@@ -1,0 +1,15 @@
+integration_example:
+  name: example
+  description: Example Integration
+  author: unixfreak0037@gmail.com
+  repo: https://github.com/unixfreak0037/ace3-example-integration
+  module: example
+
+analysis_module_example:
+  id: example
+  module: example
+  class: ExampleAnalyzer
+  enabled: true
+
+module_group_correlation:
+  analysis_module_example: true

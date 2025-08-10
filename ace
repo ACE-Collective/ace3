@@ -29,6 +29,8 @@ import requests
 import yaml
 
 from saq.analysis.root import RootAnalysis
+from saq.cli.cli_main import get_cli_subparsers, main
+from saq.cli.cli_util import display_analysis
 from saq.configuration import get_config
 from sqlalchemy import and_, or_
 
@@ -42,115 +44,6 @@ from saq.environment import g, g_boolean, g_int, g_obj, get_base_dir, initialize
 from saq.error.reporting import report_exception
 from saq.remediation import REMEDIATION_STATUS_IN_PROGRESS, REMEDIATION_STATUS_NEW
 from saq.util.uuid import storage_dir_from_uuid
-
-parser = argparse.ArgumentParser(description="Analysis Correlation Engine")
-parser.add_argument('--saq-home', required=False, dest='saq_home', default=None,
-    help="Sets the base directory of ACE.")
-parser.add_argument('-L', '--logging-config-path', required=False, dest='logging_config_path', default=None,
-    help="Path to the logging configuration file.")
-parser.add_argument('-c', '--config-path', required=False, dest='config_paths', action='append', default=[],
-    help="""ACE configuration files. $SAQ_HOME/etc/saq.default.ini is always loaded, additional override default settings.
-         This option can be specified multiple times and each file is loaded in order.""")
-parser.add_argument('--log-level', required=False, dest='log_level', default=None,
-    help="Change the root log level.")
-parser.add_argument('-u', '--user-name', required=False, dest='user_name', default=None,
-    help="The user name of the ACE user executing the command. This information is required for some commands.")
-parser.add_argument('--start', required=False, dest='start', default=False, action='store_true',
-    help="Start the specified service.  Blocks keyboard unless --daemon (-d) is used.")
-parser.add_argument('--stop', required=False, dest='stop', default=False, action='store_true',
-    help="Stop the specified service.  Only applies to services started with --daemon (-d).")
-parser.add_argument('-d', '--daemon', required=False, dest='daemon', default=False, action='store_true',
-    help="Run this process as a daemon in the background.")
-parser.add_argument('-k', '--kill-daemon', required=False, dest='kill_daemon', default=False, action='store_true',
-    help="Kill the currently processing process.")
-parser.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
-    help="Force all analysis to always generate an alert.")
-parser.add_argument('--relative-dir', required=False, dest='relative_dir', default=None,
-    help="Assume all storage paths are relative to the given directory.  Defaults to current work directory.")
-parser.add_argument('-p', '--provide-decryption-password', required=False, action='store_true', dest='provide_decryption_password', default=False,
-    help="Prompt for the decryption password. Read README.CRYPTO for details.")
-parser.add_argument('-P', '--set-decryption-password', dest='set_decryption_password', default=None,
-    help="Provide the decryption password on the command line. Not secure at all. Don't do it.")
-parser.add_argument('--trace', required=False, action='store_true', dest='trace', default=False,
-    help="Enable execution tracing (debugging option).")
-parser.add_argument('-D', required=False, action='store_true', dest='debug_on_error', default=False,
-    help="Break into pdb if an unhanled exception is thrown or an assertion fails.")
-parser.add_argument('--skip-initialize-automation-user', action='store_true', dest='skip_initialize_automation_user', default=True,
-    help="Skip the step of initializing the automation user.")
-
-subparsers = parser.add_subparsers(dest='cmd')
-
-# utility functions
-def disable_proxy():
-    for proxy_setting in [ 'http_proxy', 'https_proxy', 'ftp_proxy' ]:
-        if proxy_setting in os.environ:
-            logging.debug("removing proxy setting {}".format(proxy_setting))
-            del os.environ[proxy_setting]
-
-def recurse_analysis(analysis, level=0, current_tree=[]):
-    """Used to generate a textual display of the analysis results."""
-    from saq.observables import FileObservable
-    if not analysis:
-        return
-
-    if analysis in current_tree:
-        return
-
-    current_tree.append(analysis)
-
-    if level > 0 and len(analysis.observables) == 0 and len(analysis.tags) == 0 and analysis.summary is None:
-        return
-
-    display = '{}{}{}'.format('\t' * level, 
-                              '<' + '!' * len(analysis.detections) + '> ' if analysis.detections else '', 
-                              analysis.summary if analysis.summary is not None else str(analysis))
-    if analysis.tags:
-        display += ' [ {} ] '.format(', '.join([x.name for x in analysis.tags]))
-    
-    print(display)
-
-    for summary_detail in analysis.summary_details:
-        print('{}{}'.format('\t' * level, summary_detail.content))
-
-    for observable in analysis.observables:
-        observable_value = observable.value
-        if isinstance(observable, FileObservable):
-            observable_value = observable.file_path
-
-        display = '{} * {}{}:{}'.format('\t' * level, 
-                                        '<' + '!' * len(observable.detections) + '> ' if observable.detections else '', 
-                                         observable.type, 
-                                         observable_value)
-        if observable.time is not None:
-            display += ' @ {0}'.format(observable.time)
-        if observable.directives:
-            display += ' {{ {} }} '.format(', '.join([x for x in observable.directives]))
-        if observable.tags:
-            display += ' [ {} ] '.format(', '.join([x.name for x in observable.tags]))
-        if observable.volatile:
-            display += ' <VOLATILE> '
-        #if observable.pivot_links:
-            #for pivot_link in observable.pivot_links:
-                #display += f' 🔗 {pivot_link}'
-        print(display)
-
-        for observable_analysis in observable.all_analysis:
-            recurse_analysis(observable_analysis, level + 1, current_tree)
-
-def display_analysis(root):
-    recurse_analysis(root)
-
-    tags = set(root.all_tags)
-    if tags:
-        print("{} TAGS".format(len(tags)))
-        for tag in tags:
-            print('* {}'.format(tag))
-
-    detections = root.all_detection_points
-    if detections:
-        print("{} DETECTIONS FOUND (marked with <!> above)".format(len(detections)))
-        for detection in detections:
-            print('* {}'.format(detection))
 
 # ============================================================================
 # hunting utilities
@@ -261,7 +154,7 @@ def execute_hunt(args):
                 extensions=submission.extensions,
                 files=[])
 
-hunt_parser = subparsers.add_parser('hunt')
+hunt_parser = get_cli_subparsers().add_parser('hunt')
 hunt_sp = hunt_parser.add_subparsers(dest='hunt_cmd')
 
 execute_hunt_parser = hunt_sp.add_parser('execute',
@@ -307,6 +200,7 @@ verify_hunt_parser = hunt_sp.add_parser('verify',
     help="Verifies that all configured hunts are able to load.")
 verify_hunt_parser.set_defaults(func=verify_hunt)
 
+# XXX broken
 def list_hunts(args):
     from saq.collectors.hunter import HunterCollector
     collector = HunterCollector()
@@ -342,6 +236,7 @@ list_hunt_types_parser = hunt_sp.add_parser('list-types',
     help="List the available hunting types.")
 list_hunt_types_parser.set_defaults(func=list_hunt_types)
 
+# XXX broken
 def list_saved_searches(args):
     from saq.splunk_ss import load_saved_searches
     for saved_search in load_saved_searches(args.section, args.user, args.app):
@@ -359,6 +254,7 @@ list_saved_searches_parser.add_argument("-a", "--app", default="ftb_search_infos
     help="The splunk services namespace app.")
 list_saved_searches_parser.set_defaults(func=list_saved_searches)
 
+# XXX broken
 def publish_saved_searches(args):
     from saq.splunk_ss import load_ini_files, publish_saved_search
     for saved_search in load_ini_files(args.dir):
@@ -372,6 +268,7 @@ publish_saved_searches_parser.add_argument("-d", "--dir",
     help="The directory to load the saved searches from.")
 publish_saved_searches_parser.set_defaults(func=publish_saved_searches)
 
+# XXX broken
 def delete_saved_search(args):
     from saq.splunk_ss import delete_saved_search, load_from_ini, SavedSearch
     search = None
@@ -404,6 +301,7 @@ delete_saved_search_parser.add_argument("-n", "--name", default="ftb_search_info
     help="The name of the saved search to delete.")
 delete_saved_search_parser.set_defaults(func=delete_saved_search)
 
+# XXX broken
 def sync_saved_searches(args):
     from saq.splunk_ss import sync_saved_searches
     sync_saved_searches(args.dir, config=args.section, ns_user=args.user, ns_app=args.app)
@@ -426,7 +324,7 @@ sync_saved_searches_parser.set_defaults(func=sync_saved_searches)
 # persistence data
 #
 
-persistence_parser = subparsers.add_parser('persistence', aliases=['per'])
+persistence_parser = get_cli_subparsers().add_parser('persistence', aliases=['per'])
 persistence_sp = persistence_parser.add_subparsers(dest='persistence_cmd')
 
 def list_persistence(args):
@@ -463,7 +361,8 @@ list_persistence_parser.set_defaults(func=list_persistence)
 
 def clear_persistence(args):
     import dateparser
-    from saq.database import Persistence, PersistenceSource, and_
+    from saq.database import Persistence, PersistenceSource
+    from sqlalchemy import and_
 
     source = get_db().query(PersistenceSource).filter(PersistenceSource.name == args.source).first()
     if source is None:
@@ -536,6 +435,7 @@ def list_integrations(args):
     from saq.integration.integration_loader import get_valid_integration_dirs
     from saq.integration.integration_util import get_integration_name_from_path
     from saq.integration.integration_manager import is_integration_enabled, is_integration_installed
+    from tabulate import tabulate
 
     integration_info = []
     for dir_path in get_valid_integration_dirs():
@@ -544,18 +444,8 @@ def list_integrations(args):
         installed = is_integration_installed(name)
         integration_info.append((name, "ENABLED" if enabled else "DISABLED", "YES" if installed else "NO"))
 
-    # Determine column widths
-    name_width = max(len("Integration"), *(len(name) for name, _, _ in integration_info))
-    status_width = max(len("Status"), *(len(status) for _, status, _ in integration_info))
-    installed_width = max(len("Installed"), *(len(installed) for _, _, installed in integration_info))
-
-    # Print header
-    print(f"{'Integration'.ljust(name_width)}  {'Status'.ljust(status_width)}  {'Installed'.ljust(installed_width)}")
-    print(f"{'-'*name_width}  {'-'*status_width}  {'-'*installed_width}")
-
-    # Print each integration
-    for name, status, installed in integration_info:
-        print(f"{name.ljust(name_width)}  {status.ljust(status_width)}  {installed.ljust(installed_width)}")
+    headers = ["Integration", "Status", "Installed"]
+    print(tabulate(integration_info, headers=headers, tablefmt="simple"))
 
     sys.exit(0)
 
@@ -569,7 +459,7 @@ def uninstall_integration(args):
     uninstall_integration(args.name)
     sys.exit(0)
 
-integration_parser = subparsers.add_parser('integration')
+integration_parser = get_cli_subparsers().add_parser('integration')
 integration_sp = integration_parser.add_subparsers(dest='integration_cmd')
 
 install_integration_parser = integration_sp.add_parser('install',
@@ -604,7 +494,7 @@ disable_integration_parser.set_defaults(func=disable_integration)
 # service control/start/stop
 #
 
-service_parser = subparsers.add_parser('service',
+service_parser = get_cli_subparsers().add_parser('service',
     help="Service management commands. See ace service --help for details.")
 service_sp = service_parser.add_subparsers(dest='service_cmd')
 
@@ -633,57 +523,6 @@ def start_service(args):
 start_service_parser = service_sp.add_parser('start', help="Start an ACE service.")
 start_service_parser.add_argument('service', help="The name of the service to start. This is referenced in the configuration as [service_<name>]")
 start_service_parser.set_defaults(func=start_service)
-
-# ============================================================================
-# export observables
-#
-
-# XXX not sure we need this anymore
-
-def export_observables(args):
-    """Exports observables, mappings and some alert context into a sqlite database."""
-    from saq.database import get_db_connection
-
-    if os.path.exists(args.output_file):
-        try:
-            os.remove(args.output_file)
-        except Exception as e:
-            logging.error("unable to delete {}: {}".format(args.output_file, e))
-            sys.exit(1)
-
-    output_db = sqlite3.connect(args.output_file)
-    output_c = output_db.cursor()
-    output_c.execute("""CREATE TABLE observables ( type text NOT NULL, value text NOT NULL)""")
-    output_c.execute("""CREATE UNIQUE INDEX i_type_value ON observables( type, value )""")
-    output_c.execute("""CREATE INDEX i_value ON observables( value )""")
-
-    i = 0
-    skip = 0
-    with get_db_connection() as input_db:
-        input_c = input_db.cursor()
-        input_c.execute("""SELECT type, value FROM observables""")
-        for _type, _value in input_c:
-            try:
-                _value = _value.decode('utf-8')
-            except UnicodeDecodeError:
-                skip += 1
-                continue
-
-            output_c.execute("""INSERT INTO observables ( type, value ) VALUES ( ?, ? )""", (_type, _value))
-            i += 1
-
-    output_db.commit()
-    output_db.close()
-
-    logging.info("exported {} observables (skipped {})".format(i, skip))
-    sys.exit(0)
-
-export_observables_parser = subparsers.add_parser('export-observables',
-    help="Exports observables into a sqlite database.")
-export_observables_parser.add_argument('output_file', 
-    help="Path to the sqlite database to create. Existing files are overwritten.")
-export_observables_parser.set_defaults(func=export_observables)
-    
 
 # ============================================================================
 # command line correlation
@@ -769,7 +608,7 @@ def correlate(args):
             sys.exit(1)
 
         # disable cleanup in whatever mode we use
-        get_config()[f'analysis_mode_{root.analysis_mode}']['cleanup'] = 'no'
+        get_config()[f'analysis_mode_{root.analysis_mode}']['cleanup'] = False
 
         root.description = args.description if args.description else 'Command Line Correlation'
         root.instructions = args.instructions
@@ -936,7 +775,7 @@ def correlate(args):
 
     sys.exit(0)
 
-correlate_parser = subparsers.add_parser('correlate',
+correlate_parser = get_cli_subparsers().add_parser('correlate',
     help="Analyze one or more observables or alerts.",
     epilog="Example: ace correlate ipv4 8.8.8.8 -G email -E ip_inspector -E gglsbl_service -D process_analysis_v1 -G common")
 correlate_parser.add_argument('--multi-threaded', required=False, dest='multi_threaded', default=False, action='store_true',
@@ -1009,7 +848,7 @@ correlate_parser.set_defaults(func=correlate)
 # Remediation Utilities
 #
 
-remediation_parser = subparsers.add_parser('remediation')
+remediation_parser = get_cli_subparsers().add_parser('remediation')
 remediation_sp = remediation_parser.add_subparsers(dest='remediation_cmd')
 
 def print_remediation_status(id=None, type=None, status=None, key=None, user_id=None, user=None):
@@ -1128,7 +967,7 @@ def start_gui(args):
                use_reloader=True)
 
 # start-gui
-start_gui_parser = subparsers.add_parser('start-gui',
+start_gui_parser = get_cli_subparsers().add_parser('start-gui',
     help="Start the SAQ GUI.")
 start_gui_parser.add_argument('args', nargs=argparse.REMAINDER,
     help="Parameters to pass to the GUI command shell.")
@@ -1164,7 +1003,7 @@ def start_api(args):
                use_reloader=False)
 
 # start-gui
-start_api_parser = subparsers.add_parser('start-api',
+start_api_parser = get_cli_subparsers().add_parser('start-api',
     help="Start the ACE API server in DEBUG mode.")
 start_api_parser.add_argument('args', nargs=argparse.REMAINDER,
     help="Parameters to pass to the API command shell.")
@@ -1222,7 +1061,7 @@ def add_user(args):
 
     logging.info("added user {}".format(u.username))
 
-user_parser = subparsers.add_parser('user',
+user_parser = get_cli_subparsers().add_parser('user',
     help="User management commands.")
 user_sp = user_parser.add_subparsers(dest='user_cmd')
 
@@ -1242,7 +1081,7 @@ add_user_parser.add_argument('-q', '--queue', required=False, default='default',
 add_user_parser.set_defaults(func=add_user)
 
 # XXX DEPRECATED
-add_user_parser = subparsers.add_parser('add-user',
+add_user_parser = get_cli_subparsers().add_parser('add-user',
     help="Add a new user to the system.")
 add_user_parser.add_argument('username', help="The username of the new user.")
 add_user_parser.add_argument('email', help="The email address of the new user.")
@@ -1349,7 +1188,7 @@ modify_user_parser.add_argument('--clear-api-key', action='store_true', required
 modify_user_parser.set_defaults(func=modify_user)
 
 # XXX DEPRECATED
-modify_user_parser = subparsers.add_parser('modify-user',
+modify_user_parser = get_cli_subparsers().add_parser('modify-user',
     help="Modifies an existing user on the system.")
 modify_user_parser.add_argument('username', help="The username of the user to modify.")
 modify_user_parser.add_argument('-e', '--email', dest='email', default=None, help="The new email address of the user.")
@@ -1367,7 +1206,7 @@ def delete_user(args):
 
     logging.info("deleted user {0}".format(args.username))
 
-delete_user_parser = subparsers.add_parser('delete-user',
+delete_user_parser = get_cli_subparsers().add_parser('delete-user',
     help="Deletes an existing user from the system.")
 delete_user_parser.add_argument('username', help="The username of the user to modify.")
 delete_user_parser.set_defaults(func=delete_user)
@@ -1413,7 +1252,7 @@ exists_user_parser.set_defaults(func=user_exists)
 # test utilities
 #
 
-test_parser = subparsers.add_parser('test',
+test_parser = get_cli_subparsers().add_parser('test',
     help="Test commands.")
 test_sp = test_parser.add_subparsers(dest='test_cmd')
 
@@ -1459,7 +1298,7 @@ def test_database_connections(args):
 
     sys.exit(0)
 
-test_database_connections_parser = subparsers.add_parser('test-database-connections',
+test_database_connections_parser = get_cli_subparsers().add_parser('test-database-connections',
     help="Test the connections to all configured databases.")
 test_database_connections_parser.set_defaults(func=test_database_connections)
 
@@ -1474,7 +1313,7 @@ def test_network_semaphore(args):
     else:
         logging.error("test failed")
 
-network_semaphore_test = subparsers.add_parser('test-network-semaphore',
+network_semaphore_test = get_cli_subparsers().add_parser('test-network-semaphore',
     help="Test the Network Semaphore Server by requesting a semaphore.")
 network_semaphore_test.add_argument('semaphore_name', help="The name of the semaphore to acquire.")
 network_semaphore_test.add_argument('-t', '--timeout', required=False, default=60, type=int, dest='timeout',
@@ -1500,11 +1339,11 @@ def create_alert(args):
     root.details = { 'description': 'manually created root' }
     root.save()
 
-alert_parser = subparsers.add_parser('alert',
+alert_parser = get_cli_subparsers().add_parser('alert',
     help="Alert management commands.")
 alert_sp = alert_parser.add_subparsers(dest='alert_cmd')
 
-create_alert_parser = subparsers.add_parser('create-alert',
+create_alert_parser = get_cli_subparsers().add_parser('create-alert',
     help="Create a blank alert in the given directory.")
 create_alert_parser.add_argument('dir', help="The directory to store the alert in.")
 create_alert_parser.set_defaults(func=create_alert)
@@ -1553,7 +1392,7 @@ def rebuild_index(args):
 
     sys.exit(0)
 
-rebuild_index_parser = subparsers.add_parser('rebuild-index',
+rebuild_index_parser = get_cli_subparsers().add_parser('rebuild-index',
     help="Rebuilds the indexes for the given alerts.")
 rebuild_index_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
     help="Resyncs all alerts that belong to this node. This can take a long time.")
@@ -1619,7 +1458,7 @@ def import_alerts(args):
 
         logging.info("imported alert {}".format(alert))
 
-import_alert_parser = subparsers.add_parser('import-alerts',
+import_alert_parser = get_cli_subparsers().add_parser('import-alerts',
     help="Import one or more alert directories.")
 import_alert_parser.add_argument('-r', '--reset', action='store_true', default=False, dest='reset',
     help="Reset imported alerts.")
@@ -1661,7 +1500,7 @@ def delete_alerts(args):
 
     sys.exit(0)
 
-delete_alert_parser = subparsers.add_parser('delete-alerts',
+delete_alert_parser = get_cli_subparsers().add_parser('delete-alerts',
     help="Delete one or more alerts by UUID.")
 delete_alert_parser.add_argument('uuids', nargs='+', default=[], help="One ore more alert UUIDs to delete.")
 delete_alert_parser.set_defaults(func=delete_alerts)
@@ -1705,7 +1544,7 @@ def reset_alerts(args):
         root.save()
 
 # reset-alerts
-reset_alert_parser = subparsers.add_parser('reset-alerts',
+reset_alert_parser = get_cli_subparsers().add_parser('reset-alerts',
     help="Reset the given alerts allowing for re-analysis.")
 reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to reset.")
 reset_alert_parser.set_defaults(func=reset_alerts)
@@ -1716,7 +1555,7 @@ reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert direc
 reset_alert_parser.set_defaults(func=reset_alerts)
 
 def archive_alerts(args):
-    from saq.database import Alert
+    from saq.database.model import load_alert_by_storage_dir
 
     for storage_dir in args.dirs:
         # get the storage directory of the alert
@@ -1724,30 +1563,24 @@ def archive_alerts(args):
             logging.error("storage directory {} does not exist".format(storage_dir))
             continue
 
-        alert = get_db().session.query(Alert).filter(Alert.storage_dir==storage_dir).first()
+        alert = load_alert_by_storage_dir(storage_dir)
         if alert is None:
             logging.warning(f"cannot find alert with storage_dir {storage_dir}")
             continue
 
-        try:
-            alert.load()
-        except Exception as e:
-            logging.error("unable to load {}: {}".format(alert.storage_dir, e))
-            continue
-
         alert.archive()
-        alert.save()
+        alert.root_analysis.save()
 
-# reset-alerts
-reset_alert_parser = subparsers.add_parser('archive-alerts',
+# archive-alerts
+archive_alert_parser = get_cli_subparsers().add_parser('archive-alerts',
     help="Archives a given alert by deleting analysis details and external files but keeping observations and tags.")
-reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to archive.")
-reset_alert_parser.set_defaults(func=archive_alerts)
+archive_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to archive.")
+archive_alert_parser.set_defaults(func=archive_alerts)
 
-reset_alert_parser = alert_sp.add_parser('archive',
-    help="Archives a given alert by deleting analysis details and external files but keeping observations and tags.")
-reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to archive.")
-reset_alert_parser.set_defaults(func=archive_alerts)
+#reset_alert_parser = alert_sp.add_parser('archive',
+    #help="Archives a given alert by deleting analysis details and external files but keeping observations and tags.")
+#reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to archive.")
+#reset_alert_parser.set_defaults(func=archive_alerts)
 
 def add_observable(args):
 
@@ -1784,7 +1617,7 @@ def add_observable(args):
         alert.unlock()
 
 # add-observable
-add_observable_parser = subparsers.add_parser('add-observable',
+add_observable_parser = get_cli_subparsers().add_parser('add-observable',
     help="Add an observable to an existing alert and re-analyze.")
 add_observable_parser.add_argument('dir', help="The path to the alert to modify.")
 add_observable_parser.add_argument('observable_type', help="The type of the observable to add.")
@@ -1814,7 +1647,7 @@ def reload_alerts(args):
         alert.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.schedule()
 
-reload_alert_parser = subparsers.add_parser('reload-alerts',
+reload_alert_parser = get_cli_subparsers().add_parser('reload-alerts',
     help="Force analysis (again) on one or more existing alert(s).")
 reload_alert_parser.add_argument('uuids', nargs='+',
     help="One or more alert UUIDs to analyze.")
@@ -1834,7 +1667,7 @@ def cleanup_alerts(args):
                    dry_run=args.dry_run)
     sys.exit(0)
 
-cleanup_alerts_parsers = subparsers.add_parser('cleanup-alerts',
+cleanup_alerts_parsers = get_cli_subparsers().add_parser('cleanup-alerts',
     help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
 cleanup_alerts_parsers.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
     help="Just report how many would be deleted and archived.")
@@ -1870,7 +1703,7 @@ def distribute_alerts(args):
 
     distribute_old_alerts(days, args.dry_run, target, args.max)
 
-distribute_alerts_parsers = subparsers.add_parser('distribute-alerts',
+distribute_alerts_parsers = get_cli_subparsers().add_parser('distribute-alerts',
     help="Moves old alerts not associated to events to another node.")
 distribute_alerts_parsers.add_argument('--dry-run', required=False, default=False, action='store_true',
     help="Just report how many would be distributed.")
@@ -1896,7 +1729,7 @@ def display_alert(args):
     display_analysis(alert)
     sys.exit(0)
 
-display_alert_parser = subparsers.add_parser('display-alert',
+display_alert_parser = get_cli_subparsers().add_parser('display-alert',
     help="Displays the results of the analysis for a given alert.")
 display_alert_parser.add_argument('dir', 
     help="The directory of the alert to display")
@@ -1943,7 +1776,7 @@ def display_submission(args):
     sys.exit(0)
 
 # submission parser
-submission_parser = subparsers.add_parser('submission',
+submission_parser = get_cli_subparsers().add_parser('submission',
     help="Submission management commands.")
 
 # submission subparser
@@ -2024,207 +1857,11 @@ def submit_failed_submissions(args):
         logging.error("unable to submit: {}".format(e))
         sys.exit(1)
 
-submit_failed_submissions_parser = subparsers.add_parser('submit-failed-submissions',
+submit_failed_submissions_parser = get_cli_subparsers().add_parser('submit-failed-submissions',
     help="Submit any failed submissions stored in the directory defined in the network_client_ace configuration section.")
 submit_failed_submissions_parser.add_argument('-r', '--remove', required=False, default=False, action='store_true', dest='remove',
     help="Remove the directories that were submitted after a succuessful submissions.")
 submit_failed_submissions_parser.set_defaults(func=submit_failed_submissions)
-
-def search_archive(args):
-    import saq
-    from saq.database import get_db_connection
-
-    # are we exporting into a directory?
-    if args.output_dir:
-        if not os.path.isdir(args.output_dir):
-            try:
-                os.mkdir(args.output_dir)
-            except Exception as e:
-                logging.error("unable to create output directory {}: {}".format(args.output_dir, e))
-                sys.exit(0)
-
-    search_items = args.search_items
-
-    # are we reading search from standard input?
-    if args.from_stdin:
-        for search_item in sys.stdin:
-            search_items.append(search_item.strip())
-
-    with get_db_connection(name="email_archive") as db:
-        c = db.cursor()
-        query = """
-SELECT
-    archive_server.hostname, HEX(archive.md5)
-FROM
-    archive JOIN archive_server ON archive.server_id = archive_server.server_id
-    {extended_from_clause}
-WHERE
-    {where_clauses}
-"""
-
-        where_clauses = []
-        parameters = []
-
-        extended_from_clause = "JOIN archive_search ON archive.archive_id = archive_search.archive_id"
-        if args.exact:
-            extended_from_clause = "JOIN archive_index ON archive.archive_id = archive_index.archive_id"
-
-        for search_item in search_items:
-            if not any([args.env_from, args.env_to, args.mail_from, args.mail_to, args.subject, args.message_id]):
-                if args.exact:
-                    where_clauses.append("archive_index.hash = UNHEX(MD5(%s))")
-                    parameters.append(search_item)
-                else:
-                    where_clauses.append("archive_search.value LIKE %s")
-                    parameters.append('%%{}%%'.format(search_item))
-            else:
-                _archive_index_template = "(archive_index.field = '{field}' AND archive_index.hash = UNHEX(MD5(%s)))"
-                _archive_index_value = search_item
-                _archive_search_template = "(archive_search.field = '{field}' AND archive_search.value LIKE %s)"
-                _archive_search_value = '%%{}%%'.format(search_item)
-
-                if args.env_from:
-                    if args.exact:                        
-                        where_clauses.append(_archive_index_template.format(field='env_from'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='env_from'))
-                        parameters.append(_archive_search_value)
-
-                if args.env_to:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='env_to'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='env_to'))
-                        parameters.append(_archive_search_value)
-
-                if args.mail_from:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='mail_from'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='mail_from'))
-                        parameters.append(_archive_search_value)
-
-                if args.mail_to:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='mail_to'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='mail_to'))
-                        parameters.append(_archive_search_value)
-
-                if args.subject:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='subject'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='subject'))
-                        parameters.append(_archive_search_value)
-
-                if args.url:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='url'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='url'))
-                        parameters.append(_archive_search_value)
-
-                if args.message_id:
-                    if args.exact:
-                        where_clauses.append(_archive_index_template.format(field='message_id'))
-                        parameters.append(_archive_index_value)
-                    else:
-                        where_clauses.append(_archive_search_template.format(field='message_id'))
-                        parameters.append(_archive_search_value)        
-        
-        query = query.format(extended_from_clause=extended_from_clause,
-                            where_clauses=' OR '.join(where_clauses))
-       # print(query)
-       # print(','.join(parameters))
-        c.execute(query, parameters)
-
-        for server, md5 in c:
-            # does this archive file exist?
-            archive_base_dir = os.path.join(saq.DATA_DIR, get_config()['analysis_module_email_archiver']['archive_dir'])
-            if args.archive_dir:
-                archive_base_dir = args.archive_dir
-
-            if not os.path.isdir(archive_base_dir):
-                logging.error("archive directory {} does not exist".format(archive_base_dir))
-                sys.exit(1)
-
-            archive_path = os.path.join(archive_base_dir, server.lower(), md5.lower()[0:3],
-                                        '{}.gz.gpg'.format(md5.lower()))
-            if not os.path.exists(archive_path):
-                logging.warning("archive email {} does not exist at {}".format(md5, archive_path))
-                continue
-
-            # are we just listing the paths?
-            if not args.output_dir:
-                print(archive_path)
-                continue
-
-            # are we just copying the entire encrypted email?
-            if not saq.ENCRYPTION_PASSWORD:
-                try:
-                    shutil.copy(archive_path, args.output_dir)
-                except Exception as e:
-                    logging.warning("unable to copy {} to {}: {}".format(archive_path, args.output_dir, e))
-                    continue
-
-                print(os.path.join(args.output_dir, os.path.basename(archive_path)))
-                continue
-
-            # decrypt and decompress the emails
-            dest_path = os.path.join(args.output_dir, md5.lower())
-            with open(dest_path, 'wb') as fp:
-                gpg_p = Popen(['gpg', '--no-tty', '-d', '--passphrase-fd', '0', archive_path],
-                            stdout=PIPE, stderr=PIPE, stdin=PIPE)
-                gunzip_p = Popen(['zcat'], stdin=gpg_p.stdout, stdout=fp)
-                gpg_p.stdin.write('{}\n'.format(saq.ENCRYPTION_PASSWORD).encode())
-                gpg_p.stdin.close()
-                gpg_p.stdout.close()
-                gunzip_p.communicate()
-                gpg_p.wait()
-
-                if gpg_p.returncode != 0:
-                    logging.warning("gpg decryption failed for {} (return code {})".format(archive_path, gpg_p.returncode))
-                    continue
-
-            print(dest_path)
-
-    sys.exit(0)
-
-# search-archive
-search_archive_parser = subparsers.add_parser('search-archive',
-    help="Search the email archives.")
-search_archive_parser.add_argument('--env-from', required=False, default=False, action='store_true', dest='env_from',
-    help="Narrow searching to the envelope MAIL FROM field.")
-search_archive_parser.add_argument('--env-to', required=False, default=False, action='store_true', dest='env_to',
-    help="Narrow searching to the envelope RCPT TO field.")
-search_archive_parser.add_argument('--mail-from', required=False, default=False, action='store_true', dest='mail_from',
-    help="Narrow searching to the message body From field.")
-search_archive_parser.add_argument('--mail-to', required=False, default=False, action='store_true', dest='mail_to',
-    help="Narrow searching to the message body To field.")
-search_archive_parser.add_argument('--subject', required=False, default=False, action='store_true', dest='subject',
-    help="Narrow searching to the message body Subject field.")
-search_archive_parser.add_argument('--message-id', required=False, default=False, action='store_true', dest='message_id',
-    help="Narrow searching to the message body Message-ID field.")
-search_archive_parser.add_argument('--url', required=False, default=False, action='store_true', dest='url',
-    help="Narrow searching to a URL found anywhere in the email.")
-search_archive_parser.add_argument('--exact', required=False, default=False, action='store_true', dest='exact',
-    help="Perform an exact match (ignores options to narrow down search.) This is the fastest search.")
-search_archive_parser.add_argument('--from-stdin', required=False, default=False, action='store_true', dest='from_stdin',
-    help="Read search items from standard input (one per line.)")
-search_archive_parser.add_argument('-d', '--output-dir', required=False, default=None, dest='output_dir',
-    help="Export selected emails into the given directory. Also see the -p option in the main command.")
-search_archive_parser.add_argument('-a', '--archive-dir', required=False, default=None, dest='archive_dir',
-    help="Specify an alternative email archive directory. Defaults to what is specified in the analysis_module_email_archiver configuration.")
-search_archive_parser.add_argument('search_items', nargs='*',
-    help="One or more things to search for.  Each query will be searhed for individually.")
-search_archive_parser.set_defaults(func=search_archive)
 
 #
 # remediation
@@ -2244,7 +1881,7 @@ def display_remediation_requests(args):
 
     sys.exit(0)
 
-display_remediation_parser = subparsers.add_parser('display-remediation-requests', 
+display_remediation_parser = get_cli_subparsers().add_parser('display-remediation-requests', 
     help="Displays the remediation requests currently in the queue or in processing.")
 display_remediation_parser.set_defaults(func=display_remediation_requests)
 
@@ -2270,7 +1907,7 @@ def clear_remediation_request(args):
     get_db().commit()
     sys.exit(0)
 
-clear_remediation_request_parser = subparsers.add_parser('clear-remediation-requests',
+clear_remediation_request_parser = get_cli_subparsers().add_parser('clear-remediation-requests',
     help="Clears one or more remediation requests.")
 clear_remediation_request_parser.add_argument('-a', '--all', action='store_true', default=False,
     help="Clears all remediation requests that are not locked or have expired locks.")
@@ -2400,7 +2037,7 @@ def update_organization(args):
     except Exception as e:
         logging.error("unable to move {0} to {1}: {2}".fomrat(temp_file, dest_file, str(e)))
 
-update_organization_parsers = subparsers.add_parser('update-organization',
+update_organization_parsers = get_cli_subparsers().add_parser('update-organization',
     help="Updates the files used by the UserTaggingAnalyzer module.")
 update_organization_parsers.set_defaults(func=update_organization)
 
@@ -2435,7 +2072,7 @@ def update_for_detection_observable_cache(args):
     redis_connection_b.swapdb(REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B)
     logging.info(f'Cached {count} for_detection observables in {"%.2f" % (time.time() - start)} seconds')
 
-update_for_detection_observable_cache_parser = subparsers.add_parser('update-for-detection-observable-cache',
+update_for_detection_observable_cache_parser = get_cli_subparsers().add_parser('update-for-detection-observable-cache',
     help="Updates the local Reids cache of the observables that are enabled for detection.")
 update_for_detection_observable_cache_parser.set_defaults(func=update_for_detection_observable_cache)
 
@@ -2782,7 +2419,7 @@ def export_for_detect_observables(args):
     sys.exit(0)
 
 
-export_for_detect_parser = subparsers.add_parser('export-for-detect-observables',
+export_for_detect_parser = get_cli_subparsers().add_parser('export-for-detect-observables',
                                                  help="Exports observables marked for_detection into configured formatting")
 export_for_detect_parser.add_argument('--type', action='append', nargs=2, type=str, required=True,
                                                  help="{type of export to perform} {output directory/KVStore Collection/etc.}")
@@ -2801,7 +2438,7 @@ def cleanup_email_archive(args):
     maintain_archive(verbose=True)
     sys.exit(0)
 
-cleanup_email_archive_parser = subparsers.add_parser('cleanup-email-archive',
+cleanup_email_archive_parser = get_cli_subparsers().add_parser('cleanup-email-archive',
     help="Removes emails from the archive that have expired.")
 cleanup_email_archive_parser.set_defaults(func=cleanup_email_archive)
 
@@ -2825,7 +2462,7 @@ def list_companies(args):
     print()
     sys.exit(0)
 
-list_companies_parser = subparsers.add_parser('list-companies',
+list_companies_parser = get_cli_subparsers().add_parser('list-companies',
     help="Lists the available companies and their IDs.")
 list_companies_parser.set_defaults(func=list_companies)
 
@@ -2840,7 +2477,7 @@ def add_company(args):
 
     sys.exit(0)
 
-add_companies_parser = subparsers.add_parser('add-company',
+add_companies_parser = get_cli_subparsers().add_parser('add-company',
     help="Adds a new company entry.")
 add_companies_parser.add_argument('company_id', type=int, help="The ID of the new company (a number that is not already being used as an ID.)")
 add_companies_parser.add_argument('company_name', help="The name of the new company.")
@@ -2878,7 +2515,7 @@ def delete_company(args):
 
     sys.exit(0)
 
-delete_companies_parser = subparsers.add_parser('delete-company',
+delete_companies_parser = get_cli_subparsers().add_parser('delete-company',
     help="Deletes a given company and all associated events and alerts.")
 delete_companies_parser.add_argument('company_name', help="The name of the company to delete.")
 delete_companies_parser.set_defaults(func=delete_company)
@@ -2904,7 +2541,7 @@ def test_proxies(args):
 
     sys.exit(0)
 
-test_proxies_parser = subparsers.add_parser('test-proxies',
+test_proxies_parser = get_cli_subparsers().add_parser('test-proxies',
     help="Test the configured proxies to make sure ACE can use them.")
 test_proxies_parser.add_argument('url', help="A sample URL to attempt to download through each proxy.")
 test_proxies_parser.set_defaults(func=test_proxies)
@@ -2960,7 +2597,7 @@ def verify_modules(args):
 
         logging.info("analysis module {} verification OK".format(section))
     
-verify_modules_parsers = subparsers.add_parser('verify-modules',
+verify_modules_parsers = get_cli_subparsers().add_parser('verify-modules',
     help="Executes verify_environment() on all modules that are enabled.")
 verify_modules_parsers.set_defaults(func=verify_modules)
 
@@ -2968,7 +2605,7 @@ verify_modules_parsers.set_defaults(func=verify_modules)
 # encryption/decryption utilities
 #
 
-encryption_parser = subparsers.add_parser('encryption', aliases=['enc'],
+encryption_parser = get_cli_subparsers().add_parser('encryption', aliases=['enc'],
     help="Encryption management commands.")
 encryption_sp = encryption_parser.add_subparsers(dest='enc_cmd')
 
@@ -3018,7 +2655,7 @@ def set_encryption_password(args):
     set_encryption_password(password, old_password=current_password, key=key)
     sys.exit(0)
 
-set_encryption_password_parser = subparsers.add_parser('set-encryption-password',
+set_encryption_password_parser = get_cli_subparsers().add_parser('set-encryption-password',
     help="Sets the password used to encrypt and decrypt archived emails.")
 set_encryption_password_parser.add_argument('-o', '--overwrite', default=False, action='store_true',
     help="Overwrites an existing password without prompting.")
@@ -3108,7 +2745,7 @@ config_encryption_parser = encryption_sp.add_parser('config',
 config_encryption_sp = config_encryption_parser.add_subparsers(dest='config_enc_cmd')
 
 def set_encrypted_password(args):
-    if g_obj(G_ENCRYPTION_KEY).value is None:
+    if g(G_ENCRYPTION_KEY) is None:
         logging.error("missing encryption password (use the -p option or start the ecs service)\n")
         sys.exit(1)
 
@@ -3122,7 +2759,7 @@ def set_encrypted_password(args):
 
         break
 
-    from saq.configuration.parser import encrypt_password
+    from saq.configuration.encryption import encrypt_password
     encrypt_password(args.key, password)
     sys.exit(0)
 
@@ -3133,7 +2770,7 @@ set_encrypted_password_parser.add_argument('key',
 set_encrypted_password_parser.set_defaults(func=set_encrypted_password)
 
 def list_encrypted_passwords(args):
-    from saq.configuration.parser import export_encrypted_passwords
+    from saq.configuration.encryption import export_encrypted_passwords
     encrypted_passwords = export_encrypted_passwords()
     if not encrypted_passwords:
         print("no passwords have been encrypted")
@@ -3147,7 +2784,7 @@ def list_encrypted_passwords(args):
 
     sys.exit(0)
 
-list_encrypted_passwords_parser = subparsers.add_parser('list-encrypted-passwords',
+list_encrypted_passwords_parser = get_cli_subparsers().add_parser('list-encrypted-passwords',
     help="Lists the encrypted passwords.")
 list_encrypted_passwords_parser.set_defaults(func=list_encrypted_passwords)
 
@@ -3156,7 +2793,7 @@ list_encrypted_passwords_parser = config_encryption_sp.add_parser('list',
 list_encrypted_passwords_parser.set_defaults(func=list_encrypted_passwords)
 
 def delete_encrypted_password(args):
-    from saq.configuration.parser import delete_password
+    from saq.configuration.encryption import delete_password
     if delete_password(args.key):
         print("password deleted")
     else:
@@ -3164,7 +2801,7 @@ def delete_encrypted_password(args):
 
     sys.exit(0)
 
-delete_encrypted_password_parser = subparsers.add_parser('delete-encrypted-password',
+delete_encrypted_password_parser = get_cli_subparsers().add_parser('delete-encrypted-password',
     help="Deletes a given encrypted password.")
 delete_encrypted_password_parser.add_argument('key',
     help="The name of the password to delete.")
@@ -3177,14 +2814,14 @@ delete_encrypted_password_parser.add_argument('key',
 delete_encrypted_password_parser.set_defaults(func=delete_encrypted_password)
 
 def export_encrypted_passwords(args):
-    import saq.configuration.parser
+    import saq.configuration.encryption
 
     if args.file == '-':
         fp = sys.stdout
     else:
         fp = open(args.file, 'w')
 
-    json.dump(saq.configuration.parser.export_encrypted_passwords(), fp)
+    json.dump(saq.configuration.encryption.export_encrypted_passwords(), fp)
     fp.write('\n')
     fp.close()
     sys.exit(0)
@@ -3197,14 +2834,14 @@ export_encrypted_passwords_parser.add_argument('file',
 export_encrypted_passwords_parser.set_defaults(func=export_encrypted_passwords)
 
 def import_encrypted_passwords(args):
-    import saq.configuration.parser
+    import saq.configuration.encryption
 
     if args.file == '-':
         fp = sys.stdin
     else:
         fp = open(args.file, 'r')
 
-    saq.configuration.parser.import_encrypted_passwords(json.load(fp))
+    saq.configuration.encryption.import_encrypted_passwords(json.load(fp))
     fp.close()
     sys.exit(0)
 
@@ -3235,7 +2872,7 @@ def remove_bro_http_whitelist(args):
     os.remove(tmp_path)
     sys.exit(0)
 
-remove_bro_http_whitelist_parser = subparsers.add_parser('remove-bro-http-whitelist',
+remove_bro_http_whitelist_parser = get_cli_subparsers().add_parser('remove-bro-http-whitelist',
     help="Adds the given CIDR and description as a whitelist item to the bro HTTP whitelist.")
 remove_bro_http_whitelist_parser.add_argument('cidr', help="The network CIDR to remove from the whitelist.")
 remove_bro_http_whitelist_parser.set_defaults(func=remove_bro_http_whitelist)
@@ -3251,7 +2888,7 @@ def list_available_modules(args):
 
     sys.exit(0)
 
-list_available_modules_parser = subparsers.add_parser('list-available-modules',
+list_available_modules_parser = get_cli_subparsers().add_parser('list-available-modules',
     help="Lists the modules available in ACE.")
 list_available_modules_parser.set_defaults(func=list_available_modules)
 
@@ -3295,7 +2932,7 @@ def config(args):
     print(yaml.dump(raw_config, indent=2, default_flow_style=False))
     return 0
 
-config_parser = subparsers.add_parser('config',
+config_parser = get_cli_subparsers().add_parser('config',
     help="Queries the ACE configuration.")
 config_parser.add_argument('settings', nargs="*",
     help="Zero or more configuration items to display in the format section.key.")
@@ -3333,7 +2970,7 @@ def display_workload(args):
 
     sys.exit(0)
 
-display_workload_parser = subparsers.add_parser('display-workload',
+display_workload_parser = get_cli_subparsers().add_parser('display-workload',
     help="Displays the current ACE workload.")
 display_workload_parser.set_defaults(func=display_workload)
 
@@ -3351,7 +2988,7 @@ def build_suricata_db(args):
 
     sys.exit(0)
 
-build_suricata_db_parser = subparsers.add_parser('build-suricata-db',
+build_suricata_db_parser = get_cli_subparsers().add_parser('build-suricata-db',
     help="Builds the fast suricata signature lookup redis database.")
 build_suricata_db_parser.add_argument('--signature-path', default=None,
     help="""Path to the suricata signature file to load. 
@@ -3400,7 +3037,7 @@ def close_event(args):
 
     sys.exit(0)
 
-event_parser = subparsers.add_parser('event')
+event_parser = get_cli_subparsers().add_parser('event')
 event_sp = event_parser.add_subparsers(dest='event_cmd')
 
 close_event_parser = event_sp.add_parser('close',
@@ -3417,7 +3054,7 @@ def debug(args):
     # use this when you need it
     sys.exit(0)
 
-debug_parser = subparsers.add_parser('debug')
+debug_parser = get_cli_subparsers().add_parser('debug')
 debug_parser.set_defaults(func=debug)
 
 def generate_api_key(args):
@@ -3427,49 +3064,8 @@ def generate_api_key(args):
     print(f"api_key_sha256 = {sha256_str(api_key)}")
     sys.exit(0)
 
-generate_api_key_parser = subparsers.add_parser('generate-api-key')
+generate_api_key_parser = get_cli_subparsers().add_parser('generate-api-key')
 generate_api_key_parser.set_defaults(func=generate_api_key)
 
 if __name__ == '__main__':
-
-    # there is no reason to run anything as root
-    if os.geteuid() == 0:
-        print("do not run ace as root please")
-        sys.exit(1)
-
-    # parse the command line arguments
-    args = parser.parse_args()
-
-    encryption_password_plaintext = None
-    if args.provide_decryption_password:
-        encryption_password_plaintext = getpass.getpass(prompt="Enter the encryption password:")
-
-    # initialize saq
-    initialize_environment(
-        saq_home=args.saq_home,
-        log_level=args.log_level,
-        config_paths=args.config_paths,
-        logging_config_path=args.logging_config_path,
-        relative_dir=args.relative_dir,
-        encryption_password_plaintext=encryption_password_plaintext,
-        skip_initialize_automation_user=args.skip_initialize_automation_user)
-
-    if args.debug_on_error:
-        def info(type, value, tb):
-           if hasattr(sys, 'ps1') or not sys.stderr.isatty() or type != AssertionError:
-              # we are in interactive mode or we don't have a tty-like
-              # device, so we call the default hook
-              sys.__excepthook__(type, value, tb)
-           else:
-              import traceback
-              import pdb
-              # we are NOT in interactive mode, print the exception...
-              traceback.print_exception(type, value, tb)
-              print()
-              # ...then start the debugger in post-mortem mode.
-              pdb.pm()
-
-        sys.excepthook = info
-
-    # call the handler for the given command
-    args.func(args)
+    main()

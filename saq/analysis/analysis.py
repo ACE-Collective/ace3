@@ -547,9 +547,8 @@ class Analysis(EventSource):
         """If this returns True then this Analysis is always visible in the GUI."""
         return False
 
-# TODO revisit the need for this class
-class ReadOnlyAnalysis(Analysis):
-    """Represents an Analysis that cannot be modified."""
+class UnknownAnalysis(Analysis):
+    """Represents an Analysis that cannot be modified.  This is used when an Analysis is serialized to JSON but the class is not found."""
 
     def __init__(self, module_path, *args, **kwargs):
         self._module_path = module_path
@@ -570,14 +569,6 @@ class ReadOnlyAnalysis(Analysis):
 
     def discard_details(self):
         pass
-
-    @property
-    def details(self):
-        return self.persistence_manager.details
-
-    @details.setter
-    def details(self, value):
-        pass  # Read-only, do nothing
 
     def clear_observables(self):
         pass

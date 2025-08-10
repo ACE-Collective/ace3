@@ -61,6 +61,7 @@ requests-ntlm
 requests-oauthlib
 shodan
 SQLAlchemy
+tabulate
 tld
 tzlocal
 urlfinderlib

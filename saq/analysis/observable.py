@@ -704,7 +704,7 @@ class Observable(EventSource):
         return [a for a in self.all_analysis if isinstance(a, analysis_type)]
 
     def _load_analysis(self):
-        from saq.analysis.analysis import Analysis, ReadOnlyAnalysis
+        from saq.analysis.analysis import Analysis, UnknownAnalysis
         assert isinstance(self.analysis, dict)
 
         # see the module_path property of the Analysis object
@@ -727,7 +727,7 @@ class Observable(EventSource):
 
             except Exception as e:
                 logging.warning(f'unable to load analysis: {e}')
-                analysis = ReadOnlyAnalysis(module_path)
+                analysis = UnknownAnalysis(module_path)
 
             analysis.observable = self # set the source of the analysis
             # XXX this is a hack to get this working for now, revisit when serialization move out of these classes

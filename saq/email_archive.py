@@ -155,7 +155,7 @@ def register_email_archive(hostname: Optional[str]=None, reset_server_id: Option
         row = cursor.fetchone()
         if row:
             server_id = row[0]
-            logging.info("loaded email archive server_id %s for %s", server_id, hostname)
+            logging.debug("loaded email archive server_id %s for %s", server_id, hostname)
             return server_id
 
         logging.info("creating archive server entry for %s", hostname)

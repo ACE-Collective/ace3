@@ -273,8 +273,8 @@ class TestLoadIntegrationComponentEtc:
     def test_load_integration_component_etc_with_ini_files(self, mock_get_config, tmpdir):
         """Test loading etc component with ini files."""
         etc_dir = tmpdir.mkdir("etc")
-        config_file = etc_dir.join("test.ini")
-        config_file.write("[section]\nkey=value")
+        config_file = etc_dir.join("test.yaml")
+        config_file.write("section:\n  key: value")
         
         mock_config = MagicMock()
         mock_get_config.return_value = mock_config
@@ -301,10 +301,10 @@ class TestLoadIntegrationComponentEtc:
     def test_load_integration_component_etc_multiple_ini_files(self, mock_get_config, tmpdir):
         """Test loading etc component with multiple ini files."""
         etc_dir = tmpdir.mkdir("etc")
-        config1 = etc_dir.join("config1.ini")
-        config1.write("[section1]\nkey1=value1")
-        config2 = etc_dir.join("config2.ini")
-        config2.write("[section2]\nkey2=value2")
+        config1 = etc_dir.join("config1.yaml")
+        config1.write("section1:\n  key1: value1")
+        config2 = etc_dir.join("config2.yaml")
+        config2.write("section2:\n  key2: value2")
         
         mock_config = MagicMock()
         mock_get_config.return_value = mock_config

@@ -57,7 +57,7 @@ def load_integrations() -> bool:
     for dir_path in get_valid_integration_dirs():
         try:
             if not is_integration_enabled(get_integration_name_from_path(dir_path)):
-                logging.info(f"integration {get_integration_name_from_path(dir_path)} is disabled, skipping")
+                logging.debug(f"integration {get_integration_name_from_path(dir_path)} is disabled, skipping")
                 continue
 
             if load_integration_from_directory(dir_path):
@@ -123,7 +123,7 @@ def load_integration_component_etc(dir_path: str) -> bool:
     if os.path.exists(etc_path):
         for etc_file in os.listdir(etc_path):
             etc_file_path = os.path.join(etc_path, etc_file)
-            if etc_file_path.endswith(".ini"):
+            if etc_file_path.endswith(".yaml") or etc_file_path.endswith(".yml"):
                 logging.info(f"loading integration configuration file {etc_file_path}")
                 get_config().load_file(etc_file_path)
 

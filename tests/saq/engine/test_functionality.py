@@ -9,7 +9,7 @@ import signal
 import uuid
 import pytest
 
-from saq.analysis.analysis import Analysis, ReadOnlyAnalysis
+from saq.analysis.analysis import Analysis, UnknownAnalysis
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
@@ -2945,10 +2945,10 @@ def test_missing_analysis():
     test_observable = root.get_observable(test_observable.id)
     assert test_observable
     analysis = test_observable.get_and_load_analysis('saq.modules.test:DoesNotExist')
-    assert isinstance(analysis, ReadOnlyAnalysis)
-    assert not analysis.load_details()
+    assert isinstance(analysis, UnknownAnalysis)
+    # analysis is still able to be loaded
+    assert analysis.load_details()
     # the class that gets loaded is different
-    assert isinstance(analysis, ReadOnlyAnalysis)
     # but the summary should still be the same
     assert analysis.summary == str(test_observable.value)
 

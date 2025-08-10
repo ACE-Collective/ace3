@@ -698,14 +698,16 @@ def initialize_environment(
     # clear out any proxy environment variables if they exist
     for proxy_key in ["http_proxy", "https_proxy", "ftp_proxy"]:
         if proxy_key in os.environ:
-            logging.warning(
-                "removing proxy environment variable for {}".format(proxy_key)
-            )
+            if os.environ[proxy_key] != "":
+                logging.warning(
+                    "removing proxy environment variable for {}".format(proxy_key)
+                )
             del os.environ[proxy_key]
         if proxy_key.upper() in os.environ:
-            logging.warning(
-                "removing proxy environment variable for {}".format(proxy_key.upper())
-            )
+            if os.environ[proxy_key.upper()] != "":
+                logging.warning(
+                    "removing proxy environment variable for {}".format(proxy_key.upper())
+                )
             del os.environ[proxy_key.upper()]
 
     # load any additional proxies specified in the config sections proxy_*

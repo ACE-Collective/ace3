@@ -25,7 +25,8 @@ class ExampleAnalysis(Analysis):
     def result(self, value: str):
         self.details[KEY_RESULT] = value
 
-    def get_result(self) -> Optional[str]:
+    @override
+    def generate_summary(self) -> Optional[str]:
         if self.result:
             return f"Example Analysis: {self.result}"
         else:
@@ -34,6 +35,7 @@ class ExampleAnalysis(Analysis):
 class ExampleAnalyzer(AnalysisModule):
 
     @override
+    @property
     def valid_observable_types(self) -> list[str]:
         return [F_TEST]
 

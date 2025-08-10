@@ -893,6 +893,15 @@ def load_alert(uuid: str) -> Optional[Alert]:
 
     return alert
 
+def load_alert_by_storage_dir(storage_dir: str) -> Optional[Alert]:
+    """Returns the loaded Alert given by storage_dir, or None if the alert does not exist."""
+    alert = get_db().query(Alert).filter(Alert.storage_dir == storage_dir).one_or_none()
+
+    if alert:
+        alert.load()
+
+    return alert
+
 class Campaign(Base):
     __tablename__ = 'campaign'
     id = Column(Integer, nullable=False, primary_key=True)
