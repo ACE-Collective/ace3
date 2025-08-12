@@ -8,7 +8,7 @@ import pytz
 import ace_api
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_DESCRIPTIONS, F_FILE, G_TEMP_DIR, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, G_TEMP_DIR, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
@@ -63,7 +63,7 @@ ORDER BY
 
     tool = "gui"
     tool_instance = get_config()['global']['instance_name']
-    alert_type = request.form.get('new_alert_type', 'manual')
+    alert_type = ANALYSIS_TYPE_MANUAL
     description = request.form.get('new_alert_description', 'Manual Alert')
     is_local = request.form.get('is_local', None)
     queue = request.form.get('new_alert_queue', 'default')

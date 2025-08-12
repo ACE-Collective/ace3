@@ -19,15 +19,15 @@ else
     echo "encryption password verified"
 fi
 
-if [ ! -e data/etc/saq.api-keys.ini ]
+if [ ! -e data/etc/saq.api-keys.yaml ]
 then
     API_KEY=$(cat /proc/sys/kernel/random/uuid)
     API_KEY_SHA256=$(echo -ne $API_KEY | openssl sha256 -r | awk '{print $1}')
-    cat<<EOF > data/etc/saq.api-keys.ini
-[api]
-api_key = $API_KEY
+    cat<<EOF > data/etc/saq.api-keys.yaml
+api:
+  api_key: $API_KEY
 
-[apikeys]
-automation = $API_KEY_SHA256
+apikeys:
+  automation: $API_KEY_SHA256
 EOF
 fi
