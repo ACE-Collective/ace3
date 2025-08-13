@@ -1,7 +1,8 @@
 import bisect
 import time
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.remediation import RemediationTarget, get_remediation_targets
@@ -11,7 +12,7 @@ from saq.remediation import RemediationTarget, get_remediation_targets
 # then the analyst (or whoever) should be notified somehow
 
 @analysis.route('/remediation_targets', methods=['POST', 'PUT', 'DELETE', 'PATCH'])
-@login_required
+@require_permission('remediation', 'read')
 def remediation_targets():
     # get request body
     body = request.get_json()

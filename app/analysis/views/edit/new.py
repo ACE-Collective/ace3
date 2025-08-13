@@ -6,6 +6,7 @@ from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 import pytz
 import ace_api
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, G_TEMP_DIR, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
@@ -18,7 +19,7 @@ from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
 
 @analysis.route('/new_alert', methods=['POST'])
-@login_required
+@require_permission('alert', 'create')
 def new_alert():
     # get the list of available nodes (for all companies)
     sql = """
@@ -256,10 +257,9 @@ def new_alert_observable():
     directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
     return render_template('analysis/new_alert_observable.html', observable_types=VALID_OBSERVABLE_TYPES, directives=directives, index=index)
 
-# XXX I can't remember why this is named /file
-
+# I can't remember why this is named /file
 @analysis.route('/file', methods=['GET'])
-@login_required
+@require_permission('alert', 'create')
 def file():
     # get the list of available nodes (for all companies)
     sql = """
@@ -284,20 +284,6 @@ ORDER BY
         cursor = db.cursor()
         cursor.execute(sql, (None, ANALYSIS_MODE_CORRELATION,))
         available_nodes = cursor.fetchall()
-
-    # XXX secondary shit needs to come OUT
-
-        secondary_companies = get_config()['global'].get('secondary_company_ids', None)
-        if secondary_companies is not None:
-            secondary_companies = secondary_companies.split(',')
-            for secondary_company_id in secondary_companies:
-                cursor.execute(sql, (secondary_company_id, ANALYSIS_MODE_CORRELATION,))
-                more_nodes = cursor.fetchall()
-                for node in more_nodes:
-                    if node not in available_nodes:
-                        available_nodes = (node,) + available_nodes
-
-    logging.debug("Available Nodes: {}".format(available_nodes))
 
     directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
 

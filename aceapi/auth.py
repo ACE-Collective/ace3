@@ -9,12 +9,14 @@ from saq.configuration import get_config
 from saq.constants import CONFIG_APIKEYS
 from saq.crypto import encrypt_chunk, decrypt_chunk
 from saq.database import get_db_connection
+from saq.permissions.logic import user_has_permission
 from saq.util import sha256_str, is_uuid
 
 @dataclass
 class ApiAuthResult:
     auth_type: Optional[str] = None
     auth_name: Optional[str] = None
+    auth_user_id: Optional[int] = None
 
 KEY_API_AUTH_TYPE = "type"
 KEY_API_AUTH_NAME = "name"
@@ -36,12 +38,12 @@ def _get_user_api_key_match(auth_sha256: str) -> ApiAuthResult:
     """Returns an ApiAuthResult object if the given auth token is valid for a user, None otherwise."""
     with get_db_connection() as db:
         c = db.cursor()
-        c.execute("""SELECT username FROM users WHERE apikey_hash = %s""", (auth_sha256.lower(),))
+        c.execute("""SELECT username, id FROM users WHERE apikey_hash = %s""", (auth_sha256.lower(),))
         result = c.fetchone()
         if not result:
             return None
 
-        return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=result[0])
+        return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=result[0], auth_user_id=result[1])
 
 def verify_api_key(auth: str) -> ApiAuthResult:
     """Returns an ApiAuthResult object if the given auth token is valid, None otherwise."""
@@ -95,15 +97,26 @@ def clear_user_api_key(user_id: int) -> bool:
         else:
             return False
 
-def api_auth_check(func):
-    @wraps(func)
-    def _api_auth_check(*args, **kwargs):
-        from flask import request, abort
-        api_auth_result = verify_api_key(request.headers.get(API_HEADER_NAME, None))
-        if not api_auth_result:
-            abort(403)
+def api_auth_check(major: str, minor: str):
+    def decorator(func):
+        @wraps(func)
+        def _api_auth_check(*args, **kwargs):
+            from flask import request, abort
+            api_auth_result = verify_api_key(request.headers.get(API_HEADER_NAME, None))
+            if not api_auth_result:
+                abort(403)
 
-        logging.info("api access granted from %s type %s name %s", request.remote_addr, api_auth_result.auth_type, api_auth_result.auth_name)
-        return func(*args, **kwargs)
+            if api_auth_result.auth_type == API_AUTH_TYPE_USER:
+                if not user_has_permission(api_auth_result.auth_user_id, major, minor):
+                    logging.error(
+                        "user %s does not have permission %s.%s for URL %s",
+                        api_auth_result.auth_user_id, major, minor, request.url
+                    )
+                    abort(403)
 
-    return _api_auth_check
+            logging.info("api access granted from %s type %s name %s", request.remote_addr, api_auth_result.auth_type, api_auth_result.auth_name)
+            return func(*args, **kwargs)
+
+        return _api_auth_check
+
+    return decorator

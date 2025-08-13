@@ -55,7 +55,7 @@ KEY_O_DIRECTIVES = 'directives'
 KEY_O_LIMITED_ANALYSIS = 'limited_analysis'
 
 @analysis_bp.route('/submit', methods=['POST'])
-@api_auth_check
+@api_auth_check("alert", "create")
 def submit():
 
     if KEY_ANALYSIS not in request.values:
@@ -235,7 +235,7 @@ def submit():
         raise e
 
 @analysis_bp.route('/resubmit/<uuid>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "write")
 def resubmit(uuid):
     try:
         root = RootAnalysis(storage_dir=storage_dir_from_uuid(uuid))
@@ -247,7 +247,7 @@ def resubmit(uuid):
         return json_result({'result':'failed', 'error':str(e)})
 
 @analysis_bp.route('/<uuid>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "read")
 def get_analysis(uuid):
 
     storage_dir = storage_dir_from_uuid(uuid)
@@ -262,7 +262,7 @@ def get_analysis(uuid):
     return json_result({'result': root.json})
 
 @analysis_bp.route('/submission/<uuid>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "read")
 def get_submission(uuid):
 
     storage_dir = storage_dir_from_uuid(uuid)
@@ -279,7 +279,7 @@ def get_submission(uuid):
     return json_result({'result': root.submission})
 
 @analysis_bp.route('/status/<uuid>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "read")
 def get_status(uuid):
 
     try:
@@ -408,7 +408,7 @@ WHERE
     return json_result({'result': result})
 
 @analysis_bp.route('/details/<uuid>/<name>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "read")
 def get_details(uuid, name):
     storage_dir = storage_dir_from_uuid(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
@@ -426,7 +426,7 @@ def get_details(uuid, name):
     abort(Response("invalid uuid or invalid details name", 400))
 
 @analysis_bp.route('/file/<uuid>/<file_uuid_or_name>', methods=['GET'])
-@api_auth_check
+@api_auth_check("alert", "read")
 def get_file(uuid, file_uuid_or_name):
     storage_dir = storage_dir_from_uuid(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):

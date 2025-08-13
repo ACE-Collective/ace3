@@ -2,8 +2,9 @@ from datetime import datetime
 import os
 from uuid import uuid4
 from flask import flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
@@ -13,7 +14,7 @@ from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
 
 @analysis.route('/upload_file', methods=['POST'])
-@login_required
+@require_permission('alert', 'create')
 def upload_file():
     file_path = request.files.get('file_path')
     comment = request.form.get("comment", "")
@@ -81,7 +82,7 @@ def upload_file():
     return redirect(url_for('analysis.index', direct=alert.uuid))
 
 @analysis.route('/analyze_alert', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def analyze_alert():
     alert_uuid = request.form.get("alert_uuid")
     if not alert_uuid:

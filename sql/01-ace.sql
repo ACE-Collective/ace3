@@ -1,9 +1,3 @@
--- MySQL dump 10.13  Distrib 5.7.30, for Linux (x86_64)
---
--- Host: localhost    Database: ace
--- ------------------------------------------------------
--- Server version	5.7.30-0ubuntu0.18.04.1
-
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
 /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
@@ -790,22 +784,6 @@ CREATE TABLE `workload` (
 
 -- Dump completed on 2020-06-08 12:37:30
 
-DROP TABLE IF EXISTS `settings`;
-CREATE TABLE `settings` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `parent_id` int(11) NULL DEFAULT NULL,
-  `default_parent_id` int(11) NULL DEFAULT NULL,
-  `key` varchar(512) NOT NULL,
-  `type` varchar(512) NOT NULL DEFAULT 'String',
-  `value` text NULL DEFAULT NULL,
-  `tooltip` text NULL DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `setting_id` (`parent_id`,`key`),
-  UNIQUE KEY `map_default_child` (`default_parent_id`),
-  FOREIGN KEY (`parent_id`) REFERENCES `settings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (`default_parent_id`) REFERENCES `settings` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 DROP TABLE IF EXISTS `observable_remediation_mapping`;
 CREATE TABLE `observable_remediation_mapping` (
   `observable_id` int(11) NOT NULL,
@@ -827,4 +805,65 @@ CREATE TABLE `event_tag_mapping` (
   KEY `event_tag_mapping_ibfk_2` (`event_id`),
   CONSTRAINT `fk_event_mapping_1` FOREIGN KEY (`tag_id`) REFERENCES `tags` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
   CONSTRAINT `fk_event_tag_mapping_2` FOREIGN KEY (`event_id`) REFERENCES `events` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+--
+-- user permission tables
+--
+
+CREATE TABLE `auth_group` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `u_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `auth_group_user` (
+  `group_id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  PRIMARY KEY (`group_id`,`user_id`),
+  KEY `i_user` (`user_id`),
+  CONSTRAINT `fk_agu_group` FOREIGN KEY (`group_id`) REFERENCES `auth_group` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_agu_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `auth_permission_catalog` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `major` varchar(512) CHARACTER SET ascii NOT NULL,
+  `minor` varchar(512) CHARACTER SET ascii NOT NULL,
+  `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `u_perm` (`major`,`minor`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `auth_user_permission` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `major` varchar(512) CHARACTER SET ascii NOT NULL,
+  `minor` varchar(512) CHARACTER SET ascii NOT NULL,
+  `effect` enum('ALLOW','DENY') NOT NULL DEFAULT 'ALLOW',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_by` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `u_user_perm` (`user_id`,`major`,`minor`,`effect`),
+  KEY `i_user_major_minor` (`user_id`,`major`,`minor`),
+  KEY `i_user_effect` (`user_id`,`effect`),
+  CONSTRAINT `fk_aup_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_aup_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `auth_group_permission` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `group_id` int(11) NOT NULL,
+  `major` varchar(512) CHARACTER SET ascii NOT NULL,
+  `minor` varchar(512) CHARACTER SET ascii NOT NULL,
+  `effect` enum('ALLOW','DENY') NOT NULL DEFAULT 'ALLOW',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_by` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `u_group_perm` (`group_id`,`major`,`minor`,`effect`),
+  KEY `i_group_major_minor` (`group_id`,`major`,`minor`),
+  KEY `i_group_effect` (`group_id`,`effect`),
+  CONSTRAINT `fk_agp_group` FOREIGN KEY (`group_id`) REFERENCES `auth_group` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_agp_created_by` FOREIGN KEY (`created_by`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,12 +1,13 @@
 import logging
 from flask import request
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.util.tag_mapping import add_observable_tag_mapping, remove_observable_tag_mapping
 
 @analysis.route('/observable_action_whitelist', methods=['POST'])
-@login_required
+@require_permission('whitelist', 'write')
 def observable_action_whitelist():
     
     alert = get_current_alert()
@@ -33,7 +34,7 @@ def observable_action_whitelist():
         return f"operation failed: {e}", 200
 
 @analysis.route('/observable_action_un_whitelist', methods=['POST'])
-@login_required
+@require_permission('whitelist', 'write')
 def observable_action_un_whitelist():
     alert = get_current_alert()
     if alert is None:

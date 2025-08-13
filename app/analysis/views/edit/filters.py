@@ -1,7 +1,6 @@
 import json
-import logging
 from flask import redirect, render_template, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import login_required
 from app.analysis.views.session.filters import _reset_filters, _reset_filters_special, get_existing_filter, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.blueprints import analysis
 

@@ -5,6 +5,7 @@ from flask import flash, redirect, render_template, request, session, url_for
 from flask_login import login_required
 from app.analysis.views.session.alert import get_current_alert
 from app.analysis.views.session.filters import filter_special_tags
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -218,7 +219,7 @@ def _resolve_references(node):
 
 
 @analysis.route('/analysis', methods=['GET', 'POST'])
-@login_required
+@require_permission("alert", "read")
 def index():
     alert = None
 

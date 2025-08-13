@@ -14,6 +14,7 @@ from saq.database.util.observable_detection import (
     ObservableDetection
 )
 from saq.database.util.user_management import add_user, delete_user
+from saq.permissions.user import add_user_permission
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def test_user():
     password = "testpass123"
     
     user = add_user(username, email, display_name, password)
+    add_user_permission(user.id, "*", "*")
     yield user
     
     # Cleanup
@@ -381,7 +383,8 @@ def test_enable_detection_overwrites_existing(test_user, test_observable):
     
     # Create second user for testing
     user2 = add_user("detection_user2", "user2@test.com", "User 2", "pass123")
-    
+    add_user_permission(user2.id, "*", "*")
+
     try:
         # Enable detection second time with different user and context
         enable_observable_detection(test_observable, user2.id, "Updated context")

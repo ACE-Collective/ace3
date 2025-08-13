@@ -2,10 +2,9 @@ from flask import url_for
 import pytest
 
 from app.application import create_app
-from app.models import User
 from saq.constants import QUEUE_DEFAULT
-from saq.database.pool import get_db_connection
 from saq.database.util.user_management import add_user, delete_user
+from saq.permissions.user import add_user_permission
 
 @pytest.fixture(scope="function")
 def analyst(global_setup):
@@ -18,6 +17,9 @@ def analyst(global_setup):
         queue=QUEUE_DEFAULT,
         timezone="Etc/UTC"
     )
+
+    # grant all permissions to the analyst
+    add_user_permission(analyst.id, "*", "*")
 
     yield analyst.id
 

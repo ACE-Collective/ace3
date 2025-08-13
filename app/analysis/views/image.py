@@ -2,12 +2,13 @@ import logging
 import os
 from flask import make_response, render_template, request
 from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/image', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def image():
     alert_uuid = request.values.get("alert_uuid")
     observable_uuid = request.values.get("observable_uuid")
@@ -45,7 +46,7 @@ def image():
     return response
 
 @analysis.route('/image_full', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def image_full():
     alert_uuid = request.values.get("alert_uuid")
     observable_uuid = request.values.get("observable_uuid")

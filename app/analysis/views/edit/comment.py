@@ -1,13 +1,14 @@
 import logging
 from flask import flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import REDIRECT_MAP
 from saq.database.model import Comment
 from saq.database.pool import get_db
 
 @analysis.route('/add_comment', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def add_comment():
     user_comment = None
     uuids = None
@@ -57,7 +58,7 @@ def add_comment():
     return redirection
 
 @analysis.route('/delete_comment', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def delete_comment():
     comment_id = request.form.get('comment_id', None)
     if comment_id is None:

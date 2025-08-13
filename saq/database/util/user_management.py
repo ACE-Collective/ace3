@@ -12,6 +12,7 @@ def add_user(username: str, email: str, display_name: str, password: str, queue:
     user = User(username=username, email=email, display_name=display_name, queue=queue, timezone=timezone, password=password)
     db.add(user)
     db.commit()
+    db.refresh(user)
     return user
 
 def delete_user(username: str) -> bool:

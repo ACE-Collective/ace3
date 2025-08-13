@@ -11,14 +11,14 @@ from saq.database import Event, EventStatus, get_db
 
 
 @events_bp.route('/open', methods=['GET'])
-@api_auth_check
+@api_auth_check("event", "read")
 def get_open_events():
     open_events = get_db().query(Event).filter(Event.status.has(value='OPEN')).all()
     return json_result([event.json for event in open_events])
 
 
 @events_bp.route('/<int:event_id>/status', methods=['PUT'])
-@api_auth_check
+@api_auth_check("event", "write")
 def update_event_status(event_id):
     event = get_db().query(Event).get(event_id)
     if not event:

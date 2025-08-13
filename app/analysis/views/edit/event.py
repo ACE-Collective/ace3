@@ -3,6 +3,7 @@ import os
 from uuid import uuid4
 from flask import flash, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
@@ -12,7 +13,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
 
 @analysis.route('/add_to_event', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def add_to_event():
     analysis_page = False
     disposition = request.form.get('disposition', None)
@@ -142,7 +143,7 @@ def add_to_event():
     return redirect(url_for('analysis.manage'))
 
 @analysis.route('/load_more_events', methods=['POST', 'GET'])
-@login_required
+@require_permission('event', 'read')
 def load_more_events():
     cur_closed_event_count = int(request.args['count'])
     events = get_db().query(Event).filter(Event.status.has(value='CLOSED')).order_by(Event.creation_date.desc()).all()
@@ -158,7 +159,7 @@ def load_more_events():
     return render_template('analysis/load_more_events.html', events=added_events, end_of_list=at_end_of_list)
 
 @analysis.route('/<uuid>/event_name_candidate', methods=['GET'])
-@login_required
+@require_permission('event', 'read')
 def get_analysis_event_name_candidate(uuid):
     from saq.util import storage_dir_from_uuid, workload_storage_dir
 

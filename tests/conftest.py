@@ -14,6 +14,7 @@ from saq.crypto import set_encryption_password
 from saq.database import get_db
 from saq.database.pool import get_db_connection
 from saq.database.util.automation_user import initialize_automation_user
+from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.environment import g, get_base_dir, get_data_dir, initialize_environment, set_g, set_node
@@ -23,6 +24,7 @@ import pytest
 from saq.integration.integration_loader import get_valid_integration_dirs, load_integration_component_src
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
+from saq.permissions.user import add_user_permission
 from tests.saq.helpers import start_api_server, stop_api_server, stop_unittest_logging, initialize_unittest_logging
 from tests.saq.test_util import create_test_context
 
@@ -116,18 +118,32 @@ def global_setup(request, tmpdir, datadir):
             cursor.execute("DELETE FROM events")
             cursor.execute("DELETE FROM campaign")
             cursor.execute("DELETE FROM comments")
+            cursor.execute("DELETE FROM auth_group")
+            cursor.execute("DELETE FROM auth_group_user")
+            cursor.execute("DELETE FROM auth_permission_catalog")
+            cursor.execute("DELETE FROM auth_user_permission")
+            cursor.execute("DELETE FROM auth_group_permission")
 
-            from app.models import User
-            u = User()
-            u.username = 'unittest'
-            u.email = 'unittest@localhost'
-            u.password = 'unittest'
-            cursor.execute("""
-                INSERT INTO users ( username, email, password_hash ) VALUES ( %s, %s, %s )""",
-                (u.username, u.email, u.password_hash))
-
-            UNITTEST_USER_ID = cursor.lastrowid
             db.commit()
+
+            user = add_user("unittest", "unittest@localhost", "unittest", "unittest")
+            add_user_permission(user.id, "*", "*")
+            UNITTEST_USER_ID = user.id
+
+            #from app.models import User
+            #user = User()
+            #user.username = 'unittest'
+            #user.email = 'unittest@localhost'
+            #user.password = 'unittest'
+            #cursor.execute("""
+                #INSERT INTO users ( username, email, password_hash ) VALUES ( %s, %s, %s )""",
+                #(user.username, user.email, user.password_hash))
+
+            #db.commit()
+            #db.refresh(user)
+
+            # grant all permissions to the unittest user
+            #add_user_permission(user.id, "*", "*")
 
         with get_db_connection("brocess") as db:
             cursor = db.cursor()

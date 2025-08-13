@@ -11,17 +11,17 @@ from saq.database import Company
 from saq.database.pool import get_db
 
 @common.route('/ping', methods=['GET'])
-@api_auth_check
+@api_auth_check("system", "read")
 def ping():
     return json_result({'result': 'pong'})
 
 @common.route('/get_supported_api_version', methods=['GET'])
-@api_auth_check
+@api_auth_check("system", "read")
 def get_supported_api_version():
     return json_result({'result': 1})
 
 @common.route('/get_valid_companies', methods=['GET'])
-@api_auth_check
+@api_auth_check("system", "read")
 def get_valid_companies():
     # XXX Does it make more sense for this to return saq.NODE_COMPANIES?
     result = []
@@ -31,7 +31,7 @@ def get_valid_companies():
     return json_result({'result': result})
     
 @common.route('/get_valid_observables', methods=['GET'])
-@api_auth_check
+@api_auth_check("system", "read")
 def get_valid_observables():
     result = []
     # XXX 03/29/2025 -- something somewhere along the way in the tests is prepending the string 'Any' to this list
@@ -43,7 +43,7 @@ def get_valid_observables():
     return json_result({'result': result})
 
 @common.route('/get_valid_directives', methods=['GET'])
-@api_auth_check
+@api_auth_check("system", "read")
 def get_directives():
     result = []
     for directive in VALID_DIRECTIVES:

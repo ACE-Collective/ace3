@@ -10,6 +10,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, get_alert_by_uuid, refresh_observable_expires_on, set_dispositions
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
+from saq.permissions.user import add_user_permission
 from tests.saq.helpers import create_root_analysis, insert_alert
 
 
@@ -229,6 +230,7 @@ def test_set_dispositions_basic():
     """Test basic disposition setting functionality."""
     # Create test user
     user = add_user("testuser_disp", "testuser_disp@test.com", "Test User", "password123")
+    add_user_permission(user.id, "*", "*")
     
     try:
         # Create test alert
@@ -255,7 +257,8 @@ def test_set_dispositions_basic():
 def test_set_dispositions_with_comment():
     """Test setting disposition with user comment."""
     user = add_user("testuser_comment", "testuser_comment@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         alert = insert_alert()
         comment_text = "This is a test disposition comment"
@@ -286,7 +289,8 @@ def test_set_dispositions_with_comment():
 def test_set_dispositions_multiple_alerts():
     """Test setting disposition for multiple alerts at once."""
     user = add_user("testuser_multi", "testuser_multi@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         # Create multiple alerts
         alert1 = insert_alert()
@@ -327,7 +331,8 @@ def test_set_dispositions_malicious_updates_observables():
     get_config()[CONFIG_OBSERVABLE_EXPIRATION_MAPPINGS]["fqdn"] = "01:00:00:00"  # 1 day expiration for ipv4
 
     user = add_user("testuser_mal", "testuser_mal@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         alert = insert_alert()
         
@@ -373,7 +378,8 @@ def test_set_dispositions_malicious_updates_observables():
 def test_set_dispositions_ignore_no_workload():
     """Test that IGNORE disposition doesn't add to workload."""
     user = add_user("testuser_ignore", "testuser_ignore@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         alert = insert_alert()
         
@@ -402,7 +408,8 @@ def test_set_dispositions_ignore_no_workload():
 def test_set_dispositions_non_ignore_adds_workload():
     """Test that non-IGNORE dispositions add alert back to workload."""
     user = add_user("testuser_workload", "testuser_workload@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         alert = insert_alert()
         
@@ -429,7 +436,9 @@ def test_set_dispositions_preserves_existing_owner():
     """Test that existing owner is preserved when setting disposition."""
     original_user = add_user("original_owner", "original@test.com", "Original Owner", "password123")
     new_user = add_user("new_disposer", "new@test.com", "New Disposer", "password123")
-    
+    add_user_permission(original_user.id, "*", "*")
+    add_user_permission(new_user.id, "*", "*")
+
     try:
         alert = insert_alert()
         
@@ -458,7 +467,8 @@ def test_set_dispositions_preserves_existing_owner():
 def test_set_dispositions_already_dispositioned():
     """Test setting disposition on already dispositioned alert."""
     user = add_user("testuser_redispo", "testuser_redispo@test.com", "Test User", "password123")
-    
+    add_user_permission(user.id, "*", "*")
+
     try:
         alert = insert_alert()
         

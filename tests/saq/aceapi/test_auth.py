@@ -60,7 +60,7 @@ def test_set_invalid_user_api_key():
 @pytest.mark.integration
 def test_get_user_api_key_match():
     api_key = set_user_api_key(g_int(G_AUTOMATION_USER_ID), None)
-    assert _get_user_api_key_match(sha256_str(api_key)) == ApiAuthResult(auth_name="ace", auth_type=API_AUTH_TYPE_USER)
+    assert _get_user_api_key_match(sha256_str(api_key)) == ApiAuthResult(auth_name="ace", auth_type=API_AUTH_TYPE_USER, auth_user_id=g_int(G_AUTOMATION_USER_ID))
 
 @pytest.mark.integration
 def test_verify_api_key(monkeypatch):
@@ -69,4 +69,4 @@ def test_verify_api_key(monkeypatch):
     monkeypatch.setattr(aceapi.auth, "get_config", lambda: { "apikeys": { "test": sha256_str(API_KEY) } })
     assert verify_api_key(API_KEY) == ApiAuthResult(auth_name="test", auth_type=API_AUTH_TYPE_CONFIG)
     user_api_key = set_user_api_key(g_int(G_AUTOMATION_USER_ID), None)
-    assert verify_api_key(user_api_key) == ApiAuthResult(auth_name="ace", auth_type=API_AUTH_TYPE_USER)
+    assert verify_api_key(user_api_key) == ApiAuthResult(auth_name="ace", auth_type=API_AUTH_TYPE_USER, auth_user_id=g_int(G_AUTOMATION_USER_ID))

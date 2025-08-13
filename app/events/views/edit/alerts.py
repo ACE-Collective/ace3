@@ -1,12 +1,12 @@
 from flask import redirect, request, url_for
-from flask_login import login_required
 from sqlalchemy import and_
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.database.model import EventMapping
 from saq.database.pool import get_db
 
 @events.route('/remove_alerts', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def remove_alerts():
     mappings = request.form['event_mappings'].split(',')
 

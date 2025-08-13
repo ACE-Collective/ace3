@@ -2,7 +2,8 @@ from datetime import datetime
 import uuid as uuidlib
 import logging
 from flask import flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.database.pool import get_db
@@ -11,7 +12,7 @@ from saq.database.util.workload import add_workload
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/add_observable', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def add_observable():
     for expected_form_item in ['alert_uuid', 'add_observable_type', 'add_observable_value', 'add_observable_time']:
         if expected_form_item not in request.form:
@@ -27,8 +28,8 @@ def add_observable():
     if o_type not in ['email_conversation', 'email_delivery', 'ipv4_conversation', 'ipv4_full_conversation']:
         o_value = request.form['add_observable_value']
     else:
-        o_value_A = request.form.get(f'add_observable_value_A')
-        o_value_B = request.form.get(f'add_observable_value_B')
+        o_value_A = request.form.get('add_observable_value_A')
+        o_value_B = request.form.get('add_observable_value_B')
         if 'email' in o_type:
             o_value = '|'.join([o_value_A, o_value_B])
         elif 'ipv4_conversation' in o_type:
@@ -100,6 +101,6 @@ def add_observable():
         try:
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
-        except Exception as e:
+        except Exception:
             logging.error("unable to release lock {}: {}".format(alert.uuid, lock_uuid))
         

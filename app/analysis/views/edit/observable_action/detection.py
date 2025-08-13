@@ -1,15 +1,16 @@
 from datetime import datetime
 import logging
 from flask import flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import ACTION_ENABLE_DETECTION
 from saq.database.util.observable_detection import disable_observable_detection, enable_observable_detection
 from saq.error.reporting import report_exception
 
 @analysis.route('/observable_action_set_for_detection', methods=['POST'])
-@login_required
+@require_permission('observable', 'write')
 def observable_action_set_for_detection():
     alert = get_current_alert()
     if alert is None:
@@ -49,7 +50,7 @@ def observable_action_set_for_detection():
     return f"Observable {for_detection_status} for detection", 200
 
 @analysis.route('/observable_action_adjust_expiration', methods=['POST'])
-@login_required
+@require_permission('observable', 'write')
 def observable_action_adjust_expiration():
     alert_uuid = request.form.get('alert_uuid')
     redirection_params = {'direct': alert_uuid}

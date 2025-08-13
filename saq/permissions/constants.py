@@ -1,0 +1,7 @@
+
+ALLOW = "ALLOW"
+DENY = "DENY"
+WILDCARD = "*"
+
+SOURCE_USER = "user"
+SOURCE_GROUP = "group"

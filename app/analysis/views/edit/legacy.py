@@ -2,13 +2,14 @@ import logging
 import uuid as uuidlib
 import traceback
 from flask import flash, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.util.locking import acquire_lock, release_lock
 
 @analysis.route('/mark_suspect', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def mark_suspect():
     alert = get_current_alert()
     observable_uuid = request.form.get("observable_uuid")

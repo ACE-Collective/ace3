@@ -12,9 +12,10 @@ from uuid import uuid4
 import uuid
 import zipfile
 from flask import flash, make_response, redirect, request, send_from_directory, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert, load_current_alert
 from app.analysis.views.session.filters import _reset_filters, create_filter, hasFilter
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.constants import G_SAQ_NODE, G_TEMP_DIR
@@ -27,7 +28,7 @@ from saq.error.reporting import report_exception
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/json', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def download_json():
     result = {}
 
@@ -113,7 +114,7 @@ def download_json():
     return response
 
 @analysis.route('/export_alerts_to_csv', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def export_alerts_to_csv():
     # use default page settings if first visit
     if 'filters' not in session:
@@ -199,7 +200,7 @@ def export_alerts_to_csv():
     return output
 
 @analysis.route('/send_alert_to', methods=['POST'])
-@login_required
+@require_permission('alert', 'read')
 def send_alert_to():
     remote_host = request.json['remote_host']
     if f"send_to_{remote_host}" not in get_config():    
@@ -230,7 +231,7 @@ def send_alert_to():
     return os.path.join(remote_path, alert_uuid), 200
 
 @analysis.route('/download_file', methods=['GET', "POST"])
-@login_required
+@require_permission('alert', 'read')
 def download_file():
     alert = get_current_alert()
     if alert is None:
@@ -403,7 +404,7 @@ def download_file():
     return "", 404
 
 @analysis.route('/get_alert_meta', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def get_alert_metadata():
     alert = get_current_alert()
     if alert is None:
@@ -416,7 +417,7 @@ def get_alert_metadata():
     return response
 
 @analysis.route('/email_file', methods=["POST"])
-@login_required
+@require_permission('alert', 'read')
 def email_file():
     toemails = request.form.get('toemail', "").split(";")
     compress = request.form.get('compress', 'off')
@@ -510,7 +511,7 @@ def email_file():
     return redirect("/analysis?direct=" + alert.uuid)
 
 @analysis.route('/html_details', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def html_details():
     alert = load_current_alert()
     if alert is None:

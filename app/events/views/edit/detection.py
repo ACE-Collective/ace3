@@ -1,14 +1,15 @@
 import json
 import logging
 from flask import request
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.events.views.session import get_current_event, get_current_event_id
 from saq.database.model import Observable
 from saq.database.pool import get_db
 
 @events.route('/set_observables_detection_status', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def set_observables_detection_status():
     """This function expects to receive a JSON array in the form of:
     {"enabled": [1, 2, 3], "disabled": []}

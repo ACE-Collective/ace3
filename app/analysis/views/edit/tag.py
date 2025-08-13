@@ -1,7 +1,8 @@
 import logging
 import uuid as uuidlib
 from flask import flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import REDIRECT_MAP
 from saq.database.pool import get_db
@@ -9,7 +10,7 @@ from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/add_tag', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def add_tag():
     for expected_form_item in ['tag', 'uuids', 'redirect']:
         if expected_form_item not in request.form:
@@ -79,7 +80,7 @@ def add_tag():
     return redirection
 
 @analysis.route('/remove_tag', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def remove_tag():
     for expected_form_item in ['tag', 'uuids', 'redirect']:
         if expected_form_item not in request.form:

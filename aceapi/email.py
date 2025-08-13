@@ -17,7 +17,7 @@ from flask import request, Response, abort, redirect
 KEY_MESSAGE_ID = "message_id"
 
 @email_bp.route('/get_archived_email', methods=['GET'])
-@api_auth_check
+@api_auth_check("email", "read")
 def get_archived_email():
     if not g(G_ENCRYPTION_KEY):
         logging.critical("missing saq.ENCRYPTION_PASSWORD in api call to get_archived_email")

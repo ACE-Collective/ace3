@@ -1,6 +1,5 @@
-import logging
 from flask import redirect, render_template, url_for
-from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.events.views.session import get_current_event
 from saq.configuration.config import get_config
@@ -9,7 +8,7 @@ from saq.database.model import Comment
 from saq.util.ui import create_histogram_string
 
 @events.route('/analysis', methods=['GET', 'POST'])
-@login_required
+@require_permission('event', 'read')
 def index():
     # the "direct" parameter is used to specify a specific event to load
     event = get_current_event()

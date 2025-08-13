@@ -2,7 +2,7 @@ import logging
 import os
 import uuid
 from flask import make_response, request
-from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.configuration.config import get_config
 from saq.csv_builder import CSV
@@ -11,7 +11,7 @@ from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock
 
 @events.route('/send_event_to', methods=['POST'])
-@login_required
+@require_permission('event', 'read')
 def send_event_to():
     remote_host = request.json['remote_host']
     remote_path = get_config()[f"send_to_{remote_host}"].get("remote_path")
@@ -45,7 +45,7 @@ def send_event_to():
     return remote_path, 200
 
 @events.route('/export_events_to_csv', methods=['GET'])
-@login_required
+@require_permission('event', 'read')
 def export_events_to_csv():
     """Compiles and returns a CSV of event details, given a set of event IDs within the request."""
     event_ids = request.args.getlist('checked_events[]')

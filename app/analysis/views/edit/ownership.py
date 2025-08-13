@@ -1,14 +1,15 @@
 from datetime import datetime
 import logging
 from flask import flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.model import User
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/assign_ownership', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def assign_ownership():
     analysis_page = False
     alert_uuids = []
@@ -54,7 +55,7 @@ def assign_ownership():
     return redirect(url_for('analysis.manage'))
 
 @analysis.route('/set_owner', methods=['GET', 'POST'])
-@login_required
+@require_permission('alert', 'write')
 def set_owner():
     session['checked'] = request.args.getlist('alert_uuids') if request.method == 'GET' else request.form.getlist('alert_uuids')
     get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(session['checked'])).values(owner_id=current_user.id,owner_time=datetime.now()))

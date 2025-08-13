@@ -1,6 +1,7 @@
 import logging
 from flask import flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.database.util.tag_mapping import add_event_tag_mapping
 
@@ -11,7 +12,7 @@ REDIRECT_MAP = {
 }
 
 @events.route('/add_tag', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def add_tag():
     # Make sure all required form fields are present
     for expected_form_item in ['tag', 'ids', 'redirect']:

@@ -2,6 +2,8 @@
 
 This project is a continuation of [this project from 2014](https://github.com/ace-ecosystem/ACE). 
 
+At this time this project is very much a work in progress. I'm making sweeping changes as I go, so for now, **expect breaking changes with every commit**.
+
 ## Quick Setup
 
 ```bash

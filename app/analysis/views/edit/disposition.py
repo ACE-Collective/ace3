@@ -1,13 +1,14 @@
 import logging
 from flask import flash, redirect, request, session, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import VALID_DISPOSITIONS
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import report_exception
 
 @analysis.route('/set_disposition', methods=['POST'])
-@login_required
+@require_permission('alert', 'write')
 def set_disposition():
     alert_uuids = []
     analysis_page = False

@@ -9,7 +9,7 @@ import warnings
 
 from flask_login import UserMixin
 import pymysql
-from sqlalchemy import BLOB, BOOLEAN, DATE, DATETIME, TIMESTAMP, VARBINARY, BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text, text
+from sqlalchemy import BLOB, BOOLEAN, DATE, DATETIME, TIMESTAMP, VARBINARY, BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable, get_observable_type_expiration_time
 from saq.analysis.tag import Tag as _Tag
@@ -1958,6 +1958,142 @@ class User(UserMixin, Base):
 Owner = aliased(User)
 DispositionBy = aliased(User)
 RemediatedBy = aliased(User)
+
+class AuthGroup(Base):
+
+    __tablename__ = 'auth_group'
+
+    id = Column(
+        Integer,
+        primary_key=True)
+
+    name = Column(
+        String(512),
+        nullable=False,
+        unique=True)
+
+    permissions = relationship('AuthGroupPermission', passive_deletes=True, passive_updates=True, back_populates='group')
+
+class AuthGroupUser(Base):
+
+    __tablename__ = 'auth_group_user'
+
+    group_id = Column(
+        Integer,
+        ForeignKey('auth_group.id'),
+        primary_key=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey('users.id'),
+        primary_key=True)
+
+    group = relationship('AuthGroup')
+    user = relationship('User')
+
+class AuthPermissionCatalog(Base):
+
+    __tablename__ = 'auth_permission_catalog'
+
+    id = Column(
+        Integer,
+        primary_key=True)
+
+    major = Column(
+        String(512),
+        nullable=False)
+
+    minor = Column(
+        String(512),
+        nullable=False)
+
+    description = Column(
+        Text,
+        nullable=True)
+
+class AuthUserPermission(Base):
+
+    __tablename__ = 'auth_user_permission'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'major', 'minor', 'effect', name='u_user_perm'),
+    )
+
+    id = Column(
+        BigInteger,
+        primary_key=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=False)
+
+    major = Column(
+        String(512),
+        nullable=False)
+
+    minor = Column(
+        String(512),
+        nullable=False)
+
+    effect = Column(
+        Enum('ALLOW', 'DENY'),
+        nullable=False,
+        default='ALLOW')
+
+    created_at = Column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    created_by = Column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=True)
+
+    user = relationship('User', foreign_keys=[user_id])
+    created_by_user = relationship('User', foreign_keys=[created_by])
+
+class AuthGroupPermission(Base):
+
+    __tablename__ = 'auth_group_permission'
+    __table_args__ = (
+        UniqueConstraint('group_id', 'major', 'minor', 'effect', name='u_group_perm'),
+    )
+
+    id = Column(
+        BigInteger,
+        primary_key=True)
+
+    group_id = Column(
+        Integer,
+        ForeignKey('auth_group.id'),
+        nullable=False)
+
+    major = Column(
+        String(512),
+        nullable=False)
+
+    minor = Column(
+        String(512),
+        nullable=False)
+
+    effect = Column(
+        Enum('ALLOW', 'DENY'),
+        nullable=False,
+        default='ALLOW')
+
+    created_at = Column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    created_by = Column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=True)
+
+    group = relationship('AuthGroup', back_populates='permissions')
+    created_by_user = relationship('User', foreign_keys=[created_by])
 
 class Comment(Base):
 

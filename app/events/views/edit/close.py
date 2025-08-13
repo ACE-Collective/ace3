@@ -1,5 +1,5 @@
 import json
-from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.events.views.session import get_current_event, get_current_event_id
 from saq.configuration.config import get_config
@@ -7,7 +7,7 @@ from saq.database.model import EventStatus
 from saq.database.pool import get_db
 
 @events.route('/close_event', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def close_event():
     """This function sets the status of the given event to whatever is defined in the config as the closed status.
     It also performs some related tasks when the event is closed."""

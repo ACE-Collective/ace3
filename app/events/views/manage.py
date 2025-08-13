@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 import hashlib
 from flask import flash, redirect, render_template, request, session, url_for
-from flask_login import login_required
 from sqlalchemy import and_, func, or_
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.filters import FILTER_TYPE_CHECKBOX, FILTER_TYPE_MULTISELECT, FILTER_TYPE_SELECT, FILTER_TYPE_TEXT, SearchFilter
 from saq.configuration.config import get_config
@@ -11,7 +11,7 @@ from saq.database.pool import get_db
 from saq.disposition import get_dispositions
 
 @events.route('/manage', methods=['GET', 'POST'])
-@login_required
+@require_permission('event', 'read')
 def manage():
     if not get_config()['gui'].getboolean('display_events'):
         # redirect to index
@@ -266,7 +266,7 @@ def manage():
 
 # XXX what does this do??
 @events.route('/manage_event_summary', methods=['GET'])
-@login_required
+@require_permission('event', 'read')
 def manage_event_summary():
     event_id = request.args['event_id']
     event = get_db().query(Event).filter(Event.id == event_id).one()

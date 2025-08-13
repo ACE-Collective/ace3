@@ -1,6 +1,7 @@
 from datetime import datetime
 from flask import flash, redirect, render_template, request, url_for
 from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.configuration.config import get_config
 from saq.database.model import Campaign, Event, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventType, EventVector, Malware, MalwareMapping, Threat, User
@@ -45,7 +46,7 @@ def edit_event_modal():
                            vectors=vectors)
 
 @events.route('/edit_event', methods=['POST'])
-@login_required
+@require_permission('event', 'write')
 def edit_event():
     event_id = request.form.get('event_id', None)
     event_name = request.form.get('event_name', None)

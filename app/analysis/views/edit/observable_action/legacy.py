@@ -3,8 +3,9 @@ import os
 import traceback
 import uuid
 from flask import request
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_FILE_SEND_TO, ACTION_URL_CRAWL, ANALYSIS_MODE_CORRELATION, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
@@ -13,8 +14,12 @@ from saq.database.util.workload import add_workload
 from saq.error.reporting import report_exception
 from saq.file_upload import rsync
 
+#
+# refactor this to use registered handlers
+#
+
 @analysis.route('/observable_action', methods=['POST'])
-@login_required
+@require_permission('observable', 'write')
 def observable_action():
     alert = get_current_alert()
     observable_uuid = request.form.get('observable_uuid')
@@ -44,7 +49,7 @@ def observable_action():
                 alert.sync()
                 alert.schedule()
                 return "File collection requested.", 200
-            except Exception as e:
+            except Exception:
                 logging.error("unable to mark observable {} for file collection".format(observable))
                 report_exception()
                 return "request failed - check logs", 500
@@ -89,7 +94,7 @@ def observable_action():
 
                     add_workload(alert)
 
-                except Exception as e:
+                except Exception:
                     logging.error(f"unable to mark observable {observable} for crawl/render")
                     report_exception()
                     return "Error: Crawl/Render Request failed - Check logs", 500

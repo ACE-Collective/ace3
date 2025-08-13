@@ -1,8 +1,9 @@
 from flask import render_template, session
-from flask_login import current_user, login_required
+from flask_login import current_user
 import pytz
 from sqlalchemy import distinct, func
 from app.analysis.views.session.filters import _reset_filters, create_filter, getFilters, hasFilter, reset_checked_alerts, reset_pagination, reset_sort_filter
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, G_SAQ_NODE
@@ -14,7 +15,7 @@ from saq.gui.alert import GUIAlert
 from sqlalchemy.orm import selectinload
 
 @analysis.route('/manage', methods=['GET', 'POST'])
-@login_required
+@require_permission('alert', 'read')
 def manage():
     # use default page settings if first visit
     if 'filters' not in session:

@@ -3097,5 +3097,10 @@ def list_git_repos(args):
 
 git_list_parser = git_sp.add_parser("list")
 git_list_parser.set_defaults(func=list_git_repos)
+
+# TODO find a better way to do this
+# pull in all the other CLI parsers
+from saq.permissions.cli import permissions_parser # noqa: F401
+
 if __name__ == '__main__':
     main()

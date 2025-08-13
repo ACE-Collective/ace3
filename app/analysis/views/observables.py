@@ -1,13 +1,13 @@
 from operator import attrgetter
 from flask import flash, redirect, render_template, request, url_for
-from flask_login import login_required
+from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.model import Observable, ObservableMapping
 from saq.database.pool import get_db, get_db_connection
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/observables', methods=['GET'])
-@login_required
+@require_permission('alert', 'read')
 def observables():
     # get the alert we're currently looking at
     alert_uuid = request.args.get('alert_uuid')

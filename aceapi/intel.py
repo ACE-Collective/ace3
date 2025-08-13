@@ -55,7 +55,7 @@ def _sha256_values(values: str, b64: Optional[bool]=False) -> list[bytes]:
     return [_sha256_value(_, b64) for _ in values.split(",")]
 
 @intel_bp.route('/observables', methods=['GET'])
-@api_auth_check
+@api_auth_check("observable", "read")
 def get_observables():
     query = get_db().query(Observable).order_by(Observable.id)
 
@@ -166,7 +166,7 @@ KEY_UPDATE_BATCH_ID = "batch_id"
 # }
 
 @intel_bp.route('/observables', methods=['POST'])
-@api_auth_check
+@api_auth_check("observable", "write")
 def set_observables():
     updates = json.loads(request.values[KEY_UPDATES])
     logging.info("updates %s", updates)
