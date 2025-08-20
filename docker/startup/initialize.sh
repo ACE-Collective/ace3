@@ -53,9 +53,6 @@ fi
 # TOOD
 # initialize gitconfig
 
-# TODO
-# initialize git repos here?
-
 #
 # make sure all these directories and files exist
 #
@@ -94,15 +91,11 @@ then
     ssh-keygen -t rsa -b 4096 -f data/ssh/id_rsa -N ""
 fi
 
+bin/initialize_auth.sh
+
 # TODO get rid of these
 if [ ! -e data/etc/organization.json ]; then echo '{}' > data/etc/organization.json; fi
 if [ ! -e data/etc/local_networks.csv ]; then echo 'Indicator,Indicator_Type' > data/etc/local_networks.csv; fi
-
-# TODO mount this!
-#if [ ! -e /home/ace/.vimrc ]; then cp etc/vimrc /home/ace/.vimrc; fi
-#if [ ! -e /home/ace/.screenrc ]; then cp etc/screenrc /home/ace/.screenrc; fi
-#if [ ! -e /home/ace/.vscode-server/extensions ]; then mkdir -p /home/ace/.vscode-server/extensions; fi
-#if [ ! -e /home/ace/.vscode-server/extensionsCache ]; then mkdir -p /home/ace/.vscode-server/extensionsCache; fi
 
 # make sure we've got our SSH creds for github
 #if [ ! -e ~/.ssh/id_rsa ]

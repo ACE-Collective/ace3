@@ -101,7 +101,15 @@ def _create_signature_key(signature, rev):
 
 def _get_redis_connection():
     """Returns the Redis object to use to store/retrieve signature info."""
-    return redis.Redis(get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST), get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT), db=REDIS_DB_SNORT, decode_responses=True, encoding='utf-8')
+    return redis.Redis(
+        host=get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST), 
+        port=get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT),
+        username=get_config_value(CONFIG_REDIS, CONFIG_REDIS_USERNAME),
+        password=get_config_value(CONFIG_REDIS, CONFIG_REDIS_PASSWORD),
+        db=REDIS_DB_SNORT, 
+        decode_responses=True, 
+        encoding='utf-8'
+    )
 
 # Redis key used to store the last mtime value of the rules file
 KEY_SURICATA_RULES_MTIME = 'suricata_rules_lastmtime'

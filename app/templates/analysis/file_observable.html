@@ -39,6 +39,7 @@ $(document).ready(function() {
 
 {% block observable_preview %}
 {% if _observable.exists and _observable.is_image %}
+<br/>
 <a href="{{url_for('analysis.image_full', alert_uuid=alert.uuid, observable_uuid=_observable.id)}}" target="_blank" name="observable_preview">
     <img
         width="{{_observable.scaled_width}}"

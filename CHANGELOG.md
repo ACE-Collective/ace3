@@ -22,6 +22,9 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 - fixed issues with crypto usage.
 - switched to YAML for configuration.
 - added direct support for git repos with service to manage.
+- added phishkit scanning support, which doubles as a web crawler / renderer
+- added support for S3-like storage with MinIO
+- fixed authentication issues with some of the exposed services
 
 ### Removed
 

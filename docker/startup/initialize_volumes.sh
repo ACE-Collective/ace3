@@ -6,8 +6,9 @@
 # this ensures that the volumes are owned by ace instead
 #
 
-for path in /opt/ace/data /opt/ace/ssl /docker-entrypoint-initdb.d
+for path in /opt/ace/data /opt/ace/ssl /docker-entrypoint-initdb.d /auth
 do
+    ls -ld ${path}
     if [[ $(stat -c "$U" ${path}) != "ace" ]]
     then
         chown ace:ace ${path}

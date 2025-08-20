@@ -179,6 +179,7 @@ docs/
 
 # ai
 CLAUDE.md
+.cursor/
 
 # integrations
 integrations/

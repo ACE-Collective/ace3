@@ -280,8 +280,8 @@ def initialize_encryption(encryption_password_plaintext: Optional[str]=None, pro
                 if g(G_INSTANCE_TYPE) != INSTANCE_TYPE_DEV:
                     del os.environ["SAQ_ENC"]
 
-                if encryption_password_plaintext == "test":
-                    logging.warning("Using default encryption key 'test'. This is not recommended for production use.")
+                #if encryption_password_plaintext == "test":
+                    #logging.warning("Using default encryption key 'test'. This is not recommended for production use.")
 
             if encryption_password_plaintext is not None:
                 try:

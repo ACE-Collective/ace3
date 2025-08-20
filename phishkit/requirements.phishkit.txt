@@ -1,0 +1,6 @@
+seleniumbase
+pyautogui
+pydantic
+git+https://github.com/unixfreak0037/selenium-recaptcha-solver.git
+pillow
+opencv-python

@@ -300,8 +300,8 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
         
         request = DelayedAnalysisRequest(
             uuid=root.uuid,
-            observable_uuid=observable.uuid,
-            analysis_module=analysis_module,
+            observable_uuid=observable.id,
+            analysis_module=analysis_module.config_section_name,
             next_analysis=next_analysis,
             storage_dir=root.storage_dir,
             database_id=request_id
@@ -310,7 +310,7 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
         # Store in memory
         self._delayed_analysis_items[request_id] = request
         
-        logging.info(f"added delayed analysis request for {root.uuid} observable {observable.uuid} module {analysis_module} at {next_analysis}")
+        logging.info(f"added delayed analysis request for {root.uuid} observable {observable.id} module {analysis_module} at {next_analysis}")
         return request
 
     def clear_delayed_analysis_requests(self, root):
