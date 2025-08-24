@@ -111,8 +111,21 @@ monitor:
   use_logging: true
   use_cache: false
 
+rabbitmq:
+  username: ace3
+  password: encrypted:rabbitmq.password
+  host: rabbitmq
+
+minio:
+  host: minio
+  port: 9000
+  access_key: ace3api
+  secret_key: encrypted:minio.password
+
 # global redis settings
 redis:
+  username: ace3
+  password: encrypted:redis.password
   host: redis
   port: 6379
 
@@ -1642,6 +1655,21 @@ analysis_module_observable_detection:
   class: ObservableDetectionAnalyzer
   enabled: true
 
+analysis_module_phishkit_analyzer:
+  id: phishkit_analyzer
+  module: saq.modules.phishkit
+  class: PhishkitAnalyzer
+  enabled: true
+  # list of file extensions to enable for scanning
+  valid_file_extensions:
+    - .html
+    - .htm
+    - .pdf
+  # same as above but for mime types
+  valid_mime_types:
+    - text/html
+    - application/pdf
+
 # TAG PRIORITIES AND SETTINGS
 # valid values are
 # hidden, special (white), fp (green), info (gray), detail (light blue), warning (yellow), alert (red), critical (red)
@@ -1720,6 +1748,7 @@ module_group_correlation:
   analysis_module_network_identifier: true
   analysis_module_parse_url: true
   analysis_module_pcap_conversation_extraction: true
+  analysis_module_phishkit_analyzer: true
   analysis_module_snort_signature_analysis_v1: true
   analysis_module_url_email_pivot_analyzer: true
   analysis_module_user_analyzer: true
@@ -1775,6 +1804,7 @@ module_group_file:
   analysis_module_xml_plain_text_analyzer: true
   analysis_module_yara_scanner_v3_4: true
   analysis_module_zip_encryption_analyzer: true
+  analysis_module_phishkit_analyzer: true
 
 module_group_email:
   # everything related to email scanning

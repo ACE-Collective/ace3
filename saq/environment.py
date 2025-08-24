@@ -576,6 +576,9 @@ def initialize_environment(
     # TODO update this logic and deal with missing and invalid passwords
     initialize_encryption(encryption_password_plaintext=encryption_password_plaintext)
 
+    # resolve any encrypted values that were referenced in the config
+    get_config().decrypt_all_values()
+
     set_g(
         G_GUI_WHITELIST_EXCLUDED_OBSERVABLE_TYPES,
         set(
@@ -779,6 +782,9 @@ def initialize_environment(
 
     from saq.monitor import initialize_monitoring
     initialize_monitoring()
+
+    from saq.phishkit import initialize_phishkit
+    initialize_phishkit()
 
     from saq.integration.integration_loader import load_integrations
     load_integrations()

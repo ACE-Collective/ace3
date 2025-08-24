@@ -1,316 +1,442 @@
 x-common-env: &common-env
-    ACE_TARGET: "dev"
-    ACE_VERSION:
-    ACE_DISABLE_AUTOSTART:
-    SAQ_ENC: ${SAQ_ENC:-test}
-    SAQ_CONFIG_PATHS: "etc/saq.dev.yaml"
+  ACE_TARGET: "dev"
+  ACE_VERSION: "3.0.0"
+  ACE_DISABLE_AUTOSTART:
+  SAQ_ENC: ${SAQ_ENC:-test}
+  SAQ_CONFIG_PATHS: "etc/saq.dev.yaml"
 
 x-common-volumes: &common-volumes
-    - .:/opt/ace
-    - ace-data-dev:/opt/ace/data
-    - ace-sql-dev:/docker-entrypoint-initdb.d
-    - ace-yara-dev:/opt/ace/etc/yara
-    - ace-hunt-dev:/opt/ace/hunts
-    - ace-ssl-dev:/opt/ace/ssl
+  - .:/opt/ace
+  - ace-data:/opt/ace/data
+  - ace-sql:/docker-entrypoint-initdb.d
+  - ace-yara:/opt/ace/etc/yara
+  - ace-hunt:/opt/ace/hunts
+  - ace-ssl:/opt/ace/ssl
+  - ace-auth:/auth
 
 services:
-    # ensures file permissions on named volumes are correct
-    ace-root-volume-initialize:
-        environment: *common-env
-        user: root
-        build:
-            context: .
-            args:
-                SAQ_USER_ID: ${UID:-1000}
-                SAQ_GROUP_ID: ${GID:-1000}
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
-        volumes:
-            - ace-data-dev:/opt/ace/data
-            - ace-sql-dev:/docker-entrypoint-initdb.d
-            - ace-ssl-dev:/opt/ace/ssl
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  # ensures file permissions on named volumes are correct
+  ace-root-volume-initialize:
+    environment: *common-env
+    user: root
+    build:
+      context: .
+      args:
+        SAQ_USER_ID: ${UID:-1000}
+        SAQ_GROUP_ID: ${GID:-1000}
+    image: "ace3:${ACE_VERSION:-latest}"
+    command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
+    volumes:
+      - ace-data:/opt/ace/data
+      - ace-sql:/docker-entrypoint-initdb.d
+      - ace-ssl:/opt/ace/ssl
+      - ace-auth:/auth
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    # performs all first-time initialization routines that do not require the db
-    ace-initialize:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
-        depends_on:
-            ace-root-volume-initialize:
-                condition: service_completed_successfully
-        volumes: *common-volumes
-        cap_add:
-            - SYS_PTRACE
-        hostname: ace
-        networks: 
-            - dev
+  # performs all first-time initialization routines that do not require the db
+  ace-initialize:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
+    depends_on:
+      ace-root-volume-initialize:
+        condition: service_completed_successfully
+    volumes: *common-volumes
+    cap_add:
+      - SYS_PTRACE
+    hostname: ace
+    networks: 
+      - ace
 
-    ace-db:
-        image: mysql:9.2
-        command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
-        healthcheck:
-            test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-e", "use ace;"]
-            interval: 3s
-            retries: 5
-            start_period: 30s
-            timeout: 10s
-        restart: always
-        depends_on:
-            ace-initialize:
-                condition: service_completed_successfully
-        environment:
-            MYSQL_RANDOM_ROOT_PASSWORD: 1
-        volumes:
-            - ace-db-dev:/var/lib/mysql
-            - ace-sql-dev:/docker-entrypoint-initdb.d
-            - ace-data-dev:/opt/ace/data
-            - ./etc/mysqld/conf.d:/etc/mysql/conf.d
-            - ace-ssl-dev:/opt/ace/ssl
-        ports:
-            - "3306:3306"
-        hostname: ace-db
-        networks: 
-            - dev
+  ace-db:
+    image: mysql:9.2
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
+    healthcheck:
+      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-e", "use ace;"]
+      interval: 3s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    restart: always
+    depends_on:
+      ace-initialize:
+        condition: service_completed_successfully
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: 1
+    volumes:
+      - ace-db:/var/lib/mysql
+      - ace-sql:/docker-entrypoint-initdb.d
+      - ace-data:/opt/ace/data
+      - ./etc/mysqld/conf.d:/etc/mysql/conf.d
+      - ace-ssl:/opt/ace/ssl
+    ports:
+      - "3306:3306"
+    hostname: ace-db
+    networks: 
+      - ace
 
-    # performs all first-time initialization routines that require the db
-    ace-setup:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        command: /bin/bash -c "/opt/ace/docker/startup/setup.sh"
-        depends_on:
-            ace-db:
-                condition: service_healthy
-        volumes: *common-volumes
-        cap_add:
-            - SYS_PTRACE
-        hostname: ace
-        networks: 
-            - dev
+  # performs all first-time initialization routines that require the db
+  ace-setup:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    command: /bin/bash -c "/opt/ace/docker/startup/setup.sh"
+    depends_on:
+      ace-db:
+        condition: service_healthy
+    volumes: *common-volumes
+    cap_add:
+      - SYS_PTRACE
+    hostname: ace
+    networks: 
+      - ace
 
-    http:
-        build: 
-            context: .
-            dockerfile: Dockerfile.ace-http
-        image: "ace-http:${ACE_VERSION:-latest}"
-        restart: always
-        depends_on:
-            - ace
-        volumes: *common-volumes
-        hostname: ace-http
-        ports:
-            - "8443:443"
-        networks: 
-            - dev
+  http:
+    build: 
+      context: .
+      dockerfile: Dockerfile.ace-http
+    image: "ace3-http:${ACE_VERSION:-latest}"
+    restart: always
+    depends_on:
+      - ace
+    volumes: *common-volumes
+    hostname: ace-http
+    ports:
+      - "8443:443"
+    networks: 
+      - ace
 
-    http-app:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            - ace
-        command: /bin/bash -c "/opt/ace/docker/startup/start_uwsgi_app.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        expose:
-            - "3030"
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  http-app:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      - ace
+    command: /bin/bash -c "/opt/ace/docker/startup/start_uwsgi_app.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    expose:
+      - "3030"
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    http-api:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            - ace
-        command: /bin/bash -c "/opt/ace/docker/startup/start_uwsgi_api.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        expose:
-            - "3031"
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  http-api:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      - ace
+    command: /bin/bash -c "/opt/ace/docker/startup/start_uwsgi_api.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    expose:
+      - "3031"
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    redis:
-        image: redis:6.2.4
-        ports:
-            - "6379:6379"
-        restart: always
-        hostname: ace-redis
-        networks: 
-            - dev
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    restart: always
+    hostname: ace-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    # here we're loading the redis.conf that is built from the ace-setup container
+    command: ["redis-server", "/auth/etc/redis/redis.conf"]
+    volumes:
+      - ace-auth:/auth
+    networks: 
+      - ace
 
-    http-debug:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            - ace
-        command: /bin/bash -c "/opt/ace/docker/startup/start_debug_gui.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        ports:
-            - "5000:5000"
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  http-debug:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      - ace
+    command: /bin/bash -c "/opt/ace/docker/startup/start_debug_gui.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    ports:
+      - "5000:5000"
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    network-semaphore:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            ace-setup:
-                condition: service_completed_successfully
-        command: /bin/bash -c "/opt/ace/docker/startup/start_network_semaphore.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        ports:
-            - "53559:53559"
-        networks: 
-            - dev
+  network-semaphore:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    command: /bin/bash -c "/opt/ace/docker/startup/start_network_semaphore.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    ports:
+      - "53559:53559"
+    networks: 
+      - ace
 
-    git:
-        environment: 
-            <<: *common-env
-            ACE_ZIP_PASSWORD:
-        depends_on:
-            - ace
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        command: /bin/bash -c "/opt/ace/docker/startup/start_git.sh"
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  git:
+    environment: 
+      <<: *common-env
+      ACE_ZIP_PASSWORD:
+    depends_on:
+      - ace
+    image: "ace3:${ACE_VERSION:-latest}"
+    command: /bin/bash -c "/opt/ace/docker/startup/start_git.sh"
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    cron:
-        environment: 
-            <<: *common-env
-            ACE_ZIP_PASSWORD:
-        depends_on:
-            - ace
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        command: /bin/bash -c "/opt/ace/docker/startup/start_yacron.sh"
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  cron:
+    environment: 
+      <<: *common-env
+      ACE_ZIP_PASSWORD:
+    depends_on:
+      - ace
+    image: "ace3:${ACE_VERSION:-latest}"
+    command: /bin/bash -c "/opt/ace/docker/startup/start_yacron.sh"
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    yara:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            ace-setup:
-                condition: service_completed_successfully
-        command: /bin/bash -c "/opt/ace/docker/startup/start_yara.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  yara:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    command: /bin/bash -c "/opt/ace/docker/startup/start_yara.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    background-executor:
-        environment: *common-env
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            ace:
-                condition: service_started
-            redis:
-                condition: service_started
-        command: /bin/bash -c "/opt/ace/docker/startup/start_background_executor.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  background-executor:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace:
+        condition: service_started
+      redis:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start_background_executor.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
 
-    dev:
-        environment: 
-            <<: *common-env
-            ACE_ZIP_PASSWORD:
-            ACE_LOAD_PROD_DATA:
-            ACE_PROD_DB_HOST:
-            ACE_PROD_DB_USER:
-            ACE_PROD_DB_PASSWORD:
-            AWS_CA_BUNDLE:
-            AWS_ACCESS_KEY_ID:
-            AWS_SECRET_ACCESS_KEY:
-            AWS_DEFAULT_REGION:
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            ace-setup:
-                condition: service_completed_successfully
-        command: /bin/bash -c "/opt/ace/docker/startup/start_nothing.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        ports:
-            - "5001:5000"
-        networks: 
-            - dev
+  dev:
+    environment: 
+      <<: *common-env
+      ACE_ZIP_PASSWORD:
+      ACE_LOAD_PROD_DATA:
+      ACE_PROD_DB_HOST:
+      ACE_PROD_DB_USER:
+      ACE_PROD_DB_PASSWORD:
+      AWS_CA_BUNDLE:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_DEFAULT_REGION:
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    command: /bin/bash -c "/opt/ace/docker/startup/start_nothing.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    ports:
+      - "5001:5000"
+    networks: 
+      - ace
 
-    ace:
-        environment: 
-            <<: *common-env
-            ACE_ZIP_PASSWORD:
-            ACE_LOAD_PROD_DATA:
-            ACE_PROD_DB_HOST:
-            ACE_PROD_DB_USER:
-            ACE_PROD_DB_PASSWORD:
-            AWS_CA_BUNDLE:
-            AWS_ACCESS_KEY_ID:
-            AWS_SECRET_ACCESS_KEY:
-            AWS_DEFAULT_REGION:
-        image: "ace-dev:${ACE_VERSION:-latest}"
-        depends_on:
-            ace-setup:
-                condition: service_completed_successfully
-            yara:
-                condition: service_started
-            network-semaphore:
-                condition: service_started
-        command: /bin/bash -c "/opt/ace/docker/startup/start_engine.sh"
-        restart: always
-        volumes: *common-volumes
-        hostname: ace
-        cap_add:
-            - SYS_PTRACE
-        networks: 
-            - dev
+  ace:
+    environment: 
+      <<: *common-env
+      ACE_ZIP_PASSWORD:
+      ACE_LOAD_PROD_DATA:
+      ACE_PROD_DB_HOST:
+      ACE_PROD_DB_USER:
+      ACE_PROD_DB_PASSWORD:
+      AWS_CA_BUNDLE:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_DEFAULT_REGION:
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+      yara:
+        condition: service_started
+      network-semaphore:
+        condition: service_started
+      phishkit:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start_engine.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
+
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER: "ace3"
+    image: rabbitmq
+    ports:
+      - "5672:5672"
+    restart: always
+    hostname: rabbitmq
+    entrypoint: >
+      /bin/sh -c "
+      export RABBITMQ_DEFAULT_PASS=$(cat /auth/passwords/rabbitmq);
+      exec rabbitmq-server
+      "
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ace-auth:/auth
+    networks:
+      - ace
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: "ace3"
+    image: minio/minio:latest
+    restart: always
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # MinIO console
+    entrypoint: >
+      /bin/sh -c "
+      export MINIO_ROOT_PASSWORD=$(cat /auth/passwords/minio) && exec minio server /data --console-address :9001
+      "
+    volumes:
+      - ace-minio:/data
+      # this volume contains authentication information
+      - ace-auth:/auth
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
+    networks:
+      - ace
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /tmp/minio-init.sh
+    volumes:
+      - ace-minio:/data
+      - ace-auth:/auth
+      - ./bin/minio-init.sh:/tmp/minio-init.sh
+    networks:
+      - ace
+
+  phishkit-init:
+    build:
+      context: ./phishkit
+      dockerfile: Dockerfile.phishkit
+    image: phishkit:latest
+    # this is here just to build the image
+    entrypoint: /bin/true
+
+  phishkit:
+    environment:
+      MINIO_HOST: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: ace3api
+    build:
+      context: ./phishkit
+    image: phishkit-manager:latest
+    depends_on:
+      phishkit-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      # this is needed so that this container can create other containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # this volume is used to share the downloaded data between the child containers and this one
+      - ace-phishkit:/phishkit
+      # this volume contains authentication information
+      - ace-auth:/auth
+    networks:
+      - ace
 
 volumes:
-    ace-data-dev:
-        name: ace-data-dev
-    ace-db-dev:
-        name: ace-db-dev
-    ace-sql-dev:
-        name: ace-sql-dev
-    ace-ssl-dev:
-        name: ace-ssl-dev
-    ace-yara-dev:
-        name: ace-yara-dev
-    ace-hunt-dev:
-        name: ace-hunt-dev
+  ace-data:
+    name: ace-data
+  ace-db:
+    name: ace-db
+  ace-sql:
+    name: ace-sql
+  ace-ssl:
+    name: ace-ssl
+  ace-yara:
+    name: ace-yara
+  ace-hunt:
+    name: ace-hunt
+  ace-minio:
+    name: ace-minio
+  ace-phishkit:
+    name: ace-phishkit
+  ace-auth:
+    name: ace-auth
 
 networks:
-    dev:
+  ace:

@@ -167,7 +167,7 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
 
         return self[section].getboolean(key, fallback)
 
-    # dore behaviors
+    # do resolve behaviors
     def _resolve_value(self, value: Any) -> Any:
         # handle YAML tagged references first
         if isinstance(value, EnvVarRef):
@@ -375,4 +375,46 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
             resolved = self._resolve_value(value)
             if isinstance(resolved, str):
                 sys.path.append(resolved)
+
+    def decrypt_all_values(self) -> None:
+        """Recursively decrypt all encrypted values in the configuration.
+
+        The encryption key is stored in the database, and the database connection parameters
+        are stored in the configuration. So we need to load the configuration first, then
+        decrypt the values.
+        """
+        def _decrypt_recursive(mapping: dict[str, Any]) -> None:
+            """Recursively decrypt values in a mapping."""
+            for key, value in mapping.items():
+                if isinstance(value, dict):
+                    # Recursively process nested dictionaries
+                    _decrypt_recursive(value)
+                elif isinstance(value, list):
+                    # Process list items
+                    for i, item in enumerate(value):
+                        if isinstance(item, dict):
+                            _decrypt_recursive(item)
+                        elif isinstance(item, str) and item.startswith("encrypted:"):
+                            # Decrypt list items that are encrypted strings
+                            key_name = item[len("encrypted:"):]
+                            try:
+                                decrypted = self._get_decrypted_password(key_name)
+                                if decrypted is not None:
+                                    value[i] = decrypted
+                            except Exception as e:
+                                logging.warning("failed to decrypt value for key %s: %s", key_name, str(e))
+                elif isinstance(value, str) and value.startswith("encrypted:"):
+                    # Decrypt string values that start with "encrypted:"
+                    key_name = value[len("encrypted:"):]
+                    try:
+                        decrypted = self._get_decrypted_password(key_name)
+                        if decrypted is not None:
+                            mapping[key] = decrypted
+                    except Exception as e:
+                        logging.warning("failed to decrypt value for key %s: %s", key_name, str(e))
+
+        # Process all sections in the configuration
+        for section_name, section_data in self._data.items():
+            if isinstance(section_data, dict):
+                _decrypt_recursive(section_data)
 

@@ -597,3 +597,7 @@ test_api:
   uri: https://www.test.com
   username: user
   password: pass
+
+minio:
+  access_key: ace3apitest
+  secret_key: 5ad82077-e6bf-471d-8f44-979c4f541082

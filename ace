@@ -2749,15 +2749,21 @@ def set_encrypted_password(args):
         logging.error("missing encryption password (use the -p option or start the ecs service)\n")
         sys.exit(1)
 
-    while True:
-        password = getpass.getpass("Enter the data to be encrypted and stored:")
-        password_2 = getpass.getpass("Re-enter the value for verification:")
+    if args.load_from_file:
+        with open(args.load_from_file, "r") as fp:
+            password = fp.read().strip()
+    elif args.value:
+        password = args.value
+    else:
+        while True:
+            password = getpass.getpass("Enter the data to be encrypted and stored:")
+            password_2 = getpass.getpass("Re-enter the value for verification:")
 
-        if password != password_2:
-            logging.error("passwords do not match, try again")
-            continue
+            if password != password_2:
+                logging.error("passwords do not match, try again")
+                continue
 
-        break
+            break
 
     from saq.configuration.encryption import encrypt_password
     encrypt_password(args.key, password)
@@ -2767,6 +2773,8 @@ set_encrypted_password_parser = config_encryption_sp.add_parser('set',
     help="Set a password in the system, storing the value encrypted in the database. You will be prompted for the password.")
 set_encrypted_password_parser.add_argument('key',
     help="The key (name) of the password.")
+set_encrypted_password_parser.add_argument('--value', help="The value to store. Prompted if not supplied.")
+set_encrypted_password_parser.add_argument('--load-from-file', help="A file that contains the value to use. Trailing whitespace is ignored.")
 set_encrypted_password_parser.set_defaults(func=set_encrypted_password)
 
 def list_encrypted_passwords(args):
@@ -3101,6 +3109,8 @@ git_list_parser.set_defaults(func=list_git_repos)
 # TODO find a better way to do this
 # pull in all the other CLI parsers
 from saq.permissions.cli import permissions_parser # noqa: F401
+from saq.phishkit import phishkit_parser # noqa: F401
+from saq.storage.cli import storage_parser # noqa: F401
 
 if __name__ == '__main__':
     main()

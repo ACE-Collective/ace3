@@ -4,9 +4,10 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
+import uuid
 
-from saq.constants import F_FILE
-from saq.environment import get_base_dir
+from saq.environment import get_base_dir, get_temp_dir
 
 
 def create_directory(path):
@@ -15,6 +16,10 @@ def create_directory(path):
         os.makedirs(path)
 
     return path
+
+def create_temporary_directory() -> str:
+    """Creates a temporary directory and returns the path using mktempd with get_temp_dir() as the base directory."""
+    return tempfile.mkdtemp(dir=get_temp_dir())
 
 # XXX rename to remove_directory_and_ignore_errors
 def remove_directory(path):

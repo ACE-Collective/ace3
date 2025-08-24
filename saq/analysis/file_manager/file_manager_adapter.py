@@ -50,7 +50,7 @@ class FileManagerAdapter(FileManagerInterface):
     def ensure_storage_directories(self) -> None:
         """Ensure the storage and .ace directories exist."""
         return self._file_manager.ensure_storage_directories()
-        
+
     def create_file_path(self, relative_path: str) -> str:
         """
         Creates a file path relative to the file subdirectory.

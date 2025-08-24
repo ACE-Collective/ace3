@@ -7,14 +7,12 @@ from typing import Optional, Union
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.analysis.serialize.observable_serializer import KEY_VALUE
-from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, get_config_value_as_int
-from saq.constants import CONFIG_GUI, CONFIG_GUI_FILE_PREVIEW_BYTES, DIRECTIVE_VIEW_IN_BROWSER, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, G_SAQ_RELATIVE_DIR, R_IS_HASH_OF, parse_file_location
-from saq.environment import g
+from saq.constants import CONFIG_GUI, CONFIG_GUI_FILE_PREVIEW_BYTES, DIRECTIVE_VIEW_IN_BROWSER, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
 from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionFileSendTo, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
-from saq.util.hashing import get_md5_hash_of_file, is_sha256_hex, sha256_file
+from saq.util.hashing import is_sha256_hex
 
 KEY_MD5_HASH = "md5_hash"
 KEY_SHA1_HASH = "sha1_hash"
@@ -323,11 +321,17 @@ class FileObservable(Observable):
         w_ratio = 1.0
         h_ratio = 1.0
 
-        if width > 640:
-            w_ratio = 640.0 / float(width)
+        #if width > 640:
+            #w_ratio = 640.0 / float(width)
 
-        if height > 480:
-            h_ratio = 480.0 / float(height)
+        #if height > 480:
+            #h_ratio = 480.0 / float(height)
+
+        if width > 320:
+            w_ratio = 320.0 / float(width)
+
+        if height > 240:
+            h_ratio = 240.0 / float(height)
 
         ratio = w_ratio if w_ratio > h_ratio else h_ratio
         self._scaled_width = int(width * ratio)

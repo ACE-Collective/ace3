@@ -366,7 +366,7 @@ class AnalysisModule(FileWatcherMixin):
             return False
 
     def custom_requirement(self, observable: Observable) -> bool:
-        """Optional function is called as an additional check to see if this observalbe should be
+        """Optional function is called as an additional check to see if this observable should be
         analyzed by this module. Returns True if it should be, False if not.
         If this function is not overridden then it is ignored."""
         raise NotImplementedError()

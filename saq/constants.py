@@ -450,6 +450,7 @@ DIRECTIVE_ORIGINAL_EMAIL = 'original_email'
 DIRECTIVE_ORIGINAL_SMTP = 'original_smtp'
 DIRECTIVE_PHISHKIT = 'phishkit'
 DIRECTIVE_PREVIEW = 'preview'
+DIRECTIVE_RENDER = 'render'
 DIRECTIVE_REMEDIATE = 'remediate'
 DIRECTIVE_RENAME_ANALYSIS = 'rename_analysis'
 DIRECTIVE_RESOLVE_ASSET = 'resolve_asset'
@@ -484,6 +485,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_ORIGINAL_SMTP: 'treat this file as the original smtp stream',
     DIRECTIVE_PHISHKIT: 'analyze target for phishkit detection',
     DIRECTIVE_PREVIEW: 'show this content inline if possible',
+    DIRECTIVE_RENDER: 'render an image of the target',
     DIRECTIVE_REMEDIATE: 'remediate the target',
     DIRECTIVE_RENAME_ANALYSIS: 'indicates that the description of the root analysis object should be updated with analysis results',
     DIRECTIVE_RESOLVE_ASSET: 'indicates that ACE should treat this IP address as an asset and try to figure out the details',
@@ -731,6 +733,7 @@ REDIS_DB_TIP_B = 3
 REDIS_DB_FOR_DETECTION_A = 4
 REDIS_DB_FOR_DETECTION_B = 5
 REDIS_DB_BG_TASKS = 6
+REDIS_DB_CELERY = 7
 
 # valid summary detail formats
 SUMMARY_DETAIL_FORMAT_PRE = 'pre' # preformatted
@@ -1116,8 +1119,23 @@ CONFIG_REMOTE_EMAIL_COLLECTOR = "service_remote_email_collector"
 CONFIG_EVENTS = "events"
 CONFIG_EVENTS_AUTO_CLOSE_PATH = "auto_close_path"
 
+# celery
+CONFIG_RABBITMQ = "rabbitmq"
+CONFIG_RABBITMQ_USER = "username"
+CONFIG_RABBITMQ_PASSWORD = "password"
+CONFIG_RABBITMQ_HOST = "host"
+
+# minio
+CONFIG_MINIO = "minio"
+CONFIG_MINIO_HOST = "host"
+CONFIG_MINIO_PORT = "port"
+CONFIG_MINIO_ACCESS_KEY = "access_key"
+CONFIG_MINIO_SECRET_KEY = "secret_key"
+
 # redis
 CONFIG_REDIS = "redis"
+CONFIG_REDIS_USERNAME = "username"
+CONFIG_REDIS_PASSWORD = "password"
 CONFIG_REDIS_LOCAL = "redis-local"
 CONFIG_REDIS_HOST = "host"
 CONFIG_REDIS_PORT = "port"
@@ -1146,6 +1164,9 @@ CONFIG_GIT_REPOS = "repos"
 # engine state flag that indicates pre-analysis has been executed on a RootAnalysis
 STATE_PRE_ANALYSIS_EXECUTED = "pre_analysis_executed"
 STATE_POST_ANALYSIS_EXECUTED = "post_analysis_executed"
+
+# storage constants
+BUCKET_ACE3 = "ace3"
 
 class AnalysisExecutionResult(Enum):
     """Enum representing the possible results of an analysis execution."""

@@ -31,3 +31,14 @@ apikeys:
   automation: $API_KEY_SHA256
 EOF
 fi
+
+# load any auto-generated username/passwords automatically
+# use a marker file to indicate that we've already performed this activity
+if [ ! -f /auth/setup.executed ]
+then
+    echo "loading redis auth into ace"
+    ace enc config set redis.password --load-from-file /auth/passwords/redis && \
+    ace enc config set minio.password --load-from-file /auth/passwords/minio && \
+    ace enc config set rabbitmq.password --load-from-file /auth/passwords/rabbitmq && \
+    touch /auth/setup.executed
+fi

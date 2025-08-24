@@ -2,12 +2,11 @@ import json
 import logging
 import time
 import threading
-from typing import Optional
 
 import redis
 
 from saq.configuration import get_config, get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_REDIS, CONFIG_REDIS_HOST, CONFIG_REDIS_PORT, REDIS_DB_BG_TASKS
+from saq.constants import CONFIG_REDIS, CONFIG_REDIS_HOST, CONFIG_REDIS_PASSWORD, CONFIG_REDIS_PORT, CONFIG_REDIS_USERNAME, REDIS_DB_BG_TASKS
 from saq.database import get_db
 from saq.error import report_exception
 from saq.service import ACEServiceInterface
@@ -16,7 +15,15 @@ from saq.service import ACEServiceInterface
 
 def get_redis_connection():
     """Returns the Redis object to use to store/retrieve signature info."""
-    return redis.Redis(get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST), get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT), db=REDIS_DB_BG_TASKS, decode_responses=True, encoding='utf-8', health_check_interval=30)
+    return redis.Redis(
+            host=get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST),
+            port=get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT),
+            username=get_config_value(CONFIG_REDIS, CONFIG_REDIS_USERNAME),
+            password=get_config_value(CONFIG_REDIS, CONFIG_REDIS_PASSWORD),
+            db=REDIS_DB_BG_TASKS,
+            decode_responses=True,
+            encoding='utf-8',
+            health_check_interval=30)
 
 TASK_KEY = "tasks"
 BG_TASK_CLOSE_EVENT = "close_event"

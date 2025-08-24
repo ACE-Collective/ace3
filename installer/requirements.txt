@@ -1,5 +1,6 @@
 beautifulsoup4
 black
+celery[redis]
 certifi
 construct
 croniter
@@ -23,6 +24,7 @@ Jinja2
 ldap3
 LnkParse3
 lxml
+minio
 msoffcrypto-tool
 numpy
 olefile
@@ -35,6 +37,7 @@ plyara
 progress
 psutil
 pyasn1
+pydantic
 pyenchant
 PyExifTool
 pylint

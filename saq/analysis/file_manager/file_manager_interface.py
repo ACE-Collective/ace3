@@ -48,7 +48,7 @@ class FileManagerInterface(Protocol):
     def ensure_storage_directories(self) -> None:
         """Ensure the storage and .ace directories exist."""
         ...
-        
+
     def create_file_path(self, relative_path: str) -> str:
         """
         Creates a file path relative to the file subdirectory.

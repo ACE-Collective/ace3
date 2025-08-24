@@ -78,7 +78,7 @@ class LocalFileManager(FileManagerInterface):
         # analysis details go into a hidden directory
         if not os.path.exists(os.path.join(g(G_SAQ_RELATIVE_DIR), self._storage_dir, '.ace')):
             os.makedirs(os.path.join(g(G_SAQ_RELATIVE_DIR), self._storage_dir, '.ace'))
-            
+
     def create_file_path(self, relative_path: str) -> str:
         """
         Creates a file path relative to the file subdirectory.
