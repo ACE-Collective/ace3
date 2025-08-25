@@ -6,7 +6,6 @@ from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_javascript_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
 
 class SynchronyFileAnalysis(Analysis):
@@ -88,6 +87,7 @@ class SynchronyFileAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
+        from saq.modules.file_analysis.file_type import FileTypeAnalysis
 
         local_file_path = _file.full_path
         # do not analyze the output of this module
@@ -101,6 +101,18 @@ class SynchronyFileAnalyzer(AnalysisModule):
         # skip analysis if file is empty
         if os.path.getsize(local_file_path) == 0:
             logging.debug(f"local file {local_file_path} is empty")
+            return AnalysisExecutionResult.COMPLETED
+
+        # do not analyze JSON files
+        if _file.file_name.endswith(".json"):
+            return AnalysisExecutionResult.COMPLETED
+
+        file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
+        if file_type_analysis is not None and file_type_analysis.mime_type == "application/json":
+            return AnalysisExecutionResult.COMPLETED
+
+        # do not analyze exif output
+        if _file.file_name == "exiftool.out":
             return AnalysisExecutionResult.COMPLETED
 
         if not is_javascript_file(local_file_path):

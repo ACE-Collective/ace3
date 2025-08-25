@@ -5,6 +5,7 @@ if TYPE_CHECKING:
     from saq.analysis.pivot_link import PivotLink
 
 # dictionary keys used by the AnalysisSerializer
+KEY_UUID = 'uuid'
 KEY_INSTANCE = 'instance'
 KEY_OBSERVABLES = 'observables'
 KEY_SUMMARY = 'summary'
@@ -31,6 +32,7 @@ class AnalysisSerializer:
 
         # Include analysis-specific data
         result.update({
+            KEY_UUID: analysis.uuid,
             KEY_INSTANCE: analysis.instance,
             KEY_OBSERVABLES: [o.id for o in analysis.observables],
             KEY_SUMMARY: analysis.summary,
@@ -53,6 +55,10 @@ class AnalysisSerializer:
         analysis._tag_manager.set_json_data(data)
         analysis._detection_manager.set_json_data(data)
         analysis._sort_manager.set_json_data(data)
+
+        # set uuid
+        if KEY_UUID in data:
+            analysis._uuid = data[KEY_UUID]
 
         # Set instance
         if KEY_INSTANCE in data:

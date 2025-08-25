@@ -4,7 +4,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from saq.analysis import Observable
 from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
 from saq.modules.phishkit import (
     PhishkitAnalysis, 
@@ -21,9 +20,7 @@ from saq.modules.phishkit import (
     SCAN_TYPE_URL,
     SCAN_TYPE_FILE
 )
-from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis import FileTypeAnalysis
-from saq.observables.file import FileObservable
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
@@ -140,7 +137,7 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
     
     # Create URL observable with render directive
     url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
-    url_observable.add_directive(DIRECTIVE_RENDER)
+    url_observable.add_directive(DIRECTIVE_CRAWL)
     
     # Mock saq.phishkit functions
     def mock_scan_url(url, output_dir, is_async=True):
@@ -238,7 +235,7 @@ def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context)
     
     # Create URL observable with render directive
     url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
-    url_observable.add_directive(DIRECTIVE_RENDER)
+    url_observable.add_directive(DIRECTIVE_CRAWL)
     
     # Mock saq.phishkit functions to raise exception
     def mock_scan_url(url, output_dir, is_async=True):
@@ -336,35 +333,6 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)
 
-
-@pytest.mark.integration
-def test_phishkit_analyzer_execute_analysis_file_no_directive(test_context):
-    """Test file analysis skipped when no render directive."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    
-    # Create a test file without render directive
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
-        f.write('<html><body>Test content</body></html>')
-        test_file_path = f.name
-    
-    try:
-        file_observable = root.add_file_observable(test_file_path)
-        
-        analyzer = PhishkitAnalyzer(context=create_test_context(root=root))
-        result = analyzer.execute_analysis(file_observable)
-        
-        assert result == AnalysisExecutionResult.COMPLETED
-        
-        # No analysis should be created
-        analysis = file_observable.get_and_load_analysis(PhishkitAnalysis)
-        assert analysis is None
-        
-    finally:
-        if os.path.exists(test_file_path):
-            os.unlink(test_file_path)
-
-
 @pytest.mark.integration
 def test_phishkit_analyzer_execute_analysis_file_invalid_extension(monkeypatch, test_context):
     """Test file analysis skipped for invalid extension."""
@@ -378,7 +346,6 @@ def test_phishkit_analyzer_execute_analysis_file_invalid_extension(monkeypatch, 
     
     try:
         file_observable = root.add_file_observable(test_file_path)
-        file_observable.add_directive(DIRECTIVE_RENDER)
         
         # Configure analyzer to only accept html files
         analyzer = PhishkitAnalyzer(context=create_test_context(root=root))
@@ -391,6 +358,17 @@ def test_phishkit_analyzer_execute_analysis_file_invalid_extension(monkeypatch, 
             return []
         
         monkeypatch.setattr(analyzer.config, '__getitem__', mock_config_get)
+
+        # Mock file type analysis
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'Plain text', 'mime': 'text/plain'}
+        file_observable.add_analysis(file_type_analysis)
+
+        # Mock wait_for_analysis
+        def mock_wait_for_analysis(observable, analysis_type):
+            return file_type_analysis
+        
+        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
         
         # No need for adapter
         result = analyzer.execute_analysis(file_observable)
@@ -413,13 +391,12 @@ def test_phishkit_analyzer_execute_analysis_file_invalid_mime_type(monkeypatch, 
     root.initialize_storage()
     
     # Create a test file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
-        f.write('<html><body>Test content</body></html>')
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write('Whatever.')
         test_file_path = f.name
     
     try:
         file_observable = root.add_file_observable(test_file_path)
-        file_observable.add_directive(DIRECTIVE_RENDER)
         
         # Mock file type analysis with wrong MIME type
         file_type_analysis = FileTypeAnalysis()

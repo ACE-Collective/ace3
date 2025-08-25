@@ -14,7 +14,7 @@ import dateutil
 import pytz
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_FILE, F_FQDN, F_IPV4, F_MESSAGE_ID, F_USER_AGENT, AnalysisExecutionResult, create_email_conversation, create_email_delivery
+from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_FILE, F_FQDN, F_IPV4, F_MESSAGE_ID, F_USER_AGENT, AnalysisExecutionResult, create_email_conversation, create_email_delivery
 from saq.email import decode_rfc2822, is_local_email_domain, normalize_email_address, normalize_message_id
 from saq.environment import get_base_dir, get_data_dir, get_local_timezone
 from saq.error.reporting import report_exception
@@ -1010,6 +1010,8 @@ class EmailAnalyzer(AnalysisModule):
 
                     if target.get_content_type() == 'text/plain':
                         extracted_file.add_directive(DIRECTIVE_PREVIEW)
+                    else:
+                        extracted_file.add_directive(DIRECTIVE_RENDER)
 
                 # XXX I can't remember why we are still doing the attachment thing
                 attachments.append((len(payload), target.get_content_type(), 
@@ -1177,7 +1179,8 @@ class EmailAnalyzer(AnalysisModule):
                 full_path = os.path.join(dirpath, file_name)
                 # go ahead and add every file to be scanned
                 _file = analysis.add_file_observable(full_path)
-                if _file: _file.add_directive(DIRECTIVE_EXTRACT_URLS)
+                if _file:
+                    _file.add_directive(DIRECTIVE_EXTRACT_URLS)
 
         def _parse_bro_mv(value):
             """Parse bro multivalue field."""
@@ -1289,36 +1292,8 @@ class EmailAnalyzer(AnalysisModule):
         is_email |= 'message/rfc822' in file_type_analysis.file_type
         is_email |= 'message/rfc822' in file_type_analysis.mime_type
         is_email |= _file.has_directive(DIRECTIVE_ORIGINAL_EMAIL)
-
-        #if not is_email:
-            #header_count = 0
-            #try:
-                #with open(os.path.join(self.get_root().storage_dir, _file.full_path), 'r') as fp:
-                    #while True:
-                        #line = fp.readline(1024)
-                        #m = RE_EMAIL_HEADER.match(line)
-                        #if m:
-                            #header_count += 1
-                            #continue
-
-                        ## have we reached the end of the headers?
-                        #if line.strip() == '':
-                            #break
-
-                        #m = RE_EMAIL_HEADER_CONTINUE.match(line)
-                        #if m:
-                            #continue
-
-                        ## we read some non-email header content
-                        #header_count = 0
-                        #break
-
-                #if header_count > 5: # completely arbitrary value
-                    #logging.debug("detected email file {} by inspecting contents".format(_file.full_path))
-                    #is_email = True
-
-            #except Exception as e:
-                #logging.debug("unable to determine if {} is an email: {}".format(_file.full_path, e))
+        if file_type_analysis is not None:
+            is_email |= file_type_analysis.is_email_file
 
         if not is_email:
             logging.debug("unsupported file type for email analysis: {} {}".format(

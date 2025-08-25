@@ -47,6 +47,10 @@ class PDFAnalyzer(AnalysisModule):
         if local_file_path.endswith('.pdfparser'):
             return AnalysisExecutionResult.COMPLETED
 
+        # do not analyze OCR output
+        if local_file_path.endswith('.ocr'):
+            return AnalysisExecutionResult.COMPLETED
+
         # this file must actually be a PDF
         with open(local_file_path, 'rb') as fp:
             # the header can be anywhere in the first 1024 bytes

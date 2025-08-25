@@ -76,6 +76,9 @@ class Analysis(EventSource):
     def __init__(self, sort_order: int=100, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # the uuid of this Analysis
+        self._uuid = str(uuid.uuid4())
+
         # a reference to the RootAnalysis object this analysis belongs to (injected)
         self._analysis_tree_manager: Optional["AnalysisTreeManager"] = None
 
@@ -187,6 +190,14 @@ class Analysis(EventSource):
 
     # analysis properties and methods
     # ------------------------------------------------------------------------
+
+    @property
+    def uuid(self) -> str:
+        return self._uuid
+
+    @uuid.setter
+    def uuid(self, value: str):
+        self._uuid = value
 
     @property
     def whitelisted(self) -> bool:
@@ -527,10 +538,11 @@ class Analysis(EventSource):
         return self_str < other_str
 
     def __eq__(self, other):
-        if type(self) is not type(other):
+        if not isinstance(other, Analysis):
             return False
 
-        return self.details == other.details if self.details and other.details else False
+        return self.uuid == other.uuid
+        #return self.observable.id == other.observable.id and self.details == other.details and self.summary == other.summary
 
     def __hash__(self):
         # XXX this is weird -- why are we hashing the summary?

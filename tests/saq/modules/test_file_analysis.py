@@ -620,12 +620,25 @@ def test_is_javascript_file(datadir, file_name, expected_result):
     assert is_javascript_file(str(datadir / file_name)) == expected_result
 
 @pytest.mark.unit
-def test_synchrony_analyzer(datadir, test_context):
+def test_synchrony_analyzer(datadir, test_context, monkeypatch):
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
     
-    analyzer = AnalysisModuleAdapter(SynchronyFileAnalyzer(context=create_test_context(root=root)))
+    # Mock FileTypeAnalysis to return a non-JSON mime type
+    class MockFileTypeAnalysis:
+        def __init__(self):
+            self.mime_type = "text/plain"
+    
+    def mock_wait_for_analysis(observable, analysis_class):
+        if analysis_class.__name__ == 'FileTypeAnalysis':
+            return MockFileTypeAnalysis()
+
+        return None
+    
+    synchrony_analyzer = SynchronyFileAnalyzer(context=create_test_context(root=root))
+    monkeypatch.setattr(synchrony_analyzer, "wait_for_analysis", mock_wait_for_analysis)
+    analyzer = AnalysisModuleAdapter(synchrony_analyzer)
     
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -634,6 +647,34 @@ def test_synchrony_analyzer(datadir, test_context):
     assert analysis.returncode == 0
     assert len(analysis.extracted_files) == 1
     assert os.path.basename(analysis.extracted_files[0]).startswith("synchrony-")
+
+@pytest.mark.unit
+def test_synchrony_analyzer_skips_json_files(datadir, test_context, monkeypatch):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "sample_obsfucated_javascript.js")
+    
+    # mock FileTypeAnalysis to return JSON mime type
+    class MockFileTypeAnalysis:
+        def __init__(self):
+            self.mime_type = "application/json"
+    
+    def mock_wait_for_analysis(observable, analysis_class):
+        if analysis_class.__name__ == 'FileTypeAnalysis':
+            return MockFileTypeAnalysis()
+
+        return None
+    
+    synchrony_analyzer = SynchronyFileAnalyzer(context=create_test_context(root=root))
+    monkeypatch.setattr(synchrony_analyzer, "wait_for_analysis", mock_wait_for_analysis)
+    analyzer = AnalysisModuleAdapter(synchrony_analyzer)
+    
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(SynchronyFileAnalysis)
+
+    # should be None because JSON files are skipped
+    assert analysis is None
 
 @pytest.mark.unit
 def test_empty_file_hash(datadir, test_context):

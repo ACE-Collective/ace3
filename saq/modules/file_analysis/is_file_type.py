@@ -4,12 +4,11 @@
 # 6/29/2018 - https://docs.google.com/spreadsheets/d/1LXneVF8VxmOgkt2W_NG5Kl3lzWW45prE7gxtuPcO-4o/edit#gid=1950593040
 import logging
 import os
+import re
 from subprocess import PIPE, Popen
 import uuid
 import zipfile
 
-from saq.analysis.observable import Observable
-from saq.constants import F_FILE
 from saq.observables.file import FileObservable
 from saq.x509 import is_der_bytes, is_pem_bytes, load_cert
 
@@ -139,7 +138,7 @@ def is_zip_file(path):
         with zipfile.ZipFile(path, "r") as zfile:
             if zfile.namelist():
                 return True
-    except Exception as e:
+    except Exception:
         pass
 
     return False
@@ -326,3 +325,51 @@ def is_chm_file(path) -> bool:
         header = fp.read(4)
 
     return header == b'ITSF'
+
+RE_EMAIL_HEADER = re.compile(r"^([A-Za-z0-9\-]+):\s?.*$")
+RE_EMAIL_HEADER_INDENTED = re.compile(r"^\s+\S+")
+COMMON_EMAIL_HEADERS = [
+    "From:",
+    "To:",
+    "Subject:",
+    "Date:",
+    "Message-ID:",
+]
+def is_email_file(path) -> bool:
+    """Returns True if the given file looks like it might be an email file."""
+    try:
+        common_headers_found = set()
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                # ignore lines that have content but start with whitespace
+                if RE_EMAIL_HEADER_INDENTED.match(line):
+                    continue
+
+                # if we got this far and hit an empty line we assume it's an email file
+                # as it would be end of the headers
+                if line.strip() == "":
+                    return True
+
+                # otherwise we're checking for email headers
+                m = RE_EMAIL_HEADER.match(line)
+                if not m:
+                    return False
+                
+                # grab the header we found
+                header = m.group(1)
+                if header in COMMON_EMAIL_HEADERS:
+                    common_headers_found.add(header)
+
+                # if we've found all the common headers, we can return True
+                if len(common_headers_found) == len(COMMON_EMAIL_HEADERS):
+                    return True
+
+            # otherwise we return False
+            return False
+
+    except UnicodeDecodeError:
+        logging.debug("unable to read file %s due to unicode decode error", path)
+        return False
+    except Exception as e:
+        logging.debug("unable to read file %s: %s", path, e)
+        return False

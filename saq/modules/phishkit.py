@@ -177,9 +177,11 @@ class PhishkitAnalyzer(AnalysisModule):
                 relative_path = os.path.join("phishkit", analysis.job_id, os.path.relpath(file_path, analysis.output_dir))
                 file_observable = analysis.add_file_observable(file_path, relative_path)
                 if file_observable:
+                    from saq.modules.file_analysis.pdf import PDFAnalyzer
                     # do not send phishkit output to phishkit
                     file_observable.exclude_analysis(self)
-                    file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+                    file_observable.exclude_analysis(PDFAnalyzer)
+                    #file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
 
 
                 # TODO follow the logic of the existing crawlphish module here
@@ -194,11 +196,11 @@ class PhishkitAnalyzer(AnalysisModule):
 
         # if the observable is a file, we need to check if the file type is enabled for scanning
         if observable.type == F_FILE:
-            # files require a render directive
-            #if not observable.has_directive(DIRECTIVE_RENDER):
-                #logging.debug("skipping file %s - render directive not found", observable)
-                #return AnalysisExecutionResult.COMPLETED
+            if not observable.has_directive(DIRECTIVE_RENDER):
+                logging.debug("skipping file %s - render directive not found", observable)
+                return AnalysisExecutionResult.COMPLETED
 
+            # by default we do not accept files for phishkit analysis
             file_accepted = False
 
             # first check the file extension
@@ -221,9 +223,9 @@ class PhishkitAnalyzer(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
 
         if observable.type == F_URL:
-            # urls require render or crawl directives
-            if not observable.has_directive(DIRECTIVE_RENDER) and not observable.has_directive(DIRECTIVE_CRAWL):
-                logging.debug("skipping URL %s - render or crawl directive not found", observable)
+            # urls require crawl directives
+            if not observable.has_directive(DIRECTIVE_CRAWL):
+                logging.debug("skipping URL %s - crawl directive not found", observable)
                 return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(observable)
