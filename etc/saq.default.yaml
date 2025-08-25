@@ -124,14 +124,16 @@ minio:
 
 # global redis settings
 redis:
-  username: ace3
-  password: encrypted:redis.password
   host: redis
   port: 6379
+  username: ace3
+  password: encrypted:redis.password
 
 redis-local:
   host: redis
   port: 6379
+  username: ace3
+  password: encrypted:redis.password
 
 # global database settings
 database:

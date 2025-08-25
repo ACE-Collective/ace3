@@ -3,7 +3,7 @@ import redis
 
 from saq.analysis import Analysis
 from saq.configuration import get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_REDIS_HOST, CONFIG_REDIS_LOCAL, CONFIG_REDIS_PORT, REDIS_DB_FOR_DETECTION_A, AnalysisExecutionResult
+from saq.constants import CONFIG_REDIS_HOST, CONFIG_REDIS_LOCAL, CONFIG_REDIS_PASSWORD, CONFIG_REDIS_PORT, CONFIG_REDIS_USERNAME, REDIS_DB_FOR_DETECTION_A, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 
 KEY_FOR_DETECTION = "for_detection"

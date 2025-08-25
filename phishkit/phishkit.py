@@ -82,7 +82,7 @@ def scan_file(bucket: str, file_path: str) -> str:
     minio = Minio(
         f"{os.getenv('MINIO_HOST')}:{os.getenv('MINIO_PORT')}",
         access_key=os.getenv("MINIO_ACCESS_KEY"),
-        secret_key=os.getenv("MINIO_SECRET_KEY"),
+        secret_key=minio_password,
         secure=False,  # HTTP, not HTTPS
     )
     minio.fget_object(bucket, file_path, target_file_path)

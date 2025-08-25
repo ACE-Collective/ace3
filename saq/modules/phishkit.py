@@ -4,7 +4,7 @@ from typing import Optional, List
 
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult, DIRECTIVE_EXCLUDE_ALL
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, scan_file, scan_url
@@ -176,6 +176,12 @@ class PhishkitAnalyzer(AnalysisModule):
             else:
                 relative_path = os.path.join("phishkit", analysis.job_id, os.path.relpath(file_path, analysis.output_dir))
                 file_observable = analysis.add_file_observable(file_path, relative_path)
+                if file_observable:
+                    # do not send phishkit output to phishkit
+                    file_observable.exclude_analysis(self)
+                    file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+
+
                 # TODO follow the logic of the existing crawlphish module here
 
         return AnalysisExecutionResult.COMPLETED
@@ -189,27 +195,29 @@ class PhishkitAnalyzer(AnalysisModule):
         # if the observable is a file, we need to check if the file type is enabled for scanning
         if observable.type == F_FILE:
             # files require a render directive
-            if not observable.has_directive(DIRECTIVE_RENDER):
-                logging.debug("skipping file %s - render directive not found", observable)
-                return AnalysisExecutionResult.COMPLETED
+            #if not observable.has_directive(DIRECTIVE_RENDER):
+                #logging.debug("skipping file %s - render directive not found", observable)
+                #return AnalysisExecutionResult.COMPLETED
+
+            file_accepted = False
 
             # first check the file extension
             assert isinstance(observable, FileObservable)
             file_extension = os.path.splitext(observable.file_name)[1].lower()
-            if file_extension not in self.config['valid_file_extensions']:
-                logging.debug("skipping file %s - extension %s not enabled", observable, file_extension)
-                return AnalysisExecutionResult.COMPLETED
+            if file_extension in self.config['valid_file_extensions']:
+                logging.debug("file %s extension %s enabled for phishkit analysis", observable, file_extension)
+                file_accepted = True
 
             # then check the mime type
             from saq.modules.file_analysis import FileTypeAnalysis
             file_type_analysis = self.wait_for_analysis(observable, FileTypeAnalysis)
 
-            if not file_type_analysis:
-                logging.error("file type analysis not found for observable %s", observable)
-                return AnalysisExecutionResult.COMPLETED
+            if file_type_analysis is not None and file_type_analysis.mime_type in self.config['valid_mime_types']:
+                file_accepted = True
+                logging.debug("file %s mime type %s enabled for phishkit analysis", observable, file_type_analysis.mime_type)
 
-            if file_type_analysis.mime_type not in self.config['valid_mime_types']:
-                logging.debug("skipping file %s - mime type %s not enabled", observable, file_type_analysis.mime_type)
+            if not file_accepted:
+                logging.debug("file %s not accepted for phishkit analysis", observable)
                 return AnalysisExecutionResult.COMPLETED
 
         if observable.type == F_URL:
