@@ -13,13 +13,11 @@ import os
 import os.path
 import pwd
 import re
-from subprocess import PIPE, Popen
 from typing import Optional
 import redis
 import shutil
 import signal
 import socket
-import sqlite3
 import sys
 import time
 import traceback
@@ -40,9 +38,10 @@ from saq.database.model import Persistence, PersistenceSource, Remediation
 from saq.database.pool import get_db
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
-from saq.environment import g, g_boolean, g_int, g_obj, get_base_dir, initialize_environment
+from saq.environment import g, g_boolean, g_int, g_obj, get_base_dir
 from saq.error.reporting import report_exception
 from saq.remediation import REMEDIATION_STATUS_IN_PROGRESS, REMEDIATION_STATUS_NEW
+from saq.util.hashing import sha256_file
 from saq.util.uuid import storage_dir_from_uuid
 
 # ============================================================================
@@ -745,7 +744,7 @@ def correlate(args):
         # display the results
         root = RootAnalysis(storage_dir=root.storage_dir)
         root.load()
-        display_analysis(root)
+        display_analysis(root, include_context=True)
 
         if args.alert:
             if root.whitelisted:
@@ -843,6 +842,44 @@ correlate_parser.add_argument('--uuid', required=False, dest='uuid', default=Non
 correlate_parser.add_argument('targets', nargs="*",
     help="One or more pairs of indicator types and values.")
 correlate_parser.set_defaults(func=correlate)
+
+def submit(args) -> int:
+    from ace_api import submit
+    observables = []
+    files = []
+
+    if len(args.targets) % 2 != 0:
+        breakpoint()
+        print("Error: targets must be pairs of indicator types and values.")
+        return os.EX_USAGE
+
+    for i in range(0, len(args.targets), 2):
+        observable = { 'type': args.targets[i], 'value': args.targets[i + 1] }
+        if args.targets[i] == F_FILE:
+            files.append((os.path.basename(args.targets[i + 1]), open(args.targets[i + 1], 'rb')))
+            observable['file_path'] = os.path.basename(args.targets[i + 1])
+            observable['value'] = sha256_file(args.targets[i + 1])
+
+        observables.append(observable)
+
+    description = args.description or "ACE Manual Correlation"
+    analysis_mode = args.analysis_mode or "analysis"
+    queue = args.queue or "default"
+
+    submit(description=description, analysis_mode=analysis_mode, queue=queue, observables=observables, files=files, remote_host=args.remote_host)
+    return os.EX_OK
+
+submit_parser = get_cli_subparsers().add_parser('submit',
+    help="Submit a request to ACE for analysis and/or correlation.")
+submit_parser.add_argument('-d', '--description', help="The description (title) of the analysis.")
+submit_parser.add_argument('-m', '--mode', '--analysis_mode', dest='analysis_mode',
+    help='The mode of analysis. Default to "analysis". Set it to "correlation" to automatically become an alert.')
+submit_parser.add_argument('--queue', dest='queue',
+    help="The queue to assign the alert to (if it becomes an alert.) Defaults to the default queue.")
+submit_parser.add_argument("--remote-host", default="ace-http", help="The remote host to submit the analysis to.")
+submit_parser.add_argument('targets', nargs="*",
+    help="One or more pairs of indicator types and values.")
+submit_parser.set_defaults(func=submit)
 
 # ============================================================================
 # Remediation Utilities
@@ -1017,7 +1054,6 @@ start_api_parser.set_defaults(func=start_api)
 
 def add_user(args):
     from app.models import User
-    from saq.database import get_db_connection
     from saq.database.util.user_management import add_user
     from getpass import getpass
 
@@ -1408,11 +1444,9 @@ rebuild_index_parser.set_defaults(func=rebuild_index)
 
 def import_alerts(args):
     """Imports one or more alerts from the given directories."""
-    import saq
     from saq.constants import ANALYSIS_MODE_CORRELATION
-    from saq.database import Alert
     from saq import RootAnalysis
-    from saq.environment import get_base_dir, get_data_dir, g
+    from saq.environment import g
     from saq.database.util.alert import ALERT, get_alert_by_uuid
 
     for _dir in args.dirs:
@@ -1726,13 +1760,15 @@ def display_alert(args):
         traceback.print_exc()
         sys.exit(1)
 
-    display_analysis(alert)
+    display_analysis(alert, include_context=args.context)
     sys.exit(0)
 
 display_alert_parser = get_cli_subparsers().add_parser('display-alert',
     help="Displays the results of the analysis for a given alert.")
 display_alert_parser.add_argument('dir', 
     help="The directory of the alert to display")
+display_alert_parser.add_argument('-c', '--context', action='store_true', default=False,
+    help="Include LLM context records in the output")
 display_alert_parser.set_defaults(func=display_alert)
 
 display_alert_parser = alert_sp.add_parser('display',
@@ -3111,6 +3147,7 @@ git_list_parser.set_defaults(func=list_git_repos)
 from saq.permissions.cli import permissions_parser # noqa: F401
 from saq.phishkit import phishkit_parser # noqa: F401
 from saq.storage.cli import storage_parser # noqa: F401
+from saq.llm.cli import llm_parser # noqa: F401
 
 if __name__ == '__main__':
     main()

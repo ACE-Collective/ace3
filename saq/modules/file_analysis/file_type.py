@@ -1,6 +1,7 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
@@ -17,6 +18,11 @@ class FileTypeAnalysis(Analysis):
             'type': None, 
             'mime': None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "File Type Analysis"
 
     @property
     def file_type(self):
@@ -159,42 +165,39 @@ class FileTypeAnalysis(Analysis):
         return self.details['is_email_file']
 
     def generate_summary(self):
-        result = "File Type Analysis: ({0}) ({1})".format(
+        result = "File Type Analysis: {0} ({1})".format(
             self.details['type'] if self.details['type'] else '',
             self.details['mime'] if self.details['mime'] else '')
 
         if self.is_email_file:
-            result += " (is_email)"
+            result += " (email)"
 
-        if self.is_office_ext:
-            result += " (is_office_ext)"
+        if self.is_office_ext or self.is_office_document:
+            result += " (ms office document)"
 
         if self.is_ole_file:
-            result += " (is_ole_file)"
+            result += " (ole compound file)"
 
         if self.is_rtf_file:
-            result += " (is_rtf_file)"
+            result += " (rtf document)"
 
         if self.is_pdf_file:
-            result += " (is_pdf)"
+            result += " (pdf document)"
 
         if self.is_pe_file:
-            result += " (is_pe)"
+            result += " (portable executable)"
 
         if self.is_zip_file:
-            result += " (is_zip)"
+            result += " (zip archive)"
 
         if self.is_lnk_file:
-            result += " (is_lnk)"
+            result += " (windows shortcut)"
 
         if self.is_x509:
-            result += " (is_x509)"
+            result += " (x.509 certificate)"
 
         if self.is_jar_file:
-            result += " (is_jar)"
-
-        if self.is_office_document:
-            result += " (is_office_document)"
+            result += " (java archive)"
 
         return result
 
@@ -245,7 +248,9 @@ class FileTypeAnalyzer(AnalysisModule):
         analysis.details['is_x509'] = is_x509(local_file_path)
         analysis.details['is_lnk_file'] = is_lnk_file(local_file_path)
         analysis.details['is_jar_file'] = analysis.is_zip_file and is_jar_file(local_file_path)
+
         analysis.details['is_email_file'] = is_email_file(local_file_path)
+        analysis.details['is_email_file'] |= analysis.details['mime'] == 'message/rfc822'
 
         is_office_document = analysis.details['is_office_ext']
         is_office_document |= 'microsoft powerpoint' in analysis.file_type.lower()
@@ -281,10 +286,11 @@ class FileTypeAnalyzer(AnalysisModule):
 
         if analysis.is_x509:
             _file.add_tag('x509')
-            if analysis.details['type'] == 'data':
-                analysis.details['type'] = 'DER certificate'
 
         if analysis.is_jar_file:
             _file.add_tag('jar')
+
+        if analysis.is_email_file:
+            _file.add_tag('email')
 
         return AnalysisExecutionResult.COMPLETED

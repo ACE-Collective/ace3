@@ -1,38 +1,42 @@
 import logging
 import os.path
+from typing import override
 
 from saq.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, DIRECTIVE_ORIGINAL_EMAIL, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
 from saq.mime_extractor import parse_mime, parse_active_mime
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
+
+KEY_EXTRACTED_FILES = "extracted_files"
 
 class HiddenMIMEAnalysis(Analysis):
-    KEY_EXTRACTED_FILES = "extracted_files"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = { 
-            HiddenMIMEAnalysis.KEY_EXTRACTED_FILES: []
+            KEY_EXTRACTED_FILES: []
         }
 
+    @override
     @property
-    def extracted_files(self):
-        return self.details[HiddenMIMEAnalysis.KEY_EXTRACTED_FILES]
+    def display_name(self) -> str:
+        return "Hidden MIME Analysis"
+
+    @property
+    def extracted_files(self) -> list[str]:
+        return self.details[KEY_EXTRACTED_FILES]
 
     @extracted_files.setter
-    def extracted_files(self, value):
-        self.details[HiddenMIMEAnalysis.KEY_EXTRACTED_FILES] = value
+    def extracted_files(self, value: list[str]):
+        self.details[KEY_EXTRACTED_FILES] = value
 
     def generate_summary(self) -> str:
-        if not self.details:
-            return None
-
         if not self.extracted_files:
             return None
 
-        return f"Hidden MIME Analysis: extracted {len(self.extracted_files)} files"
+        return f"{self.display_name}: extracted {format_item_list_for_summary(self.extracted_files)}"
 
 class HiddenMIMEAnalyzer(AnalysisModule):
 
@@ -69,6 +73,9 @@ class HiddenMIMEAnalyzer(AnalysisModule):
         if file_type_analysis is not None and file_type_analysis.mime_type == "message/rfc822":
             return AnalysisExecutionResult.COMPLETED
 
+        if file_type_analysis is not None and file_type_analysis.is_email_file:
+            return AnalysisExecutionResult.COMPLETED
+
         target_dir = f"{local_file_path}.mime"
         extracted_files = parse_mime(local_file_path, target_dir)
         if not extracted_files:
@@ -83,31 +90,34 @@ class HiddenMIMEAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+KEY_EXTRACTED_FILE = "extracted_file"
+
 class ActiveMimeAnalysis(Analysis):
-    KEY_EXTRACTED_FILE = "extracted_file"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = { 
-            ActiveMimeAnalysis.KEY_EXTRACTED_FILE: []
+            KEY_EXTRACTED_FILE: []
         }
 
+    @override
     @property
-    def extracted_file(self):
-        return self.details[ActiveMimeAnalysis.KEY_EXTRACTED_FILE]
+    def display_name(self) -> str:
+        return "Active MIME Analysis"
+
+    @property
+    def extracted_file(self) -> list[str]:
+        return self.details[KEY_EXTRACTED_FILE]
 
     @extracted_file.setter
-    def extracted_file(self, value):
-        self.details[ActiveMimeAnalysis.KEY_EXTRACTED_FILE] = value
+    def extracted_file(self, value: list[str]):
+        self.details[KEY_EXTRACTED_FILE] = value
 
     def generate_summary(self) -> str:
-        if not self.details:
-            return None
-
         if not self.extracted_file:
             return None
 
-        return f"ActiveMime Analysis: extracted ActiveMime document"
+        return f"{self.display_name}: extracted {self.extracted_file}"
 
 class ActiveMimeAnalyzer(AnalysisModule):
 
@@ -133,6 +143,8 @@ class ActiveMimeAnalyzer(AnalysisModule):
         target_path = f"{local_file_path}.activemime"
         if parse_active_mime(local_file_path, target_path):
             analysis = self.create_analysis(_file)
+            assert isinstance(analysis, ActiveMimeAnalysis)
+
             analysis.extracted_file = target_path
             file_observable = analysis.add_file_observable(target_path)
             if file_observable:

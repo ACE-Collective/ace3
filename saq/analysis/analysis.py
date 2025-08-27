@@ -151,6 +151,10 @@ class Analysis(EventSource):
         # and need to be saved
         self.details_modified = False
 
+        # a list of documents that will be used to generate LLM context
+        # each document becomes a vector embedding
+        self.llm_context_documents: list[str] = []
+
     # injection methods
     # ------------------------------------------------------------------------
 
@@ -506,6 +510,13 @@ class Analysis(EventSource):
             logging.error("unable to add file observable %s: %s", path, e)
             raise e
 
+    # LLM context management
+    # ------------------------------------------------------------------------
+
+    def add_llm_context_document(self, document: str):
+        """Add a document to this analysis."""
+        self.llm_context_documents.append(document)
+
     # observable management (private interface)
     # ------------------------------------------------------------------------
 
@@ -550,6 +561,12 @@ class Analysis(EventSource):
 
     ##########################################################################
     # OVERRIDABLES 
+
+    @property
+    def display_name(self) -> str:
+        """By default this returns the name of the Analysis class.
+        You can override this to return a more human readable name."""
+        return type(self).__name__
 
     def generate_summary(self) -> Optional[str]:
         """Returns a human readable summary of the analysis.  Returns None if the analysis is not to be displayed in the GUI."""

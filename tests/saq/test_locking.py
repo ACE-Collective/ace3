@@ -23,7 +23,6 @@ def test_lock():
 @pytest.mark.integration
 def test_lock_timeout(monkeypatch):
     monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
-    #set_g(G_LOCK_TIMEOUT_SECONDS, 0)
     first_lock_uuid = str(uuid.uuid4())
     second_lock_uuid = str(uuid.uuid4())
     target_lock = str(uuid.uuid4())
@@ -34,7 +33,6 @@ def test_lock_timeout(monkeypatch):
 def test_clear_expired_locks(monkeypatch):
     monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
     # insert a lock that is already expired
-    #set_g(G_LOCK_TIMEOUT_SECONDS, 0)
     target = str(uuid.uuid4())
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(target, lock_uuid)

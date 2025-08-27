@@ -1,17 +1,20 @@
 import logging
 import os
 from subprocess import PIPE, Popen, TimeoutExpired
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_pdf_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
 
 class PDFAnalysis(Analysis):
-    pass # nothing generated
+    @override
+    @property
+    def display_name(self) -> str:
+        return "PDF Analysis"
 
 class PDFAnalyzer(AnalysisModule):
     """What is the raw PDF data after removing stream filters?"""
@@ -72,7 +75,7 @@ class PDFAnalyzer(AnalysisModule):
             '-f', '-w', '-v', '-c', '--debug', local_file_path], stdout=fp, stderr=PIPE)
             try:
                 _, stderr = p.communicate(timeout=10)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.warning("pdfparser timed out on {}".format(local_file_path))
                 p.kill()
                 _, stderr = p.communicate()
@@ -103,7 +106,7 @@ class PDFAnalyzer(AnalysisModule):
 
         try:
             _, stderr = p.communicate(timeout=10)
-        except TimeoutExpired as e:
+        except TimeoutExpired:
             logging.warning("pdfparser timed out on {}".format(local_file_path))
             p.kill()
             _, stderr = p.communicate()
@@ -136,6 +139,11 @@ class PDFTextAnalysis(Analysis):
             KEY_OUTPUT_PATH: None,
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "PDF Text Analysis"
+
     @property
     def stdout(self):
         return self.details[KEY_STDOUT]
@@ -164,7 +172,7 @@ class PDFTextAnalysis(Analysis):
         if not self.output_path:
             return None
         
-        return "PDF Text Analysis"
+        return self.display_name
     
 class PDFTextAnalyzer(AnalysisModule):
 
@@ -205,7 +213,11 @@ class PDFTextAnalyzer(AnalysisModule):
 
         analysis = self.create_analysis(_file)
 
-        output_path = '{}.pdf_txt'.format(local_file_path)
+        if local_file_path.lower().endswith('.pdf'):
+            output_path = '{}.txt'.format(local_file_path)
+        else:
+            output_path = '{}.pdf.txt'.format(local_file_path)
+
         p = Popen([self.pdftotext_path, local_file_path, output_path], stdout=PIPE, stderr=PIPE)
         try:
             analysis.stdout, analysis.stderr = p.communicate(timeout=self.timeout)

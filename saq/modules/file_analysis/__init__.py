@@ -8,6 +8,7 @@ from saq.modules.file_analysis.exif import ExifAnalysis, ExifAnalyzer
 from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.hash import FileHashAnalysis, FileHashAnalyzer
 from saq.modules.file_analysis.html import MetaRefreshExtractionAnalysis, MetaRefreshExtractionAnalyzer, MHTMLAnalysis, MHTMLAnalysisModule, HTMLDataURLAnalysis, HTMLDataURLAnalyzer
+from saq.modules.file_analysis.java import JavaClassDecompilerAnalysis, JavaClassDecompilerAnalysisModule
 from saq.modules.file_analysis.js import SynchronyFileAnalysis, SynchronyFileAnalyzer
 from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer
 from saq.modules.file_analysis.mime import ActiveMimeAnalysis, ActiveMimeAnalyzer, HiddenMIMEAnalysis, HiddenMIMEAnalyzer

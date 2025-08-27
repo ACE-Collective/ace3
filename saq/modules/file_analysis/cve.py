@@ -2,15 +2,18 @@ import logging
 import os
 import re
 import shutil
-from subprocess import PIPE, Popen, TimeoutExpired
+from subprocess import PIPE, Popen
 import tempfile
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, G_TEMP_DIR, AnalysisExecutionResult
 from saq.environment import g
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
+
+KEY_SUSPECT_FILES = "suspect_files"
 
 class CVE_2021_30657_Analysis(Analysis):
     """Does this DMG file have a script for a file in /Contents/MacOS/"""
@@ -18,21 +21,27 @@ class CVE_2021_30657_Analysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "suspect_files": {} # key = file_path, value = mime_type
+            KEY_SUSPECT_FILES: {} # key = file_path, value = mime_type
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "CVE-2021-30657 Analysis"
+
+    @property
+    def suspect_files(self) -> dict[str, str]:
+        return self.details[KEY_SUSPECT_FILES]  
+
+    @suspect_files.setter
+    def suspect_files(self, value: dict[str, str]):
+        self.details[KEY_SUSPECT_FILES] = value
+
     def generate_summary(self) -> str:
-        if not self.details:
+        if not self.suspect_files:
             return None
 
-        if not self.details["suspect_files"]:
-            return None
-
-        output = []
-        for file_path, mime_type in self.details["suspect_files"].items():
-            output.append(f"{file_path} has mime type {mime_type}")
-
-        return "CVE-2021-30657 Analysis: " + " | ".join(output)
+        return f"{self.display_name}: {format_item_list_for_summary(list(self.suspect_files.keys()))}"
 
 
 class CVE_2021_30657_Analyzer(AnalysisModule):
@@ -76,7 +85,7 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
         try:
             # "2021-04-06 23:33:06 .....        59039        61440  Installer/yWnBJLaF/1302.app/Contents/MacOS/1302"
             for line in dmg_analysis.details["file_list"]:
-                if not "/Contents/MacOS/" in line:
+                if "/Contents/MacOS/" not in line:
                     continue
 
                 # parse out the file name
@@ -109,11 +118,11 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
 
                     target_path = os.path.join(target_dir, os.path.basename(target_file))
                     shutil.copy(target_file, target_path)
-                    file_observable = analysis.add_observable_by_spec(F_FILE, os.path.relpath(target_path, start=self.get_root().storage_dir))
+                    file_observable = analysis.add_file_observable(target_path)
                     if file_observable:
                         file_observable.add_detection_point(f"Possible CVE-2021-30657 attack: a file in DMG format file {_file} is a script")
                         file_observable.add_tag("CVE-2021-30657")
-                        analysis.details["suspect_files"][file_path] = stdout.strip()
+                        analysis.suspect_files[file_observable.file_path] = stdout.strip()
 
         finally:
             try:

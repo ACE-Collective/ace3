@@ -16,6 +16,7 @@ def _reset_filters():
         { "name": "Owner", "inverted": False, "values": [ "None", current_user.display_name ] },
         { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
     ]
+    session["search"] = None
 
 def _reset_filters_special(hours: int):
     start = (local_time() - timedelta(hours=hours)).strftime("%m-%d-%Y %H:%M")
@@ -24,6 +25,7 @@ def _reset_filters_special(hours: int):
         { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
         { "name": "Alert Date", "inverted": False, "values": [ f"{start} - {end}" ] },
     ]
+    session["search"] = None
 
 def reset_checked_alerts():
     session['checked'] = []

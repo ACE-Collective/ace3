@@ -51,10 +51,15 @@ def add_comment():
 
     get_db().commit()
 
+    from saq.llm.embedding.service import submit_embedding_task
+    for uuid in uuids:
+        submit_embedding_task(uuid)
+
     flash("added comment to {0} item{1}".format(len(uuids), "s" if len(uuids) != 1 else ''))
 
     if redirect_to == "analysis.manage":
         session['checked'] = uuids
+
     return redirection
 
 @analysis.route('/delete_comment', methods=['POST'])
@@ -77,7 +82,12 @@ def delete_comment():
 
     logging.info("AUDIT: user %s deleted comment %s", current_user, comment.comment)
 
+    alert_uuid = comment.uuid
+
     get_db().delete(comment)
     get_db().commit()
+
+    from saq.llm.embedding.service import submit_embedding_task
+    submit_embedding_task(alert_uuid)
 
     return redirect(url_for('analysis.index', direct=request.form['direct']))

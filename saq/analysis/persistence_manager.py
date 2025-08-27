@@ -1,11 +1,7 @@
-from datetime import datetime
-import hashlib
 import json
 import logging
 import os
-from pathlib import Path
-import shutil
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING
 import uuid
 
 from saq.error.reporting import report_exception
@@ -124,7 +120,7 @@ class AnalysisDetailsPersistenceManager:
 
         json_file_size = os.path.getsize(full_file_path)
         if json_file_size == 0:
-            logging.debug(f"analysis details %s has no content", full_file_path)
+            logging.debug("analysis details %s has no content", full_file_path)
             return False
 
         if analysis.details_size is not None and analysis.details_size != json_file_size:

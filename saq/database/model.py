@@ -14,7 +14,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable, get_observable_type_expiration_time
 from saq.analysis.tag import Tag as _Tag
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, EVENT_GLOBAL_OBSERVABLE_ADDED, EVENT_GLOBAL_TAG_ADDED, F_FILE, F_FQDN, F_URL, G_LOCK_TIMEOUT_SECONDS, QUEUE_DEFAULT
+from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN, F_URL, G_LOCK_TIMEOUT_SECONDS, QUEUE_DEFAULT
 from saq.crypto import decrypt_chunk
 from saq.database.meta import Base
 
@@ -609,6 +609,8 @@ class Alert(Base):
         assert self.storage_dir is not None # requires a valid storage_dir at this point
         assert isinstance(self.storage_dir, str)
 
+        from saq.llm.embedding.service import submit_embedding_task
+
         if self.root_analysis:
             self.root_analysis.save()
 
@@ -637,12 +639,17 @@ class Alert(Base):
         session.commit()
         if build_index:
             self.build_index()
+            submit_embedding_task(self.uuid)
+
 
         #self.root_analysis.save() # save this alert now that it has the id
 
         # we want to unlock it here since the corelation is going to want to pick it up as soon as it gets added
         #if self.is_locked():
             #self.unlock()
+
+        # update the embedding vectors for this alert
+        #vectorize(self)
 
         return True
 
@@ -1928,7 +1935,7 @@ class User(UserMixin, Base):
         try:
             decrypted = decrypt_chunk(self.apikey_encrypted)
             return decrypted.decode()
-        except Exception as e:
+        except Exception:
             logging.error("unable to decrypt api key: {e}")
 
         return None

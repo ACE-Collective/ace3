@@ -6,6 +6,7 @@ from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_javascript_file
 from saq.observables.file import FileObservable
+from saq.util.strings import format_item_list_for_summary
 
 
 class SynchronyFileAnalysis(Analysis):
@@ -74,7 +75,7 @@ class SynchronyFileAnalysis(Analysis):
         if not self.extracted_files:
             return None
 
-        return f"Synchrony JS Deobfuscator: extracted {len(self.extracted_files)} files"
+        return "Synchrony JS Deobfuscator: extracted files " + format_item_list_for_summary(self.extracted_files)
 
 class SynchronyFileAnalyzer(AnalysisModule):
 

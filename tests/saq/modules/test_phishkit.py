@@ -25,7 +25,7 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_phishkit_analysis_init():
     """Test PhishkitAnalysis initialization."""
     analysis = PhishkitAnalysis()
@@ -40,7 +40,7 @@ def test_phishkit_analysis_init():
     assert analysis.details[FIELD_ERROR] is None
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_phishkit_analysis_properties():
     """Test PhishkitAnalysis property getters and setters."""
     analysis = PhishkitAnalysis()
@@ -82,29 +82,29 @@ def test_phishkit_analysis_properties():
     assert analysis.error == "test error"
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_phishkit_analysis_generate_summary():
     """Test PhishkitAnalysis summary generation."""
     analysis = PhishkitAnalysis()
     
     # Test error state
     analysis.error = "Something went wrong"
-    assert analysis.generate_summary() == "Phishkit Analysis Failed: Something went wrong"
+    assert analysis.generate_summary() == "Phishkit Analysis: failed: Something went wrong"
     
     # Test URL scan
     analysis.error = None
     analysis.scan_type = SCAN_TYPE_URL
     analysis.output_files = ["/tmp/file1.txt", "/tmp/file2.txt"]
-    assert analysis.generate_summary() == "Phishkit URL Analysis: 2 output files generated"
+    assert analysis.generate_summary() == "Phishkit Analysis: output files created (/tmp/file1.txt, /tmp/file2.txt)"
     
     # Test file scan
     analysis.scan_type = SCAN_TYPE_FILE
     analysis.output_files = ["/tmp/file1.txt"]
-    assert analysis.generate_summary() == "Phishkit File Analysis: 1 output files generated"
+    assert analysis.generate_summary() == "Phishkit Analysis: output files created (/tmp/file1.txt)"
     
     # Test unknown scan type
     analysis.scan_type = "unknown"
-    assert analysis.generate_summary() == "Phishkit Analysis Completed"
+    assert analysis.generate_summary() == "Phishkit Analysis: completed"
 
 
 @pytest.mark.integration
@@ -591,7 +591,9 @@ def test_phishkit_analyzer_complete_analysis_success(monkeypatch, test_context):
         result = analyzer.complete_analysis(url_observable, analysis)
         
         assert result == AnalysisExecutionResult.COMPLETED
-        assert analysis.output_files == output_files
+        # Only non-special files are added to output_files, and they're stored as relative paths
+        assert len(analysis.output_files) == 1  # Only result.json should be in output_files
+        assert analysis.output_files[0].startswith("phishkit/") and analysis.output_files[0].endswith("/result.json")
         assert analysis.scan_result == f"successfully scanned {url_observable}"
         assert analysis.error is None
         assert analysis.exit_code == 0

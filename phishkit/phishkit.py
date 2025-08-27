@@ -33,7 +33,12 @@ if os.path.exists("/auth/passwords/minio"):
 else:
     minio_password = ""
 
-app = Celery("phishkit", backend=f"redis://ace3:{redis_password}@redis:6379/7", broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//")
+app = Celery(
+    "phishkit",
+    backend=f"redis://ace3:{redis_password}@redis:6379/7",
+    broker=f"pyamqp://ace3:{rabbitmq_password}@rabbitmq//")
+
+app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
 
 @app.task
 def ping() -> str:

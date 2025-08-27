@@ -133,13 +133,13 @@ def test_autoit_decompilation(caplog, datadir, monkeypatch, test_context):
 
     # Execute the analysis
     analyzer = AnalysisModuleAdapter(AutoItAnalyzer(context=create_test_context(root=root)))
-    analysis = analyzer.execute_analysis(observable)
+    result = analyzer.execute_analysis(observable)
 
-    assert analysis == AnalysisExecutionResult.COMPLETED
-    assert 'AutoIt decompiled 1 scripts' in caplog.text
-
-
-
+    assert result == AnalysisExecutionResult.COMPLETED
+    from saq.modules.file_analysis.autoit import AutoItAnalysis
+    analysis = observable.get_and_load_analysis(AutoItAnalysis)
+    assert isinstance(analysis, AutoItAnalysis)
+    assert analysis.scripts == ['script_1.au3']
 
 @pytest.mark.integration
 def test_lnk_parser(caplog, datadir, monkeypatch, test_context):
@@ -151,13 +151,15 @@ def test_lnk_parser(caplog, datadir, monkeypatch, test_context):
 
     # Execute the analysis
     analyzer = AnalysisModuleAdapter(LnkParseAnalyzer(context=create_test_context(root=root)))
-    analysis = analyzer.execute_analysis(observable)
+    result = analyzer.execute_analysis(observable)
 
-    assert analysis == AnalysisExecutionResult.COMPLETED
-    assert 'Parsed 1 lnk file' in caplog.text
-   
+    assert result == AnalysisExecutionResult.COMPLETED
+    from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis
+    analysis = observable.get_and_load_analysis(LnkParseAnalysis)
+    assert isinstance(analysis, LnkParseAnalysis)
+    assert analysis.icon_location == 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    assert analysis.working_directory == 'C:\\Program Files\\Google\\Chrome\\Application'
 
-    
 class MockYaraAnalysis(object):
     def __init__(self, rule):
         self.rule = rule
@@ -197,7 +199,7 @@ def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
     analysis_result = analyzer.execute_analysis(observable)
 
     assert analysis_result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(De4dotAnalysis)
+    analysis = observable.get_analysis(De4dotAnalysis)
     assert analysis.deobfuscated
     
     # there should be a single file observable
@@ -207,6 +209,7 @@ def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
     assert analysis.observables[0].file_path == 'malicious.exe.deobfuscated/dotnet_deobfuscated_malicious.exe'
     assert analysis.observables[0].redirection == observable
     assert analysis.observables[0].has_relationship(R_EXTRACTED_FROM)
+    assert analysis.extracted_files == [analysis.observables[0].file_path]
 
 @pytest.mark.integration
 def test_zipped_jar(datadir, monkeypatch, test_context):
@@ -233,7 +236,7 @@ def test_zipped_jar(datadir, monkeypatch, test_context):
         raise StopAnalysisException()
     
     import saq.modules.file_analysis.archive
-    monkeypatch.setattr(saq.modules.file_analysis.archive, "popen_wrapper", popen)
+    monkeypatch.setattr(saq.modules.file_analysis.archive, "Popen", popen)
 
     # run the module
     get_config()['analysis_module_config'] = {
@@ -397,11 +400,7 @@ def test_ocr_analyzer(datadir, monkeypatch, test_filename, expected_strings, exp
     def mock_analysis_module(*args, **kwargs):
         return MockAnalysisModule(test_filename)
 
-    def mock_get_local_file_path(*args, **kwargs):
-        return os.path.join(root.storage_dir, analysis.observables[0].value)
-    
     monkeypatch.setattr("saq.modules.AnalysisModule.wait_for_analysis", mock_analysis_module)
-    monkeypatch.setattr("saq.modules.file_analysis.url_extraction.get_local_file_path", mock_get_local_file_path)
     monkeypatch.setattr("os.path.exists", lambda x: 1 == 1)  # return true that path exists
     monkeypatch.setattr("os.path.getsize", lambda x: 1)  # arbitrary filesize
 
@@ -416,38 +415,6 @@ def test_ocr_analyzer(datadir, monkeypatch, test_filename, expected_strings, exp
 
     url_observable_values = [o.value for o in analysis.observables]
     assert all(expected_url in url_observable_values for expected_url in expected_urls)
-
-@pytest.mark.unit
-def test_decompile_java_class_file(tmp_path, datadir):
-    from saq.modules.file_analysis.archive import decompile_java_class_file
-    class_file = str(datadir / 'jar/VxUGJsAplRNavewkjKujp.class')
-    assert os.path.exists(class_file)
-
-    output_directory = tmp_path / 'output'
-    output_directory.mkdir()
-    output_directory = str(output_directory)
-    decompile_java_class_file(class_file, output_directory)
-    java_file = os.path.join(output_directory, 'VxUGJsAplRNavewkjKujp.class-0-decompiled.java')
-    assert os.path.getsize(java_file) > 0
-
-    with open(java_file) as fp:
-        java_code = fp.read()
-        assert 'HBrowserNativeApis.PygDMDiPgHIHFKYIMuHMd' in java_code
-
-    # if we do it a second time we'll get a different file name
-    decompile_java_class_file(class_file, output_directory)
-    java_file = os.path.join(output_directory, 'VxUGJsAplRNavewkjKujp.class-1-decompiled.java')
-    assert os.path.exists(java_file)
-
-    # if we pass a missing file we get None back
-    assert decompile_java_class_file('does_not_exist.java', output_directory) is None
-
-    # if we pass something that is not a java class file we get None back
-    not_class_file = tmp_path / 'not_a_class_file.class'
-    not_class_file.write_text("This is not a class file.")
-    not_class_file = str(not_class_file)
-
-    assert decompile_java_class_file(not_class_file, output_directory) is None
 
 @pytest.mark.unit
 def test_html_data_url_extraction(datadir, test_context):

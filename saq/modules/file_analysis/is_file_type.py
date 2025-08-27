@@ -185,6 +185,18 @@ def is_jar_file(path):
 
     return False
 
+def is_java_class_file(path):
+    """Returns True if the given file path is a Java class file."""
+    try:
+        with open(path, "rb") as fp:
+            if fp.read(4) == b'\xCA\xFE\xBA\xBE':
+                return True
+    except Exception as e:
+        logging.debug(f"is_java_class_file failed for {path}: {e}")
+        return False
+
+    return False
+
 def is_empty_macro(path):
     """Returns True if the given macro file only has empty lines and/or Attribute settings."""
     with open(path, 'rb') as fp:
@@ -224,7 +236,11 @@ def is_x509(path):
         data_bytes = f.read(8192)
 
     # Check to see if file is PEM or DER formatted/encoded based on first so many bytes.
-    if not is_pem_bytes(data_bytes) and not is_der_bytes(data_bytes):
+    try:
+        if not is_pem_bytes(data_bytes) and not is_der_bytes(data_bytes):
+            return False
+    except Exception as e:
+        logging.debug(f"is_x509 failed for {path}: {e}")
         return False
 
     # We already determined the file contained evidence it is PEM/DER formatted or encoded,
@@ -329,11 +345,9 @@ def is_chm_file(path) -> bool:
 RE_EMAIL_HEADER = re.compile(r"^([A-Za-z0-9\-]+):\s?.*$")
 RE_EMAIL_HEADER_INDENTED = re.compile(r"^\s+\S+")
 COMMON_EMAIL_HEADERS = [
-    "From:",
-    "To:",
-    "Subject:",
-    "Date:",
-    "Message-ID:",
+    "from",
+    "subject",
+    "message-id",
 ]
 def is_email_file(path) -> bool:
     """Returns True if the given file looks like it might be an email file."""
@@ -352,7 +366,7 @@ def is_email_file(path) -> bool:
                 # if we got this far and hit an empty line we assume it's an email file
                 # as it would be end of the headers
                 if line.strip() == "":
-                    return True
+                    return False
 
                 # otherwise we're checking for email headers
                 m = RE_EMAIL_HEADER.match(line)
@@ -361,8 +375,8 @@ def is_email_file(path) -> bool:
                 
                 # grab the header we found
                 header = m.group(1)
-                if header in COMMON_EMAIL_HEADERS:
-                    common_headers_found.add(header)
+                if header.lower() in COMMON_EMAIL_HEADERS:
+                    common_headers_found.add(header.lower())
 
                 # if we've found all the common headers, we can return True
                 if len(common_headers_found) == len(COMMON_EMAIL_HEADERS):

@@ -1,3 +1,4 @@
+import copy
 import os
 import sys
 import logging
@@ -139,6 +140,14 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def copy(self) -> "YAMLConfig":
+        """Return a deep copy of this YAMLConfig object."""
+        new_config = YAMLConfig()
+        new_config._data = copy.deepcopy(self._data)
+        new_config.encrypted_password_cache = copy.deepcopy(self.encrypted_password_cache)
+        new_config.loaded_files = copy.deepcopy(self.loaded_files)
+        return new_config
 
     def sections(self) -> list[str]:
         return list(self._data.keys())

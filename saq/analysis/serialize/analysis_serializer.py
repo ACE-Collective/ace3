@@ -15,6 +15,7 @@ KEY_COMPLETED = 'completed'
 KEY_DELAYED = 'delayed'
 KEY_EXTERNAL_DETAILS_PATH = 'file_path'
 KEY_DETAILS_SIZE = 'details_size'
+KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
 
 
 class AnalysisSerializer:
@@ -42,6 +43,7 @@ class AnalysisSerializer:
             KEY_PIVOT_LINKS: [link.to_dict() for link in analysis.pivot_links],
             KEY_EXTERNAL_DETAILS_PATH: analysis.external_details_path,
             KEY_DETAILS_SIZE: analysis.details_size,
+            KEY_LLM_CONTEXT_DOCUMENTS: analysis.llm_context_documents,
         })
         
         return result
@@ -97,3 +99,7 @@ class AnalysisSerializer:
         # Set details size
         if KEY_DETAILS_SIZE in data:
             analysis.details_size = data[KEY_DETAILS_SIZE]
+
+        # Set LLM context documents
+        if KEY_LLM_CONTEXT_DOCUMENTS in data:
+            analysis.llm_context_documents = data[KEY_LLM_CONTEXT_DOCUMENTS]

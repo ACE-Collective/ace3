@@ -1,6 +1,7 @@
 from fnmatch import fnmatch
 import logging
 import os
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, F_MD5, F_SHA256, R_IS_HASH_OF
 from saq.modules import AnalysisModule
@@ -17,6 +18,11 @@ class FileHashAnalysis(Analysis):
             'md5': None,
             'sha1': None,
             'sha256': None, }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "File Hash Analysis"
 
     @property
     def md5(self):
@@ -52,8 +58,6 @@ class FileHashAnalysis(Analysis):
         self.details['sha256'] = value
 
     def generate_summary(self):
-        if self.sha256 is not None:
-            return "File Hash Analysis {0}".format(self.sha256)
         return None
 
 class FileHashAnalyzer(AnalysisModule):

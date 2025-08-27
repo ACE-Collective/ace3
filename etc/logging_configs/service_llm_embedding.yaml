@@ -1,0 +1,28 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  base:
+    format: '[%(asctime)s] [%(name)s] [%(pathname)s:%(funcName)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s'
+
+handlers:
+  file:
+    class: saq.logging.CustomFileHandler
+    level: INFO
+    formatter: base
+    log_dir: data/logs
+    filename_format: 'llm_embedding_%Y-%m-%d.log'
+  error:
+    class: logging.FileHandler
+    level: ERROR
+    formatter: base
+    filename: data/logs/llm_embedding_error.log
+
+root:
+  level: INFO
+  handlers: [file, error]
+
+
+
+
+

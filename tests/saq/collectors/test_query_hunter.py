@@ -237,6 +237,9 @@ def test_reload_hunts_on_search_modified(rules_dir, manager_kwargs):
     with open(os.path.join(rules_dir, 'test_1.query'), 'a') as fp:
         fp.write('\n\n; modified')
 
+    test_query_path = os.path.join(rules_dir, 'test_1.query')
+    os.utime(test_query_path, (os.path.getatime(test_query_path), (datetime.now() - timedelta(seconds=5)).timestamp()))
+
     manager.check_hunts()
     assert log_count('detected modification to') == 1
     assert manager.reload_hunts_flag

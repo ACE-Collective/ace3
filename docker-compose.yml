@@ -13,6 +13,7 @@ x-common-volumes: &common-volumes
   - ace-hunt:/opt/ace/hunts
   - ace-ssl:/opt/ace/ssl
   - ace-auth:/auth
+  - ace-user-home:/home/ace
 
 services:
   # ensures file permissions on named volumes are correct
@@ -257,6 +258,23 @@ services:
     networks: 
       - ace
 
+  embedding-service:
+    environment: *common-env
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace:
+        condition: service_started
+      redis:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start_embedding_service.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
+
   dev:
     environment: 
       <<: *common-env
@@ -305,6 +323,8 @@ services:
       network-semaphore:
         condition: service_started
       phishkit:
+        condition: service_started
+      qdrant:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start_engine.sh"
     restart: always
@@ -418,6 +438,16 @@ services:
     networks:
       - ace
 
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ace-qdrant:/qdrant/storage
+    networks:
+      - ace
+
+
 volumes:
   ace-data:
     name: ace-data
@@ -437,6 +467,10 @@ volumes:
     name: ace-phishkit
   ace-auth:
     name: ace-auth
+  ace-qdrant:
+    name: ace-qdrant
+  ace-user-home:
+    name: ace-user-home
 
 networks:
   ace:

@@ -1951,11 +1951,11 @@ def test_primary_node_contest_winning():
     assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
 
 @pytest.mark.integration
-def test_primary_node_clear_locks():
+def test_primary_node_clear_locks(monkeypatch):
     target = str(uuid.uuid4())
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(target, lock_uuid)
-    g_obj(G_LOCK_TIMEOUT_SECONDS).value = 0
+    monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
     # test having a node become the primary node
     # and then clearing out an expired lock
     engine = Engine()

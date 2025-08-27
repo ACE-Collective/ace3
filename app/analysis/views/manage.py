@@ -1,6 +1,8 @@
+import logging
 from flask import render_template, session
 from flask_login import current_user
 import pytz
+from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
 from app.analysis.views.session.filters import _reset_filters, create_filter, getFilters, hasFilter, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.auth.permissions import require_permission
@@ -77,6 +79,31 @@ def manage():
         # this was added on 05/02/2023 to support a DR mode of operation
         display_node_list = [_.strip() for _ in get_config()['gui'].get('display_node_list').split(',') if _.strip()]
         query = query.filter(GUIAlert.location.in_(display_node_list))
+
+    # if we have a search query then apply it
+    search_query = session.get("search", None)
+    search_result_uuids = []
+    search_result_mapping: dict[str, list[ScoredPoint]] = {}
+
+    if search_query:
+        from saq.llm.embedding.search import search
+        logging.info(f"search query: {search_query}")
+        search_results = search(search_query)
+        logging.info(f"got {len(search_results)} search results")
+        for result in search_results:
+            alert_uuid = result.payload.get("root_uuid", None)
+            logging.info(f"search result alert uuid: {alert_uuid}")
+            if alert_uuid:
+                search_result_uuids.append(alert_uuid)
+                if alert_uuid not in search_result_mapping:
+                    search_result_mapping[alert_uuid] = []
+
+                # for now we'll limit these to 5 max
+                if len(search_result_mapping[alert_uuid]) < 5:
+                    search_result_mapping[alert_uuid].append(result)
+
+    if search_result_uuids:
+        query = query.filter(GUIAlert.uuid.in_(list(set(search_result_uuids))))
 
     # get total number of alerts
     count_query = query.statement.with_only_columns(func.count(distinct(GUIAlert.id)))
@@ -156,6 +183,10 @@ def manage():
             end_of_closed_events_list = False
         closed_events = event_query_results
 
+    # if we did a vector search then we need to order by the scores
+    if search_result_uuids:
+        alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
+
     return render_template(
         'analysis/manage.html',
         # settings
@@ -165,6 +196,7 @@ def manage():
 
         # filter
         filters=getFilters(),
+        search_query=search_query,
         
         # alert data
         alerts=alerts,
@@ -182,4 +214,7 @@ def manage():
 
         # user data
         all_users=get_db().query(User).all(),
+
+        # search data
+        search_result_mapping=search_result_mapping,
     )

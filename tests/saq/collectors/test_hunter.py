@@ -288,6 +288,9 @@ def test_hunt_disabled(manager_kwargs):
     hunter.hunts[1].enabled = True
 
     assert all([not hunt.executed for hunt in hunter.hunts])
+    assert hunter.hunts[0].last_executed_time is None
+    assert hunter.hunts[1].last_executed_time is None
+    assert all([hunt.ready for hunt in hunter.hunts])
     hunter.execute()
     hunter.manager_control_event.set()
     hunter.wait_control_event.set()

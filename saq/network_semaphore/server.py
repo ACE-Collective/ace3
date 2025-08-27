@@ -95,16 +95,20 @@ class NetworkSemaphoreServer:
                 s = socket.socket()
                 s.connect((self.config.bind_address, self.config.bind_port))
                 s.close()
-            except:
-                pass # doesn't matter...
+            except Exception as e:
+                logging.debug(f"unable to force accept() call to break: {e}")
         except Exception as e:
             logging.error(f"unable to close network socket: {e}")
     
     def wait(self):
         if self.server_thread:
+            logging.debug("joining server thread...")
             self.server_thread.join()
         if self.monitor_thread:
+            logging.debug("joining monitor thread...")
             self.monitor_thread.join()
+
+        logging.debug("server stopped")
 
     def add_undefined_semaphore(self, name, count=1):
         """Adds a new undefined network semaphore with the given name and optional count.
@@ -164,7 +168,7 @@ class NetworkSemaphoreServer:
                     remote_host, remote_port = remote_address
                     logging.info(f"got connection from {remote_host}:{remote_port}")
                     if self.is_shutdown:
-                        return
+                        break
 
                     # start a thread to deal with this client
                     t = Thread(target=self.client_loop, args=(remote_host, remote_port, client_socket), name=f"Client {remote_host}")
@@ -177,6 +181,15 @@ class NetworkSemaphoreServer:
 
                 # TODO clean up socket stuff to restart
                 self.shutdown_event.wait(1)
+
+        try:
+            logging.debug("closing server socket...")
+            self.server_socket.close()
+            logging.debug("server socket closed")
+        except Exception as e:
+            logging.debug(f"unable to close server socket: {e}")
+
+        logging.debug("server loop exited")
 
     def client_loop(self, remote_host, remote_port, client_socket):
         remote_connection = f'{remote_host}:{remote_port}'

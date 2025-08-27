@@ -1,15 +1,18 @@
 import logging
 import os
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
 
 class BinaryFileAnalysis(Analysis):
-    pass
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Binary File Analysis"
 
 class BinaryFileAnalyzer(AnalysisModule):
     @property

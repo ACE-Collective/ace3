@@ -2,18 +2,62 @@ import logging
 from mmap import PROT_READ, mmap
 import os
 from subprocess import Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_office_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
-import re
 
+
+KEY_TOTAL_HEX_STRINGS = "total_hex_strings"
+KEY_LARGEST_HEX_STRING = "largest_hex_string"
+KEY_PERCENTAGE_OF_HEX_STRINGS = "percentage_of_hex_strings"
 
 class VBScriptAnalysis(Analysis):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.details = {
+            KEY_TOTAL_HEX_STRINGS: None,
+            KEY_LARGEST_HEX_STRING: None,
+            KEY_PERCENTAGE_OF_HEX_STRINGS: None,
+        }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "VBScript Analysis"
+
+    @property
+    def total_hex_strings(self):
+        return self.details[KEY_TOTAL_HEX_STRINGS]
+
+    @total_hex_strings.setter
+    def total_hex_strings(self, value):
+        self.details[KEY_TOTAL_HEX_STRINGS] = value
+
+    @property
+    def largest_hex_string(self):
+        return self.details[KEY_LARGEST_HEX_STRING]
+
+    @largest_hex_string.setter
+    def largest_hex_string(self, value):
+        self.details[KEY_LARGEST_HEX_STRING] = value
+
+    @property
+    def percentage_of_hex_strings(self):
+        return self.details[KEY_PERCENTAGE_OF_HEX_STRINGS]
+
+    @percentage_of_hex_strings.setter
+    def percentage_of_hex_strings(self, value):
+        self.details[KEY_PERCENTAGE_OF_HEX_STRINGS] = value
+
+    def generate_summary(self):
+        if not self.total_hex_strings:
+            return None
+
+        return f"{self.display_name}: {self.total_hex_strings} total hex strings, {self.largest_hex_string} largest hex string, {self.percentage_of_hex_strings}% percentage of file is hex strings"
 
 class VBScriptAnalyzer(AnalysisModule):
 
@@ -84,10 +128,11 @@ class VBScriptAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
+        assert isinstance(analysis, VBScriptAnalysis)
 
-        logging.debug("total hex strings detected: {}".format(len(hex_string_lengths)))
-        logging.debug("largest hex string: {}".format(max(hex_string_lengths)))
-        logging.debug("percentage of hex string: {0:.2f}".format((total_count / file_size) * 100.0))
+        analysis.total_hex_strings = len(hex_string_lengths)
+        analysis.largest_hex_string = max(hex_string_lengths)
+        analysis.percentage_of_hex_strings = (total_count / file_size) * 100.0
 
         distribution = {}
         for length in hex_string_lengths:
@@ -95,9 +140,6 @@ class VBScriptAnalyzer(AnalysisModule):
                 distribution[str(length)] = 1
             else:
                 distribution[str(length)] += 1
-
-        for length in distribution.keys():
-            logging.debug("{} = {}".format(length, distribution[length]))
 
         # do we have a large number of hex strings of the same length that are larger than 50?
         for length in distribution.keys():
@@ -119,26 +161,33 @@ class VBScriptAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+KEY_LINE_COUNT = "line_count"
+
 class PCodeAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "line_count": None
+            KEY_LINE_COUNT: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "PCode Analysis"
 
     @property
     def line_count(self):
-        return self.details["line_count"]
+        return self.details[KEY_LINE_COUNT]
 
     @line_count.setter
     def line_count(self, value):
-        self.details["line_count"] = value
+        self.details[KEY_LINE_COUNT] = value
 
     def generate_summary(self):
         if not self.line_count:
             return None
 
-        return "PCode Analysis: decoded {} lines".format(self.line_count)
+        return f"{self.display_name}: decoded {self.line_count} lines"
 
 class PCodeAnalyzer(AnalysisModule):
     

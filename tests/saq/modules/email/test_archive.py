@@ -100,7 +100,7 @@ def test_email_archive_results(tmpdir):
 
     assert analysis.generate_summary()
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_email_archive_action(root_analysis, tmpdir, monkeypatch):
     analyzer = EmailArchiveAction(context=create_test_context(root=root_analysis))
     assert analyzer.valid_observable_types == [ F_FILE ]

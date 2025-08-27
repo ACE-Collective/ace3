@@ -1,13 +1,16 @@
 import base64
 import logging
 import os
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path, safe_filename
+from saq.util.filesystem import safe_filename
 
 from lxml import etree
+
+from saq.util.strings import format_item_list_for_summary
 
 
 class _XMLPlainTextDumper:
@@ -43,9 +46,14 @@ class XMLPlainTextAnalysis(Analysis):
         self.details = {
             KEY_XML_PLAIN_TEXT: None,
         }
+
+    @override
+    @property
+    def display_name(self):
+        return "XML Plain Text Analysis"
  
     def generate_summary(self):
-        pass
+        return None
 
 class XMLPlainTextAnalyzer(AnalysisModule):
     @property
@@ -158,26 +166,34 @@ PART_TAG = '{http://schemas.microsoft.com/office/2006/xmlPackage}part'
 PART_NAME = '{http://schemas.microsoft.com/office/2006/xmlPackage}name'
 DATA_TAG = '{http://schemas.microsoft.com/office/2006/xmlPackage}binaryData'
 
+KEY_EXTRACTED_FILES = "extracted_files"
+
 class XMLBinaryDataAnalysis(Analysis):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "extracted_files": []
+            KEY_EXTRACTED_FILES: []
         }
+
+    @override
+    @property
+    def display_name(self):
+        return "XML Binary Data Analysis"
 
     @property
     def extracted_files(self):
-        return self.details["extracted_files"]
+        return self.details[KEY_EXTRACTED_FILES]
 
     @extracted_files.setter
     def extracted_files(self, value):
-        self.details["extracted_files"] = value
+        self.details[KEY_EXTRACTED_FILES] = value
 
     def generate_summary(self):
         if not self.extracted_files:
             return None
 
-        return 'XML Binary Data Analysis ({} files extracted)'.format(len(self.extracted_files))
+        return f"{self.display_name}: extracted {format_item_list_for_summary(self.extracted_files)}"
 
 class XMLBinaryDataAnalyzer(AnalysisModule):
     @property

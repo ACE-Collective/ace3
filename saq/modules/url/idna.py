@@ -45,7 +45,18 @@ class IDNAAnalysis(Analysis):
         self.details[KEY_UNICODE] = value
 
     def generate_summary(self):
-        return f"IDNA: {self.idna} | Unicode: {self.unicode}"
+        parts = []
+
+        if self.idna:
+            parts.append(f"idna={self.idna}")
+
+        if self.unicode:
+            parts.append(f"unicode={self.unicode}")
+
+        if not parts:
+            return None
+
+        return "IDNA: " + ", ".join(parts)
 
 
 class IDNAAnalyzer(AnalysisModule):

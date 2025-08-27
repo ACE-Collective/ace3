@@ -38,7 +38,7 @@ class EncryptedArchiveAnalysis(Analysis):
         if not self.decrypted_file:
             return None
 
-        return "Encrypted Archive Analysis - {}".format(self.decrypted_file)
+        return "Encrypted Archive Analysis - retrieved {}".format(self.decrypted_file)
 
 class EncryptedArchiveAnalyzer(AnalysisModule):
     def verify_environment(self):
@@ -138,7 +138,7 @@ class EmailArchiveResults(Analysis):
         if not self.archive_path:
             return None
 
-        return f"Archive Path - {self.archive_path}"
+        return f"Archive Path: {self.archive_path}"
 
 class EmailArchiveAction(AnalysisModule):
     @property

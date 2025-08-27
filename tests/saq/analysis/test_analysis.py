@@ -5,7 +5,7 @@ from saq.analysis import (
     RootAnalysis,
 )
 from saq.analysis.analysis import SummaryDetail
-from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR, SUMMARY_DETAIL_FORMAT_PRE
+from saq.constants import SUMMARY_DETAIL_FORMAT_PRE
 from saq.observables.file import FileObservable
 
 @pytest.mark.unit
@@ -53,7 +53,7 @@ def test_add_file_observable(root_analysis, tmpdir):
 
     file_observable_copy = root_analysis.add_file_observable(target_file)
     # should not be the exact previous observable
-    assert not (file_observable_copy is file_observable)
+    assert file_observable_copy is not file_observable
     # value should be the same
     assert file_observable_copy.value == file_observable.value
     # however, these are not considered the same by ACE because the metadata is different
@@ -102,4 +102,3 @@ def test_add_file_observable(root_analysis, tmpdir):
     file_observable_in_place_move = root_analysis.add_file_observable(target_file, move=True)
     assert file_observable_in_place.full_path == target_file
     assert os.path.exists(target_file)
-    

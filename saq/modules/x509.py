@@ -3,6 +3,7 @@
 import logging
 import json
 import os
+from typing import override
 
 from saq import x509
 from saq.analysis import Analysis, RootAnalysis
@@ -11,6 +12,7 @@ from saq.constants import F_FILE, F_FQDN, F_SHA256, F_IPV4, F_URL, DIRECTIVE_CRA
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import FileTypeAnalysis
 from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
 KEY_ISSUER = 'issuer'
 KEY_SUBJECT = 'subject'
@@ -44,6 +46,11 @@ class X509Analysis(Analysis):
                 KEY_SAN_DNS_NAMES: [],
             }
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "X509 Analysis"
 
     @property
     def issuer(self):
@@ -128,11 +135,11 @@ class X509Analysis(Analysis):
         return "analysis/x509_file_analysis.html"
 
     def generate_summary(self):
-        result = f"X509 Analysis - {self.common_name} | " \
+        result = f"{self.display_name}: {self.common_name} | " \
                  f"Issuer={self.issuer} | " \
                  f"NotValidBefore={self.not_valid_before} | " \
-                 f"Subject Alternative Names: {len(self.san_dns_names)} DNS Names, " \
-                 f"{len(self.san_ip_addresses)} IP Addresses"
+                 f"Subject Alternative Names: {format_item_list_for_summary(self.san_dns_names)} DNS Names, " \
+                 f"{format_item_list_for_summary(self.san_ip_addresses)} IP Addresses"
 
         return result
 
@@ -181,7 +188,7 @@ class X509Analyzer(AnalysisModule):
 
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
         if not file_type_analysis:
-            logging.debug(f"x509 analysis module requires FileTypeAnalysis")
+            logging.debug("x509 analysis module requires FileTypeAnalysis")
             return AnalysisExecutionResult.COMPLETED
 
         if not file_type_analysis.is_x509:

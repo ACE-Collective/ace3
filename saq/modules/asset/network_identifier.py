@@ -9,6 +9,7 @@ from saq.configuration.config import get_config_value
 from saq.constants import F_ASSET, F_IPV4, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
+from saq.util.strings import format_item_list_for_summary
 
 KEY_IDENTIFIED_NETWORKS = "identified_networks"
 
@@ -39,10 +40,10 @@ class NetworkIdentifierAnalysis(Analysis):
         return len(self.identified_networks) > 0
 
     def generate_summary(self):
-        if len(self.identified_networks) > 0:
-            return "Network Identification Analysis: {0}".format(', '.join(self.identified_networks))
+        if not self.identified_networks:
+            return None
 
-        return None
+        return "Network Identification Analysis: " + format_item_list_for_summary(self.identified_networks)
 
 class NetworkIdentifier(AnalysisModule):
     """Looks up what network(s) a given IP address belong to."""

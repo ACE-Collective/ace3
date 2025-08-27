@@ -581,6 +581,8 @@ EVENT_DETECTION_ADDED = 'detection_added'
 EVENT_ANALYSIS_MARKED_COMPLETED = 'analysis_marked_completed'
 # fired when a relationship is added to an observable
 EVENT_RELATIONSHIP_ADDED = 'relationship_added'
+# fired when we add a context record to an Analysis or Observable
+EVENT_CONTEXT_RECORD_ADDED = 'context_record_added'
 
 # these next two events are intended to be used with the RootAnalysis object
 # fired when we add a tag to any taggable object
@@ -872,6 +874,15 @@ CONFIG_GLOBAL_MEMORY_LIMIT_KILL = "memory_limit_kill"
 CONFIG_GLOBAL_MEMORY_LIMIT_WARNING = "memory_limit_warning"
 CONFIG_GLOBAL_NODE = "node"
 CONFIG_GLOBAL_TEMP_DIR = "tmp_dir"
+
+# LLM
+CONFIG_LLM = "llm"
+CONFIG_LLM_EMBEDDING_MODEL = "embedding_model"
+
+# Qdrant
+CONFIG_QDRANT = "qdrant"
+CONFIG_QDRANT_URL = "url"
+CONFIG_QDRANT_COLLECTION_ALERTS = "collection_alerts"
 
 # monitoring
 CONFIG_MONITOR = "monitor"
