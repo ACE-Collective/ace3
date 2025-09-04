@@ -226,7 +226,7 @@ class TestStateRepositoryFactory:
         assert repository._state_storage == {}
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 class TestStateRepositoryIntegration:
     """Integration tests to verify the repository works with analysis modules."""
     

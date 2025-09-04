@@ -2,13 +2,13 @@ import logging
 import os
 import re
 from subprocess import PIPE, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, F_FILE, G_ANALYST_DATA_DIR, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.environment import g
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_image, is_pdf_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
 from PIL import Image, ImageOps
 
@@ -24,6 +24,11 @@ class QRCodeAnalysis(Analysis):
             QRCodeAnalysis.KEY_EXTRACTED_TEXT: None,
             QRCodeAnalysis.KEY_INVERTED: False,
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "QR Code Analysis"
 
     @property
     def extracted_text(self):
@@ -49,13 +54,10 @@ class QRCodeAnalysis(Analysis):
         self.details[QRCodeAnalysis.KEY_INVERTED] = value
 
     def generate_summary(self) -> str:
-        if not self.details:
-            return None
-
         if not self.extracted_text:
             return None
 
-        result = f"QR Code Analysis: "
+        result = f"{self.display_name}: "
         if self.inverted:
             result += "INVERTED: "
         
@@ -146,8 +148,8 @@ class QRCodeAnalyzer(AnalysisModule):
             image = Image.open(target_file_path).convert("RGB")
             image_inverted = ImageOps.invert(image)
             image_inverted.save(inverted_target_file_path)
-        except Exception as e:
-            logging.warning("unable to invert image {target_file_path}: {e}")
+        except Exception:
+            logging.warning(f"unable to invert image {target_file_path}: {e}")
 
         _stdout_inverted = None
         _stderr_inverted = None

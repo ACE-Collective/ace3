@@ -1,74 +1,77 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_rtf_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
+KEY_STDOUT = 'stdout'
+KEY_STDERR = 'stderr'
+KEY_RETURN_CODE = 'return_code'
+KEY_EXTRACTED_FILES = 'extracted_files'
 
 class RTFOLEObjectAnalysis(Analysis):
     """Does this RTF file have OLE objects inside?"""
-    KEY_STDOUT = 'stdout'
-    KEY_STDERR = 'stderr'
-    KEY_RETURN_CODE = 'return_code'
-    KEY_EXTRACTED_FILES = 'extracted_files'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            RTFOLEObjectAnalysis.KEY_STDOUT: None,
-            RTFOLEObjectAnalysis.KEY_STDERR: None,
-            RTFOLEObjectAnalysis.KEY_RETURN_CODE: None,
-            RTFOLEObjectAnalysis.KEY_EXTRACTED_FILES: [],
+            KEY_STDOUT: None,
+            KEY_STDERR: None,
+            KEY_RETURN_CODE: None,
+            KEY_EXTRACTED_FILES: [],
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "RTF OLE Object Analysis"
 
     @property
     def stdout(self):
         """Captured standard output of rtfobj.py"""
-        return self.details[RTFOLEObjectAnalysis.KEY_STDOUT]
+        return self.details[KEY_STDOUT]
 
     @stdout.setter
     def stdout(self, value):
         assert value is None or isinstance(value, str)
-        self.details[RTFOLEObjectAnalysis.KEY_STDOUT] = value
+        self.details[KEY_STDOUT] = value
 
     @property
     def stderr(self):
         """Captured standard error of rtfobj.py"""
-        return self.details[RTFOLEObjectAnalysis.KEY_STDERR]
+        return self.details[KEY_STDERR]
 
     @stderr.setter
     def stderr(self, value):
         assert value is None or isinstance(value, str)
-        self.details[RTFOLEObjectAnalysis.KEY_STDERR] = value
+        self.details[KEY_STDERR] = value
 
     @property
     def return_code(self):
         """Return code of rtfobj.py"""
-        return self.details[RTFOLEObjectAnalysis.KEY_RETURN_CODE]
+        return self.details[KEY_RETURN_CODE]
 
     @return_code.setter
     def return_code(self, value):
         assert value is None or isinstance(value, int)
-        self.details[RTFOLEObjectAnalysis.KEY_RETURN_CODE] = value
+        self.details[KEY_RETURN_CODE] = value
 
     @property
     def extracted_files(self):
         """List of files extracted by rtfobj.py"""
-        return self.details[RTFOLEObjectAnalysis.KEY_EXTRACTED_FILES]
+        return self.details[KEY_EXTRACTED_FILES]
 
     def generate_summary(self):
-        if not self.details:
+        if not self.extracted_files:
             return None
 
-        if not self.extracted_files:
-            return "RTF OLE Object Analysis - no objects detected"
-
-        return "RTF OLE Object Analysis - {} files extracted".format(len(self.extracted_files))
+        return f"{self.display_name}: extracted {format_item_list_for_summary(self.extracted_files)}"
 
 class RTFOLEObjectAnalyzer(AnalysisModule):
 
@@ -214,28 +217,30 @@ class ExtractedRTFAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+KEY_COUNT = "count"
+
 class NoWhiteSpaceAnalysis(Analysis):
     """Removes all whitespace characters from a file and saves it as file_name.nowhitespace."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "count": 0
+            KEY_COUNT: 0
         }
 
     @property
     def count(self):
-        return self.details["count"]
+        return self.details[KEY_COUNT]
 
     @count.setter
     def count(self, value):
-        self.details["count"] = value
+        self.details[KEY_COUNT] = value
 
     def generate_summary(self):
         if not self.count:
             return None
 
-        return "Ignore Whitespace Characters ({} removed)".format(self.count)
+        return f"{self.display_name}: Ignore Whitespace Characters ({self.count} removed)"
 
 class NoWhiteSpaceAnalyzer(AnalysisModule):
    
@@ -264,6 +269,7 @@ class NoWhiteSpaceAnalyzer(AnalysisModule):
         if file_size == 0:
             return AnalysisExecutionResult.COMPLETED
 
+        # we only want to do this for RTF files
         if not is_rtf_file(local_file_path):
             return AnalysisExecutionResult.COMPLETED
 
@@ -283,5 +289,7 @@ class NoWhiteSpaceAnalyzer(AnalysisModule):
 
         analysis.count = count
         output_file = analysis.add_file_observable(output_file, volatile=True)
-        if output_file: output_file.redirection = _file
+        if output_file:
+            output_file.redirection = _file
+
         return AnalysisExecutionResult.COMPLETED

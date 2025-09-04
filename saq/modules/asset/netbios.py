@@ -93,7 +93,7 @@ class NetBIOSAnalysis(Analysis):
 
     def generate_summary(self):
         if self.netbios_open:
-            return 'NetBIOS Analysis: Name {0} Domain {1} User {2} MAC {3}'.format(
+            return 'NetBIOS Analysis: name {0} domain {1} user {2} MAC {3}'.format(
                 self.netbios_name if self.netbios_name is not None else '?', 
                 self.netbios_domain if self.netbios_domain is not None else '?', 
                 self.netbios_user if self.netbios_user is not None else '?', 

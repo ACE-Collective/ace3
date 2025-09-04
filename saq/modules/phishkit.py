@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Optional, List
+from typing import Optional, List, override
 
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -9,6 +9,7 @@ from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, scan_file, scan_url
 from saq.util.filesystem import create_temporary_directory
+from saq.util.strings import format_item_list_for_summary
 
 FIELD_OUTPUT_DIR = "output_dir"
 FIELD_JOB_ID = "job_id"
@@ -40,6 +41,11 @@ class PhishkitAnalysis(Analysis):
             FIELD_OUTPUT_FILES: [],  # list of output file paths
             FIELD_ERROR: None,  # error message if scan failed
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Phishkit Analysis"
 
     @property
     def exit_code(self) -> Optional[int]:
@@ -115,14 +121,12 @@ class PhishkitAnalysis(Analysis):
 
     def generate_summary(self):
         if self.error:
-            return f"Phishkit Analysis Failed: {self.error}"
+            return f"{self.display_name}: failed: {self.error}"
         
-        if self.scan_type == SCAN_TYPE_URL:
-            return f"Phishkit URL Analysis: {len(self.output_files)} output files generated"
-        elif self.scan_type == SCAN_TYPE_FILE:
-            return f"Phishkit File Analysis: {len(self.output_files)} output files generated"
+        if self.scan_type == SCAN_TYPE_URL or self.scan_type == SCAN_TYPE_FILE:
+            return f"{self.display_name}: output files created (" + format_item_list_for_summary(self.output_files) + ")"
         else:
-            return "Phishkit Analysis Completed"
+            return f"{self.display_name}: completed"
 
 
 class PhishkitAnalyzer(AnalysisModule):
@@ -155,11 +159,10 @@ class PhishkitAnalyzer(AnalysisModule):
             return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=60)
 
         # if we get this far then the scan results are ready
-        analysis.output_files = scan_results
         analysis.scan_result = f"successfully scanned {observable}"
         analysis.error = None
 
-        for file_path in analysis.output_files:
+        for file_path in scan_results:
             if not os.path.exists(file_path):
                 logging.error("file %s does not exist for %s job ID %s", file_path, observable, analysis.job_id)
                 continue
@@ -182,6 +185,7 @@ class PhishkitAnalyzer(AnalysisModule):
                     file_observable.exclude_analysis(self)
                     file_observable.exclude_analysis(PDFAnalyzer)
                     #file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+                    analysis.output_files.append(file_observable.file_path)
 
 
                 # TODO follow the logic of the existing crawlphish module here

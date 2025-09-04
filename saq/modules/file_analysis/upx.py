@@ -2,33 +2,72 @@ import logging
 import os
 import re
 from subprocess import PIPE, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_pe_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
+
+KEY_STDOUT = "stdout"
+KEY_STDERR = "stderr"
+KEY_OUTPUT_FILE = "output_file"
+KEY_ERROR = "error"
 
 class UPXAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = { 
-            'stdout': None,
-            'stderr': None,
-            'output_file': None,
-            'error': None,
+            KEY_STDOUT: None,
+            KEY_STDERR: None,
+            KEY_OUTPUT_FILE: None,
+            KEY_ERROR: None,
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "UPX Analysis"
+
+    @property
+    def stdout(self):
+        return self.details[KEY_STDOUT]
+
+    @stdout.setter
+    def stdout(self, value):
+        self.details[KEY_STDOUT] = value
+
+    @property
+    def stderr(self):
+        return self.details[KEY_STDERR]
+
+    @stderr.setter
+    def stderr(self, value):
+        self.details[KEY_STDERR] = value
+
+    @property
+    def output_file(self):
+        return self.details[KEY_OUTPUT_FILE]
+
+    @output_file.setter
+    def output_file(self, value):
+        self.details[KEY_OUTPUT_FILE] = value
+
+    @property
+    def error(self):
+        return self.details[KEY_ERROR]
+
+    @error.setter
+    def error(self, value):
+        self.details[KEY_ERROR] = value
+
     def generate_summary(self) -> str:
-        if not self.details:
-            return None
+        if self.details[KEY_ERROR]:
+            return f"{self.display_name}: decompression failed: {self.details[KEY_ERROR]}"
 
-        if self.details['error']:
-            return f"UPX decompression failed: {self.details['error']}"
-
-        return f"UPX decompression success: {self.details['output_file']}"
+        return f"{self.display_name}: decompression success: {self.details[KEY_OUTPUT_FILE]}"
 
 
 class UPXAnalyzer(AnalysisModule):

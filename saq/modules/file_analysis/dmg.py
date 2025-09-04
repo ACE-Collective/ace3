@@ -1,12 +1,18 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
+
+KEY_STDOUT = "stdout"
+KEY_STDERR = "stderr"
+KEY_IMAGE_FILE = "image_file"
+KEY_FILE_LIST = "file_list"
 
 class DMGAnalysis(Analysis):
     """What are the contents of this DMG file?"""
@@ -14,20 +20,54 @@ class DMGAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "stdout": None,
-            "stderr": None,
-            "image_file": None,
-            "file_list": [],
+            KEY_STDOUT: None,
+            KEY_STDERR: None,
+            KEY_IMAGE_FILE: None,
+            KEY_FILE_LIST: [],
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "DMG Analysis"
+
+    @property
+    def stdout(self) -> str:
+        return self.details[KEY_STDOUT]
+    
+    @stdout.setter
+    def stdout(self, value: str):
+        self.details[KEY_STDOUT] = value
+
+    @property
+    def stderr(self) -> str:
+        return self.details[KEY_STDERR]
+    
+    @stderr.setter
+    def stderr(self, value: str):
+        self.details[KEY_STDERR] = value
+
+    @property
+    def image_file(self) -> str:
+        return self.details[KEY_IMAGE_FILE]
+    
+    @image_file.setter
+    def image_file(self, value: str):
+        self.details[KEY_IMAGE_FILE] = value
+
+    @property
+    def file_list(self) -> list[str]:
+        return self.details[KEY_FILE_LIST]
+    
+    @file_list.setter
+    def file_list(self, value: list[str]):
+        self.details[KEY_FILE_LIST] = value
+
     def generate_summary(self) -> str:
-        if not self.details:
+        if not self.file_list:
             return None
 
-        if not self.details["file_list"]:
-            return None
-
-        return f"DMG Analysis: {len(self.details['file_list'])} files observed"
+        return f"DMG Analysis: file observabed ({format_item_list_for_summary(self.file_list)})"
 
 
 class DMGAnalyzer(AnalysisModule):

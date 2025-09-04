@@ -1,6 +1,7 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 import zipfile
 
 from html2text import html2text
@@ -30,6 +31,11 @@ class ZipEncryptionAnalysis(Analysis):
             KEY_PASSWORD: None,
             KEY_ERROR: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Zip Encryption Analysis"
 
     @property
     def encryption_info(self):
@@ -83,7 +89,7 @@ class ZipEncryptionAnalysis(Analysis):
         if self.details is None:
             return None
 
-        result = "Zip Encryption Analysis"
+        result = self.display_name
         if self.error:
             return f"{result}: {self.error}"
         elif self.password:

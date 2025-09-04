@@ -17,6 +17,7 @@ KEY_EXCLUDED_ANALYSIS = 'excluded_analysis'
 KEY_RELATIONSHIPS = 'relationships'
 KEY_GROUPING_TARGET = 'grouping_target'
 KEY_VOLATILE = 'volatile'
+KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
 
 
 class ObservableSerializer:
@@ -47,6 +48,7 @@ class ObservableSerializer:
             KEY_RELATIONSHIPS: observable._relationships,
             KEY_GROUPING_TARGET: observable._grouping_target,
             KEY_VOLATILE: observable._volatile,
+            KEY_LLM_CONTEXT_DOCUMENTS: observable.llm_context_documents,
         })
         
         return result
@@ -88,3 +90,6 @@ class ObservableSerializer:
             observable._grouping_target = data[KEY_GROUPING_TARGET]
         if KEY_VOLATILE in data:
             observable._volatile = data[KEY_VOLATILE]
+        if KEY_LLM_CONTEXT_DOCUMENTS in data:
+            observable.llm_context_documents = data[KEY_LLM_CONTEXT_DOCUMENTS]
+        

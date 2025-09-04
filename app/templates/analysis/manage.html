@@ -17,6 +17,18 @@
     </div>
 </div>
 
+<div class="container-fluid" style="margin-top:5px">
+    <div class="row">
+        <div class="col d-flex align-items-center">
+            <button type="button" class="btn btn-outline-dark d-flex align-items-center" style="margin-right: 10px;" id="alert-search-btn">
+                <span class="bi bi-search" style="margin-right:2px;"></span>
+                <span>Search</span>
+            </button>
+            <input type="text" class="form-control me-2" id="alert-search" placeholder="Search alerts..." {% if search_query %}value="{{ search_query | e }}"{% endif %}>
+        </div>
+    </div>
+</div>
+
 <div class="container-fluid" style="margin-top:5px;margin-bottom:7px;">
     <div class="row">
         <div class="col">
@@ -106,13 +118,23 @@
                         <td>
                             <span style="cursor:pointer" onmousedown='add_filter("Owner", ["{{alert.owner.gui_display}}"])'>{{alert.owner.gui_display}}</span>
                         </td>
-                        {% if display_disposition %}
                         <td>
                             <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='add_filter("Disposition", ["{{alert.disposition}}"])'>{{alert.disposition}}</span>
                         </td>
-                        {% endif %}
                         <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
                     </tr>
+                    {% if alert.uuid in search_result_mapping %}
+                        <tr>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td colspan="4">
+                                {% for search_result in search_result_mapping[alert.uuid] %}
+                                <span class="badge bg-white border border-black" style="color: black; border-width: 1px;">{{ "%.2f"|format(search_result.score * 100.0) }}%</span> {{search_result.payload.get("text", "")}}<br />
+                                {% endfor %}
+                            </td>
+                        </tr>
+                    {% endif %}
                     {% endfor %}
                 </tbody>
             </table>

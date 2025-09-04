@@ -1,8 +1,5 @@
 import os
-import sys
-from typing import Any, Dict, Mapping
 
-from configparser import ConfigParser
 
 from saq.environment import g_list
 from saq.constants import G_CONFIG_PATHS
@@ -10,7 +7,7 @@ from saq.configuration.yaml_parser import YAMLConfig
 
 
 def load_configuration():
-    """Unified configuration loader preferring YAML.
+    """Unified configuration loader using YAML.
 
     Load order:
       1) etc/saq.default.yaml

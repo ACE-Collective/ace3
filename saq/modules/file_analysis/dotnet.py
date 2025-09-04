@@ -1,17 +1,20 @@
 import logging
 import os
 from subprocess import PIPE, Popen, TimeoutExpired
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_dotnet
 from saq.observables.file import FileObservable
+from saq.util.strings import format_item_list_for_summary
 
 
 KEY_STDOUT = "stdout"
 KEY_STDERR = "stderr"
 KEY_ERROR = "error"
 KEY_DEOBFUSCATED = "deobfuscated"
+KEY_EXTRACTED_FILES = "extracted_files"
 
 class De4dotAnalysis(Analysis):
 
@@ -22,7 +25,13 @@ class De4dotAnalysis(Analysis):
             KEY_STDERR: None,
             KEY_ERROR: None,
             KEY_DEOBFUSCATED: False,
+            KEY_EXTRACTED_FILES: [],
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "De4dot Analysis"
 
     @property
     def stdout(self):
@@ -56,17 +65,22 @@ class De4dotAnalysis(Analysis):
     def deobfuscated(self, value):
         self.details[KEY_DEOBFUSCATED] = value
 
+    @property
+    def extracted_files(self) -> list[str]:
+        return self.details[KEY_EXTRACTED_FILES]
+
+    @extracted_files.setter
+    def extracted_files(self, value: list[str]):
+        self.details[KEY_EXTRACTED_FILES] = value
+
     def generate_summary(self) -> str:
-        if not self.details:
+        if self.error:
+            return f"{self.display_name} error: {self.error}"
+        
+        if not self.extracted_files:
             return None
 
-        if self.error:
-            return f"de4dot analysis error: {self.error}"
-        
-        if not self.deobfuscated:
-            return None
-        
-        return "de4dot analysis succeeded"
+        return f"{self.display_name}: extracted ({format_item_list_for_summary(self.extracted_files)})"
 
 class De4dotAnalyzer(AnalysisModule):
 
@@ -122,6 +136,8 @@ class De4dotAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
+        assert isinstance(analysis, De4dotAnalysis)
+
         output_path = f'{local_file_path}.deobfuscated'
         filename = local_file_path.split('/')[-1]
         out_file = f'{output_path}/dotnet_deobfuscated_{filename}'
@@ -150,6 +166,7 @@ class De4dotAnalyzer(AnalysisModule):
                 if file_observable:
                     file_observable.add_relationship(R_EXTRACTED_FROM, _file)
                     file_observable.redirection = _file
+                    analysis.extracted_files.append(file_observable.file_path)
             
 
         logging.debug('de4dot Analysis succeeded')

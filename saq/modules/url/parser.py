@@ -1,8 +1,10 @@
 import logging
 from typing import Optional
+from urllib.parse import parse_qsl, unquote_plus
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FQDN, F_IPV4, F_URI_PATH, F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.util.strings import format_item_list_for_summary
 
 from urlfinderlib.url import URL
 
@@ -59,14 +61,6 @@ class ParseURLAnalysis(Analysis):
         self.details[KEY_QUERY] = value
 
     @property
-    def params(self) -> Optional[str]:
-        return self.details[KEY_PARAMS]
-
-    @params.setter
-    def params(self, value: str):
-        self.details[KEY_PARAMS] = value
-
-    @property
     def fragment(self) -> Optional[str]:
         return self.details[KEY_FRAGMENT]
 
@@ -75,7 +69,30 @@ class ParseURLAnalysis(Analysis):
         self.details[KEY_FRAGMENT] = value
 
     def generate_summary(self):
-        return f"Parsed: {self.netloc}"
+        parts = []
+        if self.scheme:
+            parts.append(f"scheme={self.scheme}")
+
+        if self.netloc:
+            parts.append(f"netloc={self.netloc}")
+
+        if self.path:
+            parts.append(f"path={self.path}")
+
+        if self.query:
+            parts.append(f"query={self.query}")
+
+        if self.params:
+            decoded_params = [f"{k}={v}" for k, v in self.params.items()]
+            parts.append("params=(" + format_item_list_for_summary(decoded_params) + ")")
+
+        if self.fragment:
+            parts.append(f"fragment={self.fragment}")
+
+        if not parts:
+            return None
+
+        return "URL Parser: " + ", ".join(parts)
 
 class ParseURLAnalyzer(AnalysisModule):
     """Parse the URL and add the hostname and path as observables."""
@@ -100,6 +117,9 @@ class ParseURLAnalyzer(AnalysisModule):
             analysis.query = url.split_value.query
             analysis.fragment = url.split_value.fragment
 
+            # set analysis.params to a dict of key=value query parameters, urldecoded
+            analysis.params = {k: unquote_plus(v) for k, v in parse_qsl(url.split_value.query, keep_blank_values=True)}
+
             if url.is_netloc_ipv4:
                 ip_observable = analysis.add_observable_by_spec(F_IPV4, url.split_value.hostname)
                 if ip_observable:
@@ -111,10 +131,6 @@ class ParseURLAnalyzer(AnalysisModule):
 
             if url.path_original:
                 analysis.add_observable_by_spec(F_URI_PATH, url.path_original)
-
-            # XXX GROSS NO
-            #if kwargs.get('return_analysis'):
-                #return analysis
 
             return AnalysisExecutionResult.COMPLETED
 

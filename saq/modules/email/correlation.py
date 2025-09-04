@@ -1,4 +1,5 @@
 import logging
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_URL, AnalysisExecutionResult
 from saq.database.pool import get_db_connection
@@ -15,6 +16,11 @@ class URLEmailPivotAnalysis_v2(Analysis):
             KEY_COUNT: None,
             KEY_EMAILS: None,
         }
+
+    @override
+    @property
+    def display_name(self):
+        return "URL Email Pivot Analyzer"
 
     @property
     def count(self):
@@ -36,7 +42,7 @@ class URLEmailPivotAnalysis_v2(Analysis):
         if not self.count:
             return None
 
-        return "URL Email Pivot ({} emails matched)".format(self.count)
+        return f"{self.display_name} ({self.count} emails matched)"
 
 class URLEmailPivotAnalyzer(AnalysisModule):
     @property

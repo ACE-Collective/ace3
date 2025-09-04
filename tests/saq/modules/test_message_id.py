@@ -28,9 +28,12 @@ def reset_database(request, pytestconfig):
 @pytest.mark.unit
 def test_message_id_analysis_v2():
     analysis = MessageIDAnalysisV2()
-    assert analysis.generate_summary() == "Message ID Analysis (V2): archived email extracted"
+    assert analysis.generate_summary() is None
     analysis.error = "test"
-    assert analysis.generate_summary() == "Message ID Analysis (V2): ERROR: test"
+    assert analysis.generate_summary() == "Message ID Analysis: ERROR: test"
+    analysis.error = None
+    analysis.extracted_email = "test"
+    assert analysis.generate_summary() == "Message ID Analysis: archived email extracted test"
 
 @pytest.mark.integration
 def test_message_id_analyzer_v2(test_context, tmpdir, monkeypatch):

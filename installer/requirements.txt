@@ -75,3 +75,9 @@ WTForms
 xdis
 yacron
 yara-python
+
+# LLM stuff
+numpy
+pandas
+tqdm
+qdrant-client

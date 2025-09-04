@@ -1,35 +1,89 @@
+from datetime import datetime
+import json
 import logging
 import os
-from subprocess import PIPE, Popen
+from typing import Optional, override
 from saq.analysis.analysis import Analysis
-from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_lnk_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.error import report_exception
 
+import LnkParse3
+import warnings
+warnings.filterwarnings("ignore", module="LnkParse3")
+
+KEY_ERROR = "error"
+KEY_INFO = "info"
 
 class LnkParseAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            'stdout': None,
-            'stderr': None,
-            'error': None,
-            'lnk_count': 0
+            KEY_ERROR: None,
+            KEY_INFO: {},
         }
 
-    def generate_summary(self) -> str:
-        if not self.details:
+    @override
+    @property
+    def display_name(self) -> str:
+        return "LnkParse Analysis"
+
+    @property
+    def error(self):
+        return self.details[KEY_ERROR]
+
+    @error.setter
+    def error(self, value):
+        self.details[KEY_ERROR] = value
+
+    @property
+    def info(self):
+        return self.details[KEY_INFO]
+
+    @info.setter
+    def info(self, value):
+        self.details[KEY_INFO] = value
+
+    @property
+    def command_line_arguments(self) -> Optional[str]:
+        if not self.info:
             return None
 
-        if self.details['error']:
-            return f"LnkParse Analysis: {self.details['error']}"
+        return self.info.get("data", {}).get("command_line_arguments")
 
-        lnk_word = 'lnk' if self.details['lnk_count'] == 1 else 'lnks'
+    @property
+    def icon_location(self) -> Optional[str]:
+        if not self.info:
+            return None
 
-        return f"LnkParse Analysis: {self.details['lnk_count']} {lnk_word} parsed"
+        return self.info.get("data", {}).get("icon_location")
+
+    @property
+    def working_directory(self) -> Optional[str]:
+        if not self.info:
+            return None
+
+        return self.info.get("data", {}).get("working_directory")
+
+    def generate_summary(self) -> str:
+        if self.error:
+            return f"{self.display_name}: {self.error}"
+
+        parts = []
+        if self.command_line_arguments:
+            parts.append(f"command line arguments: ({self.command_line_arguments})")
+        if self.icon_location:
+            parts.append(f"icon location: ({self.icon_location})")
+        if self.working_directory:
+            parts.append(f"working directory: ({self.working_directory})")
+
+        if not parts:
+            return None
+
+        return f"{self.display_name}: {', '.join(parts)}"
 
 
 class LnkParseAnalyzer(AnalysisModule):
@@ -52,35 +106,43 @@ class LnkParseAnalyzer(AnalysisModule):
             logging.error(f"cannot find local file path {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 
-        if is_lnk_file(local_file_path) == False:
+        if not is_lnk_file(local_file_path):
             logging.debug(f'{local_file_path} is not a .lnk file')
             return AnalysisExecutionResult.COMPLETED
 
+        _file.add_tag("lnk")
+
         analysis = self.create_analysis(_file)
-        target_dir = f'{local_file_path}.lnkparser'
-        os.makedirs(target_dir, exist_ok=True)
-        target_file = os.path.join(target_dir, 'lnkparser.out')
+        target_file = f'{local_file_path}.lnkparser.json'
+
         try:
             # Parse the lnk file
-            logging.debug("Attempting to call lnk parse")
-            analysis.details['stdout'], analysis.details['stderr'] = Popen(['lnkparse', local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            with open(local_file_path, 'rb') as fp:
+                lnk = LnkParse3.lnk_file(fp)
+
+            analysis.info = lnk.get_json(get_all=True)
+            analysis.command = lnk.lnk_command
+
+            def _datetime_to_str(obj):
+                if isinstance(obj, datetime):
+                    return obj.replace(microsecond=0).isoformat()
+                return obj
+
+            with open(target_file, 'w') as fp:
+                json.dump(
+                    analysis.info,
+                    fp,
+                    indent=4,
+                    #separators=(",", ": "),
+                    default=_datetime_to_str,
+                    sort_keys=True,
+                )
+
+            analysis.add_file_observable(target_file)
             
-            with open(target_file, 'wb') as fp:
-                fp.write(analysis.details['stdout'])
         except Exception as e:
-            analysis.details['error'] = str(e)
+            report_exception()
+            analysis.error = str(e)
             logging.info(f'LnkParse failed for {local_file_path}')
         
-        # Add any parsed lnks as file observables
-        for f in os.listdir(target_dir):
-            if f.endswith('.out'):
-                analysis.details['lnk_count'] += 1
-                full_path = os.path.join(target_dir, f)
-                file_observable = analysis.add_file_observable(full_path)
-                if file_observable:
-                    file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-                    file_observable.add_tag('lnk')
-        
-        logging.debug(f"Parsed {analysis.details['lnk_count']} lnk file")
-
         return AnalysisExecutionResult.COMPLETED

@@ -8,7 +8,6 @@ from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_empty_macro, is_macro_ext
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
 
 class OfficeParserAnalysis3(Analysis):
@@ -35,7 +34,7 @@ class OfficeParserAnalysis3(Analysis):
         if not self.extracted_files:
             return None
 
-        return "OfficeParser3 Analysis ({} macro files)".format(len(self.extracted_files))
+        return "OfficeParser3 Analysis: extracted {} files".format(len(self.extracted_files))
 
 class OfficeParserAnalyzer3(AnalysisModule):
     def verify_environment(self):
@@ -128,7 +127,7 @@ class OfficeParserAnalyzer3(AnalysisModule):
 
         try:
             stdout, stderr = p.communicate(timeout=self.timeout)
-        except TimeoutExpired as e:
+        except TimeoutExpired:
             logging.warning("timeout expired for officeparser on {}".format(local_file_path))
             _file.add_tag('officeparser_failed')
             _file.add_directive(DIRECTIVE_SANDBOX)
@@ -172,7 +171,7 @@ class OfficeParserAnalyzer3(AnalysisModule):
                     if not os.path.isfile(full_path):
                         logging.info("skipping non-file {}".format(full_path))
                         continue
-                except Exception as e:
+                except Exception:
                     logging.error("unable to check status of {}".format(full_path))
                     continue
 
@@ -207,6 +206,8 @@ class OfficeParserAnalyzer3(AnalysisModule):
                 if not file_observable:
                     continue
 
+                analysis.extracted_files.append(output_file)
+
                 # add a relationship back to the original file
                 file_observable.add_relationship(R_EXTRACTED_FROM, _file)
 
@@ -220,6 +221,5 @@ class OfficeParserAnalyzer3(AnalysisModule):
                     file_observable.add_tag('macro')
                     # always sandbox office documents tagged with macros
                     file_observable.add_directive(DIRECTIVE_SANDBOX)
-                    analysis.extracted_files.append(output_file)
 
             return AnalysisExecutionResult.COMPLETED

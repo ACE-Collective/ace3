@@ -1,10 +1,8 @@
-from datetime import datetime
 import logging
-from multiprocessing import Pool
 import os
 import re
-import shutil
 from subprocess import PIPE, Popen, TimeoutExpired
+from typing import override
 import zipfile
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
@@ -12,7 +10,49 @@ from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
+
+def order_archive_file_list(file_list: list[str]) -> list[str]:
+    """Order the list of file paths by priority of extraction."""
+    # handle edge cases first
+    if not file_list:
+        return []
+
+    # Define extension groups by priority
+    attack_exts = [
+        ".lnk", ".one", ".jnlp", ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".msi", ".hta", ".chm", ".cpl", ".scr"
+    ]
+    executable_exts = [
+        ".exe", ".dll", ".com", ".bat", ".cmd", ".jar", ".ps1", ".msi", ".sys", ".drv", ".class"
+    ]
+    script_exts = [
+        ".js", ".jse", ".vbs", ".vbe", ".wsf", ".wsh", ".ps1", ".psm1", ".sh", ".py", ".rb", ".pl", ".php", ".asp", ".aspx"
+    ]
+    office_pdf_exts = [
+        ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".odt", ".ods", ".odp", ".pdf", ".mht", ".mhtml", ".xml"
+    ]
+
+    def get_priority(file_path):
+        lower = file_path.lower()
+        for ext in attack_exts:
+            if lower.endswith(ext):
+                return 0
+        for ext in executable_exts:
+            if lower.endswith(ext):
+                return 1
+        for ext in script_exts:
+            if lower.endswith(ext):
+                return 2
+        for ext in office_pdf_exts:
+            if lower.endswith(ext):
+                return 3
+        return 4
+
+    # sort file_list by priority, preserving original order within each group
+    return sorted(file_list, key=get_priority)
+
+KEY_FILE_COUNT = 'file_count'
+KEY_EXTRACTED_FILES = 'extracted_files'
 
 
 class ArchiveAnalysis(Analysis):
@@ -21,30 +61,40 @@ class ArchiveAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            'file_count': None,
+            KEY_FILE_COUNT: None,
+            KEY_EXTRACTED_FILES: [],
         }
 
+    @override
     @property
-    def file_count(self):
-        return self.details['file_count']
+    def display_name(self):
+        return "Archive Analysis"
+
+    @property
+    def file_count(self) -> int:
+        return self.details[KEY_FILE_COUNT]
 
     @file_count.setter
-    def file_count(self, value):
-        self.details['file_count'] = value
+    def file_count(self, value: int):
+        self.details[KEY_FILE_COUNT] = value
 
-    def upgrade(self):
-        if 'file_count' not in self.details:
-            logging.debug("upgrading {0}".format(self))
-            self.details['file_count'] = len([x for x in self.observables if x.type == F_FILE])
+    @property
+    def extracted_files(self) -> list[str]:
+        return self.details[KEY_EXTRACTED_FILES]
+
+    @extracted_files.setter
+    def extracted_files(self, value: list[str]):
+        self.details[KEY_EXTRACTED_FILES] = value
 
     def generate_summary(self):
-        if self.details['file_count'] is not None and self.details['file_count'] > 0:
-            files_available = self.details['file_count']
-            files_extracted = len([x for x in self.observables if x.type == F_FILE])
-            return "Archive Analysis ({0} files available {1} extracted)".format(
-                files_available, files_extracted)
+        if not self.file_count:
+            return None
 
-        return None
+        result = f"{self.display_name}: extracted {len(self.extracted_files)} of {self.file_count} files"
+        if self.extracted_files:
+            result += f": ({format_item_list_for_summary(self.extracted_files)})"
+
+        return result
 
 # 2018-02-19 12:15:48          319534300    299585795  155 files, 47 folders
 # 2022-04-27 08:55:00                          180304  3 files
@@ -58,95 +108,6 @@ COMPRESSION_MIN_SIZE = 2**16
 
 # listed: 1 files, totaling 711.168 bytes (compressed 326.520)
 UNACE_SUMMARY_REGEX = re.compile(rb'^listed: (\d+) files,.*')
-
-# this is for easy testing of via monkeypatching
-def popen_wrapper(params, **kwargs):
-    return Popen(params, **kwargs)
-
-class DecompileFailedError(Exception):
-    pass
-
-def decompile_java_class_file(class_file: str, output_directory: str):
-    """Decompiles a given java class file into a file in the given output_directory named
-    class_file-N-decompiled.java
-    where N makes the file name unique.
-
-    Returns the path to the decompiled java file, or, None if the decompliation failed."""
-
-    sed = None
-    java = None
-    output_file = None
-
-    if not os.path.exists(class_file):
-        logging.info(f"class file {class_file} does not exist")
-        return None
-
-    if not os.path.isdir(output_directory):
-        logging.error(f"output directory {output_directory} does not exist")
-        return None
-
-    try:
-        base_name = os.path.basename(class_file)
-        counter = 0
-        output_file = os.path.join(output_directory, f"{base_name}-{counter}-decompiled.java")
-        while os.path.exists(output_file):
-            counter += 1
-            output_file = os.path.join(output_directory, f"{base_name}-{counter}-decompiled.java")
-
-    except Exception as e:
-        logging.error(f"unable to create output file path: {e}")
-        return None
-            
-    try:
-        start_time = datetime.now()
-        with open(output_file, 'w') as fp:
-            # strip the banner out that this java tool generates
-            sed = popen_wrapper(['sed', '-e', r'/^\/\*/,/^ \*\// d'], stdin=PIPE, stdout=fp)
-            java = popen_wrapper(['java', '-jar', '/usr/local/bin/cfr.jar', class_file], stdout=sed.stdin, stderr=PIPE)
-
-            (_, stderr) = sed.communicate(timeout=30)
-            java.wait()
-
-            sed = None
-            java = None
-
-        end_time = datetime.now()
-        logging.info(f"decompiled {class_file} in {(end_time - start_time).total_seconds()} seconds")
-
-        if os.path.getsize(output_file) == 0:
-            logging.warning(f"decompilation of {class_file} returned nothing")
-            raise DecompileFailedError(f"decompilation of {class_file} returned nothing")
-
-        return output_file
-
-    except Exception as e:
-        logging.info(f"failed to extract java from {class_file}: {e}")
-
-        # this file gets created no matter what
-        # delete it if something went wrong
-        if output_file:
-            try:
-                if os.path.exists(output_file):
-                    os.remove(output_file)
-            except Exception as e:
-                logging.error(f"unable to remove {output_file}: {e}")
-
-        return None
-
-    finally:
-        # make sure child pids are reaped
-        for p in [ java, sed ]:
-            try:
-                if p:
-                    p.kill()
-            except:
-                pass
-
-            try:
-                if p:
-                    p.wait()
-            except:
-                pass
 
 class ArchiveAnalyzer(AnalysisModule):
     def verify_environment(self):
@@ -219,7 +180,8 @@ class ArchiveAnalyzer(AnalysisModule):
             if is_ole_file(local_file_path) and not is_msi_file(local_file_path):
                 logging.debug("skipping archive extraction of OLE file {}".format(_file))
                 return AnalysisExecutionResult.COMPLETED
-        #special logic for cab files
+
+        # special logic for cab files
         is_cab_file = 'ms-cab' in file_type_analysis.mime_type.lower()
         is_cab_file |= 'cabinet archive' in file_type_analysis.file_type.lower()
 
@@ -252,34 +214,12 @@ class ArchiveAnalyzer(AnalysisModule):
 
         count = 0
 
-        # Get compression ratio to alert on obvious file inflation
-        compression_ratio_detection_point = None
-        if is_ace_file or is_zip_file or is_office_document or is_cab_file or is_rar_file: 
-            logging.debug(f'checking compression ratio for {local_file_path}')
-            process = Popen(['7z', 'l', local_file_path], stdout=PIPE, stderr=PIPE, universal_newlines=True)
-            _stdout, _stderr = process.communicate()
-            try:
-                last_line = _stdout.splitlines()[-1]
-                ints = re.findall(' (?P<int>[0-9]{2,}) ', last_line)
-                uncompressed_size = int(ints[0])
-                compressed_size = int(ints[1])
-                ratio = uncompressed_size/compressed_size
-                logging.info(f'Compression ratio for {local_file_path}: {uncompressed_size}/{compressed_size} = : {ratio:2.2f}')
-                if ratio > COMPRESSION_RATIO_MIN_ALERT and uncompressed_size > COMPRESSION_MIN_SIZE:
-                    #analysis.add_detection_point(f"Possible file inflation. Compression ratio {ratio:2.2f} ({uncompressed_size}/{compressed_size}) for {local_file_path} exceeded threshold of {COMPRESSION_RATIO_MIN_ALERT}")
-                    #compression_ratio_detection_point = f"Possible file inflation. Compression ratio {ratio:2.2f} ({uncompressed_size}/{compressed_size}) for {local_file_path} exceeded threshold of {COMPRESSION_RATIO_MIN_ALERT}"
-                    logging.info(f"Possible file inflation. Compression ratio {ratio:2.2f} ({uncompressed_size}/{compressed_size}) for {local_file_path} exceeded threshold of {COMPRESSION_RATIO_MIN_ALERT}")
-            except Exception as e:
-                logging.warning(f'Failed to get compression ratio for {local_file_path}: {e}. 7z l last line stdout: "{last_line}", stderr: {_stderr}')
-        #else:
-        #    logging.debug(f'Not configured to check compression ratio for {file_type_analysis.file_type} on {local_file_path}')
-
         if is_rar_file:
             logging.debug("using unrar to extract files from {}".format(local_file_path))
             p = Popen(['unrar', 'la', local_file_path], stdout=PIPE, stderr=PIPE)
             try:
                 (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.error("timed out tryign to extract files from {} with unrar".format(local_file_path))
                 return AnalysisExecutionResult.COMPLETED
 
@@ -304,7 +244,7 @@ class ArchiveAnalyzer(AnalysisModule):
             try:
                 with zipfile.ZipFile(local_file_path, "r") as zfile:
                     count = len(zfile.namelist())
-            except Exception as e:
+            except Exception:
                 logging.error("unable to read jar file")
 
         elif is_zip_file:
@@ -312,7 +252,7 @@ class ArchiveAnalyzer(AnalysisModule):
             p = Popen(['unzip', '-l', '-P', 'infected', local_file_path], stdout=PIPE, stderr=PIPE)
             try:
                 (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.error("timed out trying to list files from {} with unzip".format(local_file_path))
                 return AnalysisExecutionResult.COMPLETED
 
@@ -359,7 +299,7 @@ class ArchiveAnalyzer(AnalysisModule):
 
             try:
                 (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.error("timed out trying to extract files from {} with 7z".format(local_file_path))
                 return AnalysisExecutionResult.COMPLETED
 
@@ -374,7 +314,7 @@ class ArchiveAnalyzer(AnalysisModule):
             p = Popen(['7z', '-y', '-pinfected', 'l', local_file_path], stdout=PIPE, stderr=PIPE)
             try:
                 (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.warning("timed out trying to extract files from {} with 7z".format(local_file_path))
                 return AnalysisExecutionResult.COMPLETED
 
@@ -418,21 +358,30 @@ class ArchiveAnalyzer(AnalysisModule):
             ole_object_regex = re.compile(b'word.embeddings.oleObject1\\.bin', re.M)
             is_office_document |= (ole_object_regex.search(stdout) is not None)
 
-        # skip archives with lots of files
-        if is_jar_file:
-            if self.max_jar_file_count != 0 and count > self.max_jar_file_count:
-                logging.debug("skipping archive analysis of {}: file count {} exceeds configured maximum {} in max_jar_file_count setting".format(
-                    local_file_path, count, self.max_jar_file_count))
-                return AnalysisExecutionResult.COMPLETED
-        elif not is_office_document:
-            if self.max_file_count != 0 and count > self.max_file_count:
-                logging.debug("skipping archive analysis of {}: file count {} exceeds configured maximum {} in max_file_count setting".format(
-                    local_file_path, count, self.max_file_count))
-                return AnalysisExecutionResult.COMPLETED
-
         if count == 0:
             logging.debug(f"no files found in {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
+
+        analysis = self.create_analysis(_file)
+        analysis.file_count = count
+
+        # this deteremine if we're limiting the number of files extracted
+        limit_file_extraction = False
+        limit_file_count = self.max_file_count
+
+        # skip archives with lots of files
+        if is_jar_file:
+            if self.max_jar_file_count != 0 and count > self.max_jar_file_count:
+                limit_file_extraction = True
+                limit_file_count = self.max_jar_file_count
+                logging.info("archive analysis of {} will limit file extraction: file count {} exceeds configured maximum {} in max_jar_file_count setting".format(
+                    local_file_path, count, self.max_jar_file_count))
+        elif not is_office_document:
+            if self.max_file_count != 0 and count > self.max_file_count:
+                limit_file_extraction = True
+                limit_file_count = self.max_file_count
+                logging.info("archive analysis of {} will limit file extraction: file count {} exceeds configured maximum {} in max_file_count setting".format(
+                    local_file_path, count, self.max_file_count))
 
         # we need a place to store these things
         extracted_path = '{}.extracted'.format(local_file_path).replace('*', '_') # XXX need a normalize function
@@ -444,14 +393,6 @@ class ArchiveAnalyzer(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
 
         logging.debug("extracting {} files from archive {} into {}".format(count, local_file_path, extracted_path))
-
-
-        analysis = self.create_analysis(_file)
-        analysis.file_count = count
-
-        # if we found a detection point by compression ratio go ahead and add it
-        if compression_ratio_detection_point:
-            analysis.add_detection_point(compression_ratio_detection_point)
 
         params = []
         kwargs = { 'stdout': PIPE, 'stderr': PIPE }
@@ -469,15 +410,6 @@ class ArchiveAnalyzer(AnalysisModule):
             # params = ['7z', '-y', '-o{}'.format(extracted_path), 'x', local_file_path]
             # params = ['java', '-jar', '/usr/local/bin/cfr.jar', local_file_path]
             # Updated 09/16/2021 JA - New decompiler doesn't like zip JARs, so we now extract class files and run decompiler on each individually
-            # Create untracked folder to move class files to once finished decompiling
-            untracked_path = '{}/untracked'.format(extracted_path).replace('*', '_')
-            if not os.path.isdir(untracked_path):
-                try:
-                    os.makedirs(untracked_path)
-                    logging.debug("created directory: {}".format(untracked_path))
-                except Exception as e:
-                    logging.error("unable to create directory {}: {}".format(extracted_path, e))
-                    return AnalysisExecutionResult.COMPLETED
             params = ['bin/unjar', local_file_path, '-d', extracted_path]
         elif is_zip_file:
             # avoid the numerious XML documents in excel files
@@ -495,111 +427,94 @@ class ArchiveAnalyzer(AnalysisModule):
             params = ['7z', '-y', '-pinfected', '-o{}'.format(extracted_path), 'x', local_file_path]
 
         if params:
-            p = popen_wrapper(params, **kwargs)
+            p = Popen(params, **kwargs)
 
             try:
                 (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired as e:
+            except TimeoutExpired:
                 logging.warning(f"archive extraction timeout on {local_file_path}: params {params} kwargs {kwargs}")
                 p.kill()
                 (stdout, stderr) = p.communicate()
 
-        #logging.debug("extracted into {}".format(extracted_path))
+        # files we've removed because we've hit the limit
+        removed_files = []
 
-        if is_jar_file:
-            extracted_class_files = []
-            for root, dirs, files in os.walk(extracted_path):
-                for file_name in files:
-                    extracted_file = os.path.join(root, file_name)
-                    logging.debug("extracted_file = {}".format(extracted_file))
-                    # Running cfr on JAR files can be inconsistent, especially if the file is a zip/jar. Instead, run on .class files and append to decompiled.java
-                    if extracted_file.endswith('class'):
-                        extracted_class_files.append(extracted_file)
+        # generate the full list of extracted files
+        extracted_files = []
+        for root, dirs, files in os.walk(extracted_path):
+            for file_name in files:
+                extracted_file = os.path.join(root, file_name)
+                extracted_files.append(extracted_file)
 
-            if extracted_class_files:
-                if len(extracted_class_files) > self.java_class_decompile_limit:
-                    logging.info(f"{_file} generated {len(extracted_class_files)} files, only the first {self.java_class_decompile_limit} will be decompiled")
-                    extracted_class_files = extracted_class_files[:self.java_class_decompile_limit]
-
-                logging.info(f"decompiling {len(extracted_class_files)} java class files")
-                with Pool() as pool:
-                    for java_file in pool.starmap(decompile_java_class_file, [(_, untracked_path) for _ in extracted_class_files]):
-                        try:
-                            if java_file:
-                                with open(java_file, 'r') as fp_in:
-                                    with open(os.path.join(extracted_path, 'decompiled.java'), 'a') as fp_out:
-                                        shutil.copyfileobj(fp_in, fp_out)
-                        except Exception as e:
-                            logging.warning(f"something went wrong with java decompile: {e}")
-
-                    #try:
-                        #os.unlink(java_file)
-                    #except Exception as e:
-                        #logging.error(f"unable to delete {java_file}: {e}")
+        # filter the list of extracted files
+        extracted_files = order_archive_file_list(extracted_files)
 
         # rather than parse the output we just go find all the files we've created in that directory
-        for root, dirs, files in os.walk(extracted_path):
-            for file_name in files:
-                extracted_file = os.path.join(root, file_name)
-                logging.debug("extracted_file = {}".format(extracted_file))
-                
-                if '/untracked/' in extracted_file:
-                    continue
+        for extracted_file in extracted_files:
+            logging.debug("extracted_file = {}".format(extracted_file))
 
-                file_observable = analysis.add_file_observable(extracted_file, volatile=True)
+            # if we've hit the limit, remove the file instead of processing it
+            if limit_file_extraction and len(analysis.extracted_files) >= limit_file_count:
+                removed_files.append(extracted_file)
+                os.remove(extracted_file)
+                continue
 
-                if not file_observable:
-                    continue
+            file_observable = analysis.add_file_observable(extracted_file, volatile=True)
 
-                # add a relationship back to the original file
-                file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            if not file_observable:
+                continue
 
-                # if we extracted an office document then we want everything to point back to that document
-                # so that we sandbox the right thing
-                if is_office_document:
-                    file_observable.redirection = _file
+            analysis.extracted_files.append(os.path.relpath(extracted_file, start=extracted_path))
 
-                # https://github.com/IntegralDefense/ACE/issues/12 - also fixed for xps
-                if file_observable.ext in [ 'xps', 'rels', 'xml' ]:
-                    file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+            # add a relationship back to the original file
+            file_observable.add_relationship(R_EXTRACTED_FROM, _file)
 
-                # a single file inside of a zip file is always suspect
-                if analysis.file_count == 1:
-                    logging.debug("archive file {} has one file inside (always suspect)".format(_file))
-                    analysis.add_tag('single_file_zip')
+            # if we extracted an office document then we want everything to point back to that document
+            # so that we sandbox the right thing
+            if is_office_document:
+                file_observable.redirection = _file
 
-                    # and then we want to sandbox it
-                    file_observable.add_directive(DIRECTIVE_SANDBOX)
+            # https://github.com/IntegralDefense/ACE/issues/12 - also fixed for xps
+            if file_observable.ext in [ 'xps', 'rels', 'xml' ]:
+                file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
 
-                    # but an executable or script file (js, vbs, etc...) is an alert
-                    for extracted_file in analysis.observables:
-                        for ext in [ '.exe', '.scr', '.cpl', '.jar' ]:
-                            if extracted_file.file_name.lower().endswith(ext):
-                                analysis.add_tag('exe_in_zip')
-                                file_observable.add_detection_point("An archive contained a single file that was an executable")
-                        for ext in [ '.vbe', '.vbs', '.jse', '.js', '.bat', '.wsh', '.ps1' ]:
-                            if extracted_file.file_name.lower().endswith(ext):
-                                analysis.add_tag('script_in_zip')
-                                file_observable.add_detection_point("An archive contained a single file that was a script")
-                        for ext in [ '.lnk' ]:
-                            if extracted_file.file_name.lower().endswith(ext):
-                                analysis.add_tag('lnk_in_zip')
-                                file_observable.add_detection_point("An archive contained a single file that was a shortcut")
-                        for ext in ['.jnlp']:
-                            if extracted_file.file_name.lower().endswith(ext):
-                                analysis.add_tag('jnlp_in_zip')
-                                file_observable.add_detection_point("An archive contained a single file that was a Java Web Start application")
-                        for ext in ['.one']:
-                            if extracted_file.file_name.lower().endswith(ext):
-                                analysis.add_tag('one_in_zip')
-                                file_observable.add_detection_point("An archive contained a single file that was a OneNote document")
+            # a single file inside of a zip file is always suspect
+            if analysis.file_count == 1:
+                logging.debug("archive file {} has one file inside (always suspect)".format(_file))
+                analysis.add_tag('single_file_zip')
 
-        # Handle the decompiled Java (add as observable)
-        for root, dirs, files in os.walk(extracted_path):
-            for file_name in files:
-                extracted_file = os.path.join(root, file_name)
-                if file_name == 'decompiled.java':
-                    file_observable = analysis.add_file_observable(extracted_file, volatile=True)
+                # and then we want to sandbox it
+                file_observable.add_directive(DIRECTIVE_SANDBOX)
+
+                # but an executable or script file (js, vbs, etc...) is an alert
+                for extracted_file in analysis.observables:
+                    for ext in [ '.exe', '.scr', '.cpl', '.jar', '.class' ]:
+                        if extracted_file.file_name.lower().endswith(ext):
+                            analysis.add_tag('exe_in_zip')
+                            file_observable.add_detection_point("An archive contained a single file that was an executable")
+                    for ext in [ '.vbe', '.vbs', '.jse', '.js', '.bat', '.wsh', '.ps1' ]:
+                        if extracted_file.file_name.lower().endswith(ext):
+                            analysis.add_tag('script_in_zip')
+                            file_observable.add_detection_point("An archive contained a single file that was a script")
+                    for ext in [ '.lnk' ]:
+                        if extracted_file.file_name.lower().endswith(ext):
+                            analysis.add_tag('lnk_in_zip')
+                            file_observable.add_detection_point("An archive contained a single file that was a shortcut")
+                    for ext in ['.jnlp']:
+                        if extracted_file.file_name.lower().endswith(ext):
+                            analysis.add_tag('jnlp_in_zip')
+                            file_observable.add_detection_point("An archive contained a single file that was a Java Web Start application")
+                    for ext in ['.one']:
+                        if extracted_file.file_name.lower().endswith(ext):
+                            analysis.add_tag('one_in_zip')
+                            file_observable.add_detection_point("An archive contained a single file that was a OneNote document")
+
+        if len(removed_files) > 0:
+            logging.info("removed {} files because we've hit the limit".format(len(removed_files)))
+
+        #
+        # adjust file permission to be readable by anyone
+        #
 
         try:
             for root, dirs, files in os.walk(extracted_path):

@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
@@ -9,7 +9,7 @@ from gglsbl_rest_client import GGLSBL_Rest_Service_Client as GRS_Client
 KEY_MATCH_TAGS = "match_tags"
 KEY_RESULT = "result"
 
-class GglsblAnalysis(Analysis):
+class GoogleSafeBrowsingAnalysis(Analysis):
     """URL matches against Google's SafeBrowsing List using the [gglsbl-rest](https://github.com/mlsecproject/gglsbl-rest) service.
     """
 
@@ -19,6 +19,11 @@ class GglsblAnalysis(Analysis):
             KEY_MATCH_TAGS: None,
             KEY_RESULT: None,
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Google SafeBrowsing Analysis"
 
     @property
     def match_tags(self) -> list[str]:
@@ -39,33 +44,34 @@ class GglsblAnalysis(Analysis):
     def generate_summary(self):
         return "Google SafeBrowsing Results: {}".format(' '.join(self.details['match_tags']))
 
-class GglsblAnalyzer(AnalysisModule):
+class GoogleSafeBrowsingAnalyzer(AnalysisModule):
     """Lookup a URL against a gglsbl-rest service.
     """
 
     @property
     def generated_analysis_type(self):
-        return GglsblAnalysis
+        return GoogleSafeBrowsingAnalysis
 
     @property
     def valid_observable_types(self):
         return F_URL
 
     @property
-    def remote_server(self):
+    def remote_server(self) -> str:
         return self.config['server']
 
     @property
-    def remote_port(self):
-        return self.config['port']
+    def remote_port(self) -> int:
+        return int(self.config['port'])
 
     def verify_environment(self):
-        self.verify_config_exists('server');
-        self.verify_config_exists('port');
+        self.verify_config_exists('server')
+        self.verify_config_exists('port')
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         logging.info("looking up '{}' in gglsbl-rest service at '{}'".format(observable.value, self.remote_server))       
         try:
+            breakpoint()
             sbc = GRS_Client(self.remote_server, self.remote_port)
             result = sbc.lookup(observable.value)
             matches = result['matches']
@@ -74,7 +80,7 @@ class GglsblAnalyzer(AnalysisModule):
                 observable.add_detection_point("URL has matches on Google Safe Browsing List")
 
                 analysis = self.create_analysis(observable)
-                assert isinstance(analysis, GglsblAnalysis)
+                assert isinstance(analysis, GoogleSafeBrowsingAnalysis)
                 analysis.result = result
                 analysis.match_tags = list(set([ m['threat'] for m in matches if m['threat_entry'] == 'URL' ]))
                 observable.add_tag('gglsbl match')

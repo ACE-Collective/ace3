@@ -72,6 +72,10 @@ class Observable(EventSource):
         # runtime state 
         self._sha256_hasher = None
 
+        # a list of documents that will be used to generate LLM context
+        # each document becomes a vector embedding
+        self.llm_context_documents: list[str] = []
+
     # temporary backwards compatibility
     # TODO this gets moved to some display layer we build when we refactor the gui
     @property
@@ -757,6 +761,13 @@ class Observable(EventSource):
         return False
 
     # TODO: display stuff needs to come out
+
+    # LLM context management
+    # ------------------------------------------------------------------------
+
+    def add_llm_context_document(self, document: str):
+        """Add a document to this observable."""
+        self.llm_context_documents.append(document)
 
     @property
     def display_preview(self) -> Optional[str]:

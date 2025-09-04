@@ -3,7 +3,6 @@ import logging
 import os
 import shutil
 import time
-from typing import Union
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import (
@@ -508,3 +507,8 @@ class AnalysisOrchestrator:
         except Exception as e:
             logging.error(f"trouble checking finished status of {execution_context.root}: {e}")
             report_exception() 
+
+    def _submit_alert_for_embedding_vectorization(self, execution_context: EngineExecutionContext):
+        """Submit the alert for embedding vectorization."""
+        from saq.llm.embedding.service import submit_embedding_task
+        submit_embedding_task(execution_context.root.uuid)

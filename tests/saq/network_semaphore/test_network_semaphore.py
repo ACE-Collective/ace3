@@ -12,7 +12,6 @@ from saq.network_semaphore import NetworkSemaphoreServer, NetworkSemaphoreClient
 from saq.network_semaphore.logging import LoggingSemaphore
 from saq.network_semaphore.fallback import (
     get_defined_fallback_semaphore,
-    get_defined_fallback_semaphores,
     get_undefined_fallback_semaphore,
     get_undefined_fallback_semaphores,
     initialize_fallback_semaphores,

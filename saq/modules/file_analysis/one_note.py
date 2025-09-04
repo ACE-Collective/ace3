@@ -8,7 +8,7 @@ from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_onenote_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
 
 class OneNoteFileAnalysis(Analysis):
@@ -35,7 +35,7 @@ class OneNoteFileAnalysis(Analysis):
         if not self.extracted_files:
             return None
 
-        return f"OneNote File Analysis: extracted {len(self.extracted_files)} files"
+        return "OneNote File Analysis: extracted files " + format_item_list_for_summary(self.extracted_files)
 
 class OneNoteFileAnalyzer(AnalysisModule):
 

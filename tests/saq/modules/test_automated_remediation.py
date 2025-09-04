@@ -1,11 +1,11 @@
 import pytest
 from saq.analysis import RootAnalysis
-from saq.constants import *
+from saq.constants import F_EMAIL_DELIVERY
 from saq.modules.remediation import AutomatedRemediationAnalyzer
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.remediation import RemediationTarget
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_automated_remediation_analyzer(test_context):
     # run the automated remediation analyzer on an email delivery observable
     observable = RootAnalysis().add_observable_by_spec(F_EMAIL_DELIVERY, '<test>|jdoe@company.com')

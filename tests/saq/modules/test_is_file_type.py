@@ -7,7 +7,7 @@ import pytest
 
 from saq.modules.file_analysis.is_file_type import (
     is_autoit, is_chm_file, is_dotnet, is_empty_macro, is_email_file, 
-    is_image, is_jar_file, is_javascript_file, is_lnk_file, is_macro_ext, 
+    is_image, is_jar_file, is_java_class_file, is_javascript_file, is_lnk_file, is_macro_ext, 
     is_msi_file, is_office_ext, is_office_file, is_ole_file, is_onenote_file, 
     is_pdf_file, is_pe_file, is_rtf_file, is_x509, is_zip_file
 )
@@ -61,7 +61,7 @@ def test_is_jar_file(datadir, tmp_path):
 
 
 @pytest.mark.parametrize('test_bytes', [b'not a certificate', b'badly formatted certificate CERTIFICATE-----'])
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_x509_not_a_cert_return_false(test_bytes):
     """Verify is_x509 returns False if file is not an x509 certificate."""
     # setup
@@ -75,13 +75,13 @@ def test_is_x509_not_a_cert_return_false(test_bytes):
 
 
 @pytest.mark.parametrize('test_cert', ['pem-encoded', 'der-encoded'])
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_x509_return_true(test_cert, cert_on_disk):
     """Verify is_x509 returns True for various certificate formats."""
     assert is_x509(cert_on_disk[test_cert])
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_autoit(datadir, tmp_path):
     # Decode the test data file...
     with open(datadir / 'hello_world.exe.hex') as f:
@@ -96,7 +96,7 @@ def test_is_autoit(datadir, tmp_path):
     assert is_autoit(datadir / 'hello_autoit.exe') is True
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_autoit_au3(datadir, tmp_path):
     with open(datadir / 'ymehvz.au3.b64') as fp:
         data = fp.read()
@@ -114,7 +114,7 @@ def test_is_autoit_au3(datadir, tmp_path):
     assert is_autoit(str(tmp_path / 'ymehvz')) is False
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_lnk(datadir, tmp_path):
     # Decode the test data file...
     with open(datadir / 'hello_world.exe.hex') as f:
@@ -129,7 +129,7 @@ def test_is_lnk(datadir, tmp_path):
     assert is_lnk_file(datadir / 'google_chrome.lnk') is True
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_dotnet(datadir, tmp_path):
     # Decode the test data file...
     with open(datadir / 'hello_world.exe.hex') as f:
@@ -150,7 +150,7 @@ def test_is_dotnet(datadir, tmp_path):
     assert is_dotnet(target_path) is True
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_image(datadir):
     assert is_image(datadir / 'hello_world.exe') is False
     assert is_image(datadir / 'fraudulent_text.png') is True
@@ -162,7 +162,7 @@ def test_is_image(datadir):
     'chm-sample-03.chm',
     'chm-sample-04',
 ])
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_chm_file(datadir, file_name):
     assert is_chm_file(str(datadir / file_name))
 
@@ -172,7 +172,7 @@ def test_is_chm_file(datadir, file_name):
     ('is_javascript', True),
     ('is_not_javascript', False),
 ])
-@pytest.mark.integration
+@pytest.mark.unit
 def test_is_javascript_file(datadir, file_name, expected_result):
     assert is_javascript_file(str(datadir / file_name)) == expected_result
 
@@ -440,3 +440,28 @@ def test_is_email_file(tmp_path):
         fp.write(b'\xff\xfe\x00\x00')
 
     assert is_email_file(target) is False
+
+
+@pytest.mark.parametrize('file_content,expected_result', [
+    (b'\xCA\xFE\xBA\xBE', True),  # valid Java class file magic number
+    (b'\xCA\xFE\xBA\xBE\x00\x00\x00\x34', True),  # valid with additional data
+    (b'\xCA\xFE\xBA', False),  # incomplete magic number
+    (b'\xCA\xFE\xBA\xBF', False),  # invalid magic number
+    (b'not a class file', False),  # text content
+    (b'', False),  # empty file
+    (b'\x00\x00', False),  # short binary content
+])
+@pytest.mark.unit
+def test_is_java_class_file(tmp_path, file_content, expected_result):
+    target = str(tmp_path / 'test.class')
+    with open(target, 'wb') as fp:
+        fp.write(file_content)
+
+    assert is_java_class_file(target) == expected_result
+
+
+@pytest.mark.unit  
+def test_is_java_class_file_missing_file(tmp_path):
+    # test missing file
+    target = str(tmp_path / 'nonexistent.class')
+    assert is_java_class_file(target) is False

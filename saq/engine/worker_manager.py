@@ -140,7 +140,11 @@ class WorkerManager:
         # is it taking too long to analyze something?
         if worker.analysis_has_timed_out():
             logging.warning(f"worker {worker} analysis has timed out")
-            kill_process_tree(worker.process.pid, signal.SIGKILL)
+            try:
+                kill_process_tree(worker.process.pid, signal.SIGKILL)
+            except Exception as e:
+                logging.warning(f"unable to kill process {worker.process}: {e}")
+
             return WorkerStatus.DEAD
 
         # is it using too much memory?

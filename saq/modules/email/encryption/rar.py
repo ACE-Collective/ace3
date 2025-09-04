@@ -1,6 +1,7 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 
 from html2text import html2text
 from saq.analysis.analysis import Analysis
@@ -29,6 +30,11 @@ class RarEncryptionAnalysis(Analysis):
             KEY_PASSWORD: None,
             KEY_ERROR: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Rar Encryption Analysis"
 
     @property
     def encryption_info(self):
@@ -82,7 +88,7 @@ class RarEncryptionAnalysis(Analysis):
         if self.details is None:
             return None
 
-        result = "Rar Encryption Analysis"
+        result = self.display_name
         if self.error:
             return f"{result}: {self.error}"
         elif self.password:

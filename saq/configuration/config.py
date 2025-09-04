@@ -92,13 +92,8 @@ def get_config_value_as_list(section: str, name: str, default: Optional[list[str
     parts = [_.strip() for _ in s.split(sep)] if sep is not None else [s]
     return parts if include_empty else [p for p in parts if p]
 
-def set_config(config: configparser.ConfigParser):
-    assert isinstance(config, configparser.ConfigParser)
-
+def set_config(config):
     global CONFIG
-    if CONFIG:
-        sys.stderr.write("global CONFIG object changing\n")
-
     CONFIG = config
 
 def initialize_configuration(config_paths: Optional[list[str]]=None):

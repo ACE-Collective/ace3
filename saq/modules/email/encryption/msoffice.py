@@ -1,6 +1,7 @@
 import logging
 import os
 from subprocess import PIPE, Popen
+from typing import override
 
 import msoffcrypto
 from saq.analysis.analysis import Analysis
@@ -34,6 +35,11 @@ class MSOfficeEncryptionAnalysis(Analysis):
             KEY_PASSWORD: None,
             KEY_ERROR: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "MSOffice Encryption Analysis"
 
     @property
     def encryption_info(self):
@@ -87,7 +93,7 @@ class MSOfficeEncryptionAnalysis(Analysis):
         if self.details is None:
             return None
 
-        result = "MSOffice Encryption Analysis"
+        result = self.display_name
         if self.error:
             return f"{result}: {self.error}"
         elif self.password:
@@ -225,7 +231,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
 
             # let's try brute forcing it if we didn't crack it with the email
             if not analysis.password and self.attempt_brute_force:
-                analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--incremental=DigitsCustom')
+                analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, '--incremental=DigitsCustom')
 
             if not analysis.password:
                 analysis.error = "could not crack password"

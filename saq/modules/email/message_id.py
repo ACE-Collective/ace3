@@ -1,21 +1,30 @@
 import logging
 import os
-from typing import Optional
+from typing import Optional, override
 from ace_api import iter_archived_email
 from saq.analysis.analysis import Analysis
 from saq.analysis.search import search_down
-from saq.constants import F_FILE, F_MESSAGE_ID, AnalysisExecutionResult
+from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 
 KEY_ERROR = "error"
+KEY_EXTRACTED_EMAIL = "extracted_email"
 
 class MessageIDAnalysisV2(Analysis):
     """Is there an email with this Message-ID available anywhere?"""
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = { KEY_ERROR: None }
+        self.details = { 
+            KEY_ERROR: None,
+            KEY_EXTRACTED_EMAIL: None,
+        }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Message ID Analysis"
 
     @property
     def error(self) -> Optional[str]:
@@ -25,16 +34,22 @@ class MessageIDAnalysisV2(Analysis):
     def error(self, value: str):
         self.details[KEY_ERROR] = value
 
+    @property
+    def extracted_email(self) -> Optional[str]:
+        return self.details[KEY_EXTRACTED_EMAIL]
+
+    @extracted_email.setter
+    def extracted_email(self, value: str):
+        self.details[KEY_EXTRACTED_EMAIL] = value
+
     def generate_summary(self):
-        if not self.details:
+        if self.error:
+            return f"{self.display_name}: ERROR: {self.error}"
+
+        if not self.extracted_email:
             return None
 
-        prefix = "Message ID Analysis (V2)"
-
-        if self.error:
-            return f"{prefix}: ERROR: {self.error}"
-
-        return f"{prefix}: archived email extracted"
+        return f"{self.display_name}: archived email extracted {self.extracted_email}"
 
 class MessageIDAnalyzerV2(AnalysisModule):
 

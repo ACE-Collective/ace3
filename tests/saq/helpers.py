@@ -560,13 +560,19 @@ def initialize_unittest_logging():
 
     log_format = logging.Formatter(datefmt='%(asctime)s')
 
-    if memory_log_handler is not None:
-        logging.getLogger().removeHandler(memory_log_handler)
-
     memory_log_handler = MemoryLogHandler()
     memory_log_handler.setLevel(logging.DEBUG)
     memory_log_handler.setFormatter(log_format)
     logging.getLogger().addHandler(memory_log_handler)
+
+def reset_unittest_logging():
+    global test_log_manager
+    global test_log_sync
+    global test_log_messages
+    global memory_log_handler
+
+    with test_log_sync:
+        test_log_messages[:] = []
 
 def stop_unittest_logging():
 

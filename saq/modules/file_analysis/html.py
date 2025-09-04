@@ -4,11 +4,15 @@ import logging
 from mmap import PROT_READ, mmap
 import os
 import re
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path, map_mimetype_to_file_ext
+from saq.util.filesystem import map_mimetype_to_file_ext
+from saq.util.strings import format_item_list_for_summary
+
+KEY_URL = "url"
 
 
 class MetaRefreshExtractionAnalysis(Analysis):
@@ -17,22 +21,27 @@ class MetaRefreshExtractionAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "url": None
+            KEY_URL: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Meta Refresh Analysis"
 
     @property
     def url(self):
-        return self.details["url"]
+        return self.details[KEY_URL]
 
     @url.setter
     def url(self, value):
-        self.details["url"] = value
+        self.details[KEY_URL] = value
 
     def generate_summary(self):
         if self.url is None:
             return None
 
-        return "Detected meta-refresh to {}".format(self.url)
+        return f"{self.display_name}: Detected meta-refresh to {self.url}"
 
 class MetaRefreshExtractionAnalyzer(AnalysisModule):
     @property
@@ -91,31 +100,38 @@ class MetaRefreshExtractionAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
+KEY_EXTRACTED_FILES = "extracted_files"
+
 class MHTMLAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "extracted_files": []
+            KEY_EXTRACTED_FILES: []
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "MHTML Analysis"
 
     @property
     def extracted_files(self):
-        return self.details["extracted_files"]
+        return self.details[KEY_EXTRACTED_FILES]
 
     @extracted_files.setter
     def extracted_files(self, value):
-        self.details["extracted_files"] = value
+        self.details[KEY_EXTRACTED_FILES] = value
 
     def generate_summary(self):
         if not self.extracted_files:
             return None
 
-        return "MHTML Analyssis - extracted {} files".format(len(self.extracted_files))
+        return f"{self.display_name}: {format_item_list_for_summary(self.extracted_files)}"
 
 class MHTMLAnalysisModule(AnalysisModule):
 
     # list of supported file extensions for this module
-    MHTML_FILE_EXTENSIONS = [ '.mhtml', '.mht', '.eml' ]
+    MHTML_FILE_EXTENSIONS = [ '.mhtml', '.mht' ]
 
     # simple regex looking for start of a MIME header
     RE_HEADER = re.compile(b'^[a-zA-Z0-9-_]+:')
@@ -220,6 +236,11 @@ class HTMLDataURLAnalysis(Analysis):
             self.KEY_COUNT: 0,
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "HTML Data URL Analysis"
+
     @property
     def count(self):
         return self.details[self.KEY_COUNT]
@@ -232,7 +253,7 @@ class HTMLDataURLAnalysis(Analysis):
         if not self.count:
             return None
 
-        return f"Extracted {self.count} Data URLs"
+        return f"{self.display_name}: Extracted {self.count} Data URLs"
 
 RE_HTML_EMBED = re.compile(b"data:([^/]+/[^;]+);base64,([-A-Za-z0-9+/=]+)")
 

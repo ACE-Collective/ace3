@@ -24,9 +24,14 @@ class FilePathAnalysis(Analysis):
         }
 
     def generate_summary(self):
-        result = "File Path Analysis ({})".format(self.file_name)
-        if self.user_name is not None:
-            result = '{} ({})'.format(result, self.user_name)
+        if not self.file_name and not self.user_name:
+            return None
+
+        result = "File Path Analysis:"
+        if self.file_name:
+            result += f" file name {self.file_name}"
+        if self.user_name:
+            result += f" user name {self.user_name}"
 
         return result
 

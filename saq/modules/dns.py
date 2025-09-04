@@ -4,7 +4,8 @@ from typing import Optional
 
 from saq.analysis import Analysis
 from saq.constants import F_FQDN, F_IPV4, AnalysisExecutionResult
-from saq.modules import AnalysisModule 
+from saq.modules import AnalysisModule
+from saq.util.strings import format_item_list_for_summary 
 
 KEY_IP_ADDRESS = "ip_address"
 KEY_RESOLUTION_COUNT = "resolution_count"
@@ -57,9 +58,17 @@ class FQDNAnalysis(Analysis):
         self.details[KEY_ALL_RESOLUTIONS] = value
 
     def generate_summary(self):
-        message = f"DNS Analysis: {self.details['ip_address']}"
-        if self.details['resolution_count'] > 1:
-            message += f", and {self.details['resolution_count']-1} other IP addresses"
+        if not self.ip_address:
+            return None
+
+        message = "DNS Analysis:"
+
+        if self.aliaslist:
+            message += f" aliaslist ({format_item_list_for_summary(self.aliaslist)})"
+
+        if self.all_resolutions:
+            message += f" ip addresses ({format_item_list_for_summary(self.all_resolutions)})"
+
         return message
 
 

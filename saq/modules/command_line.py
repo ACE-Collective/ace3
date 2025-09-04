@@ -3,9 +3,10 @@
 import shlex
 
 from saq.analysis import Analysis
-from saq.constants import F_COMMAND_LINE, F_FILE_PATH, R_EXECUTED_ON, create_file_location, AnalysisExecutionResult
+from saq.constants import F_COMMAND_LINE, F_FILE_LOCATION, F_FILE_PATH, R_EXECUTED_ON, create_file_location, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.util.filesystem import is_nt_path
+from saq.util.strings import format_item_list_for_summary
 
 KEY_FILE_PATHS = 'file_paths'
 
@@ -24,7 +25,7 @@ class CommandLineAnalysis(Analysis):
         if not self.file_paths:
             return None
 
-        return f"Command Line Analysis: extracted {len(self.file_paths)} file paths"
+        return "Command Line Analysis: extracted file paths " + format_item_list_for_summary(self.file_paths)
 
 class CommandLineAnalyzer(AnalysisModule):
     @property

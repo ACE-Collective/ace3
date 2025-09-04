@@ -1,33 +1,41 @@
 import logging
 import os
 from subprocess import DEVNULL, Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.strings import format_item_list_for_summary
 
+
+KEY_SUSPECT_FILES = "suspect_files"
 
 class ExtractedOLEAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "suspect_files": []
+            KEY_SUSPECT_FILES: []
         }
+
+    @override
+    @property
+    def display_name(self):
+        return "Extracted OLE Analysis"
 
     @property
     def suspect_files(self):
-        return self.details["suspect_files"]
+        return self.details[KEY_SUSPECT_FILES]
 
     @suspect_files.setter
     def suspect_files(self, value):
-        self.details["suspect_files"] = value
+        self.details[KEY_SUSPECT_FILES] = value
 
     def generate_summary(self):
-        if not self.details:
+        if not self.suspect_files:
             return None
 
-        return "Extracted OLE Analysis - ({})".format(','.join(self.suspect_files))
+        return f"{self.display_name}: identified ({format_item_list_for_summary(self.suspect_files)}) as suspect files"
 
 class ExtractedOLEAnalyzer(AnalysisModule):
 
@@ -77,7 +85,6 @@ class ExtractedOLEAnalyzer(AnalysisModule):
             for suspect_file_type in self.suspect_file_type:
                 if suspect_file_type.lower().strip() in file_type_analysis.file_type.lower():
                     _file.add_detection_point("OLE attachment has suspect file type {}".format(suspect_file_type))
-                    analysis.suspect_files.append(suspect_file_type)
                     suspect = True
                     break
 
@@ -85,7 +92,6 @@ class ExtractedOLEAnalyzer(AnalysisModule):
                 for suspect_file_ext in self.suspect_file_ext:
                     if _file.file_path.lower().endswith('.{}'.format(suspect_file_ext)):
                         _file.add_detection_point("OLE attachment has suspect file ext {}".format(suspect_file_ext))
-                        analysis.suspect_files.append(suspect_file_ext)
                         suspect = True
                         break
 
@@ -103,6 +109,7 @@ class ExtractedOLEAnalyzer(AnalysisModule):
 
             if suspect:
                 logging.info("found suspect ole attachment {} in {}".format(suspect_file_type, _file))
+                analysis.suspect_files.append(_file.display_value)
                 _file.add_tag('suspect_ole_attachment')
 
             return AnalysisExecutionResult.COMPLETED

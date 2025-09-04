@@ -53,6 +53,11 @@ class EmailAnalysis(Analysis):
             KEY_PARSING_ERROR: None,
             KEY_EMAIL: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Email Analysis"
         
     @property
     def parsing_error(self):
@@ -397,10 +402,10 @@ class EmailAnalysis(Analysis):
             return self.parsing_error
 
         if self.observable.has_tag('whitelisted'):
-            return "Email Analysis - (whitelisted email)"
+            return "Email Analysis: (whitelisted email)"
 
         if self.email:
-            result = "Email Analysis -"
+            result = "Email Analysis:"
             if KEY_FROM in self.email:
                 result = "{} From {}".format(result, self.email[KEY_FROM])
             if KEY_ENV_RCPT_TO in self.email and self.email[KEY_ENV_RCPT_TO]:

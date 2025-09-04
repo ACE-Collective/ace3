@@ -1,30 +1,56 @@
 import logging
 import os
+from typing import override
 from urllib.parse import urlparse
 from tld import get_tld
 from saq.analysis.analysis import Analysis
-from saq.configuration.config import get_config_value_as_boolean
-from saq.constants import CONFIG_MODULE_ENABLED, CONFIG_YARA_SCANNER_MODULE, DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 from saq.util.networking import is_subdomain
 
 from urlfinderlib import find_urls
 
+from saq.util.strings import format_item_list_for_summary
+
+
+KEY_URLS = "urls"
 
 class URLExtractionAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "urls": []
+            KEY_URLS: []
         }
 
+    @override
+    @property
+    def display_name(self):
+        return "URL Extraction Analysis"
+
+    @property
+    def urls(self) -> list[str]:
+        return self.details[KEY_URLS]
+    
+    @urls.setter
+    def urls(self, value: list[str]):
+        self.details[KEY_URLS] = value
+
     def generate_summary(self):
-        if self.details['urls'] is None or not len(self.details['urls']):
+        if not len(self.urls):
             return None
 
-        return "URL Extraction Analysis ({} urls)".format(len(self.details['urls']))
+        # extract unique domain names from the URLs
+        domains = set()
+        for url in self.urls:
+            try:
+                parsed = urlparse(url)
+                if parsed.hostname:
+                    domains.add(parsed.hostname)
+            except Exception as e:
+                logging.debug("failed to parse url %s: %s", url, e)
+
+        return f"{self.display_name} ({format_item_list_for_summary(sorted(list(domains)))})"
 
 class URLExtractionAnalyzer(AnalysisModule):
     @property

@@ -1,4 +1,5 @@
 import logging
+from typing import override
 from urllib.parse import parse_qs, urlparse
 from saq.analysis.analysis import Analysis
 from saq.constants import F_URL, AnalysisExecutionResult
@@ -15,6 +16,11 @@ class ProtectedURLAnalysis(Analysis):
             KEY_PROTECTION_TYPE: None,
             KEY_EXTRACTED_URL: None,
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Protected URL Analysis"
 
     @property
     def protection_type(self):
@@ -39,7 +45,7 @@ class ProtectedURLAnalysis(Analysis):
         if not self.extracted_url:
             return None
 
-        return "Protected URL Analysis: detected type {}".format(self.protection_type)
+        return f"{self.display_name}: detected type {self.protection_type} extracted url {self.extracted_url}"
 
 
 PROTECTION_TYPE_ONE_DRIVE = 'one drive'

@@ -91,13 +91,7 @@ class AssetAnalysis(Analysis):
         return "analysis/asset_analysis.html"
 
     def generate_summary(self):
-        return 'Asset Analysis Summary - host: {0} domain {1} MAC {2} fqdn {3} owner {4} os {5}'.format(
-            self.hostname,
-            self.domain,
-            self.mac,
-            self.fqdn,
-            self.owner,
-            self.os)
+        return f"Asset Analysis Summary: host {self.hostname} domain {self.domain} MAC {self.mac} fqdn {self.fqdn} owner {self.owner} os {self.os}"
 
 class AssetAnalyzer(AnalysisModule):
 

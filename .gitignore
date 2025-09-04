@@ -183,3 +183,6 @@ CLAUDE.md
 
 # integrations
 integrations/
+
+# local area for hosting local development/testing stuff
+workspace/

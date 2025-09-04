@@ -10,7 +10,7 @@ def disable_proxy():
             logging.debug("removing proxy setting {}".format(proxy_setting))
             del os.environ[proxy_setting]
 
-def recurse_analysis(analysis, level=0, current_tree=[]):
+def recurse_analysis(analysis, level=0, current_tree=[], include_context=False):
     """Used to generate a textual display of the analysis results."""
     from saq.observables import FileObservable
     if not analysis:
@@ -26,11 +26,15 @@ def recurse_analysis(analysis, level=0, current_tree=[]):
 
     display = '{}{}{}'.format('\t' * level, 
                               '<' + '!' * len(analysis.detections) + '> ' if analysis.detections else '', 
-                              analysis.summary if analysis.summary is not None else str(analysis))
+                              analysis.summary if analysis.summary is not None else analysis.display_name)
     if analysis.tags:
         display += ' [ {} ] '.format(', '.join([x.name for x in analysis.tags]))
     
     print(display)
+
+    if include_context:
+        for context_document in analysis.llm_context_documents:
+            print('\t' * level + f'🧠 {context_document}')
 
     for summary_detail in analysis.summary_details:
         print('{}{}'.format('\t' * level, summary_detail.content))
@@ -56,12 +60,15 @@ def recurse_analysis(analysis, level=0, current_tree=[]):
             #for pivot_link in observable.pivot_links:
                 #display += f' 🔗 {pivot_link}'
         print(display)
+        if include_context:
+            for context_document in observable.llm_context_documents:
+                print('\t' * level + f'🧠 {context_document}')
 
         for observable_analysis in observable.all_analysis:
             recurse_analysis(observable_analysis, level + 1, current_tree)
 
-def display_analysis(root):
-    recurse_analysis(root)
+def display_analysis(root, include_context=False):
+    recurse_analysis(root, include_context=include_context)
 
     tags = set(root.all_tags)
     if tags:

@@ -1,6 +1,9 @@
 from datetime import datetime
 import logging
 import os
+from lxml import etree
+from urllib.parse import urlparse
+
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, AnalysisExecutionResult
 from saq.crypto import encrypt
@@ -8,13 +11,13 @@ from saq.environment import get_data_dir
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_office_file
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
-from lxml import etree
+from saq.util.strings import format_item_list_for_summary
 
 
-class _xml_parser(object):
+class _xml_parser:
     def __init__(self):
         self.urls = [] # the list of urls we find
+
 
     def start(self, tag, attrib):
         if not tag.endswith('Relationship'):
@@ -49,11 +52,16 @@ class _xml_parser(object):
 KEY_URLS = 'urls'
 
 class OfficeXMLRelationshipExternalURLAnalysis(Analysis):
+    """Extracts URLs from Office XML relationship files."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
             KEY_URLS: [],
         }
+
+    @property
+    def display_name(self):
+        return "Office XML URL Analysis"
 
     @property
     def urls(self):
@@ -67,7 +75,18 @@ class OfficeXMLRelationshipExternalURLAnalysis(Analysis):
         if not self.urls:
             return None
 
-        return "Office XML Rel Ext URL ({} urls extracted)".format(len(self.urls))
+        domains = set()
+        for url in self.urls:
+            try:
+                parsed = urlparse(url)
+                if parsed.hostname:
+                    domains.add(parsed.hostname)
+            except Exception:
+                pass
+
+        domains = sorted(domains)
+
+        return f"{self.display_name}: {format_item_list_for_summary(domains)}"
 
 class OfficeXMLRelationshipExternalURLAnalyzer(AnalysisModule):
     

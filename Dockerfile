@@ -10,7 +10,9 @@ ENV SAQ_HOME=/opt/ace \
     SAQ_USER=ace \
     SAQ_GROUP=ace \
     TZ=UTC \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    NPM_CONFIG_PREFIX=/usr/local/share/npm-global \
+    PATH=$PATH:/usr/local/share/npm-global/bin
 
 # build arguments
 ARG SAQ_USER_ID=${SAQ_USER_ID}
@@ -35,6 +37,88 @@ RUN sed -i -e '/^Components: main$/ s/$/ contrib non-free/' /etc/apt/sources.lis
     rm /tmp/packages-microsoft-prod.deb
 
 # install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        apt-utils \
+        automake \
+        bison \
+        bsdmainutils \
+        build-essential \
+        ca-certificates \
+        curl \
+        de4dot \
+        default-jre \
+        default-mysql-client \
+        dirmngr \
+        dmg2img \
+        dmg2img \
+        dnsutils \
+        dotnet-runtime-9.0 \
+        enchant-2 \
+        exiftool \
+        file \
+        flex \
+        gcc \
+        ghostscript \
+        git \
+        htop \
+        less \
+        libarchive-zip-perl \
+        libbz2-dev \
+        libffi-dev \
+        libfuzzy-dev \
+        libgdbm-dev \
+        libimage-exiftool-perl \
+        libldap2-dev \
+        libmagic-dev \
+        libncurses5-dev \
+        libnss3-dev \
+        libreadline-dev \
+        libsasl2-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libtesseract-dev \
+        libtool \
+        libxml2-dev \
+        libxslt1-dev \
+        libyaml-dev \
+        locales \
+        lsb-release \
+        lsof \
+        make \
+        man \
+        net-tools \
+        nginx \
+        nmap \
+        openjdk-17-jre \
+        p7zip-full \
+        p7zip-rar \
+        pkg-config \
+        poppler-utils \
+        rng-tools \
+        rsync \
+        screen \
+        smbclient \
+        software-properties-common \
+        ssdeep \
+        strace \
+        tcpdump \
+        tesseract-ocr \
+        tshark \
+        unace-nonfree \
+        unixodbc-dev \
+        unrar \
+        unzip \
+        upx-ucl \
+        vim \
+        wireshark-common \
+        zbar-tools \
+        zip \
+        zlib1g-dev \
+    && apt-get clean  \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
@@ -152,17 +236,19 @@ USER ace
 COPY --chown=ace:ace installer/requirements.txt /venv/python-requirements.txt
 COPY --chown=ace:ace installer/requirements-2.7.txt /venv/python-requirements-2.7.txt
 
+# NOTE for now we're installing sentence-transformers w/o nvidia gpu support
 RUN python3 -m virtualenv --python=python3 /venv && \
     . /venv/bin/activate && \
     pip config set global.cert /etc/ssl/certs/ca-certificates.crt && \
     pip install --no-cache-dir -U pip wheel setuptools && \
     pip install --no-cache-dir -r /venv/python-requirements.txt && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git && \
-    pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git
+    pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
+    pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu
 
 # configure bash environment
 RUN echo 'source /venv/bin/activate' >> /home/ace/.bashrc && \
-    echo 'export PATH="$PATH:/opt/ace/bin:/opt/ace"' >> /home/ace/.bashrc && \
+    echo 'export PATH="$PATH:/opt/ace/bin:/opt/ace:/usr/local/share/npm-global/bin"' >> /home/ace/.bashrc && \
     echo 'if [ -e /opt/ace/load_environment ]; then source /opt/ace/load_environment; fi' >> /home/ace/.bashrc
 
 # install additional Python packages
@@ -208,6 +294,23 @@ RUN sed -i -e 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1.0/' /etc/ssl/openssl.
 
 # XXX is this line needed?
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/external /opt/ace/data/var
+
+# ------------------------------------------------------------------------------------------------
+# claude code setup
+# ------------------------------------------------------------------------------------------------
+
+# eventually we'll move this to a dev container Dockerfile
+
+ARG CLAUDE_CODE_VERSION=latest
+
+# setup needed for claude dev container work
+RUN mkdir -p /usr/local/share/npm-global /home/ace/.claude && \
+    chown -R ace:ace /usr/local/share /home/ace/.claude
+
+USER ace
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+USER root
 
 # NOTE that COPY app /opt/ace does not create /opt/ace/app, it actually copies everything inside of app into /opt/ace
 # so we copy each individual thing we need

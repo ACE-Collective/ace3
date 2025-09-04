@@ -89,9 +89,9 @@ global:
   # how often (in seconds) modules check to see if watched files have been modified
   check_watched_files_frequency: 5
   # issue a warning when a worker process uses this much memory (in MB)
-  memory_limit_warning: 512
+  memory_limit_warning: 2048
   # kill a worker when it uses this much memory (in MB)
-  memory_limit_kill: 1024
+  memory_limit_kill: 4096
   # the database we use to query for encrypted passwords
   # defaults to the local ace database
   encrypted_passwords_db: ace
@@ -103,6 +103,18 @@ global:
   # once this threshold is met, no more observables can be added
   # set to 0 to disable this functionality
   maximum_observable_count: 800
+
+# LLM settings
+llm:
+  # the embedding model to use for vectorization
+  embedding_model: all-MiniLM-L6-v2
+
+service_llm_embedding:
+  module: saq.llm.embedding.service
+  class: EmbeddingService
+  description: LLM Embedding - embeds alerts into a vector space
+  enabled: true
+  instance_type: ANY
 
 # monitor settings
 monitor:
@@ -134,6 +146,11 @@ redis-local:
   port: 6379
   username: ace3
   password: encrypted:redis.password
+
+qdrant:
+  url: http://qdrant:6333
+  # the collection name for ace3 alert data
+  collection_alerts: ace3-alerts
 
 # global database settings
 database:
@@ -808,15 +825,15 @@ custom_alerts_backward_compatibility:
 
 # ANALYSIS MODULES (only comments for select keys included below to preserve length)
 # configuration format is as follows
-# [analysis_module_UNIQUE_MODULE_NAME] <-- must begin with analysis_module_ and module_name must be unique
-# id = unique identifier for the module
-# module = MODULE_PATH <-- the module path the AnalysisModule class is located in
-# class = MODULE_CLASS
-# enabled = yes | no
-# module_groups = group1,group2,...
-# exclude_UNIQUE_NAME = type:value
-# expect_UNIQUE_NAME = type:value
-# optional parameters include file_size_limit (bytes), priority (lower goes first)
+# analysis_module_UNIQUE_MODULE_NAME:
+#   id: unique identifier for the module
+#   module: MODULE_PATH  # the module path the AnalysisModule class is located in
+#   class: MODULE_CLASS
+#   enabled: true | false
+#   module_groups: group1,group2,...
+#   exclude_UNIQUE_NAME: type:value
+#   expect_UNIQUE_NAME: type:value
+#   # optional parameters include file_size_limit (bytes), priority (lower goes first)
 
 analysis_module_html_data_url_extraction:
   id: html_data_url_extraction
@@ -981,7 +998,7 @@ analysis_module_whois_analyzer:
   id: whois_analyzer
   module: saq.modules.whois
   class: WhoisAnalyzer
-  enabled: false
+  enabled: true
 
 analysis_module_active_directory_analyzer:
   id: active_directory_analyzer
@@ -1101,7 +1118,7 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_extra_006: "*.rels"
   ignore_pattern_extra_007: "*/xl/vbaProject.bin"
   ignore_pattern_extra_008: "*.extracted/xl/*.bin"
-  ignore_pattern_pdf_txt: "*.pdf_txt"
+  ignore_pattern_pdf_txt: "*.pdf.txt"
   ignore_pattern_olevba: "*.olevba/*.bas"
   ignore_pattern_pcode: "*.pcode.bas"
 
@@ -1139,12 +1156,21 @@ analysis_module_archive:
   # more attacks only have a single file inside the zip; avoid archives with thousands of files
   max_file_count: 6
   # use a different max file count for jar files
-  max_jar_file_count: 1000
+  max_jar_file_count: 30
   # the maximum amount of time (in seconds) to wait for 7z to complete
   # 7z can go nuts and consume all system memory, so this tries to prevent that
   timeout: 5
   # the archive analyzer also decompiles java class files (limit for number of class files)
-  java_class_decompile_limit: 100
+  java_class_decompile_limit: 30
+
+analysis_module_java_class_decompiler:
+  id: java_class_decompiler
+  module: saq.modules.file_analysis.java
+  class: JavaClassDecompilerAnalysisModule
+  enabled: true
+
+  # the maximum amount of time (in seconds) to wait for the decompiler to complete
+  timeout: 30
 
 analysis_module_olevba_v1_2:
   id: olevba_v1_2
@@ -1430,10 +1456,11 @@ analysis_module_x509_analyzer:
   enabled: true
   invalid_queues: internal
 
-analysis_module_gglsbl_service:
-  id: gglsbl_service
+# XXX this needs fixed, I think it needs a local service running?
+analysis_module_google_safe_browsing_service:
+  id: google_safe_browsing_service
   module: saq.modules.url.google_sb
-  class: GglsblAnalyzer
+  class: GoogleSafeBrowsingAnalyzer
   enabled: false
   server: ""
   port: 5000
@@ -1441,11 +1468,17 @@ analysis_module_gglsbl_service:
   # Else, it should be the path the the CA chain
   verify_ssl: false
 
+#
+# this module was been deprecated in favor of this "phishkit" approach
+# you used to be able to just reach out the pull stuff down
+# but the bad guys got smart and put themselves behind geo-blocking, recaptcha, cloudflare, etc...
+#
+
 analysis_module_crawlphish:
   id: crawlphish
   module: saq.modules.url.crawlphish
   class: CrawlphishAnalyzer
-  enabled: true
+  enabled: false
   invalid_queues: internal
   # path to whitelisted netloc
   whitelist_path: etc/crawlphish.whitelist
@@ -1634,12 +1667,6 @@ analysis_module_alert_added_to_event:
   class: AlertAddedToEventAnalyzer
   enabled: true
 
-analysis_module_http_referer:
-  id: http_referer
-  module: saq.modules.referer
-  class: HTTPRefererAnalyzer
-  enabled: true
-
 analysis_module_dhash:
   id: dhash
   module: saq.modules.dhash
@@ -1743,7 +1770,6 @@ tag_css_class:
 module_group_correlation:
   # all the modules you'd want minus any special modules designed for specific systems
   analysis_module_active_directory_analyzer: true
-  analysis_module_gglsbl_service: true
   analysis_module_idna_analyzer: true
   analysis_module_message_id_analyzer_v2: true
   analysis_module_netbios_analyzer: true
@@ -1767,8 +1793,9 @@ module_group_file:
   analysis_module_autoit: true
   analysis_module_binary_file_analyzer: true
   analysis_module_cve_2021_30657_analyzer: true
-  analysis_module_dmg_analyzer: true
   analysis_module_de4dot: true
+  analysis_module_dhash: true
+  analysis_module_dmg_analyzer: true
   analysis_module_exif: true
   analysis_module_extracted_ole_analyzer: true
   analysis_module_extracted_rtf_analyzer: true
@@ -1777,6 +1804,7 @@ module_group_file:
   analysis_module_file_type: true
   analysis_module_hidden_mime: true
   analysis_module_html_data_url_extraction: true
+  analysis_module_java_class_decompiler: true
   analysis_module_lnk_parser: true
   analysis_module_mhtml: true
   analysis_module_microsoft_script_encoding_analysis: true
@@ -1790,6 +1818,7 @@ module_group_file:
   analysis_module_pcodedmp: true
   analysis_module_pdf_analyzer: true
   analysis_module_pdftotext: true
+  analysis_module_phishkit_analyzer: true
   analysis_module_protected_url_analyzer: true
   analysis_module_qrcode: true
   analysis_module_rar_encryption_analyzer: true
@@ -1806,7 +1835,6 @@ module_group_file:
   analysis_module_xml_plain_text_analyzer: true
   analysis_module_yara_scanner_v3_4: true
   analysis_module_zip_encryption_analyzer: true
-  analysis_module_phishkit_analyzer: true
 
 module_group_email:
   # everything related to email scanning

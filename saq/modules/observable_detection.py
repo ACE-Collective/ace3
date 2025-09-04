@@ -1,4 +1,5 @@
 import logging
+from typing import override
 import redis
 
 from saq.analysis import Analysis
@@ -15,6 +16,11 @@ class ObservableDetectionAnalysis(Analysis):
             KEY_FOR_DETECTION: False,
         }
 
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Observable Detection Analysis"
+
     @property
     def for_detection(self) -> bool:
         return self.details[KEY_FOR_DETECTION]
@@ -26,7 +32,9 @@ class ObservableDetectionAnalysis(Analysis):
     def generate_summary(self):
         # Only generate a summary if the observable is enabled for detection
         if self.for_detection:
-            return "Observable is enabled for detection"
+            return f"{self.display_name}: enabled for detection"
+        else:
+            return None
 
 
 class ObservableDetectionAnalyzer(AnalysisModule):

@@ -1,13 +1,15 @@
 import logging
 import os
-from typing import Optional
+from typing import Optional, override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_image
 from saq.observables.file import FileObservable
 from saq.ocr import get_binary_image, get_image_text, invert_image_color, is_dark, is_small, read_image, remove_line_wrapping, scale_image
-from saq.util.filesystem import get_local_file_path
+
+KEY_ERROR = "error"
+KEY_OCR = "ocr"
 
 
 class OCRAnalysis(Analysis):
@@ -15,17 +17,39 @@ class OCRAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            'stdout': None,
-            'stderr': None,
-            'error': None,
-            'ocr': False,
+            KEY_ERROR: None,
+            KEY_OCR: False,
         }
 
+    @override
+    @property
+    def display_name(self):
+        return "OCR Analysis"
+
+    @property
+    def error(self):
+        return self.details[KEY_ERROR]
+
+    @error.setter
+    def error(self, value: str):
+        self.details[KEY_ERROR] = value
+
+    @property
+    def ocr(self) -> bool:
+        return self.details[KEY_OCR]
+
+    @ocr.setter
+    def ocr(self, value: bool):
+        self.details[KEY_OCR] = value
+
     def generate_summary(self) -> Optional[str]:
-        if not self.details['ocr']:
+        if self.error:
+            return f"{self.display_name} error: {self.error}"
+
+        if not self.ocr:
             return None
 
-        return "OCR Analysis succeeded"
+        return self.display_name
 
 class OCRAnalyzer(AnalysisModule):
 
@@ -144,7 +168,9 @@ class OCRAnalyzer(AnalysisModule):
 
         # Create the analysis and add the text file as an observable
         analysis = self.create_analysis(_file)
-        analysis.details["ocr"] = True
+        assert isinstance(analysis, OCRAnalysis)
+
+        analysis.ocr = True
         file_observable = analysis.add_file_observable(output_filename, volatile=True)
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)

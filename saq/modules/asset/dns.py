@@ -6,6 +6,7 @@ from saq.configuration.config import get_config_value_as_list
 from saq.constants import CONFIG_GLOBAL, CONFIG_GLOBAL_LOCAL_DOMAINS, F_ASSET, F_FQDN, F_HOSTNAME, F_IPV4, G_DEFAULT_ENCODING, G_LOCAL_DOMAINS, AnalysisExecutionResult
 from saq.environment import g, g_list
 from saq.modules import AnalysisModule
+from saq.util.strings import format_item_list_for_summary
 
 #(env)jdavison@NAKYLEXSEC101:~/saq$ dig -x 162.128.155.20
 
@@ -77,13 +78,13 @@ class DNSAnalysis(Analysis):
         return self.details[ANALYSIS_DNS_IPV4]
 
     def generate_summary(self):
-        if self.dns_resolved:
-            return "DNS Analysis (hostname: {0} fqdn {1} ipv4 {2})".format(
-                self.dns_hostname,
-                self.dns_fqdn,
-                ','.join(self.dns_ipv4))
+        if not self.dns_resolved:
+            return None
 
-        return None
+        return "DNS Analysis: hostname: {0} fqdn {1} ipv4 {2}".format(
+            self.dns_hostname,
+            self.dns_fqdn,
+            format_item_list_for_summary(self.dns_ipv4))
 
 class DNSAnalyzer(AnalysisModule):
 

@@ -1,16 +1,18 @@
 import logging
 import os
 import os.path
-from typing import Optional
+from typing import Optional, override
 
 from saq.analysis import Analysis
 from saq.constants import F_FILE, DIRECTIVE_DHASH, G_ANALYST_DATA_DIR, AnalysisExecutionResult
 from saq.environment import g
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import is_image
+from saq.util.strings import format_item_list_for_summary
 
 from PIL import Image
 import dhash
+
 
 dhash.force_pil()
 
@@ -22,7 +24,14 @@ KEY_SCORES = "scores"
 class DHashImageAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = { KEY_SCORES: [] }
+        self.details = { 
+            KEY_SCORES: [] 
+        }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "DHash Image Analysis"
 
     def add_score(self, image_file_path: str, score: float, threshold: float):
         self.details[KEY_SCORES].append({
@@ -38,8 +47,8 @@ class DHashImageAnalysis(Analysis):
 
         return self.details[KEY_SCORES]
 
+    @override
     def generate_summary(self) -> Optional[str]:
-
         if not self.scores:
             return None
 
@@ -47,7 +56,7 @@ class DHashImageAnalysis(Analysis):
         for score in self.scores:
             summaries.append(f"{score['image_file']} {score['score']:.2f}% of {score['threshold']:.2f}%")
 
-        return "DHash Image Analysis: " + ", ".join(summaries)
+        return f"{self.display_name}: " + format_item_list_for_summary(summaries)
 
 class DHashImageAnalyzer(AnalysisModule):
     @property
@@ -63,7 +72,7 @@ class DHashImageAnalyzer(AnalysisModule):
         return [ DIRECTIVE_DHASH ]
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
-        local_file_path = get_local_file_path(self.get_root(), _file)
+        local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.debug("local file %s does not exist", local_file_path)
             return AnalysisExecutionResult.COMPLETED

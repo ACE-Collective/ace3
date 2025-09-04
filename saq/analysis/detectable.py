@@ -1,6 +1,5 @@
 import logging
 from saq.analysis.detection_point import DetectionPoint
-from saq.analysis.event_source import EventSource
 from saq.constants import EVENT_DETECTION_ADDED
 
 
@@ -14,20 +13,20 @@ class DetectionManager:
         self._event_source = event_source
 
     @property
-    def detections(self):
+    def detections(self) -> list[DetectionPoint]:
         return self._detections
 
     @detections.setter
-    def detections(self, value):
+    def detections(self, value: DetectionPoint):
         assert isinstance(value, list)
         assert all([isinstance(x, DetectionPoint) for x in value]) or all([isinstance(x, dict) for x in value])
         self._detections = value
 
-    def has_detection_points(self):
+    def has_detection_points(self) -> bool:
         """Returns True if this object has at least one detection point, False otherwise."""
         return len(self._detections) != 0
 
-    def add_detection_point(self, description, details=None):
+    def add_detection_point(self, description: str, details=None):
         """Adds the given detection point to this object."""
         assert isinstance(description, str)
         assert description
@@ -47,7 +46,7 @@ class DetectionManager:
     def clear_detection_points(self):
         self._detections.clear()
 
-    def get_json_data(self):
+    def get_json_data(self) -> dict:
         """Returns detection data for JSON serialization."""
         return {DetectionManager.KEY_DETECTIONS: self._detections}
 

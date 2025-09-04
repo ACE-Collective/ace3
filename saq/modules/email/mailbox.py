@@ -1,4 +1,3 @@
-from typing import Optional
 from saq.analysis.analysis import Analysis
 from saq.constants import ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_TRACKED, F_FILE, F_MESSAGE_ID, AnalysisExecutionResult
 from saq.modules import AnalysisModule

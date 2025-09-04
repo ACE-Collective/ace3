@@ -4,11 +4,12 @@ import os.path
 import shutil
 import socket
 import sys
+import tempfile
 
 from requests import HTTPError
 
 from saq.analysis.root import RootAnalysis
-from saq.configuration.config import get_config, get_config_value
+from saq.configuration.config import get_config, get_config_value, set_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR, CONFIG_GLOBAL, CONFIG_GLOBAL_NODE, G_INSTANCE_TYPE, G_SAQ_NODE, G_SAQ_NODE_ID, G_UNIT_TESTING, INSTANCE_TYPE_UNITTEST
 from saq.crypto import set_encryption_password
 from saq.database import get_db
@@ -17,7 +18,7 @@ from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
-from saq.environment import g, get_base_dir, get_data_dir, initialize_environment, set_g, set_node
+from saq.environment import g, get_base_dir, get_data_dir, initialize_data_dir, initialize_environment, set_g, set_node
 
 
 import pytest
@@ -25,7 +26,7 @@ from saq.integration.integration_loader import get_valid_integration_dirs, load_
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
-from tests.saq.helpers import start_api_server, stop_api_server, stop_unittest_logging, initialize_unittest_logging
+from tests.saq.helpers import reset_unittest_logging, start_api_server, stop_api_server, initialize_unittest_logging
 from tests.saq.test_util import create_test_context
 
 pytest.register_assert_rewrite("tests.saq.requests")
@@ -43,14 +44,8 @@ def test_context() -> AnalysisModuleContext:
     return create_test_context()
 
 
-@pytest.fixture(autouse=True, scope="function")
-def global_setup(request, tmpdir, datadir):
-
-    # remember the original sys.path
-    original_sys_path = sys.path[:]
-
-    # reset emitter to default state
-    reset_emitter()
+@pytest.fixture(autouse=True, scope="session")
+def global_setup(request):
 
     # where is ACE?
     saq_home = os.getcwd()
@@ -66,19 +61,71 @@ def global_setup(request, tmpdir, datadir):
 
     os.mkdir(data_dir)
 
-    temp_dir = tmpdir / "global"
-    temp_dir.mkdir()
+    temp_dir = tempfile.mkdtemp()
 
     initialize_environment(
         saq_home=saq_home, 
         data_dir=str(data_dir),
-        temp_dir=str(temp_dir),
+        temp_dir=temp_dir,
         config_paths=[], 
         logging_config_path=os.path.join(get_base_dir(), "etc", "logging_configs", "unittest_logging.yaml"), 
         relative_dir=None)
 
     # clear the tracking
     clear_all_tracking()
+
+    initialize_automation_user()
+    initialize_email_archive()
+
+    # set a fake encryption password
+    set_encryption_password("test")
+
+    set_g(G_SAQ_NODE, None)
+    set_g(G_SAQ_NODE_ID, None)
+
+    # what node is this?
+    node = get_config_value(CONFIG_GLOBAL, CONFIG_GLOBAL_NODE)
+    if node == "AUTO":
+        node = socket.getfqdn()
+
+    set_node(node)
+
+    # load the configuration first
+    if g(G_INSTANCE_TYPE) != INSTANCE_TYPE_UNITTEST:
+        raise Exception('*** CRITICAL ERROR ***: invalid instance_type setting in configuration for unit testing')
+
+    # additional logging required for testing
+    #initialize_unittest_logging()
+
+    # XXX what is this for?
+    # create a temporary storage directory
+    test_dir = os.path.join(get_data_dir(), 'var', 'test')
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
+
+    os.makedirs(test_dir)
+
+    # ???
+
+    #initialize_configuration(config_paths=[os.path.join(get_base_dir(), 'etc', 'unittest_logging.ini')])
+
+    # work dir
+    work_dir = os.path.join(get_data_dir(), "work_dir")
+    os.mkdir(work_dir)
+    get_config()[CONFIG_ENGINE][CONFIG_ENGINE_WORK_DIR] = work_dir
+
+    initialize_unittest_logging()
+
+    yield
+
+    # clean up the temp dir
+    shutil.rmtree(temp_dir)
+
+@pytest.fixture(autouse=True, scope="function")
+def global_function_setup(request):
+
+    # reset emitter to default state
+    reset_emitter()
 
     # don't reset the database on tests marked as a unit test
     if needs_full_reset(request):
@@ -166,53 +213,46 @@ def global_setup(request, tmpdir, datadir):
             c.execute("DELETE FROM email_history")
             db.commit()
 
+        # reset data directory
+        if os.path.exists(get_data_dir()):
+            shutil.rmtree(get_data_dir())
+
+        os.makedirs(get_data_dir())
+        initialize_data_dir()
+
+        #clear_all_tracking()
+
+        # reset the automation user
+        initialize_automation_user()
+        initialize_email_archive()
+
+        # set a fake encryption password
+        set_encryption_password("test")
+
+        set_g(G_SAQ_NODE, None)
+        set_g(G_SAQ_NODE_ID, None)
+
+        # what node is this?
+        node = get_config_value(CONFIG_GLOBAL, CONFIG_GLOBAL_NODE)
+        if node == "AUTO":
+            node = socket.getfqdn()
+
+        set_node(node)
+
     # XXX we're initializing AND THEN we're resetting the database
 
-    set_g(G_SAQ_NODE, None)
-    set_g(G_SAQ_NODE_ID, None)
+    # remember the original sys.path
+    original_sys_path = sys.path[:]
 
-    # what node is this?
-    node = get_config_value(CONFIG_GLOBAL, CONFIG_GLOBAL_NODE)
-    if node == "AUTO":
-        node = socket.getfqdn()
-
-    set_node(node)
-
-    initialize_automation_user()
-    initialize_email_archive()
-
-    # load the configuration first
-    if g(G_INSTANCE_TYPE) != INSTANCE_TYPE_UNITTEST:
-        raise Exception('*** CRITICAL ERROR ***: invalid instance_type setting in configuration for unit testing')
-
-    # additional logging required for testing
-    #initialize_unittest_logging()
-
-    # XXX what is this for?
-    # create a temporary storage directory
-    test_dir = os.path.join(get_data_dir(), 'var', 'test')
-    if os.path.exists(test_dir):
-        shutil.rmtree(test_dir)
-
-    os.makedirs(test_dir)
-
-    # ???
-
-    #initialize_configuration(config_paths=[os.path.join(get_base_dir(), 'etc', 'unittest_logging.ini')])
-
-    # work dir
-    work_dir = os.path.join(get_data_dir(), "work_dir")
-    os.mkdir(work_dir)
-    get_config()[CONFIG_ENGINE][CONFIG_ENGINE_WORK_DIR] = work_dir
-
-    initialize_unittest_logging()
-
-    # set a fake encryption password
-    set_encryption_password("test")
+    # make a deep copy of the current configuration
+    config_copy = get_config().copy()
 
     yield
 
-    stop_unittest_logging()
+    reset_unittest_logging()
+
+    # restore the original configuration
+    set_config(config_copy)
 
     # SQLAlchemy session management
     db_session = get_db()

@@ -7,6 +7,7 @@ import re
 import shutil
 import socket
 from subprocess import PIPE, Popen
+from typing import override
 
 import distorm3
 from saq.analysis.analysis import Analysis
@@ -21,9 +22,11 @@ from saq.json_encoding import _JSONEncoder
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
-from saq.util.filesystem import abs_path, get_local_file_path
+from saq.util.filesystem import abs_path
 
 import yara_scanner
+
+from saq.util.strings import format_item_list_for_summary
 
 
 class YaraScanResults_v3_4(Analysis):
@@ -34,6 +37,11 @@ class YaraScanResults_v3_4(Analysis):
         self.details = {
             "scan_results": []
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Yara Scan Results"
 
     @property
     def scan_results(self):
@@ -49,7 +57,8 @@ class YaraScanResults_v3_4(Analysis):
 
     def generate_summary(self):
         if self.details is not None:
-            return "Yara Scan Results: {0} results".format(len(self.scan_results))
+            return f"{self.display_name}: matched yara rules {format_item_list_for_summary([x['rule'] for x in self.scan_results])}"
+
         return None
 
 #
@@ -447,7 +456,7 @@ class YaraScanner_v3_4(AnalysisModule):
                             first_instr_offset = position - start_byte
                             # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
                             yara_result['context'][-1].append(disassemble(_full_path, position, first_instr_offset, len(value), context_data, decoder))
-                        except Exception as e:
+                        except Exception:
                             report_exception()
                             yara_result['context'][-1].append(disassemble('Failed to disassemble'))
 

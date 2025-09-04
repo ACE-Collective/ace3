@@ -353,15 +353,6 @@ def test_file_analysis_002_archive_003_jar(root_analysis, datadir):
     assert analysis
     assert analysis.file_count == 42
 
-    # Check the name of the decompiled java file exists in the created observables
-    decompiled_java_file = None
-    for sub_file in analysis.get_observables_by_type(F_FILE):
-        if sub_file.file_name == 'decompiled.java':
-            decompiled_java_file = sub_file
-            break
-
-    assert decompiled_java_file
-
 @pytest.mark.integration
 def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
 
@@ -383,51 +374,6 @@ def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
     assert analysis
     assert analysis.file_count == 68
 
-    # Check the name of the decompiled java file exists in the created observables
-    decompiled_java_file = None
-    for sub_file in analysis.get_observables_by_type(F_FILE):
-        if sub_file.file_name == 'decompiled.java':
-            decompiled_java_file = sub_file
-            break
-
-    assert decompiled_java_file
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_malicious_jar_limit(root_analysis, datadir):
-
-    # limit java decompile to 1 file
-    get_config()['analysis_module_archive']['java_class_decompile_limit'] = '1'
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "jar/malicious.jar"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('analysis_module_archive', 'test_groups')
-    engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 68
-
-    # we should still have this
-    decompiled_java_file = None
-    for sub_file in analysis.get_observables_by_type(F_FILE):
-        if sub_file.file_name == 'decompiled.java':
-            decompiled_java_file = sub_file
-            break
-
-    assert decompiled_java_file
-    
-    # but we should have a log message that says we only decompiled 1 file
-    assert log_count('only the first 1 will be decompiled') == 1
-    assert log_count('decompiling 1 java class files') == 1
-
 @pytest.mark.integration
 def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
 
@@ -445,7 +391,10 @@ def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
     _file = root_analysis.get_observable(_file.id)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert not analysis
+    assert isinstance(analysis, ArchiveAnalysis)
+    assert analysis.file_count == 1037
+    # defined in config as 30
+    assert len(analysis.extracted_files) == 30
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):

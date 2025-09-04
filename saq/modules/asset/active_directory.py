@@ -68,7 +68,7 @@ class ActiveDirectoryAnalysis(Analysis):
         if not self.result:
             return None
 
-        result = 'Active Directory Analysis'
+        result = 'Active Directory Analysis: '
 
         if self.fqdn is not None:
             result += ' ({0})'.format(self.fqdn)

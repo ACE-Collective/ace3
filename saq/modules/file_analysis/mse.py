@@ -1,32 +1,38 @@
 import logging
 import os
 from subprocess import Popen
+from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
 
+KEY_ANALYSIS_OUTPUT = "analysis_output"
 
 class MicrosoftScriptEncodingAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            "analysis_output": None
+            KEY_ANALYSIS_OUTPUT: None
         }
+
+    @override
+    @property
+    def display_name(self) -> str:
+        return "Microsoft Script Encoding Analysis"
 
     @property
     def analysis_output(self):
-        return self.details["analysis_output"]
+        return self.details[KEY_ANALYSIS_OUTPUT]
 
     @analysis_output.setter
     def analysis_output(self, value):
-        self.details["analysis_output"] = value
+        self.details[KEY_ANALYSIS_OUTPUT] = value
 
     def generate_summary(self):
         if self.details:
-            return 'Microsoft Script Encoding Analysis ({})'.format(self.analysis_output)
+            return f'{self.display_name}: {self.analysis_output}'
 
         return None
 
@@ -92,7 +98,8 @@ class MicrosoftScriptEncodingAnalyzer(AnalysisModule):
 
         if os.path.getsize(output_path):
             file_observable = analysis.add_file_observable(output_path, volatile=True)
-            if file_observable: file_observable.redirection = _file
-            analysis.analysis_output = os.path.basename(output_path)
+            if file_observable:
+                file_observable.redirection = _file
+            analysis.analysis_output = file_observable.file_path
 
         return AnalysisExecutionResult.COMPLETED
