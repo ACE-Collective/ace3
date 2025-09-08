@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from operator import attrgetter
 import os
@@ -178,6 +178,56 @@ class AnalysisExecutionContext:
         """Cancel the current analysis."""
         self._cancel_analysis_flag = True
 
+    def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
+        """Records the execution statistics for the analysis.
+        
+        Args:
+            elapsed_time: The total elapsed time for the analysis.
+            stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
+        """
+        # save module execution time metrics
+        try:
+            # how long did all the analysis take combined?
+            _total = 0.0
+            for key in self.total_analysis_time.keys():
+                _total += self.total_analysis_time[key]
+
+            for key in self.total_analysis_time.keys():
+                subdir_name = os.path.join(
+                    stats_dir, "ace", local_time().strftime("%Y%m%d")
+                )
+                if not os.path.isdir(subdir_name):
+                    try:
+                        os.makedirs(subdir_name, exist_ok=True)
+                    except Exception as e:
+                        logging.error(
+                            "unable to create new stats subdir {}: {}".format(
+                                subdir_name, e
+                            )
+                        )
+                        continue
+
+                percentage = "?"
+                if elapsed_time:
+                    percentage = "{0:.2f}%".format(
+                        (self.total_analysis_time[key] / elapsed_time) * 100.0
+                    )
+                if not elapsed_time:
+                    elapsed_time = 0
+
+                output_line = "{} ({}) [{:.2f}:{:.2f}] - {}\n".format(
+                    timedelta(seconds=self.total_analysis_time[key]),
+                    percentage,
+                    _total,
+                    elapsed_time,
+                    self.root.uuid,
+                )
+
+                with open(os.path.join(subdir_name, "{}.stats".format(key)), "a") as fp:
+                    fp.write(output_line)
+
+        except Exception as e:
+            logging.error("unable to record statistics: {}".format(e))
 
 class AnalysisExecutor:
     """Executes analysis modules on observables and manages the analysis workflow."""
@@ -211,7 +261,7 @@ class AnalysisExecutor:
         # this is set to True to cancel the analysis going on in the process() function
         self._cancel_analysis_flag = False
 
-    def execute(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]):
+    def execute(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]) -> AnalysisExecutionContext:
         """
         Execute analysis on the given target.
 

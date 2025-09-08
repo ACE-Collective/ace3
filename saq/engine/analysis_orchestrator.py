@@ -90,7 +90,7 @@ class AnalysisOrchestrator:
             logging.debug(f"analyzing {execution_context.root} in analysis_mode {execution_context.root.analysis_mode}")
 
             # Check for alert disposition before analysis
-            if self._should_skip_analysis_due_to_disposition(execution_context):
+            if self._check_disposition(execution_context):
                 return True
 
             # Perform the actual analysis
@@ -147,17 +147,19 @@ class AnalysisOrchestrator:
             f"processing {execution_context.root.description} mode {execution_context.root.analysis_mode} ({execution_context.root.uuid})"
         )
 
-    def _should_skip_analysis_due_to_disposition(self, execution_context: EngineExecutionContext) -> bool:
+    def _check_disposition(self, execution_context: EngineExecutionContext) -> bool:
         """
         Check if analysis should be skipped due to alert disposition.
         
         Returns:
             True if analysis should be skipped, False otherwise
         """
+        # if we're not in alert mode then it doesn't matter
         if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
             return False
 
         try:
+            # XXX why is this needed?
             get_db().close()
 
             # Get the two different stop analysis setting values
@@ -207,19 +209,23 @@ class AnalysisOrchestrator:
         start_time = time.time()
 
         try:
-            # Use the AnalysisExecutor to perform the core analysis
+            # use the AnalysisExecutor to perform the core analysis
             context = self.analysis_executor.execute(execution_context.work_item)
 
             elapsed_time = time.time() - start_time
+
             logging.info(f"completed analysis {execution_context.work_item} in {elapsed_time:.2f} seconds")
 
             # save all the changes we've made
             execution_context.root.save()
 
+            # record the execution statistics
+            context.record_execution_statistics(elapsed_time, g(G_MODULE_STATS_DIR))
+
         except Exception as e:
             elapsed_time = time.time() - start_time
 
-            # Log timeouts as warnings if configured
+            # log timeouts as warnings if configured
             if isinstance(e, AnalysisTimeoutError):
                 logging.warning(f"analysis failed on {execution_context.root}: {e}")
             #else:
@@ -240,65 +246,16 @@ class AnalysisOrchestrator:
             # Re-raise the exception for the caller to handle
             raise
 
-        # XXX this probably belongs to the context?
-        # save module execution time metrics
-        try:
-            # how long did all the analysis take combined?
-            _total = 0.0
-            for key in context.total_analysis_time.keys():
-                _total += context.total_analysis_time[key]
-
-            for key in context.total_analysis_time.keys():
-                subdir_name = os.path.join(
-                    g(G_MODULE_STATS_DIR), "ace", datetime.now().strftime("%Y%m%d")
-                )
-                if not os.path.isdir(subdir_name):
-                    try:
-                        os.mkdir(subdir_name)
-                    except Exception as e:
-                        logging.error(
-                            "unable to create new stats subdir {}: {}".format(
-                                subdir_name, e
-                            )
-                        )
-                        continue
-
-                percentage = "?"
-                if elapsed_time:
-                    percentage = "{0:.2f}%".format(
-                        (context.total_analysis_time[key] / elapsed_time) * 100.0
-                    )
-                if not elapsed_time:
-                    elapsed_time = 0
-
-                output_line = "{} ({}) [{:.2f}:{:.2f}] - {}\n".format(
-                    timedelta(seconds=context.total_analysis_time[key]),
-                    percentage,
-                    _total,
-                    elapsed_time,
-                    execution_context.root.uuid,
-                )
-
-                with open(os.path.join(subdir_name, "{}.stats".format(key)), "a") as fp:
-                    fp.write(output_line)
-
-                # if error_report_stats_dir:
-                # with open(os.path.join(error_report_stats_dir, '{}.stats'.format(key)), 'a') as fp:
-                # fp.write(output_line)
-
-        except Exception as e:
-            logging.error("unable to record statistics: {}".format(e))
-
     def _handle_post_analysis_logic(self, execution_context: EngineExecutionContext):
         """Handle post-analysis logic including detection handling, mode changes, and cleanup."""
         
-        # Check for outstanding work and handle detection points
+        # check for outstanding work and handle detection points
         self._check_outstanding_work_and_handle_detections(execution_context)
         
-        # Handle analysis mode changes
+        # handle analysis mode changes
         self._handle_analysis_mode_changes(execution_context)
         
-        # Handle cleanup if analysis mode supports it
+        # handle cleanup if analysis mode supports it
         self._handle_cleanup(execution_context)
 
     def _check_outstanding_work_and_handle_detections(self, execution_context: EngineExecutionContext):
@@ -311,7 +268,7 @@ class AnalysisOrchestrator:
                 if self.lock_manager.lock_uuid is None:
                     logging.warning(f"missing lock_uuid when processing {execution_context.work_item}")
 
-                # Check for outstanding work
+                # check for outstanding work
                 has_outstanding_work = self._check_for_outstanding_work(cursor, execution_context)
 
                 if not has_outstanding_work:
@@ -329,7 +286,7 @@ class AnalysisOrchestrator:
         Returns:
             True if there is outstanding work, False otherwise
         """
-        # First check workload and locks
+        # first check workload and locks
         cursor.execute(
             """SELECT uuid FROM workload WHERE uuid = %s AND analysis_mode != %s
                      UNION SELECT uuid FROM locks WHERE uuid = %s AND lock_uuid != %s
@@ -347,7 +304,7 @@ class AnalysisOrchestrator:
         if row is not None:
             return True
 
-        # Check delayed analysis requests
+        # check delayed analysis requests
         query = "SELECT uuid FROM delayed_analysis WHERE uuid = %s"
         params = [execution_context.root.uuid]
         
@@ -363,21 +320,21 @@ class AnalysisOrchestrator:
     def _handle_detection_points(self, execution_context: EngineExecutionContext):
         """Handle detection points when no outstanding work remains."""
         
-        # is this work item in a detectable analysis mode (any mode except non-detectable modes)
-        if execution_context.root.analysis_mode not in self.config.non_detectable_modes:
-            # has this analysis been whitelisted?
-            if not g_boolean(G_FORCED_ALERTS) and execution_context.root.whitelisted:
-                logging.info(f"{execution_context.root} has been whitelisted")
-            elif execution_context.root.has_detections():
-                logging.info(
-                    f"{execution_context.root} has {len(execution_context.root.all_detection_points)} detection points - changing mode to {ANALYSIS_MODE_CORRELATION}"
-                )
-                if self.config.alerting_enabled:
-                    execution_context.root.analysis_mode = ANALYSIS_MODE_CORRELATION
-            elif g_boolean(G_FORCED_ALERTS):
-                logging.warning("saq.FORCED_ALERTS is set to True")
-                if self.config.alerting_enabled:
-                    execution_context.root.analysis_mode = ANALYSIS_MODE_CORRELATION
+        # is this work item in a non-detectable analysis mode?
+        if execution_context.root.analysis_mode in self.config.non_detectable_modes:
+            return
+
+        # has this analysis been whitelisted?
+        if not g_boolean(G_FORCED_ALERTS) and execution_context.root.whitelisted:
+            logging.info(f"{execution_context.root} has been whitelisted")
+            return
+
+        if (execution_context.root.has_detections() or g_boolean(G_FORCED_ALERTS)) and self.config.alerting_enabled:
+            reason = f"{len(execution_context.root.all_detection_points)} detection points" if execution_context.root.has_detections() else "forced alerts enabled"
+            logging.info(
+                f"{execution_context.root} has {reason} - changing mode to {ANALYSIS_MODE_CORRELATION}"
+            )
+            execution_context.root.analysis_mode = ANALYSIS_MODE_CORRELATION
 
     def _handle_analysis_mode_changes(self, execution_context: EngineExecutionContext):
         """Handle analysis mode changes and their consequences."""
