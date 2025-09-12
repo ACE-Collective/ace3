@@ -53,6 +53,7 @@ def main(args) -> int:
         secret_key=s3_credentials.secret_key,
         session_token=s3_credentials.session_token,
         secure=args.secure,
+        region=args.region
     )
 
     if args.create_bucket:
@@ -84,11 +85,12 @@ if __name__ == "__main__":
 
     #parser.add_argument("--key", required=True, help='The key to upload the file to.')
     parser.add_argument("--spool-size-mb", type=int, default=1, help="The size of the spooled buffer to use.")
-    parser.add_argument("--endpoint", default="minio:9000", help="The endpoint of the minio server.")
+    parser.add_argument("--endpoint", default="minio:9000", help="The endpoint of the minio server. For AWS use s3.amazonaws.com")
     parser.add_argument("--access-key", help="The access key of the minio server.")
     parser.add_argument("--secret-key", help="The secret key of the minio server.")
     parser.add_argument("--secure", action="store_true", default=False, help="Whether to use SSL.")
     parser.add_argument("--use-ec2-metadata", action="store_true", default=False, help="Whether to use EC2 metadata to get the access key and secret key.")
+    parser.add_argument("--region", help="Optional region to use. If not provided, the region will be inferred.")
     args = parser.parse_args()
 
     sys.exit(main(args))
