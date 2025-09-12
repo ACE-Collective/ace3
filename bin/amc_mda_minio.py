@@ -47,7 +47,8 @@ def get_s3_credentials_from_args(args) -> S3Credentials:
     """Get the S3 credentials from the arguments."""
     return S3Credentials(
         access_key=args.access_key,
-        secret_key=args.secret_key)
+        secret_key=args.secret_key,
+        region=args.region)
 
 def main(args) -> int:
     if args.use_ec2_metadata:
@@ -61,7 +62,7 @@ def main(args) -> int:
         secret_key=s3_credentials.secret_key,
         session_token=s3_credentials.session_token,
         secure=args.secure,
-        region=args.region
+        region=s3_credentials.region
     )
 
     if args.create_bucket:
