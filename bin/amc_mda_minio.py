@@ -88,7 +88,7 @@ if __name__ == "__main__":
     parser.add_argument("--access-key", help="The access key of the minio server.")
     parser.add_argument("--secret-key", help="The secret key of the minio server.")
     parser.add_argument("--secure", action="store_true", default=False, help="Whether to use SSL.")
-    parser.add_argument("--use-ec2-metadata", type=bool, default=False, help="Whether to use EC2 metadata to get the access key and secret key.")
+    parser.add_argument("--use-ec2-metadata", action="store_true", default=False, help="Whether to use EC2 metadata to get the access key and secret key.")
     args = parser.parse_args()
 
     sys.exit(main(args))
