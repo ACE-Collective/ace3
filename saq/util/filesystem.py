@@ -5,10 +5,16 @@ import re
 import shlex
 import shutil
 import tempfile
-import uuid
 
 from saq.environment import get_base_dir, get_temp_dir
 
+def delete_file(path: str) -> bool:
+    try:
+        os.unlink(path)
+        return True
+    except Exception as e:
+        logging.error(f"unable to delete file {path}: {e}")
+        return False
 
 def create_directory(path):
     """Creates the given directory and returns the path."""

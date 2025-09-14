@@ -129,10 +129,19 @@ rabbitmq:
   host: rabbitmq
 
 minio:
+  # for aws use s3.amazonaws.com port 443
   host: minio
   port: 9000
   access_key: ace3api
   secret_key: encrypted:minio.password
+  # set to use SSL
+  secure: false
+  # set to valicate SSL certification
+  cert_check: false
+  # leave empty for MinIO server
+  region:
+  # query the EC2 metadata service for credentials
+  use_ec2_metadata: false
 
 # global redis settings
 redis:
@@ -224,6 +233,23 @@ service_email_collector:
   delete_files: true
   # contains the rules that assigns emails to collectors
   assignment_yara_rule_path: etc/remote_assignments.yar
+  # any email that matches these rules are ignored
+  blacklist_yara_rule_path: etc/blacklist.yar
+  # how often do we check to see if the blacklist yara rule has changed (in SECONDS)
+  blacklist_yara_rule_check_frequency: 10
+
+service_journal_email_collector:
+  module: saq.collectors.email.journal
+  class: JournalEmailCollectorService
+  description: Journal Email Collector - collects journal emails from an S3 bucket
+  enabled: true
+  workload_type: journal
+  delete_files: true
+  collection_frequency: 5
+  # the S3 bucket to collect emails from
+  s3_bucket: journal-emails
+  # the S3 prefix to collect emails from
+  s3_prefix: 
   # any email that matches these rules are ignored
   blacklist_yara_rule_path: etc/blacklist.yar
 

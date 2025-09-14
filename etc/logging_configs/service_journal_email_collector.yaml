@@ -1,0 +1,23 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  base:
+    format: '[%(asctime)s] [%(filename)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s'
+
+handlers:
+  file:
+    class: saq.logging.CustomFileHandler
+    level: INFO
+    formatter: base
+    log_dir: data/logs
+    filename_format: 'journal_email_collector_%Y-%m-%d.log'
+
+root:
+  level: INFO
+  handlers: [file]
+
+
+
+
+

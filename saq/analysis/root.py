@@ -890,8 +890,10 @@ class Submission:
         self,
         root: RootAnalysis,
         group_assignments: Optional[list]=None,
+        key: Optional[str]=None,
     ):
         self.root = root
+        self.key = key
 
         # list of RemoteNodeGroup.name values
         # empty list means send to all configured groups

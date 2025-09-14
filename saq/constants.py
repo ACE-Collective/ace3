@@ -1123,6 +1123,14 @@ CONFIG_EMAIL_COLLECTOR = "service_email_collector"
 CONFIG_EMAIL_COLLECTOR_ASSIGNMENT_YARA_RULE_PATH = "assignment_yara_rule_path"
 CONFIG_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_PATH = "blacklist_yara_rule_path"
 
+# journal email collector
+CONFIG_JOURNAL_EMAIL_COLLECTOR = "service_journal_email_collector"
+CONFIG_JOURNAL_EMAIL_COLLECTOR_S3_BUCKET = "s3_bucket"
+CONFIG_JOURNAL_EMAIL_COLLECTOR_S3_PREFIX = "s3_prefix"
+CONFIG_JOURNAL_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_PATH = "blacklist_yara_rule_path"
+CONFIG_JOURNAL_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_CHECK_FREQUENCY = "blacklist_yara_rule_check_frequency"
+
+
 # remote email scanner
 CONFIG_REMOTE_EMAIL_COLLECTOR = "service_remote_email_collector"
 
@@ -1142,6 +1150,10 @@ CONFIG_MINIO_HOST = "host"
 CONFIG_MINIO_PORT = "port"
 CONFIG_MINIO_ACCESS_KEY = "access_key"
 CONFIG_MINIO_SECRET_KEY = "secret_key"
+CONFIG_MINIO_SECURE = "secure"
+CONFIG_MINIO_CERT_CHECK = "cert_check"
+CONFIG_MINIO_REGION = "region"
+CONFIG_MINIO_USE_EC2_METADATA = "use_ec2_metadata"
 
 # redis
 CONFIG_REDIS = "redis"

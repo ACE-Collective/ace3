@@ -5,6 +5,7 @@ This module provides a concrete implementation of the StorageInterface protocol
 for storing and retrieving files from MinIO object storage.
 """
 
+from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
@@ -14,8 +15,73 @@ from urllib.parse import urljoin
 from minio import Minio
 from minio.error import S3Error
 
+import requests
+
+from saq.configuration.config import get_config_value, get_config_value_as_boolean
+from saq.constants import CONFIG_MINIO, CONFIG_MINIO_ACCESS_KEY, CONFIG_MINIO_CERT_CHECK, CONFIG_MINIO_HOST, CONFIG_MINIO_PORT, CONFIG_MINIO_REGION, CONFIG_MINIO_SECRET_KEY, CONFIG_MINIO_SECURE, CONFIG_MINIO_USE_EC2_METADATA
 from saq.storage.interface import StorageInterface
 from saq.storage.error import StorageError
+
+METADATA_BASE_URL = "http://169.254.169.254/latest/meta-data/"
+
+@dataclass
+class S3Credentials:
+    access_key: str
+    secret_key: str
+    session_token: Optional[str] = None
+    region: Optional[str] = None
+
+def get_s3_credentials_from_config() -> S3Credentials:
+    """Get the S3 credentials from the configuration."""
+    return S3Credentials(
+        access_key=get_config_value(CONFIG_MINIO, CONFIG_MINIO_ACCESS_KEY),
+        secret_key=get_config_value(CONFIG_MINIO, CONFIG_MINIO_SECRET_KEY),
+        region=get_config_value(CONFIG_MINIO, CONFIG_MINIO_REGION))
+
+def get_s3_credentials_from_ec2_metadata() -> S3Credentials:
+    """Get the EC2 metadata for the current instance."""
+    metadata_url = f"{METADATA_BASE_URL}iam/security-credentials/"
+    response = requests.get(metadata_url)
+    response.raise_for_status()
+    role_name = response.text
+
+    metadata_url = f"{METADATA_BASE_URL}iam/security-credentials/{role_name}"
+    response = requests.get(metadata_url)
+    response.raise_for_status()
+    credentials = response.json()
+
+    # get the region from the EC2 metadata
+    region_url = f"{METADATA_BASE_URL}placement/region"
+    region_response = requests.get(region_url)
+    region_response.raise_for_status()
+    region = region_response.text.strip()
+
+    return S3Credentials(
+        access_key=credentials["AccessKeyId"],
+        secret_key=credentials["SecretAccessKey"],
+        session_token=credentials["Token"],
+        region=region)
+
+def get_minio_client() -> Minio:
+    """Returns a MinIO client configured with the current configuration."""
+    if get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_USE_EC2_METADATA):
+        s3_credentials = get_s3_credentials_from_ec2_metadata()
+    else:
+        s3_credentials = get_s3_credentials_from_config()
+
+    host = get_config_value(CONFIG_MINIO, CONFIG_MINIO_HOST)
+    port = get_config_value(CONFIG_MINIO, CONFIG_MINIO_PORT)
+    endpoint = f"{host}:{port}"
+    secure = get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_SECURE)
+    cert_check = get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_CERT_CHECK)
+
+    return Minio(
+        endpoint=endpoint,
+        access_key=s3_credentials.access_key,
+        secret_key=s3_credentials.secret_key,
+        secure=secure,
+        cert_check=cert_check,
+        region=s3_credentials.region)
 
 
 class MinIOStorage(StorageInterface):

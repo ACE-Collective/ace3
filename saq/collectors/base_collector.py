@@ -108,9 +108,6 @@ class CollectorService(ACEServiceInterface):
         # this is used to filter out submissions according to yara rules
         self.submission_filter = SubmissionFilter()
         
-        # this is used to filter out duplicate submissions using persistence
-        self.duplicate_filter = None
-        
         # repository for database operations
         self.workload_repository = WorkloadRepository()
         self.workload_type_id = self.workload_repository.get_workload_type_id(self.config.workload_type)
@@ -163,7 +160,7 @@ class CollectorService(ACEServiceInterface):
         else:
             self.start_multi_threaded(execution_mode)
 
-    def start_single_threaded(self, execution_mode: CollectorExecutionMode, execute_nodes: bool=True):
+    def start_single_threaded(self, execution_mode: CollectorExecutionMode=CollectorExecutionMode.SINGLE_SHOT, execute_nodes: bool=True):
         assert execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION], "invalid execution mode for single threaded collector"
         
         self.execution_mode = execution_mode
@@ -340,6 +337,14 @@ class CollectorService(ACEServiceInterface):
                 if tuning_matches:
                     self.submission_filter.log_tuning_matches(submission, tuning_matches)
                     continue
+
+                if submission.key:
+                    if self.duplicate_filter.is_duplicate(submission.key):
+                        logging.info(f"skipping duplicate submission {submission.key}")
+                        continue
+
+                    logging.debug(f"marking submission {submission.key} as processed")
+                    self.duplicate_filter.mark_as_processed(submission.key)
                 
                 if self.submission_scheduler:
                     self.submission_scheduler.schedule_submission(submission, self.remote_node_groups)

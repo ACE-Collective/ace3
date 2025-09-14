@@ -237,7 +237,10 @@ class RemoteNodeGroup:
         while True:
             try:
                 result = execute_with_db_cursor(DB_COLLECTION, self.execute, work_lock_uuid)
-                logging.info(f"remote node group loop result ({result})")
+                log_func = logging.info
+                if result == NO_WORK_AVAILABLE:
+                    log_func = logging.debug
+                log_func(f"remote node group loop result ({result})")
                 if single_shot:
                     break
 

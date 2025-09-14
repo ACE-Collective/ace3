@@ -335,6 +335,31 @@ services:
     networks: 
       - ace
 
+  journal-email-collector:
+    environment: 
+      <<: *common-env
+      ACE_ZIP_PASSWORD:
+      ACE_LOAD_PROD_DATA:
+      ACE_PROD_DB_HOST:
+      ACE_PROD_DB_USER:
+      ACE_PROD_DB_PASSWORD:
+      AWS_CA_BUNDLE:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_DEFAULT_REGION:
+    image: "ace3:${ACE_VERSION:-latest}"
+    depends_on:
+      ace:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start_journal_email_collector.sh"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks: 
+      - ace
+
   rabbitmq:
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
