@@ -1,0 +1,3 @@
+minio
+boto3
+requests
