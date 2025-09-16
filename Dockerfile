@@ -322,6 +322,7 @@ COPY --chown=ace:ace bro /opt/ace/bro
 COPY --chown=ace:ace cron /opt/ace/cron
 COPY --chown=ace:ace docker /opt/ace/docker
 COPY --chown=ace:ace saq /opt/ace/saq
+COPY --chown=ace:ace sql /opt/ace/sql
 COPY --chown=ace:ace tests /opt/ace/tests
 COPY --chown=ace:ace etc /opt/ace/etc
 COPY --chown=ace:ace hunts /opt/ace/hunts
