@@ -2962,22 +2962,21 @@ def config(args):
 
         return False
 
-    raw_config = get_config()._data.copy()
-
-    for section in list(raw_config.keys()):
+    result = {}
+    for section in list(get_config().keys()):
         if section == 'DEFAULT': # XXX what is this?
             continue
 
         if not matches_param(section):
-            del raw_config[section]
             continue
 
-        for key in list(get_config()[section].keys()):
-            if not matches_param(section, key):
-                del raw_config[section][key]
-                continue
+        result[section] = {}
 
-    print(yaml.dump(raw_config, indent=2, default_flow_style=False))
+        for key in list(get_config()[section].keys()):
+            if matches_param(section, key):
+                result[section][key] = get_config()[section][key]
+
+    print(yaml.dump(result, indent=2))
     return 0
 
 config_parser = get_cli_subparsers().add_parser('config',

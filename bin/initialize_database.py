@@ -23,7 +23,12 @@ def initialize_sql():
     print(f"copying {source_dir} to {target_dir}")
     shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
 
-    user_password = generate_password()
+    # if the password is set in the environment, use it
+    user_password = os.environ.get("ACE_DB_USER_PASSWORD")
+    if not user_password:
+        # otherwise generate a new password
+        user_password = generate_password()
+
     source_path = os.path.join(target_dir, "templates", "create_db_user.sql")
     target_path = os.path.join(target_dir, "70-create-db-user.sql")
     with open(source_path, 'r') as fp_in:
@@ -42,7 +47,11 @@ password={user_password}""")
 
     print(f"created {target_path}")
 
-    admin_password = generate_password()
+    # same for the admin password
+    admin_password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD")
+    if not admin_password:
+        admin_password = generate_password()
+
     source_path = os.path.join(source_dir, "templates", "create_db_super_user.sql")
     target_path = os.path.join(target_dir, "71-create-db-super-user.sql")
     with open(source_path, "r") as fp_in:

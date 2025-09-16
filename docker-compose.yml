@@ -39,7 +39,10 @@ services:
 
   # performs all first-time initialization routines that do not require the db
   ace-initialize:
-    environment: *common-env
+    environment:
+      <<: *common-env
+      ACE_DB_USER_PASSWORD:
+      ACE_SUPERUSER_DB_USER_PASSWORD:
     image: "ace3:${ACE_VERSION:-latest}"
     command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
     depends_on:
