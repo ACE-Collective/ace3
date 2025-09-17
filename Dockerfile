@@ -326,6 +326,7 @@ COPY --chown=ace:ace sql /opt/ace/sql
 COPY --chown=ace:ace tests /opt/ace/tests
 COPY --chown=ace:ace etc /opt/ace/etc
 COPY --chown=ace:ace hunts /opt/ace/hunts
+COPY --chown=ace:ace phishkit /opt/ace/phishkit
 
 # install all available integrations
 # note that all integrations are installed even if they are disabled in the config
