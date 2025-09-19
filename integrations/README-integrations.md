@@ -23,7 +23,7 @@ I want to be able to...
 - The presence of an `integration.md` file signifies that the directory is, in fact, an integration. This file serves as the documentation for it.
 - The presence of an `install.sh` script is executed at image build time.
 - The presence of a `src` directory is automatically appended to PYTHONPATH.
-- The presence of a `etc` directory has all `ini` files inside automatically loaded.
+- The presence of a `etc` directory with the file `saq.integration.yaml` is automatically loaded.
 - The presence of a `bin` directory is appended to PATH.
 - See below for what happens with the `tests` directory.
 

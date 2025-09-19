@@ -121,11 +121,10 @@ def load_integration_component_etc(dir_path: str) -> bool:
 
     # load all the ini files found in the etc directory
     if os.path.exists(etc_path):
-        for etc_file in os.listdir(etc_path):
-            etc_file_path = os.path.join(etc_path, etc_file)
-            if etc_file_path.endswith(".yaml") or etc_file_path.endswith(".yml"):
-                logging.info(f"loading integration configuration file {etc_file_path}")
-                get_config().load_file(etc_file_path)
+        auto_load_config_file = os.path.join(etc_path, "saq.integration.yaml")
+        if os.path.exists(auto_load_config_file):
+            logging.debug(f"auto loading integration configuration file {auto_load_config_file}")
+            get_config().load_file(auto_load_config_file)
 
     return True
 
