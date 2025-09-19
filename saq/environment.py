@@ -492,6 +492,9 @@ def initialize_environment(
 
     initialize_configuration()
 
+    from saq.integration.integration_loader import load_integrations
+    load_integrations()
+
     set_g(
         G_DATA_DIR,
         data_dir if data_dir else os.path.join(
@@ -785,8 +788,5 @@ def initialize_environment(
 
     from saq.phishkit import initialize_phishkit
     initialize_phishkit()
-
-    from saq.integration.integration_loader import load_integrations
-    load_integrations()
 
     logging.debug("SAQ initialized")
