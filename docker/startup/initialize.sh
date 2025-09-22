@@ -10,7 +10,7 @@ source /venv/bin/activate
 source load_environment
 
 # do we need to create fake ssl certificates?
-if [ ! -f ssl/ace.cert.pem ]
+if [ -z "$(ls -A ssl 2>/dev/null)" ]
 then
     echo "installing self-signed SSL certificates"
     mkdir -p ssl

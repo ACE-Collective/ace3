@@ -15,4 +15,15 @@ do
 done
 shift $((OPTIND-1))
 
-docker exec -it -u $USER $(bin/get-dev-container.sh) /bin/bash -il
+# attach to the dev container by default
+TARGET_CONTAINER=$(bin/get-dev-container.sh)
+
+# if the dev container does not exist, attach to the main ace container instead
+if [ -z "$TARGET_CONTAINER" ]; then
+    echo "attaching to ace container"
+    TARGET_CONTAINER=$(bin/get-ace-container.sh)
+else
+    echo "attaching to dev container"
+fi
+
+docker exec -it -u $USER $TARGET_CONTAINER /bin/bash -il
