@@ -4,7 +4,7 @@ if TYPE_CHECKING:
     from saq.analysis.observable import Observable
 
 # dictionary keys used by the ObservableSerializer
-KEY_ID = 'id'
+KEY_ID = 'uuid'
 KEY_TYPE = 'type'
 KEY_VALUE = 'value'
 KEY_TIME = 'time'
@@ -35,7 +35,7 @@ class ObservableSerializer:
         
         # Include observable-specific data
         result.update({
-            KEY_ID: observable.id,
+            KEY_ID: observable.uuid,
             KEY_TYPE: observable.type,
             KEY_TIME: observable.time,
             KEY_VALUE: observable._value,
@@ -65,7 +65,7 @@ class ObservableSerializer:
 
         # Set observable properties
         if KEY_ID in data:
-            observable.id = data[KEY_ID]
+            observable.uuid = data[KEY_ID]
         if KEY_TYPE in data:
             observable.type = data[KEY_TYPE]
         if KEY_TIME in data:

@@ -144,11 +144,11 @@ def _recurse(current_node, node_tracker=None):
         current_node.add_child(child_node)
 
         # if the observable is already in the current tree then we want to display a link to the existing analysis display
-        if observable.id in node_tracker:
-            child_node.refer_to(node_tracker[observable.id])
+        if observable.uuid in node_tracker:
+            child_node.refer_to(node_tracker[observable.uuid])
             continue
 
-        node_tracker[observable.id] = child_node
+        node_tracker[observable.uuid] = child_node
 
         for observable_analysis in [a for a in observable.all_analysis if a]:
             observable_analysis_node = TreeNode(observable_analysis, prune_volatile=current_node.prune_volatile)

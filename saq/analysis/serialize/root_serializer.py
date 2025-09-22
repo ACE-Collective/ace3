@@ -99,7 +99,7 @@ class RootAnalysisSerializer:
             root_analysis._analysis_mode = value[KEY_ANALYSIS_MODE]
             root_analysis._original_analysis_mode = value[KEY_ANALYSIS_MODE]
         if KEY_UUID in value:
-            root_analysis._uuid = value[KEY_UUID]
+            root_analysis.uuid = value[KEY_UUID]
         if KEY_TOOL in value:
             root_analysis._tool = value[KEY_TOOL]
         if KEY_TOOL_INSTANCE in value:

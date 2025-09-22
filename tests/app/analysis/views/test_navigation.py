@@ -68,7 +68,7 @@ class TestRedirectTo:
         alert.load()
         file_observables = [obs for obs in alert.root_analysis.observables if obs.type == 'file']
         assert len(file_observables) > 0
-        file_id = file_observables[0].id
+        file_id = file_observables[0].uuid
         
         # Call redirect_to without target parameter
         redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id}
@@ -101,7 +101,7 @@ class TestRedirectTo:
         alert.load()
         file_observables = [obs for obs in alert.root_analysis.observables if obs.type == 'file']
         assert len(file_observables) > 0
-        file_id = file_observables[0].id
+        file_id = file_observables[0].uuid
         
         # Call redirect_to with invalid target
         redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id, 'target': 'invalid_target'}
@@ -135,7 +135,7 @@ class TestRedirectTo:
         file_observables = [obs for obs in alert.root_analysis.observables if obs.type == 'file']
         assert len(file_observables) > 0
         file_observable = file_observables[0]
-        file_id = file_observable.id
+        file_id = file_observable.uuid
         
         # Call redirect_to with valid VirusTotal target
         redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id, 'target': 'vt'}
@@ -196,7 +196,7 @@ class TestRedirectTo:
         file_observables = [obs for obs in alert.root_analysis.observables if obs.type == 'file']
         assert len(file_observables) > 0
         file_observable = file_observables[0]
-        file_id = file_observable.id
+        file_id = file_observable.uuid
         
         # Call redirect_to with GET method
         redirect_url = url_for('analysis.redirect_to', alert_uuid=alert_uuid, file_uuid=file_id, target='vt')

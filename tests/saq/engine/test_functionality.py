@@ -146,7 +146,7 @@ def test_single_process_analysis(root_analysis: RootAnalysis):
     engine.start_single_threaded(analysis_priority_mode='test_single', execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(analysis, BasicTestAnalysis)
@@ -164,7 +164,7 @@ def test_multi_process_analysis(root_analysis: RootAnalysis):
     engine.start_single_shot()
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(analysis, BasicTestAnalysis)
@@ -183,7 +183,7 @@ def test_missing_analysis_mode(root_analysis: RootAnalysis):
 
     # the analysis mode should default to test_single
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(analysis, BasicTestAnalysis)
@@ -203,7 +203,7 @@ def test_analysis_queues(root_analysis: RootAnalysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
     assert observable
 
     # make sure modules with no valid_queues or invlaid_queues run on all queues
@@ -239,7 +239,7 @@ def test_invalid_analysis_mode(root_analysis: RootAnalysis):
 
     # the analysis mode should default to test_empty but we should also get a warning
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -258,7 +258,7 @@ def test_multi_process_multi_analysis():
         root.analysis_mode = 'test_single'
         root.save()
         root.schedule()
-        uuids.append((root.uuid, observable.id))
+        uuids.append((root.uuid, observable.uuid))
 
     engine = Engine()
     engine.configuration_manager.enable_module('analysis_module_basic_test')
@@ -316,7 +316,7 @@ def test_no_analysis(root_analysis: RootAnalysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
 
     # so this should come back as False
     assert isinstance(observable.get_and_load_analysis(BasicTestAnalysis), bool)
@@ -366,28 +366,28 @@ def test_configurable_module(root_analysis: RootAnalysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    user_observable = root_analysis.get_observable(user_observable.id)
+    user_observable = root_analysis.get_observable(user_observable.uuid)
     assert user_observable
     analysis = user_observable.get_and_load_analysis(ConfigurableModuleTestAnalysis)
 
     # this should be empty since this module does not analyze user
     assert analysis is None
 
-    test_observable = root_analysis.get_observable(test_observable.id)
+    test_observable = root_analysis.get_observable(test_observable.uuid)
     assert test_observable
     analysis = test_observable.get_and_load_analysis(ConfigurableModuleTestAnalysis)
 
     # this should also be empty since this module requires the directive
     assert analysis is None
 
-    test_observable_with_directive = root_analysis.get_observable(test_observable_with_directive.id)
+    test_observable_with_directive = root_analysis.get_observable(test_observable_with_directive.uuid)
     assert test_observable_with_directive
     analysis = test_observable_with_directive.get_and_load_analysis(ConfigurableModuleTestAnalysis)
 
     # this should NOT have analysis since it is missing the tag requirement
     assert analysis is None
 
-    test_observable_with_tag = root_analysis.get_observable(test_observable_with_tag.id)
+    test_observable_with_tag = root_analysis.get_observable(test_observable_with_tag.uuid)
     assert test_observable_with_tag
     analysis = test_observable_with_tag.get_and_load_analysis(ConfigurableModuleTestAnalysis)
 
@@ -410,10 +410,10 @@ def test_time_range_grouped_analysis(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable_1 = root_analysis.get_observable(observable_1.id)
-    observable_2 = root_analysis.get_observable(observable_2.id)
-    observable_3 = root_analysis.get_observable(observable_3.id)
-    observable_4 = root_analysis.get_observable(observable_4.id)
+    observable_1 = root_analysis.get_observable(observable_1.uuid)
+    observable_2 = root_analysis.get_observable(observable_2.uuid)
+    observable_3 = root_analysis.get_observable(observable_3.uuid)
+    observable_4 = root_analysis.get_observable(observable_4.uuid)
 
     # observations 3 and 4 should have analysis
     assert bool(observable_3.get_and_load_analysis(GroupedByTimeRangeAnalysis))
@@ -434,9 +434,9 @@ def test_time_range_grouped_analysis(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable_1 = root_analysis.get_observable(observable_1.id)
-    observable_2 = root_analysis.get_observable(observable_2.id)
-    grouping_target = root_analysis.get_observable(grouping_target.id)
+    observable_1 = root_analysis.get_observable(observable_1.uuid)
+    observable_2 = root_analysis.get_observable(observable_2.uuid)
+    grouping_target = root_analysis.get_observable(grouping_target.uuid)
 
     # either 1 or 2 should have it but not both (logical xor)
     assert bool(observable_1.get_and_load_analysis(GroupingTargetAnalysis)) ^ bool(observable_2.get_and_load_analysis(GroupingTargetAnalysis))
@@ -456,7 +456,7 @@ def test_no_analysis_no_return(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    observable = root_analysis.get_observable(observable.id)
+    observable = root_analysis.get_observable(observable.uuid)
 
     # so what happens here is even though you return nothing from execute_analysis
     # execute_final_analysis defaults to returning False
@@ -478,7 +478,7 @@ def test_delayed_analysis_single(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    analysis = root_analysis.get_observable(observable.id).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert analysis
     assert analysis.load_details()
     assert analysis.initial_request
@@ -501,7 +501,7 @@ def test_delayed_analysis_single_instance(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    analysis = root_analysis.get_observable(observable.id).get_and_load_analysis(DelayedAnalysisTestAnalysis, instance='instance1')
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis, instance='instance1')
     assert analysis
     assert analysis.load_details()
     assert analysis.initial_request
@@ -522,7 +522,7 @@ def test_delayed_analysis_multiple():
         observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
         root.save()
         root.schedule()
-        uuids.append((root.storage_dir, observable.id))
+        uuids.append((root.storage_dir, observable.uuid))
 
     engine = Engine()
     engine.configuration_manager.enable_module('analysis_module_test_delayed_analysis', "test_groups")
@@ -563,7 +563,7 @@ def test_delayed_analysis_timing():
     
     # the second one should finish before the first one
     root_1 = load_root(root_1.storage_dir)
-    analysis_1 = root_1.get_observable(o_1.id).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    analysis_1 = root_1.get_observable(o_1.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis_1, DelayedAnalysisTestAnalysis)
     assert analysis_1.load_details()
     assert analysis_1.initial_request
@@ -573,7 +573,7 @@ def test_delayed_analysis_timing():
 
 
     root_2 = load_root(root_2.storage_dir)
-    analysis_2 = root_2.get_observable(o_2.id).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    analysis_2 = root_2.get_observable(o_2.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis_2, DelayedAnalysisTestAnalysis)
     assert analysis_2.load_details()
     assert analysis_2.initial_request
@@ -615,7 +615,7 @@ def test_io_count():
     root.load()
     assert _get_io_write_count() == 4
     assert _get_io_read_count() == 2
-    analysis = root.get_observable(observable.id).get_and_load_analysis(BasicTestAnalysis)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(BasicTestAnalysis)
     assert _get_io_read_count() == 2 # should not have loaded details yet...
     assert analysis.test_result
     assert _get_io_read_count() == 3
@@ -658,7 +658,7 @@ def test_delayed_analysis_io_count():
     assert root.load()
     assert _get_io_write_count() == 6
     assert _get_io_read_count() == 4
-    analysis = root.get_observable(observable.id).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     
     assert analysis
     assert _get_io_read_count() == 4 # should not have loaded details yet...
@@ -695,7 +695,7 @@ def test_final_analysis():
     root = load_root(root.storage_dir)
     assert len(root.all_observables) == 1
     assert root.has_observable_by_spec(F_TEST, 'test')
-    analysis = root.get_observable(observable.id).get_and_load_analysis(FinalAnalysisTestAnalysis)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(FinalAnalysisTestAnalysis)
     assert analysis
     # we should have seen this twice since the modification of adding an analysis will triggert
     # final analysis again
@@ -805,7 +805,7 @@ def test_delayed_analysis_recovery():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    analysis = root.get_observable(observable.id).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis, DelayedAnalysisTestAnalysis)
     assert analysis.load_details()
     assert analysis.initial_request
@@ -833,7 +833,7 @@ def test_wait_for_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -856,7 +856,7 @@ def test_wait_for_analysis_instance():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A, instance='instance1')
     assert test_observable.get_and_load_analysis(WaitAnalysis_B, instance='instance1')
@@ -880,7 +880,7 @@ def test_wait_for_analysis_instance_multi():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A, instance='instance1')
     assert test_observable.get_and_load_analysis(WaitAnalysis_A, instance='instance2')
@@ -900,7 +900,7 @@ def test_wait_for_disabled_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
 
@@ -920,7 +920,7 @@ def test_wait_for_analysis_circ_dep():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -941,7 +941,7 @@ def test_wait_for_analysis_missing_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -964,7 +964,7 @@ def test_wait_for_analysis_circ_dep_chained():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -987,7 +987,7 @@ def test_wait_for_analysis_chained():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -1009,7 +1009,7 @@ def test_wait_for_analysis_target_delayed():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
     analysis = test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -1031,7 +1031,7 @@ def test_wait_for_analysis_source_delayed():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -1050,7 +1050,7 @@ def test_wait_for_analysis_source_and_target_delayed():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     # A is waiting for B which is delayed
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -1075,7 +1075,7 @@ def test_wait_for_analysis_rejected():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
@@ -1095,7 +1095,7 @@ def test_post_analysis_after_false_return():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
 
     assert not test_observable.get_and_load_analysis(PostAnalysisTestResult)
@@ -1259,7 +1259,7 @@ def test_is_module_enabled():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     
     from saq.modules.test import DependencyTestAnalysis, KEY_SUCCESS, KEY_FAIL
@@ -1449,7 +1449,7 @@ def test_exclusion():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -1478,7 +1478,7 @@ def test_limited_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # there should only be one analysis performed
@@ -1507,7 +1507,7 @@ def test_limited_analysis_invalid():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # there should be no analysis
@@ -1575,7 +1575,7 @@ def test_local_analysis_mode_single():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -1596,7 +1596,7 @@ def test_excluded_analysis_mode():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis is None
@@ -1621,7 +1621,7 @@ def test_local_analysis_mode_missing_default():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -1661,7 +1661,7 @@ def test_local_analysis_mode_not_local():
     # this should exit out since the workload entry is for test_single analysis mode
     # but we don't support that with this engine so it shouldn't see it
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert isinstance(observable, Observable)
     # should not have any analysis
     assert not observable.analysis
@@ -1775,7 +1775,7 @@ def test_local_analysis_mode_remote_pickup(mock_api_call, monkeypatch):
 
     # but there should be a new one in the new "node"
     root = load_root(storage_dir_from_uuid(root.uuid))
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -2015,7 +2015,7 @@ def test_failed_analysis_module():
 
     root = RootAnalysis(storage_dir=root.storage_dir)
     root.load()
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # we should have recorded a failed analysis
@@ -2057,7 +2057,7 @@ def test_analysis_module_timeout():
 
     root = RootAnalysis(storage_dir=root.storage_dir)
     root.load()
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # we should have recorded a failed analysis
@@ -2105,7 +2105,7 @@ def test_copy_terminated_analysis_cause():
 
     root = RootAnalysis(storage_dir=root.storage_dir)
     root.load()
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # we should have copied the file now
@@ -2158,7 +2158,7 @@ def test_analysis_module_timeout_root_flushed():
 
     root = RootAnalysis(storage_dir=root.storage_dir)
     root.load()
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # we should only see this message once
@@ -2182,7 +2182,7 @@ def test_local_mode():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     assert isinstance(observable.get_and_load_analysis(BasicTestAnalysis), BasicTestAnalysis)
 
@@ -2240,9 +2240,9 @@ def test_action_counters():
     # we have an action count limit of 2, so 2 of these should have analysis and 1 should not
     root = load_root(root.storage_dir)
 
-    t1 = root.get_observable(t1.id)
-    t2 = root.get_observable(t2.id)
-    t3 = root.get_observable(t3.id)
+    t1 = root.get_observable(t1.uuid)
+    t2 = root.get_observable(t2.uuid)
+    t3 = root.get_observable(t3.uuid)
 
     assert t1
     assert t2
@@ -2418,7 +2418,7 @@ def test_analysis_reset():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
     root = load_root(root.storage_dir)
-    o1 = root.get_observable(o1.id)
+    o1 = root.get_observable(o1.uuid)
     assert o1
     analysis = o1.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -2441,7 +2441,7 @@ def test_analysis_reset():
     root.reset()
 
     # the original observable should still be there
-    o1 = root.get_observable(o1.id)
+    o1 = root.get_observable(o1.uuid)
     assert o1
     analysis = o1.get_and_load_analysis(BasicTestAnalysis)
     # but it should NOT have analysis
@@ -2539,14 +2539,14 @@ def test_archive():
     alert = load_alert(root.uuid)
     assert isinstance(alert, Alert)
 
-    test_observable = alert.root_analysis.get_observable(test_observable.id)
+    test_observable = alert.root_analysis.get_observable(test_observable.uuid)
     assert test_observable
     basic_analysis = test_observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(basic_analysis, BasicTestAnalysis)
     assert basic_analysis.load_details()
     assert basic_analysis.details
 
-    test_file_observable = alert.root_analysis.get_observable(test_file_observable.id)
+    test_file_observable = alert.root_analysis.get_observable(test_file_observable.uuid)
     assert test_file_observable
     basic_analysis = test_file_observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(basic_analysis, BasicTestAnalysis)
@@ -2565,7 +2565,7 @@ def test_archive():
     assert isinstance(alert, Alert)
     assert alert.archived is True
     
-    test_observable = alert.root_analysis.get_observable(test_observable.id)
+    test_observable = alert.root_analysis.get_observable(test_observable.uuid)
     assert test_observable
     basic_analysis = test_observable.get_and_load_analysis(BasicTestAnalysis)
     assert isinstance(basic_analysis, BasicTestAnalysis)
@@ -2574,12 +2574,12 @@ def test_archive():
     # but the summary should be OK
     assert bool(basic_analysis.summary)
     
-    root_file_observable = alert.root_analysis.get_observable(root_file_observable.id)
+    root_file_observable = alert.root_analysis.get_observable(root_file_observable.uuid)
     assert isinstance(root_file_observable, FileObservable)
     # the file that came with the alert should still be there
     assert root_file_observable.exists
     
-    additional_file_observable = alert.root_analysis.get_observable(additional_file_observable.id)
+    additional_file_observable = alert.root_analysis.get_observable(additional_file_observable.uuid)
     assert isinstance(additional_file_observable, FileObservable)
     # but the one that was added during analysis should NOT be there
     assert not additional_file_observable.exists
@@ -2700,7 +2700,7 @@ def test_analysis_mode_dispositioned():
     
     alert = load_alert(root.uuid)
     assert isinstance(alert, Alert)
-    observable_2 = alert.root_analysis.get_observable(observable_2.id)
+    observable_2 = alert.root_analysis.get_observable(observable_2.uuid)
     assert observable_2
     analysis = observable_2.get_and_load_analysis(BasicTestAnalysis)
     assert analysis
@@ -2754,7 +2754,7 @@ def test_observable_whitelisting():
 
     # we should only see the user-defined tagging analysis
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert len(test_observable.analysis) == 1
     assert test_observable.all_analysis[0].module_path == 'saq.modules.tag:UserDefinedTaggingAnalysis'
@@ -2777,7 +2777,7 @@ def test_observable_whitelisting():
 
     # we should see any one analysis for this observable
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert len(test_observable.analysis) == 2
 
@@ -2807,7 +2807,7 @@ def test_file_observable_whitelisting():
 
     # we should NOT see any analysis for this observable
     root = load_root(root.storage_dir)
-    file_observable = root.get_observable(file_observable.id)
+    file_observable = root.get_observable(file_observable.uuid)
     assert file_observable
     assert file_observable.has_tag('whitelisted')
     assert len(file_observable.analysis) == 1
@@ -2833,7 +2833,7 @@ def test_file_observable_whitelisting():
 
     # we should see analysis for this observable
     root = load_root(root.storage_dir)
-    file_observable = root.get_observable(file_observable.id)
+    file_observable = root.get_observable(file_observable.uuid)
     assert file_observable
     assert not file_observable.has_tag('whitelisted')
     assert len(file_observable.analysis) == 2
@@ -2854,7 +2854,7 @@ def test_module_instance():
     assert log_count('loading module ') == 2
 
     root = load_root(root.storage_dir)
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert isinstance(test_observable, Observable)
     
     analysis_instance_1 = test_observable.get_and_load_analysis(TestInstanceAnalysis, instance='instance1')
@@ -2927,16 +2927,16 @@ def test_missing_analysis():
     with open(root.json_path, 'r') as fp:
         analysis_json = json.load(fp)
 
-    analysis_json['observable_store'][test_observable.id]['analysis']['saq.modules.test:DoesNotExist'] = \
-        analysis_json['observable_store'][test_observable.id]['analysis']['saq.modules.test:GenericTestAnalysis'].copy()
-    del analysis_json['observable_store'][test_observable.id]['analysis']['saq.modules.test:GenericTestAnalysis']
+    analysis_json['observable_store'][test_observable.uuid]['analysis']['saq.modules.test:DoesNotExist'] = \
+        analysis_json['observable_store'][test_observable.uuid]['analysis']['saq.modules.test:GenericTestAnalysis'].copy()
+    del analysis_json['observable_store'][test_observable.uuid]['analysis']['saq.modules.test:GenericTestAnalysis']
     with open(root.json_path, 'w') as fp:
         json.dump(analysis_json, fp)
 
     # now when we try to load it we should have a missing analysis module
     root = load_root(root.storage_dir)
 
-    test_observable = root.get_observable(test_observable.id)
+    test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     analysis = test_observable.get_and_load_analysis('saq.modules.test:DoesNotExist')
     assert isinstance(analysis, UnknownAnalysis)
@@ -2964,7 +2964,7 @@ def test_cancel_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # there should be 3 analysis
@@ -2986,7 +2986,7 @@ def test_cancel_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
 
     # there should be no analysis
@@ -3014,7 +3014,7 @@ def test_file_size_limit():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
     # this should have worked because the size of the file is within the limit
@@ -3037,7 +3037,7 @@ def test_file_size_limit():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
     # this should have not worked since the size of the file is too big
@@ -3062,7 +3062,7 @@ def test_file_size_limit():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
     # file was missing
@@ -3088,7 +3088,7 @@ def test_file_size_limit():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(root.storage_dir)
-    observable = root.get_observable(observable.id)
+    observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
     # the default is no limit

@@ -35,7 +35,7 @@ class AnalysisSerializer:
         result.update({
             KEY_UUID: analysis.uuid,
             KEY_INSTANCE: analysis.instance,
-            KEY_OBSERVABLES: [o.id for o in analysis.observables],
+            KEY_OBSERVABLES: [o.uuid for o in analysis.observables],
             KEY_SUMMARY: analysis.summary,
             KEY_COMPLETED: analysis.completed,
             KEY_DELAYED: analysis.delayed,
@@ -60,7 +60,7 @@ class AnalysisSerializer:
 
         # set uuid
         if KEY_UUID in data:
-            analysis._uuid = data[KEY_UUID]
+            analysis.uuid = data[KEY_UUID]
 
         # Set instance
         if KEY_INSTANCE in data:

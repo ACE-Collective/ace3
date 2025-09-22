@@ -37,7 +37,7 @@ def test_index(web_client, root_analysis, api_server, test_context):
 
     result = web_client.get(url_for("analysis.index"), query_string={
             "direct": root_analysis.uuid,
-            "observable_uuid": test_observable.id,
+            "observable_uuid": test_observable.uuid,
             "module_path": MODULE_PATH(analysis),
         })
     assert result.status_code == 200
@@ -368,7 +368,7 @@ def test_index_with_observable_and_module_path(web_client, root_analysis, test_c
     
     result = web_client.get(url_for("analysis.index"), query_string={
         "direct": root_analysis.uuid,
-        "observable_uuid": test_observable.id,
+        "observable_uuid": test_observable.uuid,
         "module_path": MODULE_PATH(analysis)
     })
     

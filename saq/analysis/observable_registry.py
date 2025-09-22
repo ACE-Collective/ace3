@@ -93,7 +93,7 @@ class ObservableRegistry:
         for o in self._store.values():
             if o == observable:
                 logging.debug("returning existing observable {} ({}) [{}] <{}> for {} ({}) [{}] <{}>".format(
-                    o, id(o), o.id, o.type, observable, id(observable), observable.id, observable.type))
+                    o, id(o), o.uuid, o.type, observable, id(observable), observable.uuid, observable.type))
                 return o
         
         # Check observable limit
@@ -123,8 +123,8 @@ class ObservableRegistry:
                     raise ExcessiveFileDataSizeError(f'analysis is too large to add {observable.value}')
         
         # Record the observable
-        self._store[observable.id] = observable
-        logging.debug("recorded observable {} with id {}".format(observable, observable.id))
+        self._store[observable.uuid] = observable
+        logging.debug("recorded observable {} with id {}".format(observable, observable.uuid))
         
         # Notify modification
         if self._on_modified:

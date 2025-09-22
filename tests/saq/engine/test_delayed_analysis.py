@@ -174,7 +174,7 @@ class TestDelayedAnalysisRequest:
         # Create delayed analysis request
         request = DelayedAnalysisRequest(
             uuid=root.uuid,
-            observable_uuid=observable.id,
+            observable_uuid=observable.uuid,
             analysis_module_str="test_module",
             next_analysis=datetime.now(),
             storage_dir=str(tmpdir)
@@ -187,7 +187,7 @@ class TestDelayedAnalysisRequest:
         assert request.root is not None
         assert request.root.uuid == root.uuid
         assert request.observable is not None
-        assert request.observable.id == observable.id
+        assert request.observable.uuid == observable.uuid
         assert request.analysis_module == mock_analysis_module
         assert request.analysis == analysis
     
@@ -240,7 +240,7 @@ class TestDelayedAnalysisRequest:
         # Create delayed analysis request
         request = DelayedAnalysisRequest(
             uuid=root.uuid,
-            observable_uuid=observable.id,
+            observable_uuid=observable.uuid,
             analysis_module_str="missing_module",
             next_analysis=datetime.now(),
             storage_dir=str(tmpdir)
@@ -275,7 +275,7 @@ class TestDelayedAnalysisRequest:
         # Create delayed analysis request
         request = DelayedAnalysisRequest(
             uuid=root.uuid,
-            observable_uuid=observable.id,
+            observable_uuid=observable.uuid,
             analysis_module_str="test_module",
             next_analysis=datetime.now(),
             storage_dir=str(tmpdir)

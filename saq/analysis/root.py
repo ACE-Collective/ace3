@@ -35,7 +35,6 @@ class RootAnalysis(Analysis):
                  name=None,
                  remediation=None,
                  state=None,
-                 uuid=None,
                  location=None,
                  storage_dir=None,
                  company_name=None,
@@ -47,15 +46,12 @@ class RootAnalysis(Analysis):
                  extensions=None,
                  **kwargs):
 
-        import uuid as uuidlib
-
         super().__init__(*args, **kwargs)
 
         # we set this to True by default so that the details are saved to disk
         # if they ended up getting loaded, the loader sets this to False
         self.details_modified = True
 
-        self._uuid = uuid or str(uuidlib.uuid4()) # default is new uuid
         self._analysis_mode = analysis_mode
         self._original_analysis_mode = analysis_mode
         self._tool = tool
@@ -128,7 +124,7 @@ class RootAnalysis(Analysis):
         # if the storage_dir is not set then we use a temporary directory
         if not storage_dir:
             logging.warning("storage_dir is not set, using temporary directory")
-            storage_dir = os.path.join(get_temp_dir(), self._uuid)
+            storage_dir = os.path.join(get_temp_dir(), self.uuid)
         
         # initialize file manager if storage_dir is set
         # if not it gets set automatically when the file_manager property is accessed
@@ -182,17 +178,6 @@ class RootAnalysis(Analysis):
         assert value is None or ( isinstance(value, str) and value )
         self._analysis_mode = value
         self._original_analysis_mode = value
-
-    @property
-    def uuid(self) -> str:
-        if not self._uuid:
-            raise RuntimeError("uuid is not set")
-
-        return self._uuid
-
-    @uuid.setter
-    def uuid(self, value):
-        raise RuntimeError("uuid is not settable")
 
     @property
     def tool(self):
@@ -551,7 +536,7 @@ class RootAnalysis(Analysis):
 
     def get_delayed_analysis_start_time_key(self, observable, analysis_module) -> str:
         """Returns the key for the delayed analysis start time."""
-        return '{}:{}'.format(analysis_module.config_section_name, observable.id)
+        return '{}:{}'.format(analysis_module.config_section_name, observable.uuid)
 
     def initialize_delayed_analysis_start_time(self, observable, analysis_module) -> datetime:
         """Sets the start time for the delayed analysis to the current time if not already set.
@@ -665,7 +650,7 @@ class RootAnalysis(Analysis):
 
         # remove observables from the observable_store that didn't come with the original alert
         #import pdb; pdb.set_trace()
-        original_uuids = set([o.id for o in self.observables])
+        original_uuids = set([o.uuid for o in self.observables])
         remove_list = []
         for uuid in list(self.analysis_tree_manager.observable_registry.store.keys()):
             if uuid not in original_uuids:
@@ -762,7 +747,7 @@ class RootAnalysis(Analysis):
         
         root = RootAnalysis(uuid=new_uuid, storage_dir=target_dir)
         root.load()
-        root._uuid = new_uuid
+        root.uuid = new_uuid
         root.save()
         return root
 

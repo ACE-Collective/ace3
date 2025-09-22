@@ -210,7 +210,7 @@ def test_download_file_text_mode(web_client, root_analysis, tmpdir):
     result = web_client.get(url_for("analysis.download_file"),
                             query_string={
                                 'direct': alert.uuid,
-                                'file_uuid': file_observable.id,
+                                'file_uuid': file_observable.uuid,
                                 'mode': 'text'
                             })
     assert result.status_code == 200
@@ -232,7 +232,7 @@ def test_download_file_hex_mode(web_client, root_analysis, tmpdir):
     result = web_client.get(url_for("analysis.download_file"),
                             query_string={
                                 'direct': alert.uuid,
-                                'file_uuid': file_observable.id,
+                                'file_uuid': file_observable.uuid,
                                 'mode': 'hex'
                             })
     assert result.status_code == 200
@@ -308,7 +308,7 @@ def test_email_file_success(mock_config, mock_smtp, web_client, root_analysis, t
                             data={
                                 'direct': alert.uuid,
                                 'toemail': 'test@example.com',
-                                'file_uuid': file_observable.id,
+                                'file_uuid': file_observable.uuid,
                                 'emailmessage': 'Test message',
                                 'subject': 'Test subject'
                             })

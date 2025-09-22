@@ -18,7 +18,7 @@ from saq.permissions.user import add_user_permission
 
 
 @pytest.fixture
-def test_user():
+def test_user() -> User:
     """Create a test user for observable detection tests."""
     username = "detection_test_user"
     email = "detection_test@example.com"
@@ -250,21 +250,21 @@ def test_get_observable_detections_with_detections(test_user, test_observables):
     
     # Should have detections for first two observables
     assert len(detections) == 2
-    assert test_observables[0].id in detections
-    assert test_observables[1].id in detections
-    assert test_observables[2].id not in detections
-    assert test_observables[3].id not in detections
+    assert test_observables[0].uuid in detections
+    assert test_observables[1].uuid in detections
+    assert test_observables[2].uuid not in detections
+    assert test_observables[3].uuid not in detections
     
     # Verify detection data
-    detection1 = detections[test_observables[0].id]
+    detection1 = detections[test_observables[0].uuid]
     assert isinstance(detection1, ObservableDetection)
-    assert detection1.observable_uuid == test_observables[0].id
+    assert detection1.observable_uuid == test_observables[0].uuid
     assert detection1.for_detection is True
     assert detection1.enabled_by == test_user.display_name
     assert detection1.detection_context == "Context 1"
     
-    detection2 = detections[test_observables[1].id]
-    assert detection2.observable_uuid == test_observables[1].id
+    detection2 = detections[test_observables[1].uuid]
+    assert detection2.observable_uuid == test_observables[1].uuid
     assert detection2.for_detection is True
     assert detection2.enabled_by == test_user.display_name
     assert detection2.detection_context == "Context 2"
@@ -301,13 +301,13 @@ def test_get_observable_detections_mixed(test_user, test_observables):
     # Should only have detection for first observable (enabled=True)
     # Second observable has detection disabled, so it should still appear but with for_detection=False
     assert len(detections) == 2
-    assert test_observables[0].id in detections
-    assert test_observables[2].id in detections
+    assert test_observables[0].uuid in detections
+    assert test_observables[2].uuid in detections
     
-    detection1 = detections[test_observables[0].id]
+    detection1 = detections[test_observables[0].uuid]
     assert detection1.for_detection is True
     
-    detection2 = detections[test_observables[2].id]
+    detection2 = detections[test_observables[2].uuid]
     assert detection2.for_detection is False
     
     # Cleanup
@@ -329,10 +329,10 @@ def test_get_all_observable_detections(test_user, test_root_analysis):
     
     # Should have detections for enabled observables
     assert len(detections) >= 2
-    assert observables[0].id in detections
-    assert observables[1].id in detections
+    assert observables[0].uuid in detections
+    assert observables[1].uuid in detections
     
-    detection1 = detections[observables[0].id]
+    detection1 = detections[observables[0].uuid]
     assert detection1.for_detection is True
     assert detection1.enabled_by == test_user.display_name
     assert detection1.detection_context == "Root context 1"
@@ -367,7 +367,7 @@ def test_enable_detection_context_persistence(test_user, test_observable):
     
     # Retrieve detection and verify context
     detections = get_observable_detections([test_observable])
-    detection = detections[test_observable.id]
+    detection = detections[test_observable.uuid]
     
     assert detection.detection_context == context
     
@@ -391,7 +391,7 @@ def test_enable_detection_overwrites_existing(test_user, test_observable):
         
         # Verify it was updated
         detections = get_observable_detections([test_observable])
-        detection = detections[test_observable.id]
+        detection = detections[test_observable.uuid]
         
         assert detection.enabled_by == user2.display_name
         assert detection.detection_context == "Updated context"

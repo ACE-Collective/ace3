@@ -26,7 +26,7 @@ from saq.constants import SUMMARY_DETAIL_FORMAT_PRE
 class MockObservable:
     """Mock observable for testing."""
     def __init__(self, id_value):
-        self.id = id_value
+        self.uuid = id_value
 
 
 class TestAnalysis(Analysis):
@@ -44,7 +44,7 @@ class TestAnalysis(Analysis):
 def sample_analysis():
     """Create a sample Analysis object for testing."""
     analysis = TestAnalysis()
-    analysis._uuid = "test-uuid-12345"
+    analysis.uuid = "test-uuid-12345"
     analysis.instance = "test-instance"
     analysis.summary = "test summary"
     analysis._completed = True
@@ -226,7 +226,7 @@ def test_deserialize_full_data():
     assert analysis._sort_manager.sort_order == 75
     
     # Verify analysis properties were set
-    assert analysis._uuid == "test-uuid-67890"
+    assert analysis.uuid == "test-uuid-67890"
     assert analysis.instance == "deserialized-instance"
     assert analysis.observable_references == ["obs-3", "obs-4", "obs-5"]
     assert analysis.summary == "deserialized summary"
@@ -253,7 +253,7 @@ def test_deserialize_partial_data():
     analysis = TestAnalysis()
     
     # Store original values
-    original_uuid = analysis._uuid
+    original_uuid = analysis.uuid
     original_instance = analysis.instance
     
     # Partial data dictionary
@@ -266,7 +266,7 @@ def test_deserialize_partial_data():
     AnalysisSerializer.deserialize(analysis, data)
     
     # Verify only provided properties were set
-    assert analysis._uuid == "partial-uuid"
+    assert analysis.uuid == "partial-uuid"
     assert analysis.summary == "partial summary"
     assert analysis._completed is True
     
@@ -280,7 +280,7 @@ def test_deserialize_empty_data():
     analysis = TestAnalysis()
     
     # Store original values
-    original_uuid = analysis._uuid
+    original_uuid = analysis.uuid
     original_instance = analysis.instance
     
     data = {}
@@ -288,7 +288,7 @@ def test_deserialize_empty_data():
     AnalysisSerializer.deserialize(analysis, data)
     
     # Verify properties retain original values
-    assert analysis._uuid == original_uuid
+    assert analysis.uuid == original_uuid
     assert analysis.instance == original_instance
 
 
@@ -320,7 +320,7 @@ def test_round_trip_serialization(sample_analysis):
     AnalysisSerializer.deserialize(new_analysis, serialized_data)
     
     # Verify key properties are preserved
-    assert new_analysis._uuid == sample_analysis._uuid
+    assert new_analysis.uuid == sample_analysis.uuid
     assert new_analysis.instance == sample_analysis.instance
     assert new_analysis.summary == sample_analysis.summary
     assert new_analysis._completed == sample_analysis._completed

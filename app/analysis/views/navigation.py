@@ -33,7 +33,7 @@ def redirect_to():
         return "missing target", 500
 
     # find the observable with this id
-    file_observable = alert.root_analysis.find_observable(lambda o: o.id == file_uuid)
+    file_observable = alert.root_analysis.find_observable(lambda o: o.uuid == file_uuid)
     if not file_observable:
         flash("missing file observable uuid {0} for alert {1} user {2}".format(
             file_uuid, alert, current_user))

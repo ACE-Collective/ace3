@@ -183,7 +183,7 @@ def test_io_count():
 def test_has_observable():
     root = create_root_analysis()
     root.initialize_storage()
-    o_uuid = root.add_observable_by_spec(F_TEST, 'test').id
+    o_uuid = root.add_observable_by_spec(F_TEST, 'test').uuid
     assert root.has_observable_by_spec(F_TEST, 'test')
     assert not root.has_observable_by_spec(F_TEST, 't3st')
     assert root.has_observable(create_observable(F_TEST, 'test'))
@@ -199,12 +199,12 @@ def test_find_observables():
     o_all = sorted([o1, o2])
 
     # search by type, single observable
-    assert root.find_observable(lambda o: o.type == F_TEST).id in [ o.id for o in o_all]
+    assert root.find_observable(lambda o: o.type == F_TEST).uuid in [ o.uuid for o in o_all]
     # search by type, multi observable
     assert sorted(root.find_observables(lambda o: o.type == F_TEST)) == o_all
 
     # search by lambda, single observable
-    assert root.find_observable(lambda o: o.type == F_TEST).id in [ o.id for o in o_all]
+    assert root.find_observable(lambda o: o.type == F_TEST).uuid in [ o.uuid for o in o_all]
     # search by lambda, multi observable
     assert sorted(root.find_observables(lambda o: o.type == F_TEST)) == o_all
 

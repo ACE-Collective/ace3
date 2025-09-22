@@ -1,10 +1,7 @@
-from datetime import datetime, timedelta
-import logging
-from multiprocessing import Event, Pipe
+from datetime import datetime
 import os
 import pickle
 import shutil
-import threading
 from typing import Optional, Union
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
@@ -49,7 +46,7 @@ class AnalysisModuleTrackingMessage(TrackingMessage):
     """A message indicating that analysis has started by the given module on the given observable.
     Args:
          module_path: the result of MODULE_PATH
-         observable_id: Observable.id
+         observable_id: Observable.uuid
          maximum_analysis_time: the maximum amount of time (in seconds) the module is allowed to execute
          observable_type: Observable.type
          observable_value: Observable.value
@@ -122,7 +119,7 @@ class TrackingMessageManager:
             pickle.dump(
                 AnalysisModuleTrackingMessage(
                     MODULE_PATH(module),
-                    observable.id,
+                    observable.uuid,
                     module.maximum_analysis_time,
                     observable.type,
                     observable.value,

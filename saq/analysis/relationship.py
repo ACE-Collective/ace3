@@ -42,7 +42,7 @@ class Relationship:
     def json(self):
         return {
             KEY_RELATIONSHIP_TYPE: self.r_type,
-            KEY_RELATIONSHIP_TARGET: self.target.id
+            KEY_RELATIONSHIP_TARGET: self.target.uuid
         }
 
     @json.setter

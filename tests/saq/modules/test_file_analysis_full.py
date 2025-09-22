@@ -63,7 +63,7 @@ def test_file_analysis_000_url_extraction_001_pdfparser(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
@@ -94,7 +94,7 @@ def test_file_analysis_000_url_extraction_002_gs(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
@@ -167,7 +167,7 @@ def test_file_analysis_001_oletools_000(root_analysis, result_map, datadir):
         engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
         root_analysis = load_root(root_analysis.storage_dir)
-        file_observable = root_analysis.get_observable(file_observable.id)
+        file_observable = root_analysis.get_observable(file_observable.uuid)
         assert file_observable
         if expected_results[KEY_SANDBOX]:
             assert file_observable.has_directive(DIRECTIVE_SANDBOX)
@@ -192,7 +192,7 @@ def test_file_analysis_002_archive_000_zip(root_analysis, datadir):
 
     alert = load_alert(root_analysis.uuid)
     assert alert
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
     assert _file
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -216,7 +216,7 @@ def test_file_analysis_002_archive_001_rar(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
     
     from saq.modules.file_analysis import ArchiveAnalysis
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -245,7 +245,7 @@ def test_file_analysis_archive_skip_ole(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     # this should return False since OLE files are not analyzed by the archive analyzer
@@ -265,7 +265,7 @@ def test_file_analysis_archive_malicious_msi(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
@@ -301,7 +301,7 @@ def test_file_analysis_archive_7z_under(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
@@ -325,7 +325,7 @@ def test_file_analysis_002_archive_002_ace(root_analysis, datadir):
 
     alert = load_alert(root_analysis.uuid)
     root_analysis = alert.root_analysis
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
@@ -347,7 +347,7 @@ def test_file_analysis_002_archive_003_jar(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
@@ -368,7 +368,7 @@ def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
@@ -388,7 +388,7 @@ def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert isinstance(analysis, ArchiveAnalysis)
@@ -416,7 +416,7 @@ def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
     assert log_count('got yara results for') == 1
 
     alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
     assert analysis
@@ -448,7 +448,7 @@ def test_file_analysis_004_yara_002_no_alert(yss_server, datadir):
     #assert log_count('with yss (matches found: True)') == 1
 
     root.load()
-    _file = root.get_observable(_file.id)
+    _file = root.get_observable(_file.uuid)
     
     from saq.modules.file_analysis import YaraScanResults_v3_4
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
@@ -480,7 +480,7 @@ def test_file_analysis_004_yara_003_directives(yss_server, datadir):
 
     alert = load_alert(root.uuid)
     root = alert.root_analysis
-    _file = root.get_observable(_file.id)
+    _file = root.get_observable(_file.uuid)
     
     from saq.modules.file_analysis import YaraScanResults_v3_4
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
@@ -515,8 +515,8 @@ def test_file_analysis_004_yara_004_directives_redirection(yss_server, root_anal
     #assert log_count('with yss (matches found: True)') == 1
 
     alert = load_alert(root_analysis.uuid)
-    child_file_observable = alert.root_analysis.get_observable(child_file.id)
-    parent_file_observable = alert.root_analysis.get_observable(parent_file.id)
+    child_file_observable = alert.root_analysis.get_observable(child_file.uuid)
+    parent_file_observable = alert.root_analysis.get_observable(parent_file.uuid)
     
     analysis = child_file_observable.get_and_load_analysis(YaraScanResults_v3_4)
     assert analysis
@@ -546,7 +546,7 @@ def test_file_analysis_004_yara_006_whitelist(yss_server, root_analysis, datadir
     #assert log_count('with yss (matches found: True)') == 1
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
     assert analysis
@@ -574,7 +574,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     #assert log_count('with yss (matches found: True)') == 1
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert isinstance(_file, FileObservable)
 
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
@@ -610,7 +610,7 @@ def test_file_analysis_004_yara_008_for_detection(yss_server, root_analysis, dat
     #assert log_count('with yss (matches found: True)') == 1
 
     alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
 
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
     assert analysis
@@ -642,7 +642,7 @@ def test_file_analysis_005_pcode_000_extract_pcode(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(PCodeAnalysis)
@@ -671,7 +671,7 @@ def test_file_analysis_005_office_file_archiver_000_archive(root_analysis, tmpdi
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(OfficeFileArchiveAction)
@@ -702,7 +702,7 @@ def test_file_analysis_005_office_file_archiver_000_archive(root_analysis, tmpdi
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(OfficeFileArchiveAction)
@@ -731,7 +731,7 @@ def test_file_analysis_006_extracted_ole_000_js(root_analysis, datadir):
 
     alert = load_alert(root_analysis.uuid)
     root_analysis = alert.root_analysis
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
     assert any([d for d in root_analysis.all_detection_points if 'compiles as JavaScript' in d.description])
 
@@ -749,7 +749,7 @@ def test_open_office_extraction(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -773,7 +773,7 @@ def test_crawl_extracted_urls(yss_server, root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(URLExtractionAnalysis)
@@ -826,7 +826,7 @@ def test_mhtml_analysis(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
 
     analysis = file_observable.get_and_load_analysis(MHTMLAnalysis)
@@ -852,7 +852,7 @@ def test_officeparser_macro_extraction(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     # this sample should have the following three macros extracted
@@ -876,7 +876,7 @@ def test_officeparser_macro_extraction_merged(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     # this sample should have the following three macros all merged into one
@@ -903,7 +903,7 @@ def test_olevba_macro_extraction(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
     assert _file
 
     # this sample should have the following three macros extracted
@@ -928,7 +928,7 @@ def test_olevba_macro_extraction_merged(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.id)
+    _file = alert.root_analysis.get_observable(_file.uuid)
     assert _file
 
     # this sample should have the following three macros all merged into one
@@ -950,7 +950,7 @@ def test_upx(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(UPXAnalysis)
@@ -994,7 +994,7 @@ def test_xml_plain_text_analysis(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(XMLPlainTextAnalysis)
@@ -1042,7 +1042,7 @@ def test_xml_plain_text_analysis_file_too_large(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    _file = root_analysis.get_observable(_file.id)
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
     analysis = _file.get_and_load_analysis(XMLPlainTextAnalysis)

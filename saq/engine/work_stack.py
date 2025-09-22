@@ -45,14 +45,14 @@ class WorkStack:
     def append(self, item: Union[WorkTarget, Observable, Analysis]):
         # are we already tracking this in the work stack?
         if isinstance(item, Observable):
-            if item.id in self.tracker:
+            if item.uuid in self.tracker:
                 return
 
         if isinstance(item, WorkTarget):
             self.work.append(item)
         elif isinstance(item, Observable):
             self.work.append(WorkTarget(observable=item))
-            self.tracker.add(item.id)
+            self.tracker.add(item.uuid)
         elif isinstance(item, Analysis):
             pass
         else:
@@ -64,7 +64,7 @@ class WorkStack:
         result = self.work.popleft()
         if result.observable:
             try:
-                self.tracker.remove(result.observable.id)
+                self.tracker.remove(result.observable.uuid)
             except KeyError:
                 pass  # will throw this when analyzing delayed analysis
 

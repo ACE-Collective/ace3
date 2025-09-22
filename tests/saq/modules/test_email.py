@@ -246,7 +246,7 @@ def test_update_brocess(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     from saq.modules.email import EmailAnalysis
     analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert isinstance(analysis, EmailAnalysis)
@@ -309,7 +309,7 @@ def test_archive_1(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     archive_results = file_observable.get_and_load_analysis('EmailArchiveResults')
     assert isinstance(archive_results, EmailArchiveResults)
@@ -366,7 +366,7 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     archive_results = file_observable.get_and_load_analysis('EmailArchiveResults')
     assert isinstance(archive_results, EmailArchiveResults)
@@ -389,7 +389,7 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    message_id_observable = root_analysis.get_observable(message_id_observable.id)
+    message_id_observable = root_analysis.get_observable(message_id_observable.uuid)
     assert message_id_observable
     message_id_analysis = message_id_observable.get_and_load_analysis('MessageIDAnalysisV2')
     assert isinstance(message_id_analysis, MessageIDAnalysisV2)
@@ -417,7 +417,7 @@ def test_archive_2(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     archive_results = file_observable.get_and_load_analysis('EmailArchiveResults')
     assert isinstance(archive_results, EmailArchiveResults)
@@ -473,7 +473,7 @@ def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     archive_results = file_observable.get_and_load_analysis(EmailArchiveResults)
     assert isinstance(archive_results, EmailArchiveResults)
@@ -528,7 +528,7 @@ def test_email_pivot(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     new_root = load_root(new_root.storage_dir)
-    url_observable = new_root.get_observable(url_observable.id)
+    url_observable = new_root.get_observable(url_observable.uuid)
     analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
     assert isinstance(analysis, URLEmailPivotAnalysis_v2)
     analysis.load_details()
@@ -582,7 +582,7 @@ def test_email_pivot_excessive_emails(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     new_root = load_root(new_root.storage_dir)
-    url_observable = new_root.get_observable(url_observable.id)
+    url_observable = new_root.get_observable(url_observable.uuid)
     analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
     assert isinstance(analysis, URLEmailPivotAnalysis_v2)
     analysis.load_details()
@@ -611,7 +611,7 @@ def test_message_id(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
@@ -640,7 +640,7 @@ def test_basic_email_parsing(root_analysis, datadir):
     
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
@@ -721,7 +721,7 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
     
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
@@ -812,7 +812,7 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
@@ -872,7 +872,7 @@ def test_whitelisting(root_analysis, whitelist_item, datadir):
 
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert not email_analysis
@@ -895,7 +895,7 @@ def test_automated_msoffice_decryption(root_analysis, datadir):
     alert = load_alert(root_analysis.uuid)
 
     from saq.modules.email import EmailAnalysis
-    file_observable = alert.root_analysis.get_observable(file_observable.id)
+    file_observable = alert.root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     # make sure we extracted the encrypted office document
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
@@ -932,7 +932,7 @@ def test_message_id_remediation(root_analysis, datadir):
     
     root_analysis = load_root(root_analysis.storage_dir)
     
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert email_analysis
@@ -962,7 +962,7 @@ def test_message_id_remediation(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
     root_analysis = load_root(root_analysis.storage_dir)
-    file_observable = root_analysis.get_observable(file_observable.id)
+    file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert email_analysis

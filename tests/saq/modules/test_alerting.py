@@ -144,7 +144,7 @@ def test_alert_dispositioned():
     assert alert
     alert.load()
 
-    observable_pause = alert.root_analysis.get_observable(observable_pause.id)
+    observable_pause = alert.root_analysis.get_observable(observable_pause.uuid)
     assert observable_pause
     # since LowPriorityAnalysis executes *after* analysis_module_pause, it
     # should NOT have executed on this observable
@@ -180,7 +180,7 @@ def test_alert_dispositioned():
     assert alert
     alert.load()
 
-    observable_pause = alert.root_analysis.get_observable(observable_pause.id)
+    observable_pause = alert.root_analysis.get_observable(observable_pause.uuid)
     assert observable_pause
     # since LowPriorityAnalysis executes *after* analysis_module_pause, it
     # should NOT have executed on this observable
@@ -240,7 +240,7 @@ def test_alert_continue_specific_disposition():
     assert alert
     alert.load()
 
-    observable_pause = alert.root_analysis.get_observable(observable_pause.id)
+    observable_pause = alert.root_analysis.get_observable(observable_pause.uuid)
     assert observable_pause
     # since LowPriorityAnalysis executes *after* analysis_module_pause, it
     # should have executed on this observable since we did not stop analysis

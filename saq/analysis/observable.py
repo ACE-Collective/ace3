@@ -5,16 +5,12 @@ import importlib
 import inspect
 import logging
 from typing import TYPE_CHECKING, Optional, Union
-import uuid
-from saq.analysis.detectable import DetectionManager
+from saq.analysis.base_node import BaseNode
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.analysis.module_path import CLASS_STRING_REGEX, IS_MODULE_PATH, MODULE_PATH, SPLIT_MODULE_PATH
 from saq.analysis.relationship import Relationship
 from saq.analysis.search import search_down
 from saq.analysis.serialize.observable_serializer import ObservableSerializer
-from saq.analysis.sortable import SortManager
-from saq.analysis.taggable import TagManager
-from saq.analysis.event_source import EventSource
 from saq.configuration import get_config_value
 from saq.constants import CONFIG_OBSERVABLE_EXPIRATION_MAPPINGS, EVENT_ANALYSIS_ADDED, EVENT_DIRECTIVE_ADDED, EVENT_RELATIONSHIP_ADDED, EVENT_TIME_FORMAT_TZ, F_TEST, VALID_RELATIONSHIP_TYPES
 from saq.environment import get_local_timezone
@@ -25,7 +21,7 @@ if TYPE_CHECKING:
     from saq.analysis.analysis_tree.analysis_tree_manager import AnalysisTreeManager
     from saq.remediation import RemediationTarget
 
-class Observable(EventSource):
+class Observable(BaseNode):
     """Represents a piece of information discovered in an analysis that can itself be analyzed."""
 
     def __init__(self, type: Optional[str]=None, value: Optional[str]=None, time: Union[str, datetime, None]=None, volatile: bool=False, sort_order: int=100, *args, **kwargs):
@@ -41,7 +37,6 @@ class Observable(EventSource):
         self._volatile = volatile
         self._db = None
 
-        self._id = str(uuid.uuid4())
         self._type = type
         self.value = value
         self._time = time
@@ -58,11 +53,6 @@ class Observable(EventSource):
         # reference to the AnalysisTreeManager object
         self._analysis_tree_manager: Optional["AnalysisTreeManager"] = None # injected
         self._file_manager: Optional[FileManagerInterface] = None # injected
-
-        # composition-based component managers
-        self._tag_manager = TagManager(event_source=self)
-        self._detection_manager = DetectionManager(event_source=self)
-        self._sort_manager = SortManager(sort_order=sort_order)
 
         self._cache_id = None
         self._faqueue_hits = None
@@ -162,78 +152,8 @@ class Observable(EventSource):
         This can be overridden to provide more advanced matching such as CIDR for ipv4."""
         return self.value == value
 
-
-    # tag management
-    # ------------------------------------------------------------------------
-
-    @property
-    def tags(self):
-        return self._tag_manager.tags
-
-    @tags.setter
-    def tags(self, value):
-        self._tag_manager.tags = value
-
-    def add_tag(self, *args, **kwargs):
-        self._tag_manager.add_tag(*args, **kwargs)
-        for target in self.links:
-            target.add_tag(*args, **kwargs)
-
-    def remove_tag(self, tag):
-        self._tag_manager.remove_tag(tag)
-
-    def clear_tags(self):
-        self._tag_manager.clear_tags()
-
-    def has_tag(self, tag_value):
-        """Returns True if this object has this tag."""
-        return self._tag_manager.has_tag(tag_value)
-
-    # detection management
-    # ------------------------------------------------------------------------
-
-    @property
-    def detections(self):
-        return self._detection_manager.detections
-
-    @detections.setter
-    def detections(self, value):
-        self._detection_manager.detections = value
-
-    def has_detection_points(self):
-        """Returns True if this object has at least one detection point, False otherwise."""
-        return self._detection_manager.has_detection_points()
-
-    def add_detection_point(self, description, details=None):
-        """Adds the given detection point to this object."""
-        self._detection_manager.add_detection_point(description, details)
-
-    def clear_detection_points(self):
-        self._detection_manager.clear_detection_points()
-
-    # sort management
-    # ------------------------------------------------------------------------
-
-    @property
-    def sort_order(self):
-        return self._sort_manager.sort_order
-
-    @sort_order.setter
-    def sort_order(self, value):
-        self._sort_manager.sort_order = value
-
     # observable properties and methods
     # ------------------------------------------------------------------------
-
-    @property
-    def id(self) -> str:
-        """A unique ID for this Observable instance."""
-        return self._id
-
-    @id.setter
-    def id(self, value: str):
-        assert isinstance(value, str)
-        self._id = value
 
     @property
     def volatile(self) -> bool:
@@ -348,7 +268,7 @@ class Observable(EventSource):
     @redirection.setter
     def redirection(self, value):
         assert isinstance(value, Observable)
-        self._redirection = value.id
+        self._redirection = value.uuid
 
     @property
     def links(self):
@@ -363,7 +283,7 @@ class Observable(EventSource):
         for v in value:
             assert isinstance(v, Observable)
 
-        self._links = [x.id for x in value]
+        self._links = [x.uuid for x in value]
 
     def add_link(self, target):
         """Links this Observable object to another Observable object.  Any tags
@@ -377,8 +297,8 @@ class Observable(EventSource):
             logging.warning("{} already links to {}".format(target, self))
             return
         
-        if target.id not in self._links:
-            self._links.append(target.id)
+        if target.uuid not in self._links:
+            self._links.append(target.uuid)
 
         logging.debug("linked {} to {}".format(self, target))
 
@@ -578,7 +498,7 @@ class Observable(EventSource):
     @property
     def dependencies(self):
         """Returns the list of all AnalysisDependency objects targeting this Observable."""
-        return self.analysis_tree_manager.dependency_manager.get_dependencies_for_observable(self.id)
+        return self.analysis_tree_manager.dependency_manager.get_dependencies_for_observable(self.uuid)
 
     def add_dependency(self, source_analysis, source_analysis_instance, target_observable, target_analysis, target_analysis_instance):
         from saq.analysis.analysis import Analysis
@@ -592,7 +512,7 @@ class Observable(EventSource):
 
     def get_dependency(self, _type):
         assert isinstance(_type, str)
-        return self.analysis_tree_manager.dependency_manager.get_dependency_by_type(self.id, _type)
+        return self.analysis_tree_manager.dependency_manager.get_dependency_by_type(self.uuid, _type)
 
     # this should only be called from the AnalysisTreeManager
     def add_analysis_to_tree(self, analysis: "Analysis", parent: "Observable") -> "Analysis":
@@ -829,7 +749,7 @@ class Observable(EventSource):
             return False
 
         # exactly the same?
-        if other.id == self.id:
+        if other.uuid == self.uuid:
             return True
 
         if other.type != self.type:

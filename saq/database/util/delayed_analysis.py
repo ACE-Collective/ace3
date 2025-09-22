@@ -31,7 +31,7 @@ def add_delayed_analysis_request(root, observable, analysis_module, hours, minut
                                     NOW() )""", 
                               ( 
                                   root.uuid, 
-                                  observable.id, 
+                                  observable.uuid, 
                                   analysis_module.config_section_name, 
                                   hours, 
                                   minutes, 
@@ -42,7 +42,7 @@ def add_delayed_analysis_request(root, observable, analysis_module, hours, minut
             db.commit()
 
             logging.info("added delayed analysis uuid {} observable_uuid {} analysis_module {} delayed for {}:{}:{} node {} storage_dir {}".format(
-                         root.uuid, observable.id, analysis_module.config_section_name, hours, minutes, seconds, g_int(G_SAQ_NODE_ID), root.storage_dir))
+                         root.uuid, observable.uuid, analysis_module.config_section_name, hours, minutes, seconds, g_int(G_SAQ_NODE_ID), root.storage_dir))
 
     except pymysql.err.IntegrityError as ie:
         logging.warning(str(ie))

@@ -1,6 +1,6 @@
 import inspect
 import logging
-from typing import Any, Callable, List, Optional
+from typing import Optional
 
 from saq.analysis.dependency import AnalysisDependency
 from saq.analysis.module_path import MODULE_PATH
@@ -16,7 +16,7 @@ class AnalysisDependencyManager:
         Args:
             observable_registry: The observable registry to use for resolving observable IDs
         """
-        self.dependency_tracking: List[AnalysisDependency] = []
+        self.dependency_tracking: list[AnalysisDependency] = []
         self.observable_registry = observable_registry
 
     def add_dependency(self, source_observable, source_analysis, source_analysis_instance: Optional[str], 
@@ -49,9 +49,9 @@ class AnalysisDependencyManager:
 
         # Check if this dependency already exists
         for dep in self.dependency_tracking:
-            if (dep.source_observable_id == source_observable.id and 
+            if (dep.source_observable_id == source_observable.uuid and 
                 dep.source_analysis_type == MODULE_PATH(source_analysis, instance=source_analysis_instance) and
-                dep.target_observable_id == target_observable.id and
+                dep.target_observable_id == target_observable.uuid and
                 dep.target_analysis_type == MODULE_PATH(target_analysis, instance=target_analysis_instance)):
                 logging.debug("already added dependency for {} {} ({}) --> {} {} ({})".format(
                               source_observable, source_analysis, source_analysis_instance,
@@ -64,9 +64,9 @@ class AnalysisDependencyManager:
 
         # Create new dependency
         dep = AnalysisDependency(
-            target_observable.id, 
+            target_observable.uuid, 
             MODULE_PATH(target_analysis, instance=target_analysis_instance), 
-            source_observable.id, 
+            source_observable.uuid, 
             MODULE_PATH(source_analysis, instance=source_analysis_instance),
             self.observable_registry)
 
@@ -85,10 +85,10 @@ class AnalysisDependencyManager:
         try:
             logging.debug("removing {}".format(dep))
             self.dependency_tracking.remove(dep)
-        except ValueError as e:
+        except ValueError:
             logging.error("requested removal of untracked dependency {}".format(dep))
 
-    def get_dependencies_for_observable(self, observable_id: str) -> List[AnalysisDependency]:
+    def get_dependencies_for_observable(self, observable_id: str) -> list[AnalysisDependency]:
         """Get all dependencies targeting a specific observable.
         
         Args:
@@ -115,7 +115,7 @@ class AnalysisDependencyManager:
         return None
 
     @property
-    def active_dependencies(self) -> List[AnalysisDependency]:
+    def active_dependencies(self) -> list[AnalysisDependency]:
         """Get dependencies that are not failed, delayed, or resolved.
         
         Returns:
@@ -135,7 +135,7 @@ class AnalysisDependencyManager:
         return sorted(_buffer, key=lambda dep: dep.score, reverse=False)
 
     @property
-    def all_dependencies(self) -> List[AnalysisDependency]:
+    def all_dependencies(self) -> list[AnalysisDependency]:
         """Get all tracked dependencies.
         
         Returns:
@@ -153,7 +153,7 @@ class AnalysisDependencyManager:
         def resolve_node(so, sa, to, ta):
             nonlocal target_analysis, target_analysis_instance
 
-            dependencies = self.get_dependencies_for_observable(so.id)
+            dependencies = self.get_dependencies_for_observable(so.uuid)
             for dep in [dep for dep in dependencies if dep.target_analysis_type == sa]:
                 if MODULE_PATH(target_analysis, instance=target_analysis_instance) == dep.source_analysis_type:
                     raise RuntimeError("CIRCULAR DEPENDENCY ERROR: {} {} {} {} -> {}".format(so, sa, to, ta, dep))

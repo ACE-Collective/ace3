@@ -78,8 +78,8 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
         if observable is None:
             continue
 
-        detections[observable.id] = ObservableDetection(
-            observable_uuid=observable.id,
+        detections[observable.uuid] = ObservableDetection(
+            observable_uuid=observable.uuid,
             for_detection=db_observable.for_detection,
             enabled_by=db_observable.enabled_by_user.display_name if db_observable.enabled_by_user else "unknown",
             detection_context=db_observable.detection_context

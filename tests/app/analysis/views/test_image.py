@@ -76,7 +76,7 @@ def test_image_success(web_client, root_analysis, tmpdir):
     result = web_client.get(url_for("analysis.image"),
                           query_string={
                               'alert_uuid': alert.uuid,
-                              'observable_uuid': file_observable.id
+                              'observable_uuid': file_observable.uuid
                           })
     assert result.status_code == 200
     assert result.headers['Content-Type'] == 'image/png'
@@ -100,7 +100,7 @@ def test_image_with_different_mime_type(web_client, root_analysis, tmpdir):
     result = web_client.get(url_for("analysis.image"),
                           query_string={
                               'alert_uuid': alert.uuid,
-                              'observable_uuid': file_observable.id
+                              'observable_uuid': file_observable.uuid
                           })
     assert result.status_code == 200
     assert result.headers['Content-Type'] == 'image/jpeg'
@@ -154,7 +154,7 @@ def test_image_success(tmpdir, web_client):
     result = web_client.get(url_for("analysis.image"),
                           query_string={
                               'alert_uuid': alert.uuid,
-                              'observable_uuid': file_observable.id
+                              'observable_uuid': file_observable.uuid
                           })
     
     assert result.status_code == 200
@@ -193,7 +193,7 @@ def test_image_mocked_file_not_exists(tmpdir, web_client):
     result = web_client.get(url_for("analysis.image"),
                           query_string={
                               'alert_uuid': root.uuid,
-                              'observable_uuid': file_observable.id
+                              'observable_uuid': file_observable.uuid
                           })
     
     assert result.status_code == 404

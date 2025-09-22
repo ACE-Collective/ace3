@@ -90,8 +90,8 @@ def test_api_analysis_submit(test_client):
             assert observable['type'] == F_FILE
             assert observable['file_path'] == 'sample.dat'
             assert observable['time'] is None
-            assert observable['id'] is not None
-            file_uuid = observable['id']
+            assert observable['uuid'] is not None
+            file_uuid = observable['uuid']
 
     # we should see a single workload entry
     with get_db_connection() as db:
@@ -238,8 +238,8 @@ def test_api_analysis_submit_queue(test_client):
             assert observable['type'] == F_FILE
             assert observable['file_path'] == 'sample.dat'
             assert observable['time'] is None
-            assert observable['id']
-            file_uuid = observable['id']
+            assert observable['uuid']
+            file_uuid = observable['uuid']
 
     # we should see a single workload entry
     with get_db_connection() as db:

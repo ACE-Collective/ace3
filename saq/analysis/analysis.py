@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable, Optional
 import uuid
 
+from saq.analysis.base_node import BaseNode
 from saq.analysis.detectable import DetectionManager
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.analysis.module_path import MODULE_PATH
@@ -10,7 +11,6 @@ from saq.analysis.search import search_down
 from saq.analysis.serialize.analysis_serializer import AnalysisSerializer
 from saq.analysis.sortable import SortManager
 from saq.analysis.taggable import TagManager
-from saq.analysis.event_source import EventSource
 from saq.constants import EVENT_ANALYSIS_MARKED_COMPLETED, EVENT_OBSERVABLE_ADDED
 
 if TYPE_CHECKING:
@@ -70,14 +70,11 @@ class SummaryDetail():
 
         return self.id == other.id
 
-class Analysis(EventSource):
+class Analysis(BaseNode):
     """Represents an output of analysis work."""
 
     def __init__(self, sort_order: int=100, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-        # the uuid of this Analysis
-        self._uuid = str(uuid.uuid4())
 
         # a reference to the RootAnalysis object this analysis belongs to (injected)
         self._analysis_tree_manager: Optional["AnalysisTreeManager"] = None
@@ -124,11 +121,6 @@ class Analysis(EventSource):
 
         # set to True when delayed analysis is requested
         self._delayed: bool = False
-
-        # composition-based component managers
-        self._tag_manager = TagManager(event_source=self)
-        self._detection_manager = DetectionManager(event_source=self)
-        self._sort_manager = SortManager(sort_order)
 
         # a list of external links an analyst can pivot to from this analysis
         self._pivot_links: list[PivotLink] = []
@@ -194,14 +186,6 @@ class Analysis(EventSource):
 
     # analysis properties and methods
     # ------------------------------------------------------------------------
-
-    @property
-    def uuid(self) -> str:
-        return self._uuid
-
-    @uuid.setter
-    def uuid(self, value: str):
-        self._uuid = value
 
     @property
     def whitelisted(self) -> bool:
@@ -301,62 +285,6 @@ class Analysis(EventSource):
 
         return search_down(self, lambda obj: False if isinstance(obj, RootAnalysis) else obj.has_detection_points()) is not None
 
-    # tag management
-    # ------------------------------------------------------------------------
-
-    @property
-    def tags(self):
-        return self._tag_manager.tags
-
-    @tags.setter
-    def tags(self, value):
-        self._tag_manager.tags = value
-
-    def add_tag(self, tag):
-        self._tag_manager.add_tag(tag)
-
-    def remove_tag(self, tag):
-        self._tag_manager.remove_tag(tag)
-
-    def clear_tags(self):
-        self._tag_manager.clear_tags()
-
-    def has_tag(self, tag_value):
-        """Returns True if this object has this tag."""
-        return self._tag_manager.has_tag(tag_value)
-
-    # detection management
-    # ------------------------------------------------------------------------
-
-    @property
-    def detections(self):
-        return self._detection_manager.detections
-
-    @detections.setter
-    def detections(self, value):
-        self._detection_manager.detections = value
-
-    def has_detection_points(self):
-        """Returns True if this object has at least one detection point, False otherwise."""
-        return self._detection_manager.has_detection_points()
-
-    def add_detection_point(self, description, details=None):
-        """Adds the given detection point to this object."""
-        self._detection_manager.add_detection_point(description, details)
-
-    def clear_detection_points(self):
-        self._detection_manager.clear_detection_points()
-
-    # sort management
-    # ------------------------------------------------------------------------
-
-    @property
-    def sort_order(self):
-        return self._sort_manager.sort_order
-
-    @sort_order.setter
-    def sort_order(self, value):
-        self._sort_manager.sort_order = value
 
     # JSON serialization delegation methods
     # ------------------------------------------------------------------------

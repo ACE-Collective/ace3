@@ -51,7 +51,7 @@ def test_download(test_client):
         assert 'hello' in root.details
         assert 'world' == root.details['hello']
 
-        file_observable = root.get_observable(file_observable.id)
+        file_observable = root.get_observable(file_observable.uuid)
         assert file_observable.exists
         with open(file_observable.full_path, 'r') as fp:
             assert fp.read() == 'test'

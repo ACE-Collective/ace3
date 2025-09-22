@@ -35,7 +35,7 @@ def test_url_download_conditions_no_directive(root_analysis):
     
     root_analysis = load_root(root_analysis.storage_dir)
     
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
     assert not analysis
 
@@ -73,7 +73,7 @@ def test_url_download_conditions_with_directive(root_analysis, monkeypatch, data
     
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
     assert isinstance(analysis, CrawlphishAnalysisV2)
 
@@ -111,7 +111,7 @@ def test_url_download_conditions_manual_alert(root_analysis, monkeypatch, datadi
     
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
     assert isinstance(analysis, CrawlphishAnalysisV2)
 
@@ -150,7 +150,7 @@ def test_url_download_conditions_auto_crawl(root_analysis, monkeypatch, datadir)
     
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
     assert isinstance(analysis, CrawlphishAnalysisV2)
 
@@ -188,7 +188,7 @@ def test_basic_download(root_analysis, monkeypatch, datadir):
     
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
 
     assert analysis.status_code == 200
@@ -247,7 +247,7 @@ def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, dat
     
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
 
     assert analysis.status_code == 200
@@ -303,7 +303,7 @@ def test_download_404(root_analysis, monkeypatch):
 
     root_analysis = load_root(root_analysis.storage_dir)
 
-    url = root_analysis.get_observable(url.id)
+    url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
 
     assert analysis.proxy_results['GLOBAL'].status_code == 404

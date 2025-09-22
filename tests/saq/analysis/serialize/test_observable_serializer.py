@@ -1,12 +1,8 @@
 import pytest
 from datetime import datetime, timezone
-import uuid
 
 from saq.analysis.observable import Observable
 from saq.analysis.relationship import Relationship
-from saq.analysis.detectable import DetectionManager
-from saq.analysis.taggable import TagManager
-from saq.analysis.sortable import SortManager
 from saq.analysis.serialize.observable_serializer import (
     ObservableSerializer,
     KEY_ID,
@@ -24,7 +20,7 @@ from saq.analysis.serialize.observable_serializer import (
     KEY_VOLATILE,
     KEY_LLM_CONTEXT_DOCUMENTS,
 )
-from saq.constants import F_TEST, VALID_RELATIONSHIP_TYPES
+from saq.constants import F_TEST
 
 
 class MockObservable(Observable):
@@ -40,7 +36,7 @@ def sample_observable():
     observable = MockObservable(type=F_TEST, value="test-value", volatile=True)
     
     # Set observable ID to a known value for testing
-    observable._id = "test-observable-12345"
+    observable.uuid = "test-observable-12345"
     
     # Set time to a specific datetime
     test_time = datetime(2023, 12, 25, 12, 30, 45, tzinfo=timezone.utc)
@@ -97,7 +93,7 @@ def empty_observable():
 @pytest.mark.unit
 def test_observable_serializer_constants():
     """Test that all required constants are defined."""
-    assert KEY_ID == 'id'
+    assert KEY_ID == 'uuid'
     assert KEY_TYPE == 'type'
     assert KEY_VALUE == 'value'
     assert KEY_TIME == 'time'
@@ -247,7 +243,7 @@ def test_deserialize_full_data():
     assert observable._sort_manager.sort_order == 150
     
     # Verify observable properties were set
-    assert observable.id == "deserialized-id-67890"
+    assert observable.uuid == "deserialized-id-67890"
     assert observable.type == "deserialized-type"
     assert observable._value == "deserialized-value"
     assert observable.time == datetime(2023, 11, 15, 10, 20, 30, tzinfo=timezone.utc)
@@ -269,7 +265,7 @@ def test_deserialize_partial_data():
     observable = MockObservable()
     
     # Store original values
-    original_id = observable.id
+    original_id = observable.uuid
     original_type = observable.type
     original_value = observable._value
     
@@ -283,7 +279,7 @@ def test_deserialize_partial_data():
     ObservableSerializer.deserialize(observable, data)
     
     # Verify only provided properties were set
-    assert observable.id == "partial-id"
+    assert observable.uuid == "partial-id"
     assert observable.analysis == {"partial_module": "partial_analysis"}
     assert observable._volatile is True
     
@@ -298,7 +294,7 @@ def test_deserialize_empty_data():
     observable = MockObservable()
     
     # Store original values
-    original_id = observable.id
+    original_id = observable.uuid
     original_type = observable.type
     original_value = observable._value
     
@@ -307,7 +303,7 @@ def test_deserialize_empty_data():
     ObservableSerializer.deserialize(observable, data)
     
     # Verify properties retain original values
-    assert observable.id == original_id
+    assert observable.uuid == original_id
     assert observable.type == original_type
     assert observable._value == original_value
 
@@ -358,7 +354,7 @@ def test_round_trip_serialization(sample_observable):
     ObservableSerializer.deserialize(new_observable, serialized_data)
     
     # Verify key properties are preserved
-    assert new_observable.id == sample_observable.id
+    assert new_observable.uuid == sample_observable.uuid
     assert new_observable.type == sample_observable.type
     assert new_observable._value == sample_observable._value
     assert new_observable.time == sample_observable.time
@@ -386,7 +382,7 @@ def test_round_trip_serialization(sample_observable):
 def test_serialize_preserves_original_observable():
     """Test that serialization doesn't modify the original observable."""
     observable = MockObservable(type=F_TEST, value="original-value")
-    original_id = observable.id
+    original_id = observable.uuid
     original_type = observable.type
     original_value = observable._value
     
@@ -394,7 +390,7 @@ def test_serialize_preserves_original_observable():
     result = ObservableSerializer.serialize(observable)
     
     # Verify original observable is unchanged
-    assert observable.id == original_id
+    assert observable.uuid == original_id
     assert observable.type == original_type
     assert observable._value == original_value
     

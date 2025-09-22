@@ -19,7 +19,7 @@ def test_command_line_analyzer(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     root_analysis = load_root(root_analysis.storage_dir)
-    command_line_observable = root_analysis.get_observable(command_line_observable.id)
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
     assert command_line_observable
     analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
     assert isinstance(analysis, CommandLineAnalysis)
