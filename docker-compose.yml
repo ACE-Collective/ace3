@@ -35,8 +35,8 @@ services:
     build:
       context: .
       args:
-        SAQ_USER_ID: ${UID:-1000}
-        SAQ_GROUP_ID: ${GID:-1000}
+        SAQ_USER_ID: ${SAQ_USER_ID:-1000}
+        SAQ_GROUP_ID: ${SAQ_GROUP_ID:-1000}
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
     volumes:
