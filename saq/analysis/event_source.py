@@ -1,4 +1,8 @@
+from typing import TYPE_CHECKING, Callable
 from saq.constants import VALID_EVENTS
+
+if TYPE_CHECKING:
+    from saq.analysis import Analysis, Observable
 
 
 class EventSource:
@@ -10,7 +14,7 @@ class EventSource:
     def clear_event_listeners(self):
         self.event_listeners = {} # key = string, value = [] of callback functions
 
-    def add_event_listener(self, event, callback):
+    def add_event_listener(self, event: str, callback: Callable):
         assert isinstance(event, str)
         assert callback
 
@@ -20,7 +24,7 @@ class EventSource:
         if callback not in self.event_listeners[event]:
             self.event_listeners[event].append(callback)
 
-    def fire_event(self, source, event, *args, **kwargs):
+    def fire_event(self, source: "Analysis | Observable", event: str, *args, **kwargs):
         from saq.analysis import Analysis, Observable
         assert isinstance(source, Analysis) or isinstance(source, Observable)
         assert event in VALID_EVENTS

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 
 
-class BaseNode(EventSource):
+class BaseNode():
     """The base class of a node in the analysis tree."""
 
     def __init__(self, *args, uuid: Optional[str]=None, sort_order: int=100, **kwargs):
@@ -24,6 +24,7 @@ class BaseNode(EventSource):
         self._tag_manager = TagManager(event_source=self)
         self._detection_manager = DetectionManager(event_source=self)
         self._sort_manager = SortManager(sort_order)
+        self._event_source = EventSource()
 
         # a reference to the RootAnalysis object this analysis belongs to (injected)
         self._analysis_tree_manager: Optional["AnalysisTreeManager"] = None
@@ -127,3 +128,15 @@ class BaseNode(EventSource):
     @sort_order.setter
     def sort_order(self, value):
         self._sort_manager.sort_order = value
+
+    # event management
+    # ------------------------------------------------------------------------
+
+    def add_event_listener(self, event, callback):
+        self._event_source.add_event_listener(event, callback)
+
+    def fire_event(self, event, *args, **kwargs):
+        self._event_source.fire_event(event, *args, **kwargs)
+
+    def clear_event_listeners(self):
+        self._event_source.clear_event_listeners()
