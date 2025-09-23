@@ -14,7 +14,7 @@
         $('#otm_existing_tags').css('display', 'none');
         {% endif %}
 
-        $('#otm_observable_id').val('{{_observable.id}}');
+        $('#otm_observable_id').val('{{_observable.uuid}}');
         $('#otm_alert_uuid').val('{{alert.uuid}}');
         $('#otm').modal('show');
     });

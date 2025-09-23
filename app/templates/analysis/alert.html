@@ -272,7 +272,7 @@
                         {{node.obj}}
                     {% else %}
                         {% if node.presenter.is_drillable and not alert.archived %}
-                            <a href="{{ url_for('analysis.index', alert_uuid=alert.uuid, observable_uuid=node.parent.obj.id, module_path=node.obj.module_path) }}" title="{{node.obj.question}}">
+                            <a href="{{ url_for('analysis.index', alert_uuid=alert.uuid, observable_uuid=node.parent.obj.uuid, module_path=node.obj.module_path) }}" title="{{node.obj.question}}">
                                 {{node.presenter.display_name}}
                             </a>
                         {% else %}

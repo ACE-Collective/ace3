@@ -4,12 +4,12 @@
 {% block observable_display_value %}{{ _observable.display_value }}{% endblock %}
 {% if _observable.display_time %} @ {{ _observable.display_time }} {% endif %}</span>
 {% if _observable.volatile %}<span style="font-size: 50%">(volatile)</span>{% endif %}
-{% if _observable.id in observable_detections and observable_detections[_observable.id].for_detection %}
+{% if _observable.uuid in observable_detections and observable_detections[_observable.uuid].for_detection %}
     <span 
         class="observable_display" 
         style="font-size: 70%; font-weight: bold; color: darkred" 
-        onmousedown="alert(decodeURI(decodeURI(atob('{{observable_detections[_observable.id].detection_context | b64escape}}'))))" 
-        alt="{{observable_detections[_observable.id].detection_context | e}}"> (detect enabled 👀)
+        onmousedown="alert(decodeURI(decodeURI(atob('{{observable_detections[_observable.uuid].detection_context | b64escape}}'))))" 
+        alt="{{observable_detections[_observable.uuid].detection_context | e}}"> (detect enabled 👀)
     </span>
 {% endif %}
 <script type="text/javascript">

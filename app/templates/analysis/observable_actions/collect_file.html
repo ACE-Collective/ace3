@@ -1,9 +1,9 @@
 <script type="text/javascript">
     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
         $.post("{{ url_for('analysis.observable_action') }}",
-                {"observable_uuid":"{{_observable.id}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
+                {"observable_uuid":"{{_observable.uuid}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
                 function(data) {
-                    window.location = '{{url_for('analysis.index', direct=alert.uuid)}}';
+                    window.location = '{{url_for("analysis.index", direct=alert.uuid)}}';
                 }
         ).fail(function(data, textStatus, jqXHR) {
             alert("Action failed: " + textStatus);

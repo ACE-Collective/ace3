@@ -5,7 +5,7 @@ $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
     sendToDatastore.url = "{{ url_for('analysis.observable_action') }}"
     sendToDatastore.formData = {
               "alert_uuid": "{{alert.uuid}}",
-              "observable_uuid": "{{_observable.id}}",
+              "observable_uuid": "{{_observable.uuid}}",
               "action_id": "{{action.name}}",
           };
     sendToDatastore.filename = "{{ _observable.value }}";

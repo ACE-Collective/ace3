@@ -57,7 +57,7 @@ def download_json():
             'shape': 'box',
             'label': type(analysis).__name__,
             'details': analysis.details,
-            'observable_uuid': None if analysis.observable is None else analysis.observable.id,
+            'observable_uuid': None if analysis.observable is None else analysis.observable.uuid,
             'module_path': analysis.module_path}
 
         # if analysis.jinja_template_path is not None:

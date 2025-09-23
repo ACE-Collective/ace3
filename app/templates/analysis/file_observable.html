@@ -29,7 +29,7 @@ $(document).ready(function() {
             alert("You must have at least one email address specified.");
             return;
         }
-        $("#email-form").append('<input type="hidden" name="file_uuid" value="{{_observable.id}}" />');
+        $("#email-form").append('<input type="hidden" name="file_uuid" value="{{_observable.uuid}}" />');
         $("#email-form").append('<input type="hidden" name="alert_uuid" value="' + current_alert_uuid + '" />');
         $("#email-form").submit();
     });
@@ -40,11 +40,11 @@ $(document).ready(function() {
 {% block observable_preview %}
 {% if _observable.exists and _observable.is_image %}
 <br/>
-<a href="{{url_for('analysis.image_full', alert_uuid=alert.uuid, observable_uuid=_observable.id)}}" target="_blank" name="observable_preview">
+<a href="{{url_for('analysis.image_full', alert_uuid=alert.uuid, observable_uuid=_observable.uuid)}}" target="_blank" name="observable_preview">
     <img
         width="{{_observable.scaled_width}}"
         height="{{_observable.scaled_height}}"
-        src="{{url_for('analysis.image', alert_uuid=alert.uuid, observable_uuid=_observable.id)}}"
+        src="{{url_for('analysis.image', alert_uuid=alert.uuid, observable_uuid=_observable.uuid)}}"
         class="img-thumbnail"
     />
 </a>
