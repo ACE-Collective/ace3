@@ -56,7 +56,7 @@ services:
     environment: 
       <<: *common-env
       # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
-      ACE_DB_HOST: {$ACE_DB_HOST:-ace-db}
+      ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
     depends_on:
