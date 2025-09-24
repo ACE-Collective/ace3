@@ -6,9 +6,9 @@ ssl-ca = /opt/ace/ssl/ca-chain.cert.pem
 ssl-cert = /opt/ace/ssl/mysql.cert.pem
 ssl-key = /opt/ace/ssl/mysql.key.pem
 
-# replication settings (primary)
-log_bin = mysql-bin
-# binlog_format = ROW (deprecated)
-server_id = 1
+# replication settings (replica)
+server_id = 2
 gtid_mode = ON
 enforce_gtid_consistency = ON
+read_only = ON
+# super_read_only = ON

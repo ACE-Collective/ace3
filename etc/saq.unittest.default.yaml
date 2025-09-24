@@ -36,7 +36,7 @@ network_configuration:
     - 192.168.0.0/16
 
 SSL:
-  ca_chain_path: ssl/ca-chain-combined.cert.pem
+  ca_chain_path: ssl/ca-chain.cert.pem
 
 SLA:
   enabled: false
@@ -601,3 +601,6 @@ test_api:
 minio:
   access_key: ace3apitest
   secret_key: 5ad82077-e6bf-471d-8f44-979c4f541082
+
+service_llm_embedding:
+  enabled: false

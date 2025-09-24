@@ -21,6 +21,7 @@ x-common-volumes: &common-volumes
   - .:/opt/ace
   - ace-data:/opt/ace/data
   - ace-sql:/docker-entrypoint-initdb.d
+  - ace-sql-readonly:/ace-sql-readonly
   - ace-yara:/opt/ace/etc/yara
   - ace-hunt:/opt/ace/hunts
   - ace-ssl:/opt/ace/ssl
@@ -42,6 +43,7 @@ services:
     volumes:
       - ace-data:/opt/ace/data
       - ace-sql:/docker-entrypoint-initdb.d
+      - ace-sql-readonly:/ace-sql-readonly
       - ace-ssl:/opt/ace/ssl
       - ace-auth:/auth
     cap_add:
@@ -66,7 +68,7 @@ services:
 
   ace-db:
     image: mysql:9.2
-    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824 --log-error=/dev/stderr --general-log=1 --general-log-file=/dev/stdout
     healthcheck:
       test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-e", "use ace;"]
       interval: 3s
@@ -91,6 +93,33 @@ services:
     networks: 
       - ace
 
+  ace-db-readonly:
+    image: mysql:9.2
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824 --log-error=/dev/stderr --general-log=1 --general-log-file=/dev/stdout
+    healthcheck:
+      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-h", "ace-db-readonly", "-e", "use ace;"]
+      interval: 3s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+    restart: always
+    depends_on:
+      ace-db:
+        condition: service_healthy
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: 1
+    volumes:
+      - ace-db-readonly:/var/lib/mysql
+      - ace-sql-readonly:/docker-entrypoint-initdb.d
+      - ace-data:/opt/ace/data
+      - ./etc/mysqld.replica/conf.d:/etc/mysql/conf.d
+      - ace-ssl:/opt/ace/ssl
+    ports:
+      - "3307:3306"
+    hostname: ace-db-readonly
+    networks: 
+      - ace
+
   # performs all first-time initialization routines that require the db
   ace-setup:
     environment: *common-env
@@ -106,7 +135,7 @@ services:
     networks: 
       - ace
 
-  http:
+  ace-http:
     build: 
       context: .
       dockerfile: Dockerfile.ace-http
@@ -158,7 +187,7 @@ services:
     ports:
       - "6379:6379"
     restart: always
-    hostname: ace-redis
+    hostname: redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -347,31 +376,6 @@ services:
     networks: 
       - ace
 
-  journal-email-collector:
-    environment: 
-      <<: *common-env
-      ACE_ZIP_PASSWORD:
-      ACE_LOAD_PROD_DATA:
-      ACE_PROD_DB_HOST:
-      ACE_PROD_DB_USER:
-      ACE_PROD_DB_PASSWORD:
-      AWS_CA_BUNDLE:
-      AWS_ACCESS_KEY_ID:
-      AWS_SECRET_ACCESS_KEY:
-      AWS_DEFAULT_REGION:
-    image: ${ACE3_IMAGE_URL:-ace3:latest}
-    depends_on:
-      ace:
-        condition: service_started
-    command: /bin/bash -c "/opt/ace/docker/startup/start_journal_email_collector.sh"
-    restart: always
-    volumes: *common-volumes
-    hostname: ace
-    cap_add:
-      - SYS_PTRACE
-    networks: 
-      - ace
-
   rabbitmq:
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
@@ -404,6 +408,7 @@ services:
       MINIO_ROOT_USER: "ace3"
     image: minio/minio:latest
     restart: always
+    hostname: minio
     ports:
       - "9000:9000" # S3 API
       - "9001:9001" # MinIO console
@@ -416,7 +421,7 @@ services:
       # this volume contains authentication information
       - ace-auth:/auth
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -453,6 +458,7 @@ services:
       MINIO_HOST: minio
       MINIO_PORT: 9000
       MINIO_ACCESS_KEY: ace3api
+    hostname: phishkit
     build:
       context: ./phishkit
     image: ${ACE3_PHISHKIT_MANAGER_IMAGE_URL:-phishkit-manager:latest}
@@ -477,6 +483,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant
+    hostname: qdrant
     ports:
       - "6333:6333"
     volumes:
@@ -490,8 +497,12 @@ volumes:
     name: ace-data
   ace-db:
     name: ace-db
+  ace-db-readonly:
+    name: ace-db-readonly
   ace-sql:
     name: ace-sql
+  ace-sql-readonly:
+    name: ace-sql-readonly
   ace-ssl:
     name: ace-ssl
   ace-yara:

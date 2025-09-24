@@ -3,26 +3,14 @@ import multiprocessing
 from typing import Optional
 
 from pydantic import BaseModel
-import redis
 
-from saq.configuration.config import get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_REDIS, CONFIG_REDIS_HOST, CONFIG_REDIS_PASSWORD, CONFIG_REDIS_PORT, CONFIG_REDIS_USERNAME, REDIS_DB_BG_TASKS
+from saq.configuration.config import get_config_value_as_boolean
+from saq.constants import CONFIG_SERVICE_LLM_EMBEDDING, CONFIG_SERVICE_LLM_EMBEDDING_ENABLED, REDIS_DB_BG_TASKS
 from saq.database.pool import get_db
 from saq.error.reporting import report_exception
 from saq.llm.embedding.vector import vectorize
+from saq.redis_client import get_redis_connection
 from saq.service import ACEServiceInterface
-
-def get_redis_connection():
-    """Returns the Redis object to use to store/retrieve signature info."""
-    return redis.Redis(
-            host=get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST),
-            port=get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT),
-            username=get_config_value(CONFIG_REDIS, CONFIG_REDIS_USERNAME),
-            password=get_config_value(CONFIG_REDIS, CONFIG_REDIS_PASSWORD),
-            db=REDIS_DB_BG_TASKS,
-            decode_responses=True,
-            encoding='utf-8',
-            health_check_interval=30)
 
 TASK_KEY = "embedding_tasks"
 
@@ -31,7 +19,11 @@ class EmbeddingTask(BaseModel):
 
 def submit_embedding_task(alert_uuid: str) -> bool:
     try:
-        rc = get_redis_connection()
+        if not get_config_value_as_boolean(CONFIG_SERVICE_LLM_EMBEDDING, CONFIG_SERVICE_LLM_EMBEDDING_ENABLED):
+            logging.debug(f"embedding service is not enabled, skipping task for {alert_uuid}")
+            return False
+
+        rc = get_redis_connection(REDIS_DB_BG_TASKS)
         rc.rpush(TASK_KEY, EmbeddingTask(alert_uuid=alert_uuid).model_dump_json())
         return True
     except Exception as e:
@@ -70,7 +62,7 @@ class EmbeddingWorker:
         self.process.join()
 
     def get_next_task(self) -> Optional[tuple[str, dict]]:
-        redis_connection = get_redis_connection()
+        redis_connection = get_redis_connection(REDIS_DB_BG_TASKS)
         return redis_connection.blpop(TASK_KEY, timeout=1)
 
     def worker_loop(self):

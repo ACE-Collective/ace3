@@ -6,6 +6,34 @@
 # and store the results in the auth volume
 #
 
+# I obviously used AI to create this function
+genpw() {
+
+    local min="$1" max="$2"
+    if [[ -z "$min" || -z "$max" || "$min" -le 0 || "$max" -lt "$min" ]]; then
+        echo "Usage: genpw MIN MAX   (where MIN>=1 and MAX>=MIN)" >&2
+        return 1
+    fi
+
+    # Uniform random length in [min, max] using /dev/urandom + rejection sampling
+    local range=$((max - min + 1))
+    local r limit L
+    local TWO32=4294967296  # 2^32
+  
+    while :; do
+        # Read an unsigned 32-bit integer
+        r=$(od -An -N4 -tu4 < /dev/urandom | tr -d ' ')
+        # Largest multiple of range less than 2^32, avoids modulo bias
+        limit=$(( (TWO32 / range) * range ))
+        (( r < limit )) && { L=$(( min + (r % range) )); break; }
+    done
+
+    # Generate L characters from a safe, shell-friendly alphabet
+    # Put '-' at the end so it's not interpreted as a range by tr.
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$L"
+}
+
+
 # the ace-auth volume is mounted ao /auth
 #
 if [ ! -d /auth/passwords ]
@@ -13,14 +41,53 @@ then
     mkdir /auth/passwords
 fi
 
+if [ ! -f /auth/passwords/ace-user ]
+then
+    echo "initializing mysql ace-user authentication"
+    if [ -z "$ACE_DB_USER_PASSWORD" ]
+    then
+        echo "generating random password for mysql ace-user"
+        ACE_DB_USER_PASSWORD=$(genpw 12 16)
+        echo "generated password for mysql ace-user: ${ACE_DB_USER_PASSWORD}"
+    fi
+
+    echo "${ACE_DB_USER_PASSWORD}" > /auth/passwords/ace-user
+fi
+
+if [ ! -f /auth/passwords/ace-superuser ]
+then
+    echo "initializing mysql superuser authentication"
+    if [ -z "$ACE_SUPERUSER_DB_USER_PASSWORD" ]
+    then
+        echo "generating random password for mysql ace-superuser"
+        ACE_SUPERUSER_DB_USER_PASSWORD=$(genpw 12 16)
+        echo "generated password for mysql ace-superuser: ${ACE_SUPERUSER_DB_USER_PASSWORD}"
+    fi
+
+    echo "${ACE_SUPERUSER_DB_USER_PASSWORD}" > /auth/passwords/ace-superuser
+fi
+
 if [ ! -d /auth/etc/redis ]
 then
     echo "initializing redis authentication"
     mkdir -p /auth/etc/redis
     echo "aclfile /auth/etc/redis/custom_aclfile.acl" > /auth/etc/redis/redis.conf
+    # TODO come back to this idea, ran into issues with some of the clients
+    # Add TLS configuration
+    #echo "port 0" >> /auth/etc/redis/redis.conf
+    #echo "tls-port 6379" >> /auth/etc/redis/redis.conf
+    #echo "tls-cert-file /opt/ace/ssl/ace.cert.pem" >> /auth/etc/redis/redis.conf
+    #echo "tls-key-file /opt/ace/ssl/ace.key.pem" >> /auth/etc/redis/redis.conf
+    #echo "tls-ca-cert-file /opt/ace/ssl/ca-chain.cert.pem" >> /auth/etc/redis/redis.conf
+    #echo "tls-protocols \"TLSv1.2 TLSv1.3\"" >> /auth/etc/redis/redis.conf
+    #echo "tls-ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256" >> /auth/etc/redis/redis.conf
+    #echo "tls-prefer-server-ciphers yes" >> /auth/etc/redis/redis.conf
+    
     if [ -z "$REDIS_PASSWORD" ]
     then
-        REDIS_PASSWORD=$(cat /proc/sys/kernel/random/uuid)
+        echo "generating random password for redis"
+        REDIS_PASSWORD=$(genpw 12 16)
+        echo "generated password for redis: ${REDIS_PASSWORD}"
     fi
     echo "user ace3 on allkeys allchannels allcommands >${REDIS_PASSWORD} " > /auth/etc/redis/custom_aclfile.acl
     echo "user default off nopass nocommands" >> /auth/etc/redis/custom_aclfile.acl
@@ -33,7 +100,9 @@ then
     mkdir -p /auth/etc/minio
     if [ -z "$MINIO_PASSWORD" ]
     then
-        MINIO_PASSWORD=$(cat /proc/sys/kernel/random/uuid)
+        echo "generating random password for minio"
+        MINIO_PASSWORD=$(genpw 12 16)
+        echo "generated password for minio: ${MINIO_PASSWORD}"
     fi
 
     echo "${MINIO_PASSWORD}" > /auth/passwords/minio
@@ -45,7 +114,9 @@ then
     mkdir -p /auth/etc/rabbitmq
     if [ -z "$RABBITMQ_PASSWORD" ]
     then
-        RABBITMQ_PASSWORD=$(cat /proc/sys/kernel/random/uuid)
+        echo "generating random password for rabbitmq"
+        RABBITMQ_PASSWORD=$(genpw 12 16)
+        echo "generated password for rabbitmq: ${RABBITMQ_PASSWORD}"
     fi
 
     echo "${RABBITMQ_PASSWORD}" > /auth/passwords/rabbitmq

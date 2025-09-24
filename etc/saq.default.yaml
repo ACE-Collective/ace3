@@ -149,12 +149,16 @@ redis:
   port: 6379
   username: ace3
   password: encrypted:redis.password
+  use_ssl: false
+  #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
 
 redis-local:
   host: redis
   port: 6379
   username: ace3
   password: encrypted:redis.password
+  use_ssl: false
+  #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
 
 qdrant:
   url: http://qdrant:6333
@@ -286,7 +290,7 @@ node_translation:
 node_translation_gui: {}
 
 SSL:
-  ca_chain_path: ssl/ca-chain-combined.cert.pem
+  ca_chain_path: ssl/ca-chain.cert.pem
 
 proxy:
   # leave these values blank if you do not need to use a proxy
@@ -486,6 +490,7 @@ database_ace:
   database: ace
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
+  ssl_ca: ssl/ca-chain.cert.pem
   # ssl_key, ssl_cert, ssl_ca can be added if needed
   max_allowed_packet: 1073741824
 
@@ -496,6 +501,7 @@ database_collection:
   database: ace
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
+  ssl_ca: ssl/ca-chain.cert.pem
   max_allowed_packet: 1073741824
 
 database_brocess:
@@ -505,6 +511,7 @@ database_brocess:
   database: brocess
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
+  ssl_ca: ssl/ca-chain.cert.pem
   # how long do we wait for brocess queries to complete (in seconds)
   # these queries should complete super fast
   # failure to complete the timeout will send the analysis module using brocess into cooldown mode
@@ -518,6 +525,7 @@ database_email_archive:
   database: email-archive
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
+  ssl_ca: ssl/ca-chain.cert.pem
   max_allowed_packet: 1073741824
 
 ldap:

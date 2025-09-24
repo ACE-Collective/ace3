@@ -3,34 +3,22 @@ import logging
 import time
 import threading
 
-import redis
 
-from saq.configuration import get_config, get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_REDIS, CONFIG_REDIS_HOST, CONFIG_REDIS_PASSWORD, CONFIG_REDIS_PORT, CONFIG_REDIS_USERNAME, REDIS_DB_BG_TASKS
+from saq.configuration import get_config
+from saq.constants import REDIS_DB_BG_TASKS
 from saq.database import get_db
 from saq.error import report_exception
+from saq.redis_client import get_redis_connection
 from saq.service import ACEServiceInterface
 
 # XXX terrible hack, replace this with a proper system
-
-def get_redis_connection():
-    """Returns the Redis object to use to store/retrieve signature info."""
-    return redis.Redis(
-            host=get_config_value(CONFIG_REDIS, CONFIG_REDIS_HOST),
-            port=get_config_value_as_int(CONFIG_REDIS, CONFIG_REDIS_PORT),
-            username=get_config_value(CONFIG_REDIS, CONFIG_REDIS_USERNAME),
-            password=get_config_value(CONFIG_REDIS, CONFIG_REDIS_PASSWORD),
-            db=REDIS_DB_BG_TASKS,
-            decode_responses=True,
-            encoding='utf-8',
-            health_check_interval=30)
 
 TASK_KEY = "tasks"
 BG_TASK_CLOSE_EVENT = "close_event"
 BG_TASK_RSYNC_ALERT = "rsync_alert"
 
 def add_background_task(name: str, *args):
-    rc = get_redis_connection()
+    rc = get_redis_connection(REDIS_DB_BG_TASKS)
     rc.rpush(TASK_KEY, json.dumps({ 'name': name, 'args': args }))
 
 class BackgroundExecutor(ACEServiceInterface):
@@ -69,7 +57,7 @@ class BackgroundExecutor(ACEServiceInterface):
 
     def initialize_message_queue(self):
         logging.debug("initializing message queue")
-        connection = get_redis_connection()
+        connection = get_redis_connection(REDIS_DB_BG_TASKS)
         connection.rpush(TASK_KEY, "")
         connection.lpop(TASK_KEY)
 
@@ -84,7 +72,7 @@ class BackgroundExecutor(ACEServiceInterface):
         self.execute_task(json.loads(task))
 
     def get_next_task(self):
-        redis_connection = get_redis_connection()
+        redis_connection = get_redis_connection(REDIS_DB_BG_TASKS)
         return redis_connection.blpop(TASK_KEY, timeout=1)
 
     def execute_task(self, task: dict):

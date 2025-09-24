@@ -22,9 +22,10 @@ then
         -sha256 \
         -days 3650 \
         -nodes \
-        -subj "/C=US/ST=Ohio/L=Springfield/O=CompanyName/OU=CompanySectionName/CN=ace.local"
+        -subj "/C=US/ST=Ohio/L=Springfield/O=CompanyName/OU=CompanySectionName/CN=ace" \
+        -addext "subjectAltName=DNS:ace,DNS:ace-db,DNS:ace-db-readonly,DNS:ace-http,DNS:minio,DNS:phishkit,DNS:qdrant,DNS:rabbitmq,DNS:redis,DNS:localhost,IP:127.0.0.1"
 
-    cp ssl/ace.cert.pem ssl/ca-chain-combined.cert.pem
+    # the self-signed certificate is also the CA chain
     cp ssl/ace.cert.pem ssl/ca-chain.cert.pem
 
     cp ssl/ace.key.pem ssl/mysql.key.pem
@@ -33,9 +34,10 @@ then
     # Set proper permissions for SSL files
     chmod 600 ssl/ace.key.pem
     chmod 644 ssl/ace.cert.pem
-    chmod 644 ssl/ca-chain-combined.cert.pem
     chmod 644 ssl/ca-chain.cert.pem
 
+    # these are the same as the ace certs but need looser perms for mysql user
+    # insecure but this is for a local dev environment
     cp ssl/ace.key.pem ssl/mysql.key.pem
     cp ssl/ace.cert.pem ssl/mysql.cert.pem
 
@@ -43,11 +45,22 @@ then
     chmod 644 ssl/mysql.cert.pem
 fi
 
+# if we're missing any of the required authentication credentials then we create them here
+# this is for someone just standing up a quick dev environment to test this out
+# production systems should have these values defined
+
+bin/initialize_auth.sh
+
 # prepare SQL files
 
 if [ ! -f /docker-entrypoint-initdb.d/done ]
 then
-    bin/initialize_database.py 
+    bin/initialize_database.py /docker-entrypoint-initdb.d
+fi
+
+if [ ! -f /ace-sql-readonly/done ]
+then
+    bin/initialize_database.py /ace-sql-readonly --replica
 fi
 
 # TOOD
@@ -90,12 +103,6 @@ then
     echo "creating SSH key"
     ssh-keygen -t rsa -b 4096 -f data/ssh/id_rsa -N ""
 fi
-
-# if we're missing any of the required authentication credentials then we create them here
-# this is for someone just standing up a quick dev environment to test this out
-# production systems should have these values defined
-
-bin/initialize_auth.sh
 
 # TODO get rid of these
 if [ ! -e data/etc/organization.json ]; then echo '{}' > data/etc/organization.json; fi

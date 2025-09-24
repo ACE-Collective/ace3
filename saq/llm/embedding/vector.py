@@ -107,7 +107,7 @@ def vectorize(target: Union[Alert, RootAnalysis]) -> list[str]:
     model = load_model(get_embedding_model())
 
     vectors = model.encode(context_records, show_progress_bar=False)
-    np.save("vectors.npy", vectors, allow_pickle=False)
+    #np.save("vectors.npy", vectors, allow_pickle=False)
 
     client = QdrantClient(url=get_config_value(CONFIG_QDRANT, CONFIG_QDRANT_URL))
     if not client.collection_exists(collection_name=get_alert_collection_name()):

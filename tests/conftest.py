@@ -1,4 +1,5 @@
 
+import logging
 import os
 import os.path
 import shutil
@@ -237,8 +238,22 @@ def global_function_setup(request):
     # SQLAlchemy session management
     db_session = get_db()
     if db_session is not None:
-        db_session.remove()
-        db_session.close()
+
+        #
+        # (09/24/2025) there's something weird going on here with SSL enabled
+        # we end up with SSL sockets in an invalid state sometimes
+        # so I've got these wrapped in try/except for now...
+        #
+
+        try:
+            db_session.remove()
+        except Exception as e:
+            logging.error(f"error removing database session: {e}")
+
+        try:
+            db_session.close()
+        except Exception as e:
+            logging.error(f"error closing database session: {e}")
 
     from sqlalchemy.orm.session import close_all_sessions
     close_all_sessions()

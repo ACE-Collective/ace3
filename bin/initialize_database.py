@@ -11,24 +11,64 @@ import random
 import re
 import shutil
 import string
+import sys
 
 import yaml
 
 def generate_password() -> str:
     return "".join(random.choices(string.ascii_letters, k=random.randint(23, 32))) 
 
-def initialize_sql():
-    source_dir = "sql"
-    target_dir = "/docker-entrypoint-initdb.d"
-    print(f"copying {source_dir} to {target_dir}")
-    shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
-
+def get_user_password() -> str:
     # if the password is set in the environment, use it
     user_password = os.environ.get("ACE_DB_USER_PASSWORD")
     if not user_password:
-        # otherwise generate a new password
-        user_password = generate_password()
+        # otherwise load the password from the auth directory
+        with open("/auth/passwords/ace-user", "r") as fp:
+            user_password = fp.read().strip()
 
+    if not user_password:
+        raise RuntimeError("unable to load password for ace-user\n")
+
+    return user_password
+
+def get_admin_password() -> str:
+    admin_password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD")
+    if not admin_password:
+        # otherwise load the password from the auth directory
+        with open("/auth/passwords/ace-superuser", "r") as fp:
+            admin_password = fp.read().strip()
+
+    if not admin_password:
+        raise RuntimeError("unable to load password for ace-superuser\n")
+
+    return admin_password
+
+def initialize_replica(target_dir: str):
+    admin_password = get_admin_password()
+
+    target_path = os.path.join(target_dir, "98-configure-and-start-replica.sql")
+    with open(target_path, "w") as fp:
+        fp.write(f"""
+        CHANGE REPLICATION SOURCE TO
+        SOURCE_HOST = 'ace-db',
+        SOURCE_PORT = 3306,
+        SOURCE_USER = 'ace-superuser',
+        SOURCE_PASSWORD = '{admin_password}',
+        SOURCE_AUTO_POSITION = 1,
+        SOURCE_SSL = 1,
+        SOURCE_SSL_CA = '/opt/ace/ssl/ca-chain.cert.pem';
+        START REPLICA;
+        """)
+
+    print(f"created {target_path}")
+
+def initialize_sql(target_dir: str, replica: bool=False):
+    source_dir = "sql"
+    #target_dir = "/docker-entrypoint-initdb.d"
+    print(f"copying {source_dir} to {target_dir}")
+    shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+
+    user_password = get_user_password()
     source_path = os.path.join(target_dir, "templates", "create_db_user.sql")
     target_path = os.path.join(target_dir, "70-create-db-user.sql")
     with open(source_path, 'r') as fp_in:
@@ -50,7 +90,13 @@ password={user_password}""")
     # same for the admin password
     admin_password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD")
     if not admin_password:
-        admin_password = generate_password()
+        # otherwise load the password from the auth directory
+        with open("/auth/passwords/ace-superuser", "r") as fp:
+            admin_password = fp.read().strip()
+
+    if not admin_password:
+        sys.stderr.write("ERROR: unable to load password for ace-superuser\n")
+        sys.exit(1)
 
     source_path = os.path.join(source_dir, "templates", "create_db_super_user.sql")
     target_path = os.path.join(target_dir, "71-create-db-super-user.sql")
@@ -167,4 +213,12 @@ Acquire::https::Proxy "{https_proxy}";
             pass
 
 if __name__ == '__main__':
-    initialize_sql()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("target_dir", help="Ends up as /docker-entrypoint-initdb.d in the mysql container")
+    parser.add_argument("--replica", action="store_true", help="Initialize for a replica")
+    args = parser.parse_args()
+    if args.replica:
+        initialize_replica(args.target_dir)
+    else:
+        initialize_sql(args.target_dir, args.replica)

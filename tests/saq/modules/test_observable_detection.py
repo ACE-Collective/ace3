@@ -3,7 +3,6 @@ import pytest
 
 from saq.constants import F_TEST, REDIS_DB_FOR_DETECTION_A
 from saq.modules.observable_detection import ObservableDetectionAnalyzer
-from saq.modules.adapter import AnalysisModuleAdapter
 from tests.saq.helpers import create_root_analysis
 
 

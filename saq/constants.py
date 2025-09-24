@@ -878,6 +878,8 @@ CONFIG_GLOBAL_TEMP_DIR = "tmp_dir"
 # LLM
 CONFIG_LLM = "llm"
 CONFIG_LLM_EMBEDDING_MODEL = "embedding_model"
+CONFIG_SERVICE_LLM_EMBEDDING = "service_llm_embedding"
+CONFIG_SERVICE_LLM_EMBEDDING_ENABLED = "enabled"
 
 # Qdrant
 CONFIG_QDRANT = "qdrant"
@@ -1162,6 +1164,8 @@ CONFIG_REDIS_PASSWORD = "password"
 CONFIG_REDIS_LOCAL = "redis-local"
 CONFIG_REDIS_HOST = "host"
 CONFIG_REDIS_PORT = "port"
+CONFIG_REDIS_USE_SSL = "use_ssl"
+CONFIG_REDIS_SSL_CA_PATH = "ssl_ca_path"
 
 # yara scanner
 CONFIG_YARA_SCANNER = "service_yara"
