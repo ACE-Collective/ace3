@@ -43,6 +43,14 @@ def get_admin_password() -> str:
 
     return admin_password
 
+def create_mysql_defaults_file(target_path: str, user: str, primary_database: str, password: str):
+    with open(target_path, "w") as fp:
+        fp.write(f"""[client]
+host={primary_database}
+user={user}
+password={password}
+""")
+
 def initialize_replica(target_dir: str, primary_database: str):
     admin_password = get_admin_password()
 
@@ -62,7 +70,11 @@ def initialize_replica(target_dir: str, primary_database: str):
 
     print(f"created {target_path}")
 
-def initialize_sql(target_dir: str):
+    target_path = os.path.join(target_dir, "mysql_defaults")
+    create_mysql_defaults_file(target_path, "ace-user", primary_database, get_user_password())
+    print(f"created {target_path}")
+
+def initialize_sql(target_dir: str, primary_database: str):
     source_dir = "sql"
     #target_dir = "/docker-entrypoint-initdb.d"
     print(f"copying {source_dir} to {target_dir}")
@@ -79,12 +91,7 @@ def initialize_sql(target_dir: str):
         print(f"created {target_path}")
 
     target_path = os.path.join(target_dir, "mysql_defaults")
-    with open(target_path, "w") as fp:
-        fp.write(f"""[client]
-host=ace-db
-user=ace-user
-password={user_password}""")
-
+    create_mysql_defaults_file(target_path, "ace-user", primary_database, user_password)
     print(f"created {target_path}")
 
     # same for the admin password
@@ -108,12 +115,7 @@ password={user_password}""")
     print(f"created {target_path}")
 
     target_path = os.path.join(target_dir, "mysql_defaults.root")
-    with open(target_path, "w") as fp:
-        fp.write(f"""[client]
-host=ace-db
-user=ace-superuser
-password={admin_password}""")
-
+    create_mysql_defaults_file(target_path, "ace-superuser", primary_database, admin_password)
     print(f"created {target_path}")
 
     target_path = os.path.join(target_dir, "saq.database.passwords.yaml")
@@ -222,4 +224,4 @@ if __name__ == '__main__':
     if args.type == "replica":
         initialize_replica(args.target_dir, args.primary_database)
     else:
-        initialize_sql(args.target_dir)
+        initialize_sql(args.target_dir, args.primary_database)
