@@ -8,9 +8,11 @@
 
 for path in /opt/ace/data /opt/ace/ssl /docker-entrypoint-initdb.d /ace-sql-readonly /auth /home/ace
 do
-    #ls -ld ${path}
-    if [[ $(stat -c "$U" ${path}) != "ace" ]]
+    if [ -d "${path}" ]
     then
-        chown ace:ace ${path}
+        if [[ $(stat -c "$U" ${path}) != "ace" ]]
+        then
+            chown ace:ace ${path}
+        fi
     fi
 done
