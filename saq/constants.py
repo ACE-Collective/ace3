@@ -884,6 +884,9 @@ CONFIG_SERVICE_LLM_EMBEDDING_ENABLED = "enabled"
 # Qdrant
 CONFIG_QDRANT = "qdrant"
 CONFIG_QDRANT_URL = "url"
+CONFIG_QDRANT_USE_SSL = "use_ssl"
+CONFIG_QDRANT_SSL_CA_PATH = "ssl_ca_path"
+CONFIG_QDRANT_API_KEY = "api_key"
 CONFIG_QDRANT_COLLECTION_ALERTS = "collection_alerts"
 
 # monitoring

@@ -1,6 +1,6 @@
 import os
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 import saq.llm.embedding.model as model_module
 

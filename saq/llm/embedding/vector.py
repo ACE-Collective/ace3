@@ -9,16 +9,15 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.analysis.search import recurse_tree
-import numpy as np
 
-from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, UpdateStatus, VectorParams, Distance
 
 from saq.configuration.config import get_config_value
-from saq.constants import CONFIG_LLM, CONFIG_LLM_EMBEDDING_MODEL, CONFIG_QDRANT, CONFIG_QDRANT_COLLECTION_ALERTS, CONFIG_QDRANT_URL
+from saq.constants import CONFIG_LLM, CONFIG_LLM_EMBEDDING_MODEL, CONFIG_QDRANT, CONFIG_QDRANT_COLLECTION_ALERTS
 from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.llm.embedding.model import load_model
+from saq.qdrant_client import get_qdrant_client
 
 def _generate_point_id(root: RootAnalysis, context_document: str) -> str:
     key = f"{root.storage_dir}/{context_document}"
@@ -35,7 +34,7 @@ def get_alert_collection_name() -> str:
 
 def clear_vectors():
     """Clears ALL vectors fro Qrant for the ace collection."""
-    client = QdrantClient(url=get_config_value(CONFIG_QDRANT, CONFIG_QDRANT_URL))
+    client = get_qdrant_client()
     if client.collection_exists(collection_name=get_alert_collection_name()):
         client.delete_collection(collection_name=get_alert_collection_name())
 
@@ -109,7 +108,7 @@ def vectorize(target: Union[Alert, RootAnalysis]) -> list[str]:
     vectors = model.encode(context_records, show_progress_bar=False)
     #np.save("vectors.npy", vectors, allow_pickle=False)
 
-    client = QdrantClient(url=get_config_value(CONFIG_QDRANT, CONFIG_QDRANT_URL))
+    client = get_qdrant_client()
     if not client.collection_exists(collection_name=get_alert_collection_name()):
         client.create_collection(
             collection_name=get_alert_collection_name(),

@@ -12,7 +12,7 @@ import saq.llm.embedding.vector as vector_module
 
 @pytest.fixture
 def mock_qdrant_client(monkeypatch):
-    """Mock QdrantClient to avoid external dependencies."""
+    """Mock get_qdrant_client to avoid external dependencies."""
     mock_client = Mock()
     mock_client.collection_exists.return_value = True
     mock_client.delete_collection = Mock()
@@ -20,10 +20,10 @@ def mock_qdrant_client(monkeypatch):
     mock_client.delete.return_value = Mock(status=UpdateStatus.COMPLETED)
     mock_client.count.return_value = Mock(count=0)
     mock_client.upload_points = Mock()
-    
-    mock_client_class = Mock(return_value=mock_client)
-    monkeypatch.setattr("saq.llm.embedding.vector.QdrantClient", mock_client_class)
-    return mock_client_class, mock_client
+
+    mock_get_client_func = Mock(return_value=mock_client)
+    monkeypatch.setattr("saq.llm.embedding.vector.get_qdrant_client", mock_get_client_func)
+    return mock_get_client_func, mock_client
 
 
 @pytest.fixture
@@ -52,10 +52,10 @@ def mock_config(monkeypatch):
         ("qdrant", "collection_alerts"): "test-collection",
         ("qdrant", "url"): "http://localhost:6333"
     }
-    
+
     def mock_get_config_value(section, key):
         return config_values.get((section, key), "default_value")
-    
+
     monkeypatch.setattr("saq.llm.embedding.vector.get_config_value", mock_get_config_value)
     return config_values
 
@@ -73,12 +73,6 @@ def mock_get_db(monkeypatch):
     return mock_db
 
 
-@pytest.fixture
-def mock_np_save(monkeypatch):
-    """Mock numpy save to avoid file operations."""
-    mock_save = Mock()
-    monkeypatch.setattr("saq.llm.embedding.vector.np.save", mock_save)
-    return mock_save
 
 
 @pytest.fixture
@@ -166,22 +160,22 @@ class TestGetAlertCollectionName:
 class TestClearVectors:
     def test_clear_vectors_collection_exists(self, mock_config, mock_qdrant_client):
         """test that clear_vectors deletes collection when it exists."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_client.collection_exists.return_value = True
-        
+
         vector_module.clear_vectors()
-        
-        mock_client_class.assert_called_once_with(url="http://localhost:6333")
+
+        mock_get_client_func.assert_called_once()
         mock_client.collection_exists.assert_called_once_with(collection_name="test-collection")
         mock_client.delete_collection.assert_called_once_with(collection_name="test-collection")
 
     def test_clear_vectors_collection_does_not_exist(self, mock_config, mock_qdrant_client):
         """test that clear_vectors does nothing when collection doesn't exist."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_client.collection_exists.return_value = False
-        
+
         vector_module.clear_vectors()
-        
+
         mock_client.delete_collection.assert_not_called()
 
 
@@ -221,10 +215,10 @@ class TestGetContextRecords:
 
 class TestVectorize:
     @pytest.mark.unit
-    def test_vectorize_root_analysis(self, sample_root_analysis, mock_config, mock_qdrant_client, 
-                                    mock_load_model, mock_get_db, mock_np_save):
+    def test_vectorize_root_analysis(self, sample_root_analysis, mock_config, mock_qdrant_client,
+                                    mock_load_model, mock_get_db):
         """test vectorize with root analysis."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_load_model_func, mock_model = mock_load_model
         mock_client.collection_exists.return_value = False
         
@@ -241,14 +235,8 @@ class TestVectorize:
         assert isinstance(encoded_args, list)
         assert len(encoded_args) > 0
         
-        # Verify numpy save (just check it was called with correct filename and options)
-        assert mock_np_save.call_count == 1
-        call_args = mock_np_save.call_args
-        assert call_args[0][0] == "vectors.npy"  # filename
-        assert call_args[1]["allow_pickle"] is False
-        
-        # Verify Qdrant client instantiation
-        mock_client_class.assert_called_once_with(url="http://localhost:6333")
+        # Verify Qdrant client function called
+        mock_get_client_func.assert_called_once()
         
         # Verify collection creation (since it doesn't exist)
         mock_client.create_collection.assert_called_once_with(
@@ -280,9 +268,9 @@ class TestVectorize:
 
     @pytest.mark.integration
     def test_vectorize_alert(self, sample_alert, mock_config, mock_qdrant_client,
-                            mock_load_model, mock_get_db, mock_np_save):
+                            mock_load_model, mock_get_db):
         """test vectorize with alert."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_load_model_func, mock_model = mock_load_model
         mock_client.collection_exists.return_value = True
         
@@ -303,9 +291,9 @@ class TestVectorize:
 
     @pytest.mark.unit
     def test_vectorize_existing_collection(self, sample_root_analysis, mock_config, mock_qdrant_client,
-                                          mock_load_model, mock_get_db, mock_np_save):
+                                          mock_load_model, mock_get_db):
         """test vectorize when collection already exists."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_client.collection_exists.return_value = True
         
         vector_module.vectorize(sample_root_analysis)
@@ -315,9 +303,9 @@ class TestVectorize:
 
     @pytest.mark.unit
     def test_vectorize_count_assertion_failure(self, sample_root_analysis, mock_config, mock_qdrant_client,
-                                              mock_load_model, mock_get_db, mock_np_save):
+                                              mock_load_model, mock_get_db):
         """test vectorize fails when count check fails."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_client.count.return_value = Mock(count=5)  # Non-zero count
         
         with pytest.raises(AssertionError, match="count_result is 5"):
@@ -325,9 +313,9 @@ class TestVectorize:
 
     @pytest.mark.unit
     def test_vectorize_delete_status_assertion_failure(self, sample_root_analysis, mock_config, mock_qdrant_client,
-                                                       mock_load_model, mock_get_db, mock_np_save):
+                                                       mock_load_model, mock_get_db):
         """test vectorize fails when delete operation doesn't complete."""
-        mock_client_class, mock_client = mock_qdrant_client
+        mock_get_client_func, mock_client = mock_qdrant_client
         mock_client.delete.return_value = Mock(status="FAILED")
         
         with pytest.raises(AssertionError):
@@ -335,7 +323,7 @@ class TestVectorize:
 
     @pytest.mark.unit
     def test_vectorize_returns_context_records(self, sample_root_analysis, mock_config, mock_qdrant_client,
-                                              mock_load_model, mock_get_db, mock_np_save):
+                                              mock_load_model, mock_get_db):
         """test vectorize returns context records."""
         context_records = vector_module.vectorize(sample_root_analysis)
         

@@ -121,3 +121,17 @@ then
 
     echo "${RABBITMQ_PASSWORD}" > /auth/passwords/rabbitmq
 fi
+
+if [ ! -f /auth/passwords/qdrant ]
+then
+    echo "initializing qdrant authentication"
+    if [ -z "$QDRANT_API_KEY" ]
+    then
+        echo "generating random api key for qdrant"
+        QDRANT_API_KEY=$(genpw 12 16)
+        echo "generated api key for qdrant: ${QDRANT_API_KEY}"
+    fi
+
+    echo "${QDRANT_API_KEY}" > /auth/passwords/qdrant
+fi
+

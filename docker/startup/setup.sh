@@ -47,5 +47,6 @@ then
     ace enc config set redis.password --load-from-file /auth/passwords/redis && \
     ace enc config set minio.password --load-from-file /auth/passwords/minio && \
     ace enc config set rabbitmq.password --load-from-file /auth/passwords/rabbitmq && \
+    ace enc config set qdrant.api_key --load-from-file /auth/passwords/qdrant && \
     touch /auth/setup.executed
 fi

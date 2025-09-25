@@ -16,6 +16,7 @@ x-common-env: &common-env
   REDIS_PASSWORD:
   MINIO_PASSWORD:
   RABBITMQ_PASSWORD:
+  QDRANT_API_KEY:
 
 x-common-volumes: &common-volumes
   - .:/opt/ace
@@ -485,12 +486,25 @@ services:
       - ace
 
   qdrant:
+    environment:
+      QDRANT__SERVICE__ENABLE_TLS: 1
+      QDRANT__TLS__CERT: /ssl/ace.cert.pem
+      QDRANT__TLS__KEY: /ssl/ace.key.pem
     image: qdrant/qdrant
     hostname: qdrant
+    entrypoint: >
+      /bin/sh -c "
+      export QDRANT__SERVICE__API_KEY=$(cat /auth/passwords/qdrant) && ./entrypoint.sh
+      "
+    depends_on:
+      ace-setup:
+        condition: service_completed_successfully
     ports:
-      - "6333:6333"
+      - "6333"
     volumes:
       - ace-qdrant:/qdrant/storage
+      - ace-ssl:/ssl:ro
+      - ace-auth:/auth
     networks:
       - ace
 

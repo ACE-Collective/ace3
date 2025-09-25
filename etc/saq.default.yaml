@@ -161,7 +161,10 @@ redis-local:
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
 
 qdrant:
-  url: http://qdrant:6333
+  url: https://qdrant:6333
+  use_ssl: true
+  ssl_ca_path: ssl/ca-chain.cert.pem
+  api_key: encrypted:qdrant.api_key
   # the collection name for ace3 alert data
   collection_alerts: ace3-alerts
 
