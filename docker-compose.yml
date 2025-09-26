@@ -11,6 +11,8 @@ x-common-env: &common-env
   ACE_DISABLE_AUTOSTART:
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS:
+  # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
+  ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
   ACE_DB_USER_PASSWORD:
   ACE_SUPERUSER_DB_USER_PASSWORD:
   REDIS_PASSWORD:
@@ -54,10 +56,7 @@ services:
 
   # performs all first-time initialization routines that do not require the db
   ace-initialize:
-    environment: 
-      <<: *common-env
-      # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
-      ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
+    environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
     depends_on:

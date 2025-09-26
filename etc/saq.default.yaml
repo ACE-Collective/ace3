@@ -93,8 +93,8 @@ global:
   # kill a worker when it uses this much memory (in MB)
   memory_limit_kill: 4096
   # the database we use to query for encrypted passwords
-  # defaults to the local ace database
-  encrypted_passwords_db: ace
+  # defaults to env variable ACE_DB_HOST (see docker-compose.yml)
+  encrypted_passwords_db: env:ACE_DB_HOST
   # maximum allowed size in bytes for an analysis (JSON + size of file observables)
   # this is to prevent things like emails with tons of attachments from expanding into hundreds of gigabytes in size and using all available disk space
   # set this to 0 to disable this functionality
