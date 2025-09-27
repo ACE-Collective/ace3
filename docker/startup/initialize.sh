@@ -107,14 +107,3 @@ fi
 # TODO get rid of these
 if [ ! -e data/etc/organization.json ]; then echo '{}' > data/etc/organization.json; fi
 if [ ! -e data/etc/local_networks.csv ]; then echo 'Indicator,Indicator_Type' > data/etc/local_networks.csv; fi
-
-# make sure we've got our SSH creds for github
-#if [ ! -e ~/.ssh/id_rsa ]
-#then
-    #mkdir -p ~/.ssh && tar -C ~/.ssh -zxf mnt/ssh.$ACE_TARGET/ssh.creds.tar.gz && chmod 400 ~/.ssh/id_rsa
-#fi
-
-#if [ ! -e ~/.ssh/known_hosts ]
-#then
-    #cp mnt/ssh.$ACE_TARGET/known_hosts ~/.ssh/known_hosts
-#fi

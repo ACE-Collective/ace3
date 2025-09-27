@@ -317,7 +317,7 @@ class TestJournalEmailCollector:
         delete_objects = call_args[0][1]
         assert len(delete_objects) == 1
         assert isinstance(delete_objects[0], DeleteObject)
-        assert delete_objects[0]._name == "test_email.rfc822"
+        assert delete_objects[0].name == "test_email.rfc822"
 
     @pytest.mark.unit
     def test_collect_multiple_emails_mixed_blacklist(self, monkeypatch, mock_minio_client, tmpdir, blacklist_yara_rule, sample_email_content):

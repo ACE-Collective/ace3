@@ -6,9 +6,6 @@
 # ACE3_PHISHKIT_IMAGE_URL
 
 x-common-env: &common-env
-  ACE_TARGET: "dev"
-  ACE_VERSION: "3.0.0"
-  ACE_DISABLE_AUTOSTART:
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS:
   # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
@@ -323,17 +320,7 @@ services:
       - ace
 
   dev:
-    environment: 
-      <<: *common-env
-      ACE_ZIP_PASSWORD:
-      ACE_LOAD_PROD_DATA:
-      ACE_PROD_DB_HOST:
-      ACE_PROD_DB_USER:
-      ACE_PROD_DB_PASSWORD:
-      AWS_CA_BUNDLE:
-      AWS_ACCESS_KEY_ID:
-      AWS_SECRET_ACCESS_KEY:
-      AWS_DEFAULT_REGION:
+    environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       ace-setup:
@@ -350,17 +337,7 @@ services:
       - ace
 
   ace:
-    environment: 
-      <<: *common-env
-      ACE_ZIP_PASSWORD:
-      ACE_LOAD_PROD_DATA:
-      ACE_PROD_DB_HOST:
-      ACE_PROD_DB_USER:
-      ACE_PROD_DB_PASSWORD:
-      AWS_CA_BUNDLE:
-      AWS_ACCESS_KEY_ID:
-      AWS_SECRET_ACCESS_KEY:
-      AWS_DEFAULT_REGION:
+    environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       ace-setup:

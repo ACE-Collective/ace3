@@ -22,22 +22,6 @@ do
     sleep 1
 done
 
-if [ -n "$ACE_DISABLE_AUTOSTART" ]
-then
-    echo 
-    echo "autostart disabled"
-    echo
-    echo "to enable autostart remove the ACE_DISABLE_AUTOSTART environment variable"
-    echo
-    
-    while :
-    do
-        sleep 1
-    done
-
-    exit 0
-fi
-
 echo 
 echo "starting ace..."
 echo
