@@ -1,21 +1,60 @@
 
-# set these in your .env file to point to the container registry you want to use
+#
+# .env variables
+#
+#
+# these set the default output docker image tags
+# 
 # ACE3_IMAGE_URL
 # ACE3_HTTP_IMAGE_URL
 # ACE3_PHISHKIT_MANAGER_IMAGE_URL
 # ACE3_PHISHKIT_IMAGE_URL
+#
+# these allow you to override the default docker images
+# useful if you are using some kind of a pass through docker image registry
+#
+# PYTHON_DOCKER_IMAGE
+# MYSQL_DOCKER_IMAGE
+# NGINX_DOCKER_IMAGE
+# RABBITMQ_DOCKER_IMAGE
+# MINIO_DOCKER_IMAGE
+# MINIO_MC_DOCKER_IMAGE
+# QDRANT_DOCKER_IMAGE
+# DOCKER_IN_DOCKER_IMAGE
+# UBUNTU_DOCKER_IMAGE
+#
+# password and configuration settings
+# NOTE if these are not set they are auto-generated and stored in the ace-auth docker volume
+#
+# SAQ_ENC
+# ACE_DB_USER_PASSWORD
+# ACE_SUPERUSER_DB_USER_PASSWORD
+# REDIS_PASSWORD
+# MINIO_PASSWORD
+# RABBITMQ_PASSWORD
+# QDRANT_API_KEY
+#
+# host name overrides if services are running on different hosts
+# ACE_DB_HOST
+# ACE_DB_READONLY_HOST
+# RABBITMQ_HOSTNAME
+# REDIS_HOSTNAME
+# MINIO_HOSTNAME
+# QDRANT_HOSTNAME
+#
 
 x-common-env: &common-env
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS:
   # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
   ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
-  ACE_DB_USER_PASSWORD:
-  ACE_SUPERUSER_DB_USER_PASSWORD:
-  REDIS_PASSWORD:
-  MINIO_PASSWORD:
-  RABBITMQ_PASSWORD:
-  QDRANT_API_KEY:
+  ACE_DB_READONLY_HOST: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
+  ACE_DB_USER_PASSWORD: ${ACE_DB_USER_PASSWORD:-}
+  ACE_SUPERUSER_DB_USER_PASSWORD: ${ACE_SUPERUSER_DB_USER_PASSWORD:-}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  MINIO_PASSWORD: ${MINIO_PASSWORD:-}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
 
 x-common-volumes: &common-volumes
   - .:/opt/ace
@@ -73,7 +112,7 @@ services:
     image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     healthcheck:
-      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-e", "use ace;"]
+      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-h", "${ACE_DB_HOST:-ace-db}", "-e", "use ace;"]
       interval: 3s
       retries: 5
       start_period: 30s
@@ -92,7 +131,7 @@ services:
       - ace-ssl:/opt/ace/ssl
     ports:
       - "3306:3306"
-    hostname: ace-db
+    hostname: ${ACE_DB_HOST:-ace-db}
     networks: 
       - ace
 
@@ -100,7 +139,7 @@ services:
     image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     healthcheck:
-      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-h", "ace-db-readonly", "-e", "use ace;"]
+      test: ["CMD", "mysql", "--defaults-file=/docker-entrypoint-initdb.d/mysql_defaults", "-h", "${ACE_DB_READONLY_HOST:-ace-db-readonly}", "-e", "use ace;"]
       interval: 3s
       retries: 5
       start_period: 30s
@@ -119,7 +158,7 @@ services:
       - ace-ssl:/opt/ace/ssl
     ports:
       - "3307:3306"
-    hostname: ace-db-readonly
+    hostname: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
     networks: 
       - ace
 
@@ -192,7 +231,7 @@ services:
     ports:
       - "6379:6379"
     restart: always
-    hostname: redis
+    hostname: ${REDIS_HOSTNAME:-redis}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -368,7 +407,7 @@ services:
     ports:
       - "5672:5672"
     restart: always
-    hostname: rabbitmq
+    hostname: ${RABBITMQ_HOSTNAME:-rabbitmq}
     entrypoint: >
       /bin/sh -c "
       export RABBITMQ_DEFAULT_PASS=$(cat /auth/passwords/rabbitmq);
@@ -393,7 +432,7 @@ services:
       MINIO_ROOT_USER: "ace3"
     image: ${MINIO_DOCKER_IMAGE:-minio/minio:latest}
     restart: always
-    hostname: minio
+    hostname: ${MINIO_HOSTNAME:-minio}
     ports:
       - "9000:9000" # S3 API
       - "9001:9001" # MinIO console
@@ -403,7 +442,7 @@ services:
       "
     volumes:
       - ace-minio:/data
-      # this volume contains authentication information
+      - ace-minio-events:/opt/minio/events
       - ace-auth:/auth
     healthcheck:
       test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
@@ -418,13 +457,18 @@ services:
       - ace
 
   minio-init:
+    environment:
+      RABBITMQ_HOSTNAME: ${RABBITMQ_HOSTNAME:-rabbitmq}
     image: ${MINIO_MC_DOCKER_IMAGE:-minio/mc:latest}
     depends_on:
       minio:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     entrypoint: /tmp/minio-init.sh
     volumes:
       - ace-minio:/data
+      - ace-minio-events:/opt/minio/events
       - ace-auth:/auth
       - ./bin/minio-init.sh:/tmp/minio-init.sh
     networks:
@@ -442,7 +486,7 @@ services:
 
   phishkit:
     environment:
-      MINIO_HOST: minio
+      MINIO_HOST: ${MINIO_HOSTNAME:-minio}
       MINIO_PORT: 9000
       MINIO_ACCESS_KEY: ace3api
     hostname: phishkit
@@ -476,7 +520,7 @@ services:
       QDRANT__TLS__CERT: /ssl/ace.cert.pem
       QDRANT__TLS__KEY: /ssl/ace.key.pem
     image: ${QDRANT_DOCKER_IMAGE:-qdrant/qdrant}
-    hostname: qdrant
+    hostname: ${QDRANT_HOSTNAME:-qdrant}
     entrypoint: >
       /bin/sh -c "
       export QDRANT__SERVICE__API_KEY=$(cat /auth/passwords/qdrant) && ./entrypoint.sh
@@ -512,6 +556,8 @@ volumes:
     name: ace-hunt
   ace-minio:
     name: ace-minio
+  ace-minio-events:
+    name: ace-minio-events
   ace-phishkit:
     name: ace-phishkit
   ace-auth:
