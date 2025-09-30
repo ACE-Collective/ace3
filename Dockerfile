@@ -47,6 +47,7 @@ RUN apt-get update && \
         bsdmainutils \
         build-essential \
         ca-certificates \
+        coreutils \
         curl \
         de4dot \
         default-jre \
@@ -182,7 +183,7 @@ RUN cd /opt/tools && \
     git clone https://github.com/openwall/john.git john-1.9.0-jumbo-1 && \
     cd john-1.9.0-jumbo-1/src && \
     ./configure && \
-    make -sj
+    make -s -j $(nproc)
 
 # the olevba library wants to reset the logging levels you set
 # so we patch it so that it doesn't do that
