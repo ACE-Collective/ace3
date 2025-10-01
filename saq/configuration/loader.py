@@ -56,6 +56,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
     # optional auto-generated passwords and API keys
     db_auto_yaml = os.path.join("/docker-entrypoint-initdb.d", "saq.database.passwords.yaml")
     api_auto_yaml = os.path.join("data", "etc", "saq.api-keys.yaml")
+    local_yaml = os.path.join("etc", "saq.yaml")
 
     def _load_optional(path_yaml: str) -> None:
         if os.path.exists(path_yaml):
@@ -63,6 +64,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
 
     _load_optional(db_auto_yaml)
     _load_optional(api_auto_yaml)
+    _load_optional(local_yaml)
 
     config.verify()
     config.apply_path_references()
