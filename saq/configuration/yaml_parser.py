@@ -263,7 +263,8 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
             sys.stderr.write(f"referenced YAML configuration file not found: {path}\n")
             return False
 
-        #sys.stderr.write(f"loading YAML configuration file: {path}\n")
+        if os.getenv("SAQ_DEBUG_CONFIG"):
+            sys.stderr.write(f"loading YAML configuration file: {path}\n")
 
         # support relative paths as-is (consistent with current behavior)
         yaml_root = self._load_yaml_file(path)

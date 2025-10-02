@@ -50,8 +50,6 @@ def load_configuration(config_paths: Optional[list[str]] = None):
     if g_boolean(G_UNIT_TESTING):
         # unit testing loads different configurations
         config.load_file(os.path.join(get_base_dir(), "etc", "saq.unittest.default.yaml"))
-    else:
-        config.load_file(os.path.join(get_base_dir(), "etc", "saq.yaml"))
 
     # optional auto-generated passwords and API keys
     db_auto_yaml = os.path.join("/docker-entrypoint-initdb.d", "saq.database.passwords.yaml")
