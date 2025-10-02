@@ -25,10 +25,19 @@ def create_timedelta(timespec):
 
     return timedelta(days=days, seconds=seconds, minutes=minutes, hours=hours)
 
+# Example: "2023-06-15 14:23:45 +0000"
 RE_ET_FORMAT = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}$')
+
+# Example: "2023-06-15 14:23:45"
 RE_ET_OLD_FORMAT = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$')
+
+# Example: "2023-06-15T14:23:45.123456+0000"
 RE_ET_JSON_FORMAT = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3,6}[+-][0-9]{4}$')
+
+# Example: "2023-06-15T14:23:45.123456"
 RE_ET_OLD_JSON_FORMAT = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3,6}$')
+
+# Example: "2023-06-15T14:23:45.123456+00:00"
 RE_ET_ISO_FORMAT = re.compile(r'^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3,6}[+-][0-9]{2}:[0-9]{2}$')
 
 def parse_event_time(event_time):
@@ -61,6 +70,9 @@ def format_iso8601(d):
     assert isinstance(d, datetime)
     d, f, z = d.strftime('%Y-%m-%dT%H:%M:%S %f %z').split()
     return f'{d}.{f[:3]}-{z[1:3]}:{z[3:]}'
+
+def parse_iso8601(date_string: str) -> datetime:
+    return datetime.fromisoformat(date_string.replace("Z", "+00:00"))
 
 def validate_time_format(t):
     """Returns True if the given string matches the event time format, False otherwise."""

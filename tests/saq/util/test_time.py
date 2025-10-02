@@ -1,7 +1,8 @@
 import pytest
+from datetime import datetime
 
 from saq.environment import get_local_timezone
-from saq.util.time import parse_event_time
+from saq.util.time import parse_event_time, parse_iso8601
 
 @pytest.mark.unit
 def test_util_000_date_parsing():
@@ -60,3 +61,23 @@ def test_util_000_date_parsing():
     assert result.second == 49
     assert result.tzinfo
     assert int(result.tzinfo.utcoffset(None).total_seconds()), -(5 * 60 * 60)
+
+@pytest.mark.unit
+@pytest.mark.parametrize("iso_string,year,month,day,hour,minute,second,microsecond,tz_offset_seconds", [
+    ('2023-06-15T14:23:45.123456+05:00', 2023, 6, 15, 14, 23, 45, 123456, 5 * 60 * 60),
+    ('2023-06-15T14:23:45.123456-05:00', 2023, 6, 15, 14, 23, 45, 123456, -(5 * 60 * 60)),
+    ('2023-06-15T14:23:45.123456Z', 2023, 6, 15, 14, 23, 45, 123456, 0),
+    ('2023-06-15T14:23:45+00:00', 2023, 6, 15, 14, 23, 45, 0, 0),
+    ('2023-12-31T23:59:59.999999+00:00', 2023, 12, 31, 23, 59, 59, 999999, 0),
+])
+def test_util_001_parse_iso8601(iso_string, year, month, day, hour, minute, second, microsecond, tz_offset_seconds):
+    result = parse_iso8601(iso_string)
+    assert result.year == year
+    assert result.month == month
+    assert result.day == day
+    assert result.hour == hour
+    assert result.minute == minute
+    assert result.second == second
+    assert result.microsecond == microsecond
+    assert result.tzinfo
+    assert int(result.tzinfo.utcoffset(None).total_seconds()) == tz_offset_seconds
