@@ -26,27 +26,35 @@ else
     echo "encryption password verified"
 fi
 
-if [ ! -e data/etc/saq.api-keys.yaml ]
-then
-    API_KEY=$(cat /proc/sys/kernel/random/uuid)
-    API_KEY_SHA256=$(echo -ne $API_KEY | openssl sha256 -r | awk '{print $1}')
-    cat<<EOF > data/etc/saq.api-keys.yaml
-api:
-  api_key: $API_KEY
+# load any auto-generated username/passwords automatically
+# once these are loaded we can remove the plaintext files
 
-apikeys:
-  automation: $API_KEY_SHA256
-EOF
+if [ -f "/auth/passwords/redis" ] && [ ! -f "/auth/passwords/redis.loaded" ]; then
+    echo "loading redis auth into ace"
+    ace enc config set redis.password --load-from-file /auth/passwords/redis && touch /auth/passwords/redis.loaded
 fi
 
-# load any auto-generated username/passwords automatically
-# use a marker file to indicate that we've already performed this activity
-if [ ! -f /auth/setup.executed ]
-then
-    echo "loading redis auth into ace"
-    ace enc config set redis.password --load-from-file /auth/passwords/redis && \
-    ace enc config set minio.password --load-from-file /auth/passwords/minio && \
-    ace enc config set rabbitmq.password --load-from-file /auth/passwords/rabbitmq && \
-    ace enc config set qdrant.api_key --load-from-file /auth/passwords/qdrant && \
-    touch /auth/setup.executed
+if [ -f "/auth/passwords/minio" ] && [ ! -f "/auth/passwords/minio.loaded" ]; then
+    echo "loading minio auth into ace"
+    ace enc config set minio.password --load-from-file /auth/passwords/minio && touch /auth/passwords/minio.loaded
+fi
+
+if [ -f "/auth/passwords/rabbitmq" ] && [ ! -f "/auth/passwords/rabbitmq.loaded" ]; then
+    echo "loading rabbitmq auth into ace"
+    ace enc config set rabbitmq.password --load-from-file /auth/passwords/rabbitmq && touch /auth/passwords/rabbitmq.loaded
+fi
+
+if [ -f "/auth/passwords/qdrant" ] && [ ! -f "/auth/passwords/qdrant.loaded" ]; then
+    echo "loading qdrant auth into ace"
+    ace enc config set qdrant.api_key --load-from-file /auth/passwords/qdrant && touch /auth/passwords/qdrant.loaded
+fi
+
+if [ -f "/auth/passwords/ace-api-key" ]; then
+    echo "loading ace api key into ace"
+    ace enc config set ace.api_key --load-from-file /auth/passwords/ace-api-key && rm /auth/passwords/ace-api-key
+fi
+
+if [ -f "/auth/passwords/ace-api-key-sha256" ]; then
+    echo "loading ace api key into ace"
+    ace enc config set ace.api_key --load-from-file /auth/passwords/ace-api-key-sha256 && rm /auth/passwords/ace-api-key-sha256
 fi

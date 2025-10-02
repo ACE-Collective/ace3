@@ -18,9 +18,10 @@ def load_configuration(config_paths: Optional[list[str]] = None):
       1) etc/saq.default.yaml
       2) overrides from environment variables or command line
       3) Optional credential/config files
-           - /docker-entrypoint-initdb.d/saq.database.passwords.{yaml,yml}
-           - data/etc/saq.api-keys.{yaml,yml}
-      4) verify() and apply_path_references()
+           - /docker-entrypoint-initdb.d/saq.database.passwords.yaml
+      4) etc/saq.yaml
+      5) etc/saq.unittest.default.yaml (when unit testing)
+      6) verify() and apply_path_references()
     """
 
     default_yaml = os.path.join("etc", "saq.default.yaml")
@@ -52,16 +53,14 @@ def load_configuration(config_paths: Optional[list[str]] = None):
         config.load_file(os.path.join(get_base_dir(), "etc", "saq.unittest.default.yaml"))
 
     # optional auto-generated passwords and API keys
-    db_auto_yaml = os.path.join("/docker-entrypoint-initdb.d", "saq.database.passwords.yaml")
-    api_auto_yaml = os.path.join("data", "etc", "saq.api-keys.yaml")
-    local_yaml = os.path.join("etc", "saq.yaml")
+    db_auto_yaml = "/docker-entrypoint-initdb.d/saq.database.passwords.yaml"
+    local_yaml = "etc/saq.yaml"
 
     def _load_optional(path_yaml: str) -> None:
         if os.path.exists(path_yaml):
             config.load_file(path_yaml)
 
     _load_optional(db_auto_yaml)
-    _load_optional(api_auto_yaml)
     if not g_boolean(G_UNIT_TESTING):
         _load_optional(local_yaml)
 

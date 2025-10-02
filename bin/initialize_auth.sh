@@ -41,6 +41,11 @@ then
     mkdir /auth/passwords
 fi
 
+if [ -d /auth/etc ]
+then
+    mkdir /auth/etc
+fi
+
 if [ ! -f /auth/passwords/ace-user ]
 then
     echo "initializing mysql ace-user authentication"
@@ -135,3 +140,23 @@ then
     echo "${QDRANT_API_KEY}" > /auth/passwords/qdrant
 fi
 
+if [ ! -f /auth/passwords/ace-api-key ]
+then
+    echo "initializing ace api keys"
+    if [ -z "$ACE_API_KEY" ]
+    then
+        ACE_API_KEY=$(cat /proc/sys/kernel/random/uuid)
+    fi
+
+    ACE_API_KEY_SHA256=$(echo -ne $ACE_API_KEY | openssl sha256 -r | awk '{print $1}')
+    echo "${ACE_API_KEY}" > /auth/passwords/ace-api-key
+    echo "${ACE_API_KEY_SHA256}" > /auth/passwords/ace-api-key-sha256
+
+    #cat<<EOF > /auth/etc/saq.api-keys.yaml
+#api:
+  #api_key: $ACE_API_KEY
+#
+#apikeys:
+  #automation: $ACE_API_KEY_SHA256
+#EOF
+fi

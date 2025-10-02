@@ -23,11 +23,12 @@
 # UBUNTU_DOCKER_IMAGE
 #
 # password and configuration settings
-# NOTE if these are not set they are auto-generated and stored in the ace-auth docker volume
+# NOTE if these are not set they are auto-generated
 #
-# SAQ_ENC
-# ACE_DB_USER_PASSWORD
-# ACE_SUPERUSER_DB_USER_PASSWORD
+# SAQ_ENC (primary encryption password)
+# ACE_API_KEY (api key for node-to-node communication)
+# ACE_DB_USER_PASSWORD (password for the ace-user database user)
+# ACE_SUPERUSER_DB_USER_PASSWORD (password for the ace-superuser database user)
 # REDIS_PASSWORD
 # MINIO_PASSWORD
 # RABBITMQ_PASSWORD
@@ -57,6 +58,7 @@ x-common-env: &common-env
   MINIO_PASSWORD: ${MINIO_PASSWORD:-}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
   QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+  ACE_API_KEY: ${ACE_API_KEY:-}
 
 x-common-volumes: &common-volumes
   - .:/opt/ace
