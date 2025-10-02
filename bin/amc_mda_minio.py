@@ -63,6 +63,14 @@ def get_s3_credentials_from_args(args) -> S3Credentials:
 def get_compiled_yara_rule_path(yara_rule_path: str) -> str:
     return f"{yara_rule_path}c"
 
+def load_yara_rule(yara_rule_path: str) -> yara.Rules:
+    compiled_rule_path = get_compiled_yara_rule_path(yara_rule_path)
+    if os.path.exists(compiled_rule_path):
+        return yara.load(compiled_rule_path)
+    else:
+        logger.warning(f"compiled yara rule {compiled_rule_path} does not exist, compiling on-the-fly")
+        return yara.compile(filepath=yara_rule_path)
+
 def compile_yara_rule(yara_rule_path: str) -> yara.Rules:
     compiled_rule_path = get_compiled_yara_rule_path(yara_rule_path)
     # if the compiled rule doesn't exist or the source rule is newer, we need to compile it
@@ -80,7 +88,6 @@ def main(args) -> int:
     if args.default_block:
         decision = BLOCK
 
-
     # read standard input a temporary file
     with NamedTemporaryFile() as fp:
         shutil.copyfileobj(sys.stdin.buffer, fp)
@@ -88,7 +95,7 @@ def main(args) -> int:
 
         # did we specify a yara rule?
         if args.yara_rule_path:
-            yara_rules = compile_yara_rule(args.yara_rule_path)
+            yara_rules = load_yara_rule(args.yara_rule_path)
             matches = yara_rules.match(fp.name)
             for match in matches:
                 for tag in match.tags:
@@ -114,7 +121,8 @@ def main(args) -> int:
         # generate a unique key for this upload
         unique_key = str(uuid.uuid4())
 
-        if args.skip_s3_upload:
+        if not args.bucket:
+            logger.warning("no bucket specified, skipping upload")
             print(unique_key)
             return os.EX_OK
 
@@ -154,7 +162,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     # bucket parameters
-    parser.add_argument("--bucket", required=True, help="The bucket to upload the file to.")
+    parser.add_argument("--bucket", help="The bucket to upload the file to.")
     parser.add_argument("--create-bucket", action="store_true", default=False, help="Whether to create the bucket if it does not exist.")
 
     #parser.add_argument("--key", required=True, help='The key to upload the file to.')
@@ -167,8 +175,8 @@ if __name__ == "__main__":
     parser.add_argument("--region", help="Optional region to use. If not provided, the region will be inferred.")
     parser.add_argument("--syslog", action="store_true", default=False, help="Whether to use syslog.")
     parser.add_argument("--yara-rule-path", help="The path to a yara rule to use for filtering. By default all content is allowed.")
+    parser.add_argument("--compile-only", action="store_true", default=False, help="Only compile the yara rule, do not run it.")
     parser.add_argument("--default-block", action="store_true", default=False, help="Block everything by default, only allow content matching yara rules with 'allow' tags.")
-    parser.add_argument("--skip-s3-upload", action="store_true", default=False, help="Does not upload the file to s3, just writes the unique key to stdout.")
     args = parser.parse_args()
 
     # Configure logging to syslog
@@ -190,6 +198,11 @@ if __name__ == "__main__":
 
     # Add handler to logger
     logger.addHandler(handler)
+
+    # are we only compiling the yara rule?
+    if args.yara_rule_path and args.compile_only:
+        compile_yara_rule(args.yara_rule_path)
+        sys.exit(os.EX_OK)
 
     try:
         sys.exit(main(args))
