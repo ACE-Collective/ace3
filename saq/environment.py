@@ -58,7 +58,6 @@ from saq.constants import (
     G_DATA_DIR,
     G_DEFAULT_ENCODING,
     G_DUMP_TRACEBACKS,
-    G_ECS_SOCKET_PATH,
     G_EMAIL_ARCHIVE_SERVER_ID,
     G_ENCRYPTION_INITIALIZED,
     G_ENCRYPTION_KEY,
@@ -79,7 +78,6 @@ from saq.constants import (
     G_SAQ_HOME,
     G_SAQ_NODE,
     G_SAQ_NODE_ID,
-    G_SAQ_RELATIVE_DIR,
     G_SEMAPHORES_ENABLED,
     G_SERVICES_DIR,
     G_SQLITE3_TIMEOUT,
@@ -166,9 +164,6 @@ GLOBAL_ENV = {
         name=G_DEFAULT_ENCODING,
         value=locale.getpreferredencoding(),
         description="what text encoding we're using",
-    ),
-    G_SAQ_RELATIVE_DIR: GlobalEnvironmentSetting(
-        name=G_SAQ_RELATIVE_DIR, value=None, description=""
     ),
     G_CONFIG: GlobalEnvironmentSetting(
         name=G_CONFIG, value=None, description="global configuration"
@@ -261,11 +256,6 @@ GLOBAL_ENV = {
         name=G_GUI_WHITELIST_EXCLUDED_OBSERVABLE_TYPES,
         value=[],
         description="list of observable types we want to exclude from whitelisting (via the GUI)",
-    ),
-    G_ECS_SOCKET_PATH: GlobalEnvironmentSetting(
-        name=G_ECS_SOCKET_PATH,
-        value=None,
-        description="path to the unix socket for the optional encryption cache service",
     ),
     G_LOCAL_DOMAINS: GlobalEnvironmentSetting(
         name=G_LOCAL_DOMAINS, value=[], description=""
@@ -467,8 +457,6 @@ def initialize_environment(
         initialize_configuration,
     )
     initialize_base_dir(saq_home=saq_home)
-
-    set_g(G_ECS_SOCKET_PATH, os.path.join(get_base_dir(), ".ecs"))
 
     initialize_configuration(config_paths=config_paths)
 
