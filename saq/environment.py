@@ -470,18 +470,6 @@ def initialize_environment(
 
     set_g(G_ECS_SOCKET_PATH, os.path.join(get_base_dir(), ".ecs"))
 
-    # XXX not sure we need this SAQ_RELATIVE_DIR anymore -- check it out
-    # this system was originally designed to run out of /opt/saq
-    # later we modified to run out of anywhere for command line correlation
-    # when running the GUI in apache you have no control over the current working directory
-    # so we specify what directory we'd *want* to be running out of here (even if we're not actually)
-    # this only matters when loading alerts
-    # this defaults to the current working directory
-    if relative_dir:
-        set_g(G_SAQ_RELATIVE_DIR, relative_dir)
-    else:
-        set_g(G_SAQ_RELATIVE_DIR, os.path.relpath(os.getcwd(), start=get_base_dir()))
-
     initialize_configuration(config_paths=config_paths)
 
     from saq.integration.integration_loader import load_integrations

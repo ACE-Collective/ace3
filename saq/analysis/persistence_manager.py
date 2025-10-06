@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.analysis.io_tracking import _track_reads, _track_writes
-from saq.constants import G_SAQ_RELATIVE_DIR
+from saq.constants import G_SAQ_HOME
 from saq.environment import g
 from saq.json_encoding import _JSONEncoder
 from saq.util import abs_path
@@ -58,22 +58,22 @@ class AnalysisDetailsPersistenceManager:
             analysis.external_details_path = '{}_{}.json'.format(target_name, str(uuid.uuid4()))
 
         # make sure the containing directory exists
-        if not os.path.exists(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir)):
-            os.makedirs(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir))
+        if not os.path.exists(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir)):
+            os.makedirs(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir))
 
         # analysis details go into a hidden directory
-        if not os.path.exists(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir, '.ace')):
-            os.makedirs(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir, '.ace'))
+        if not os.path.exists(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir, '.ace')):
+            os.makedirs(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir, '.ace'))
 
         json_data = json.dumps(analysis.details, sort_keys=True, cls=_JSONEncoder)
 
         # save the details
         logging.debug("SAVE: saving external details for {} to {}".format(analysis, analysis.external_details_path))
-        with open(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir, '.ace', analysis.external_details_path), 'w') as fp:
+        with open(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir, '.ace', analysis.external_details_path), 'w') as fp:
             fp.write(json_data)
             _track_writes()
 
-        analysis.details_size = os.path.getsize(os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir, '.ace', analysis.external_details_path))
+        analysis.details_size = os.path.getsize(os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir, '.ace', analysis.external_details_path))
         return True
 
     def flush(self, analysis: "Analysis"):
@@ -112,7 +112,7 @@ class AnalysisDetailsPersistenceManager:
             logging.error("external_details_path is None for {}".format(analysis))
             return False
 
-        full_file_path = os.path.join(g(G_SAQ_RELATIVE_DIR), self.file_manager.storage_dir, '.ace', analysis.external_details_path)
+        full_file_path = os.path.join(g(G_SAQ_HOME), self.file_manager.storage_dir, '.ace', analysis.external_details_path)
 
         if not os.path.exists(full_file_path):
             logging.debug(f"missing file {full_file_path}")
