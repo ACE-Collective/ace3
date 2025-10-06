@@ -25,7 +25,7 @@ def reset_crawlphish(tmpdir):
     with open(whitelist_path, 'w') as fp:
         fp.write('anonfile.xyz\n')
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_filters():
 
     _filter = CrawlphishURLFilter()
