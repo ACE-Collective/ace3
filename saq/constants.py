@@ -1040,6 +1040,7 @@ CONFIG_EMAIL_ARCHIVE_MODULE_DIR = "archive_dir"
 
 # email archive
 CONFIG_EMAIL_ARCHIVE = "email_archive"
+CONFIG_EMAIL_ARCHIVE_TARGET = "target"
 CONFIG_EMAIL_ARCHIVE_PRIMARY = "primary"
 
 # timeline
