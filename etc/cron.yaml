@@ -4,6 +4,11 @@ jobs:
     shell: /bin/bash
     schedule: "0 5 * * *"
     concurrencyPolicy: Forbid
+  - name: weekly maintenance
+    command: /opt/ace/bin/weekly-maintenance.sh >> /opt/ace/data/logs/weekly-maintenance-`date '+%Y-%m-%d'`.log 2>&1
+    shell: /bin/bash
+    schedule: "0 5 * * 1"
+    concurrencyPolicy: Forbid
   - name: update for detection observable cache
     command: /opt/ace/bin/update-for-detection-observable-cache >> /opt/ace/data/logs/update-for-detection-observable-cache-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
