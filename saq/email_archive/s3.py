@@ -3,9 +3,10 @@ import os
 import tempfile
 from typing import Optional
 
+from minio import Minio
 from minio.error import S3Error
 from saq.configuration.config import get_config_value
-from saq.constants import CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_BUCKET
+from saq.constants import CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_BUCKET, CONFIG_EMAIL_ARCHIVE_S3_CONFIG
 from saq.email_archive.local import EmailArchiveLocal
 from saq.storage.minio import get_minio_client
 
@@ -20,15 +21,19 @@ def _extract_sha256_from_file_name(file_path: str) -> str:
     # file name should be sha256_hash.lower().gz.e
     return os.path.basename(file_path).split('.')[0]
 
+def _get_email_archive_minio_client() -> Minio:
+    return get_minio_client(get_config_value(CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_S3_CONFIG))
+
 class EmailArchiveS3(EmailArchiveLocal):
     def email_exists_in_s3(self, sha256_hash: str) -> bool:
         bucket = get_config_value(CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_BUCKET)
-        s3_client = get_minio_client()
+        s3_client = _get_email_archive_minio_client()
+
         try:
             result = s3_client.stat_object(bucket, sha256_hash)
             return result is not None
         except S3Error as e:
-            # if the object doesn't exist, stat_object raises an exception
+            # if the object doesn't exist, stat_object raises an exception with code NoSuchKey
             if e.code == "NoSuchKey":
                 logging.debug(f"email {sha256_hash} does not exist in s3: {e}")
                 return False
@@ -39,7 +44,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         bucket = get_config_value(CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_BUCKET)
         metadata = { "message_id": message_id }
         logging.info(f"uploading email archive {sha256_hash} to {bucket} with metadata {metadata}")
-        s3_client = get_minio_client()
+        s3_client = _get_email_archive_minio_client()
         result = s3_client.fput_object(bucket, sha256_hash, local_path, metadata=metadata)
         logging.debug(f"uploaded email archive {sha256_hash} to {bucket}: {result}")
         return True
@@ -56,7 +61,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         fd, temp_path = tempfile.mkstemp(prefix=f'archive_{sha256_hash}.', suffix='.gz.e', dir=os.path.dirname(target_path))
         os.close(fd)
 
-        s3_client = get_minio_client()
+        s3_client = _get_email_archive_minio_client()
         logging.info(f"downloading email archive {sha256_hash} to {temp_path}")
         s3_client.fget_object(
             get_config_value(CONFIG_EMAIL_ARCHIVE, CONFIG_EMAIL_ARCHIVE_BUCKET),

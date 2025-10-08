@@ -62,18 +62,21 @@ def get_s3_credentials_from_ec2_metadata() -> S3Credentials:
         session_token=credentials["Token"],
         region=region)
 
-def get_minio_client() -> Minio:
-    """Returns a MinIO client configured with the current configuration."""
-    if get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_USE_EC2_METADATA):
+def get_minio_client(section: str = CONFIG_MINIO) -> Minio:
+    """Returns a MinIO client configured with the current configuration.
+    By default the settings defined in the CONFIG_MINIO section are used.
+    This can be overridden by passing a custom configuration section name."""
+
+    if get_config_value_as_boolean(section, CONFIG_MINIO_USE_EC2_METADATA):
         s3_credentials = get_s3_credentials_from_ec2_metadata()
     else:
         s3_credentials = get_s3_credentials_from_config()
 
-    host = get_config_value(CONFIG_MINIO, CONFIG_MINIO_HOST)
-    port = get_config_value(CONFIG_MINIO, CONFIG_MINIO_PORT)
+    host = get_config_value(section, CONFIG_MINIO_HOST)
+    port = get_config_value(section, CONFIG_MINIO_PORT)
     endpoint = f"{host}:{port}"
-    secure = get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_SECURE)
-    cert_check = get_config_value_as_boolean(CONFIG_MINIO, CONFIG_MINIO_CERT_CHECK)
+    secure = get_config_value_as_boolean(section, CONFIG_MINIO_SECURE)
+    cert_check = get_config_value_as_boolean(section, CONFIG_MINIO_CERT_CHECK)
 
     return Minio(
         endpoint=endpoint,
