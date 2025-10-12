@@ -874,6 +874,11 @@ CONFIG_GLOBAL_MEMORY_LIMIT_WARNING = "memory_limit_warning"
 CONFIG_GLOBAL_NODE = "node"
 CONFIG_GLOBAL_TEMP_DIR = "tmp_dir"
 
+# service constants
+CONFIG_SERVICE_MODULE = "module"
+CONFIG_SERVICE_CLASS = "class"
+CONFIG_SERVICE_INSTANCE_TYPES = "instance_types"
+
 # LLM
 CONFIG_LLM = "llm"
 CONFIG_LLM_EMBEDDING_MODEL = "embedding_model"

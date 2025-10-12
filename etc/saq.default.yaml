@@ -115,7 +115,6 @@ service_llm_embedding:
   class: EmbeddingService
   description: LLM Embedding - embeds alerts into a vector space
   enabled: true
-  instance_type: ANY
 
 # cron settings
 service_cron:
@@ -123,8 +122,6 @@ service_cron:
   class: ACECronService
   description: ACE Cron Service - runs cron jobs
   enabled: true
-  instance_type: ANY
-  # the path to the cron configuration file (relative to SAQ_HOME)
   cron_config_path: etc/cron.yaml
 
 # monitor settings
@@ -224,22 +221,12 @@ collection:
 service_default:
   description: default unconfigured service
   enabled: true
-  instance_type:
-    - PRODUCTION
-    - UNITTEST
-    - DEV
-    - QA
 
 service_background_executor:
   module: saq.background_exec
   class: BackgroundExecutor
   description: Background Process Executor
   enabled: true
-  instance_type:
-    - PRODUCTION
-    - UNITTEST
-    - DEV
-    - QA
 
 service_email_collector:
   module: saq.collectors.email.scanner
@@ -276,7 +263,6 @@ service_hunter:
   class: HunterService
   description: Hunter - executes searches, queries and commands on external systems
   enabled: true
-  instance_type: ANY
   delete_files: true
   workload_type: hunter
   # how often do we check to see if the hunts have been modified/updated (in SECONDS)
@@ -421,7 +407,6 @@ service_network_semaphore:
   class: NetworkSemaphoreServer
   description: Network Semaphore - global network service for controlling concurrent access to limited resources
   enabled: true
-  instance_type: ANY
   # the address of the network semaphore server (used to bind and listen)
   # now that ACE is running in containers, this cannot bind on 127.0.0.1, or else the other containers
   # will not be able to reach the port
@@ -806,7 +791,6 @@ service_yara:
   class: YSSService
   description: Yara Scanner Service - local distributed yara scanner
   enabled: true
-  instance_type: ANY
   # relative directory where the unix sockets for the yara scanner server are located (relative to DATA_DIR)
   socket_dir: var/yss/sockets
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
@@ -1917,7 +1901,6 @@ service_engine:
   class: EngineService
   description: Analysis Correlation Engine - core analysis engine
   enabled: true
-  instance_type: ANY
   # analysis pool settings: see INI for detailed documentation
   # if NO analysis pools are specified then a single pool with no equal priority will be created with a size equal to the number of CPU cores
   # in a multi-node configuration nodes are free to pull work from other nodes (target_nodes)

@@ -3,7 +3,7 @@ from typing import Any, Optional
 
 from saq.configuration.loader import load_configuration
 
-# global configuration singleton (INI or YAML-backed)
+# global configuration singleton (YAML-backed)
 CONFIG = None
 
 def config_section_exists(section_name: str) -> bool:
@@ -11,7 +11,7 @@ def config_section_exists(section_name: str) -> bool:
     return section_name in get_config()
 
 def get_config():
-    """Returns the global configuration object (INI ConfigParser or YAMLConfig)."""
+    """Returns the global configuration object (YAMLConfig)."""
     return CONFIG
 
 def get_config_value(section: str, name: str, default: Optional[Any] = None) -> Optional[str]:

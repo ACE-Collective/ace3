@@ -52,7 +52,7 @@ def _yaml_enc_constructor(loader: yaml.Loader, node: yaml.Node) -> EncryptedRef:
 class YAMLSectionProxy(MutableMapping[str, Any]):
     """A mapping-like proxy for a section that resolves special values on access.
 
-    Behaves similarly to ConfigParser's section proxy where reads apply interpolation.
+    Applies interpolation when reading values.
     """
 
     def __init__(self, parent: "YAMLConfig", section_name: str, mapping: dict[str, Any]):
@@ -100,7 +100,7 @@ class YAMLSectionProxy(MutableMapping[str, Any]):
 
 
 class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
-    """YAML-based configuration with ConfigParser-like interface.
+    """YAML-based configuration interface.
 
     - Top-level keys are treated as sections.
     - Values in sections are key/value pairs.
@@ -194,11 +194,11 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
                 return f"encrypted:{key}"
             try:
                 return self._get_decrypted_password(key)
-            except Exception as e:  # keep parity with INI behavior that returns str(e)
+            except Exception as e:
                 # XXX this is wrong
                 return str(e)
 
-        # then support string prefix forms used by INI
+        # then support string prefix forms
         if isinstance(value, str):
             if value.startswith("env:"):
                 var = value[len("env:") :]
@@ -270,7 +270,7 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
         yaml_root = self._load_yaml_file(path)
 
         # convert YAML root mapping into sections
-        # if users render INI-like structure, each top-level key is a section
+        # each top-level key is a section
         # except an optional top-level 'config' used for includes (handled later)
         for top_key, top_value in yaml_root.items():
             if top_key == "config":
@@ -290,7 +290,7 @@ class YAMLConfig(MutableMapping[str, YAMLSectionProxy]):
 
             else:
                 # if a scalar is found at top-level, treat it as a section-less key by
-                # putting it under a pseudo section named by the key (parity with INI is sectioned)
+                # putting it under a pseudo section named by the key
                 self._data[top_key] = {"value": top_value}
 
         self.loaded_files.add(path)
