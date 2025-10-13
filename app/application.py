@@ -24,8 +24,10 @@ from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.ui import get_tag_css_class, human_readable_size
 
+# TODO: find something else to use besides this LoginManager
 login_manager = LoginManager()
-login_manager.session_protection = 'strong'
+# turning this off for now while I figure out how this works with load balancers
+login_manager.session_protection = None
 login_manager.login_view = 'auth.login'
 
 #
