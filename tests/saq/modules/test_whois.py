@@ -4,7 +4,7 @@ from datetime import datetime
 from saq.constants import F_FQDN, AnalysisExecutionResult
 from saq.modules.whois import WhoisAnalysis, WhoisAnalyzer
 from tests.saq.helpers import create_root_analysis
-from whois.parser import PywhoisError
+from whois.exceptions import PywhoisError
 
 
 @pytest.mark.unit

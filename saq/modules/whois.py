@@ -26,7 +26,7 @@ from saq.constants import F_FQDN, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 
 import whois
-from whois.parser import PywhoisError
+from whois.exceptions import PywhoisError
 
 from saq.util.strings import format_item_list_for_summary
 
