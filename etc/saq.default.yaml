@@ -1103,7 +1103,7 @@ analysis_module_email_logger:
   # set this to yes to update the smtplog table of the brocess database
   update_brocess: true
   # elasticsearch JSON logging
-  json_log_enabled: true
+  json_log_enabled: false
   # relative file path of the generated JSON logs
   # the file name is passed through strftime
   # https://docs.python.org/3/library/datetime.html#strftime-strptime-behavior
