@@ -72,6 +72,7 @@ x-common-volumes: &common-volumes
   - ace-hunt:/opt/ace/hunts
   - ace-auth:/auth
   - ace-user-home:/home/ace
+  - ./ssl:/opt/ace/ssl
 
 services:
   # ensures file permissions on named volumes are correct
