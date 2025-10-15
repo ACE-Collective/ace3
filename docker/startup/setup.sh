@@ -58,3 +58,8 @@ if [ -f "/auth/passwords/ace-api-key-sha256" ]; then
     echo "loading ace api key sha256 into ace"
     ace enc config set ace.api_key-sha256 --load-from-file /auth/passwords/ace-api-key-sha256 && rm /auth/passwords/ace-api-key-sha256
 fi
+
+if [ -f "/auth/keys/flask-secret-key" ]; then
+    echo "loading flask secret key into ace"
+    ace enc config set flask.secret_key --load-from-file /auth/keys/flask-secret-key && rm /auth/keys/flask-secret-key
+fi

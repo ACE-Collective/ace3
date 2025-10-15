@@ -35,16 +35,13 @@ genpw() {
 
 
 # the ace-auth volume is mounted ao /auth
-#
-if [ ! -d /auth/passwords ]
-then
-    mkdir /auth/passwords
-fi
-
-if [ -d /auth/etc ]
-then
-    mkdir /auth/etc
-fi
+for dir in /auth/passwords /auth/etc /auth/keys
+do
+    if [ ! -d $dir ]
+    then
+        mkdir -p $dir
+    fi
+done
 
 if [ ! -f /auth/passwords/ace-user ]
 then
@@ -145,18 +142,21 @@ then
     echo "initializing ace api keys"
     if [ -z "$ACE_API_KEY" ]
     then
-        ACE_API_KEY=$(cat /proc/sys/kernel/random/uuid)
+        ACE_API_KEY=$(cat /proc/sys/kernel/random/uuid | tr '[:upper:]' '[:lower:]')
     fi
 
     ACE_API_KEY_SHA256=$(echo -ne $ACE_API_KEY | openssl sha256 -r | awk '{print $1}')
     echo "${ACE_API_KEY}" > /auth/passwords/ace-api-key
     echo "${ACE_API_KEY_SHA256}" > /auth/passwords/ace-api-key-sha256
+fi
 
-    #cat<<EOF > /auth/etc/saq.api-keys.yaml
-#api:
-  #api_key: $ACE_API_KEY
-#
-#apikeys:
-  #automation: $ACE_API_KEY_SHA256
-#EOF
+if [ ! -f /auth/keys/flask-secret-key ]
+then
+    if [ -z "$FLASK_SECRET_KEY" ]
+    then
+        echo "initializing flask secret key"
+        FLASK_SECRET_KEY=$(cat /proc/sys/kernel/random/uuid | tr '[:upper:]' '[:lower:]')
+    fi
+
+    echo "${FLASK_SECRET_KEY}" > /auth/keys/flask-secret-key
 fi

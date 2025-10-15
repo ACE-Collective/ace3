@@ -33,6 +33,7 @@
 # MINIO_PASSWORD
 # RABBITMQ_PASSWORD
 # QDRANT_API_KEY
+# FLASK_SECRET_KEY (used by flask to encrypt and verify session data)
 #
 # host name overrides if services are running on different hosts
 # ACE_DB_HOST
@@ -60,6 +61,8 @@ x-common-env: &common-env
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
   QDRANT_API_KEY: ${QDRANT_API_KEY:-}
   ACE_API_KEY: ${ACE_API_KEY:-}
+  FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-}
+  AWS_REGION:
 
 x-common-volumes: &common-volumes
   - .:/opt/ace
