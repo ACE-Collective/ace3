@@ -91,15 +91,17 @@
                     <li class="nav-item nav-separator"></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('analysis.manage') }}">Alerts</a></li>
                     <li class="nav-item nav-separator"></li>
-                    <li class="nav-item"><a class="nav-link" href="#">Signatures</a></li>
+                    <li class="nav-item">
+                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Signatures</a>
+                    </li>
                     <li class="nav-item nav-separator"></li>
-                    <li class="nav-item"><a class="nav-link" href="#">Observables</a></li>
+                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Observables</a>
                     <li class="nav-item nav-separator"></li>
-                    <li class="nav-item"><a class="nav-link" href="#">DetectOps</a></li>
+                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">DetectOps</a>
                     <li class="nav-item nav-separator"></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('auth.manage_users') }}">Users</a></li>
                     <li class="nav-item nav-separator"></li>
-                    <li class="nav-item"><a class="nav-link" href="#">Settings</a></li>
+                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Settings</a>
                     <!--<li class="nav-item"><a class="nav-link" href="{{ url_for('events.manage') }}">Events</a></li>-->
                 {% endif %}
             </ul>
