@@ -29,13 +29,10 @@ ENV http_proxy=$http_proxy \
 RUN groupadd ace -g $SAQ_GROUP_ID && \
     useradd -g ace -m -s /bin/bash -u $SAQ_USER_ID ace
 
-# update sources and add microsoft repository
-# XXX do we still need the microsoft repo?
+# update sources to include contrib, non-free, and backports
+# Note: de4dot uses mono-runtime from Debian - dotnet runtime not needed.
 RUN sed -i -e '/^Components: main$/ s/$/ contrib non-free/' /etc/apt/sources.list.d/debian.sources && \
-    sed -i -e '/^Suites: bookworm bookworm-updates$/ s/$/ bookworm-backports/' /etc/apt/sources.list.d/debian.sources && \
-    wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/packages-microsoft-prod.deb && \
-    dpkg -i /tmp/packages-microsoft-prod.deb && \
-    rm /tmp/packages-microsoft-prod.deb
+    sed -i -e '/^Suites: bookworm bookworm-updates$/ s/$/ bookworm-backports/' /etc/apt/sources.list.d/debian.sources
 
 # install system dependencies
 RUN apt-get update && \
@@ -56,7 +53,6 @@ RUN apt-get update && \
         dmg2img \
         dmg2img \
         dnsutils \
-        dotnet-runtime-9.0 \
         enchant-2 \
         exiftool \
         file \
