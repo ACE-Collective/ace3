@@ -897,6 +897,10 @@ class HuntManager:
                     if not hunt_config.endswith('.ini'):
                         continue
 
+                    # skip the template.ini file
+                    if hunt_config == "template.ini":
+                        continue
+
                     result.append(os.path.join(root, hunt_config))
 
         return result
