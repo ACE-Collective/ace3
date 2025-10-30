@@ -461,11 +461,11 @@ def test_splunk_client_init(monkeypatch):
 
     client = SplunkClient('splunk_test', user_context='foo', app='bar')
 
-    assert client.session.base_url == 'https://test.com:443/servicesNS/foo/bar'
-    assert client.session.proxies == { 'http': 'http://whatever' }
-    assert client.session.auth == ('hello', 'world')
-    assert client.session.trust_env == False
-    assert client.session.verify == False
+    assert client.search_session.base_url == 'https://test.com:443/servicesNS/foo/bar'
+    assert client.search_session.proxies == { 'http': 'http://whatever' }
+    assert client.search_session.auth == ('hello', 'world')
+    assert client.search_session.trust_env == False
+    assert client.search_session.verify == False
     assert client.gui_path == 'en-US/app/bar/search'
 
 
@@ -479,9 +479,9 @@ def test_splunk_client_init(monkeypatch):
 
     client = SplunkClient('splunk_test')
 
-    assert client.session.base_url == 'https://test.com:443/servicesNS/-/-'
-    assert client.session.proxies == {}
-    assert client.session.auth == ('hello', 'world')
-    assert client.session.trust_env == False
-    assert client.session.verify == False
+    assert client.search_session.base_url == 'https://test.com:443/servicesNS/-/-'
+    assert client.search_session.proxies == {}
+    assert client.search_session.auth == ('hello', 'world')
+    assert client.search_session.trust_env == False
+    assert client.search_session.verify == False
     assert client.gui_path == 'en-US/app/search/search'

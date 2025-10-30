@@ -63,9 +63,10 @@ class SplunkQueryObject:
     def __init__(
         self,
         uri: str,
-        username: str,
-        password: str,
-        proxies: dict = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        token: Optional[str] = None,
+        proxies: Optional[dict] = None,
         user_context: str = '-',
         app: str = '-',
         dispatch_state: Optional[str]=None,
@@ -80,19 +81,38 @@ class SplunkQueryObject:
 
         Args:
             uri (str): the splunk api base uri to use e.g. https://splunk.com:8089
-            username (str): the username for authentication
-            password (str): the password for authentication
+            username (str, optional): the username for authentication (required if token is not provided)
+            password (str, optional): the password for authentication (required if token is not provided)
+            token (str, optional): the token for authentication (required if username and password are not provided)
             proxies (dict, optional): the proxy info used to connect to splunk api (default None -> no proxy)
-            user_context (str, optional): the user context for operations (default '-' -> any user)
-            app (str, optional): the app conext for operations (default '-' -> any app)
+            user_context (str): the user context for operations (default '-' -> any user)
+            app (str): the app conext for operations (default '-' -> any app)
         """
+
+        self.uri = uri
+        self.user_context = user_context
+        self.app = app
+
+        self.base_session = Session(max_retries=0)
+        self.base_session.base_url = uri
+        if token:
+            self.base_session.headers['Authorization'] = f'Bearer {token}'
+        else:
+            self.base_session.auth = (username, password)
+        self.base_session.proxies = proxies if proxies else {}
+        self.base_session.trust_env = False
+        self.base_session.verify = False
+
         # create the session
-        self.session = Session(max_retries=0)
-        self.session.base_url = f'{uri}/servicesNS/{user_context}/{app}'
-        self.session.auth = (username, password)
-        self.session.proxies = proxies if proxies else {}
-        self.session.trust_env = False
-        self.session.verify = False
+        self.search_session = Session(max_retries=0)
+        self.search_session.base_url = f'{uri}/servicesNS/{user_context}/{app}'
+        if token:
+            self.search_session.headers['Authorization'] = f'Bearer {token}'
+        else:
+            self.search_session.auth = (username, password)
+        self.search_session.proxies = proxies if proxies else {}
+        self.search_session.trust_env = False
+        self.search_session.verify = False
 
         # determine gui search path from namespace app
         self.gui_path = 'en-US/app/search/search' if app == '-' else f'en-US/app/{app}/search'
@@ -109,6 +129,11 @@ class SplunkQueryObject:
             start_time=start_time, 
             running_start_time=running_start_time, 
             end_time=end_time)
+
+    def get_server_info(self) -> dict:
+        response = self.base_session.get("/services/server/info?output_mode=json")
+        response.raise_for_status()
+        return response.json()
 
     def reset_search_status(
         self, 
@@ -205,7 +230,7 @@ class SplunkQueryObject:
             params['latest'] = int(time.mktime(end_time.timetuple()))
 
         # build link
-        uri = urllib.parse.urlparse(self.session.base_url)
+        uri = urllib.parse.urlparse(self.search_session.base_url)
         uri = (
             uri.scheme,
             uri.hostname,
@@ -381,7 +406,7 @@ class SplunkQueryObject:
                 logging.info(f"using time earliest = {data['earliest_time']} latest = {data['latest_time']}")
 
 
-        response = self.session.post(f'/search/jobs', data=data)
+        response = self.search_session.post('/search/jobs', data=data)
         search_id = etree.fromstring(response.content).xpath('//sid/text()')[0]
         self.record_splunk_sid(search_id, query)
         return search_id
@@ -395,7 +420,7 @@ class SplunkQueryObject:
         Returns:
             bool: True if complete, False otherwise
         """
-        response = self.session.get(f'/search/jobs/{sid}')
+        response = self.search_session.get(f'/search/jobs/{sid}')
         # weird bug with splunk api that results in it returning a 204 with no content, requeue query when this happens
         if response.status_code == 204:
             raise HTTPError('No content', response=response)
@@ -439,7 +464,7 @@ class SplunkQueryObject:
             list: the list of results for the query
         """
         params = {'count': "0", 'output_mode': 'json_rows'}
-        r = self.session.get(f'/search/jobs/{sid}/results', params=params).json()
+        r = self.search_session.get(f'/search/jobs/{sid}/results', params=params).json()
 
         # convert list of fields and rows to list of dictionaries
         return [ { r['fields'][i] : row[i] for i in range(0, len(r['fields'])) } for row in r['rows'] ]
@@ -459,7 +484,7 @@ class SplunkQueryObject:
 
         # tell splunk to delete the job
         try:
-            r = self.session.delete(f'/search/jobs/{sid}')
+            r = self.search_session.delete(f'/search/jobs/{sid}')
             return True
 
         # ignore failures
@@ -482,7 +507,7 @@ class SplunkQueryObject:
         # tell splunk to delete the job
         try:
             logging.info(f"deleting search job {sid}")
-            response = self.session.delete(f'/search/jobs/{sid}')
+            response = self.search_session.delete(f'/search/jobs/{sid}')
             response.raise_for_status()
             return True
 
@@ -501,7 +526,7 @@ class SplunkQueryObject:
             list: a list containing a dict for each item in the collection
         """
         try:
-            return self.session.get(f'/storage/collections/data/{collection}').json()
+            return self.search_session.get(f'/storage/collections/data/{collection}').json()
 
         except Exception as e:
             logging.error(f'unable to get data from {collection}: {e}')
@@ -518,7 +543,7 @@ class SplunkQueryObject:
             bool: True if save was successful, False otherwise
         """
         try:
-            self.session.post(f'/storage/collections/data/{collection}/batch_save', json=items)
+            self.search_session.post(f'/storage/collections/data/{collection}/batch_save', json=items)
             return True
 
         except Exception as e:
@@ -536,7 +561,7 @@ class SplunkQueryObject:
             bool: True if delete was successful, False otherwise
         """
         try:
-            self.session.delete(f'/storage/collections/data/{collection}/{item_id}')
+            self.search_session.delete(f'/storage/collections/data/{collection}/{item_id}')
             return True
 
         except Exception as e:
@@ -553,7 +578,7 @@ class SplunkQueryObject:
             bool: True if delete was successful, False otherwise
         """
         try:
-            self.session.delete(f'/storage/collections/data/{collection}')
+            self.search_session.delete(f'/storage/collections/data/{collection}')
             return True
 
         except Exception as e:
@@ -579,7 +604,7 @@ class SplunkQueryObject:
     def get_search_log(self, sid: str, target_file: str) -> bool:
         """Download the Splunk log for the given search and store it in the specified file.
         Returns True if one or more bytes was written. Raises exception on HTTP error."""
-        response = self.session.get(f'/search/jobs/{sid}/search.log', stream=True)
+        response = self.search_session.get(f'/search/jobs/{sid}/search.log', stream=True)
         response.raise_for_status()
         bytes = 0
         with open(target_file, "wb") as fp:
@@ -640,7 +665,7 @@ class SplunkQueryObject:
             }
 
             logging.debug(f"downloading saved searches @ offset {offset}")
-            response = self.session.request("get", "/saved/searches", params=params)
+            response = self.search_session.request("get", "/saved/searches", params=params)
             response.raise_for_status()
 
             parsed_xml = etree.fromstring(response.content)
@@ -682,7 +707,7 @@ class SplunkQueryObject:
         logging.info(f"publishing saved search {prefixed_name}")
 
         try:
-            response = self.session.request("post", "/saved/searches", data={
+            response = self.search_session.request("post", "/saved/searches", data={
                 "name": prefixed_name,
                 "description": saved_search.description,
                 "search": saved_search.search,
@@ -692,7 +717,7 @@ class SplunkQueryObject:
             return response.status_code in range(200, 300)
         except HTTPError as e:
             if e.response.status_code == 409:
-                response = self.session.request("post", f"/saved/searches/{prefixed_name}", data={
+                response = self.search_session.request("post", f"/saved/searches/{prefixed_name}", data={
                     "description": saved_search.description,
                     "search": saved_search.search,
                 })
@@ -708,31 +733,29 @@ class SplunkQueryObject:
 
         prefixed_name = SAVED_SEARCH_PREFIX + saved_search.name
         logging.info(f"deleting saved search {prefixed_name}")
-        response = self.session.request("delete", f"/saved/searches/{prefixed_name}")
+        response = self.search_session.request("delete", f"/saved/searches/{prefixed_name}")
         response.raise_for_status()
         return response.status_code in range(200, 300)
 
-def SplunkClient(
-    config: str = 'splunk', 
-    user_context: Optional[str] = None,
-    app: Optional[str] = None
-) -> SplunkQueryObject:
+def SplunkClient(config: str = "splunk", **kwargs) -> SplunkQueryObject:
     """Convenience function for creating a SplunkClient from a config section
 
     Attributes:
         config (str, optional): the name of the config section to load a splunk client with (default splunk)
-        user_context (str, optional): the user context to run in (default None -> '-' which is a wildcard)
-        app (str, optional): the app context to run in (default None -> '-' which is a wildcard)
 
     Returns:
         SplunkQueryObject: a splunk client configured with the options set in the specified config section
     """
 
-    return SplunkQueryObject(
-        get_config()[config]['uri'],
-        get_config()[config]['username'],
-        get_config()[config]['password'],
-        proxies = proxy_config(get_config()[config].get('proxy', fallback=None)),
-        user_context = user_context if user_context else '-',
-        app = app if app else '-',
-    )
+    kwargs.update({
+        "uri": get_config()[config]["uri"],
+        "proxies": proxy_config(get_config()[config].get("proxy", fallback=None)),
+    })
+
+    if get_config()[config].get("username"):
+        kwargs["username"] = get_config()[config]["username"]
+        kwargs["password"] = get_config()[config]["password"]
+    else:
+        kwargs["token"] = get_config()[config]["token"]
+
+    return SplunkQueryObject(**kwargs)
