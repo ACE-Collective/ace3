@@ -187,7 +187,7 @@ class EmailLoggingAnalyzer(AnalysisModule):
             os.makedirs(dir_path, exist_ok=True)
 
         with open(target_path, "a") as fp:
-            fp.write(json.dumps(entry))
+            fp.write(json.dumps(entry) + "\n")
 
         return True
 
