@@ -543,6 +543,7 @@ ldap:
   # a user is tagged as executive if they are within 2 managers of this user
   top_user: ""
 
+# general settings for logging intended for a splunk heavy forwarder
 splunk_logging:
   # location of generated splunk logs (relative to DATA_DIR)
   splunk_log_dir: splunk_logs
@@ -1093,20 +1094,22 @@ analysis_module_email_logger:
   module: saq.modules.email.logging
   class: EmailLoggingAnalyzer
   enabled: true
-  # set this to yes to enable log formatted for splunk
-  splunk_log_enabled: true
+  # this enabled an older style of logging suitable for a splunk heavy forwarder
+  # if possible, use the JSON logger instead and send the logs to HEC
+  splunk_log_enabled: false
   # the subdirectory inside of splunk_log_dir (see [splunk_logging]) that contains the logs
   splunk_log_subdir: smtp
-  # set this to yes to update the smtplog table of the brocess database
-  update_brocess: true
-  # elasticsearch JSON logging
-  json_log_enabled: false
-  # relative file path of the generated JSON logs
+  # this enabled updating the smtplog table of the brocess database
+  # which is used for various heuristic-based phishing detections
+  brocess_logging_enabled: true
+  # this enables JSON logging to a file, suitable for any logging system that supports JSON
+  json_logging_enabled: true
+  # JSON logging file path relative to DATA_DIR
   # the file name is passed through strftime
   # https://docs.python.org/3/library/datetime.html#strftime-strptime-behavior
-  # {pid} is replaced with the process ID of the current executing process
-  # so that we don't have multiple processes writing to the same file
-  json_log_path_format: email/email-{pid}-%Y%m%d.json
+  # {pid} (required) is replaced with the process ID of the current executing process
+  # NOTE if you change this, you need to update your fluent-bit configuration as well
+  json_log_path_format: logs/email/email-{pid}-%Y%m%d.log.json
 
 analysis_module_file_hash_analyzer:
   id: file_hash_analyzer

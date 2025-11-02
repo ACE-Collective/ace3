@@ -1,5 +1,5 @@
 from datetime import datetime
-import json
+import simdjson as json
 import logging
 import os
 
@@ -7,13 +7,19 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.search import recurse_tree
 from saq.configuration.config import get_config_value
-from saq.constants import CONFIG_ELK_LOGGING, CONFIG_ELK_LOGGING_DIR, CONFIG_SPLUNK_LOGGING, CONFIG_SPLUNK_LOGGING_DIR, DIRECTIVE_ORIGINAL_EMAIL, F_FILE, F_URL, AnalysisExecutionResult
+from saq.constants import CONFIG_SPLUNK_LOGGING, CONFIG_SPLUNK_LOGGING_DIR, DIRECTIVE_ORIGINAL_EMAIL, F_FILE, F_URL, AnalysisExecutionResult
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.email import normalize_email_address
 from saq.environment import get_base_dir, get_data_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
+
+CONFIG_SPLUNK_LOGGING_ENABLED = "splunk_log_enabled"
+CONFIG_SPLUNK_LOG_SUBDIR = "splunk_log_subdir"
+CONFIG_JSON_LOGGING_ENABLED = "json_logging_enabled"
+CONFIG_JSON_LOG_PATH_FORMAT = "json_log_path_format"
+CONFIG_BROCESS_LOGGING_ENABLED = "brocess_logging_enabled"
 
 
 class EmailHistoryRecord:
@@ -42,20 +48,21 @@ class EmailLoggingAnalyzer(AnalysisModule):
         super().__init__(*args, **kwargs)
 
         # splunk log settings
-        self.splunk_log_enabled = self.config.getboolean('splunk_log_enabled')
+        self.splunk_log_enabled = self.config.getboolean(CONFIG_SPLUNK_LOGGING_ENABLED)
         self.splunk_log_dir = os.path.join(get_data_dir(), get_config_value(CONFIG_SPLUNK_LOGGING, CONFIG_SPLUNK_LOGGING_DIR), 
-                                           self.config['splunk_log_subdir'])
+                                           self.config.get(CONFIG_SPLUNK_LOG_SUBDIR))
 
         # JSON log settings (for elasticsearch)
-        self.json_log_enabled = self.config.getboolean('json_log_enabled')
-        self.json_log_path_format = self.config['json_log_path_format']
+        self.json_logging_enabled = self.config.getboolean(CONFIG_JSON_LOGGING_ENABLED)
+        self.json_log_path_format = self.config.get(CONFIG_JSON_LOG_PATH_FORMAT)
 
         # brocess log settings
-        self.update_brocess = self.config.getboolean('update_brocess')
+        self.brocess_logging_enabled = self.config.getboolean(CONFIG_BROCESS_LOGGING_ENABLED)
 
     def verify_environment(self):
-        self.verify_config_exists('splunk_log_subdir')
-        self.create_required_directory(self.splunk_log_dir)
+        if self.splunk_log_enabled:
+            self.verify_config_exists(CONFIG_SPLUNK_LOG_SUBDIR)
+            self.create_required_directory(self.splunk_log_dir)
         
     @property
     def generated_analysis_type(self):
@@ -143,27 +150,49 @@ class EmailLoggingAnalyzer(AnalysisModule):
         entry.update({'extracted_urls': extracted_urls})
         entry.update({'archive_path': None if archive_path is None else os.path.relpath(archive_path, start=get_base_dir())})
 
-        try:
-            self.export_to_splunk(entry.copy())
-        except Exception as e:
-            logging.error("unable to create splunk log export for {}: {}".format(email_file, e))
+        if self.json_logging_enabled:
+            try:
+                self.export_to_json(entry.copy())
+            except Exception as e:
+                logging.error(f"unable to create JSON log export for {email_file}: {e}")
+                report_exception()
 
-        try:
-            self.export_to_es(entry.copy())
-        except Exception as e:
-            logging.error("unable to create elasticsearch log export for {}: {}".format(email_file, e))
+        if self.splunk_log_enabled:
+            try:
+                self.export_to_splunk(entry.copy())
+            except Exception as e:
+                logging.error(f"unable to create splunk log export for {email_file}: {e}")
+                report_exception()
 
-        try:
-            self.export_to_brocess(entry.copy())
-        except Exception as e:
-            logging.error("unable to create brocess data export for {}: {}".format(email_file, e))
+        if self.brocess_logging_enabled:
+            try:
+                self.export_to_brocess(entry.copy())
+            except Exception as e:
+                logging.error(f"unable to create brocess log export for {email_file}: {e}")
+                report_exception()
+
+        return True
+
+    def export_to_json(self, entry: dict) -> bool:
+        """Exports the logging information to a JSON file."""
+
+        # convert the date into a timestamp for splunk
+        entry["timestamp"] = str(datetime.strptime(entry["date"], '%Y-%m-%d %H:%M:%S.%f %z').timestamp())
+
+        json_log_path_format = get_config_value(self.config_section_name, CONFIG_JSON_LOG_PATH_FORMAT)
+        target_path = datetime.now().strftime(os.path.join(get_data_dir(), json_log_path_format)).format(pid=os.getpid())
+
+        dir_path = os.path.dirname(target_path)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(target_path, "a") as fp:
+            fp.write(json.dumps(entry))
 
         return True
 
     def export_to_splunk(self, entry):
-        """Exports the logging information to a directory where splunk can pick it up."""
-        if not self.splunk_log_enabled:
-            return
+        """Exports the logging information to a directory suitable for a splunk heavy forwarder."""
 
         entry_data = []
 
@@ -238,39 +267,12 @@ class EmailLoggingAnalyzer(AnalysisModule):
                     entry_data = [ entry['date'], entry['message_id'], url ]
                     fp.write('{}\n'.format(_esc('\x1e'.join(entry_data))))
 
-    def export_to_es(self, entry):
-        """Create the ElasticSearch log entry."""
-
-        if not self.json_log_enabled:
-            return
-
-        target_path = os.path.join(get_data_dir(), get_config_value(CONFIG_ELK_LOGGING, CONFIG_ELK_LOGGING_DIR), 
-                                   datetime.now().strftime(self.json_log_path_format)).format(pid=os.getpid())
-
-        # has the current JSON path
-        target_dir = os.path.dirname(target_path)
-        if not os.path.exists(target_dir):
-            try:
-                logging.debug("creating json logging directory {}".format(target_dir))
-                os.makedirs(target_dir)
-            except Exception as e:
-                logging.error("unable to create directory {}: {}".format(target_dir, e))
-                return
-
-        with open(target_path, 'a') as fp:
-            fp.write(json.dumps(entry))
-            fp.write('\n')
-
     def export_to_brocess(self, entry):
-        if not self.update_brocess:
-            return
+        """Exports the logging information to the brocess database."""
 
-        # are we updating the brocess database?
         mail_from = normalize_email_address(entry['mail_from'])
         if not mail_from:
             return
-
-        logging.debug("updating brocess for {}".format(mail_from))
 
         try:
             with get_db_connection(name='brocess') as db:

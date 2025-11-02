@@ -7,6 +7,9 @@ COMPRESS_LOGS_OLDER_THAN=3
 # delete logs older than N days
 DELETE_LOGS_OLDER_THAN=30
 
+# delete JSON logs older than N days
+DELETE_JSON_LOGS_OLDER_THAN=7
+
 # delete error reports older than N days
 DELETE_ERROR_REPORTS_OLDER_THAN=7
 
@@ -39,6 +42,9 @@ find -L data/logs -name '*.log' ! -name '*_error.log' -mtime +$COMPRESS_LOGS_OLD
 
 # clear compressed logs older than N days
 find -L data/logs -mindepth 1 -maxdepth 1 -name '*.log.gz' -mtime +$DELETE_LOGS_OLDER_THAN -delete
+
+# delete JSON logs older than N days
+find -L data/logs -mindepth 1 -maxdepth 1 -name '*.json.log' -mtime +$DELETE_JSON_LOGS_OLDER_THAN -delete
 
 # clear out old stats directories older than 7 days
 find -L data/stats/modules -maxdepth 2 -mindepth 2 -type d -mtime +7 -exec rm -rf '{}' \;

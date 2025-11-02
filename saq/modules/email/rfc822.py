@@ -1063,7 +1063,7 @@ class EmailAnalyzer(AnalysisModule):
             'user_agent': user_agent,
             'x_mailer': x_mailer,
             'originating_ip': email_details[KEY_ORIGINATING_IP] if KEY_ORIGINATING_IP in email_details else None,
-            'headers': ['{}: {}'.format(h[0], re.sub('[\t\n]', '', h[1])) for h in email_details[KEY_HEADERS] if not h[0].lower().startswith('x-ms-exchange-')] if KEY_HEADERS in email_details else None,
+            'headers': ['{}: {}'.format(h[0], re.sub('[\t\n]', '', h[1])) for h in email_details[KEY_HEADERS]] if KEY_HEADERS in email_details else None,
             'attachment_count': len(attachments),
             'attachment_sizes': [a[0] for a in attachments],
             'attachment_types': [a[1] for a in attachments],
