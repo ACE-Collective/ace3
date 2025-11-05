@@ -43,10 +43,11 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     gnome-screenshot
 
-# install google chrome
-RUN curl -k -L https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/google-chrome-stable_current_amd64.deb \
-    && dpkg -i /tmp/google-chrome-stable_current_amd64.deb \
-    && rm /tmp/google-chrome-stable_current_amd64.deb
+# install google chrome (architecture-aware)
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -k -L "https://dl.google.com/linux/direct/google-chrome-stable_current_${ARCH}.deb" -o /tmp/google-chrome-stable.deb && \
+    dpkg -i /tmp/google-chrome-stable.deb || apt-get install -f -y && \
+    rm /tmp/google-chrome-stable.deb
 
 # install python venv
 RUN python3 -m venv /opt/venv
