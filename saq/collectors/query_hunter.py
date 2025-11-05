@@ -206,31 +206,33 @@ class QueryHunt(Hunt):
 
         return result
     
-    def load_from_ini(self, path, *args, **kwargs):
-        config = super().load_from_ini(path, *args, **kwargs)
+    def load_from_yaml(self, path: str, *args, **kwargs) -> dict:
+        config = super().load_from_yaml(path, *args, **kwargs)
 
         rule_section = config['rule']
         
         # if we don't specify a time range then it defaults to whatever the frequency is
-        self.time_range = rule_section.get('time_range', fallback=None)
+        self.time_range = rule_section.get('time_range')
         if self.time_range is None:
             self.time_range = self.frequency
         else:
             self.time_range = create_timedelta(self.time_range)
 
-        self.max_time_range = rule_section.get('max_time_range', fallback=None)
+        self.max_time_range = rule_section.get('max_time_range')
         if self.max_time_range is not None:
             self.max_time_range = create_timedelta(self.max_time_range)
 
-        self.full_coverage = rule_section.getboolean('full_coverage')
-        self.group_by = rule_section.get('group_by', fallback=None)
-        self.use_index_time = rule_section.getboolean('use_index_time')
+        self.full_coverage = rule_section.get('full_coverage', False)
+        self.group_by = rule_section.get('group_by')
+        self.use_index_time = rule_section.get('use_index_time', False)
 
-        self.max_result_count =  rule_section.getint('max_result_count', 
-                                                     fallback=get_config_value_as_int(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT))
+        self.max_result_count =  rule_section.get('max_result_count',
+                                                   get_config_value_as_int(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT))
+        if self.max_result_count is not None and not isinstance(self.max_result_count, int):
+            self.max_result_count = int(self.max_result_count)
 
         self.query_timeout = rule_section.get('query_timeout',
-                                              fallback=get_config_value(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT))
+                                              get_config_value(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT))
 
         if 'offset' in rule_section:
             self.offset = create_timedelta(rule_section['offset'])
@@ -239,6 +241,8 @@ class QueryHunt(Hunt):
         
         self.observable_mapping = {}
         for key, value in observable_mapping_section.items():
+
+            # TODO revisit this, we can support encoded file content
             if value == F_FILE:
                 mapping = f'{rule_section["type"]}.{rule_section["name"]}.{key} = {value}'
                 logging.error(f'Invalid observable mapping: {mapping} - did you mean to user file_name?')
@@ -246,16 +250,17 @@ class QueryHunt(Hunt):
 
             self.observable_mapping[key] = value
 
-        if 'tag_mapping' in config:
-            tag_mapping_section = config['tag_mapping']
-            self.tag_mapping = {}
-            for key, value in tag_mapping_section.items():
-                self.tag_mapping[key] = [_.strip() for _ in value.split(",")]
+        self.tag_mapping = rule_section.get('tag_mapping', {})
+        #if 'tag_mapping' in config:
+            #tag_mapping_section = config['tag_mapping']
+            #self.tag_mapping = {}
+            #for key, value in tag_mapping_section.items():
+                #self.tag_mapping[key] = [_.strip() for _ in value.split(",")]
 
-        temporal_fields_section = config['temporal_fields']
-        self.temporal_fields = {}
-        for key in temporal_fields_section.keys():
-            self.temporal_fields[key] = temporal_fields_section.getboolean(key)
+        temporal_fields_section = config.get('temporal_fields', {})
+        self.temporal_fields = temporal_fields_section if temporal_fields_section is not None else {}
+        #for key in temporal_fields_section.keys():
+            #self.temporal_fields[key] = temporal_fields_section.getboolean(key)
 
         directives_section = config['directives']
     
@@ -285,8 +290,8 @@ class QueryHunt(Hunt):
         if 'search' not in rule_section and 'query' not in rule_section:
             raise KeyError(f"missing search or query in {path}")
 
-        self.search_query_path = rule_section.get('search', fallback=None)
-        self.query = rule_section.get('query', fallback=None)
+        self.search_query_path = rule_section.get('search')
+        self.query = rule_section.get('query')
 
         if self.search_query_path is not None and self.query is not None:
             raise ValueError(f"both search and query are specified for {path} (only need one)")
@@ -299,7 +304,7 @@ class QueryHunt(Hunt):
 
     @property
     def is_modified(self):
-        return self.ini_is_modified or self.query_is_modified
+        return self.yaml_is_modified or self.query_is_modified
 
     @property
     def query_is_modified(self):

@@ -199,74 +199,82 @@ def test_load_hunts(manager_kwargs):
 
 @pytest.mark.integration
 def test_fix_invalid_hunt(rules_dir, manager_kwargs):
-    failed_ini_path = os.path.join(rules_dir, 'test_3.ini')
-    with open(failed_ini_path, 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_3
-description = Unit Test Description 3
-type = test
-alert_type = test - alert
-;frequency = 00:00:01 <-- missing frequency
-tags = tag1, tag2 """)
+    failed_yaml_path = os.path.join(rules_dir, 'test_3.yaml')
+    with open(failed_yaml_path, 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_3
+  description: Unit Test Description 3
+  type: test
+  alert_type: test - alert
+  #frequency: '00:00:01' <-- missing frequency
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter = HuntManager(**manager_kwargs)
     hunter.load_hunts_from_config()
     assert len(hunter.hunts) == 2
-    assert len(hunter.failed_ini_files) == 1
-    assert failed_ini_path in hunter.failed_ini_files
-    assert hunter.failed_ini_files[failed_ini_path][0] == os.path.getmtime(failed_ini_path)
-    assert hunter.failed_ini_files[failed_ini_path][1] == os.path.getsize(failed_ini_path)
-    assert hunter.failed_ini_files[failed_ini_path][2] == sha256(failed_ini_path)
+    assert len(hunter.failed_yaml_files) == 1
+    assert failed_yaml_path in hunter.failed_yaml_files
+    assert hunter.failed_yaml_files[failed_yaml_path][0] == os.path.getmtime(failed_yaml_path)
+    assert hunter.failed_yaml_files[failed_yaml_path][1] == os.path.getsize(failed_yaml_path)
+    assert hunter.failed_yaml_files[failed_yaml_path][2] == sha256(failed_yaml_path)
 
     assert not hunter.reload_hunts_flag
     hunter.check_hunts()
     assert not hunter.reload_hunts_flag
 
-    with open(failed_ini_path, 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_3 
-description = Unit Test Description 3
-type = test
-alert_type = test - alert
-frequency = 00:00:01
-tags = tag1, tag2 """)
+    with open(failed_yaml_path, 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_3
+  description: Unit Test Description 3
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:01'
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter.check_hunts()
     assert hunter.reload_hunts_flag
     hunter.reload_hunts()
     assert len(hunter.hunts) == 3
-    assert len(hunter.failed_ini_files) == 0
+    assert len(hunter.failed_yaml_files) == 0
 
 @pytest.mark.integration
 def test_load_hunts_wrong_type(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)
     os.mkdir(rules_dir)
-    with open(os.path.join(rules_dir, 'hunt_invalid.ini'), 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = test_wrong_type
-description = Testing Wrong Type
-type = unknown
-alert_type = test - alert
-frequency = 00:00:01
-tags = tag1, tag2 """)
+    with open(os.path.join(rules_dir, 'hunt_invalid.yaml'), 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: test_wrong_type
+  description: Testing Wrong Type
+  type: unknown
+  alert_type: test - alert
+  frequency: '00:00:01'
+  tags:
+    - tag1
+    - tag2
+""")
 
 
-    with open(os.path.join(rules_dir, 'hunt_valid.ini'), 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_3 
-description = Unit Test Description 3
-type = test
-alert_type = test - alert
-frequency = 00:00:01
-tags = tag1, tag2 """)
+    with open(os.path.join(rules_dir, 'hunt_valid.yaml'), 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_3
+  description: Unit Test Description 3
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:01'
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter = HuntManager(**manager_kwargs)
     hunter.load_hunts_from_config()
@@ -311,13 +319,13 @@ def test_hunt_disabled(manager_kwargs):
     assert all([not hunt.executed for hunt in hunter.hunts])
 
 @pytest.mark.system
-def test_reload_hunts_on_ini_modified(rules_dir, hunter_service_multi_threaded):
+def test_reload_hunts_on_yaml_modified(rules_dir, hunter_service_multi_threaded):
     hunter_service_multi_threaded.hunt_managers["test"].update_frequency = 1
     hunter_service_multi_threaded.start()
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 1)
     wait_for_log_count('loaded Hunt(Test 2[test]) from', 1)
-    with open(os.path.join(rules_dir, 'test_1.ini'), 'a') as fp:
-        fp.write('\n\n; modified')
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'a') as fp:
+        fp.write('\n\n# modified')
 
     wait_for_log_count('detected modification to', 1, 5)
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 2)
@@ -331,7 +339,7 @@ def test_reload_hunts_on_deleted(rules_dir, hunter_service_multi_threaded):
     hunter_service_multi_threaded.start()
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 1)
     wait_for_log_count('loaded Hunt(Test 2[test]) from', 1)
-    os.remove(os.path.join(rules_dir, 'test_1.ini'))
+    os.remove(os.path.join(rules_dir, 'test_1.yaml'))
     wait_for_log_count('detected modification to', 1, 5)
     wait_for_log_count('loaded Hunt(Test 2[test]) from', 2)
     assert log_count('loaded Hunt(unit_test_1[test]) from') == 1
@@ -344,18 +352,20 @@ def test_reload_hunts_on_new(rules_dir, hunter_service_multi_threaded):
     hunter_service_multi_threaded.start()
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 1)
     wait_for_log_count('loaded Hunt(Test 2[test]) from', 1)
-    with open(os.path.join(rules_dir, 'test_3.ini'), 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_3
-description = Unit Test Description 3
-type = test
-alert_type = test - alert
-frequency = 00:00:10
-tags = tag1, tag2""")
+    with open(os.path.join(rules_dir, 'test_3.yaml'), 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_3
+  description: Unit Test Description 3
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:10'
+  tags:
+    - tag1
+    - tag2
+""")
 
-    wait_for_log_count('detected new hunt ini', 1, 5)
+    wait_for_log_count('detected new hunt yaml', 1, 5)
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 2)
     wait_for_log_count('loaded Hunt(Test 2[test]) from', 2)
     wait_for_log_count('loaded Hunt(unit_test_3[test]) from', 1)
@@ -366,16 +376,18 @@ tags = tag1, tag2""")
 def test_valid_cron_schedule(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)
     os.mkdir(rules_dir)
-    with open(os.path.join(rules_dir, 'test_1.ini'), 'a') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_1
-description = Unit Test Description 1
-type = test
-alert_type = test - alert
-frequency = */1 * * * *
-tags = tag1, tag2""")
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'a') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '*/1 * * * *'
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter = HuntManager(**manager_kwargs)
     hunter.load_hunts_from_config()
@@ -388,37 +400,41 @@ tags = tag1, tag2""")
 def test_invalid_cron_schedule(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)
     os.mkdir(rules_dir)
-    with open(os.path.join(rules_dir, 'test_1.ini'), 'a') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_1
-description = Unit Test Description 1
-type = test
-alert_type = test - alert
-frequency = */1 * * *
-tags = tag1, tag2""")
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'a') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '*/1 * * *'
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter = HuntManager(**manager_kwargs)
     hunter.load_hunts_from_config()
     assert len(hunter.hunts) == 0
-    assert len(hunter.failed_ini_files) == 1
+    assert len(hunter.failed_yaml_files) == 1
 
 @pytest.mark.integration
 def test_hunt_suppression(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)
     os.mkdir(rules_dir)
-    with open(os.path.join(rules_dir, 'test_1.ini'), 'a') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = unit_test_1
-description = Unit Test Description 1
-type = test
-alert_type = test - alert
-frequency = 00:00:01
-suppression = 00:01:00
-tags = tag1, tag2""")
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'a') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:01'
+  suppression: '00:01:00'
+  tags:
+    - tag1
+    - tag2
+""")
 
     hunter = HuntManager(**manager_kwargs)
     hunter.load_hunts_from_config()

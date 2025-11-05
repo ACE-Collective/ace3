@@ -80,11 +80,10 @@ class SplunkHunt(QueryHunt):
     def query(self, value):
         self._query = value
     
-    def load_from_ini(self, *args, **kwargs):
-        config = super().load_from_ini(*args, **kwargs)
+    def load_from_yaml(self, path: str, *args, **kwargs) -> dict:
+        config = super().load_from_yaml(path, *args, **kwargs)
 
         section_rule = config['rule']
-        self.use_index_time = section_rule.getboolean('use_index_time')
 
         # make sure the time spec formatter is available
         # this should really be done at load time...
@@ -100,6 +99,8 @@ class SplunkHunt(QueryHunt):
             self.namespace_user = self.default_namespace_user
         if not self.namespace_app:
             self.namespace_app = self.default_namespace_app
+
+        return config
 
     def execute_query(self, start_time, end_time, unit_test_query_results=None, **kwargs):
         tz = pytz.timezone(self.timezone)

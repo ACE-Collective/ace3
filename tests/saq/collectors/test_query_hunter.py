@@ -5,6 +5,7 @@ import os
 from queue import Queue
 import shutil
 import pytest
+import yaml
 
 from saq.collectors.base_collector import CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
@@ -90,43 +91,42 @@ def setup(rules_dir):
     s['concurrency_limit'] = "1"
     s['update_frequency'] = "60"
 
-    test_ini_path = os.path.join(rules_dir, 'test_1.ini')
-    with open(test_ini_path, 'w') as fp:
-        fp.write(f"""
-[rule]
-enabled = yes
-name = query_test_1
-description = Query Test Description 1
-type = test_query
-alert_type = test - query
-frequency = 00:01:00
-tags = tag1, tag2
-
-time_range = 00:01:00
-max_time_range = 01:00:00
-offset = 00:05:00
-full_coverage = yes
-group_by = field1
-search = {rules_dir}/test_1.query
-use_index_time = yes
-
-[observable_mapping]
-src_ip = ipv4
-dst_ip = ipv4
-
-[temporal_fields]
-src_ip = yes
-dst_ip = yes
-
-[directives]
-""")
+    test_yaml_path = os.path.join(rules_dir, 'test_1.yaml')
+    with open(test_yaml_path, 'w') as fp:
+        yaml.dump({
+            'rule': {
+                'enabled': 'yes',
+                'name': 'query_test_1',
+                'description': 'Query Test Description 1',
+                'type': 'test_query',
+                'alert_type': 'test - query',
+                'frequency': '00:01:00',
+                'tags': ['tag1', 'tag2'],
+                'time_range': '00:01:00',
+                'max_time_range': '01:00:00',
+                'offset': '00:05:00',
+                'full_coverage': 'yes',
+                'group_by': 'field1',
+                'search': f'{rules_dir}/test_1.query',
+                'use_index_time': 'yes'
+            },
+            'observable_mapping': {
+                'src_ip': 'ipv4',
+                'dst_ip': 'ipv4'
+            },
+            'temporal_fields': {
+                'src_ip': True,
+                'dst_ip': True
+            },
+            'directives': {}
+        }, fp, default_flow_style=False)
 
     test_query_path = os.path.join(rules_dir, 'test_1.query')
     with open(test_query_path, 'w') as fp:
         fp.write('Test query.')
 
 @pytest.mark.integration
-def test_load_hunt_ini(manager_kwargs):
+def test_load_hunt_yaml(manager_kwargs):
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
     assert len(manager.hunts) == 1
@@ -150,36 +150,35 @@ def test_load_hunt_ini(manager_kwargs):
 
 @pytest.mark.integration
 def test_load_query_inline(rules_dir, manager_kwargs):
-    test_ini_path = os.path.join(rules_dir, 'test_1.ini')
-    with open(test_ini_path, 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = query_test_1
-description = Query Test Description 1
-type = test_query
-alert_type = test - query
-frequency = 00:01:00
-tags = tag1, tag2
-
-time_range = 00:01:00
-max_time_range = 01:00:00
-offset = 00:05:00
-full_coverage = yes
-group_by = field1
-query = Test query.
-use_index_time = yes
-
-[observable_mapping]
-src_ip = ipv4
-dst_ip = ipv4
-
-[temporal_fields]
-src_ip = yes
-dst_ip = yes
-
-[directives]
-""")
+    test_yaml_path = os.path.join(rules_dir, 'test_1.yaml')
+    with open(test_yaml_path, 'w') as fp:
+        yaml.dump({
+            'rule': {
+                'enabled': 'yes',
+                'name': 'query_test_1',
+                'description': 'Query Test Description 1',
+                'type': 'test_query',
+                'alert_type': 'test - query',
+                'frequency': '00:01:00',
+                'tags': ['tag1', 'tag2'],
+                'time_range': '00:01:00',
+                'max_time_range': '01:00:00',
+                'offset': '00:05:00',
+                'full_coverage': 'yes',
+                'group_by': 'field1',
+                'query': 'Test query.',
+                'use_index_time': 'yes'
+            },
+            'observable_mapping': {
+                'src_ip': 'ipv4',
+                'dst_ip': 'ipv4'
+            },
+            'temporal_fields': {
+                'src_ip': True,
+                'dst_ip': True
+            },
+            'directives': {}
+        }, fp, default_flow_style=False)
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
     assert len(manager.hunts) == 1
@@ -189,44 +188,41 @@ dst_ip = yes
 
 @pytest.mark.integration
 def test_load_multi_line_query_inline(rules_dir, manager_kwargs):
-    test_ini_path = os.path.join(rules_dir, 'test_1.ini')
-    with open(test_ini_path, 'w') as fp:
-        fp.write("""
-[rule]
-enabled = yes
-name = query_test_1
-description = Query Test Description 1
-type = test_query
-alert_type = test - query
-frequency = 00:01:00
-tags = tag1, tag2
-
-time_range = 00:01:00
-max_time_range = 01:00:00
-offset = 00:05:00
-full_coverage = yes
-group_by = field1
-query = 
-    This is a multi line query.
-    How about that?
-use_index_time = yes
-
-[observable_mapping]
-src_ip = ipv4
-dst_ip = ipv4
-
-[temporal_fields]
-src_ip = yes
-dst_ip = yes
-
-[directives]
-""")
+    test_yaml_path = os.path.join(rules_dir, 'test_1.yaml')
+    with open(test_yaml_path, 'w') as fp:
+        yaml.dump({
+            'rule': {
+                'enabled': 'yes',
+                'name': 'query_test_1',
+                'description': 'Query Test Description 1',
+                'type': 'test_query',
+                'alert_type': 'test - query',
+                'frequency': '00:01:00',
+                'tags': ['tag1', 'tag2'],
+                'time_range': '00:01:00',
+                'max_time_range': '01:00:00',
+                'offset': '00:05:00',
+                'full_coverage': 'yes',
+                'group_by': 'field1',
+                'query': 'This is a multi line query.\nHow about that?',
+                'use_index_time': 'yes'
+            },
+            'observable_mapping': {
+                'src_ip': 'ipv4',
+                'dst_ip': 'ipv4'
+            },
+            'temporal_fields': {
+                'src_ip': True,
+                'dst_ip': True
+            },
+            'directives': {}
+        }, fp, default_flow_style=False)
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
     assert len(manager.hunts) == 1
     hunt = manager.hunts[0]
     assert hunt.enabled
-    assert hunt.query == """\nThis is a multi line query.\nHow about that?"""
+    assert hunt.query == 'This is a multi line query.\nHow about that?'
 
 @pytest.mark.integration
 def test_reload_hunts_on_search_modified(rules_dir, manager_kwargs):
@@ -352,7 +348,7 @@ def test_missing_query_file(rules_dir, manager_kwargs):
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
     assert len(manager.hunts) == 0
-    assert len(manager.failed_ini_files) == 1
+    assert len(manager.failed_yaml_files) == 1
 
     assert not manager.reload_hunts_flag
     manager.check_hunts()

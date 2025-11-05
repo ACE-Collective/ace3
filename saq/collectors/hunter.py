@@ -15,14 +15,13 @@
 # 
 # TYPE is some unique string that identifies the type of the hunt
 # the module and class settings define the class that will be used that extends saq.collector.hunter.Hunt
-# rule_dirs contains a list of directories to load rules ini formatted rules from
+# rule_dirs contains a list of directories to load rules yaml formatted rules from
 # and concurrency_limit defines concurrency constraints (see below)
 #
 # Each of these "types" is managed by a HuntManager which loads the Hunt-based rules and manages the execution
 # of these rules, apply any concurrency constraints required.
 #
 
-import configparser
 import datetime
 import importlib
 import logging
@@ -34,6 +33,7 @@ import shutil
 import threading
 from typing import Generator, override
 from croniter import croniter
+import yaml
 
 import pytz
 
@@ -126,8 +126,8 @@ class Hunt:
         # subclasses might use the address or url they are hitting for their queries
         self.tool_instance = 'localhost'
 
-        # when we load from an ini file we record the last modified time of the file
-        self.ini_path = None
+        # when we load from a yaml file we record the last modified time of the file
+        self.file_path = None
         self.last_mtime = None
 
     @property
@@ -273,69 +273,70 @@ class Hunt:
 
         return True
 
-    def load_from_ini(self, path):
-        """Loads the settings for the hunt from an ini formatted file. This function must return the 
-           ConfigParser object used to load the settings."""
-        config = configparser.ConfigParser(interpolation=None)
-        config.optionxform = str # preserve case when reading option names
-        config.read(path)
+    def load_from_yaml(self, path) -> dict:
+        """loads the settings for the hunt from a yaml formatted file. this function must return the 
+           dictionary object used to load the settings."""
+        with open(path, 'r') as fp:
+            config = yaml.safe_load(fp)
 
-        section_rule = config['rule']
+        rule_config = config['rule']
 
         # is this a supported type?
-        if section_rule['type'] != self.type:
-            raise InvalidHuntTypeError(section_rule['type'])
+        if rule_config['type'] != self.type:
+            raise InvalidHuntTypeError(rule_config['type'])
 
-        self.enabled = section_rule.getboolean('enabled')
+        self.enabled = rule_config['enabled']
 
-        # if we don't pass the name then we create it from the name of the ini file
-        self.name = section_rule.get(
+        # if we don't pass the name then we create it from the name of the yaml file
+        self.name = rule_config.get(
                 'name', 
-                fallback=(os.path.splitext(os.path.basename(path))[0]).replace('_', ' ').title())
+                (os.path.splitext(os.path.basename(path))[0]).replace('_', ' ').title())
 
-        self.description = section_rule['description']
+        self.description = rule_config['description']
         # if we don't pass an alert type then we default to the type field
-        self.alert_type = section_rule.get('alert_type', fallback=f'hunter - {self.type}')
-        self.analysis_mode = section_rule.get('analysis_mode', fallback=ANALYSIS_MODE_CORRELATION)
+        self.alert_type = rule_config.get('alert_type', f'hunter - {self.type}')
+        self.analysis_mode = rule_config.get('analysis_mode', ANALYSIS_MODE_CORRELATION)
 
         # frequency can be either a timedelta or a crontab entry
         self.frequency = None
-        if ':' in section_rule['frequency']:
-            self.frequency = create_timedelta(section_rule['frequency'])
+        if ':' in rule_config['frequency']:
+            self.frequency = create_timedelta(rule_config['frequency'])
 
         # suppression must be either empty for a time range
         self.suppression = None
-        if 'suppression' in section_rule and section_rule['suppression']:
-            self.suppression = create_timedelta(section_rule['suppression'])
+        if 'suppression' in rule_config and rule_config['suppression']:
+            self.suppression = create_timedelta(rule_config['suppression'])
 
         self.cron_schedule = None
         if self.frequency is None:
-            self.cron_schedule = section_rule.get('cron_schedule', fallback=section_rule['frequency'])
+            self.cron_schedule = rule_config.get('cron_schedule', rule_config['frequency'])
             # make sure this crontab entry parses
             croniter(self.cron_schedule)
 
-        self.tags = [_.strip() for _ in section_rule['tags'].split(',') if _]
-        self.queue = section_rule['queue'] if 'queue' in section_rule else QUEUE_DEFAULT
-        self.playbook_url = section_rule.get('playbook_url', None)
+        self.tags = rule_config['tags']
+        self.queue = rule_config['queue'] if 'queue' in rule_config else QUEUE_DEFAULT
+        self.playbook_url = rule_config.get('playbook_url', None)
 
-        self.ini_path = path
+        self.file_path = path
         self.last_mtime = os.path.getmtime(path)
         return config
 
     @property
     def is_modified(self):
         """"Returns True if this hunt has been modified since it has been loaded."""
-        return self.ini_is_modified
+        return self.yaml_is_modified
 
     @property
-    def ini_is_modified(self):
-        """Returns True if this hunt was loaded from an ini file and that file has been modified since we loaded it."""
+    def yaml_is_modified(self):
+        """returns True if this hunt was loaded from a yaml file and that file has been modified since we loaded it."""
+        if self.file_path is None:
+            return False
         try:
-            return self.last_mtime != os.path.getmtime(self.ini_path)
+            return self.last_mtime != os.path.getmtime(self.file_path)
         except FileNotFoundError:
             return True
         except Exception as e:
-            logging.error(f"unable to check last modified time of {self.ini_path}: {e}")
+            logging.error(f"unable to check last modified time of {self.file_path}: {e}")
             return False
 
     @property
@@ -365,8 +366,8 @@ class Hunt:
         if self.cron_schedule is not None:
             if self.last_executed_time is None:
                 cron_parser = croniter(self.cron_schedule, local_time())
-                return cron_parser.get_prev(datetime.datetime)
                 logging.info(f"initialized last_executed_time (cron) for {self} to {self.last_executed_time}")
+                return cron_parser.get_prev(datetime.datetime)
 
             cron_parser = croniter(self.cron_schedule, self.last_executed_time)
             result = cron_parser.get_next(datetime.datetime)
@@ -427,7 +428,7 @@ class HuntManager:
         # event that is set when the manager thread has started
         self.manager_startup_event = threading.Event()
 
-        # thread that handles tracking changes made to the hunts loaded from ini
+        # thread that handles tracking changes made to the hunts loaded from yaml
         self.update_manager_thread = None
 
         # event that is set when the update manager thread has started
@@ -443,7 +444,7 @@ class HuntManager:
         # the type of hunting this manager manages
         self.hunt_type = hunt_type
 
-        # the list of directories that contain the hunt configuration ini files for this type of hunt
+        # the list of directories that contain the hunt configuration yaml files for this type of hunt
         self.rule_dirs = rule_dirs
 
         # the class used to instantiate the rules in the given rules directories
@@ -458,11 +459,11 @@ class HuntManager:
         # acquire this lock before making any modifications to the hunts
         self.hunt_lock = threading.RLock()
 
-        # the ini files that failed to load
-        self.failed_ini_files = {} # key = ini_path, value = (os.path.getmtime(), os.path.getsize(), sha256 of file content)
+        # the yaml files that failed to load
+        self.failed_yaml_files = {} # key = yaml_path, value = (os.path.getmtime(), os.path.getsize(), sha256 of file content)
 
-        # the ini files that we skipped
-        self.skipped_ini_files = set() # key = ini_path
+        # the yaml files that we skipped
+        self.skipped_yaml_files = set() # key = yaml_path
 
         # the type of concurrency contraint this type of hunt uses (can be None)
         # use the set_concurrency_limit() function to change it
@@ -625,7 +626,7 @@ class HuntManager:
                     trigger_reload = True
 
             # if any hunts failed to load last time, check to see if they were modified
-            for ini_path, (mtime, file_size, sha256_hash) in self.failed_ini_files.items():
+            for ini_path, (mtime, file_size, sha256_hash) in self.failed_yaml_files.items():
                 try:
                     # go from easiest computation to most expensive
                     if os.path.getmtime(ini_path) != mtime:
@@ -641,12 +642,12 @@ class HuntManager:
                     logging.error(f"unable to check failed ini file {ini_path}: {e}")
 
             # are there any new hunts?
-            existing_ini_paths = set([hunt.ini_path for hunt in self._hunts])
-            for ini_path in self._list_hunt_ini():
-                if ( ini_path not in existing_ini_paths 
-                        and ini_path not in self.failed_ini_files
-                        and ini_path not in self.skipped_ini_files ):
-                    logging.info(f"detected new hunt ini {ini_path}")
+            existing_yaml_paths = set([hunt.file_path for hunt in self._hunts])
+            for yaml_path in self._list_hunt_yaml():
+                if ( yaml_path not in existing_yaml_paths 
+                        and yaml_path not in self.failed_yaml_files
+                        and yaml_path not in self.skipped_yaml_files ):
+                    logging.info(f"detected new hunt yaml {yaml_path}")
                     trigger_reload = True
 
         if trigger_reload:
@@ -822,11 +823,11 @@ class HuntManager:
            The hunt_filter paramter defines an optional lambda function that takes the Hunt object
            after it is loaded and returns True if the Hunt should be added, False otherwise.
            This is useful for unit testing."""
-        for hunt_config in self._list_hunt_ini():
+        for hunt_config in self._list_hunt_yaml():
             hunt = self.hunt_cls(manager=self)
             logging.debug(f"loading hunt from {hunt_config}")
             try:
-                hunt.load_from_ini(hunt_config)
+                hunt.load_from_yaml(hunt_config)
 
                 if hunt_filter(hunt):
                     logging.debug(f"loaded {hunt} from {hunt_config}")
@@ -835,14 +836,15 @@ class HuntManager:
                     logging.debug(f"not loading {hunt} (hunt_filter returned False)")
 
             except InvalidHuntTypeError as e:
-                self.skipped_ini_files.add(hunt_config)
+                report_exception()
+                self.skipped_yaml_files.add(hunt_config)
                 logging.debug(f"skipping {hunt_config} for {self}: {e}")
                 continue
             except Exception as e:
                 logging.error(f"unable to load hunt {hunt}: {e}")
                 report_exception()
                 try:
-                    self.failed_ini_files[hunt_config] = (
+                    self.failed_yaml_files[hunt_config] = (
                         os.path.getmtime(hunt_config),
                         os.path.getsize(hunt_config),
                         sha256(hunt_config)
@@ -874,8 +876,8 @@ class HuntManager:
         """Removes all hunts."""
         with self.hunt_lock:
             self._hunts = []
-            self.failed_ini_files = {}
-            self.skipped_ini_files = set()
+            self.failed_yaml_files = {}
+            self.skipped_yaml_files = set()
 
         self.wait_control_event.set()
 
@@ -888,8 +890,8 @@ class HuntManager:
         self.wait_control_event.set()
         return hunt
 
-    def _list_hunt_ini(self):
-        """Returns the list of ini files for hunts in self.rule_dirs."""
+    def _list_hunt_yaml(self):
+        """Returns the list of yaml files for hunts in self.rule_dirs."""
         result = []
         for rule_dir in self.rule_dirs:
             rule_dir = abs_path(rule_dir)
@@ -897,15 +899,15 @@ class HuntManager:
                 logging.error(f"rules directory {rule_dir} specified for {self} is not a directory")
                 continue
 
-            # load each .ini file found in this rules directory
+            # load each .yaml file found in this rules directory
             logging.debug(f"searching {rule_dir} for hunt configurations")
             for root, dirnames, filenames in os.walk(rule_dir):
                 for hunt_config in filenames:
-                    if not hunt_config.endswith('.ini'):
+                    if not hunt_config.endswith('.yaml'):
                         continue
 
-                    # skip the template.ini file
-                    if hunt_config == "template.ini":
+                    # skip the template.yaml file
+                    if hunt_config == "template.yaml":
                         continue
 
                     result.append(os.path.join(root, hunt_config))
