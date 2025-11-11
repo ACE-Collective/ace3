@@ -171,4 +171,57 @@ def test_clear(test_client):
 
     # clear it
     result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=lock_uuid), headers = { 'x-ice-auth': get_config()["api"]["api_key"] })
-    assert result.status_code, 200
+    assert result.status_code == 200
+
+    # make sure the directory is gone
+    assert not os.path.exists(root.storage_dir)
+
+@pytest.mark.integration
+def test_clear_invalid_lock(test_client):
+
+    # first create something to clear
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.details = { 'hello': 'world' }
+    file_path = root.create_file_path("test.dat")
+    with open(file_path, 'w') as fp:
+        fp.write('test')
+    file_observable = root.add_file_observable(file_path)
+    root.save()
+
+    lock_uuid = str(uuid.uuid4())
+
+    # get a lock on it
+    assert acquire_lock(root.uuid, lock_uuid)
+
+    # clear it but with the wrong lock uuid
+    result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=str(uuid.uuid4())), headers = { 'x-ice-auth': get_config()["api"]["api_key"] })
+    assert result.status_code == 400
+
+    # directory is still there
+    assert os.path.exists(root.storage_dir)
+
+@pytest.mark.integration
+def test_clear_unknown_uuid(test_client):
+
+    # first create something to clear
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.details = { 'hello': 'world' }
+    file_path = root.create_file_path("test.dat")
+    with open(file_path, 'w') as fp:
+        fp.write('test')
+    file_observable = root.add_file_observable(file_path)
+    root.save()
+
+    lock_uuid = str(uuid.uuid4())
+
+    # get a lock on it
+    assert acquire_lock(root.uuid, lock_uuid)
+
+    # clear it with the wrong uuid
+    result = test_client.get(url_for('engine.clear', uuid=str(uuid.uuid4()), lock_uuid=lock_uuid), headers = { 'x-ice-auth': get_config()["api"]["api_key"] })
+    assert result.status_code == 400
+
+    # directory is still there
+    assert os.path.exists(root.storage_dir)

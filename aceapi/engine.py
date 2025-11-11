@@ -2,6 +2,7 @@
 #
 # ACE API engine routines
 
+import shutil
 from aceapi.auth import api_auth_check
 from aceapi.blueprints import engine_bp
 
@@ -16,7 +17,8 @@ import uuid as uuidlib
 
 from aceapi.json import json_result
 from saq.configuration import get_config
-from saq.constants import G_COMPANY_ID, G_COMPANY_NAME, G_SAQ_NODE, G_TEMP_DIR
+from saq.configuration.config import get_config_value
+from saq.constants import CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR, G_COMPANY_ID, G_COMPANY_NAME, G_SAQ_NODE, G_TEMP_DIR
 from saq.database.pool import get_db_connection
 from saq.environment import g, g_int
 
@@ -195,8 +197,31 @@ def clear(uuid, lock_uuid):
     validate_uuid(uuid)
     validate_uuid(lock_uuid)
 
+    # make sure this uuid owns this lock
     with get_db_connection() as db:
-        c = db.cursor()
-        c.execute("""DELETE FROM locks WHERE uuid = %s AND lock_uuid = %s""", (uuid, lock_uuid))
-        db.commit()
-        return json_result({'result': 'success'})
+        cursor = db.cursor()
+        cursor.execute("SELECT uuid FROM locks WHERE uuid = %s AND lock_uuid = %s", (uuid, lock_uuid))
+        row = cursor.fetchone()
+        if row is None:
+            logging.warning("request to clear uuid {} with invalid lock uuid {}".format(uuid, lock_uuid))
+            abort(Response("nope", 400))
+
+    target_dir = storage_dir_from_uuid(uuid)
+    if get_config_value(CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR) and not os.path.isdir(target_dir):
+        target_dir = workload_storage_dir(uuid)
+
+    if not os.path.isdir(target_dir):
+        logging.error("request to clear unknown target {}".format(target_dir))
+        abort(Response("unknown target {}".format(target_dir)))
+
+    logging.info("received request to clear {} from {}".format(uuid, request.remote_addr))
+
+    try:
+        logging.info("clearing target directory {}".format(target_dir))
+        shutil.rmtree(target_dir)
+    except Exception as e:
+        logging.error("unable to clear {}: {}".format(target_dir, e))
+        report_exception()
+        abort(Response("clear failed"))
+
+    return json_result({"result": True})
