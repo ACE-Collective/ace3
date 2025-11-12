@@ -492,3 +492,131 @@ def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
     # shoule be ready
     assert hunt.next_execution_time <= local_time()
     assert hunt.ready
+
+@pytest.mark.integration
+def test_load_hunt_with_instance_types(rules_dir, manager_kwargs):
+    shutil.rmtree(rules_dir)
+    os.mkdir(rules_dir)
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:01'
+  instance_types:
+    - production
+    - development
+  tags:
+    - tag1
+    - tag2
+""")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunter.load_hunts_from_config()
+    assert len(hunter.hunts) == 1
+    assert isinstance(hunter.hunts[0], TestHunt)
+    assert hunter.hunts[0].instance_types == ['production', 'development']
+
+@pytest.mark.integration
+def test_load_hunt_without_instance_types(rules_dir, manager_kwargs):
+    shutil.rmtree(rules_dir)
+    os.mkdir(rules_dir)
+    with open(os.path.join(rules_dir, 'test_1.yaml'), 'w') as fp:
+        fp.write("""rule:
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:01'
+  tags:
+    - tag1
+    - tag2
+""")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunter.load_hunts_from_config()
+    assert len(hunter.hunts) == 1
+    assert isinstance(hunter.hunts[0], TestHunt)
+    assert hunter.hunts[0].instance_types == []
+
+@pytest.mark.integration
+def test_is_valid_instance_type_empty(manager_kwargs, monkeypatch):
+    # when instance_types is empty, hunt should be valid for any instance type
+    monkeypatch.setitem(get_config()["global"], "instance_type", "production")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=hunter)
+    hunt.instance_types = []
+
+    assert hunter.is_valid_instance_type(hunt)
+
+@pytest.mark.integration
+def test_is_valid_instance_type_matching(manager_kwargs, monkeypatch):
+    # hunt with instance_types=['production'] should be valid for production instance
+    monkeypatch.setitem(get_config()["global"], "instance_type", "production")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=hunter)
+    hunt.instance_types = ['production', 'development']
+
+    assert hunter.is_valid_instance_type(hunt)
+
+@pytest.mark.integration
+def test_is_valid_instance_type_case_insensitive(manager_kwargs, monkeypatch):
+    # instance type matching should be case insensitive
+    monkeypatch.setitem(get_config()["global"], "instance_type", "Production")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=hunter)
+    hunt.instance_types = ['PRODUCTION', 'development']
+
+    assert hunter.is_valid_instance_type(hunt)
+
+@pytest.mark.integration
+def test_is_valid_instance_type_non_matching(manager_kwargs, monkeypatch):
+    # hunt with instance_types=['production'] should not be valid for development instance
+    monkeypatch.setitem(get_config()["global"], "instance_type", "development")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=hunter)
+    hunt.instance_types = ['production']
+
+    assert not hunter.is_valid_instance_type(hunt)
+
+@pytest.mark.integration
+def test_hunt_execution_skips_invalid_instance_type(manager_kwargs, monkeypatch):
+    # hunts with invalid instance types should not execute
+    monkeypatch.setitem(get_config()["global"], "instance_type", "production")
+
+    hunter = HuntManager(**manager_kwargs)
+
+    # add a hunt valid for production
+    valid_hunt = default_hunt(manager=hunter, name='valid_hunt')
+    valid_hunt.instance_types = ['production']
+    hunter.add_hunt(valid_hunt)
+
+    # add a hunt valid for development only
+    invalid_hunt = default_hunt(manager=hunter, name='invalid_hunt')
+    invalid_hunt.instance_types = ['development']
+    hunter.add_hunt(invalid_hunt)
+
+    # add a hunt with no instance type restriction
+    unrestricted_hunt = default_hunt(manager=hunter, name='unrestricted_hunt')
+    unrestricted_hunt.instance_types = []
+    hunter.add_hunt(unrestricted_hunt)
+
+    # execute all hunts
+    hunter.execute()
+    hunter.manager_control_event.set()
+    hunter.wait_control_event.set()
+    hunter.wait()
+
+    # valid_hunt and unrestricted_hunt should have executed
+    assert valid_hunt.executed
+    assert unrestricted_hunt.executed
+
+    # invalid_hunt should not have executed
+    assert not invalid_hunt.executed

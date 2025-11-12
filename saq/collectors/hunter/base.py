@@ -95,6 +95,12 @@ class Hunt:
         self.cron_schedule = None
         self.queue = QUEUE_DEFAULT
 
+        # list of instance types this hunt will run on
+        # for example, if you have a development and production instance of ACE, 
+        # you may not want to run all of your hunts in both
+        # if this is empty then it will run on all instance types
+        self.instance_types = []
+
         # a datetime.timedelta that represents how long to suppress until this hunt starts to fire again
         self.suppression = None
 
@@ -288,6 +294,7 @@ class Hunt:
         # if we don't pass an alert type then we default to the type field
         self.alert_type = rule_config.get('alert_type', f'hunter - {self.type}')
         self.analysis_mode = rule_config.get('analysis_mode', ANALYSIS_MODE_CORRELATION)
+        self.instance_types = rule_config.get('instance_types', [])
 
         # frequency can be either a timedelta or a crontab entry
         self.frequency = None

@@ -5,7 +5,8 @@ from queue import Queue
 import threading
 
 
-from saq.constants import ExecutionMode
+from saq.configuration.config import get_config_value
+from saq.constants import CONFIG_GLOBAL, CONFIG_GLOBAL_INSTANCE_TYPE, ExecutionMode
 from saq.error import report_exception
 from saq.network_semaphore import NetworkSemaphoreClient
 from saq.util import local_time, abs_path
@@ -137,6 +138,14 @@ class HuntManager:
                 return hunt
 
         return None
+
+    def is_valid_instance_type(self, hunt: Hunt) -> bool:
+        """Returns True if the given hunt is valid for the current instance type (ignoring case)."""
+        instance_type = get_config_value(CONFIG_GLOBAL, CONFIG_GLOBAL_INSTANCE_TYPE)
+        return (
+            not hunt.instance_types or
+            any(instance_type.lower() == t.lower() for t in hunt.instance_types)
+        )
 
     def signal_reload(self):
         """Signals to this manager that the hunts should be reloaded.
@@ -292,6 +301,7 @@ class HuntManager:
     def execute(self):
         # the next one to run should be the first in our list
         disabled_count = 0
+        invalid_instance_type_count = 0
         suppressed_count = 0
         running_count = 0
         ready_count = 0
@@ -300,6 +310,10 @@ class HuntManager:
         for hunt in self.hunts:
             if not hunt.enabled:
                 disabled_count += 1
+                continue
+
+            if not self.is_valid_instance_type(hunt):
+                invalid_instance_type_count += 1
                 continue
 
             if hunt.suppressed:
@@ -316,12 +330,10 @@ class HuntManager:
             else:
                 idle_count += 1
 
-        hunt_status_message = f"hunt status: {disabled_count} disabled {suppressed_count} suppressed {running_count} running {ready_count} ready {idle_count} idle"
+        hunt_status_message = f"hunt status: ({disabled_count} disabled) ({invalid_instance_type_count} invalid instance type) ({suppressed_count} suppressed) ({running_count} running) ({ready_count} ready) ({idle_count} idle)"
         if hunt_status_message != self.last_hunt_status_message:
             logging.info(hunt_status_message)
             self.last_hunt_status_message = hunt_status_message
-        #logging.info(f"hunt status: {disabled_count} disabled {suppressed_count} suppressed {running_count} running {ready_count} ready {idle_count} idle")
-
 
     def execute_hunt(self, hunt):
         # are we ready to run another one of these types of hunts?
