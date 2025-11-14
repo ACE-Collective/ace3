@@ -152,6 +152,20 @@ def test_interpolate_observable_value_key_syntax():
 
 
 @pytest.mark.unit
+def test_interpolate_observable_value_with_escaped_braces_in_lookup():
+    """test interpolation when lookup contains literal brace characters"""
+    event = {
+        "field}name": "closing-brace-key",
+        "field{start": "opening-brace-key",
+        "device": {"id}value": "nested-closing"}
+    }
+
+    assert interpolate_event_value("${field\\}name}", event) == "closing-brace-key"
+    assert interpolate_event_value("$key{field\\{start}", event) == "opening-brace-key"
+    assert interpolate_event_value("$dot{device.id\\}value}", event) == "nested-closing"
+
+
+@pytest.mark.unit
 def test_interpolate_observable_value_multiple_interpolations():
     """test multiple field interpolations in single value"""
     event = {

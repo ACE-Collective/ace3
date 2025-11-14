@@ -11,7 +11,7 @@ import re
 
 from typing import Optional
 
-from glom import PathAccessError, glom
+from glom import PathAccessError
 from pydantic import BaseModel, Field
 import yaml
 
@@ -439,6 +439,6 @@ class QueryHunt(Hunt):
         # update the descriptions of grouped alerts with the event counts
         if self.group_by is not None:
             for submission in submissions:
-                submission.root.description += f' ({len(submission.root.details) - 1} events)'
+                submission.root.description += f' ({len(submission.root.details) - 1} event{"" if len(submission.root.details) - 1 == 1 else "s"})'
 
         return submissions

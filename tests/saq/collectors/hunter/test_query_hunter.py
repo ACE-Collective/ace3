@@ -502,7 +502,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    assert submission.root.description == "test (1 events)"
+    assert submission.root.description == "test (1 event)"
     assert submission.root.analysis_mode == hunt.analysis_mode
     assert submission.root.tool == f"hunter-{hunt.type}"
     assert submission.root.tool_instance == "localhost"
@@ -545,7 +545,7 @@ def test_process_query_results(monkeypatch):
     assert len(submissions) == 2
     for submission in submissions:
         assert len(submission.root.observables) == 2
-        assert submission.root.description.endswith(": 1.2.3.4 (1 events)") or submission.root.description.endswith(": 1.2.3.5 (1 events)")
+        assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
 
     hunt.config.group_by = "dst"
     submissions = hunt.process_query_results([
@@ -556,7 +556,7 @@ def test_process_query_results(monkeypatch):
     assert len(submissions) == 2
     for submission in submissions:
         assert len(submission.root.observables) == 2
-        assert submission.root.description == "test (1 events)"
+        assert submission.root.description == "test (1 event)"
 
     hunt.config.group_by = "ALL"
     submissions = hunt.process_query_results([

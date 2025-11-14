@@ -3,11 +3,13 @@
 # the syntax is $TYPE{LOOKUP} where TYPE is the style of interpolation to use
 # and LOOKUP is some kind of key to use to lookup the value in the event data
 #
-# TYPE is OPTIONNAL and supports the following values:
+# TYPE is OPTIONAL and supports the following values:
 # - key: the LOOKUP is used as a key to lookup the value in the event data
 # - dot: the LOOKUP is treated as a dotted string path to access the field in the event data (using the glom library)
 # 
 # if not specified, the default for TYPE is "key"
+#
+# If LOOKUP needs to contain a literal { or } character, then it must be escaped using a backslash
 #
 # Examples:
 #
@@ -24,10 +26,21 @@ from typing import List
 from glom import Path, PathAccessError, glom
 
 # pattern to match $TYPE{LOOKUP} or ${LOOKUP}
-_FIELD_PATTERN = re.compile(r"\$(?:([a-z]+))?\{([^}]+)\}")
+_FIELD_PATTERN = re.compile(r"\$(?:([a-z]+))?\{((?:\\.|[^\\}])*)\}")
 
 FIELD_LOOKUP_TYPE_KEY = "key"
 FIELD_LOOKUP_TYPE_DOT = "dot"
+
+
+def _unescape_lookup_value(field_path: str) -> str:
+    """Converts escaped brace characters back to their literal form."""
+    if "\\" not in field_path:
+        return field_path
+
+    return (
+        field_path.replace("\\{", "{")
+        .replace("\\}", "}")
+    )
 
 def _build_path_components(path: str) -> List[object] | None:
     """Converts the dotted string path into glom Path components."""
@@ -97,6 +110,8 @@ def interpolate_event_value(value: str, event: dict) -> str:
 
         if not field_path:
             return match.group(0)
+
+        field_path = _unescape_lookup_value(field_path)
 
         # default to "key" if no type specified (None or empty string)
         if not lookup_type:
