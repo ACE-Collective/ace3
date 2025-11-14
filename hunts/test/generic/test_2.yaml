@@ -1,9 +1,10 @@
 rule:
+  uuid: ea465ce5-65b3-4e56-aaa4-8d0767c3b797
   enabled: yes
-  #name: unit_test_2
+  name: unit_test_2
   description: Unit Test Description 2
   type: test
-  #alert_type: test - alert
+  alert_type: test - alert
   analysis_mode: analysis
   frequency: '00:00:01'
   tags:

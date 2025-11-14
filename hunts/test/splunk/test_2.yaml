@@ -1,4 +1,5 @@
 rule:
+  uuid: 5aaace43-0aae-41e2-8280-e6544fa8457a
   enabled: yes
   name: query_test_2
   description: Query Test Description 2
@@ -18,12 +19,10 @@ rule:
   earliest: '01:00:00'
   latest: '00:05:00'
 
-observable_mapping:
-  src_ip: ipv4
-  dst_ip: ipv4
-
-temporal_fields:
-  src_ip: yes
-  dst_ip: yes
-
-directives: {}
+  observable_mapping:
+    - fields: ['src_ip']
+      type: ipv4
+      time: true
+    - fields: ['dst_ip']
+      type: ipv4
+      time: true

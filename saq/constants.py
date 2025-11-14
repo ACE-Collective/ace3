@@ -1126,6 +1126,7 @@ CONFIG_ANALYSIS_MODULE_PREFIX = "analysis_module_"
 
 
 # splunk
+CONFIG_SPLUNK = "splunk"
 CONFIG_SPLUNK_URI = "uri"
 CONFIG_SPLUNK_TIMEZONE = "timezone"
 CONFIG_SPLUNK_USER_CONTEXT = "user_context"

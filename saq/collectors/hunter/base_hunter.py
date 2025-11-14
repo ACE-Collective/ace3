@@ -29,7 +29,9 @@ import os.path
 import pickle
 import shutil
 import threading
+from typing import TYPE_CHECKING, Optional
 from croniter import croniter
+from pydantic import BaseModel, Field, field_validator
 import yaml
 
 import pytz
@@ -39,6 +41,42 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, CONFIG_COLLECTION, CONFIG_C
 from saq.environment import get_data_dir
 from saq.error import report_exception
 from saq.util import local_time, create_timedelta
+from saq.util.time import is_timedelta_string
+
+if TYPE_CHECKING:
+    from saq.collectors.hunter.manager import HuntManager
+
+class HuntConfig(BaseModel):
+    uuid: str = Field(..., description="The UUID of the hunt. This must be unique across all signatures in all repositories.")
+    name: str = Field(..., description="The name of the hunt. This must be unique to the hunt type.")
+    type_: str = Field(..., alias="type", description="The type of the hunt. Must be one of the supported hunt types.")
+    enabled: bool = Field(..., description="Whether the hunt is enabled. If disabled, the hunt will not be executed.")
+    instance_types: list[str] = Field(default_factory=list, description="The instance types this hunt will run on. Valid values are: production, development, qa.")
+    description: str = Field(..., description="The description of the hunt. This is a long description that explains what this hunt is looking for.")
+    alert_type: str = Field(..., description="The alert type of the hunt. This is used to categorize the alert in ACE when it is displayed.")
+    analysis_mode: str = Field(default=ANALYSIS_MODE_CORRELATION, description="The analysis mode of the hunt. Review the configuration to get a list of valid values.")
+    frequency: str = Field(..., description="The frequency of the hunt. This is the time between executions of the hunt. Can be specified in HH:MM:SS format or as a cron schedule string.")
+    queue: str = Field(default=QUEUE_DEFAULT, description="The queue to submit alerts to.")
+    suppression: Optional[str] = Field(default=None, description="The suppression of the hunt. This is the time to suppress alerts after one fires. Can be specified in HH:MM:SS format.")
+    playbook_url: Optional[str] = Field(default=None, description="This is the url of the playbook that will be used to investigate the alert.")
+    tags: list[str] = Field(default_factory=list, description="These are tags that will be added to the alert in ACE when it is displayed.")
+    pivot_links: list[dict] = Field(default_factory=list, description="These are links that will be displayed in ACE when the alert is displayed.")
+
+    @field_validator("frequency")
+    @classmethod
+    def validate_frequency(cls, value: str) -> str:
+        if not value:
+            raise ValueError("frequency must not be empty")
+
+        if is_timedelta_string(value):
+            return value
+
+        try:
+            croniter(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("frequency must be a timedelta string or a valid cron expression") from exc
+
+        return value
 
 class InvalidHuntTypeError(ValueError):
     pass
@@ -71,38 +109,10 @@ def read_persistence_data(hunt_type: str, hunt_name: str, value_name: str):
 class Hunt:
     """Abstract class that represents a single hunt."""
 
-    def __init__(
-            self, 
-            enabled=None, 
-            name=None, 
-            description=None,
-            manager=None,
-            alert_type=None,
-            analysis_mode=None,
-            frequency=None, 
-            playbook_url=None,
-            tags=[]):
+    def __init__(self, manager: Optional["HuntManager"] = None, config: Optional[HuntConfig] = None):
 
-        self.enabled = enabled
-        self.name = name
-        self.description = description
         self.manager = manager
-        self.alert_type = alert_type
-        self.analysis_mode = analysis_mode
-        self.frequency = frequency
-        self.playbook_url = playbook_url
-        self.tags = tags
-        self.cron_schedule = None
-        self.queue = QUEUE_DEFAULT
-
-        # list of instance types this hunt will run on
-        # for example, if you have a development and production instance of ACE, 
-        # you may not want to run all of your hunts in both
-        # if this is empty then it will run on all instance types
-        self.instance_types = []
-
-        # a datetime.timedelta that represents how long to suppress until this hunt starts to fire again
-        self.suppression = None
+        self.config = config
 
         # the thread this hunt is currently executing on, or None if it is not currently executing
         self.execution_thread = None
@@ -115,6 +125,7 @@ class Hunt:
 
         # if this is True then we're executing the Hunt outside of normal operations
         # in that case we don't want to record any of the execution time stamps
+        # XXX do we still need this?
         self.manual_hunt = False
 
         # this property maps to the "tool_instance" property of alerts
@@ -127,17 +138,98 @@ class Hunt:
         self.file_path = None
         self.last_mtime = None
 
+    #
+    # configuration-based properties
+    #
+
+    @property
+    def name(self) -> str:
+        return self.config.name
+
+    @property
+    def type(self) -> str:
+        return self.config.type_
+
+    @property
+    def enabled(self) -> bool:
+        return self.config.enabled
+
+    @property
+    def instance_types(self) -> list[str]:
+        return self.config.instance_types
+
+    @property
+    def description(self) -> str:
+        return self.config.description
+
+    @property
+    def alert_type(self) -> str:
+        return self.config.alert_type
+
+    @property
+    def analysis_mode(self) -> str:
+        return self.config.analysis_mode
+
+    @property
+    def frequency(self) -> Optional[datetime.timedelta]:
+        if not self.config.frequency:   
+            return None
+
+        if is_timedelta_string(self.config.frequency):
+            return create_timedelta(self.config.frequency)
+
+        # otherwise assume it's a cron schedule
+        return None
+
+    @property
+    def cron_schedule(self) -> Optional[str]:
+        """Returns the cron schedule string, or None if the frequency is not a cron schedule string."""
+        if not self.config.frequency:
+            return None
+
+        if is_timedelta_string(self.config.frequency):
+            return None
+        else:
+            return self.config.frequency
+
+    @property
+    def queue(self) -> str:
+        return self.config.queue
+
+    @property
+    def suppression(self) -> Optional[datetime.timedelta]:
+        if not self.config.suppression:
+            return None
+
+        return create_timedelta(self.config.suppression)
+
+    @property
+    def playbook_url(self) -> Optional[str]:
+        return self.config.playbook_url
+
+    @property
+    def tags(self) -> list[str]:
+        return self.config.tags
+
+    @property
+    def pivot_links(self) -> list[dict]:
+        return self.config.pivot_links
+
+    #
+    # runtime state
+    #
+
     @property
     def hunt_state_dir(self) -> str:
         "Returns the path to the directory that contains persitence information about this hunt."""
         return os.path.join(get_data_dir(), get_config_value(CONFIG_COLLECTION, CONFIG_COLLECTION_PERSISTENCE_DIR), 'hunt', self.type, self.name)
 
-    @property
-    def type(self):
-        if self.manager is not None:
-            return self.manager.hunt_type or None
-        else:
-            return None
+    #@property
+    #def type(self):
+        #if self.manager is not None:
+            #return self.manager.hunt_type or None
+        #else:
+            #return None
 
     @property
     def suppressed(self):
@@ -198,6 +290,10 @@ class Hunt:
 
         self._last_alert_time = value
         write_persistence_data(self.type, self.name, 'last_alert_time', value)
+
+    #
+    # misc
+    #
 
     def __str__(self):
         return f"Hunt({self.name}[{self.type}])"
@@ -271,54 +367,23 @@ class Hunt:
 
         return True
 
-    def load_from_yaml(self, path) -> dict:
+    def load_from_yaml(self, path: str) -> HuntConfig:
         """loads the settings for the hunt from a yaml formatted file. this function must return the 
            dictionary object used to load the settings."""
         with open(path, 'r') as fp:
-            config = yaml.safe_load(fp)
+            config_dict = yaml.safe_load(fp)
 
-        rule_config = config['rule']
+        rule_config = HuntConfig.model_validate(config_dict["rule"])
 
         # is this a supported type?
-        if rule_config['type'] != self.type:
-            raise InvalidHuntTypeError(rule_config['type'])
-
-        self.enabled = rule_config['enabled']
-
-        # if we don't pass the name then we create it from the name of the yaml file
-        self.name = rule_config.get(
-                'name', 
-                (os.path.splitext(os.path.basename(path))[0]).replace('_', ' ').title())
-
-        self.description = rule_config['description']
-        # if we don't pass an alert type then we default to the type field
-        self.alert_type = rule_config.get('alert_type', f'hunter - {self.type}')
-        self.analysis_mode = rule_config.get('analysis_mode', ANALYSIS_MODE_CORRELATION)
-        self.instance_types = rule_config.get('instance_types', [])
-
-        # frequency can be either a timedelta or a crontab entry
-        self.frequency = None
-        if ':' in rule_config['frequency']:
-            self.frequency = create_timedelta(rule_config['frequency'])
-
-        # suppression must be either empty for a time range
-        self.suppression = None
-        if 'suppression' in rule_config and rule_config['suppression']:
-            self.suppression = create_timedelta(rule_config['suppression'])
-
-        self.cron_schedule = None
-        if self.frequency is None:
-            self.cron_schedule = rule_config.get('cron_schedule', rule_config['frequency'])
-            # make sure this crontab entry parses
-            croniter(self.cron_schedule)
-
-        self.tags = rule_config['tags']
-        self.queue = rule_config['queue'] if 'queue' in rule_config else QUEUE_DEFAULT
-        self.playbook_url = rule_config.get('playbook_url', None)
+        #if rule_config['type'] != self.type:
+            #raise InvalidHuntTypeError(rule_config['type'])
 
         self.file_path = path
         self.last_mtime = os.path.getmtime(path)
-        return config
+
+        self.config = rule_config
+        return rule_config
 
     @property
     def is_modified(self):
@@ -362,7 +427,15 @@ class Hunt:
             return self.suppression_end
 
         # if using cron schedule instead of frequency
-        if self.cron_schedule is not None:
+        if self.frequency:
+            # if it hasn't executed at all yet
+            if self.last_executed_time is None:
+                # assume it executed the last time it was supposed to
+                return local_time() - self.frequency
+
+            return self.last_executed_time + self.frequency
+
+        elif self.cron_schedule:
             if self.last_executed_time is None:
                 cron_parser = croniter(self.cron_schedule, local_time())
                 logging.info(f"initialized last_executed_time (cron) for {self} to {self.last_executed_time}")
@@ -376,14 +449,8 @@ class Hunt:
 
             return result
 
-        # if using frequency instead of cron shedule
         else:
-            # if it hasn't executed at all yet
-            if self.last_executed_time is None:
-                # assume it executed the last time it was supposed to
-                return local_time() - self.frequency
-
-            return self.last_executed_time + self.frequency
+            raise ValueError(f"hunt {self} has an invalid frequency or cron schedule {self.frequency or self.cron_schedule}")
 
     def record_execution_time(self, time_delta):
         """Record the amount of time it took to execute this hunt."""

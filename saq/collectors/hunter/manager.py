@@ -11,7 +11,7 @@ from saq.error import report_exception
 from saq.network_semaphore import NetworkSemaphoreClient
 from saq.util import local_time, abs_path
 from saq.util.hashing import sha256
-from saq.collectors.hunter.base import Hunt, InvalidHuntTypeError
+from saq.collectors.hunter.base_hunter import Hunt, InvalidHuntTypeError
 
 CONCURRENCY_TYPE_NETWORK_SEMAPHORE = 'network_semaphore'
 CONCURRENCY_TYPE_LOCAL_SEMAPHORE = 'local_semaphore'
@@ -471,7 +471,7 @@ class HuntManager:
                 logging.debug(f"skipping {hunt_config} for {self}: {e}")
                 continue
             except Exception as e:
-                logging.error(f"unable to load hunt {hunt}: {e}")
+                logging.error(f"unable to load hunt from {hunt_config}: {e}")
                 report_exception()
                 try:
                     self.failed_yaml_files[hunt_config] = (

@@ -7,7 +7,7 @@ import pytest
 
 from saq.analysis.root import RootAnalysis
 from saq.collectors.hunter import HuntManager, HunterCollector
-from saq.collectors.splunk_hunter import SplunkHunt
+from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME, F_HUNT
 from saq.environment import get_data_dir
@@ -25,6 +25,8 @@ def rules_dir(datadir) -> str:
     return str(temp_rules_dir)
 
 class TestSplunkHunter(HunterCollector):
+    __test__ = False
+
     def update(self):
         pass
 
@@ -85,8 +87,13 @@ def test_load_hunt_ini(manager_kwargs):
     assert hunt.group_by == 'field1'
     assert hunt.query == 'index=proxy {time_spec} src_ip=1.1.1.1\n'
     assert hunt.use_index_time
-    assert hunt.observable_mapping == { 'src_ip': 'ipv4', 'dst_ip': 'ipv4' }
-    assert hunt.temporal_fields == { 'src_ip': True, 'dst_ip': True }
+    assert len(hunt.observable_mapping) == 2
+    assert hunt.observable_mapping[0].fields == ['src_ip']
+    assert hunt.observable_mapping[0].type == 'ipv4'
+    assert hunt.observable_mapping[0].time
+    assert hunt.observable_mapping[1].fields == ['dst_ip']
+    assert hunt.observable_mapping[1].type == 'ipv4'
+    assert hunt.observable_mapping[1].time
     assert hunt.namespace_app is None
     assert hunt.namespace_user is None
 

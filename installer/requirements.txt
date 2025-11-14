@@ -18,6 +18,7 @@ Flask-SQLAlchemy
 Flask-WTF
 fluent-logger
 gglsbl-rest-client
+glom
 hexdump
 html2text
 idna

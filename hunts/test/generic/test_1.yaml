@@ -1,4 +1,5 @@
 rule:
+  uuid: 7b5f2270-4a1d-4009-86a0-de3f8c9c82e7
   enabled: yes
   name: unit_test_1
   description: Unit Test Description 1

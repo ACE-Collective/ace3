@@ -30,7 +30,7 @@ service_network_semaphore:
   semaphore_splunk: 1
 
 hunt_type_splunk:
-  module: saq.collectors.splunk_hunter
+  module: saq.collectors.hunter.splunk_hunter
   class: SplunkHunt
   rule_dirs: hunts/splunk
   splunk_config: splunk

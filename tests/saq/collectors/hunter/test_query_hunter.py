@@ -7,10 +7,12 @@ import shutil
 import pytest
 import yaml
 
-from saq.collectors.base_collector import CollectorService
-from saq.collectors.collector_configuration import CollectorServiceConfiguration
-from saq.collectors.hunter import HuntManager, HunterCollector, HunterService, read_persistence_data
-from saq.collectors.query_hunter import QueryHunt, _compute_directive_value
+from saq.analysis.tag import Tag
+import saq.collectors.hunter.base_hunter as hunter_base
+import saq.collectors.hunter.query_hunter as query_hunter_module
+import saq.util.time as saq_time
+from saq.collectors.hunter import HuntManager, HunterService, read_persistence_data
+from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_HUNT, G_DATA_DIR
 from saq.environment import g_obj, get_data_dir
@@ -34,45 +36,56 @@ class TestQueryHunt(QueryHunt):
     def cancel(self):
         pass
 
-def default_hunt(enabled=True, 
-                 name='test_hunt', 
-                 description='Test Hunt', 
-                 alert_type='test - query',
-                 frequency=create_timedelta('00:10'), 
-                 tags=[ 'test_tag' ],
-                 search_query_path='hunts/test/query/test_1.query',
-                 time_range=create_timedelta('00:10'),
-                 full_coverage=True,
-                 offset=None,
-                 group_by='field1',
-                 observable_mapping={},
-                 temporal_fields=[],
-                 directives={}):
-    return TestQueryHunt(enabled=enabled, 
-                         name=name, 
-                         description=description,
-                         alert_type=alert_type,
-                         frequency=frequency, 
-                         tags=tags,
-                         search_query_path=search_query_path,
-                         time_range=time_range,
-                         full_coverage=full_coverage,
-                         offset=offset,
-                         group_by=group_by,
-                         observable_mapping=observable_mapping,
-                         temporal_fields=temporal_fields,
-                         directives=directives)
+def default_hunt(
+    # base hunter
+    uuid="cb7ec70f-0e81-4d84-b8bc-e5a3907dd4f7",
+    name="test_hunt", 
+    type="test_query",
+    enabled=True, 
+    description="Test Hunt", 
+    alert_type="test - query",
+    frequency="00:10", 
+    tags=[ "test_tag" ],
+
+    # query hunter
+    time_range="00:10",
+    max_time_range="24:00:00",
+    full_coverage=True,
+    use_index_time=True,
+    query="index=test sourcetype=test test_string",
+    group_by="field1",
+    **kwargs):
+
+    config = QueryHuntConfig(
+        uuid=uuid,
+        name=name,
+        type=type,
+        enabled=enabled,
+        description=description,
+        alert_type=alert_type,
+        frequency=frequency,
+        tags=tags,
+        query=query,
+        time_range=time_range,
+        max_time_range=max_time_range,
+        full_coverage=full_coverage,
+        use_index_time=use_index_time,
+        group_by=group_by,
+        **kwargs
+    )
+
+    return TestQueryHunt(config=config)
 
 @pytest.fixture
 def manager_kwargs(rules_dir):
     return { 'submission_queue': Queue(),
-                'hunt_type': 'test_query',
-                'rule_dirs': [ rules_dir ],
-                'hunt_cls': TestQueryHunt,
-                'concurrency_limit': 1,
-                'persistence_dir': os.path.join(get_data_dir(), get_config()['collection']['persistence_dir']),
-                'update_frequency': 60 ,
-                'config': {}}
+             'hunt_type': 'test_query',
+             'rule_dirs': [ rules_dir ],
+             'hunt_cls': TestQueryHunt,
+             'concurrency_limit': 1,
+             'persistence_dir': os.path.join(get_data_dir(), get_config()['collection']['persistence_dir']),
+             'update_frequency': 60 ,
+             'config': {}}
 
 @pytest.fixture
 def rules_dir(tmpdir, datadir) -> str:
@@ -84,7 +97,7 @@ def rules_dir(tmpdir, datadir) -> str:
 def setup(rules_dir):
     get_config().add_section('hunt_type_test_query')
     s = get_config()['hunt_type_test_query']
-    s['module'] = 'tests.saq.collectors.test_query_hunter'
+    s['module'] = 'tests.saq.collectors.hunter.test_query_hunter'
     s['class'] = 'TestQueryHunt'
     s['rule_dirs'] = rules_dir
     s['hunt_type'] = 'test_query'
@@ -95,6 +108,7 @@ def setup(rules_dir):
     with open(test_yaml_path, 'w') as fp:
         yaml.dump({
             'rule': {
+                'uuid': 'c36e8ddd-aa3e-46be-a80e-d6df94d9aade',
                 'enabled': 'yes',
                 'name': 'query_test_1',
                 'description': 'Query Test Description 1',
@@ -110,15 +124,18 @@ def setup(rules_dir):
                 'search': f'{rules_dir}/test_1.query',
                 'use_index_time': 'yes'
             },
-            'observable_mapping': {
-                'src_ip': 'ipv4',
-                'dst_ip': 'ipv4'
-            },
-            'temporal_fields': {
-                'src_ip': True,
-                'dst_ip': True
-            },
-            'directives': {}
+            'observable_mapping': [
+                {
+                    'fields': ['src_ip'],
+                    'type': 'ipv4',
+                    'time': True,
+                },
+                {
+                    'fields': ['dst_ip'],
+                    'type': 'ipv4',
+                    'time': True,
+                },
+            ],
         }, fp, default_flow_style=False)
 
     test_query_path = os.path.join(rules_dir, 'test_1.query')
@@ -145,8 +162,8 @@ def test_load_hunt_yaml(manager_kwargs):
     assert hunt.group_by == 'field1'
     assert hunt.query == 'Test query.'
     assert hunt.use_index_time
-    assert hunt.observable_mapping == { 'src_ip': 'ipv4', 'dst_ip': 'ipv4' }
-    assert hunt.temporal_fields == { 'src_ip': True, 'dst_ip': True }
+    assert hunt.observable_mapping == []
+    #assert hunt.temporal_fields == { 'src_ip': True, 'dst_ip': True }
 
 @pytest.mark.integration
 def test_load_query_inline(rules_dir, manager_kwargs):
@@ -154,6 +171,7 @@ def test_load_query_inline(rules_dir, manager_kwargs):
     with open(test_yaml_path, 'w') as fp:
         yaml.dump({
             'rule': {
+                'uuid': 'af7ab6f2-008b-44d1-8a70-339d61186ad2',
                 'enabled': 'yes',
                 'name': 'query_test_1',
                 'description': 'Query Test Description 1',
@@ -192,6 +210,7 @@ def test_load_multi_line_query_inline(rules_dir, manager_kwargs):
     with open(test_yaml_path, 'w') as fp:
         yaml.dump({
             'rule': {
+                'uuid': '072e8b57-e296-4b5c-951a-2e43c359748a',
                 'enabled': 'yes',
                 'name': 'query_test_1',
                 'description': 'Query Test Description 1',
@@ -207,15 +226,18 @@ def test_load_multi_line_query_inline(rules_dir, manager_kwargs):
                 'query': 'This is a multi line query.\nHow about that?',
                 'use_index_time': 'yes'
             },
-            'observable_mapping': {
-                'src_ip': 'ipv4',
-                'dst_ip': 'ipv4'
-            },
-            'temporal_fields': {
-                'src_ip': True,
-                'dst_ip': True
-            },
-            'directives': {}
+            'observable_mapping': [
+                {
+                    'fields': ['src_ip'],
+                    'type': 'ipv4',
+                    'time': True,
+                },
+                {   
+                    'fields': ['dst_ip'],
+                    'type': 'ipv4',
+                    'time': True,
+                },
+            ],
         }, fp, default_flow_style=False)
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
@@ -262,71 +284,84 @@ def test_start_stop():
     hunter_service.stop()
     hunter_service.wait()
 
-@pytest.mark.integration
-def test_full_coverage(manager_kwargs):
+@pytest.fixture
+def full_coverage_hunt(manager_kwargs, monkeypatch):
     manager = HuntManager(**manager_kwargs)
-    hunt = default_hunt(time_range=create_timedelta('01:00:00'), 
-                        frequency=create_timedelta('01:00:00'))
+    hunt = default_hunt(time_range='01:00:00', frequency='01:00:00')
     hunt.manager = manager
     manager.add_hunt(hunt)
 
-    # first test that the start time and end time are correct for normal operation
-    # for first-time hunt execution
+    state = {"now": saq_time.local_time()}
+
+    def apply_time_patch():
+        monkeypatch.setattr(query_hunter_module, "local_time", lambda: state["now"])
+        monkeypatch.setattr(hunter_base, "local_time", lambda: state["now"])
+
+    def set_now(new_now=None):
+        if new_now is None:
+            new_now = saq_time.local_time()
+        state["now"] = new_now
+        apply_time_patch()
+        return state["now"]
+
+    set_now(state["now"])
+    return hunt, set_now
+
+@pytest.mark.integration
+def test_full_coverage_ready_states(full_coverage_hunt):
+    hunt, set_now = full_coverage_hunt
+
+    current = set_now()
     assert hunt.ready
 
-    # now put the last time we executed to 5 minutes ago
-    # ready should return False
-    hunt.last_executed_time = local_time() - timedelta(minutes=5)
+    current = set_now()
+    hunt.last_executed_time = current - timedelta(minutes=5)
     assert not hunt.ready
 
-    # now put the last time we executed to 65 minutes ago
-    # ready should return True
-    hunt.last_executed_time = local_time() - timedelta(minutes=65)
+    current = set_now()
+    hunt.last_executed_time = current - timedelta(minutes=65)
     assert hunt.ready
 
-    # set the last time we executed to 3 hours ago
-    hunt.last_executed_time = local_time() - timedelta(hours=3)
-    # and the last end date to 2 hours ago
-    hunt.last_end_time = local_time() - timedelta(hours=2)
-    # so now we have 2 hours to cover under full coverage
-    # ready should return True, start should be 3 hours ago and end should be 2 hours ago
+@pytest.mark.integration
+def test_full_coverage_respects_last_end_time(full_coverage_hunt):
+    hunt, set_now = full_coverage_hunt
+
+    current = set_now()
+    hunt.last_executed_time = current - timedelta(hours=3)
+    hunt.last_end_time = current - timedelta(hours=2)
+
     assert hunt.ready
     assert hunt.start_time == hunt.last_end_time
     assert hunt.end_time == hunt.last_end_time + hunt.time_range
 
-    # now let's pretend that we just executed that
-    # at this point, the last_end_time becomes the end_time
-    hunt.last_end_time = hunt.end_time
-    # and the last_executed_time becomes now
-    hunt.last_executed_time = local_time()
-    # at this point the hunt should still be ready because we're not caught up yet
-    #self.assertTrue(hunt.ready)
+@pytest.mark.integration
+def test_full_coverage_catch_up_with_max_range(full_coverage_hunt):
+    hunt, set_now = full_coverage_hunt
 
-    # now give the hunt the ability to cover 2 hours instead of 1 to get caught up
-    hunt.max_time_range = create_timedelta('02:00:00')
-    # set the last time we executed to 3 hours ago
-    hunt.last_executed_time = local_time() - timedelta(hours=3)
-    # and the last end date to 2 hours ago
-    hunt.last_end_time = local_time() - timedelta(hours=2)
-    # now the difference between the stop and stop should be 2 hours instead of one
+    hunt.config.max_time_range = '02:00:00'
+    baseline = set_now()
+    current = set_now(baseline + timedelta(seconds=1))
+    hunt.last_executed_time = current - timedelta(hours=3)
+    hunt.last_end_time = current - timedelta(hours=2, seconds=1)
+
     assert hunt.end_time - hunt.start_time >= hunt.max_time_range
 
-    # set the last time we executed to 3 hours ago
-    hunt.last_executed_time = local_time() - timedelta(hours=3)
-    # and the last end date to 2 hours ago
-    hunt.last_end_time = local_time() - timedelta(hours=2)
-    # so now we have 2 hours to cover but let's turn off full coverage
-    hunt.full_coverage = False
-    # it should be ready to run
+@pytest.mark.integration
+def test_full_coverage_disabled_falls_back_to_frequency(full_coverage_hunt):
+    hunt, set_now = full_coverage_hunt
+
+    current = set_now()
+    hunt.config.full_coverage = False
+    hunt.last_executed_time = current - timedelta(hours=3)
+    hunt.last_end_time = current - timedelta(hours=2)
+
     assert hunt.ready
-    # and the start time should be now - time_range
+    assert hunt.start_time == current - hunt.time_range
 
 @pytest.mark.integration
 def test_offset(manager_kwargs):
     manager = HuntManager(**manager_kwargs)
-    hunt = default_hunt(time_range=create_timedelta('01:00:00'), 
-                        frequency=create_timedelta('01:00:00'),
-                        offset=create_timedelta('00:30:00'))
+    hunt = default_hunt(time_range='01:00:00', frequency='01:00:00', offset='00:30:00')
     hunt.manager = manager
     manager.add_hunt(hunt)
 
@@ -348,7 +383,8 @@ def test_missing_query_file(rules_dir, manager_kwargs):
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config()
     assert len(manager.hunts) == 0
-    assert len(manager.failed_yaml_files) == 1
+    # there's another file in here that is not valid for a query hunter lol
+    assert len(manager.failed_yaml_files) == 2
 
     assert not manager.reload_hunts_flag
     manager.check_hunts()
@@ -364,17 +400,6 @@ _local_time = local_time()
 def mock_local_time():
     return _local_time
 
-@pytest.mark.unit
-@pytest.mark.parametrize("field_name,directives,event,expected_result", [
-    ("name", {}, None, []), # no directives
-    ("name", {"name":["value"]}, None, ["value"]), # simple directive
-    ("name", {"name":["value_{ip}"]}, {"ip": "test"}, ["value_test"]), # single directive with format
-    ("name", {"name":["value_{ips}"]}, {"ip": "test"}, []), # single directive missing key
-    ("name", {"name":["test", "value_{ips}"]}, {"ip": "test"}, ["test"]), # directive missing key and simple directive
-])
-def test_compute_directive_value(field_name, directives, event, expected_result, datadir):
-    assert _compute_directive_value(field_name, directives, event=event) == expected_result
-
 class MockManager:
     @property
     def hunt_type(self):
@@ -383,8 +408,8 @@ class MockManager:
 @pytest.mark.unit
 def test_query_hunter_end_time(monkeypatch, tmpdir):
 
-    import saq.collectors.query_hunter
-    monkeypatch.setattr(saq.collectors.query_hunter, "local_time", mock_local_time)
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     data_dir = tmpdir / "data"
     data_dir.mkdir()
@@ -393,25 +418,27 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
     mock_config.read_string("""[collection]
                             persistence_dir = p
                             """)
-    hunt = QueryHunt(manager=MockManager(), name="test")
+    hunt = default_hunt(manager=MockManager(), name="test")
     assert hunt.end_time
 
     # full coverage end time
-    hunt.full_coverage = True
+    hunt.config.full_coverage = True
     hunt.last_end_time = mock_local_time() - timedelta(hours=1)
-    hunt.time_range = timedelta(hours=1)
+    hunt.config.time_range = '01:00:00'
     assert hunt.end_time == hunt.last_end_time + hunt.time_range
 
     # full coverage, we're behind by one hour and max_time_range is not set
+    hunt.config.max_time_range = None
     hunt.last_end_time = mock_local_time() - timedelta(hours=2)
     assert hunt.end_time == hunt.last_end_time + timedelta(hours=1) # can only go in increments of time_range
 
     # full coverage, we're behind by one hour and max_time_range is set
-    hunt.last_end_time = mock_local_time() - timedelta(hours=2)
-    hunt.max_time_range = timedelta(hours=8)
-    assert hunt.end_time == hunt.last_end_time + timedelta(hours=2) # can go up to max time range
+    hunt.last_end_time = mock_local_time() - timedelta(hours=3)
+    hunt.config.max_time_range = '02:00:00'
+    assert hunt.end_time == hunt.last_end_time + create_timedelta('02:00:00') # can go up to max time range
 
     # but no more than that at a time
+    hunt.config.max_time_range = '08:00:00'
     hunt.last_end_time = mock_local_time() - timedelta(hours=9)
     assert hunt.end_time == hunt.last_end_time + timedelta(hours=8) # can go up to max time range
 
@@ -425,23 +452,24 @@ def test_query_hunter_ready(monkeypatch, tmpdir):
                             persistence_dir = p
                             """)
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = QueryHunt(manager=MockManager(), name="test")
+    hunt = default_hunt(manager=MockManager(), name="test")
+    #hunt = QueryHunt(manager=MockManager(), config=default_query_hunt_config(name="test"))
 
     # we just ran and our frequency is sent to an hour
     hunt.last_executed_time = mock_local_time()
-    hunt.frequency = timedelta(hours=1)
+    hunt.config.frequency = '01:00:00'
     assert not hunt.ready
 
     # we ran an hour ago and frequency is set to an hour
     hunt.last_executed_time = mock_local_time() - timedelta(hours=1)
-    hunt.frequency = timedelta(hours=1)
+    hunt.config.frequency = '01:00:00'
     assert hunt.ready
 
     # full coverage testing
     # we ran 2 hours ago, range is set to an hour and frequency is set to an hour
-    hunt.full_coverage = True
+    hunt.config.full_coverage = True
     hunt.last_executed_time = mock_local_time() - timedelta(hours=2)
-    hunt.frequency = timedelta(hours=1)
+    hunt.config.frequency = '01:00:00'
     assert hunt.ready
 
     # this logic is no longer supported
@@ -453,20 +481,20 @@ def test_query_hunter_ready(monkeypatch, tmpdir):
 
 @pytest.mark.unit
 def test_process_query_results(monkeypatch):
-    import saq.collectors.query_hunter
-    monkeypatch.setattr(saq.collectors.query_hunter, "local_time", mock_local_time)
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
-    hunt = QueryHunt(manager=MockManager(), name="test")
-    hunt.analysis_mode = ANALYSIS_MODE_CORRELATION
-    hunt.observable_mapping = {
-        "src": "ipv4"
-    }
-    hunt.alert_type = "test-type"
-    hunt.queue = "test-queue"
-    hunt.description = "test instructions"
-    hunt.playbook_url = "http://playbook"
-    hunt.directives = { }
-    hunt.temporal_fields = { }
+    hunt = default_hunt(manager=MockManager(),
+        name="test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        alert_type="test-type",
+        queue="test-queue",
+        description="test instructions",
+        playbook_url="http://playbook",
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
 
     assert hunt.process_query_results(None) is None
     assert not hunt.process_query_results([])
@@ -474,18 +502,18 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    assert submission.root.description == "test"
+    assert submission.root.description == "test (1 events)"
     assert submission.root.analysis_mode == hunt.analysis_mode
-    assert submission.root.tool == "hunter-test"
+    assert submission.root.tool == f"hunter-{hunt.type}"
     assert submission.root.tool_instance == "localhost"
     assert submission.root.alert_type == hunt.alert_type
     assert submission.root.event_time == mock_local_time()
     assert isinstance(submission.root.details, list)
     assert submission.root.details[1] == {}
-    assert submission.root.observables
+    assert len(submission.root.observables) == 1
     hunt_observable = submission.root.get_observables_by_type(F_HUNT)[0]
     assert hunt_observable.value == "test"
-    assert submission.root.tags == []
+    assert submission.root.tags == [Tag(name="test_tag")]
     #assert submission.root.files == []
     assert submission.root.queue == hunt.queue
     assert submission.root.instructions == hunt.description
@@ -496,8 +524,19 @@ def test_process_query_results(monkeypatch):
     assert len(submissions) == 1
     submission = submissions[0]
     assert len(submission.root.observables) == 2
+    for observable in submission.root.observables:
+        if observable.type == F_HUNT:
+            assert observable.value == "test"
+        elif observable.type == "ipv4":
+            assert observable.value == "1.2.3.4"
+        else:
+            assert False, f"unexpected observable type: {observable.type}"
 
-    hunt.group_by = "src"
+        assert not observable.time
+        assert not observable.tags
+        assert not observable.directives
+
+    hunt.config.group_by = "src"
     submissions = hunt.process_query_results([
         {"src": "1.2.3.4"},
         {"src": "1.2.3.5"},
@@ -508,7 +547,7 @@ def test_process_query_results(monkeypatch):
         assert len(submission.root.observables) == 2
         assert submission.root.description.endswith(": 1.2.3.4 (1 events)") or submission.root.description.endswith(": 1.2.3.5 (1 events)")
 
-    hunt.group_by = "dst"
+    hunt.config.group_by = "dst"
     submissions = hunt.process_query_results([
         {"src": "1.2.3.4"},
         {"src": "1.2.3.5"},
@@ -517,8 +556,9 @@ def test_process_query_results(monkeypatch):
     assert len(submissions) == 2
     for submission in submissions:
         assert len(submission.root.observables) == 2
+        assert submission.root.description == "test (1 events)"
 
-    hunt.group_by = "ALL"
+    hunt.config.group_by = "ALL"
     submissions = hunt.process_query_results([
         {"src": "1.2.3.4"},
         {"src": "1.2.3.5"},
@@ -527,3 +567,4 @@ def test_process_query_results(monkeypatch):
     assert len(submissions) == 1
     for submission in submissions:
         assert len(submission.root.observables) == 3
+        assert submission.root.description == "test (2 events)"

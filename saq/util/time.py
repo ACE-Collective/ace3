@@ -8,6 +8,16 @@ from saq.constants import EVENT_TIME_FORMAT, EVENT_TIME_FORMAT_JSON, EVENT_TIME_
 from saq.environment import g, get_local_timezone
 
 
+# Matches DD:HH:MM:SS, HH:MM:SS, MM:SS, or S (at least seconds must be specified)
+_RE_TIMEDELTA_STRING = re.compile(r'^(\d+:)?(\d+:)?(\d+:)?\d+$')
+def is_timedelta_string(timespec: str) -> bool:
+    """Returns True if the given value is a valid timespec string."""
+    assert isinstance(timespec, str)
+    if timespec is None:
+        return False
+
+    return bool(_RE_TIMEDELTA_STRING.match(timespec))
+
 def create_timedelta(timespec):
     """Utility function to translate DD:HH:MM:SS into a timedelta object."""
     duration = timespec.split(':')

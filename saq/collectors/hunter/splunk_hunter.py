@@ -5,31 +5,34 @@
 
 import re
 import logging
-import os, os.path
+import os
+import os.path
 import threading
+from typing import Optional
 
+from pydantic import Field
 import pytz
+import yaml
 
 from saq.configuration import get_config_value
-from saq.constants import CONFIG_SPLUNK_APP_CONTEXT, CONFIG_SPLUNK_TIMEZONE, CONFIG_SPLUNK_URI, CONFIG_SPLUNK_USER_CONTEXT
+from saq.constants import CONFIG_SPLUNK, CONFIG_SPLUNK_APP_CONTEXT, CONFIG_SPLUNK_TIMEZONE, CONFIG_SPLUNK_URI, CONFIG_SPLUNK_USER_CONTEXT
 from saq.splunk import extract_event_timestamp, SplunkClient
-from saq.collectors.query_hunter import QueryHunt
+from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
+
+class SplunkHuntConfig(QueryHuntConfig):
+    namespace_user: Optional[str] = Field(alias="splunk_user_context", default_factory=lambda: get_config_value(CONFIG_SPLUNK, CONFIG_SPLUNK_USER_CONTEXT), description="The namespace user to use for the hunt")
+    namespace_app: Optional[str] = Field(alias="splunk_app_context", default_factory=lambda: get_config_value(CONFIG_SPLUNK, CONFIG_SPLUNK_APP_CONTEXT), description="The namespace app to use for the hunt")
+
 
 class SplunkHunt(QueryHunt):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.use_index_time = bool()
 
         self.cancel_event = threading.Event()
 
-        # supports hash-style comments
-        self.strip_comments = True
-
-        # splunk queries can optionally have <include:> directives
-        self._query = None
-        self.search_id = None
-        self.time_spec = None
+        # the time spec we're using for the query
+        self.time_spec: Optional[str] = None
 
         # since we have multiple splunk instances, allow config to point to a different one
         self.splunk_config = self.manager.config.get('splunk_config', 'splunk')
@@ -37,27 +40,22 @@ class SplunkHunt(QueryHunt):
         self.tool_instance = get_config_value(self.splunk_config, CONFIG_SPLUNK_URI)
         self.timezone = get_config_value(self.splunk_config, CONFIG_SPLUNK_TIMEZONE)
 
-        # splunk app/user context
-        self.default_namespace_user = get_config_value(self.splunk_config, CONFIG_SPLUNK_USER_CONTEXT)
-        self.default_namespace_app = get_config_value(self.splunk_config, CONFIG_SPLUNK_APP_CONTEXT)
-        self.namespace_user = self.default_namespace_user
-        self.namespace_app = self.default_namespace_app
-
-    def extract_event_timestamp(self, event):
-        return extract_event_timestamp(event)
-
-    def formatted_query(self):
-        return self.query.replace('{time_spec}', self.time_spec)
-
-    def formatted_query_timeless(self):
-        return self.query.replace('{time_spec}', '')
+    @property
+    def namespace_user(self) -> Optional[str]:
+        return self.config.namespace_user
+    
+    @property
+    def namespace_app(self) -> Optional[str]:
+        return self.config.namespace_app
 
     @property
-    def query(self):
-        if self._query is None:
-            return self._query
+    def query(self) -> str:
+        # load the query normally first
+        result = super().query
 
-        result = self._query
+        # if the query doesn't have a time_spec, add it
+        if '{time_spec}' not in result:
+            result = '{time_spec} ' + result
 
         # run the includes you might have
         while True:
@@ -76,31 +74,21 @@ class SplunkHunt(QueryHunt):
 
         return result
 
-    @query.setter
-    def query(self, value):
-        self._query = value
-    
-    def load_from_yaml(self, path: str, *args, **kwargs) -> dict:
-        config = super().load_from_yaml(path, *args, **kwargs)
+    def formatted_query(self):
+        return self.query.replace('{time_spec}', self.time_spec)
 
-        rule_config = config['rule']
+    def formatted_query_timeless(self):
+        return self.query.replace('{time_spec}', '')
 
-        # make sure the time spec formatter is available
-        # this should really be done at load time...
-        if '{time_spec}' not in self.query:
-            # why I waited so long to do this, I don't know
-            self.query = '{time_spec} ' + self.query
+    def extract_event_timestamp(self, event):
+        return extract_event_timestamp(event)
 
-        # load user and app context
-        self.namespace_user = rule_config.get('splunk_user_context')
-        self.namespace_app = rule_config.get('splunk_app_context')
+    def load_from_yaml(self, path: str) -> SplunkHuntConfig:
+        with open(path, "r") as fp:
+            config_dict = yaml.safe_load(fp)
 
-        if not self.namespace_user:
-            self.namespace_user = self.default_namespace_user
-        if not self.namespace_app:
-            self.namespace_app = self.default_namespace_app
-
-        return config
+        self.config = SplunkHuntConfig.model_validate(config_dict["rule"])
+        return self.config
 
     def execute_query(self, start_time, end_time, unit_test_query_results=None, **kwargs):
         tz = pytz.timezone(self.timezone)
@@ -115,9 +103,10 @@ class SplunkHunt(QueryHunt):
 
         query = self.formatted_query()
 
-        logging.info(f"executing hunt {self.name} with start time {earliest} end time {latest}")
+        logging.info(f"executing hunt {self.name} with start time {start_time} end time {end_time} time spec {self.time_spec}")
         logging.debug(f"executing hunt {self.name} with query {query}")
 
+        # nooooo
         if unit_test_query_results is not None:
             return unit_test_query_results
         
@@ -130,11 +119,8 @@ class SplunkHunt(QueryHunt):
         # reset search_id before searching so we don't get previous run results
         self.search_id = None
 
-        # calculate the time at which we should stop the query
-        #timeout = time.time() + create_timedelta(self.query_timeout).total_seconds()
-
         while True:
-            # continue the query
+            # continue the query (this call times out on its own if the query takes too long)
             self.search_id, search_result = searcher.query_async(query, sid=self.search_id, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
 
             # stop if we are done

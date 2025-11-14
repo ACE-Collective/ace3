@@ -51,7 +51,7 @@ def execute_hunt(args):
     import pytz
     from saq.constants import EVENT_TIME_FORMAT_TZ
     from saq.collectors.hunter import HunterService
-    from saq.collectors.query_hunter import QueryHunt
+    from saq.collectors.hunter.query_hunter import QueryHunt
     hunter_service = HunterService()
     hunter_service.load_hunt_managers()
     
@@ -61,7 +61,10 @@ def execute_hunt(args):
         sys.exit(1)
 
     hunter_service.hunt_managers[hunt_type].load_hunts_from_config()
-    hunt = hunter_service.hunt_managers[hunt_type].get_hunt(lambda hunt: hunt_name in hunt.file_path)
+    for hunt in hunter_service.hunt_managers[hunt_type].hunts:
+        print(hunt.name)
+
+    hunt = hunter_service.hunt_managers[hunt_type].get_hunt(lambda hunt: hunt_name.lower() in hunt.name.lower())
     if hunt is None:
         logging.error(f"unknown hunt {hunt_name} for type {hunt_type}")
         sys.exit(1)
@@ -93,25 +96,29 @@ def execute_hunt(args):
         print(submission.root.description)
         if args.details:
             for o in submission.root.observables:
-                output = f"\t(*) {o['type']} - {o['value']}"
-                if 'time' in o:
-                    output += " - {}".format(o['time'].strftime(EVENT_TIME_FORMAT_TZ))
-                if 'tags' in o:
-                    output += " tags [{}]".format(','.join(o['tags']))
-                if 'directives' in o:
-                    output += " direc [{}]".format(','.join(o['directives']))
-                if 'pivot_links' in o:
-                    for pv in o["pivot_links"]:
-                        output += f" pivot ({pv['url']})[{pv['text']}]"
+                output = f"\t(*) {o.type} - {o.value}"
+                if o.time:
+                    output += " - {}".format(o.time)
+                if o.tags:
+                    output += " tags [{}]".format(','.join([t.name for t in o.tags]))
+                if o.directives:
+                    output += " direc [{}]".format(','.join(o.directives))
+                #if o.pivot_links:
+                    #for pv in o.pivot_links:
+                        #output += f" pivot ({pv.url})[{pv.text}]"
                 # TODO the other stuff
                 print(output)
 
             for t in submission.root.tags:
                 print(f"\t(+) {t}")
 
-            if submission.root.extensions:
-                for url in submission.root.extensions.get("pivot_links", []):
-                    print(f"\t🔗 {url}")
+            #if submission.root.extensions:
+                #for url in submission.root.extensions.get("pivot_links", []):
+                    #print(f"\t🔗 {url}")
+
+            if submission.root.pivot_links:
+                for pv in submission.root.pivot_links:
+                    print(f"\t🔗 pivot ({pv.url})[{pv.text}]")
             
         if args.events:
             print("BEGIN EVENTS")
@@ -510,6 +517,7 @@ service_sp = service_parser.add_subparsers(dest='service_cmd')
 
 def start_service(args):
     from saq.service import load_service_by_name
+
     service = load_service_by_name(args.service)
 
     signal.signal(signal.SIGTERM, lambda signum, frame: service.stop())
@@ -519,7 +527,9 @@ def start_service(args):
             service.start_single_threaded()
         else:
             service.start()
+
         service.wait()
+
     except KeyboardInterrupt:
         logging.info(f"caught keyboard interrupt, stopping service {args.service}")
         service.stop()

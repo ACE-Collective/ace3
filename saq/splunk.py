@@ -324,7 +324,7 @@ class SplunkQueryObject:
         """
         try:
             # check if we've timed out 
-            if self.is_running():
+            if self.is_running() and timeout is not None:
                 if local_time() >= self.running_start_time + create_timedelta(timeout):
                     logging.warning(f"splunk query timed out: {query}")
                     self.cancel(sid)

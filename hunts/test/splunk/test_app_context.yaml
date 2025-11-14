@@ -1,4 +1,5 @@
 rule:
+  uuid: 5ecc7baf-e044-46ad-8837-e2b4228be634
   enabled: yes
   name: test_app_context
   description: Test App Context
@@ -20,12 +21,10 @@ rule:
   splunk_app_context: app
   splunk_user_context: user
 
-observable_mapping:
-  src_ip: ipv4
-  dst_ip: ipv4
-
-temporal_fields:
-  src_ip: yes
-  dst_ip: yes
-
-directives: {}
+  observable_mapping:
+    - fields: ['src_ip']
+      type: ipv4
+      time: true
+    - fields: ['dst_ip']
+      type: ipv4
+      time: true
