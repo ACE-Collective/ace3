@@ -29,6 +29,7 @@ handlers:
     # NOTE this gets overridden by the FLUENT_BIT_TAG environment variable
     tag: ace-debug
     #buffer_overflow_handler: TBD
+    nanosecond_precision: true
     formatter: fluent_fmt
     level: DEBUG
 
