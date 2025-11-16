@@ -1,329 +1,254 @@
 from datetime import UTC, datetime
+from unittest.mock import Mock, patch
 import pytest
 from requests.exceptions import HTTPError, Timeout, ProxyError, ConnectionError
 
 from saq.configuration import get_config
 from saq.splunk import SplunkClient, SplunkQueryObject, extract_event_timestamp
 from tests.saq.mock_datetime import MOCK_NOW
-from tests.saq.requests import mock_site 
+
 
 @pytest.mark.unit
-def test_queue(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'POST',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'request_text': 'search=search+hello&max_count=1',
-        'response_file': 'queue_response.xml',
-    }])
+def test_queue():
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "the_search_id"
+
+    # create mock client with jobs collection
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    sid = splunk.queue('hello', 1)
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        job = splunk.queue("hello", 1)
 
     # verify
-    assert sid == 'the_search_id'
+    assert job.name == "the_search_id"
+    mock_client.jobs.create.assert_called_once()
 
 
 @pytest.mark.unit
-def test_complete(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_file': 'complete_response.xml',
-    }])
+def test_complete():
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.is_ready.return_value = True
+    mock_job.__getitem__ = Mock(side_effect=lambda x: {
+        "isDone": "1",
+        "doneProgress": "1.0",
+        "dispatchState": "DONE",
+        "isFailed": "0",
+        "eventCount": "100",
+        "runDuration": "1.234"
+    }[x])
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    complete = splunk.complete('sid')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        complete = splunk.complete(mock_job)
 
     # verify
     assert complete == True
+    mock_job.refresh.assert_called_once()
 
 
 @pytest.mark.unit
-def test_incomplete(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_file': 'incomplete_response.xml',
-    }])
+def test_incomplete():
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.is_ready.return_value = True
+    mock_job.__getitem__ = Mock(side_effect=lambda x: {
+        "isDone": "0",
+        "doneProgress": "0.5",
+        "dispatchState": "RUNNING",
+        "isFailed": "0",
+        "eventCount": "50",
+        "runDuration": "0.5"
+    }[x])
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    complete = splunk.complete('sid')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        complete = splunk.complete(mock_job)
 
     # verify
     assert complete == False
+    mock_job.refresh.assert_called_once()
 
 
 @pytest.mark.unit
-def test_complete_204(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid',
-        'status_code': 204,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_text': '',
-    }])
+def test_complete_not_ready():
+    # create mock job that is not ready
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.is_ready.return_value = False
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    with pytest.raises(HTTPError) as e:
-        complete = splunk.complete('sid')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        complete = splunk.complete(mock_job)
 
     # verify
-    assert e.value.response.status_code == 204
+    assert not complete
+    mock_job.refresh.assert_not_called()
 
 
 @pytest.mark.unit
-def test_results(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid/results',
-        'params':  {'count': "0", 'output_mode': 'json_rows'},
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_file': 'results.json',
-    }])
+def test_results():
+    # create mock job that is complete
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.is_ready.return_value = True
+    mock_job.__getitem__ = Mock(side_effect=lambda x: {
+        "isDone": "1",
+        "doneProgress": "1.0",
+        "dispatchState": "DONE",
+        "isFailed": "0",
+        "eventCount": "100",
+        "runDuration": "1.234"
+    }[x])
+    mock_job.results.return_value = '{"fields":["foo","hello"],"rows":[["bar","world"]]}'
 
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.results('sid')
+    # create mock client
+    mock_client = Mock()
 
-    # verify
-    assert results == [{'foo': 'bar', 'hello': 'world'}]
+    # mock the JSONResultsReader to return expected results
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        with patch("saq.splunk.JSONResultsReader") as mock_reader:
+            mock_reader.return_value = [{"foo": "bar", "hello": "world"}]
+
+            splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+
+            # simulate query_async completing
+            job, results = splunk.query_async("test", job=mock_job, limit=1000)
+
+            # verify
+            assert results == [{"foo": "bar", "hello": "world"}]
+            mock_job.results.assert_called_once_with(count="0", output_mode="json")
 
 
 @pytest.mark.unit
-def test_cancel(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_file': 'complete_response.xml',
-    }])
+def test_cancel():
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.cancel.return_value = None
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    cancelled = splunk.cancel('sid')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        cancelled = splunk.cancel(mock_job)
 
     assert cancelled == True
+    mock_job.cancel.assert_called_once()
 
 
 @pytest.mark.unit
-def test_cancel_error(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/search/jobs/sid',
-        'status_code': 500,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_file': 'complete_response.xml',
-    }])
+def test_cancel_error():
+    # create mock job that raises exception
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.cancel.side_effect = Exception("cancel failed")
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    cancelled = splunk.cancel('sid')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        cancelled = splunk.cancel(mock_job)
 
     assert cancelled == False
 
 
 @pytest.mark.unit
 def test_cancel_none():
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    cancelled = splunk.cancel(None)
+    # create mock client
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        cancelled = splunk.cancel(None)
 
     assert cancelled == True
 
 
 @pytest.mark.unit
-def test_get_all_from_kvstore(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_json': [{'foo': 'bar', 'hello': 'world'}],
-    }])
+def test_delete_search_job():
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.delete.return_value = None
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.get_all_from_kvstore('hello')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        deleted = splunk.delete_search_job(mock_job)
 
-    # verify
-    assert results == [{'foo': 'bar', 'hello': 'world'}]
+    assert deleted
+    mock_job.delete.assert_called_once()
 
 
 @pytest.mark.unit
-def test_get_all_from_kvstore_error(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'GET',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello',
-        'status_code': 500,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_json': [{'foo': 'bar', 'hello': 'world'}],
-    }])
+def test_delete_search_job_error():
+    # create mock job that raises exception
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_job.delete.side_effect = Exception("delete failed")
+
+    # create mock client
+    mock_client = Mock()
 
     # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.get_all_from_kvstore('hello')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
+        deleted = splunk.delete_search_job(mock_job)
 
-    # verify
-    assert results == []
-
-
-@pytest.mark.unit
-def test_save_to_kvstore(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'POST',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello/batch_save',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'request_json': [{'foo': 'bar', 'hello': 'world'}],
-        'response_json': [{'foo': 'bar'}],
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.save_to_kvstore('hello', [{'foo': 'bar', 'hello': 'world'}])
-
-    # verify
-    assert results == True
-
-
-@pytest.mark.unit
-def test_save_to_kvstore_error(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'POST',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello/batch_save',
-        'status_code': 500,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'request_json': [{'foo': 'bar', 'hello': 'world'}],
-        'response_json': [{'foo': 'bar'}],
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.save_to_kvstore('hello', [{'foo': 'bar', 'hello': 'world'}])
-
-    # verify
-    assert results == False
-
-
-@pytest.mark.unit
-def test_delete_from_kvstore_by_id(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello/123',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_text': '',
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.delete_from_kvstore_by_id('hello', '123')
-
-    # verify
-    assert results == True
-
-
-@pytest.mark.unit
-def test_delete_from_kvstore_by_id_error(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello/123',
-        'status_code': 500,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_text': '',
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.delete_from_kvstore_by_id('hello', '123')
-
-    # verify
-    assert results == False
-
-
-@pytest.mark.unit
-def test_delete_all_from_kvstore(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello',
-        'status_code': 200,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_text': '',
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.delete_all_from_kvstore('hello')
-
-    # verify
-    assert results == True
-
-
-@pytest.mark.unit
-def test_delete_all_from_kvstore_error(requests_mock, datadir):
-    # mock
-    mock_site(requests_mock, datadir, [{
-        'method': 'DELETE',
-        'url': f'http://test.com/servicesNS/o/o/storage/collections/data/hello',
-        'status_code': 500,
-        'headers': {'Authorization': 'Basic dXNlcjpwYXNz'},
-        'response_text': '',
-    }])
-
-    # test
-    splunk = SplunkQueryObject('http://test.com', 'user', 'pass', user_context='o', app='o')
-    results = splunk.delete_all_from_kvstore('hello')
-
-    # verify
-    assert results == False
+    assert not deleted
 
 
 @pytest.mark.unit
 def test_link():
-    # init splunk
-    splunk = SplunkQueryObject('http://test.com:8089', 'test', 'test')
+    # create mock client
+    mock_client = Mock()
 
-    # make sure special chars get encoded
-    link = splunk.encoded_query_link('search index=test field!=":&+*" | table field')
-    assert link == 'http://test.com/en-US/app/search/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        # init splunk
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test")
 
-    # make sure search is prepended when missing
-    link = splunk.encoded_query_link('index=test field!=":&+*" | table field')
-    assert link == 'http://test.com/en-US/app/search/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
+        # make sure special chars get encoded
+        link = splunk.encoded_query_link('search index=test field!=":&+*" | table field')
+        assert link == 'https://test.com:8089/en-US/app/search/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
 
-    # test optional time range
-    link = splunk.encoded_query_link('index=test', start_time=MOCK_NOW, end_time=MOCK_NOW)
-    assert link == 'http://test.com/en-US/app/search/search?q=search+index%3Dtest&earliest=1510385761&latest=1510385761'
+        # make sure search is prepended when missing
+        link = splunk.encoded_query_link('index=test field!=":&+*" | table field')
+        assert link == 'https://test.com:8089/en-US/app/search/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
 
-    # test app namespace
-    splunk = SplunkQueryObject('http://test.com:8089', 'test', 'test', app='myapp')
-    link = splunk.encoded_query_link('search index=test field!=":&+*" | table field')
-    assert link == 'http://test.com/en-US/app/myapp/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
+        # test optional time range
+        link = splunk.encoded_query_link('index=test', start_time=MOCK_NOW, end_time=MOCK_NOW)
+        assert link == 'https://test.com:8089/en-US/app/search/search?q=search+index%3Dtest&earliest=1510385761&latest=1510385761'
+
+        # test app namespace
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test", app="myapp")
+        link = splunk.encoded_query_link('search index=test field!=":&+*" | table field')
+        assert link == 'https://test.com:8089/en-US/app/myapp/search?q=search+index%3Dtest+field%21%3D%22%3A%26%2B%2A%22+%7C+table+field'
 
 
 @pytest.mark.unit
@@ -339,19 +264,17 @@ def test_get_event_time(monkeypatch):
 @pytest.mark.unit
 def test_query(monkeypatch):
     search_results = None
+
     class MockSplunk(SplunkQueryObject):
-        def query_async(self, query, sid=None, limit=1000, start=None, end=None, use_index_time=False, timeout=None):
+        def query_async(self, query, job=None, limit=1000, start=None, end=None, use_index_time=False, timeout=None):
             self.cancelled = False
-            return sid, search_results
+            return job, search_results
 
-        def cancel(self, sid):
+        def cancel(self, job):
             self.cancelled = True
 
-        def delete_search_job(self, sid):
+        def delete_search_job(self, job):
             self.cancelled = True
-            return True
-
-        def get_search_log(self, *args, **kwargs):
             return True
 
     def mock_sleep(t):
@@ -360,64 +283,68 @@ def test_query(monkeypatch):
 
     monkeypatch.setattr('saq.splunk.time.sleep', mock_sleep)
 
-    # test no longer valid since timeout check moved into query_async
-    #splunk = MockSplunk('http://test.com:8089', 'test', 'test')
-    #splunk.running_start_time = local_time()
-    #result = splunk.query('whatever', timeout='00:00:00')
-    #assert result == []
-    #assert splunk.cancelled == True
+    # create mock client
+    mock_client = Mock()
 
-    splunk = MockSplunk('http://test.com:8089', 'test', 'test')
-    result = splunk.query('whatever', timeout='05:00:00')
-    assert splunk.cancelled == False
-    assert result == 'yada'
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        result = splunk.query('whatever', timeout='05:00:00')
+        assert not splunk.cancelled
+        assert result == 'yada'
 
 
 @pytest.mark.unit
 def test_query_async(monkeypatch):
-    queue_result = '123'
-    complete = False
+    queue_result = Mock()
+    queue_result.name = "123"
+    queue_result.results.return_value = Mock()
+    complete_status = False
 
     class MockSplunk(SplunkQueryObject):
         def queue(self, query, limit, start=None, end=None, use_index_time=False):
             return queue_result
 
-        def complete(self, sid):
-            assert sid == '123'
-            return complete
+        def complete(self, job):
+            # only verify job name on the first job instance
+            if job.name == "123":
+                return complete_status
+            # if we somehow got a different job, fail
+            raise AssertionError(f"unexpected job name: {job.name}")
 
-        def results(self, sid):
-            return 'blorp' if sid == '123' else None
-
-        def delete_search_job(self, sid):
+        def delete_search_job(self, job):
             return True
 
-        def get_search_log(self, *args, **kwargs):
-            return True
+    # create mock client
+    mock_client = Mock()
 
-    splunk = MockSplunk('http://test.com:8089', 'test', 'test')
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        with patch("saq.splunk.JSONResultsReader") as mock_reader:
+            mock_reader.return_value = ["blorp"]
 
-    # first call should just queue
-    sid, result = splunk.query_async('whatever', sid=None)
-    assert sid == '123'
-    assert result == None
+            splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
 
-    # second call should be incomplete
-    queue_result = '456'
-    sid, result = splunk.query_async('whatever', sid=sid)
-    assert sid == '123'
-    assert result == None
+            # first call should just queue
+            job, result = splunk.query_async('whatever', job=None)
+            assert job.name == "123"
+            assert result is None
 
-    # third call should return results
-    complete = True
-    sid, result = splunk.query_async('whatever', sid=sid)
-    assert sid == '123'
-    assert result == 'blorp'
+            # second call should be incomplete (job not complete yet)
+            job, result = splunk.query_async('whatever', job=job)
+            assert job.name == "123"
+            assert result is None
+
+            # third call should return results (job is now complete)
+            complete_status = True
+            job, result = splunk.query_async('whatever', job=job)
+            assert job.name == "123"
+            assert result == ["blorp"]
 
 
 class MockResponse:
     def __init__(self, status_code):
         self.status_code = status_code
+
+
 @pytest.mark.parametrize('exception, expected_result', [
     (HTTPError('error', response=MockResponse(204)), None),
     (HTTPError('error', response=MockResponse(404)), []),
@@ -429,59 +356,109 @@ class MockResponse:
 @pytest.mark.unit
 def test_query_async_error(exception, expected_result):
     class MockSplunk(SplunkQueryObject):
-        def complete(self, sid):
+        def complete(self, job):
             self.cancelled = False
             raise exception
-        def cancel(self, sid):
-            assert sid == '123'
+        def cancel(self, job):
+            assert job.name == "123"
             self.cancelled = True
-        def delete_search_job(self, sid):
+        def delete_search_job(self, job):
             self.cancelled = True
             return True
-        def get_search_log(self, *args, **kwargs):
-            return True
 
-    splunk = MockSplunk('http://test.com:8089', 'test', 'test')
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "123"
 
-    sid, result = splunk.query_async('whatever', sid='123')
-    assert sid == None
-    assert result == expected_result
-    assert splunk.cancelled == (expected_result is not None)
+    # create mock client
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        job, result = splunk.query_async('whatever', job=mock_job)
+        assert job is None
+        assert result == expected_result
+        assert splunk.cancelled == (expected_result is not None)
 
 
 @pytest.mark.unit
-def test_splunk_client_init(monkeypatch):
-    monkeypatch.setattr('saq.OTHER_PROXIES', { 'zorp': { 'http': 'http://whatever' } })
+def test_splunk_client_init():
     get_config()['splunk_test'] = {
-        'uri': 'https://test.com:443',
-        'username': 'hello',
-        'password': 'world',
-        'proxy': 'zorp',
-    }
-
-    client = SplunkClient('splunk_test', user_context='foo', app='bar')
-
-    assert client.search_session.base_url == 'https://test.com:443/servicesNS/foo/bar'
-    assert client.search_session.proxies == { 'http': 'http://whatever' }
-    assert client.search_session.auth == ('hello', 'world')
-    assert client.search_session.trust_env == False
-    assert client.search_session.verify == False
-    assert client.gui_path == 'en-US/app/bar/search'
-
-
-@pytest.mark.unit
-def test_splunk_client_init(monkeypatch):
-    get_config()['splunk_test'] = {
-        'uri': 'https://test.com:443',
+        'host': 'test.com',
+        'port': '443',
         'username': 'hello',
         'password': 'world',
     }
 
-    client = SplunkClient('splunk_test')
+    # create mock client
+    mock_client = Mock()
 
-    assert client.search_session.base_url == 'https://test.com:443/servicesNS/-/-'
-    assert client.search_session.proxies == {}
-    assert client.search_session.auth == ('hello', 'world')
-    assert client.search_session.trust_env == False
-    assert client.search_session.verify == False
-    assert client.gui_path == 'en-US/app/search/search'
+    with patch("saq.splunk.client.connect") as mock_connect:
+        mock_connect.return_value = mock_client
+        client = SplunkClient('splunk_test', user_context='foo', app='bar')
+
+        # verify connection was called with correct parameters
+        mock_connect.assert_called_once()
+        call_kwargs = mock_connect.call_args[1]
+        assert call_kwargs['host'] == 'test.com'
+        assert call_kwargs['port'] == '443'
+        assert call_kwargs['username'] == 'hello'
+        assert call_kwargs['password'] == 'world'
+        assert call_kwargs['owner'] == 'foo'
+        assert call_kwargs['app'] == 'bar'
+        assert call_kwargs['autologin']
+
+        assert client.gui_path == 'en-US/app/bar/search'
+
+
+@pytest.mark.unit
+def test_splunk_client_init_defaults():
+    get_config()['splunk_test'] = {
+        'host': 'test.com',
+        'port': '443',
+        'username': 'hello',
+        'password': 'world',
+    }
+
+    # create mock client
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect") as mock_connect:
+        mock_connect.return_value = mock_client
+        client = SplunkClient('splunk_test')
+
+        # verify connection was called with correct parameters
+        mock_connect.assert_called_once()
+        call_kwargs = mock_connect.call_args[1]
+        assert call_kwargs['host'] == 'test.com'
+        assert call_kwargs['port'] == '443'
+        assert call_kwargs['username'] == 'hello'
+        assert call_kwargs['password'] == 'world'
+
+        assert client.gui_path == 'en-US/app/search/search'
+
+
+@pytest.mark.unit
+def test_splunk_client_init_with_token():
+    get_config()['splunk_test'] = {
+        'host': 'test.com',
+        'port': '443',
+        'token': 'mytoken123',
+    }
+
+    # create mock client
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect") as mock_connect:
+        mock_connect.return_value = mock_client
+        SplunkClient('splunk_test')
+
+        # verify connection was called with correct parameters
+        mock_connect.assert_called_once()
+        call_kwargs = mock_connect.call_args[1]
+        assert call_kwargs['host'] == 'test.com'
+        assert call_kwargs['port'] == '443'
+        assert call_kwargs['token'] == 'mytoken123'
+        assert 'username' not in call_kwargs
+        assert 'password' not in call_kwargs

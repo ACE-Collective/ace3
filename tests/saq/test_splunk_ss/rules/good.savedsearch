@@ -1,7 +1,0 @@
-[rule]
-name = test_name
-description = test_description
-type = test_type
-search = test_search
-user = test_user
-app = test_app

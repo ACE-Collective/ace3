@@ -6,30 +6,23 @@ import os.path
 import time
 import urllib.parse
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from lxml import etree
 from requests.exceptions import HTTPError, Timeout, ProxyError, ConnectionError
 from typing import Optional, Tuple, List
+
+from splunklib.client import Job
+import splunklib.client as client
+from splunklib.results import JSONResultsReader
 
 from saq.configuration import get_config
 from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
-from saq.requests_wrapper import Session
 from saq.proxy import proxy_config
 
-@dataclass
-class SavedSearch:
-    name: str
-    description: Optional[str]=None
-    search: Optional[str]=None
-    type: Optional[str]=None
-    ns_user: Optional[str]=None
-    ns_app: Optional[str]=None
-
-# all saved search names managed by ice start with this prefix
-SAVED_SEARCH_PREFIX = "ICE1_"
+#
+# NOTE: proxy support is missing
+#
 
 def extract_event_timestamp(event:dict) -> datetime:
     """Extracts the event time from the event as a datetime
@@ -45,30 +38,28 @@ def extract_event_timestamp(event:dict) -> datetime:
         if '_time' in event:
             # XXX assume UTC
             return datetime.strptime(event['_time'][:19], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)
-    except:
-        logging.error(f"_time field does not match expected format: {event['_time']}")
+    except Exception as e:
+        logging.error(f"_time field does not match expected format: {event['_time']}: {e}")
         report_exception()
 
     return local_time()
 
 
 class SplunkQueryObject:
-    """Splunk api client for performing queries and kvstore operations
-
-    Attributes:
-        search_results (dict): the raw search results from the last query performed
-            format: {'fields': ['field1', 'field2'], 'rows': [['r1v1', 'r1v2'], ['r2v1', 'r2v2']]}
+    """This is a wrapper around whatever Splunk API library we are using.
+    This will eventually be replaced with direct Splunk SDK usage.
     """
 
     def __init__(
         self,
-        uri: str,
+        host: str,
+        port: int,
         username: Optional[str] = None,
         password: Optional[str] = None,
         token: Optional[str] = None,
         proxies: Optional[dict] = None,
-        user_context: str = '-',
-        app: str = '-',
+        user_context: Optional[str] = None,
+        app: Optional[str] = None,
         dispatch_state: Optional[str]=None,
         start_time: Optional[datetime]=None,
         running_start_time: Optional[datetime]=None,
@@ -80,7 +71,8 @@ class SplunkQueryObject:
         Initializes a splunk api session
 
         Args:
-            uri (str): the splunk api base uri to use e.g. https://splunk.com:8089
+            host (str): the splunk api host to use
+            port (int): the splunk api port to use
             username (str, optional): the username for authentication (required if token is not provided)
             password (str, optional): the password for authentication (required if token is not provided)
             token (str, optional): the token for authentication (required if username and password are not provided)
@@ -89,59 +81,42 @@ class SplunkQueryObject:
             app (str): the app conext for operations (default '-' -> any app)
         """
 
-        self.uri = uri
+        self.host = host
+        self.port = port
+
         self.user_context = user_context
         self.app = app
 
-        if self.user_context is None:
-            logging.warning("user_context is not set, using default '-'")
-            self.user_context = '-'
+        connect_kwargs = {
+            "host": self.host,
+            "port": self.port,
+            "app": self.app,
+            "owner": self.user_context,
+            "autologin": True,
+            "retries": 5,
+            "retryDelay": 10,
+        }
 
-        if self.app is None:
-            logging.warning("app is not set, using default '-'")
-            self.app = '-'
-
-        self.base_session = Session(max_retries=0)
-        self.base_session.base_url = uri
-        if token:
-            self.base_session.headers['Authorization'] = f'Bearer {token}'
+        if username:
+            connect_kwargs["username"] = username
+            connect_kwargs["password"] = password
+        elif token:
+            connect_kwargs["token"] = token
         else:
-            self.base_session.auth = (username, password)
-        self.base_session.proxies = proxies if proxies else {}
-        self.base_session.trust_env = False
-        self.base_session.verify = False
+            raise ValueError("username and password or token must be provided")
 
-        # create the session
-        self.search_session = Session(max_retries=0)
-        self.search_session.base_url = f'{uri}/servicesNS/{user_context}/{app}'
-        if token:
-            self.search_session.headers['Authorization'] = f'Bearer {token}'
-        else:
-            self.search_session.auth = (username, password)
-        self.search_session.proxies = proxies if proxies else {}
-        self.search_session.trust_env = False
-        self.search_session.verify = False
+        self.client = client.connect(**connect_kwargs)
 
         # determine gui search path from namespace app
         self.gui_path = 'en-US/app/search/search' if app is None or app == '-' else f'en-US/app/{app}/search'
 
         self.performance_logging_directory = performance_logging_directory
-        if self.performance_logging_directory is None:
-            try:
-                self.performance_logging_directory = get_config()["splunk"].get("performance_logging_dir")
-            except Exception as e:
-                logging.warning(f"unable to load performance_logging_dir: {e}")
 
         self.reset_search_status(
             dispatch_state=dispatch_state, 
             start_time=start_time, 
             running_start_time=running_start_time, 
             end_time=end_time)
-
-    def get_server_info(self) -> dict:
-        response = self.base_session.get("/services/server/info?output_mode=json")
-        response.raise_for_status()
-        return response.json()
 
     def reset_search_status(
         self, 
@@ -215,7 +190,7 @@ class SplunkQueryObject:
     def search_failed(self) -> bool:
         return self.is_failed is not None and self.is_failed != "0"
 
-    def encoded_query_link(self, query:str, start_time:datetime=None, end_time:datetime=None) -> str:
+    def encoded_query_link(self, query:str, start_time:Optional[datetime]=None, end_time:Optional[datetime]=None) -> str:
         """Returns a gui link for the query over the given time range
 
         Args:
@@ -238,10 +213,9 @@ class SplunkQueryObject:
             params['latest'] = int(time.mktime(end_time.timetuple()))
 
         # build link
-        uri = urllib.parse.urlparse(self.search_session.base_url)
         uri = (
-            uri.scheme,
-            uri.hostname,
+            "https",
+            f"{self.host}:{self.port}",
             self.gui_path,
             '',
             urllib.parse.urlencode(params),
@@ -287,10 +261,10 @@ class SplunkQueryObject:
             query = f'{prefix}earliest={start.strftime("%m/%d/%Y:%H:%M:%S")} {query}'
 
         # run the query
-        sid = None
+        job = None
         while True:
             # submit/check query
-            sid, results = self.query_async(query, sid=sid, limit=limit, start=start, end=end, use_index_time=use_index_time, timeout=timeout)
+            job, results = self.query_async(query, job=job, limit=limit, start=start, end=end, use_index_time=use_index_time, timeout=timeout)
 
             if results is not None:
                 return results
@@ -301,12 +275,12 @@ class SplunkQueryObject:
     def query_async(
         self, 
         query:str, 
-        sid:Optional[str]=None, 
+        job:Optional[Job]=None, 
         limit:int=1000, 
         start:Optional[datetime]=None, 
         end:Optional[datetime]=None, 
         use_index_time:bool=False, 
-        timeout: Optional[str]="30:00") -> Tuple[Optional[str], Optional[List[dict]]]:
+        timeout: Optional[str]="30:00") -> Tuple[Optional[Job], Optional[List[dict]]]:
         """Executes a query asynchronously.
 
         To properly use the method you must call it in a loop and pass the returned sid into the next call until results are returned
@@ -327,25 +301,26 @@ class SplunkQueryObject:
             if self.is_running() and timeout is not None:
                 if local_time() >= self.running_start_time + create_timedelta(timeout):
                     logging.warning(f"splunk query timed out: {query}")
-                    self.cancel(sid)
+                    self.cancel(job)
                     return None, []
 
             # queue the query if we have not already
-            if sid is None:
-                sid = self.queue(query, limit, start=start, end=end, use_index_time=use_index_time)
-                return sid, None
+            if job is None:
+                job = self.queue(query, limit, start=start, end=end, use_index_time=use_index_time)
+                return job, None
 
-            # check if it is complete
-            if not self.complete(sid):
-                return sid, None
+            # wait for the job to complete
+            if not self.complete(job):
+                return job, None
 
             # return the results
-            results = self.results(sid)
-            logging.info(f"got results for {sid}")
+            results_reader = JSONResultsReader(job.results(count="0", output_mode="json"))
+            results = [result for result in results_reader]
+            logging.info(f"got results for {job.name}")
             self.end_time = local_time()
-            self.record_splunk_query_performance(sid)
-            self.delete_search_job(sid)
-            return sid, results
+            self.record_splunk_query_performance(job)
+            self.delete_search_job(job)
+            return job, results
 
         except HTTPError as e:
             # requeue query if splunk lost the query
@@ -355,29 +330,29 @@ class SplunkQueryObject:
             # report erorr and return empty results
             logging.warning(f'Search failed: {type(e)} {e}')
             #self.cancel(sid)
-            if sid:
-                self.delete_search_job(sid)
-            self.record_splunk_query_performance(sid, error=e)
+            if job:
+                self.delete_search_job(job)
+            self.record_splunk_query_performance(job, error=e)
             return None, []
 
         # report erorrs and return empty results
         except ( ConnectionError, Timeout, ProxyError ) as e:
             logging.warning(f'Search failed: {type(e)} {e}')
-            if sid:
-                self.delete_search_job(sid)
-            self.record_splunk_query_performance(sid, error=e)
+            if job:
+                self.delete_search_job(job)
+            self.record_splunk_query_performance(job, error=e)
             return None, []
 
         except Exception as e:
             logging.error(f'Search failed: {e}')
             report_exception()
-            if sid:
-                self.delete_search_job(sid)
-            self.record_splunk_query_performance(sid, error=e)
+            if job:
+                self.delete_search_job(job)
+            self.record_splunk_query_performance(job, error=e)
             return None, []
 
-    def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False) -> str:
-        """Queue the query and return the search id
+    def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False) -> Optional[Job]:
+        """Queue the query and return the job object
 
         Args:
             query (str): the query to queue
@@ -387,7 +362,7 @@ class SplunkQueryObject:
             use_index_time (bool, optional): set to true to search over index time (default False)
 
         Returns:
-            str: the search id of the query
+            Optional[Job]: the job object for the query
         """
         self.reset_search_status()
 
@@ -396,7 +371,7 @@ class SplunkQueryObject:
             query = 'search ' + query
 
 
-        data = {'search': query, 'max_count': limit}
+        search_kwargs = {'max_count': limit, "exec_mode": "normal"}
 
         # see https://docs.splunk.com/Documentation/Splunk/9.0.3/RESTREF/RESTsearch#search.2Fjobs
         # then see https://community.splunk.com/t5/Splunk-Search/subsearch-default-time-range/m-p/52515/highlight/true#M12767
@@ -405,21 +380,22 @@ class SplunkQueryObject:
 
         if start is not None and end is not None:
             if use_index_time:
-                data['index_earliest'] = start.isoformat(sep='T',timespec='auto')
-                data['index_latest'] = end.isoformat(sep='T',timespec='auto')
-                logging.info(f"using index time earliest = {data['index_earliest']} latest = {data['index_latest']}")
+                search_kwargs['index_earliest'] = start.isoformat(sep='T',timespec='auto')
+                search_kwargs['index_latest'] = end.isoformat(sep='T',timespec='auto')
+                logging.info(f"using index time earliest = {search_kwargs['index_earliest']} latest = {search_kwargs['index_latest']}")
             else:
-                data['earliest_time'] = start.isoformat(sep='T',timespec='auto')
-                data['latest_time'] = end.isoformat(sep='T',timespec='auto')
-                logging.info(f"using time earliest = {data['earliest_time']} latest = {data['latest_time']}")
+                search_kwargs['earliest_time'] = start.isoformat(sep='T',timespec='auto')
+                search_kwargs['latest_time'] = end.isoformat(sep='T',timespec='auto')
+                logging.info(f"using time earliest = {search_kwargs['earliest_time']} latest = {search_kwargs['latest_time']}")
 
 
-        response = self.search_session.post('/search/jobs', data=data)
-        search_id = etree.fromstring(response.content).xpath('//sid/text()')[0]
-        self.record_splunk_sid(search_id, query)
-        return search_id
+        #self.job = self.search_session.post('/search/jobs', data=search_kwargs)
+        search_job = self.client.jobs.create(query, **search_kwargs)
+        #search_id = etree.fromstring(response.content).xpath('//sid/text()')[0]
+        self.record_splunk_sid(search_job.name, query)
+        return search_job
 
-    def complete(self, sid:str) -> bool:
+    def complete(self, job:Job) -> bool:
         """Checks if the query is complete
 
         Args:
@@ -428,56 +404,24 @@ class SplunkQueryObject:
         Returns:
             bool: True if complete, False otherwise
         """
-        response = self.search_session.get(f'/search/jobs/{sid}')
-        # weird bug with splunk api that results in it returning a 204 with no content, requeue query when this happens
-        if response.status_code == 204:
-            raise HTTPError('No content', response=response)
+        if not job.is_ready():
+            logging.debug(f"job {job.name} is not ready yet")
+            return False
 
-        parsed_xml = etree.fromstring(response.content)
+        # gather all the stats at once
+        job.refresh()
 
-        node_search = parsed_xml.find('.//*[@name="isDone"]')
-        if node_search is not None:
-            self.is_done = node_search.text
+        self.is_done = job["isDone"]
+        self.done_progress = job["doneProgress"]
+        self.dispatch_state = job["dispatchState"]
+        self.is_failed = job["isFailed"]
+        self.event_count = job["eventCount"]
+        self.run_duration = job["runDuration"]
 
-        node_search = parsed_xml.find('.//*[@name="doneProgress"]')
-        if node_search is not None:
-            self.done_progress = node_search.text
+        logging.info(f"{job.name} dispatch state {self.dispatch_state} done progress: {self.done_progress} is failed {self.is_failed} event count {self.event_count} run duration {self.run_duration} wait time {int(self.wait_time if self.wait_time else 0)} run time {int(self.run_time if self.run_time else 0)} total time {int(self.total_time if self.total_time else 0)}")
+        return self.is_done == "1"
 
-        node_search = parsed_xml.find('.//*[@name="dispatchState"]')
-        if node_search is not None:
-            self.dispatch_state = node_search.text
-
-        node_search = parsed_xml.find('.//*[@name="isFailed"]')
-        if node_search is not None:
-            self.is_failed = node_search.text
-
-        node_search = parsed_xml.find('.//*[@name="eventCount"]')
-        if node_search is not None:
-            self.event_count = node_search.text
-
-        node_search = parsed_xml.find('.//*[@name="runDuration"]')
-        if node_search is not None:
-            self.run_duration = node_search.text
-
-        logging.info(f"{sid} dispatch state {self.dispatch_state} done progress: {self.done_progress} is failed {self.is_failed} event count {self.event_count} run duration {self.run_duration} wait time {int(self.wait_time if self.wait_time else 0)} run time {int(self.run_time if self.run_time else 0)} total time {int(self.total_time if self.total_time else 0)}")
-        return self.is_done == '1'
-
-    def results(self, sid:str) -> List[dict]:
-        """Returns the results for a given search id
-
-        Args:
-            sid (str): the search id of the query to get results for
-
-        Returns:
-            list: the list of results for the query
-        """
-        params = {'count': "0", 'output_mode': 'json_rows'}
-        r = self.search_session.get(f'/search/jobs/{sid}/results', params=params).json()
-
-        # convert list of fields and rows to list of dictionaries
-        return [ { r['fields'][i] : row[i] for i in range(0, len(r['fields'])) } for row in r['rows'] ]
-
-    def cancel(self, sid:str) -> bool:
+    def cancel(self, job:Job) -> bool:
         """Cancels a query by search id
 
         Args:
@@ -487,20 +431,21 @@ class SplunkQueryObject:
             bool: True if cancelled succesfully, False otherwise
         """
         # skip if sid is not set
-        if sid is None:
+        if job is None:
+            logging.warning("called cancel with no job")
             return True
 
         # tell splunk to delete the job
         try:
-            r = self.search_session.delete(f'/search/jobs/{sid}')
+            job.cancel()
             return True
 
         # ignore failures
         except Exception as e:
-            logging.warning(f"unable to cancel search {sid}: {e}")
+            logging.warning(f"unable to cancel search {job.name}: {e}")
             return False
 
-    def delete_search_job(self, sid:str) -> bool:
+    def delete_search_job(self, job:Job) -> bool:
         """Deletes a search job by sid.
 
         Args:
@@ -510,90 +455,20 @@ class SplunkQueryObject:
             bool: True if deleted
         """
         # skip if sid is not set
-        assert sid
+        assert job is not None
 
         # tell splunk to delete the job
         try:
-            logging.info(f"deleting search job {sid}")
-            response = self.search_session.delete(f'/search/jobs/{sid}')
-            response.raise_for_status()
+            logging.info(f"deleting search job {job.name}")
+            job.delete()
             return True
 
         # ignore failures
         except Exception as e:
-            logging.warning(f"unable to delete search {sid}: {e}")
+            logging.warning(f"unable to delete search {job.name}: {e}")
             return False
 
-    def get_all_from_kvstore(self, collection:str) -> List[dict]:
-        """gets all items in a kv store collection
-
-        Args:
-            collection (str): the name of the collection to retrieve entries from
-
-        Returns:
-            list: a list containing a dict for each item in the collection
-        """
-        try:
-            return self.search_session.get(f'/storage/collections/data/{collection}').json()
-
-        except Exception as e:
-            logging.error(f'unable to get data from {collection}: {e}')
-            return []
-
-    def save_to_kvstore(self, collection:str, items:List[dict]) -> bool:
-        """batch save a list of items to the collection. duplicated are ignored
-
-        Args:
-            collection (str): the name of the collection to add items to
-            items (str): a list containing a dict for each item to add to the collection
-
-        Returns:
-            bool: True if save was successful, False otherwise
-        """
-        try:
-            self.search_session.post(f'/storage/collections/data/{collection}/batch_save', json=items)
-            return True
-
-        except Exception as e:
-            logging.error(f'unable to save data to {collection}: {e}')
-            return False
-
-    def delete_from_kvstore_by_id(self, collection:str, item_id:str) -> bool:
-        """Deletes an item from the collection
-
-        Args:
-            collection (str): the name of the collection to delete the item from
-            item_id (str): the id of the item to remove from the collection
-
-        Returns:
-            bool: True if delete was successful, False otherwise
-        """
-        try:
-            self.search_session.delete(f'/storage/collections/data/{collection}/{item_id}')
-            return True
-
-        except Exception as e:
-            logging.error(f'unable to delete {item_id} from {collection}: {e}')
-            return False
-
-    def delete_all_from_kvstore(self, collection:str) -> bool:
-        """Deletes all items from the collection
-
-        Args:
-            collection (str): the name of the collection to delete all items from
-
-        Returns:
-            bool: True if delete was successful, False otherwise
-        """
-        try:
-            self.search_session.delete(f'/storage/collections/data/{collection}')
-            return True
-
-        except Exception as e:
-            logging.error(f'unable to clear {collection}: {e}')
-            return False
-
-    def record_splunk_sid(self, sid: str, query: str):
+    def record_splunk_sid(self, job: Job, query: str):
         if not self.performance_logging_directory:
             return
 
@@ -603,7 +478,7 @@ class SplunkQueryObject:
             target_path = os.path.join(target_dir, local_time().strftime("splunk_sid_lookup_%d%m%Y.csv"))
             with open(target_path, "a+") as fp:
                 writer = csv.writer(fp)
-                writer.writerow([sid, query])
+                writer.writerow([job.name, query])
 
         except Exception as e:
             logging.error(f"unable to record splunk sid: {e}")
@@ -612,17 +487,11 @@ class SplunkQueryObject:
     def get_search_log(self, sid: str, target_file: str) -> bool:
         """Download the Splunk log for the given search and store it in the specified file.
         Returns True if one or more bytes was written. Raises exception on HTTP error."""
-        response = self.search_session.get(f'/search/jobs/{sid}/search.log', stream=True)
-        response.raise_for_status()
-        bytes = 0
-        with open(target_file, "wb") as fp:
-            for chunk in response.iter_content(chunk_size=None):
-                fp.write(chunk)
-                bytes += len(chunk)
 
-        return bytes > 0
+        # removed for now...
+        raise NotImplementedError("not implemented")
 
-    def record_splunk_query_performance(self, sid, error=None):
+    def record_splunk_query_performance(self, job: Job, error=None):
         if not self.performance_logging_directory:
             return
 
@@ -633,119 +502,12 @@ class SplunkQueryObject:
             target_path = os.path.join(target_dir, local_time().strftime("splunk_performance_%d%m%Y.csv"))
             with open(target_path, "a+") as fp:
                 writer = csv.writer(fp)
-                writer.writerow([sid, local_time(), self.start_time, self.running_start_time, self.end_time, self.dispatch_state, self.run_duration, error, self.wait_time, self.total_time, self.run_time])
+                writer.writerow([job.name, local_time(), self.start_time, self.running_start_time, self.end_time, self.dispatch_state, self.run_duration, error, self.wait_time, self.total_time, self.run_time])
 
         except Exception as e:
             logging.error(f"unable to record splunk query performance: {e}")
             report_exception()
 
-        #try:
-            #log_dir = os.path.join(target_dir, "logs")
-            #if not os.path.isdir(log_dir):
-                #os.mkdir(log_dir)
-
-            #log_path = os.path.join(log_dir, f"{sid}.log")
-            #if os.path.exists(log_path):
-                #logging.info(f"splunk log file {log_path} already exists")
-            #else:
-                #if self.get_search_log(sid, log_path):
-                    #logging.info(f"saved search log for {sid} to {log_path}")
-
-        #except Exception as e:
-            #logging.warning(f"unable to acquire search.log for {sid}: {e}")
-
-    def get_saved_searches(self) -> list[SavedSearch]:
-        """Returns the list of all the saved searches available as a list of SavedSearch objects."""
-
-        ns = {
-            "": "http://www.w3.org/2005/Atom",
-            "s": "http://dev.splunk.com/ns/rest",
-            "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
-        }
-
-        results = []
-        offset = 0
-
-        while True:
-            params = {
-                "count": 30,
-                "offset": offset,
-            }
-
-            logging.debug(f"downloading saved searches @ offset {offset}")
-            response = self.search_session.request("get", "/saved/searches", params=params)
-            response.raise_for_status()
-
-            parsed_xml = etree.fromstring(response.content)
-
-            total_results = int(parsed_xml.find(".//opensearch:totalResults", ns).text)
-            items_per_page = int(parsed_xml.find(".//opensearch:itemsPerPage", ns).text)
-            start_index = int(parsed_xml.find(".//opensearch:startIndex", ns).text)
-
-            for node in parsed_xml.findall(".//entry", ns):
-                search = SavedSearch(
-                    name = node.find(".//title", ns).text,
-                    description = node.find('.//*[@name="description"]', ns).text,
-                    search = node.find('.//*[@name="search"]', ns).text,
-                )
-
-                # we mark what we manage by prepending a prefix to the name
-                if not search.name.startswith(SAVED_SEARCH_PREFIX):
-                    continue
-
-                # make this feature transparent by stripping the prefix
-                search.name = search.name[len(SAVED_SEARCH_PREFIX):]
-
-                results.append(search)
-
-            # are we done yet?
-            if start_index + items_per_page >= total_results:
-                break
-
-            # move on to the next page
-            offset += items_per_page
-
-        return results
-
-    def publish_saved_search(self, saved_search: SavedSearch) -> bool:
-        """Publishes the given search to Splunk. Creates or updates the saved search.
-        Returns True if successful. Raises HTTPError on API error."""
-
-        prefixed_name = SAVED_SEARCH_PREFIX + saved_search.name
-        logging.info(f"publishing saved search {prefixed_name}")
-
-        try:
-            response = self.search_session.request("post", "/saved/searches", data={
-                "name": prefixed_name,
-                "description": saved_search.description,
-                "search": saved_search.search,
-            }, halt_statuses=[409])
-            response.raise_for_status()
-            logging.info(f"created saved search {prefixed_name}")
-            return response.status_code in range(200, 300)
-        except HTTPError as e:
-            if e.response.status_code == 409:
-                response = self.search_session.request("post", f"/saved/searches/{prefixed_name}", data={
-                    "description": saved_search.description,
-                    "search": saved_search.search,
-                })
-                response.raise_for_status()
-                logging.info(f"updated saved search {prefixed_name}")
-                return response.status_code in range(200, 300)
-
-        return False
-
-    def delete_saved_search(self, saved_search: SavedSearch) -> bool:
-        """Deletes the given saved search.
-        Returns True if successful. Raises HTTPError on API error."""
-
-        prefixed_name = SAVED_SEARCH_PREFIX + saved_search.name
-        logging.info(f"deleting saved search {prefixed_name}")
-        response = self.search_session.request("delete", f"/saved/searches/{prefixed_name}")
-        response.raise_for_status()
-        return response.status_code in range(200, 300)
-
-# XXX refactor this garbage function
 def SplunkClient(config: str = "splunk", **kwargs) -> SplunkQueryObject:
     """Convenience function for creating a SplunkClient from a config section
 
@@ -757,7 +519,8 @@ def SplunkClient(config: str = "splunk", **kwargs) -> SplunkQueryObject:
     """
 
     kwargs.update({
-        "uri": get_config()[config]["uri"],
+        "host": get_config()[config]["host"],
+        "port": get_config()[config]["port"],
         "proxies": proxy_config(get_config()[config].get("proxy", fallback=None)),
     })
 

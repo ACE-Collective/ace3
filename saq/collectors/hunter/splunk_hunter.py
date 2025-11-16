@@ -40,6 +40,8 @@ class SplunkHunt(QueryHunt):
         self.tool_instance = get_config_value(self.splunk_config, CONFIG_SPLUNK_URI)
         self.timezone = get_config_value(self.splunk_config, CONFIG_SPLUNK_TIMEZONE)
 
+        self.job = None
+
     @property
     def namespace_user(self) -> Optional[str]:
         return self.config.namespace_user
@@ -117,11 +119,11 @@ class SplunkHunt(QueryHunt):
         self.search_link = searcher.encoded_query_link(self.formatted_query_timeless(), start_time.astimezone(tz), end_time.astimezone(tz))
 
         # reset search_id before searching so we don't get previous run results
-        self.search_id = None
+        self.job = None
 
         while True:
             # continue the query (this call times out on its own if the query takes too long)
-            self.search_id, search_result = searcher.query_async(query, sid=self.search_id, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
+            self.job, search_result = searcher.query_async(query, job=self.job, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
 
             # stop if we are done
             if search_result is not None:
@@ -135,7 +137,7 @@ class SplunkHunt(QueryHunt):
 
             # wait a few seconds before checking again
             if self.cancel_event.wait(3):
-                searcher.cancel(self.search_id)
+                searcher.cancel(self.job)
                 return None
 
     def cancel(self):

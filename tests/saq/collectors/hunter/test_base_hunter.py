@@ -130,6 +130,27 @@ def test_start_stop(hunter_service_multi_threaded):
     hunter_service_multi_threaded.wait()
 
 @pytest.mark.integration
+def test_persistence_defers_execution_on_reload(hunter_service_single_threaded, manager_kwargs):
+    # Execute all hunts once to write persistence (last_executed_time, etc.)
+    hunter_service_single_threaded.start_single_threaded()
+    # Validate they executed at least once (establishes persisted state)
+    assert log_count('unit test execute marker: Hunt(unit_test_1[test])') >= 1
+    assert log_count('unit test execute marker: Hunt(unit_test_2[test])') >= 1
+
+    # Simulate a "restart": construct a fresh manager and load hunts
+    manager = HuntManager(**manager_kwargs)
+    manager.load_hunts_from_config()
+    assert len(manager.hunts) >= 1
+
+    # The hunt 'unit_test_1' has a frequency of 10s; immediately after restart it should NOT be ready
+    hunt_names = {h.name: h for h in manager.hunts}
+    if 'unit_test_1' in hunt_names:
+        assert not hunt_names['unit_test_1'].ready
+    else:
+        # If the expected hunt isn't present, fail explicitly (test fixture/rules issue)
+        assert False, "Expected hunt 'unit_test_1' not found after reload"
+
+@pytest.mark.integration
 def test_add_hunt(manager_kwargs):
     hunter = HuntManager(**manager_kwargs)
     hunter.add_hunt(default_hunt(manager=hunter))

@@ -67,6 +67,7 @@ requests-mock
 requests-ntlm
 requests-oauthlib
 shodan
+splunk-sdk
 SQLAlchemy
 tabulate
 tld
@@ -85,4 +86,3 @@ numpy
 pandas
 tqdm
 qdrant-client
-
