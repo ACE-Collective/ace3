@@ -24,7 +24,17 @@ if TYPE_CHECKING:
 class Observable(BaseNode):
     """Represents a piece of information discovered in an analysis that can itself be analyzed."""
 
-    def __init__(self, type: Optional[str]=None, value: Optional[str]=None, time: Union[str, datetime, None]=None, volatile: bool=False, sort_order: int=100, *args, **kwargs):
+    def __init__(
+        self,
+        type:
+        Optional[str]=None,
+        value: Optional[str]=None,
+        time: Union[str, datetime, None]=None,
+        volatile: bool=False,
+        sort_order: int=100,
+        *args,
+        **kwargs):
+
         super().__init__(*args, **kwargs)
 
         self._directives = []

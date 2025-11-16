@@ -28,6 +28,8 @@ from saq.util import parse_event_time, storage_dir_from_uuid, validate_uuid, wor
 from flask import request, abort, Response, send_from_directory
 from flask import g as g_flask
 
+from saq.util.hashing import sha256_file
+
 
 KEY_ANALYSIS = 'analysis'
 
@@ -116,28 +118,21 @@ def submit():
             for tag in r[KEY_TAGS]:
                 root.add_tag(tag)
 
+        file_observable_dicts: list[dict] = []
+
         # add the observables
         if KEY_OBSERVABLES in r:
             for observable_dict in r[KEY_OBSERVABLES]:
-                root.add_observable(create_observable_from_dict(observable_dict))
+                if observable_dict['type'] == F_FILE:
+                    file_observable_dicts.append(observable_dict)
+                else:
+                    root.add_observable(create_observable_from_dict(observable_dict))
 
         # save the files to disk and add them as observables of type file
         file_list = []
         for file_object in request.files.getlist('file'):
-            logging.debug("recording file {}".format(file_object.filename))
-            #temp_dir = tempfile.mkdtemp(dir=get_config().get('api', 'incoming_dir'))
-            #_path = os.path.join(temp_dir, secure_filename(f.filename))
+            logging.info("recording file {}".format(file_object.filename))
             try:
-                #if os.path.exists(_path):
-                    #logging.error("duplicate file name {}".format(_path))
-                    #abort(400)
-
-                #logging.debug("saving file to {}".format(_path))
-                #try:
-                    #f.save(_path)
-                #except Exception as e:
-                    #logging.error("unable to save file to {}: {}".format(_path, e))
-                    #abort(400)
 
                 full_path = root.create_file_path(file_object.filename)
 
@@ -153,10 +148,33 @@ def submit():
                     logging.debug("saving file {}".format(full_path))
                     file_object.save(full_path)
 
+                    #
+                    # XXX absolutely ugly code here, sorry
+                    # just keeping this working for now until we replace with FastAPI
+                    #
+
+                    # find the file observable dict that matches this file
+                    file_sha256 = sha256_file(full_path)
+                    file_observable_dict = next((f for f in file_observable_dicts if f['value'] == file_sha256), None)
+
+                    # if we don't find one we create one
+                    if not file_observable_dict:
+                        file_observable_dict = {
+                            'value': file_sha256,
+                            'file_path': file_object.filename
+                        }
+
                     # add this as a F_FILE type observable
-                    file_observable = root.add_file_observable(full_path)
+                    file_observable = root.add_file_observable(full_path, target_path=file_observable_dict['file_path'])
                     if file_observable:
                         file_list.append(file_observable.full_path)
+                        if file_observable_dict:
+                            for tag in file_observable_dict.get('tags', []):
+                                file_observable.add_tag(tag)
+                            for directive in file_observable_dict.get('directives', []):
+                                file_observable.add_directive(directive)
+                            for limited_analysis in file_observable_dict.get('limited_analysis', []):
+                                file_observable.limit_analysis(limited_analysis)
 
                 except Exception as e:
                     logging.error("unable to copy file from to {} for root {}: {}".format(full_path, root, e))
@@ -167,12 +185,6 @@ def submit():
                 logging.error("unable to deal with file {}: {}".format(file_object, e))
                 report_exception()
                 abort(400)
-
-            #finally:
-                #try:
-                    #shutil.rmtree(temp_dir)
-                #except Exception as e:
-                    #logging.error("unable to delete temp dir {}: {}".format(temp_dir, e))
 
         # is this submission tuned out?
         try:

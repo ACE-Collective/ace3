@@ -9,6 +9,7 @@ import os
 import os.path
 import re
 
+from tempfile import mkstemp
 from typing import Optional
 
 from glom import PathAccessError
@@ -17,10 +18,11 @@ from pydantic import BaseModel, Field
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.hunter.base_hunter import HuntConfig
+from saq.collectors.hunter.decoder import DecoderType, decode_value
 from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration import get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT, F_HUNT, G_TEMP_DIR
+from saq.constants import CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT, F_FILE, F_HUNT, G_TEMP_DIR
 from saq.environment import g
 from saq.observables.generator import create_observable
 
@@ -36,6 +38,8 @@ class ObservableMapping(BaseModel):
     field_lookup_type: Optional[str] = Field(default=FIELD_LOOKUP_TYPE_KEY, description="The type of lookup to perform for the fields.")
     type: str = Field(..., description="The type of observable to map to")
     value: Optional[str] = Field(default=None, description="OPTIONAL value to use for the observable")
+    file_name: Optional[str] = Field(default=None, description="OPTIONAL if the type is F_FILE, the name of the file to use for the observable")
+    file_decoder: Optional[DecoderType] = Field(default=None, description="OPTIONAL if the type is F_FILE, the decoder to use for the observable")
     time: bool = Field(default=False, description="Whether to use the time of the event as the time of the observable")
     directives: list[str] = Field(default_factory=list, description="The directives to add to the observable")
     tags: list[str] = Field(default_factory=list, description="The tags to add to the observable")
@@ -52,6 +56,10 @@ class QueryHuntConfig(HuntConfig):
     observable_mapping: list[ObservableMapping] = Field(default_factory=list, description="The mapping of fields to observables.")
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config_value_as_int(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT), description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config_value(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT), description="The timeout for the query (in HH:MM:SS format).")
+
+class FileContent(BaseModel):
+    file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
+    content: bytes = Field(..., description="The content of the file.")
 
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -349,8 +357,9 @@ class QueryHunt(Hunt):
 
             # pull the observables out of this event
             observables: list[Observable] = []
-            if self.name:
-                observables.append(create_observable(F_HUNT, self.name))
+
+            # pull file contents out separately from observables
+            file_contents: list[FileContent] = []
 
             for observable_mapping in self.observable_mapping:
                 # first make sure all the fields that we need to map this observable are present in the event
@@ -377,8 +386,25 @@ class QueryHunt(Hunt):
                     # otherwise we interpolate the value from the event
                     observed_value = interpolate_event_value(observable_mapping.value, event)
 
+                if observable_mapping.file_decoder is not None:
+                    observed_value = decode_value(observed_value, observable_mapping.file_decoder)
+
                 # create the observable
-                observable = create_observable(observable_mapping.type, observed_value)
+                if observable_mapping.type == F_FILE:
+                    # if we're treating the value of this field as file content but the value is a string,
+                    # then we need to encode it as bytes
+                    if isinstance(observed_value, str):
+                        observed_value = observed_value.encode('utf-8')
+
+                    if not isinstance(observed_value, bytes):
+                        logging.error(f"expected bytes for file content, got {type(observed_value)} for event {event} in hunt {self}")
+                        continue
+
+                    target_file_name = interpolate_event_value(observable_mapping.file_name, event)
+                    file_contents.append(FileContent(file_name=target_file_name, content=observed_value))
+                else:
+                    observable = create_observable(observable_mapping.type, observed_value)
+
                 if observable is None:
                     logging.error(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
                     continue
@@ -399,12 +425,22 @@ class QueryHunt(Hunt):
                 if observable not in observables:
                     observables.append(observable)
 
+            if self.name:
+                observables.append(create_observable(F_HUNT, self.name))
+
             # if we are NOT grouping then each row is an alert by itself
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
                 submission = _create_submission(event)
                 submission.root.event_time = event_time
                 for observable in observables:
                     submission.root.add_observable(observable)
+
+                for file_content in file_contents:
+                    fd, temp_file_path = mkstemp(dir=g(G_TEMP_DIR))
+                    os.write(fd, file_content.content)
+                    os.close(fd)
+
+                    submission.root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True)
 
                 submission.root.details.append(event)
                 submissions.append(submission)
@@ -427,6 +463,13 @@ class QueryHunt(Hunt):
                     for observable in observables:
                         if observable not in event_grouping[grouping_target].root.observables:
                             event_grouping[grouping_target].root.add_observable(observable)
+
+                    for file_content in file_contents:
+                        fd, temp_file_path = mkstemp(dir=g(G_TEMP_DIR))
+                        os.write(fd, file_content.content)
+                        os.close(fd)
+
+                        event_grouping[grouping_target].root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True)
 
                     event_grouping[grouping_target].root.details.append(event)
 

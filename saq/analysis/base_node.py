@@ -17,7 +17,11 @@ KEY_SORT_ORDER = 'sort_order'
 class BaseNode():
     """The base class of a node in the analysis tree."""
 
-    def __init__(self, *args, uuid: Optional[str]=None, sort_order: int=100, **kwargs):
+    def __init__(
+        self,
+        uuid: Optional[str]=None,
+        sort_order: int=100):
+
         self.uuid:str = uuid or str(uuid4())
 
         self.tags:list[Tag] = []

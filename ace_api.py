@@ -361,18 +361,18 @@ def submit(
         formatted_event_time = event_time
 
     # make sure the observables are in the correct format
-    for o in observables:
-        assert isinstance(o, dict)
-        assert 'type' in o, "missing type in observable {}".format(o)
-        assert 'value' in o, "missing value in observable {}".format(o)
-        for key in o.keys():
-            assert key in [ 'type', 'value', 'time', 'tags', 'directives', 'limited_analysis', 'pivot_links', 'file_path' ], "unknown observable property {} in {}".format(key, o)
+    for observable in observables:
+        assert isinstance(observable, dict)
+        assert 'type' in observable, "missing type in observable {}".format(observable)
+        assert 'value' in observable, "missing value in observable {}".format(observable)
+        for key in observable.keys():
+            assert key in [ 'type', 'value', 'time', 'tags', 'directives', 'limited_analysis', 'pivot_links', 'file_path' ], "unknown observable property {} in {}".format(key, observable)
 
         # make sure any times are formatted
-        if 'time' in o and isinstance(o['time'], datetime.datetime):
-            if o['time'].tzinfo is None:
-                o['time'] = LOCAL_TIMEZONE.localize(o['time'])
-            o['time'] = o['time'].astimezone(pytz.UTC).strftime(DATETIME_FORMAT)
+        if 'time' in observable and isinstance(observable['time'], datetime.datetime):
+            if observable['time'].tzinfo is None:
+                observable['time'] = LOCAL_TIMEZONE.localize(observable['time'])
+            observable['time'] = observable['time'].astimezone(pytz.UTC).strftime(DATETIME_FORMAT)
 
     # make sure the tags are strings
     for t in tags:

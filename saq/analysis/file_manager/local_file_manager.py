@@ -1,9 +1,7 @@
-import hashlib
 import logging
 import os
 import shutil
 from typing import Any, Optional
-from pathlib import Path
 
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR, G_SAQ_HOME
@@ -151,6 +149,7 @@ class LocalFileManager(FileManagerInterface):
                 except Exception:
                     try:
                         # Fall back to copy
+                        logging.warning(f"unable to hard link file {source_path} to {hardcopy_path}, falling back to copy")
                         shutil.copy(source_path, hardcopy_path)
                     except Exception as e:
                         logging.error(f"unable to copy file {source_path} to {hardcopy_path}: {e}")

@@ -1,6 +1,10 @@
 import pytest
 
-from saq.util.strings import format_item_list_for_summary
+from saq.util.strings import (
+    decode_ascii_hex,
+    decode_base64,
+    format_item_list_for_summary,
+)
 
 
 class TestFormatItemListForSummary:
@@ -52,3 +56,57 @@ class TestFormatItemListForSummary:
         expected_items = ", ".join([f"item{i}" for i in range(20)])
         expected = f"{expected_items} + 5 more"
         assert result == expected
+
+
+class TestDecodeBase64:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("Zm9v", b"foo"),
+            (" Zm9vYmFyIA==\n", b"foobar "),
+            ("Zm9vYmFy", b"foobar"),
+            ("Zm9vYmF", b"fooba"),
+            ("Zm9vYg", b"foob"),
+        ],
+    )
+    def test_decode_base64_valid(self, value, expected):
+        assert decode_base64(value) == expected
+
+    @pytest.mark.unit
+    def test_decode_base64_type_error(self):
+        with pytest.raises(TypeError):
+            decode_base64(b"Zm9v")
+
+    @pytest.mark.unit
+    def test_decode_base64_invalid_data(self):
+        with pytest.raises(Exception):
+            decode_base64("not-base64!")
+
+
+class TestDecodeAsciiHex:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("4d5a", b"MZ"),
+            (" 4d5a ", b"MZ"),
+            ("", b""),
+        ],
+    )
+    def test_decode_ascii_hex_valid(self, value, expected):
+        assert decode_ascii_hex(value) == expected
+
+    @pytest.mark.unit
+    def test_decode_ascii_hex_type_error(self):
+        with pytest.raises(TypeError):
+            decode_ascii_hex(b"4d5a")
+
+    @pytest.mark.unit
+    def test_decode_ascii_hex_odd_length(self, caplog):
+        caplog.set_level("WARNING")
+        result = decode_ascii_hex("4d5")
+        assert result == b"M"
+        assert "dropping trailing character" in caplog.text

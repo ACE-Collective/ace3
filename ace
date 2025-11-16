@@ -38,6 +38,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.environment import g, g_boolean, g_int, g_obj, get_base_dir
 from saq.error.reporting import report_exception
+from saq.observables.file import FileObservable
 from saq.remediation import REMEDIATION_STATUS_IN_PROGRESS, REMEDIATION_STATUS_NEW
 from saq.util.hashing import sha256_file
 from saq.util.uuid import storage_dir_from_uuid
@@ -61,9 +62,6 @@ def execute_hunt(args):
         sys.exit(1)
 
     hunter_service.hunt_managers[hunt_type].load_hunts_from_config()
-    for hunt in hunter_service.hunt_managers[hunt_type].hunts:
-        print(hunt.name)
-
     hunt = hunter_service.hunt_managers[hunt_type].get_hunt(lambda hunt: hunt_name.lower() in hunt.name.lower())
     if hunt is None:
         logging.error(f"unknown hunt {hunt_name} for type {hunt_type}")
@@ -96,7 +94,7 @@ def execute_hunt(args):
         print(submission.root.description)
         if args.details:
             for o in submission.root.observables:
-                output = f"\t(*) {o.type} - {o.value}"
+                output = f"\t(*) {o.type} - {o.display_value}"
                 if o.time:
                     output += " - {}".format(o.time)
                 if o.tags:
@@ -111,10 +109,6 @@ def execute_hunt(args):
 
             for t in submission.root.tags:
                 print(f"\t(+) {t}")
-
-            #if submission.root.extensions:
-                #for url in submission.root.extensions.get("pivot_links", []):
-                    #print(f"\t🔗 {url}")
 
             if submission.root.pivot_links:
                 for pv in submission.root.pivot_links:
@@ -142,7 +136,7 @@ def execute_hunt(args):
 
         observables = []
         for observable in submission.root.observables:
-            observables.append({
+            observable_json = {
                 'type': observable.type,
                 'value': observable.value,
                 'time': observable.time,
@@ -151,7 +145,12 @@ def execute_hunt(args):
                 'limited_analysis': observable.limited_analysis,
                 #'pivot_links': observable.pivot_links,
                 #'file_path': observable.file_path,
-            })
+            }
+
+            if isinstance(observable, FileObservable):
+                observable_json['file_path'] = observable.file_path
+
+            observables.append(observable_json)
 
         if args.submit_alerts is not None:
             result = ace_api.submit(
@@ -169,7 +168,9 @@ def execute_hunt(args):
                 queue=submission.root.queue,
                 instructions=submission.root.instructions,
                 extensions=submission.root.extensions,
-                files=[])
+                # LOL this awful "api" -- these params are backwards to how they are actually sent :(
+                files=[(_.file_path, open(_.full_path, "rb")) for _ in submission.root.observables if isinstance(_, FileObservable)]
+            )
 
 hunt_parser = get_cli_subparsers().add_parser('hunt')
 hunt_sp = hunt_parser.add_subparsers(dest='hunt_cmd')
