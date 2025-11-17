@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
 from saq.modules.phishkit import (
     PhishkitAnalysis, 
     PhishkitAnalyzer,
@@ -599,3 +599,135 @@ def test_phishkit_analyzer_continue_analysis_success(monkeypatch, test_context):
         assert analysis.exit_code == 0
         assert analysis.stdout == "scan completed"
         assert analysis.stderr == "no errors"
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_file_not_analyzed_in_non_correlation_mode(monkeypatch, test_context):
+    """Test that F_FILE observables are NOT analyzed when root analysis is NOT in correlation mode."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    
+    # Create a test file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<html><body>Test content</body></html>')
+        test_file_path = f.name
+    
+    try:
+        # Create file observable
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+        
+        # Mock file type analysis
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'HTML document', 'mime': 'text/html'}
+        file_observable.add_analysis(file_type_analysis)
+        
+        # Configure analyzer to accept html files
+        analyzer = PhishkitAnalyzer(context=create_test_context(root=root))
+        
+        def mock_config_get(key):
+            if key == 'valid_file_extensions':
+                return ['.html']
+            elif key == 'valid_mime_types':
+                return ['text/html']
+            return []
+        
+        monkeypatch.setattr(analyzer.config, '__getitem__', mock_config_get)
+        
+        # Mock wait_for_analysis
+        def mock_wait_for_analysis(observable, analysis_type):
+            return file_type_analysis
+        
+        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
+        
+        # Verify that accepts returns False (custom_requirement check)
+        # This is the gatekeeper - if accepts returns False, execute_analysis should not be called
+        assert not analyzer.accepts(file_observable)
+        
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkeypatch, test_context):
+    """Test that F_FILE observables ARE analyzed after switching root analysis to correlation mode."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    
+    # Create a test file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<html><body>Test content</body></html>')
+        test_file_path = f.name
+    
+    try:
+        # Create file observable
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+        
+        # Mock file type analysis
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'HTML document', 'mime': 'text/html'}
+        file_observable.add_analysis(file_type_analysis)
+        
+        # Configure analyzer to accept html files
+        analyzer = PhishkitAnalyzer(context=create_test_context(root=root))
+        
+        def mock_config_get(key):
+            if key == 'valid_file_extensions':
+                return ['.html']
+            elif key == 'valid_mime_types':
+                return ['text/html']
+            return []
+        
+        monkeypatch.setattr(analyzer.config, '__getitem__', mock_config_get)
+        
+        # Mock wait_for_analysis
+        def mock_wait_for_analysis(observable, analysis_type):
+            return file_type_analysis
+        
+        monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
+        
+        # First, verify that in non-correlation mode, it's NOT accepted for analysis
+        # The accepts method checks custom_requirement, which should return False
+        assert not analyzer.accepts(file_observable)
+        
+        # Now switch to correlation mode
+        root.analysis_mode = ANALYSIS_MODE_CORRELATION
+        
+        # Verify that accepts now returns True (custom_requirement should pass)
+        assert analyzer.accepts(file_observable)
+        
+        # Mock saq.phishkit functions
+        def mock_scan_file(file_path, output_dir, is_async=True):
+            return "file-job-after-switch"
+        
+        monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
+        
+        # Mock delay_analysis to return the expected result
+        def mock_delay_analysis(*args, **kwargs):
+            return AnalysisExecutionResult.INCOMPLETE
+        
+        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
+        
+        # Mock create_temporary_directory
+        def mock_create_temporary_directory():
+            return "/tmp/test-file-output-after-switch"
+        
+        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
+        
+        # Now execute analysis - it should create analysis
+        result = analyzer.execute_analysis(file_observable)
+        
+        # Since file analysis now returns the result of delay_analysis
+        assert result == AnalysisExecutionResult.INCOMPLETE
+        
+        # Analysis should now be created
+        analysis = file_observable.get_and_load_analysis(PhishkitAnalysis)
+        assert analysis is not None
+        assert analysis.job_id == "file-job-after-switch"
+        assert analysis.scan_type == SCAN_TYPE_FILE
+        
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)

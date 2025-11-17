@@ -146,6 +146,16 @@ class PhishkitAnalyzer(AnalysisModule):
         self.verify_config_item_has_value('valid_file_extensions')
         self.verify_config_item_has_value('valid_mime_types')
 
+    def custom_requirement(self, observable: Observable) -> bool:
+        """Custom requirement for phishkit analysis."""
+        if observable.type == F_URL:
+            return True
+        elif observable.type == F_FILE:
+            # phishkit file rendering only meaningful in correlation mode
+            return self.get_root().analysis_mode == ANALYSIS_MODE_CORRELATION
+        else:
+            return False
+
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
         if not analysis.job_id:
@@ -196,11 +206,6 @@ class PhishkitAnalyzer(AnalysisModule):
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         # if the observable is a file, we need to check if the file type is enabled for scanning
         if observable.type == F_FILE:
-            # phishkit file rendering only meaningful in correlation mode
-            if self.get_root().analysis_mode != ANALYSIS_MODE_CORRELATION:
-                logging.debug(f"skipping file {observable} - phishkit file rendering only runs in correlation mode")
-                return AnalysisExecutionResult.COMPLETED
-
             if not observable.has_directive(DIRECTIVE_RENDER):
                 logging.debug(f"skipping file {observable} - render directive not found")
                 return AnalysisExecutionResult.COMPLETED
