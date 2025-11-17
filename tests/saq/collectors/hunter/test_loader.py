@@ -242,7 +242,7 @@ class TestYAMLLoaderBasicFunctionality:
         yaml_file = tmpdir / "simple.yaml"
         yaml_file.write(yaml_content)
 
-        config = load_from_yaml(str(yaml_file), SimpleConfig)
+        config, _ = load_from_yaml(str(yaml_file), SimpleConfig)
 
         assert config.name == "test_rule"
         assert config.value == "test_value"
@@ -299,7 +299,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # the main file should override the included file's value
         assert config.name == "included_rule"
@@ -324,7 +324,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # the main file should override the included file's value
         assert config.name == "included_rule"
@@ -358,7 +358,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # later includes and main file should override earlier ones
         assert config.name == "second_rule"
@@ -392,7 +392,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # should resolve all nested includes
         assert config.name == "middle_rule"
@@ -420,7 +420,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         assert config.name == "included_rule"
         assert config.value == "overridden_value"
@@ -440,7 +440,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # should successfully load without the include directive in the result
         assert config.name == "test_rule"
@@ -463,7 +463,7 @@ rule:
         circular_file = tmpdir / "circular.yaml"
         circular_file.write(circular_content)
 
-        config = load_from_yaml(str(circular_file), SimpleConfig)
+        config, _ = load_from_yaml(str(circular_file), SimpleConfig)
 
         # should not cause infinite loop, file should only be loaded once
         assert config.name == "circular_rule"
@@ -490,7 +490,7 @@ rule:
         file_a = tmpdir / "file_a.yaml"
         file_a.write(file_a_content)
 
-        config = load_from_yaml(str(file_a), SimpleConfig)
+        config, _ = load_from_yaml(str(file_a), SimpleConfig)
 
         # should not cause infinite loop
         assert config.name == "file_a_rule"
@@ -525,7 +525,7 @@ rule:
         file_a = tmpdir / "file_a.yaml"
         file_a.write(file_a_content)
 
-        config = load_from_yaml(str(file_a), SimpleConfig)
+        config, _ = load_from_yaml(str(file_a), SimpleConfig)
 
         # should not cause infinite loop
         assert config.name == "file_a_rule"
@@ -567,7 +567,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # should successfully load without duplicating base
         assert config.name == "file_a_rule"
@@ -647,7 +647,7 @@ rule:
         override_file = tmpdir / "override.yaml"
         override_file.write(override_content)
 
-        config = load_from_yaml(str(override_file), SimpleConfig)
+        config, _ = load_from_yaml(str(override_file), SimpleConfig)
 
         # name should come from base, value should be overridden
         assert config.name == "base_name"
@@ -679,7 +679,7 @@ rule:
         main_file = tmpdir / "main.yaml"
         main_file.write(main_content)
 
-        config = load_from_yaml(str(main_file), SimpleConfig)
+        config, _ = load_from_yaml(str(main_file), SimpleConfig)
 
         # both values should come from main file
         assert config.name == "main_name"
@@ -709,7 +709,7 @@ rule:
         main1_file = tmpdir / "main1.yaml"
         main1_file.write(main1_content)
 
-        config1 = load_from_yaml(str(main1_file), SimpleConfig)
+        config1, _ = load_from_yaml(str(main1_file), SimpleConfig)
         assert config1.name == "second"
         assert config1.value == "second_value"
 
@@ -721,7 +721,7 @@ rule:
         main2_file = tmpdir / "main2.yaml"
         main2_file.write(main2_content)
 
-        config2 = load_from_yaml(str(main2_file), SimpleConfig)
+        config2, _ = load_from_yaml(str(main2_file), SimpleConfig)
         assert config2.name == "first"
         assert config2.value == "first_value"
 
@@ -753,7 +753,7 @@ rule:
         top_file = tmpdir / "top.yaml"
         top_file.write(top_content)
 
-        config = load_from_yaml(str(top_file), SimpleConfig)
+        config, _ = load_from_yaml(str(top_file), SimpleConfig)
 
         # name should be from middle (which overrode deep)
         # value should be from top (which overrode deep)
@@ -794,8 +794,8 @@ rule:
         hunt2_file.write(hunt2_content)
 
         # load both hunts
-        config1 = load_from_yaml(str(hunt1_file), SimpleConfig)
-        config2 = load_from_yaml(str(hunt2_file), SimpleConfig)
+        config1, _ = load_from_yaml(str(hunt1_file), SimpleConfig)
+        config2, _ = load_from_yaml(str(hunt2_file), SimpleConfig)
 
         # both should have common value but different names
         assert config1.name == "hunt1"
@@ -831,7 +831,7 @@ rule:
         specific_file = tmpdir / "specific.yaml"
         specific_file.write(specific_content)
 
-        config = load_from_yaml(str(specific_file), SimpleConfig)
+        config, _ = load_from_yaml(str(specific_file), SimpleConfig)
 
         assert config.name == "specific"
         assert config.value == "base_value"
@@ -846,7 +846,7 @@ rule:
         yaml_file = tmpdir / "test.yaml"
         yaml_file.write(content)
 
-        config = load_from_yaml(str(yaml_file), SimpleConfig)
+        config, _ = load_from_yaml(str(yaml_file), SimpleConfig)
 
         assert config.name == "test_rule"
         assert config.value == "test_value"

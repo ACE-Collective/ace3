@@ -102,7 +102,7 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
     return result
 
 
-def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> "HuntConfig":
+def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> tuple["HuntConfig", set[str]]:
     """Loads a hunt configuration from a YAML file.
 
     Args:
@@ -110,7 +110,7 @@ def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> "HuntConfig":
         config_type: the type of configuration to load
 
     Returns:
-        The loaded configuration object.
+        A tuple of (the loaded configuration object, set of all file paths that were loaded including the main file and all included files).
     """
 
     logging.debug(f"loading {path} from {config_type.__name__}")
@@ -122,5 +122,5 @@ def load_from_yaml(path: str, config_type: Type["HuntConfig"]) -> "HuntConfig":
     # recursively load and merge
     result = _load_and_merge_yaml(path, resolved_history)
 
-    # and then return the validated configuration object
-    return config_type.model_validate(result["rule"])
+    # and then return the validated configuration object and all file paths that were loaded
+    return config_type.model_validate(result["rule"]), resolved_history

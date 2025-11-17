@@ -440,6 +440,220 @@ def test_reload_hunts_on_new(rules_dir, hunter_service_multi_threaded):
     hunter_service_multi_threaded.stop()
     hunter_service_multi_threaded.wait()
 
+@pytest.mark.system
+def test_reload_hunts_on_included_file_modified(rules_dir, hunter_service_multi_threaded):
+    """Test that modifying an included file causes the hunt to reload."""
+    # Create an includes subdirectory
+    includes_dir = os.path.join(rules_dir, 'includes')
+    os.makedirs(includes_dir, exist_ok=True)
+    
+    # Create an included file
+    included_file = os.path.join(includes_dir, 'test_include.include.yaml')
+    with open(included_file, 'w') as fp:
+        fp.write("""rule:
+  tags:
+    - included_tag_1
+    - included_tag_2
+  description: Included description
+""")
+    
+    # Create a hunt file that includes the above file
+    hunt_file = os.path.join(rules_dir, 'test_with_include.yaml')
+    with open(hunt_file, 'w') as fp:
+        fp.write("""include:
+  - includes/test_include.include.yaml
+rule:
+  uuid: 8c6f3381-5b2e-4f67-9c1d-0e4f5a6b7c8d
+  enabled: yes
+  name: test_with_include
+  description: Test Hunt With Include
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:10'
+  instance_types:
+    - unittest
+  tags:
+    - main_tag
+""")
+    
+    hunter_service_multi_threaded.hunt_managers["test"].update_frequency = 1
+    hunter_service_multi_threaded.start()
+    wait_for_log_count('loaded Hunt(test_with_include[test]) from', 1)
+    
+    # Verify the hunt was loaded with the included tags
+    manager = hunter_service_multi_threaded.hunt_managers["test"]
+    hunt = next((h for h in manager.hunts if h.name == 'test_with_include'), None)
+    assert hunt is not None
+    assert 'included_tag_1' in hunt.tags
+    assert 'included_tag_2' in hunt.tags
+    assert 'main_tag' in hunt.tags
+    
+    # Modify the included file
+    with open(included_file, 'a') as fp:
+        fp.write('\n  # modified included file')
+    
+    # Wait for the modification to be detected and the hunt to reload
+    wait_for_log_count('detected modification to', 1, 5)
+    wait_for_log_count('loaded Hunt(test_with_include[test]) from', 2)
+    
+    # Verify the hunt was reloaded (the hunt object should still exist)
+    hunt_after = next((h for h in manager.hunts if h.name == 'test_with_include'), None)
+    assert hunt_after is not None
+    
+    hunter_service_multi_threaded.stop()
+    hunter_service_multi_threaded.wait()
+
+@pytest.mark.system
+def test_reload_hunts_on_nested_included_file_modified(rules_dir, hunter_service_multi_threaded):
+    """Test that modifying a nested included file (include within include) causes the hunt to reload."""
+    # Create an includes subdirectory
+    includes_dir = os.path.join(rules_dir, 'includes')
+    os.makedirs(includes_dir, exist_ok=True)
+    
+    # Create a base included file
+    base_include_file = os.path.join(includes_dir, 'base.include.yaml')
+    with open(base_include_file, 'w') as fp:
+        fp.write("""rule:
+  tags:
+    - base_tag
+  description: Base included description
+""")
+    
+    # Create a middle included file that includes the base
+    # Since middle.include.yaml is in the includes/ directory, the path to base.include.yaml
+    # should be relative to that directory (just the filename since they're in the same dir)
+    middle_include_file = os.path.join(includes_dir, 'middle.include.yaml')
+    with open(middle_include_file, 'w') as fp:
+        fp.write("""include:
+  - base.include.yaml
+rule:
+  tags:
+    - middle_tag
+""")
+    
+    # Create a hunt file that includes the middle file
+    hunt_file = os.path.join(rules_dir, 'test_with_nested_include.yaml')
+    with open(hunt_file, 'w') as fp:
+        fp.write("""include:
+  - includes/middle.include.yaml
+rule:
+  uuid: 9d7f4492-6c3f-5g78-0d2e-1f5g6h7i8j9k
+  enabled: yes
+  name: test_with_nested_include
+  description: Test Hunt With Nested Include
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:10'
+  instance_types:
+    - unittest
+  tags:
+    - main_tag
+""")
+    
+    hunter_service_multi_threaded.hunt_managers["test"].update_frequency = 1
+    hunter_service_multi_threaded.start()
+    wait_for_log_count('loaded Hunt(test_with_nested_include[test]) from', 1)
+    
+    # Verify the hunt was loaded with all the included tags
+    manager = hunter_service_multi_threaded.hunt_managers["test"]
+    hunt = next((h for h in manager.hunts if h.name == 'test_with_nested_include'), None)
+    assert hunt is not None
+    assert 'base_tag' in hunt.tags
+    assert 'middle_tag' in hunt.tags
+    assert 'main_tag' in hunt.tags
+    
+    # Modify the base included file (the nested one)
+    with open(base_include_file, 'a') as fp:
+        fp.write('\n  # modified base included file')
+    
+    # Wait for the modification to be detected and the hunt to reload
+    wait_for_log_count('detected modification to', 1, 5)
+    wait_for_log_count('loaded Hunt(test_with_nested_include[test]) from', 2)
+    
+    # Verify the hunt was reloaded
+    hunt_after = next((h for h in manager.hunts if h.name == 'test_with_nested_include'), None)
+    assert hunt_after is not None
+    
+    hunter_service_multi_threaded.stop()
+    hunter_service_multi_threaded.wait()
+
+@pytest.mark.system
+def test_reload_hunts_on_multiple_included_files(rules_dir, hunter_service_multi_threaded):
+    """Test that modifying any of multiple included files causes the hunt to reload."""
+    # Create an includes subdirectory
+    includes_dir = os.path.join(rules_dir, 'includes')
+    os.makedirs(includes_dir, exist_ok=True)
+    
+    # Create two included files
+    include1_file = os.path.join(includes_dir, 'include1.include.yaml')
+    with open(include1_file, 'w') as fp:
+        fp.write("""rule:
+  tags:
+    - include1_tag
+""")
+    
+    include2_file = os.path.join(includes_dir, 'include2.include.yaml')
+    with open(include2_file, 'w') as fp:
+        fp.write("""rule:
+  tags:
+    - include2_tag
+""")
+    
+    # Create a hunt file that includes both files
+    hunt_file = os.path.join(rules_dir, 'test_with_multiple_includes.yaml')
+    with open(hunt_file, 'w') as fp:
+        fp.write("""include:
+  - includes/include1.include.yaml
+  - includes/include2.include.yaml
+rule:
+  uuid: 0e8g5503-7d4g-6h89-1e3f-2g6h7i8j9k0l
+  enabled: yes
+  name: test_with_multiple_includes
+  description: Test Hunt With Multiple Includes
+  type: test
+  alert_type: test - alert
+  frequency: '00:00:10'
+  instance_types:
+    - unittest
+  tags:
+    - main_tag
+""")
+    
+    hunter_service_multi_threaded.hunt_managers["test"].update_frequency = 1
+    hunter_service_multi_threaded.start()
+    wait_for_log_count('loaded Hunt(test_with_multiple_includes[test]) from', 1)
+    
+    # Verify the hunt was loaded with all the included tags
+    manager = hunter_service_multi_threaded.hunt_managers["test"]
+    hunt = next((h for h in manager.hunts if h.name == 'test_with_multiple_includes'), None)
+    assert hunt is not None
+    assert 'include1_tag' in hunt.tags
+    assert 'include2_tag' in hunt.tags
+    assert 'main_tag' in hunt.tags
+    
+    # Modify the first included file
+    with open(include1_file, 'a') as fp:
+        fp.write('\n  # modified include1')
+    
+    # Wait for the modification to be detected and the hunt to reload
+    wait_for_log_count('detected modification to', 1, 5)
+    wait_for_log_count('loaded Hunt(test_with_multiple_includes[test]) from', 2)
+    
+    # Now modify the second included file
+    with open(include2_file, 'a') as fp:
+        fp.write('\n  # modified include2')
+    
+    # Wait for another modification to be detected and the hunt to reload again
+    wait_for_log_count('detected modification to', 2, 5)
+    wait_for_log_count('loaded Hunt(test_with_multiple_includes[test]) from', 3)
+    
+    # Verify the hunt was reloaded
+    hunt_after = next((h for h in manager.hunts if h.name == 'test_with_multiple_includes'), None)
+    assert hunt_after is not None
+    
+    hunter_service_multi_threaded.stop()
+    hunter_service_multi_threaded.wait()
+
 @pytest.mark.integration
 def test_valid_cron_schedule(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)

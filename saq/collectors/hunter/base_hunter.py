@@ -137,6 +137,10 @@ class Hunt:
         # when we load from a yaml file we record the last modified time of the file
         self.file_path = None
         self.last_mtime = None
+        
+        # track all files that make up this hunt configuration (main file + included files)
+        # maps file path -> modification time (None if we couldn't get the mtime)
+        self.included_files: dict[str, float | None] = {}
 
     #
     # configuration-based properties
@@ -371,14 +375,24 @@ class Hunt:
 
         return True
 
-    def load_hunt_config(self, path: str) -> HuntConfig:
+    def load_hunt_config(self, path: str) -> tuple[HuntConfig, set[str]]:
         return load_from_yaml(path, HuntConfig)
 
     def load_hunt(self, path: str) -> HuntConfig:
-        self.config = self.load_hunt_config(path)
+        self.config, included_file_paths = self.load_hunt_config(path)
 
         self.file_path = path
         self.last_mtime = os.path.getmtime(path)
+        
+        # track modification times for all files that make up this hunt configuration
+        self.included_files = {}
+        for file_path in included_file_paths:
+            try:
+                self.included_files[file_path] = os.path.getmtime(file_path)
+            except (OSError, FileNotFoundError) as e:
+                logging.warning(f"unable to get modification time for included file {file_path}: {e}")
+                # store None to indicate we couldn't get the mtime
+                self.included_files[file_path] = None
 
         return self.config
 
@@ -389,16 +403,35 @@ class Hunt:
 
     @property
     def yaml_is_modified(self):
-        """returns True if this hunt was loaded from a yaml file and that file has been modified since we loaded it."""
+        """returns True if this hunt was loaded from a yaml file and that file or any included file has been modified since we loaded it."""
         if self.file_path is None:
             return False
+        
+        # check the main file
         try:
-            return self.last_mtime != os.path.getmtime(self.file_path)
+            if self.last_mtime != os.path.getmtime(self.file_path):
+                return True
         except FileNotFoundError:
             return True
         except Exception as e:
             logging.error(f"unable to check last modified time of {self.file_path}: {e}")
             return False
+        
+        # check all included files
+        for file_path, stored_mtime in self.included_files.items():
+            try:
+                current_mtime = os.path.getmtime(file_path)
+                if stored_mtime is None or stored_mtime != current_mtime:
+                    return True
+            except FileNotFoundError:
+                # if an included file was deleted, consider it modified
+                return True
+            except Exception as e:
+                logging.error(f"unable to check last modified time of included file {file_path}: {e}")
+                # on error, conservatively assume it's modified
+                return True
+        
+        return False
 
     @property
     def ready(self):

@@ -239,7 +239,7 @@ class QueryHunt(Hunt):
 
         return result
     
-    def load_hunt_config(self, path: str) -> QueryHuntConfig:
+    def load_hunt_config(self, path: str) -> tuple[QueryHuntConfig, set[str]]:
         return load_from_yaml(path, QueryHuntConfig)
 
     def load_hunt(self, path: str) -> QueryHuntConfig:

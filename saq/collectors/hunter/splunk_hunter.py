@@ -85,7 +85,7 @@ class SplunkHunt(QueryHunt):
     def extract_event_timestamp(self, event):
         return extract_event_timestamp(event)
 
-    def load_hunt_config(self, path: str) -> SplunkHuntConfig:
+    def load_hunt_config(self, path: str) -> tuple[SplunkHuntConfig, set[str]]:
         return load_from_yaml(path, SplunkHuntConfig)
 
     #def load_hunt(self, path: str) -> SplunkHuntConfig:
