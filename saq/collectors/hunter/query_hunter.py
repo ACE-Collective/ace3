@@ -22,7 +22,7 @@ from saq.collectors.hunter.decoder import DecoderType, decode_value
 from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration import get_config_value, get_config_value_as_int
-from saq.constants import CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT, F_FILE, F_HUNT, G_TEMP_DIR
+from saq.constants import CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT, F_FILE, F_HUNT, F_SIGNATURE_ID, G_TEMP_DIR
 from saq.environment import g
 from saq.observables.generator import create_observable
 
@@ -425,8 +425,8 @@ class QueryHunt(Hunt):
                 if observable not in observables:
                     observables.append(observable)
 
-            if self.name:
-                observables.append(create_observable(F_HUNT, self.name))
+            observables.append(create_observable(F_HUNT, self.name))
+            observables.append(create_observable(F_SIGNATURE_ID, self.uuid))
 
             # if we are NOT grouping then each row is an alert by itself
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):

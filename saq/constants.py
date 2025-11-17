@@ -124,6 +124,7 @@ F_SCAN_ID = 'scan_id'
 F_SHA1 = 'sha1'
 F_SHA256 = 'sha256'
 F_SHAREPOINT_FILE = 'sharepoint_file'
+F_SIGNATURE_ID = "signature_id"
 F_SNORT_SIGNATURE = 'snort_sig'
 F_STRING_EPS = 'string_eps'
 F_STRING_HTML = 'string_html'
@@ -213,6 +214,7 @@ OBSERVABLE_DESCRIPTIONS = {
     F_SHA1: 'SHA1 hash',
     F_SHA256: 'SHA256 hash',
     F_SHAREPOINT_FILE: 'sharepoint file path',
+    F_SIGNATURE_ID: 'the UUID of a signature',
     F_SNORT_SIGNATURE: 'snort signature ID',
     F_STRING_EPS: 'string in an eps file',
     F_STRING_HTML: 'string in an html file',
@@ -302,6 +304,7 @@ VALID_OBSERVABLE_TYPES = sorted([
     F_SHA1,
     F_SHA256,
     F_SHAREPOINT_FILE,
+    F_SIGNATURE_ID,
     F_SNORT_SIGNATURE,
     F_STRING_EPS,
     F_STRING_HTML,

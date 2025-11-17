@@ -14,7 +14,7 @@ import saq.util.time as saq_time
 from saq.collectors.hunter import HuntManager, HunterService, read_persistence_data
 from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_HUNT, G_DATA_DIR
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_HUNT, F_IPV4, F_SIGNATURE_ID, G_DATA_DIR
 from saq.environment import g_obj, get_data_dir
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import log_count, wait_for_log_count
@@ -152,6 +152,7 @@ def test_load_hunt_yaml(manager_kwargs):
     assert len(manager.hunts) == 1
     hunt = manager.hunts[0]
     assert hunt.enabled
+    assert hunt.uuid == 'c36e8ddd-aa3e-46be-a80e-d6df94d9aade'
     assert hunt.name == 'query_test_1'
     assert hunt.description == 'Query Test Description 1'
     assert hunt.manager == manager
@@ -515,9 +516,11 @@ def test_process_query_results(monkeypatch):
     assert submission.root.event_time == mock_local_time()
     assert isinstance(submission.root.details, list)
     assert submission.root.details[1] == {}
-    assert len(submission.root.observables) == 1
-    hunt_observable = submission.root.get_observables_by_type(F_HUNT)[0]
+    assert len(submission.root.observables) == 2 # F_HUNT and F_SIGNATURE_ID
+    hunt_observable = next((o for o in submission.root.observables if o.type == F_HUNT), None)
     assert hunt_observable.value == "test"
+    signature_id_observable = next((o for o in submission.root.observables if o.type == F_SIGNATURE_ID), None)
+    assert signature_id_observable.value == hunt.uuid
     assert submission.root.tags == [Tag(name="test_tag")]
     #assert submission.root.files == []
     assert submission.root.queue == hunt.queue
@@ -528,11 +531,13 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    assert len(submission.root.observables) == 2
+    assert len(submission.root.observables) == 3
     for observable in submission.root.observables:
         if observable.type == F_HUNT:
             assert observable.value == "test"
-        elif observable.type == "ipv4":
+        elif observable.type == F_SIGNATURE_ID:
+            assert observable.value == hunt.uuid
+        elif observable.type == F_IPV4:
             assert observable.value == "1.2.3.4"
         else:
             assert False, f"unexpected observable type: {observable.type}"
@@ -549,7 +554,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 2
+        assert len(submission.root.observables) == 3
         assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
 
     hunt.config.group_by = "dst"
@@ -560,7 +565,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 2
+        assert len(submission.root.observables) == 3
         assert submission.root.description == "test (1 event)"
 
     hunt.config.group_by = "ALL"
@@ -571,5 +576,5 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     for submission in submissions:
-        assert len(submission.root.observables) == 3
+        assert len(submission.root.observables) == 4
         assert submission.root.description == "test (2 events)"

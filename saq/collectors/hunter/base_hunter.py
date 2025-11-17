@@ -143,6 +143,10 @@ class Hunt:
     #
 
     @property
+    def uuid(self) -> str:
+        return self.config.uuid
+
+    @property
     def name(self) -> str:
         return self.config.name
 
