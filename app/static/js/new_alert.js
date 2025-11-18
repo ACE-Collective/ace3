@@ -88,8 +88,8 @@ function new_alert_observable_type_changed(index) {
   } else {
       target_input_container.html(`
   <input class="form-control" type="hidden" id="observable_data_sep_${index}" name="observable_data_sep_${index}" value="single">
-  <div class="input-group">
-    <span id="observable_input_container_${index}"><input class="form-control" type="text" name="observables_values_${index}" id="observables_values_${index}"/></span>
+  <div class="input-group" style="width:100%;">
+    <span id="observable_input_container_${index}" style="flex:1;"><input class="form-control" type="text" style="width:100%;" name="observables_values_${index}" id="observables_values_${index}"/></span>
     <span class="input-group-btn">
       <button class="btn btn-outline-dark" type="button" id="observables_multi_${index}">...</button>
     </span>
@@ -106,7 +106,7 @@ function new_alert_observable_type_changed(index) {
           // figured this out in the debugger, when it's an input text field then the localName is "input"
           if (target_input_element.localName == "input") {
               // change it over to textarea control
-              target_input_container.html(`<textarea class="form-control" rows=4 name="observables_values_${button_index}" id="observables_values_${button_index}"></textarea>`);
+              target_input_container.html(`<textarea class="form-control" style="width:100%;" rows=4 name="observables_values_${button_index}" id="observables_values_${button_index}"></textarea>`);
               // when we POST we indicate this is a "multi" field
               $("#observable_data_sep_" + button_index).val("multi");
               // show the additional button to submit multiple alerts
@@ -114,7 +114,7 @@ function new_alert_observable_type_changed(index) {
               $('#observables_values_' + button_index).focus();
           } else {
               // otherwise swap it back
-              target_input_container.html(`<input class="form-control" type="text" name="observables_values_${index}" id="observables_values_${index}"/>`);
+              target_input_container.html(`<input class="form-control" type="text" style="width:100%;" name="observables_values_${button_index}" id="observables_values_${button_index}"/>`);
               $("#observable_data_sep_" + button_index).val("single");
               $('#observables_values_' + button_index).focus();
           }

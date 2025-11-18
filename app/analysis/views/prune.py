@@ -7,11 +7,9 @@ from saq.constants import DEFAULT_PRUNE, DEFAULT_PRUNE_VOLATILE
 @analysis.route('/toggle_prune', methods=['POST', 'GET'])
 @login_required
 def toggle_prune():
-    if 'prune' not in session:
-        session['prune'] = DEFAULT_PRUNE
-
-    session['prune'] = not session['prune']
-    logging.debug("prune set to {} for {}".format(session['prune'], current_user))
+    # Critical Analysis view is disabled - always force Detailed Analysis
+    session['prune'] = False
+    logging.debug("prune forced to False (Critical Analysis disabled) for {}".format(current_user))
 
     alert_uuid = None
     if 'alert_uuid' in request.values:

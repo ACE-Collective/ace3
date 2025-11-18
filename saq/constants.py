@@ -554,7 +554,7 @@ REDIRECT_MAP = {
 
 # controls if we prune analysis by default or not
 # could also be called DEFAULT_PRUNE_ALL
-DEFAULT_PRUNE = True
+DEFAULT_PRUNE = False
 
 # controls if we prune volatile observables or not
 DEFAULT_PRUNE_VOLATILE = True

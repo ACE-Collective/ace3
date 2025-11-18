@@ -167,10 +167,6 @@ $(document).ready(function() {
         $('#analyze-alert-form').submit();
     });
 
-    $("#btn-toggle-prune").click(function(e) {
-        $('#toggle-prune-form').submit();
-    });
-
     $("#btn-toggle-prune-volatile").click(function(e) {
         $('#toggle-prune-form-volatile').submit();
     });

@@ -291,10 +291,8 @@ def index():
     # compute the display tree
 
     # are we viewing all analysis?
-    if 'prune' not in session:
-        session['prune'] = True
-    elif not isinstance(session['prune'], bool):
-        session['prune'] = True
+    # Always force prune to False to keep Detailed Analysis view (Critical Analysis is disabled)
+    session['prune'] = False
 
     # are we viewing volatile analysis?
     if 'prune_volatile' not in session:
@@ -308,7 +306,7 @@ def index():
         display_tree = TreeNode(analysis, prune_volatile=session['prune_volatile'])
         _recurse(display_tree)
         _sort(display_tree)
-        if session['prune'] or session['prune_volatile']:
+        if session['prune_volatile']:
             _prune(display_tree)
             # root node is visible
             display_tree.visible = True

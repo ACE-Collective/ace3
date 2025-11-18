@@ -4,6 +4,10 @@
 {{ super() }}
 
 <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+<!-- Google Fonts - Inter -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 
 <!-- jquery -->
@@ -75,8 +79,8 @@
 
 {% block body %}
 {# navigation bar #}
-<nav class="navbar navbar-expand-lg bg-body-tertiary mb-3">
-    <div class="container-fluid">
+<div class="container-fluid">
+    <nav class="navbar navbar-expand-lg bg-body-tertiary mb-3">
         <a class="navbar-brand d-flex align-items-center" href="{{ url_for('main.index') }}">
             <img src="{{ url_for('static', filename='images/ace3.jpg') }}" alt="ACE3 Logo" class="me-2" style="height: 1em; width: auto; display: inline-block; vertical-align: middle;">
             <span>ACE3 ({{config.INSTANCE_NAME}})</span>
@@ -88,45 +92,49 @@
             <ul class="navbar-nav me-auto mb-2 mb-lg-0">
                 {% if current_user.is_authenticated %}
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('analysis.file') }}">Analyze</a></li>
-                    <li class="nav-item nav-separator"></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('analysis.manage') }}">Alerts</a></li>
-                    <li class="nav-item nav-separator"></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Signatures</a>
                     </li>
-                    <li class="nav-item nav-separator"></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
+                    <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Observables</a>
-                    <li class="nav-item nav-separator"></li>
+                    </li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
+                    <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">DetectOps</a>
-                    <li class="nav-item nav-separator"></li>
+                    </li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('auth.manage_users') }}">Users</a></li>
-                    <li class="nav-item nav-separator"></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
+                    <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Settings</a>
+                    </li>
                     <!--<li class="nav-item"><a class="nav-link" href="{{ url_for('events.manage') }}">Events</a></li>-->
                 {% endif %}
             </ul>
             <ul class="navbar-nav">
                 {% if current_user.is_authenticated %}
-                    {% if config.AUTHENTICATION_ON %}
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle" href="#" id="user-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                                {{ current_user.display_name }} ({{ current_user.username }})
-                            </a>
-                            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="user-dropdown">
-                                {% if current_user.apikey_decrypted %}
-                                <li><a class="dropdown-item" href="#" onclick="copy_to_clipboard('{{current_user.apikey_decrypted}}'); return false;">Copy API Key</a></li>
-                                {% endif %}
-                                <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
-                                <li><hr class="dropdown-divider"></li>
-                                <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}">Logout</a></li>
-                            </ul>
-                        </li>
-                    {% endif %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="user-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            {{ current_user.display_name }} ({{ current_user.username }})
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="user-dropdown">
+                            {% if current_user.apikey_decrypted %}
+                            <li><a class="dropdown-item" href="#" onclick="copy_to_clipboard('{{current_user.apikey_decrypted}}'); return false;">Copy API Key</a></li>
+                            {% endif %}
+                            <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}">Logout</a></li>
+                        </ul>
+                    </li>
                 {% endif %}
             </ul>
         </div>
-    </div>
-</nav>
+    </nav>
+</div>
 
 <div id="control_panel" class="container-fluid">
     <div class="row">
@@ -175,8 +183,8 @@
     #}
 
     {% block event_modal %}
-    <div class="modal fade modal-lg" id="event_modal" tabindex="-1" role="dialog" aria-labelledby="event_modal_label" aria-hidden="true">
-        <div class="modal-dialog">
+    <div class="modal fade" id="event_modal" tabindex="-1" role="dialog" aria-labelledby="event_modal_label" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
             <form id="event-form" class="form-horizontal" role="form" method="POST" action={{url_for('analysis.add_to_event')}}>
                 <div class="modal-content">
                     <div class="modal-header">
@@ -267,17 +275,17 @@
 
     {% block disposition_modal %}
     <div class="modal fade" id="disposition_modal" tabindex="-1" role="dialog" aria-labelledby="disposition_modal_label" aria-hidden="true">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-lg">
             <form id="disposition-form" class="form-horizontal" role="form" method="POST" action={{url_for('analysis.set_disposition')}}>
             {% block disposition_form %}{% endblock disposition_form %}
             <div class="modal-content">
                 <div class="modal-header">
-                    <h1 class="modal-title fs-5" id="disposition_modal_label">Set Disposition</h4>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="close"></button>
+                    <h4 class="modal-title fs-5" id="disposition_modal_label">Set Disposition</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body">
-                    <div class="row">
-                        <div class="col-md-4">
+                <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
+                    <div class="row" style="flex: 1; display: flex;">
+                        <div class="col-md-4" style="display: flex; flex-direction: column;">
                             {% for disposition in dispositions %}
                                 <div class="form-check">
                                     <input
@@ -288,27 +296,27 @@
                                         value="{{disposition}}"
                                         autocomplete="off"
                                         {% if dispositions[disposition]['show_save_to_event'] %}
-                                            onclick="showSaveToEventButton();"
+                                            onclick="showSaveToEventButton(); document.querySelector('[name=comment]').focus();"
                                         {% else %}
-                                            onclick="hideSaveToEventButton();"
+                                            onclick="hideSaveToEventButton(); document.querySelector('[name=comment]').focus();"
                                         {% endif %}
                                     />
                                     <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="option_{{disposition}}">
-                                        <span class="badge text-bg-{{dispositions[disposition]['css']}}"> {{disposition}} </span>
+                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}
                         </div>
-                        <div class="col-md-8">
-                            <textarea class="form-control" rows="4" name="comment"></textarea>
+                        <div class="col-md-8" style="display: flex; flex-direction: column;">
+                            <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
                     <button type="submit" class="btn btn-outline-primary" id="btn-disposition">Save</button>
-                    <button type="button" class="btn btn-outline-primary" id="btn-disposition-and-remediate" data-dismiss="modal">Save and Remediate</button>
-                    <button type="button" class="btn btn-outline-primary" id="btn-save-to-event" style="display:none;" data-toggle="modal" data-dismiss="modal" data-target="#event_modal">Save To Event</button>
+                    <button type="button" class="btn btn-primary" id="btn-disposition-and-remediate" data-bs-dismiss="modal">Save and Remediate</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-save-to-event" style="display:none;" data-bs-toggle="modal" data-bs-dismiss="modal" data-bs-target="#event_modal">Save To Event</button>
                 </div>
             </div>
             </form>
@@ -322,7 +330,7 @@
             <form id="comment-form" class="form-horizontal" role="form" method="POST" action={{url_for('analysis.add_comment')}}>
             <div class="modal-content">
                 <div class="modal-header">
-                    <h1 class="modal-title fs-5" id="comment_modal_label">Add Comment</h4>
+                    <h1 class="modal-title fs-5" id="comment_modal_label">Add Comment</h1>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -411,7 +419,7 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h1 class="modal-title fs-5" id="assign_ownership_modal_label">Assign Ownership</h4>
+                <h1 class="modal-title fs-5" id="assign_ownership_modal_label">Assign Ownership</h1>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
@@ -533,7 +541,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h1 class="modal-title fs-5" id="send-event-to-modal-label">Send Event To</h1>
-                <button type="button" class="btn-close" data-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="send-event-to-body">
                 <!-- Host selections -->
@@ -589,7 +597,7 @@
                 <b><span id="alert_thief"></span></b> just took ownership of this alert.
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-outline-dark" data-bsdismiss="modal">¯\_(ツ)_/¯</button>
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">¯\_(ツ)_/¯</button>
             </div>
         </div>
     </div>

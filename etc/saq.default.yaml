@@ -2163,8 +2163,8 @@ show_save_to_event:
   AUTHORIZED: true
   UNKNOWN: true
   REVIEWED: true
-  GRAYWARE: true
-  POLICY_VIOLATION: true
+  GRAYWARE: false
+  POLICY_VIOLATION: false
   RECONNAISSANCE: true
   WEAPONIZATION: true
   DELIVERY: true

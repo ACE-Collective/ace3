@@ -24,15 +24,10 @@
 </div>
 <div class="col">
     <div class="float-end">
-        {% if prune_display_tree %}
-            <button id="btn-toggle-prune" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-filter"></span> View Detailed Analysis</button>
+        {% if prune_volatile %}
+            <button id="btn-toggle-prune-volatile" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-eye"></span> Show All Observables</button>
         {% else %}
-            <button id="btn-toggle-prune" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-filter"></span> View Critical Analysis</button>
-            {% if prune_volatile %}
-                <button id="btn-toggle-prune-volatile" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-eye"></span> Show All Observables</button>
-            {% else %}
-                <button id="btn-toggle-prune-volatile" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-eye-slash"></span> Hide Volatile Observables</button>
-            {% endif %}
+            <button id="btn-toggle-prune-volatile" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-eye-slash"></span> Hide Volatile Observables</button>
         {% endif %}
     </div>
 </div>
@@ -110,10 +105,6 @@
 </div>
 
 <form id="analyze-alert-form" action="{{url_for('analysis.analyze_alert')}}" method="POST">
-    <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"/>
-</form>
-
-<form id="toggle-prune-form" action={{url_for('analysis.toggle_prune')}} method="POST">
     <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"/>
 </form>
 

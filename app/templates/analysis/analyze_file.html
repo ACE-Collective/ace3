@@ -1,7 +1,7 @@
 {% extends "analysis/analyze.html" %}
 
 {% block tab_content %}
-<form enctype=multipart/form-data method="POST" action="{{url_for('analysis.new_alert')}}">
+<form enctype="multipart/form-data" method="POST" action="{{url_for('analysis.new_alert')}}">
   <div style="margin:10px;">
     <h3>Alert Info</h3>
     <table style="width:400px;table-layout:auto;margin-bottom:40px;">
@@ -22,7 +22,7 @@
         <td style="width:100%;padding-bottom:4px;">
           <select class="form-control" name="timezone">
           {% for timezone in timezones %}
-            <option value="{{timezone}}" {% if timezone == 'UTC' %}SELECTED{% endif %}>{{timezone}}</option>
+            <option value="{{timezone}}" {% if timezone == 'UTC' %}selected{% endif %}>{{timezone}}</option>
           {% endfor %}
           </select>
         </td>
@@ -43,10 +43,10 @@
         </th>
         <td style="width:100%;padding-bottom:4px;">
           <select class="form-control" style="width:100%;" name="new_alert_queue">
-            <option value="default" {% if queue == "default" %}SELECTED{% endif %}>default</option>
-            <option value="external" {% if queue == "external" %}SELECTED{% endif %}>external</option>
-            <option value="intel" {% if queue == "intel" %}SELECTED{% endif %}>intel</option>
-            <option value="internal" {% if queue == "internal" %}SELECTED{% endif %}>internal</option>
+            <option value="default" {% if queue == "default" %}selected{% endif %}>default</option>
+            <option value="external" {% if queue == "external" %}selected{% endif %}>external</option>
+            <option value="intel" {% if queue == "intel" %}selected{% endif %}>intel</option>
+            <option value="internal" {% if queue == "internal" %}selected{% endif %}>internal</option>
           </select>
           <!--<input type="text" class="form-control" name="new_alert_queue" value="{{queue}}"/>-->
         </td>
@@ -93,7 +93,7 @@
         <td style="padding-right:10px;padding-bottom:4px;">
           <select class="form-control" style="width:100%;" name="observables_types_0" id="observables_types_0" onchange="new_alert_observable_type_changed('0')">
             {% for observable_type in observable_types %}
-            <option value="{{observable_type}}" {% if observable_type == "file" %}SELECTED{% endif %}>{{observable_type}}</option>
+            <option value="{{observable_type}}" {% if observable_type == "file" %}selected{% endif %}>{{observable_type}}</option>
             {% endfor %}
           </select>
         </td>
@@ -107,7 +107,7 @@
             <input class="form-control" type="text" style="width:100%" name="observables_directives_0" id="observables_directives_text_0" value="">
         </div>
         <div id="observables_directives_multiselect_container_0">
-            <select class="form-select" name="observables_directives_0[]" id="observables_directives_multiselect_0" multiple="multiple">
+            <select class="form-select" name="observables_directives_0[]" id="observables_directives_multiselect_0" multiple>
             {% for directive in directives %}
                 <option value="{{directive}}" title="{{ directives[directive] }}">{{directive}}</option>
             {% endfor %}
@@ -115,11 +115,11 @@
         </div>
         </td>
         <td style="padding-bottom:4px;">
-          <button type="button" onclick="new_alert_remove_observable('0')" class="btn-close btn-outline-dark" aria-label="Close"></button>
+          <button type="button" onclick="new_alert_remove_observable('0')" class="btn-close" aria-label="Close"></button>
         </td>
       </tr>
     </table>
-    <table style="width:100%;table-layout:auto;margin-bottom:40px;" id="new_alert_observables">
+    <table style="width:100%;table-layout:auto;margin-bottom:40px;" id="new_alert_observables_add">
       <tr>
         <th style="width:15%;padding-bottom:4px;">
           <button type="button" onclick="new_alert_observable()" class="btn btn-outline-dark"><span class="bi bi-plus"></span> Add</button>
