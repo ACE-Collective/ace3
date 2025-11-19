@@ -11,6 +11,7 @@ from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count, wait_for_log_count, wait_for_process
 
 @pytest.mark.integration
@@ -46,7 +47,7 @@ def test_no_detection(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     assert not load_alert(root_analysis.uuid)
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     # the analysis mode should be the same
     assert root_analysis.analysis_mode == 'test_groups'

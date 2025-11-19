@@ -14,7 +14,7 @@ from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, G_D
 from saq.environment import g_obj, get_data_dir
 from saq.util.hashing import sha256
 from saq.util.time import local_time
-from saq.util.uuid import storage_dir_from_uuid
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import log_count, wait_for_log_count
 
 def default_hunt_config(**kwargs):
@@ -68,7 +68,7 @@ class TestHunt(Hunt):
         root_uuid = str(uuid4())
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=storage_dir_from_uuid(root_uuid),
+            storage_dir=get_storage_dir(root_uuid),
             desc='test',
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             tool='test_tool',

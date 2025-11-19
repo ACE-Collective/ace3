@@ -11,7 +11,8 @@ import uuid
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
-from saq.constants import F_FILE, LockManagerType, WorkloadManagerType
+from saq.configuration.config import get_config_value
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR, F_FILE, LockManagerType, WorkloadManagerType
 from saq.database.pool import get_db
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
@@ -38,6 +39,7 @@ from saq.modules.interfaces import AnalysisModuleInterface
 from saq.observables.file import FileObservable
 from saq.util.process import kill_process_tree
 from saq.util.time import local_time
+from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
 
 class Worker:
     """Responsible for maintaining an executing analysis process."""
@@ -397,6 +399,27 @@ class Worker:
                 return
 
         try:
+            work_dir = get_config_value(CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR)
+
+            if (
+                # if the work target is a root analysis object,
+                isinstance(work_item, RootAnalysis)
+                # and it is not an alert,
+                and work_item.analysis_mode not in [ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED]
+                # and this system uses a work directory for analysis,
+                and work_dir
+                # and the storage directory is currently set to the main data directory
+                and work_item.storage_dir == storage_dir_from_uuid(work_item.uuid)
+            ):
+                logging.info(f"switching to work directory for {work_item}")
+                # then we move the storage directory to the work directory
+                # first we need to load it
+                work_item.load()
+                # then we can move it
+                self.analysis_orchestrator._relocate_storage_directory(workload_storage_dir(work_item.uuid), execution_context)
+                # and re-track to that new target location
+                self.tracking_message_manager.track_current_work_target(work_item)
+
             # Use the AnalysisOrchestrator to handle the complete analysis lifecycle
             success = self.analysis_orchestrator.orchestrate_analysis(execution_context)
             

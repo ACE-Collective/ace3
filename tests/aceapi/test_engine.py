@@ -15,7 +15,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock
 from saq.environment import g
-from saq.util.uuid import storage_dir_from_uuid
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
 
 @pytest.mark.integration
@@ -96,7 +96,7 @@ def test_upload(test_client):
                                     'archive': (fp, os.path.basename(tar_path))}, headers = { 'x-ice-auth': get_config()["api"]["api_key"] })
 
     # make sure it uploaded
-    root = RootAnalysis(storage_dir=storage_dir_from_uuid(root.uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
 
     assert root.details == { 'hello': 'world' }

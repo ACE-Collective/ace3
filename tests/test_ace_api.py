@@ -19,7 +19,7 @@ from saq.database.util.locking import acquire_lock
 from saq.environment import g
 from saq.observables.file import FileObservable
 from saq.util.time import local_time, parse_event_time
-from saq.util.uuid import storage_dir_from_uuid, validate_uuid, workload_storage_dir
+from saq.util.uuid import get_storage_dir, validate_uuid
 from tests.saq.helpers import create_root_analysis, log_count, start_api_server, stop_api_server
 
 @pytest.fixture(autouse=True, scope="function")
@@ -159,7 +159,7 @@ def test_submit(mock_api_call):
     uuid = result['uuid']
 
     # make sure this actually uploaded
-    root = RootAnalysis(storage_dir=workload_storage_dir(uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
     root.load()
 
     assert root.analysis_mode == 'test_empty'
@@ -215,7 +215,7 @@ def test_resubmit(mock_api_call):
     uuid = result['uuid']
 
     # make sure this actually uploaded
-    root = RootAnalysis(storage_dir=storage_dir_from_uuid(uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
     root.load()
 
     assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
@@ -274,7 +274,7 @@ def test_submit_with_utc_timezone(mock_api_call):
     assert result['uuid']
     uuid = result['uuid']
 
-    root = RootAnalysis(storage_dir=workload_storage_dir(uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
     root.load()
 
     assert root.event_time == _get_localized_submit_time()
@@ -290,7 +290,7 @@ def test_submit_with_other_timezone(mock_api_call):
     assert result['uuid']
     uuid = result['uuid']
 
-    root = RootAnalysis(storage_dir=workload_storage_dir(uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(uuid))
     root.load()
 
     assert root.event_time == _get_localized_submit_time()
@@ -438,7 +438,7 @@ def test_upload(mock_api_call):
     assert result['result']
 
     # uploads go straight into saq.DATA_DIR
-    root = RootAnalysis(storage_dir=storage_dir_from_uuid(root.uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
 
     assert root.details == { 'hello': 'world' }
@@ -487,7 +487,7 @@ def test_legacy_submit(mock_api_call):
     alert.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config()['SSL']['ca_chain_path'])
     assert validate_uuid(alert.uuid)
 
-    root = RootAnalysis(storage_dir=storage_dir_from_uuid(alert.uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(alert.uuid))
     root.load()
 
     assert root.description == 'Test Alert'

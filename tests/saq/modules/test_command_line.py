@@ -5,6 +5,7 @@ from saq.constants import F_COMMAND_LINE, F_FILE_PATH
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.command_line import CommandLineAnalysis
+from saq.util.uuid import get_storage_dir
     
 @pytest.mark.integration
 def test_command_line_analyzer(root_analysis):
@@ -18,7 +19,7 @@ def test_command_line_analyzer(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_command_line_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
     assert command_line_observable
     analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)

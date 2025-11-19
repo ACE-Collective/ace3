@@ -18,6 +18,14 @@ def is_uuid(uuid):
     """Returns True if the given string matches the UUID pattern."""
     return UUID_REGEX.match(uuid)
 
+def get_storage_dir(uuid):
+    """Returns the path (relative to SAQ_HOME) to the storage directory for the given uuid."""
+    result = workload_storage_dir(uuid)
+    if os.path.exists(result):
+        return result
+    else:
+        return storage_dir_from_uuid(uuid)
+
 def storage_dir_from_uuid(uuid):
     """Returns the path (relative to SAQ_HOME) to the storage directory for the given uuid."""
     validate_uuid(uuid)

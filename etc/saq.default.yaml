@@ -1933,7 +1933,7 @@ service_engine:
   # make copies of files analyzed by analysis modules that ended up timing out and getting killed by the worker manager (can take a lot of disk space)
   copy_terminated_analysis_causes: false
   # in some cases you might want your work to be performed on a different hard drive; if set then new non-alert analysis will be performed in this directory (relative to SAQ_HOME)
-  work_dir: data/work
+  #work_dir: data/work
   # when an analyst dispositions an alert ace will stop analyzing it if the alert is in correlation mode
   # this specifies how often ace checks the database for the disposition value (in seconds)
   alert_disposition_check_frequency: 5

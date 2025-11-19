@@ -2,7 +2,6 @@
 from datetime import datetime
 import logging
 import os
-import pickle
 import shutil
 import threading
 from typing import Optional, Union
@@ -14,13 +13,13 @@ import urllib3
 from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration import get_config_value, get_config_value_as_boolean, get_config_value_as_int
-from saq.constants import ANALYSIS_MODE_CORRELATION, CONFIG_COLLECTION, CONFIG_COLLECTION_ERROR_DIR, CONFIG_COLLECTION_FORCE_API, CONFIG_COLLECTION_INCOMING_DIR, CONFIG_ENGINE, CONFIG_ENGINE_NODE_STATUS_UPDATE_FREQUENCY, CONFIG_SSL, CONFIG_SSL_CA_CHAIN_PATH, DB_COLLECTION, G_SAQ_NODE, G_UNIT_TESTING, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, CONFIG_COLLECTION, CONFIG_COLLECTION_FORCE_API, CONFIG_COLLECTION_INCOMING_DIR, CONFIG_ENGINE, CONFIG_ENGINE_NODE_STATUS_UPDATE_FREQUENCY, CONFIG_SSL, CONFIG_SSL_CA_CHAIN_PATH, DB_COLLECTION, G_SAQ_NODE, G_UNIT_TESTING, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
 from saq.database import ALERT, execute_with_retry, get_db, get_db_connection
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import g, g_boolean, get_data_dir
 from saq.error import report_exception
-from saq.util.uuid import workload_storage_dir
+from saq.util.uuid import storage_dir_from_uuid
 
 
 class RemoteNode:
@@ -79,7 +78,7 @@ class RemoteNode:
 
         # we duplicate because we could be sending multiple copies to multiple remote nodes
         new_root = submission.root.duplicate()
-        new_root.move(workload_storage_dir(new_root.uuid))
+        new_root.move(storage_dir_from_uuid(new_root.uuid))
         new_root.save()
 
         # if we received a submission for correlation mode then we go ahead and add it to the database

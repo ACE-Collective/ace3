@@ -122,7 +122,7 @@ def upload(uuid):
     # does the target directory already exist?
     if not is_alert:
         # if this is not an alert then we use the workload directory, if available
-        target_dir = workload_storage_dir(uuid)
+        target_dir = storage_dir_from_uuid(uuid)
     else:
         # otherwise we use the standard storage directory
         target_dir = storage_dir_from_uuid(uuid)

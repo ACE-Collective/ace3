@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 from saq.analysis.root import load_root
 from saq.configuration.config import get_config
+from saq.util.uuid import get_storage_dir
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, G_ANALYST_DATA_DIR, R_DOWNLOADED_FROM
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
@@ -33,7 +34,7 @@ def test_url_download_conditions_no_directive(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -71,7 +72,7 @@ def test_url_download_conditions_with_directive(root_analysis, monkeypatch, data
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -109,7 +110,7 @@ def test_url_download_conditions_manual_alert(root_analysis, monkeypatch, datadi
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -148,7 +149,7 @@ def test_url_download_conditions_auto_crawl(root_analysis, monkeypatch, datadir)
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'correlation')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -186,7 +187,7 @@ def test_basic_download(root_analysis, monkeypatch, datadir):
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -245,7 +246,7 @@ def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, dat
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
@@ -301,7 +302,7 @@ def test_download_404(root_analysis, monkeypatch):
     engine.configuration_manager.enable_module('analysis_module_crawlphish', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)

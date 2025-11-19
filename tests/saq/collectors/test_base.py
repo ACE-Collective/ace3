@@ -24,14 +24,14 @@ from saq.database.util.node import initialize_node
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.environment import g, g_int, get_data_dir, set_g
-from saq.util.uuid import storage_dir_from_uuid
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import log_count, search_log_condition, wait_for_log_count
 
 def create_root_analysis() -> RootAnalysis:
     root_uuid = str(uuid4())
     root = RootAnalysis(
         uuid=root_uuid,
-        storage_dir=storage_dir_from_uuid(root_uuid),
+        storage_dir=get_storage_dir(root_uuid),
         desc='test_description',
         analysis_mode='analysis',
         tool='unittest_tool',

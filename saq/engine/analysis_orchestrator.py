@@ -390,8 +390,6 @@ class AnalysisOrchestrator:
         else:
             logging.info(f"moving {execution_context.root.storage_dir} to {target_dir}")
             try:
-                #shutil.move(execution_context.root.storage_dir, target_dir)
-                #execution_context.root.storage_dir = target_dir
                 execution_context.root.move(target_dir)
             except Exception as e:
                 logging.error(f"unable to move {execution_context.root.storage_dir} to {target_dir}: {e}")

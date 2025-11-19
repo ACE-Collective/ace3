@@ -25,6 +25,7 @@ from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_file
+from saq.util.uuid import get_storage_dir
 from saq.yara_scanning_service import YSSService
 from tests.saq.helpers import create_root_analysis, log_count
 
@@ -61,7 +62,7 @@ def test_file_analysis_000_url_extraction_001_pdfparser(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_parse_url', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -93,7 +94,7 @@ def test_file_analysis_000_url_extraction_002_gs(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_parse_url', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
@@ -166,7 +167,7 @@ def test_file_analysis_001_oletools_000(root_analysis, result_map, datadir):
         engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
         engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-        root_analysis = load_root(root_analysis.storage_dir)
+        root_analysis = load_root(get_storage_dir(root_analysis.uuid))
         file_observable = root_analysis.get_observable(file_observable.uuid)
         assert file_observable
         if expected_results[KEY_SANDBOX]:
@@ -244,7 +245,7 @@ def test_file_analysis_archive_skip_ole(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -264,7 +265,7 @@ def test_file_analysis_archive_malicious_msi(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -300,7 +301,7 @@ def test_file_analysis_archive_7z_under(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -346,7 +347,7 @@ def test_file_analysis_002_archive_003_jar(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -367,7 +368,7 @@ def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -387,7 +388,7 @@ def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
@@ -545,7 +546,7 @@ def test_file_analysis_004_yara_006_whitelist(yss_server, root_analysis, datadir
     # scanned file /opt/saq/var/test/91b55d6f-fe82-4508-ac68-bbc519693d12/scan.target with yss (matches found: True)
     #assert log_count('with yss (matches found: True)') == 1
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     
     analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
@@ -573,7 +574,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     # scanned file /opt/saq/var/test/91b55d6f-fe82-4508-ac68-bbc519693d12/scan.target with yss (matches found: True)
     #assert log_count('with yss (matches found: True)') == 1
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert isinstance(_file, FileObservable)
 
@@ -641,7 +642,7 @@ def test_file_analysis_005_pcode_000_extract_pcode(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -670,7 +671,7 @@ def test_file_analysis_005_office_file_archiver_000_archive(root_analysis, tmpdi
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -701,7 +702,7 @@ def test_file_analysis_005_office_file_archiver_000_archive(root_analysis, tmpdi
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -748,7 +749,7 @@ def test_open_office_extraction(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -772,7 +773,7 @@ def test_crawl_extracted_urls(yss_server, root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_url_extraction', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -825,7 +826,7 @@ def test_mhtml_analysis(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_mhtml', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
 
@@ -851,7 +852,7 @@ def test_officeparser_macro_extraction(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -875,7 +876,7 @@ def test_officeparser_macro_extraction_merged(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -949,7 +950,7 @@ def test_upx(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_upx', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -993,7 +994,7 @@ def test_xml_plain_text_analysis(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_xml_plain_text_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 
@@ -1041,7 +1042,7 @@ def test_xml_plain_text_analysis_file_too_large(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_xml_plain_text_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
 

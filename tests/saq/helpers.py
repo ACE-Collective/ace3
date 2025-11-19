@@ -18,7 +18,7 @@ from saq.database.model import load_alert
 from saq.database.util.alert import ALERT
 from saq.environment import g, get_base_dir
 from saq.modules.email import EmailAnalysis
-from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
+from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 # expected values
 EV_TEST_DATE = datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)
@@ -621,7 +621,7 @@ def create_submission(**kwargs) -> Submission:
     root_uuid = str(uuid.uuid4())
     root = RootAnalysis(
         uuid=root_uuid,
-        storage_dir=storage_dir_from_uuid(root_uuid),
+        storage_dir=get_storage_dir(root_uuid),
         desc="test",
         analysis_mode=ANALYSIS_MODE_ANALYSIS,
         tool="test_tool",

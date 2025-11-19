@@ -1,16 +1,13 @@
-import os
 from threading import Event
-from uuid import uuid4
 import pytest
 
 from saq.analysis.root import RootAnalysis
-from saq.collectors.base_collector import Collector, CollectorService
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION, G_COMPANY_ID, G_SAQ_NODE, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE
-from saq.database.pool import execute_with_db_cursor, get_db_connection
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION, G_COMPANY_ID, G_SAQ_NODE
+from saq.database.pool import get_db_connection
 from saq.environment import g, g_int
 from saq.util.time import local_time
-from saq.util.uuid import workload_storage_dir
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_submission
 
 @pytest.fixture
@@ -57,7 +54,7 @@ def test_submit_local(root_analysis, remote_node):
     result = remote_node.submit_local(root_analysis.create_submission())
     new_uuid = result["result"]
     assert new_uuid != root_analysis.uuid
-    root = RootAnalysis(storage_dir=workload_storage_dir(new_uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(new_uuid))
     root.load()
     assert root.description == root_analysis.description
 
@@ -67,7 +64,7 @@ def test_submit_local_alert(root_analysis, remote_node):
     result = remote_node.submit_local(root_analysis.create_submission())
     new_uuid = result["result"]
     assert new_uuid != root_analysis.uuid
-    root = RootAnalysis(storage_dir=workload_storage_dir(new_uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(new_uuid))
     root.load()
     assert root.description == root_analysis.description
 
@@ -75,7 +72,7 @@ def test_submit_local_alert(root_analysis, remote_node):
 def test_submit_remote(root_analysis, remote_node, mock_api_call):
     new_uuid = remote_node.submit_remote(root_analysis.create_submission())
     assert new_uuid != root_analysis.uuid
-    root = RootAnalysis(storage_dir=workload_storage_dir(new_uuid))
+    root = RootAnalysis(storage_dir=get_storage_dir(new_uuid))
     root.load()
     assert root.description == root_analysis.description
 

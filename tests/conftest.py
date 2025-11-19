@@ -6,6 +6,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import uuid
 
 from requests import HTTPError
 
@@ -27,6 +28,7 @@ from saq.integration.integration_loader import get_valid_integration_dirs, load_
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
+from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import reset_unittest_logging, start_api_server, stop_api_server, initialize_unittest_logging
 from tests.saq.test_util import create_test_context
 
@@ -128,6 +130,12 @@ def execute_global_setup():
 
 @pytest.fixture(autouse=True, scope="function")
 def global_function_setup(request):
+
+    # clear work directory
+    work_dir = get_config_value(CONFIG_ENGINE, CONFIG_ENGINE_WORK_DIR)
+    assert os.path.exists(work_dir)
+    shutil.rmtree(work_dir)
+    os.mkdir(work_dir)
 
     # reset emitter to default state
     reset_emitter()
@@ -273,12 +281,14 @@ def test_client():
 
 @pytest.fixture
 def root_analysis(tmpdir) -> RootAnalysis:
+    root_uuid = str(uuid.uuid4())
     root = RootAnalysis(
+        uuid=root_uuid,
         tool="tool",
         tool_instance="tool_instance",
         alert_type="alert_type",
         desc="Test Alert",
-        storage_dir=str(tmpdir / "test_analysis"),
+        storage_dir=storage_dir_from_uuid(root_uuid),
         analysis_mode=ANALYSIS_MODE_ANALYSIS)
     root.initialize_storage()
     return root

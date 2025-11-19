@@ -30,7 +30,7 @@ from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, 
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
-from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
+from saq.util.uuid import get_storage_dir, workload_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count, search_log, search_log_regex, track_io, wait_for_log_count, wait_for_process
 
 @pytest.mark.system
@@ -145,7 +145,7 @@ def test_single_process_analysis(root_analysis: RootAnalysis):
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(analysis_priority_mode='test_single', execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -163,7 +163,7 @@ def test_multi_process_analysis(root_analysis: RootAnalysis):
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_shot()
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -182,7 +182,7 @@ def test_missing_analysis_mode(root_analysis: RootAnalysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # the analysis mode should default to test_single
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -202,7 +202,7 @@ def test_analysis_queues(root_analysis: RootAnalysis):
     engine.configuration_manager.enable_module('analysis_module_invalid_queues_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
     assert observable
 
@@ -238,7 +238,7 @@ def test_invalid_analysis_mode(root_analysis: RootAnalysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # the analysis mode should default to test_empty but we should also get a warning
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -252,7 +252,7 @@ def test_multi_process_multi_analysis():
 
     for _ in range(3):
         root_uuid = str(uuid.uuid4())
-        root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+        root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
         root.initialize_storage()
         observable = root.add_observable_by_spec(F_TEST, 'test_1')
         root.analysis_mode = 'test_single'
@@ -265,7 +265,7 @@ def test_multi_process_multi_analysis():
     engine.start(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     for root_uuid, observable_uuid in uuids:
-        root = RootAnalysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+        root = RootAnalysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
         root.load()
         observable = root.get_observable(observable_uuid)
         assert observable
@@ -315,7 +315,7 @@ def test_no_analysis(root_analysis: RootAnalysis):
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
 
     # so this should come back as False
@@ -365,7 +365,7 @@ def test_configurable_module(root_analysis: RootAnalysis):
     engine.configuration_manager.enable_module('analysis_module_configurable_module_test', "test_single")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     user_observable = root_analysis.get_observable(user_observable.uuid)
     assert user_observable
     analysis = user_observable.get_and_load_analysis(ConfigurableModuleTestAnalysis)
@@ -409,7 +409,7 @@ def test_time_range_grouped_analysis(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_grouped_time_range')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable_1 = root_analysis.get_observable(observable_1.uuid)
     observable_2 = root_analysis.get_observable(observable_2.uuid)
     observable_3 = root_analysis.get_observable(observable_3.uuid)
@@ -433,7 +433,7 @@ def test_time_range_grouped_analysis(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_grouping_target')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable_1 = root_analysis.get_observable(observable_1.uuid)
     observable_2 = root_analysis.get_observable(observable_2.uuid)
     grouping_target = root_analysis.get_observable(grouping_target.uuid)
@@ -455,7 +455,7 @@ def test_no_analysis_no_return(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     observable = root_analysis.get_observable(observable.uuid)
 
     # so what happens here is even though you return nothing from execute_analysis
@@ -477,7 +477,7 @@ def test_delayed_analysis_single(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_test_delayed_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert analysis
     assert analysis.load_details()
@@ -500,7 +500,7 @@ def test_delayed_analysis_single_instance(root_analysis):
     engine.configuration_manager.enable_module('analysis_module_test_delayed_analysis_instance')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis, instance='instance1')
     assert analysis
     assert analysis.load_details()
@@ -517,19 +517,19 @@ def test_delayed_analysis_multiple():
     
     for _ in range(3):
         root_uuid = str(uuid.uuid4())
-        root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=storage_dir_from_uuid(root_uuid))
+        root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=get_storage_dir(root_uuid))
         root.initialize_storage()
         observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
         root.save()
         root.schedule()
-        uuids.append((root.storage_dir, observable.uuid))
+        uuids.append((root.uuid, observable.uuid))
 
     engine = Engine()
     engine.configuration_manager.enable_module('analysis_module_test_delayed_analysis', "test_groups")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    for storage_dir, observable_uuid in uuids:
-        root = load_root(storage_dir)
+    for root_uuid, observable_uuid in uuids:
+        root = load_root(get_storage_dir(root_uuid))
         analysis = root.get_observable(observable_uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
         assert isinstance(analysis, DelayedAnalysisTestAnalysis)
         assert analysis.load_details()
@@ -562,7 +562,7 @@ def test_delayed_analysis_timing():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
     
     # the second one should finish before the first one
-    root_1 = load_root(root_1.storage_dir)
+    root_1 = load_root(get_storage_dir(root_1.uuid))
     analysis_1 = root_1.get_observable(o_1.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis_1, DelayedAnalysisTestAnalysis)
     assert analysis_1.load_details()
@@ -572,7 +572,7 @@ def test_delayed_analysis_timing():
     assert analysis_1.completed
 
 
-    root_2 = load_root(root_2.storage_dir)
+    root_2 = load_root(get_storage_dir(root_2.uuid))
     analysis_2 = root_2.get_observable(o_2.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis_2, DelayedAnalysisTestAnalysis)
     assert analysis_2.load_details()
@@ -611,7 +611,7 @@ def test_io_count():
     assert _get_io_write_count() == 4
     assert _get_io_read_count() == 1
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     root.load()
     assert _get_io_write_count() == 4
     assert _get_io_read_count() == 2
@@ -654,7 +654,7 @@ def test_delayed_analysis_io_count():
     # and then 4 reads (one LOAD for each, iterated twice)
     assert _get_io_read_count() == 3
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     assert root.load()
     assert _get_io_write_count() == 6
     assert _get_io_read_count() == 4
@@ -692,7 +692,7 @@ def test_final_analysis():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we should have a single observable now
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     assert len(root.all_observables) == 1
     assert root.has_observable_by_spec(F_TEST, 'test')
     analysis = root.get_observable(observable.uuid).get_and_load_analysis(FinalAnalysisTestAnalysis)
@@ -781,7 +781,7 @@ def test_delayed_analysis_recovery():
     # the delayed analysis should pick back up and complete
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, '0:00|0:05')
     root.save()
@@ -804,7 +804,7 @@ def test_delayed_analysis_recovery():
     engine.configuration_manager.enable_module('analysis_module_test_delayed_analysis', "test_groups")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     analysis = root.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
     assert isinstance(analysis, DelayedAnalysisTestAnalysis)
     assert analysis.load_details()
@@ -832,7 +832,7 @@ def test_wait_for_analysis():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -855,7 +855,7 @@ def test_wait_for_analysis_instance():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b_instance', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A, instance='instance1')
@@ -879,7 +879,7 @@ def test_wait_for_analysis_instance_multi():
     engine.configuration_manager.enable_module('analysis_module_test_wait_a_instance_2', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A, instance='instance1')
@@ -899,7 +899,7 @@ def test_wait_for_disabled_analysis():
     engine.configuration_manager.enable_module('analysis_module_test_wait_a_instance', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -919,7 +919,7 @@ def test_wait_for_analysis_circ_dep():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -940,7 +940,7 @@ def test_wait_for_analysis_missing_analysis():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -963,7 +963,7 @@ def test_wait_for_analysis_circ_dep_chained():
     engine.configuration_manager.enable_module('analysis_module_test_wait_c', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -986,7 +986,7 @@ def test_wait_for_analysis_chained():
     engine.configuration_manager.enable_module('analysis_module_test_wait_c', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -1008,7 +1008,7 @@ def test_wait_for_analysis_target_delayed():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -1030,7 +1030,7 @@ def test_wait_for_analysis_source_delayed():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -1049,7 +1049,7 @@ def test_wait_for_analysis_source_and_target_delayed():
     engine.configuration_manager.enable_module('analysis_module_test_wait_b', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     # A is waiting for B which is delayed
@@ -1074,7 +1074,7 @@ def test_wait_for_analysis_rejected():
     engine.configuration_manager.enable_module('analysis_module_test_wait_c', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
@@ -1094,7 +1094,7 @@ def test_post_analysis_after_false_return():
     engine.configuration_manager.enable_module('analysis_module_test_post_analysis', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
 
@@ -1258,7 +1258,7 @@ def test_is_module_enabled():
     engine.configuration_manager.enable_module('analysis_module_dependency_test', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     
@@ -1448,7 +1448,7 @@ def test_exclusion():
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -1477,7 +1477,7 @@ def test_limited_analysis():
     engine.configuration_manager.enable_module('analysis_module_test_post_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
 
@@ -1506,7 +1506,7 @@ def test_limited_analysis_invalid():
     engine.configuration_manager.enable_module('analysis_module_test_post_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
 
@@ -1521,7 +1521,7 @@ def test_limited_analysis_invalid():
 @pytest.mark.integration
 def test_cleanup_alt_workdir():
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_cleanup', storage_dir=workload_storage_dir(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_cleanup', storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     root.save()
     root.schedule()
@@ -1529,7 +1529,7 @@ def test_cleanup_alt_workdir():
     engine = Engine()
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    assert not os.path.isdir(root.storage_dir)
+    assert not os.path.isdir(workload_storage_dir(root.uuid))
 
 @pytest.mark.integration
 def test_no_cleanup():
@@ -1564,7 +1564,7 @@ def test_cleanup_with_delayed_analysis():
 def test_local_analysis_mode_single():
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1574,7 +1574,7 @@ def test_local_analysis_mode_single():
     engine.configuration_manager.enable_module('analysis_module_basic_test', "test_groups")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -1584,7 +1584,7 @@ def test_local_analysis_mode_single():
 def test_excluded_analysis_mode():
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1595,7 +1595,7 @@ def test_excluded_analysis_mode():
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -1609,7 +1609,7 @@ def test_local_analysis_mode_missing_default():
 
     # we specify test_single as the supported local analysis mode, but the default is test_empty
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.analysis_mode = 'test_single'
@@ -1620,7 +1620,7 @@ def test_local_analysis_mode_missing_default():
     engine.configuration_manager.enable_module('analysis_module_basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -1645,7 +1645,7 @@ def test_local_analysis_mode_missing_pool():
 def test_local_analysis_mode_not_local():
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     # but we target test_single for this analysis
@@ -1660,7 +1660,7 @@ def test_local_analysis_mode_not_local():
 
     # this should exit out since the workload entry is for test_single analysis mode
     # but we don't support that with this engine so it shouldn't see it
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert isinstance(observable, Observable)
     # should not have any analysis
@@ -1679,7 +1679,7 @@ def test_target_nodes():
 
     # schedule work on the current node
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     root.save()
@@ -1729,7 +1729,7 @@ def test_target_nodes():
 def test_local_analysis_mode_remote_pickup(mock_api_call, monkeypatch):
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     # but we target test_single for this analysis
@@ -1774,7 +1774,7 @@ def test_local_analysis_mode_remote_pickup(mock_api_call, monkeypatch):
     assert not os.path.exists(old_storage_dir)
 
     # but there should be a new one in the new "node"
-    root = load_root(storage_dir_from_uuid(root.uuid))
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(BasicTestAnalysis)
@@ -1800,7 +1800,7 @@ def test_local_analysis_mode_remote_pickup_invalid_company_id(mock_api_call):
         other_company_id = row[0]
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_1')
     # but we target test_single for this analysis
@@ -1969,7 +1969,7 @@ def test_engine_worker_recovery():
     
     # make sure the engine detects dead workers and replaces them
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_worker_death')
     root.save()
@@ -1993,7 +1993,7 @@ def test_failed_analysis_module():
     # make sure that when an analysis module causes the entire analysis process to crash
     # ACE deals with the situation and recovers
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_worker_death')
     root.save()
@@ -2013,7 +2013,7 @@ def test_failed_analysis_module():
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
-    root = RootAnalysis(storage_dir=root.storage_dir)
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
     observable = root.get_observable(observable.uuid)
     assert observable
@@ -2035,7 +2035,7 @@ def test_analysis_module_timeout():
     get_config()['analysis_module_basic_test']['maximum_analysis_time'] = '0'
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_worker_timeout')
     root.save()
@@ -2055,7 +2055,7 @@ def test_analysis_module_timeout():
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
-    root = RootAnalysis(storage_dir=root.storage_dir)
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
     observable = root.get_observable(observable.uuid)
     assert observable
@@ -2081,7 +2081,7 @@ def test_copy_terminated_analysis_cause():
     get_config()['service_engine']['copy_terminated_analysis_causes'] = 'yes'
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     target_path = root.create_file_path('test_worker_timeout')
     with open(target_path, 'w') as fp:
@@ -2103,7 +2103,7 @@ def test_copy_terminated_analysis_cause():
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
-    root = RootAnalysis(storage_dir=root.storage_dir)
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
     observable = root.get_observable(observable.uuid)
     assert observable
@@ -2137,7 +2137,7 @@ def test_analysis_module_timeout_root_flushed():
     get_config()['analysis_module_basic_test']['maximum_analysis_time'] = '0'
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, 'test_generate_file')
     root.save()
@@ -2156,7 +2156,7 @@ def test_analysis_module_timeout_root_flushed():
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 
-    root = RootAnalysis(storage_dir=root.storage_dir)
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
     observable = root.get_observable(observable.uuid)
     assert observable
@@ -2172,7 +2172,7 @@ def test_local_mode():
     engine.initialize_single_threaded_worker(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_TEST, "test_1")
     root.save()
@@ -2181,7 +2181,7 @@ def test_local_mode():
     engine.single_threaded_worker.workload_manager.add_workload(root)
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     assert isinstance(observable.get_and_load_analysis(BasicTestAnalysis), BasicTestAnalysis)
@@ -2190,7 +2190,7 @@ def test_local_mode():
 def test_clear_outstanding_locks():
     
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, 'test_never_return')
     root.save()
@@ -2225,7 +2225,7 @@ def test_clear_outstanding_locks():
 def test_action_counters():
     
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test_action_counter_1')
     t2 = root.add_observable_by_spec(F_TEST, 'test_action_counter_2')
@@ -2238,7 +2238,7 @@ def test_action_counters():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we have an action count limit of 2, so 2 of these should have analysis and 1 should not
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
 
     t1 = root.get_observable(t1.uuid)
     t2 = root.get_observable(t2.uuid)
@@ -2259,7 +2259,7 @@ def test_action_counters():
 def test_module_priority():
     
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -2286,7 +2286,7 @@ def test_module_priority():
     get_config()['analysis_module_low_priority']['priority'] = '0'
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -2313,7 +2313,7 @@ def test_module_priority():
     del get_config()['analysis_module_low_priority']['priority']
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -2348,7 +2348,7 @@ def test_module_priority():
 def test_post_analysis_multi_mode():
     
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -2368,7 +2368,7 @@ def test_post_analysis_multi_mode():
 def test_post_analysis_delayed_analysis():
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_single', storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_single', storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test_delayed')
     root.save()
@@ -2388,7 +2388,7 @@ def test_alt_workload_move():
     # then that analysis should move into the saq.DATA_DIR directory
     
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=workload_storage_dir(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     t1 = root.add_observable_by_spec(F_TEST, 'test')
     root.save()
@@ -2399,8 +2399,8 @@ def test_alt_workload_move():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # root should have moved
-    assert not os.path.exists(root.storage_dir)
-    root = load_root(storage_dir_from_uuid(root.uuid))
+    assert not os.path.exists(workload_storage_dir(root.uuid))
+    root = load_root(get_storage_dir(root.uuid))
     assert root
 
 @pytest.mark.integration
@@ -2417,7 +2417,7 @@ def test_analysis_reset():
     engine.configuration_manager.enable_module('analysis_module_basic_test')  
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     o1 = root.get_observable(o1.uuid)
     assert o1
     analysis = o1.get_and_load_analysis(BasicTestAnalysis)
@@ -2472,7 +2472,7 @@ def test_analysis_reset_locked():
 
     # now try to reset it
     with pytest.raises(LockedException):
-        root = RootAnalysis(storage_dir=root.storage_dir)
+        root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
         root.load()
         root.reset()
 
@@ -2480,7 +2480,7 @@ def test_analysis_reset_locked():
     release_lock(root.uuid, lock_uuid)
 
     # the reset should work this time
-    root = RootAnalysis(storage_dir=root.storage_dir)
+    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
     root.load()
     root.reset()
 
@@ -2753,7 +2753,7 @@ def test_observable_whitelisting():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we should only see the user-defined tagging analysis
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert len(test_observable.analysis) == 1
@@ -2776,7 +2776,7 @@ def test_observable_whitelisting():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we should see any one analysis for this observable
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
     assert len(test_observable.analysis) == 2
@@ -2806,7 +2806,7 @@ def test_file_observable_whitelisting():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we should NOT see any analysis for this observable
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     file_observable = root.get_observable(file_observable.uuid)
     assert file_observable
     assert file_observable.has_tag('whitelisted')
@@ -2832,7 +2832,7 @@ def test_file_observable_whitelisting():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # we should see analysis for this observable
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     file_observable = root.get_observable(file_observable.uuid)
     assert file_observable
     assert not file_observable.has_tag('whitelisted')
@@ -2853,7 +2853,7 @@ def test_module_instance():
 
     assert log_count('loading module ') == 2
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert isinstance(test_observable, Observable)
     
@@ -2874,7 +2874,7 @@ def test_automation_limit():
     get_config()['analysis_module_generic_test']['automation_limit'] = '1'
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable_1 = root.add_observable_by_spec(F_TEST, 'test_1')
     observable_2 = root.add_observable_by_spec(F_TEST, 'test_2')
@@ -2886,13 +2886,13 @@ def test_automation_limit():
     engine.configuration_manager.enable_module('analysis_module_generic_test', 'test_single')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     assert len(root.get_analysis_by_type(GenericTestAnalysis)) == 1
 
     # do the same as before but add the directives that tells to engine to ignore the limits
 
     root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
     root.initialize_storage()
     observable_1 = root.add_observable_by_spec(F_TEST, 'test_1')
     observable_2 = root.add_observable_by_spec(F_TEST, 'test_2')
@@ -2906,7 +2906,7 @@ def test_automation_limit():
     engine.configuration_manager.enable_module('analysis_module_generic_test', 'test_single')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     # in this case both of them should have been analyzed
     assert len(root.get_analysis_by_type(GenericTestAnalysis)) == 2
 
@@ -2934,7 +2934,7 @@ def test_missing_analysis():
         json.dump(analysis_json, fp)
 
     # now when we try to load it we should have a missing analysis module
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
 
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
@@ -2963,7 +2963,7 @@ def test_cancel_analysis():
     engine.configuration_manager.enable_module('analysis_module_low_priority')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
 
@@ -2985,7 +2985,7 @@ def test_cancel_analysis():
     engine.configuration_manager.enable_module('analysis_module_low_priority')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
 
@@ -3013,7 +3013,7 @@ def test_file_size_limit():
     engine.configuration_manager.enable_module('analysis_module_test_file_size_limit')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
@@ -3036,7 +3036,7 @@ def test_file_size_limit():
     engine.configuration_manager.enable_module('analysis_module_test_file_size_limit')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
@@ -3061,7 +3061,7 @@ def test_file_size_limit():
     engine.configuration_manager.enable_module('analysis_module_test_file_size_limit')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)
@@ -3087,7 +3087,7 @@ def test_file_size_limit():
     engine.configuration_manager.enable_module('analysis_module_test_file_size_limit')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(root.storage_dir)
+    root = load_root(get_storage_dir(root.uuid))
     observable = root.get_observable(observable.uuid)
     assert observable
     analysis = observable.get_and_load_analysis(FileSizeLimitAnalysis)

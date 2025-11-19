@@ -15,7 +15,7 @@ from flask import url_for
 
 from saq.json_encoding import _JSONEncoder
 from saq.util.hashing import sha256_file
-from saq.util.uuid import workload_storage_dir
+from saq.util.uuid import get_storage_dir
 
 def verify(root):
     from saq.modules.http import HTTP_DETAILS_READY, HTTP_DETAILS_REQUEST, HTTP_DETAILS_REPLY
@@ -57,7 +57,7 @@ def test_bro_http_analyzer(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_bro_http_analyzer', ANALYSIS_MODE_HTTP)
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     verify(root_analysis)
 
@@ -125,5 +125,5 @@ def test_bro_http_submission(test_client, datadir):
     engine.configuration_manager.enable_module('analysis_module_bro_http_analyzer', ANALYSIS_MODE_HTTP)
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root = load_root(workload_storage_dir(uuid))
+    root = load_root(get_storage_dir(uuid))
     verify(root)

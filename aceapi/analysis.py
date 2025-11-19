@@ -25,10 +25,13 @@ from saq.observables.generator import create_observable_from_dict
 from saq.submission_filter import SubmissionFilter
 from saq.util import parse_event_time, storage_dir_from_uuid, validate_uuid, workload_storage_dir
 
-from flask import request, abort, Response, send_from_directory
-from flask import g as g_flask
+from flask import request, abort, Response
+from flask import g as g_flask, current_app
 
 from saq.util.hashing import sha256_file
+from saq.util.uuid import get_storage_dir
+
+import werkzeug.utils
 
 
 KEY_ANALYSIS = 'analysis'
@@ -82,7 +85,7 @@ def submit():
     analysis_mode = r[KEY_ANALYSIS_MODE] if KEY_ANALYSIS_MODE in r else get_config()['service_engine']['default_analysis_mode']
     root_uuid = str(uuid.uuid4())
     if analysis_mode != ANALYSIS_MODE_CORRELATION:
-        _storage_dir = workload_storage_dir(root_uuid)
+        _storage_dir = storage_dir_from_uuid(root_uuid)
     else:
         _storage_dir = storage_dir_from_uuid(root_uuid)
 
@@ -250,7 +253,7 @@ def submit():
 @api_auth_check("alert", "write")
 def resubmit(uuid):
     try:
-        root = RootAnalysis(storage_dir=storage_dir_from_uuid(uuid))
+        root = RootAnalysis(storage_dir=get_storage_dir(uuid))
         root.load()
         root.reset()
         root.schedule()
@@ -262,7 +265,7 @@ def resubmit(uuid):
 @api_auth_check("alert", "read")
 def get_analysis(uuid):
 
-    storage_dir = storage_dir_from_uuid(uuid)
+    storage_dir = get_storage_dir(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
         storage_dir = workload_storage_dir(uuid)
 
@@ -277,7 +280,7 @@ def get_analysis(uuid):
 @api_auth_check("alert", "read")
 def get_submission(uuid):
 
-    storage_dir = storage_dir_from_uuid(uuid)
+    storage_dir = get_storage_dir(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
         storage_dir = workload_storage_dir(uuid)
 
@@ -299,7 +302,7 @@ def get_status(uuid):
     except ValueError as e:
         abort(Response(str(e), 400))
 
-    storage_dir = storage_dir_from_uuid(uuid)
+    storage_dir = get_storage_dir(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
         storage_dir = workload_storage_dir(uuid)
 
@@ -422,7 +425,7 @@ WHERE
 @analysis_bp.route('/details/<uuid>/<name>', methods=['GET'])
 @api_auth_check("alert", "read")
 def get_details(uuid, name):
-    storage_dir = storage_dir_from_uuid(uuid)
+    storage_dir = get_storage_dir(uuid)
     if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
         storage_dir = workload_storage_dir(uuid)
 
@@ -440,9 +443,9 @@ def get_details(uuid, name):
 @analysis_bp.route('/file/<uuid>/<file_uuid_or_name>', methods=['GET'])
 @api_auth_check("alert", "read")
 def get_file(uuid, file_uuid_or_name):
-    storage_dir = storage_dir_from_uuid(uuid)
-    if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
-        storage_dir = workload_storage_dir(uuid)
+    storage_dir = get_storage_dir(uuid)
+    #if get_config()['service_engine']['work_dir'] and not os.path.isdir(storage_dir):
+        #storage_dir = workload_storage_dir(uuid)
 
     root = RootAnalysis(storage_dir=storage_dir)
     root.load()
@@ -469,8 +472,23 @@ def get_file(uuid, file_uuid_or_name):
         abort(Response("file path {} does not exist".format(target_path), 400))
 
     # XXX revisit how we save (name) files
-    return send_from_directory(os.path.dirname(target_path), 
-                               os.path.basename(target_path), 
-                               as_attachment=True,
-                               # XXX latin-1 ???
-                               download_name=os.path.basename(target_path).encode().decode('latin-1', errors='ignore'))
+    #kwargs.update(
+        #environ=request.environ,
+        #use_x_sendfile=current_app.config["USE_X_SENDFILE"],
+        #response_class=current_app.response_class,
+        #_root_path=current_app.root_path,
+    #)
+    #return send_from_directory(os.path.dirname(target_path), 
+                               #os.path.basename(target_path), 
+                               #as_attachment=True,
+                               ## XXX latin-1 ???
+                               #download_name=os.path.basename(target_path).encode().decode('latin-1', errors='ignore'))
+
+    return werkzeug.utils.send_from_directory(
+        os.path.dirname(target_path),
+        os.path.basename(target_path),
+        environ=request.environ,
+        response_class=current_app.response_class,
+        as_attachment=True,
+        download_name=os.path.basename(target_path).encode().decode('latin-1', errors='ignore')
+    )

@@ -26,7 +26,7 @@ from saq.modules.email.mailbox import MAILBOX_ALERT_PREFIX
 from saq.modules.email.message_id import MessageIDAnalysisV2
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.util.hashing import sha256_file
-from saq.util.uuid import workload_storage_dir
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
 
 
@@ -46,7 +46,7 @@ def test_mailbox(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_mailbox_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     # we should still have our old details
     assert 'hello' in root_analysis.details
@@ -72,7 +72,7 @@ def test_no_mailbox(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_mailbox_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     # we should still have our old details
     assert 'hello' in root_analysis.details
@@ -97,7 +97,7 @@ def test_mailbox_whitelisted(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_mailbox_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     # we should still have our old details
     assert 'hello' in root_analysis.details
@@ -148,7 +148,7 @@ def test_mailbox_submission(test_client, root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_mailbox_email_analyzer', 'email')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = RootAnalysis(storage_dir=workload_storage_dir(uuid))
+    root_analysis = RootAnalysis(storage_dir=get_storage_dir(uuid))
     root_analysis.load()
 
     observable = root_analysis.find_observable(lambda o: o.has_directive(DIRECTIVE_ORIGINAL_EMAIL))
@@ -247,7 +247,7 @@ def test_update_brocess(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_logger', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     from saq.modules.email import EmailAnalysis
@@ -310,7 +310,7 @@ def test_archive_1(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_parse_url', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -367,7 +367,7 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_message_id_analyzer_v2', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -390,7 +390,7 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_message_id_analyzer_v2', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     message_id_observable = root_analysis.get_observable(message_id_observable.uuid)
     assert message_id_observable
@@ -418,7 +418,7 @@ def test_archive_2(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_pdf_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -474,7 +474,7 @@ def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
     engine.configuration_manager.enable_module('analysis_module_url_extraction', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -530,7 +530,7 @@ def test_email_pivot(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_url_email_pivot_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    new_root = load_root(new_root.storage_dir)
+    new_root = load_root(get_storage_dir(new_root.uuid))
     url_observable = new_root.get_observable(url_observable.uuid)
     analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
     assert isinstance(analysis, URLEmailPivotAnalysis_v2)
@@ -584,7 +584,7 @@ def test_email_pivot_excessive_emails(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_url_email_pivot_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    new_root = load_root(new_root.storage_dir)
+    new_root = load_root(get_storage_dir(new_root.uuid))
     url_observable = new_root.get_observable(url_observable.uuid)
     analysis = url_observable.get_and_load_analysis(URLEmailPivotAnalysis_v2)
     assert isinstance(analysis, URLEmailPivotAnalysis_v2)
@@ -612,7 +612,7 @@ def test_message_id(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -641,7 +641,7 @@ def test_basic_email_parsing(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -722,7 +722,7 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -791,7 +791,7 @@ def test_alert_renaming(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
 
     # the name of the alert should have changed
     assert root_analysis.description == f'{old_description} - canary #3'
@@ -813,7 +813,7 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -873,7 +873,7 @@ def test_whitelisting(root_analysis, whitelist_item, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     file_observable
@@ -933,7 +933,7 @@ def test_message_id_remediation(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
@@ -964,7 +964,7 @@ def test_message_id_remediation(root_analysis, datadir):
     engine.configuration_manager.enable_module('analysis_module_email_analyzer', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
     
-    root_analysis = load_root(root_analysis.storage_dir)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
