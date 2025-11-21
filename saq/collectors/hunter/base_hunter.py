@@ -63,6 +63,7 @@ class HuntConfig(BaseModel):
     tags: list[str] = Field(default_factory=list, description="These are tags that will be added to the alert in ACE when it is displayed.")
     pivot_links: list[dict] = Field(default_factory=list, description="These are links that will be displayed in ACE when the alert is displayed.")
     icon_configuration: Optional[IconConfiguration] = Field(default=None, description="The icon to use for the hunt.")
+    alert_template: Optional[str] = Field(default=None, description="The template to use to display the alert in ACE.")
 
     @field_validator("frequency")
     @classmethod
@@ -228,6 +229,10 @@ class Hunt:
     @property
     def icon_configuration(self) -> Optional[IconConfiguration]:
         return self.config.icon_configuration
+
+    @property
+    def alert_template(self) -> Optional[str]:
+        return self.config.alert_template
 
     #
     # runtime state

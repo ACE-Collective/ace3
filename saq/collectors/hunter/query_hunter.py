@@ -24,7 +24,7 @@ from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration import get_config_value, get_config_value_as_int
 from saq.constants import CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT, F_FILE, F_HUNT, F_SIGNATURE_ID, G_TEMP_DIR
 from saq.environment import g
-from saq.gui.alert import KEY_ICON_CONFIGURATION
+from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
 
 import pytz
@@ -316,6 +316,9 @@ class QueryHunt(Hunt):
 
         if self.icon_configuration:
             extensions[KEY_ICON_CONFIGURATION] = self.icon_configuration.model_dump()
+
+        if self.alert_template:
+            extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
         root = RootAnalysis(
             uuid=root_uuid,

@@ -13,7 +13,8 @@ from saq.environment import get_base_dir
 from saq.gui.icon import IconConfiguration
 
 # supported extension keys
-KEY_ICON_CONFIGURATION = 'icon_configuration'
+KEY_ICON_CONFIGURATION = "icon_configuration"
+KEY_ALERT_TEMPLATE = "alert_template"
 
 class GUIAlert(Alert):
 
@@ -171,6 +172,11 @@ class GUIAlertPresenter(AnalysisPresenter):
     @property
     def template_path(self) -> str:
         """Returns the template path with complex logic from the original GUIAlert."""
+        assert isinstance(self._analysis, RootAnalysis)
+        alert_template = self._analysis.extensions.get(KEY_ALERT_TEMPLATE, None)
+        if alert_template:
+            return alert_template
+
         # Check if this is a GUIAlert with specific template logic
         if not hasattr(self._analysis, "alert_type"):
             return "analysis/alert.html"
