@@ -152,8 +152,10 @@ def test_splunk_query(manager_kwargs, datadir):
     assert len(result) == 4
     for submission in result:
         assert submission.root.analysis_mode == ANALYSIS_MODE_CORRELATION
-        assert isinstance(submission.root.details, list)
-        assert all([isinstance(_, dict) for _ in submission.root.details])
+        assert isinstance(submission.root.details, dict)
+        assert "events" in submission.root.details
+        assert isinstance(submission.root.details["events"], list)
+        assert all([isinstance(_, dict) for _ in submission.root.details["events"]])
         assert submission.root.get_observables_by_type(F_FILE) == []
         for tag in ["tag1", "tag2"]:
             assert submission.root.has_tag(tag)

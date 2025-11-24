@@ -2,18 +2,18 @@
 {% block alert_details %}
 
 <div class="mb-4">
-    {% if 'search_link' in analysis.details[0] %}
+    {% if 'search_link' in analysis.details %}
         <div class="mb-3">
-            <b><a href="{{ analysis.details[0]['search_link'] }}" target="_blank" class="btn btn-primary btn-sm">
+            <b><a href="{{ analysis.details['search_link'] }}" target="_blank" class="btn btn-primary btn-sm">
                 <span class="bi bi-search"></span> Search in Splunk
             </a></b>
         </div>
         <div class="alert alert-info py-2">
             <small><strong>Note:</strong> If your Splunk search opens in the wrong app, make sure that <code>splunk_app_context</code> is properly set in your hunt config.</small>
         </div>
-    {% else %}
+    {% elif 'search_id' in analysis.details %}
         <div class="mb-3">
-            <b><a href="https://splunk/en-US/app/search/search?sid={{ analysis.details[0]['search_id'] }}" target="_blank" class="btn btn-primary btn-sm">
+            <b><a href="https://splunk/en-US/app/search/search?sid={{ analysis.details['search_id'] }}" target="_blank" class="btn btn-primary btn-sm">
                 <span class="bi bi-search"></span> Search in Splunk
             </a></b>
         </div>
@@ -23,7 +23,7 @@
     {% endif %}
 </div>
 
-{% if analysis.details | length > 0 and 'query' in analysis.details[0] %}
+{% if analysis.details.get("events", []) | length > 0 and 'query' in analysis.details %}
 <div class="mb-4">
     <div class="d-flex align-items-center mb-2">
         <h6 class="mb-0 me-2">Original Query</h6>
@@ -32,7 +32,7 @@
     <script type="text/javascript">
         $('#copy_action_splunk_{{unique_reference}}').on('click', function () {
             // avoid escaping issues going from python to javascript by using base64
-            let query_string = atob('{{analysis.details[0]["query"] | s64encode}}');
+            let query_string = atob('{{analysis.details["query"] | s64encode}}');
             // see app/static/js/ace.js
             copy_to_clipboard(query_string);
             // let the user know it was copied by flashing it a bit
@@ -41,7 +41,7 @@
     </script>
 
     <div class="p-4 bg-light border rounded raw-log" style="word-break:break-all; -webkit-text-size-adjust: 110%;">
-        {% set query_split = analysis.details[0]['query'].split('|') %}
+        {% set query_split = analysis.details['query'].split('|') %}
         {{ query_split[0] }}<br>
         {% for line in query_split[1:] %}
             {% set line_tokens = line.strip().split(' ') %}
@@ -67,9 +67,9 @@
         </h5>
     </div>
     <div class="card-body p-4 bg-light raw-log collapse" id="collapse_raw_splunk_details" style="word-break:break-all; -webkit-text-size-adjust: 110%">
-        {% for dict in analysis.details[1:] %}
-            {% for event in dict %}
-                {% if dict[event] != None %}{{ (event | pprint) }}: {{ dict[event] | pprint | escape}} <br>{% endif %}
+        {% for event in analysis.details.get("events", []) %}
+            {% for key, value in event.items() %}
+                {% if value != None %}{{ (key | pprint) }}: {{ value | pprint | escape}} <br>{% endif %}
             {% endfor %}
         {% endfor %}
     </div>

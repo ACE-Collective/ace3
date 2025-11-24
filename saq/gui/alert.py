@@ -173,7 +173,9 @@ class GUIAlertPresenter(AnalysisPresenter):
     def template_path(self) -> str:
         """Returns the template path with complex logic from the original GUIAlert."""
         assert isinstance(self._analysis, RootAnalysis)
-        alert_template = self._analysis.extensions.get(KEY_ALERT_TEMPLATE, None)
+        alert_template = None
+        if self._analysis.extensions:
+            alert_template = self._analysis.extensions.get(KEY_ALERT_TEMPLATE, None)
         if alert_template:
             return alert_template
 

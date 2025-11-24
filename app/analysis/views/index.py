@@ -2,7 +2,6 @@ from datetime import datetime
 import logging
 from uuid import uuid4
 from flask import flash, redirect, render_template, request, session, url_for
-from flask_login import login_required
 from app.analysis.views.session.alert import get_current_alert
 from app.analysis.views.session.filters import filter_special_tags
 from app.auth.permissions import require_permission

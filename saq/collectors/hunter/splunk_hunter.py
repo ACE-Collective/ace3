@@ -89,10 +89,6 @@ class SplunkHunt(QueryHunt):
     def load_hunt_config(self, path: str) -> tuple[SplunkHuntConfig, set[str]]:
         return load_from_yaml(path, SplunkHuntConfig)
 
-    #def load_hunt(self, path: str) -> SplunkHuntConfig:
-        #self.config = self.load_hunt_config(path)
-        #return self.config
-
     def execute_query(self, start_time: datetime.datetime, end_time: datetime.datetime, unit_test_query_results=None, **kwargs) -> Optional[list[dict]]:
         tz = pytz.timezone(self.timezone)
 

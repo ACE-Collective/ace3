@@ -32,6 +32,11 @@ import pytz
 from saq.collectors.hunter import Hunt, write_persistence_data, read_persistence_data
 from saq.util import local_time, create_timedelta, abs_path
 
+QUERY_DETAILS_SEARCH_ID = "search_id"
+QUERY_DETAILS_SEARCH_LINK = "search_link"
+QUERY_DETAILS_QUERY = "query"
+QUERY_DETAILS_EVENTS = "events"
+
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
 class ObservableMapping(BaseModel):
@@ -44,6 +49,7 @@ class ObservableMapping(BaseModel):
     time: bool = Field(default=False, description="Whether to use the time of the event as the time of the observable")
     directives: list[str] = Field(default_factory=list, description="The directives to add to the observable")
     tags: list[str] = Field(default_factory=list, description="The tags to add to the observable")
+    volatile: bool = Field(default=False, description="Whether to add the observable as volatile. Volatile observables are added for the purposes of detection.")
 
 class QueryHuntConfig(HuntConfig):
     time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
@@ -61,6 +67,9 @@ class QueryHuntConfig(HuntConfig):
 class FileContent(BaseModel):
     file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
     content: bytes = Field(..., description="The content of the file.")
+    directives: list[str] = Field(default_factory=list, description="The directives to add to the file observable.")
+    tags: list[str] = Field(default_factory=list, description="The tags to add to the file observable.")
+    volatile: bool = Field(default=False, description="Whether to add the observable as volatile.")
 
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -328,9 +337,12 @@ class QueryHunt(Hunt):
             tool=f'hunter-{self.type}',
             tool_instance=self.tool_instance,
             alert_type=self.alert_type,
-            details=[{'search_id': self.search_id if self.search_id else None,
-                    'search_link': self.search_link if self.search_link else None,
-                    'query': self.formatted_query()}],
+            details={
+                QUERY_DETAILS_SEARCH_ID: self.search_id if self.search_id else None,
+                QUERY_DETAILS_SEARCH_LINK: self.search_link if self.search_link else None,
+                QUERY_DETAILS_QUERY: self.formatted_query(),
+                QUERY_DETAILS_EVENTS: [],
+            },
             event_time=None,
             queue=self.queue,
             instructions=interpolate_event_value(self.description, event),
@@ -396,6 +408,10 @@ class QueryHunt(Hunt):
                     # otherwise we interpolate the value from the event
                     observed_value = interpolate_event_value(observable_mapping.value, event)
 
+                # if the value is empty we ignore it
+                if not observed_value:
+                    continue
+
                 if observable_mapping.file_decoder is not None:
                     observed_value = decode_value(observed_value, observable_mapping.file_decoder)
 
@@ -411,9 +427,20 @@ class QueryHunt(Hunt):
                         continue
 
                     target_file_name = interpolate_event_value(observable_mapping.file_name, event)
-                    file_contents.append(FileContent(file_name=target_file_name, content=observed_value))
-                else:
-                    observable = create_observable(observable_mapping.type, observed_value)
+                    # interpolate directives and tags from event fields
+                    interpolated_directives = [interpolate_event_value(d, event) for d in observable_mapping.directives]
+                    interpolated_tags = [interpolate_event_value(t, event) for t in observable_mapping.tags]
+                    file_contents.append(FileContent(
+                        file_name=target_file_name,
+                        content=observed_value,
+                        directives=interpolated_directives,
+                        tags=interpolated_tags,
+                        volatile=observable_mapping.volatile
+                    ))
+
+                    continue
+                
+                observable = create_observable(observable_mapping.type, observed_value, volatile=observable_mapping.volatile)
 
                 if observable is None:
                     logging.error(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
@@ -450,9 +477,13 @@ class QueryHunt(Hunt):
                     os.write(fd, file_content.content)
                     os.close(fd)
 
-                    submission.root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True)
+                    file_obs = submission.root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True, volatile=file_content.volatile)
+                    for directive in file_content.directives:
+                        file_obs.add_directive(directive)
+                    for tag in file_content.tags:
+                        file_obs.add_tag(tag)
 
-                submission.root.details.append(event)
+                submission.root.details[QUERY_DETAILS_EVENTS].append(event)
                 submissions.append(submission)
 
             # if we are grouping then we start pulling all the data into groups
@@ -479,9 +510,13 @@ class QueryHunt(Hunt):
                         os.write(fd, file_content.content)
                         os.close(fd)
 
-                        event_grouping[grouping_target].root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True)
+                        file_obs = event_grouping[grouping_target].root.add_file_observable(temp_file_path, target_path=file_content.file_name, move=True, volatile=file_content.volatile)
+                        for directive in file_content.directives:
+                            file_obs.add_directive(directive)
+                        for tag in file_content.tags:
+                            file_obs.add_tag(tag)
 
-                    event_grouping[grouping_target].root.details.append(event)
+                    event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)
 
                     # for grouped events, the overall event time is the earliest event time in the group
                     # this won't really matter if the observables are temporal
@@ -493,6 +528,6 @@ class QueryHunt(Hunt):
         # update the descriptions of grouped alerts with the event counts
         if self.group_by is not None:
             for submission in submissions:
-                submission.root.description += f' ({len(submission.root.details) - 1} event{"" if len(submission.root.details) - 1 == 1 else "s"})'
+                submission.root.description += f' ({len(submission.root.details.get(QUERY_DETAILS_EVENTS, []))} event{"" if len(submission.root.details.get(QUERY_DETAILS_EVENTS, [])) == 1 else "s"})'
 
         return submissions

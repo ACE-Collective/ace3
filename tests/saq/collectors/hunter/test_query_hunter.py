@@ -514,8 +514,11 @@ def test_process_query_results(monkeypatch):
     assert submission.root.tool_instance == "localhost"
     assert submission.root.alert_type == hunt.alert_type
     assert submission.root.event_time == mock_local_time()
-    assert isinstance(submission.root.details, list)
-    assert submission.root.details[1] == {}
+    assert isinstance(submission.root.details, dict)
+    assert "events" in submission.root.details
+    assert isinstance(submission.root.details["events"], list)
+    assert len(submission.root.details["events"]) == 1
+    assert submission.root.details["events"][0] == {}
     assert len(submission.root.observables) == 2 # F_HUNT and F_SIGNATURE_ID
     hunt_observable = next((o for o in submission.root.observables if o.type == F_HUNT), None)
     assert hunt_observable.value == "test"
@@ -539,12 +542,25 @@ def test_process_query_results(monkeypatch):
             assert observable.value == hunt.uuid
         elif observable.type == F_IPV4:
             assert observable.value == "1.2.3.4"
+            assert not observable.volatile
         else:
             assert False, f"unexpected observable type: {observable.type}"
 
         assert not observable.time
         assert not observable.tags
         assert not observable.directives
+
+    # test volatile observable
+    hunt.config.observable_mapping = [
+        ObservableMapping(fields=["src"], type="ipv4", volatile=True)
+    ]
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.volatile
 
     hunt.config.group_by = "src"
     submissions = hunt.process_query_results([
@@ -578,3 +594,557 @@ def test_process_query_results(monkeypatch):
     for submission in submissions:
         assert len(submission.root.observables) == 4
         assert submission.root.description == "test (2 events)"
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable(monkeypatch, tmpdir):
+    """test mapping fields to F_FILE type observables"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    # set up temp directory for file observables
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt"
+            )
+        ]
+    )
+
+    # test with string content - should be encoded to bytes
+    submissions = hunt.process_query_results([{"file_content": "hello world"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # should have F_HUNT and F_SIGNATURE_ID observables plus the file observable
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+    assert file_obs.file_name == "test_file.txt"
+
+    # verify file was created with correct content
+    with open(file_obs.full_path, "rb") as f:
+        assert f.read() == b"hello world"
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_interpolation(monkeypatch, tmpdir):
+    """test F_FILE observable with interpolated file name"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content", "filename"],
+                type=F_FILE,
+                file_name="${filename}"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{
+        "file_content": "test data",
+        "filename": "dynamic_file.bin"
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+    assert file_obs.file_name == "dynamic_file.bin"
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, tmpdir):
+    """test F_FILE observable with base64 decoder"""
+    import base64
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.decoder import DecoderType
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["encoded_content"],
+                type=F_FILE,
+                file_name="decoded_file.txt",
+                file_decoder=DecoderType.BASE64
+            )
+        ]
+    )
+
+    original_content = b"decoded content from base64"
+    encoded_content = base64.b64encode(original_content).decode("utf-8")
+
+    submissions = hunt.process_query_results([{"encoded_content": encoded_content}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    with open(file_obs.full_path, "rb") as f:
+        assert f.read() == original_content
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatch, tmpdir):
+    """test F_FILE observable with ascii hex decoder"""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.decoder import DecoderType
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["hex_content"],
+                type=F_FILE,
+                file_name="hex_decoded.bin",
+                file_decoder=DecoderType.ASCII_HEX
+            )
+        ]
+    )
+
+    original_content = b"hex decoded"
+    hex_content = original_content.hex()
+
+    submissions = hunt.process_query_results([{"hex_content": hex_content}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    with open(file_obs.full_path, "rb") as f:
+        assert f.read() == original_content
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir):
+    """test F_FILE observable with grouped events"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by="group_field",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="grouped_file.txt"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"file_content": "content1", "group_field": "group_a"},
+        {"file_content": "content2", "group_field": "group_a"},
+        {"file_content": "content3", "group_field": "group_b"},
+    ])
+    assert submissions
+    assert len(submissions) == 2
+
+    # find submission for each group
+    group_a_submission = next((s for s in submissions if "group_a" in s.root.description), None)
+    group_b_submission = next((s for s in submissions if "group_b" in s.root.description), None)
+
+    assert group_a_submission is not None
+    assert group_b_submission is not None
+
+    # group_a should have 2 file observables
+    group_a_files = [o for o in group_a_submission.root.observables if o.type == F_FILE]
+    assert len(group_a_files) == 2
+
+    # group_b should have 1 file observable
+    group_b_files = [o for o in group_b_submission.root.observables if o.type == F_FILE]
+    assert len(group_b_files) == 1
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir):
+    """test F_FILE observable when required field is missing"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt"
+            )
+        ]
+    )
+
+    # event is missing the file_content field
+    submissions = hunt.process_query_results([{"other_field": "value"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # should only have F_HUNT and F_SIGNATURE_ID, no file observable
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 0
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir):
+    """test F_FILE observable when content is empty"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt"
+            )
+        ]
+    )
+
+    # event has empty file content
+    submissions = hunt.process_query_results([{"file_content": ""}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # should only have F_HUNT and F_SIGNATURE_ID, no file observable (empty content is skipped)
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 0
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_directives(monkeypatch, tmpdir):
+    """test F_FILE observable with directives"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE, DIRECTIVE_SANDBOX
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                directives=[DIRECTIVE_SANDBOX, "custom_directive"]
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "malicious content"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    assert DIRECTIVE_SANDBOX in file_obs.directives
+    assert "custom_directive" in file_obs.directives
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
+    """test F_FILE observable with tags"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                tags=["suspicious", "needs_review"]
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "tagged content"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    tag_names = [t.name for t in file_obs.tags]
+    assert "suspicious" in tag_names
+    assert "needs_review" in tag_names
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir):
+    """test F_FILE observable with volatile property set to False"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    # test with volatile=False (the default)
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                volatile=False
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "non-volatile content"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    # the file observable should NOT be volatile when volatile=False in mapping
+    assert not file_obs.volatile
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_volatile_true(monkeypatch, tmpdir):
+    """test F_FILE observable with volatile property set to True"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                volatile=True
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "volatile content"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    assert file_obs.volatile
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_interpolated_tags(monkeypatch, tmpdir):
+    """test F_FILE observable with interpolated tags from event fields"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content", "source_system"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                tags=["source:${source_system}", "static_tag"]
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{
+        "file_content": "content from splunk",
+        "source_system": "splunk"
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    tag_names = [t.name for t in file_obs.tags]
+    assert "source:splunk" in tag_names
+    assert "static_tag" in tag_names
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_all_properties(monkeypatch, tmpdir):
+    """test F_FILE observable with directives, tags, and volatile all set"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE, DIRECTIVE_SANDBOX
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="fully_configured.txt",
+                directives=[DIRECTIVE_SANDBOX],
+                tags=["high_priority", "malware_candidate"],
+                volatile=True
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "suspicious payload"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    # verify all properties are set correctly
+    assert DIRECTIVE_SANDBOX in file_obs.directives
+    tag_names = [t.name for t in file_obs.tags]
+    assert "high_priority" in tag_names
+    assert "malware_candidate" in tag_names
+    assert file_obs.volatile
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_grouping_and_properties(monkeypatch, tmpdir):
+    """test F_FILE observable with directives, tags, and volatile when using group_by"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE, DIRECTIVE_SANDBOX
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_hunt",
+        group_by="group_field",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="grouped_file.txt",
+                directives=[DIRECTIVE_SANDBOX],
+                tags=["grouped_tag"],
+                volatile=False
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"file_content": "content1", "group_field": "group_a"},
+        {"file_content": "content2", "group_field": "group_a"},
+    ])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 2
+
+    for file_obs in file_observables:
+        assert DIRECTIVE_SANDBOX in file_obs.directives
+        tag_names = [t.name for t in file_obs.tags]
+        assert "grouped_tag" in tag_names
+        assert not file_obs.volatile
