@@ -131,6 +131,9 @@ class GUIAlert(Alert):
 
     @property
     def icon_configuration(self) -> Optional[IconConfiguration]:
+        if not self.root_analysis.extensions:
+            return None
+
         icon_configuration_dict = self.root_analysis.extensions.get(KEY_ICON_CONFIGURATION, None)
         if not icon_configuration_dict:
             return None
