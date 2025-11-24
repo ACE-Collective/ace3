@@ -651,7 +651,8 @@ def test_basic_email_parsing(root_analysis, datadir):
 
     assert email_analysis.parsing_error is None
     assert email_analysis.email
-    assert email_analysis.env_mail_from is None
+    # this sample email is also a journaled email message so it gets this env_mail_from value
+    assert email_analysis.env_mail_from == 'unixfreak0037@gmail.com'
     assert isinstance(email_analysis.env_rcpt_to, list)
     assert len(email_analysis.env_rcpt_to) == 1
     assert email_analysis.env_rcpt_to[0] == 'jwdavison@company.com'
@@ -822,7 +823,7 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
     email_analysis.load_details()
     assert email_analysis.parsing_error is None
     assert email_analysis.email
-    assert email_analysis.env_mail_from is None
+    assert email_analysis.env_mail_from == 'ap@someothercompany.com'
     assert (isinstance(email_analysis.env_rcpt_to, list))
     assert len(email_analysis.env_rcpt_to) == 1
     assert email_analysis.env_rcpt_to[0] == 'lulu.zingzing@company.com'

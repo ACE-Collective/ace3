@@ -616,6 +616,10 @@ class EmailAnalyzer(AnalysisModule):
                 file_path, address = email.utils.parseaddr(o365_meta_recipient)
                 env_rcpt_to = [ address ]
 
+            if o365_meta_sender:
+                file_path, address = email.utils.parseaddr(o365_meta_sender)
+                env_mail_from = address
+
         # if we know this is an office365 journaled email AND we did not find the "meta block"
         # then at least log that something is wrong
         if is_office365 and not o365_meta_part:
