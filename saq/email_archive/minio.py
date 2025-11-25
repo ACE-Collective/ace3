@@ -30,7 +30,7 @@ class EmailArchiveMinio(EmailArchiveLocal):
         s3_client = _get_email_archive_minio_client()
 
         try:
-            result = s3_client.stat_object(bucket, sha256_hash)
+            result = s3_client.stat_object(bucket_name=bucket, object_name=sha256_hash)
             return result is not None
         except S3Error as e:
             # if the object doesn't exist, stat_object raises an exception with code NoSuchKey
@@ -45,7 +45,7 @@ class EmailArchiveMinio(EmailArchiveLocal):
         metadata = { "message_id": message_id }
         logging.info(f"uploading email archive {sha256_hash} to {bucket} with metadata {metadata}")
         s3_client = _get_email_archive_minio_client()
-        result = s3_client.fput_object(bucket, sha256_hash, local_path, metadata=metadata)
+        result = s3_client.fput_object(bucket_name=bucket, object_name=sha256_hash, file_path=local_path, user_metadata=metadata)
         logging.debug(f"uploaded email archive {sha256_hash} to {bucket}: {result}")
         return True
 

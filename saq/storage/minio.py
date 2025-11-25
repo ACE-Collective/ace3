@@ -219,7 +219,7 @@ class MinIOStorage(StorageInterface):
         try:
             # Check if object exists in storage
             try:
-                self.client.stat_object(bucket, remote_path)
+                self.client.stat_object(bucket_name=bucket, object_name=remote_path)
             except S3Error as e:
                 if e.code == "NoSuchKey":
                     raise FileNotFoundError(f"file not found in storage: {bucket}/{remote_path}")
@@ -258,8 +258,8 @@ class MinIOStorage(StorageInterface):
             bucket: Name of the bucket to ensure exists
         """
         try:
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
+            if not self.client.bucket_exists(bucket_name=bucket):
+                self.client.make_bucket(bucket_name=bucket)
                 logging.info(f"created bucket: {bucket}")
         except S3Error as e:
             error_msg = f"failed to ensure bucket {bucket} exists: {e}"
@@ -319,7 +319,7 @@ class MinIOStorage(StorageInterface):
             StorageError: If listing fails
         """
         try:
-            objects = self.client.list_objects(bucket, prefix=prefix, recursive=recursive)
+            objects = self.client.list_objects(bucket_name=bucket, prefix=prefix, recursive=recursive)
             return [obj.object_name for obj in objects]
         except S3Error as e:
             error_msg = f"failed to list objects in bucket {bucket}: {e}"
@@ -341,7 +341,7 @@ class MinIOStorage(StorageInterface):
             StorageError: If deletion fails
         """
         try:
-            self.client.remove_object(bucket, remote_path)
+            self.client.remove_object(bucket_name=bucket, object_name=remote_path)
             logging.info(f"deleted {bucket}/{remote_path}")
             return True
         except S3Error as e:
@@ -361,7 +361,7 @@ class MinIOStorage(StorageInterface):
             bool: True if object exists, False otherwise
         """
         try:
-            self.client.stat_object(bucket, remote_path)
+            self.client.stat_object(bucket_name=bucket, object_name=remote_path)
             return True
         except S3Error as e:
             if e.code == "NoSuchKey":
@@ -383,7 +383,7 @@ class MinIOStorage(StorageInterface):
                  Returns None if object doesn't exist
         """
         try:
-            stat = self.client.stat_object(bucket, remote_path)
+            stat = self.client.stat_object(bucket_name=bucket, object_name=remote_path)
             return {
                 'size': stat.size,
                 'last_modified': stat.last_modified,
