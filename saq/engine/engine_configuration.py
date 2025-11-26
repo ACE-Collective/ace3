@@ -6,6 +6,7 @@ configuration options needed for an Engine to operate.
 """
 
 import logging
+from multiprocessing import cpu_count
 import os
 import sys
 from typing import Optional
@@ -16,12 +17,14 @@ from saq.configuration.config import (
     get_config_value_as_boolean,
     get_config_value_as_int,
     get_config_value_as_list,
+    get_config_value_as_is,
 )
 from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
     CONFIG_ENGINE,
     CONFIG_ENGINE_ALERT_DISPOSITION_CHECK_FREQUENCY,
     CONFIG_ENGINE_ALERTING_ENABLED,
+    CONFIG_ENGINE_ANALYSIS_POOLS,
     CONFIG_ENGINE_AUTO_REFRESH_FREQUENCY,
     CONFIG_ENGINE_COPY_ANALYSIS_ON_ERROR,
     CONFIG_ENGINE_COPY_TERMINATED_ANALYSIS_CAUSES,
@@ -46,6 +49,22 @@ from saq.constants import (
 from saq.engine.enums import EngineType
 from saq.environment import g, get_data_dir
 
+def compute_pool_size(pool_size_specification: str|int) -> int:
+    """A pool size can be specified as a number of workers, or a percentage of the total number of CPU cores.
+    Percentages are rounded up to the nearest integer, with a minimum of 1 worker for any non-zero percentage.
+    """
+    if isinstance(pool_size_specification, int):
+        return pool_size_specification
+
+    if pool_size_specification.endswith("%"):
+        percentage = int(pool_size_specification[:-1])
+        if percentage == 0:
+            return 0
+
+        # use max(1, ...) to ensure at least 1 worker for any non-zero percentage
+        return max(1, int(cpu_count() * percentage / 100))
+    else:
+        return int(pool_size_specification)
 
 class EngineConfiguration:
     """Configuration container for Engine operation settings."""
@@ -53,7 +72,7 @@ class EngineConfiguration:
     def __init__(
         self,
         local_analysis_modes: Optional[list[str]] = None,
-        analysis_pools: Optional[dict[str, int]] = None,
+        analysis_pools: Optional[dict[str, str|int]] = None,
         pool_size_limit: Optional[int] = None,
         copy_analysis_on_error: Optional[bool] = None,
         single_threaded_mode: bool = False,
@@ -287,19 +306,14 @@ class EngineConfiguration:
 
         return result
     
-    def _get_analysis_pools(self, analysis_pools: Optional[dict[str, int]]) -> dict[str, int]:
+    def _get_analysis_pools(self, analysis_pools: Optional[dict[str, str|int]]) -> dict[str, int]:
         """Get the analysis pools configuration."""
-        if analysis_pools is not None:
-            result = dict(analysis_pools)
-        else:
-            result = {}
-            for key in get_config()[CONFIG_ENGINE].keys():
-                if not key.startswith("analysis_pool_size_"):
-                    continue
-                
-                analysis_mode = key[len("analysis_pool_size_"):]
-                result[analysis_mode] = get_config_value_as_int(CONFIG_ENGINE, key)
-                logging.debug(f"added analysis pool mode {analysis_mode} count {result[analysis_mode]}")
+        if analysis_pools is None:
+            analysis_pools = get_config_value_as_is(CONFIG_ENGINE, CONFIG_ENGINE_ANALYSIS_POOLS, {})
+
+        result = {}
+        for analysis_mode, value in analysis_pools.items():
+            result[analysis_mode] = compute_pool_size(value)
 
         return self._filter_valid_analysis_pools(result)
     

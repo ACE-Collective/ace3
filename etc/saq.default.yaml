@@ -1917,6 +1917,8 @@ service_engine:
   enabled: true
   # analysis pool settings
   # if NO analysis pools are specified then a single pool with no equal priority will be created with a size equal to the number of CPU cores
+  analysis_pools:
+    correlation: 100%
   # analysis_pool_size_correlation = 8
   # analysis_pool_size_email = 8
   # in a multi-node configuration nodes are free to pull work from other nodes (target_nodes)

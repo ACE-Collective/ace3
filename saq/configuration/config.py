@@ -14,6 +14,18 @@ def get_config():
     """Returns the global configuration object (YAMLConfig)."""
     return CONFIG
 
+def get_config_value_as_is(section: str, name: str, default: Optional[Any] = None) -> Optional[Any]:
+    cfg = get_config()
+    if section not in cfg:
+        return default
+
+    section_proxy = cfg[section]
+    value = section_proxy.get(name, default)
+    if value is None:
+        return default
+
+    return value
+
 def get_config_value(section: str, name: str, default: Optional[Any] = None) -> Optional[str]:
     cfg = get_config()
     if section not in cfg:

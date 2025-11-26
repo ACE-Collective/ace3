@@ -1,4 +1,3 @@
-from enum import Enum
 import logging
 from multiprocessing import cpu_count
 import signal
@@ -10,6 +9,7 @@ from saq.engine.enums import EngineExecutionMode, WorkerManagerState, WorkerStat
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.util.process import kill_process_tree
+
 
 
 class WorkerManager:
@@ -61,13 +61,13 @@ class WorkerManager:
         # NOTE that workers can do work for other anaysis modes as well
         for mode in self.config.analysis_pools.keys():
             pool_size = self.config.analysis_pools[mode]
-            if isinstance(pool_size, int):
-                for i in range(pool_size):
-                    self.add_worker(
-                        name=f"{mode}-{i}",
-                        idle_timeout_max=max(pool_size, 5), 
-                        analysis_mode_priority=mode
-                    )
+            logging.debug(f"adding {pool_size} workers for analysis mode {mode}")
+            for i in range(pool_size):
+                self.add_worker(
+                    name=f"{mode}-{i}",
+                    idle_timeout_max=max(pool_size, 5), 
+                    analysis_mode_priority=mode
+                )
 
         # do we NOT have any defined analysis pools?
         if len(self.workers) == 0:

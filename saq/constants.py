@@ -1013,6 +1013,7 @@ CONFIG_ENGINE_STOP_ANALYSIS_ON_ANY_ALERT_DISPOSITION = "stop_analysis_on_any_ale
 CONFIG_ENGINE_STOP_ANALYSIS_ON_DISPOSITIONS = "stop_analysis_on_dispositions"
 CONFIG_ENGINE_TARGET_NODES = "target_nodes"
 CONFIG_ENGINE_WORK_DIR = "work_dir"
+CONFIG_ENGINE_ANALYSIS_POOLS = "analysis_pools"
 
 # database
 CONFIG_DATABASE = "database"

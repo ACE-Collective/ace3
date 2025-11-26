@@ -347,23 +347,21 @@ def test_engine_configuration_loads_from_config():
 @pytest.mark.unit
 def test_engine_configuration_analysis_pools_loaded_from_config():
     """Test that analysis_pools are loaded automatically from configuration."""
-    from saq.configuration.config import get_config
-    from saq.constants import CONFIG_ENGINE
+    from saq.configuration.config import get_config_value_as_is
+    from saq.constants import CONFIG_ENGINE, CONFIG_ENGINE_ANALYSIS_POOLS
+    from saq.engine.engine_configuration import compute_pool_size
 
     # Create config without passing analysis_pools - should load from configuration
     # Use local_analysis_modes=[] to avoid filtering
     config = EngineConfiguration(local_analysis_modes=[])
 
-    # Get the engine config section to check what's defined
-    engine_config = get_config()[CONFIG_ENGINE]
+    # Get the analysis_pools from configuration
+    config_analysis_pools = get_config_value_as_is(CONFIG_ENGINE, CONFIG_ENGINE_ANALYSIS_POOLS, {})
 
-    # Check that analysis pools are loaded from configuration
-    # The config should have keys like "analysis_pool_size_correlation", etc.
+    # Compute expected pools using the compute_pool_size function
     expected_pools = {}
-    for key in engine_config.keys():
-        if key.startswith("analysis_pool_size_"):
-            analysis_mode = key[len("analysis_pool_size_"):]
-            expected_pools[analysis_mode] = engine_config.getint(key)
+    for analysis_mode, value in config_analysis_pools.items():
+        expected_pools[analysis_mode] = compute_pool_size(value)
 
     # Verify the pools were loaded
     assert isinstance(config.analysis_pools, dict)
@@ -390,9 +388,12 @@ def test_engine_configuration_analysis_pools_empty_when_none_defined():
 @pytest.mark.unit
 def test_engine_configuration_analysis_pools_explicit():
     """Test that explicitly passed analysis_pools are used correctly."""
+    from multiprocessing import cpu_count
+
     test_pools = {
         "analysis": 4,
-        "correlation": 8,
+        "correlation": "50%",
+        "email": "8",
     }
 
     # Pass local_analysis_modes=[] to allow all modes (no filtering)
@@ -402,17 +403,21 @@ def test_engine_configuration_analysis_pools_explicit():
         default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
     )
 
-    # Should use the explicitly provided pools
-    assert config.analysis_pools == test_pools
+    # Should use the explicitly provided pools with computed values
+    assert config.analysis_pools["analysis"] == 4
+    assert config.analysis_pools["correlation"] == int(cpu_count() * 50 / 100)
+    assert config.analysis_pools["email"] == 8
 
 
 @pytest.mark.unit
 def test_engine_configuration_analysis_pools_filtered_by_local_modes():
     """Test that analysis_pools are filtered based on local_analysis_modes."""
+    from multiprocessing import cpu_count
+
     test_pools = {
         "analysis": 4,
-        "correlation": 8,
-        "email": 6,
+        "correlation": "100%",
+        "email": "6",
     }
 
     # Only allow "analysis" and "email" modes
@@ -424,7 +429,9 @@ def test_engine_configuration_analysis_pools_filtered_by_local_modes():
 
     # "correlation" should be filtered out
     assert "analysis" in config.analysis_pools
+    assert config.analysis_pools["analysis"] == 4
     assert "email" in config.analysis_pools
+    assert config.analysis_pools["email"] == 6
     assert "correlation" not in config.analysis_pools
 
 
@@ -525,6 +532,124 @@ def test_engine_configuration_add_analysis_pool_filtered():
     # Add for supported mode
     config.add_analysis_pool("allowed_mode", 10)
     assert "allowed_mode" in config.analysis_pools
+
+
+@pytest.mark.unit
+def test_compute_pool_size_with_integer():
+    """Test compute_pool_size with integer input."""
+    from saq.engine.engine_configuration import compute_pool_size
+
+    assert compute_pool_size(4) == 4
+    assert compute_pool_size(8) == 8
+    assert compute_pool_size(16) == 16
+
+
+@pytest.mark.unit
+def test_compute_pool_size_with_percentage():
+    """Test compute_pool_size with percentage string."""
+    from saq.engine.engine_configuration import compute_pool_size
+    from multiprocessing import cpu_count
+
+    # Test with 50%
+    result = compute_pool_size("50%")
+    expected = int(cpu_count() * 50 / 100)
+    assert result == expected
+
+    # Test with 100%
+    result = compute_pool_size("100%")
+    expected = int(cpu_count() * 100 / 100)
+    assert result == expected
+
+    # Test with 25%
+    result = compute_pool_size("25%")
+    expected = int(cpu_count() * 25 / 100)
+    assert result == expected
+
+
+@pytest.mark.unit
+def test_compute_pool_size_with_string_number():
+    """Test compute_pool_size with string number input."""
+    from saq.engine.engine_configuration import compute_pool_size
+
+    assert compute_pool_size("4") == 4
+    assert compute_pool_size("8") == 8
+    assert compute_pool_size("16") == 16
+
+
+@pytest.mark.unit
+def test_compute_pool_size_percentage_rounding():
+    """Test compute_pool_size percentage rounding behavior with low CPU counts."""
+    from saq.engine.engine_configuration import compute_pool_size
+    from unittest.mock import patch
+
+    # Test with 1 CPU
+    with patch("saq.engine.engine_configuration.cpu_count", return_value=1):
+        # 25% of 1 CPU = 0.25, but min is 1 for non-zero percentages
+        assert compute_pool_size("25%") == 1
+        # 50% of 1 CPU = 0.5, but min is 1 for non-zero percentages
+        assert compute_pool_size("50%") == 1
+        # 100% of 1 CPU = 1
+        assert compute_pool_size("100%") == 1
+        # 200% of 1 CPU = 2
+        assert compute_pool_size("200%") == 2
+
+    # Test with 2 CPUs
+    with patch("saq.engine.engine_configuration.cpu_count", return_value=2):
+        # 25% of 2 CPUs = 0.5, but min is 1 for non-zero percentages
+        assert compute_pool_size("25%") == 1
+        # 50% of 2 CPUs = 1
+        assert compute_pool_size("50%") == 1
+        # 100% of 2 CPUs = 2
+        assert compute_pool_size("100%") == 2
+
+    # Test with 3 CPUs
+    with patch("saq.engine.engine_configuration.cpu_count", return_value=3):
+        # 33% of 3 CPUs = 0.99, but min is 1 for non-zero percentages
+        assert compute_pool_size("33%") == 1
+        # 34% of 3 CPUs = 1.02, should truncate to 1
+        assert compute_pool_size("34%") == 1
+        # 50% of 3 CPUs = 1.5, should truncate to 1
+        assert compute_pool_size("50%") == 1
+
+
+@pytest.mark.unit
+def test_compute_pool_size_percentage_edge_cases():
+    """Test compute_pool_size with edge case percentages."""
+    from saq.engine.engine_configuration import compute_pool_size
+    from multiprocessing import cpu_count
+
+    # Test with 0%
+    assert compute_pool_size("0%") == 0
+
+    # Test with 1% - should return at least 1 for non-zero percentages
+    result = compute_pool_size("1%")
+    expected = max(1, int(cpu_count() * 1 / 100))
+    assert result == expected
+
+    # Test with high percentage (200%)
+    result = compute_pool_size("200%")
+    expected = max(1, int(cpu_count() * 200 / 100))
+    assert result == expected
+
+    # Test with very high percentage (500%)
+    result = compute_pool_size("500%")
+    expected = max(1, int(cpu_count() * 500 / 100))
+    assert result == expected
+
+
+@pytest.mark.unit
+def test_compute_pool_size_zero_values():
+    """Test compute_pool_size with zero values."""
+    from saq.engine.engine_configuration import compute_pool_size
+
+    # Integer zero
+    assert compute_pool_size(0) == 0
+
+    # String zero
+    assert compute_pool_size("0") == 0
+
+    # 0 percent
+    assert compute_pool_size("0%") == 0
 
 
 @pytest.mark.unit
