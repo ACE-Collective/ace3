@@ -127,6 +127,8 @@ RUN curl -fsSLk https://packages.microsoft.com/config/debian/12/packages-microso
 RUN apt-get update && \
     apt-get install -y dotnet-sdk-8.0
 
+# install ilspycmd
+RUN dotnet tool install --tool-path /opt/dotnet ilspycmd
 
 # create necessary directories
 RUN mkdir -p /opt/signatures /opt/ace /venv /opt/tools && \
@@ -192,9 +194,6 @@ RUN cd /opt/tools && \
     cd john-1.9.0-jumbo-1/src && \
     ./configure && \
     make -s -j $(nproc)
-
-# install ilspycmd
-RUN dotnet tool install --global ilspycmd
 
 # the olevba library wants to reset the logging levels you set
 # so we patch it so that it doesn't do that

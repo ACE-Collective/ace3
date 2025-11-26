@@ -1378,7 +1378,7 @@ analysis_module_ilspy:
   module: saq.modules.file_analysis.dotnet
   class: IlspyAnalyzer
   enabled: true
-  binary_path: /home/ace/.dotnet/tools/ilspycmd
+  binary_path: /opt/dotnet/ilspycmd
 
 analysis_module_ocr:
   id: ocr
