@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 import logging
 import os
 import shutil
@@ -97,15 +96,19 @@ class AnalysisOrchestrator:
             # Perform the actual analysis
             self._execute_analysis(execution_context)
 
-            # Handle post-analysis logic: detection handling, mode changes, cleanup
-            self._handle_post_analysis_logic(execution_context)
-
             return True
 
         except Exception as e:
             logging.error(f"error orchestrating analysis for {execution_context.work_item}: {e}")
             report_exception()
             return False
+        finally:
+            # Handle post-analysis logic: detection handling, mode changes, cleanup
+            try:
+                self._handle_post_analysis_logic(execution_context)
+            except Exception as e:
+                logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
+                report_exception()
 
     def _process_work_item(self, execution_context: EngineExecutionContext) -> bool:
         """Process the work item and set up the root analysis."""
@@ -122,7 +125,10 @@ class AnalysisOrchestrator:
             return False
 
         if isinstance(work_item, DelayedAnalysisRequest):
-            work_item.load(self.configuration_manager)
+            if not work_item.load(self.configuration_manager):
+                logging.error(f"unable to load delayed analysis request {work_item}")
+                return False
+
             # reset the delay flag for this analysis
             if work_item.analysis:
                 work_item.analysis.delayed = False
