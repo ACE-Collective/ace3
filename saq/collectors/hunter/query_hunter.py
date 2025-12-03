@@ -13,7 +13,7 @@ from tempfile import mkstemp
 from typing import Optional
 
 from glom import PathAccessError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
@@ -50,6 +50,16 @@ class ObservableMapping(BaseModel):
     directives: list[str] = Field(default_factory=list, description="The directives to add to the observable")
     tags: list[str] = Field(default_factory=list, description="The tags to add to the observable")
     volatile: bool = Field(default=False, description="Whether to add the observable as volatile. Volatile observables are added for the purposes of detection.")
+    ignored_values: list[str] = Field(default_factory=list, description="A list of values to ignore when mapping the observable.")
+    display_type: Optional[str] = Field(default=None, description="The display type to use for the observable.")
+    display_value: Optional[str] = Field(default=None, description="The display value to use for the observable.")
+
+    @model_validator(mode='after')
+    def validate_display_value_for_file_type(self):
+        """validate that display_value is not set for file type observables"""
+        if self.type == F_FILE and self.display_value is not None:
+            raise ValueError(f"display_value is not supported for file type observables (type={self.type})")
+        return self
 
 class QueryHuntConfig(HuntConfig):
     time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
@@ -63,6 +73,7 @@ class QueryHuntConfig(HuntConfig):
     observable_mapping: list[ObservableMapping] = Field(default_factory=list, description="The mapping of fields to observables.")
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config_value_as_int(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT), description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config_value_as_str(CONFIG_QUERY_HUNTER, CONFIG_QUERY_HUNTER_QUERY_TIMEOUT), description="The timeout for the query (in HH:MM:SS format).")
+    auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
 
 class FileContent(BaseModel):
     file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
@@ -70,6 +81,8 @@ class FileContent(BaseModel):
     directives: list[str] = Field(default_factory=list, description="The directives to add to the file observable.")
     tags: list[str] = Field(default_factory=list, description="The tags to add to the file observable.")
     volatile: bool = Field(default=False, description="Whether to add the observable as volatile.")
+    display_type: Optional[str] = Field(default=None, description="The display type to use for the file observable.")
+    display_value: Optional[str] = Field(default=None, description="The display value to use for the file observable.")
 
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -412,6 +425,10 @@ class QueryHunt(Hunt):
                 if not observed_value:
                     continue
 
+                # if the value is in the ignored values list, then we ignore it
+                if observable_mapping.ignored_values and observed_value in observable_mapping.ignored_values:
+                    continue
+
                 if observable_mapping.file_decoder is not None:
                     observed_value = decode_value(observed_value, observable_mapping.file_decoder)
 
@@ -435,7 +452,9 @@ class QueryHunt(Hunt):
                         content=observed_value,
                         directives=interpolated_directives,
                         tags=interpolated_tags,
-                        volatile=observable_mapping.volatile
+                        volatile=observable_mapping.volatile,
+                        display_type=observable_mapping.display_type,
+                        display_value=observable_mapping.display_value
                     ))
 
                     continue
@@ -458,12 +477,21 @@ class QueryHunt(Hunt):
                 for tag in observable_mapping.tags:
                     observable.add_tag(interpolate_event_value(tag, event))
 
+                if observable_mapping.display_type is not None:
+                    observable.display_type = observable_mapping.display_type
+
+                if observable_mapping.display_value is not None:
+                    observable.display_value = observable_mapping.display_value
+
                 # add it to our list if we haven't already added it
                 if observable not in observables:
                     observables.append(observable)
 
-            observables.append(create_observable(F_HUNT, self.name))
-            observables.append(create_observable(F_SIGNATURE_ID, self.uuid))
+            signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
+
+            if signature_id_observable is not None:
+                signature_id_observable.display_value = self.name
+                observables.append(signature_id_observable)
 
             # if we are NOT grouping then each row is an alert by itself
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
@@ -482,6 +510,9 @@ class QueryHunt(Hunt):
                         file_obs.add_directive(directive)
                     for tag in file_content.tags:
                         file_obs.add_tag(tag)
+                    if file_content.display_type is not None:
+                        file_obs.display_type = file_content.display_type
+                    # note: display_value is not set for FileObservable as it's read-only
 
                 submission.root.details[QUERY_DETAILS_EVENTS].append(event)
                 submissions.append(submission)
@@ -515,6 +546,9 @@ class QueryHunt(Hunt):
                             file_obs.add_directive(directive)
                         for tag in file_content.tags:
                             file_obs.add_tag(tag)
+                        if file_content.display_type is not None:
+                            file_obs.display_type = file_content.display_type
+                        # note: display_value is not set for FileObservable as it's read-only
 
                     event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)
 

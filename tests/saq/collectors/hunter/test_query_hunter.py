@@ -14,7 +14,7 @@ import saq.util.time as saq_time
 from saq.collectors.hunter import HuntManager, HunterService, read_persistence_data
 from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_HUNT, F_IPV4, F_SIGNATURE_ID, G_DATA_DIR
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_SIGNATURE_ID, G_DATA_DIR
 from saq.environment import g_obj, get_data_dir
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import log_count, wait_for_log_count
@@ -519,9 +519,7 @@ def test_process_query_results(monkeypatch):
     assert isinstance(submission.root.details["events"], list)
     assert len(submission.root.details["events"]) == 1
     assert submission.root.details["events"][0] == {}
-    assert len(submission.root.observables) == 2 # F_HUNT and F_SIGNATURE_ID
-    hunt_observable = next((o for o in submission.root.observables if o.type == F_HUNT), None)
-    assert hunt_observable.value == "test"
+    assert len(submission.root.observables) == 1 # only F_SIGNATURE_ID
     signature_id_observable = next((o for o in submission.root.observables if o.type == F_SIGNATURE_ID), None)
     assert signature_id_observable.value == hunt.uuid
     assert submission.root.tags == [Tag(name="test_tag")]
@@ -534,11 +532,9 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    assert len(submission.root.observables) == 3
+    assert len(submission.root.observables) == 2
     for observable in submission.root.observables:
-        if observable.type == F_HUNT:
-            assert observable.value == "test"
-        elif observable.type == F_SIGNATURE_ID:
+        if observable.type == F_SIGNATURE_ID:
             assert observable.value == hunt.uuid
         elif observable.type == F_IPV4:
             assert observable.value == "1.2.3.4"
@@ -570,7 +566,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 3
+        assert len(submission.root.observables) == 2
         assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
 
     hunt.config.group_by = "dst"
@@ -581,7 +577,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 3
+        assert len(submission.root.observables) == 2
         assert submission.root.description == "test (1 event)"
 
     hunt.config.group_by = "ALL"
@@ -592,7 +588,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     for submission in submissions:
-        assert len(submission.root.observables) == 4
+        assert len(submission.root.observables) == 3
         assert submission.root.description == "test (2 events)"
 
 
@@ -627,7 +623,7 @@ def test_process_query_results_file_observable(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should have F_HUNT and F_SIGNATURE_ID observables plus the file observable
+    # should have F_SIGNATURE_ID observable plus the file observable
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 1
     file_obs = file_observables[0]
@@ -834,7 +830,7 @@ def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should only have F_HUNT and F_SIGNATURE_ID, no file observable
+    # should only have F_SIGNATURE_ID, no file observable
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 0
 
@@ -868,7 +864,7 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should only have F_HUNT and F_SIGNATURE_ID, no file observable (empty content is skipped)
+    # should only have F_SIGNATURE_ID, no file observable (empty content is skipped)
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 0
 
@@ -1148,3 +1144,419 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
         tag_names = [t.name for t in file_obs.tags]
         assert "grouped_tag" in tag_names
         assert not file_obs.volatile
+
+
+@pytest.mark.unit
+def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
+    """test observable mapping with ignored_values"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_ignored_values",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                ignored_values=["0.0.0.0", "127.0.0.1"]
+            )
+        ]
+    )
+
+    # test with a value that should be ignored
+    submissions = hunt.process_query_results([{"src_ip": "0.0.0.0"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # should only have F_SIGNATURE_ID observable, no ipv4 observable
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 0
+
+    # test with another ignored value
+    submissions = hunt.process_query_results([{"src_ip": "127.0.0.1"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 0
+
+    # test with a value that should NOT be ignored
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    assert ipv4_observables[0].value == "1.2.3.4"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, tmpdir):
+    """test ignored_values with multiple events, some ignored and some not"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_ignored_values",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                ignored_values=["0.0.0.0"]
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"src_ip": "0.0.0.0"},
+        {"src_ip": "1.2.3.4"},
+        {"src_ip": "5.6.7.8"},
+    ])
+    assert submissions
+    assert len(submissions) == 3
+
+    # first submission should have no ipv4 observable (ignored)
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 0
+
+    # second and third submissions should have ipv4 observables
+    ipv4_observables = [o for o in submissions[1].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    assert ipv4_observables[0].value == "1.2.3.4"
+
+    ipv4_observables = [o for o in submissions[2].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    assert ipv4_observables[0].value == "5.6.7.8"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
+    """test observable mapping with display_type and display_value"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_display_properties",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                display_type="source_address",
+                display_value="Source IP Address"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    ipv4_obs = ipv4_observables[0]
+
+    # display_type getter appends the actual type in parentheses
+    assert ipv4_obs.display_type == "source_address (ipv4)"
+    # display_value getter appends the actual value in parentheses
+    assert ipv4_obs.display_value == "Source IP Address (1.2.3.4)"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
+    """test observable mapping with only display_type set"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_display_type",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                display_type="source_ip"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    ipv4_obs = ipv4_observables[0]
+
+    # display_type getter appends the actual type in parentheses
+    assert ipv4_obs.display_type == "source_ip (ipv4)"
+    # display_value getter returns the actual value when _display_value is None
+    assert ipv4_obs.display_value == "1.2.3.4"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_display_value_only(monkeypatch, tmpdir):
+    """test observable mapping with only display_value set"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_display_value",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                display_value="Custom IP Display"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    ipv4_obs = ipv4_observables[0]
+
+    # display_type getter returns the actual type when _display_type is None
+    assert ipv4_obs.display_type == "ipv4"
+    # display_value getter appends the actual value in parentheses
+    assert ipv4_obs.display_value == "Custom IP Display (1.2.3.4)"
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_display_properties(monkeypatch, tmpdir):
+    """test F_FILE observable with display_type and display_value
+
+    NOTE: FileObservable overrides display_value as a read-only property that returns file_path,
+    so ObservableMapping validation will fail if display_value is set for file type observables.
+    """
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+    from pydantic import ValidationError
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    # attempting to create an ObservableMapping with display_value for file type should fail validation
+    with pytest.raises(ValidationError, match="display_value is not supported for file type observables"):
+        ObservableMapping(
+            fields=["file_content"],
+            type=F_FILE,
+            file_name="test_file.txt",
+            display_type="email_attachment",
+            display_value="Suspicious Email Attachment"
+        )
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_display_type_only(monkeypatch, tmpdir):
+    """test F_FILE observable with only display_type set"""
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_display_type",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="test_file.txt",
+                display_type="malware_sample"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([{"file_content": "malware data"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    file_obs = file_observables[0]
+
+    # display_type getter appends the actual type in parentheses
+    assert file_obs.display_type == "malware_sample (file)"
+    # display_value returns file_path for FileObservable (it's read-only)
+    assert file_obs.display_value == "test_file.txt"
+
+
+@pytest.mark.unit
+def test_process_query_results_file_observable_with_grouped_display_properties(monkeypatch, tmpdir):
+    """test F_FILE observable with display_type when using group_by
+
+    NOTE: display_value cannot be set for file observables due to validation.
+    """
+    import saq.collectors.hunter.query_hunter
+    from saq.constants import F_FILE
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "g", lambda key: str(tmpdir) if key == "G_TEMP_DIR" else None)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_file_display_grouped",
+        group_by="group_field",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["file_content"],
+                type=F_FILE,
+                file_name="grouped_file.txt",
+                display_type="grouped_attachment"
+            )
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"file_content": "content1", "group_field": "group_a"},
+        {"file_content": "content2", "group_field": "group_a"},
+    ])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
+    assert len(file_observables) == 2
+
+    # verify display_type is set on grouped file observables
+    for file_obs in file_observables:
+        assert file_obs.display_type == "grouped_attachment (file)"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdir):
+    """test observable mapping with empty ignored_values list"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_empty_ignored",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                ignored_values=[]
+            )
+        ]
+    )
+
+    # with empty ignored_values list, all values should be processed
+    submissions = hunt.process_query_results([{"src_ip": "0.0.0.0"}])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    assert ipv4_observables[0].value == "0.0.0.0"
+
+
+@pytest.mark.unit
+def test_observable_mapping_validation_display_value_for_file_type():
+    """test that ObservableMapping validation prevents display_value for file type observables"""
+    from saq.constants import F_FILE
+    from pydantic import ValidationError
+
+    # should raise ValidationError when trying to set display_value for file type
+    with pytest.raises(ValidationError) as exc_info:
+        ObservableMapping(
+            fields=["file_content"],
+            type=F_FILE,
+            file_name="test.txt",
+            display_value="Custom Display"
+        )
+
+    assert "display_value is not supported for file type observables" in str(exc_info.value)
+
+    # display_type should be allowed for file type observables
+    mapping = ObservableMapping(
+        fields=["file_content"],
+        type=F_FILE,
+        file_name="test.txt",
+        display_type="custom_file_type"
+    )
+    assert mapping.display_type == "custom_file_type"
+    assert mapping.display_value is None
+
+
+@pytest.mark.unit
+def test_query_hunt_config_auto_append_default():
+    """test that QueryHuntConfig has auto_append property with default empty string"""
+    config = QueryHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="test_query",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="test query",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False
+    )
+
+    assert hasattr(config, "auto_append")
+    assert config.auto_append == ""
+
+
+@pytest.mark.unit
+def test_query_hunt_config_auto_append_custom():
+    """test that QueryHuntConfig auto_append property can be set to custom value"""
+    config = QueryHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="test_query",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="test query",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="| custom command"
+    )
+
+    assert config.auto_append == "| custom command"

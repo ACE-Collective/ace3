@@ -252,7 +252,7 @@ class SplunkQueryObject:
         query: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
-        timeout: str = '30:00',
+        timeout: Optional[timedelta] = None,
         limit: int = 1000,
         use_index_time: bool = False,
     ) -> list:
@@ -270,6 +270,9 @@ class SplunkQueryObject:
             list: list of results where each item is a dictionary that maps the field to the value
         """
         # remove search from start of query if it is present, it will get added back on later
+        if timeout is None:
+            timeout = create_timedelta("30:00")
+
         if query.lstrip().lower().startswith('search'):
             query = query[len('search'):]
 
@@ -304,7 +307,7 @@ class SplunkQueryObject:
         start:Optional[datetime]=None, 
         end:Optional[datetime]=None, 
         use_index_time:bool=False, 
-        timeout: Optional[str]="30:00") -> Tuple[Optional[Job], Optional[List[dict]]]:
+        timeout: Optional[timedelta]=None) -> Tuple[Optional[Job], Optional[List[dict]]]:
         """Executes a query asynchronously.
 
         To properly use the method you must call it in a loop and pass the returned sid into the next call until results are returned
@@ -320,10 +323,13 @@ class SplunkQueryObject:
         Returns:
             tuple: First value is the sid of the query, second value is the json results of the query
         """
+        if timeout is None:
+            timeout = create_timedelta("30:00")
+
         try:
             # check if we've timed out 
             if self.is_running() and timeout is not None:
-                if local_time() >= self.running_start_time + create_timedelta(timeout):
+                if local_time() >= self.running_start_time + timeout:
                     logging.warning(f"splunk query timed out: {query}")
                     self.cancel(job)
                     return None, []

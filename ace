@@ -94,7 +94,7 @@ def execute_hunt(args):
         print(submission.root.description)
         if args.details:
             for o in submission.root.observables:
-                output = f"\t(*) {o.type} - {o.display_value}"
+                output = f"\t(*) {o.display_type} - {o.display_value}"
                 if o.time:
                     output += " - {}".format(o.time)
                 if o.tags:
@@ -136,19 +136,20 @@ def execute_hunt(args):
 
         observables = []
         for observable in submission.root.observables:
-            observable_json = {
-                'type': observable.type,
-                'value': observable.value,
-                'time': observable.time,
-                'tags': [t.name for t in observable.tags],
-                'directives': observable.directives,
-                'limited_analysis': observable.limited_analysis,
-                #'pivot_links': observable.pivot_links,
-                #'file_path': observable.file_path,
-            }
+            observable_json = observable.json
+            #observable_json = {
+                #'type': observable.type,
+                #'value': observable.value,
+                #'time': observable.time,
+                #'tags': [t.name for t in observable.tags],
+                #'directives': observable.directives,
+                #'limited_analysis': observable.limited_analysis,
+                ##'pivot_links': observable.pivot_links,
+                ##'file_path': observable.file_path,
+            #}
 
-            if isinstance(observable, FileObservable):
-                observable_json['file_path'] = observable.file_path
+            #if isinstance(observable, FileObservable):
+                #observable_json['file_path'] = observable.file_path
 
             observables.append(observable_json)
 

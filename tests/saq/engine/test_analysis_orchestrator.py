@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, G_FORCED_ALERTS
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -129,6 +129,170 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
         monkeypatch.setattr("saq.engine.analysis_orchestrator.g_boolean", lambda x: forced_alerts and x == G_FORCED_ALERTS)
         
         orchestrator._handle_detection_points(execution_context)
-        
+
         assert execution_context.root.analysis_mode == "test_mode"
+
+
+@pytest.mark.unit
+class TestAnalysisOrchestratorFinallyBlock:
+    """Test cases to validate that _handle_post_analysis_logic is called in the finally block."""
+
+    @pytest.fixture
+    def mock_config_manager(self):
+        """create a mock configuration manager"""
+        config_manager = Mock(spec=ConfigurationManager)
+        config_manager.config = Mock()
+        config_manager.config.non_detectable_modes = ["analysis"]
+        config_manager.config.alerting_enabled = True
+        return config_manager
+
+    @pytest.fixture
+    def mock_analysis_executor(self):
+        """create a mock analysis executor"""
+        return Mock(spec=AnalysisExecutor)
+
+    @pytest.fixture
+    def mock_workload_manager(self):
+        """create a mock workload manager"""
+        return Mock()
+
+    @pytest.fixture
+    def mock_lock_manager(self):
+        """create a mock lock manager"""
+        return Mock()
+
+    @pytest.fixture
+    def orchestrator(self, mock_config_manager, mock_analysis_executor, mock_workload_manager, mock_lock_manager):
+        """create an AnalysisOrchestrator instance for testing"""
+        return AnalysisOrchestrator(
+            configuration_manager=mock_config_manager,
+            analysis_executor=mock_analysis_executor,
+            workload_manager=mock_workload_manager,
+            lock_manager=mock_lock_manager
+        )
+
+    @pytest.fixture
+    def execution_context(self, tmpdir):
+        """create an execution context with a test root analysis"""
+        root = create_root_analysis(analysis_mode="test_mode", storage_dir=str(tmpdir))
+        root.save()
+        context = Mock(spec=EngineExecutionContext)
+        context.root = root
+        context.work_item = root
+        return context
+
+    def test_post_analysis_logic_called_on_success(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called when analysis succeeds"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', return_value=False), \
+             patch.object(orchestrator, '_execute_analysis'), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is True
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_called_on_execute_analysis_exception(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called even when _execute_analysis raises an exception"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', return_value=False), \
+             patch.object(orchestrator, '_execute_analysis', side_effect=RuntimeError("analysis failed")), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_called_on_check_disposition_exception(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called when _check_disposition raises an exception"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', side_effect=RuntimeError("disposition check failed")), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_called_when_process_work_item_fails(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called even when _process_work_item returns False"""
+        with patch.object(orchestrator, '_process_work_item', return_value=False), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            # the finally block still executes even when we return early from the try block
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_called_when_root_is_none(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called even when root is None after processing work item"""
+        execution_context.root = None
+
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            # the finally block still executes even when we return early from the try block
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_called_when_check_disposition_returns_true(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called when _check_disposition returns True (skipping analysis)"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', return_value=True), \
+             patch.object(orchestrator, '_execute_analysis') as mock_execute, \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is True
+            mock_execute.assert_not_called()
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_post_analysis_logic_exception_is_caught(self, orchestrator, execution_context):
+        """test that exceptions in _handle_post_analysis_logic are caught and logged"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', return_value=False), \
+             patch.object(orchestrator, '_execute_analysis'), \
+             patch.object(orchestrator, '_handle_post_analysis_logic', side_effect=RuntimeError("post-analysis failed")), \
+             patch('saq.engine.analysis_orchestrator.logging') as mock_logging:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            # analysis should still return True because the exception was in the finally block
+            assert result is True
+            # verify error was logged
+            mock_logging.error.assert_called()
+            error_call_args = str(mock_logging.error.call_args)
+            assert "post-analysis logic" in error_call_args
+
+    def test_orchestrate_analysis_exception_before_finally_block(self, orchestrator, execution_context):
+        """test that _handle_post_analysis_logic is called even when there's an exception in the try block"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', side_effect=ValueError("unexpected error")), \
+             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis, \
+             patch('saq.engine.analysis_orchestrator.logging'):
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            mock_post_analysis.assert_called_once_with(execution_context)
+
+    def test_multiple_exceptions_in_try_and_finally(self, orchestrator, execution_context):
+        """test behavior when exceptions occur in both try and finally blocks"""
+        with patch.object(orchestrator, '_process_work_item', return_value=True), \
+             patch.object(orchestrator, '_check_disposition', return_value=False), \
+             patch.object(orchestrator, '_execute_analysis', side_effect=RuntimeError("execute failed")), \
+             patch.object(orchestrator, '_handle_post_analysis_logic', side_effect=RuntimeError("post-analysis failed")), \
+             patch('saq.engine.analysis_orchestrator.logging') as mock_logging:
+
+            result = orchestrator.orchestrate_analysis(execution_context)
+
+            assert result is False
+            # verify both errors were logged
+            assert mock_logging.error.call_count >= 2
 

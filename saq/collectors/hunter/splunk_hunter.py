@@ -23,7 +23,10 @@ from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
 class SplunkHuntConfig(QueryHuntConfig):
     namespace_user: Optional[str] = Field(alias="splunk_user_context", default_factory=lambda: get_config_value_as_str(CONFIG_SPLUNK, CONFIG_SPLUNK_USER_CONTEXT), description="The namespace user to use for the hunt")
     namespace_app: Optional[str] = Field(alias="splunk_app_context", default_factory=lambda: get_config_value_as_str(CONFIG_SPLUNK, CONFIG_SPLUNK_APP_CONTEXT), description="The namespace app to use for the hunt")
-
+    # splunk requires | fields * to actually return all of the fields in the results
+    # so by default we append this to every splunk query
+    # you can override this by setting the auto_append field in the hunt config
+    auto_append: str = Field(default="| fields *", description="The string to append to the query after the time spec. By default this is | fields *")
 
 class SplunkHunt(QueryHunt):
 
@@ -78,10 +81,18 @@ class SplunkHunt(QueryHunt):
         return result
 
     def formatted_query(self):
-        return self.query.replace('{time_spec}', self.time_spec)
+        result = self.query.replace('{time_spec}', self.time_spec)
+        if not result.endswith(self.config.auto_append):
+            result += ' ' + self.config.auto_append
+
+        return result
 
     def formatted_query_timeless(self):
-        return self.query.replace('{time_spec}', '')
+        result = self.query.replace('{time_spec}', '')
+        if not result.endswith(self.config.auto_append):
+            result += self.config.auto_append
+
+        return result
 
     def extract_event_timestamp(self, event):
         return extract_event_timestamp(event)

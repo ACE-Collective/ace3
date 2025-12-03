@@ -244,6 +244,134 @@ def test_invalid_mac_observable():
     assert observable is None
 
 @pytest.mark.unit
+def test_display_type_with_no_custom_display():
+    """test that display_type returns the type when no custom display_type is set"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    assert observable.display_type == F_IPV4
+    assert observable.display_type == observable.type
+
+@pytest.mark.unit
+def test_display_type_with_custom_display():
+    """test that display_type returns custom display with type in parentheses when display_type is set"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    observable.display_type = "Internal IP"
+    assert observable.display_type == f"Internal IP ({F_IPV4})"
+    assert observable.type == F_IPV4
+
+@pytest.mark.unit
+def test_display_value_with_no_custom_display():
+    """test that display_value returns the value when no custom display_value is set"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_FQDN, 'example.com')
+    assert observable.display_value == 'example.com'
+    assert observable.display_value == observable.value
+
+@pytest.mark.unit
+def test_display_value_with_custom_display():
+    """test that display_value returns custom display with value in parentheses when display_value is set"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_FQDN, 'example.com')
+    observable.display_value = "Example Domain"
+    assert observable.display_value == "Example Domain (example.com)"
+    assert observable.value == 'example.com'
+
+@pytest.mark.unit
+def test_display_properties_combined():
+    """test that both display_type and display_value work together correctly"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_USER, 'john.doe')
+
+    # initially no custom display set
+    assert observable.display_type == F_USER
+    assert observable.display_value == 'john.doe'
+
+    # set custom display values
+    observable.display_type = "Domain User"
+    observable.display_value = "John Doe"
+
+    # verify custom display is applied
+    assert observable.display_type == f"Domain User ({F_USER})"
+    assert observable.display_value == "John Doe (john.doe)"
+
+    # verify underlying properties remain unchanged
+    assert observable.type == F_USER
+    assert observable.value == 'john.doe'
+
+@pytest.mark.unit
+def test_display_properties_with_empty_string():
+    """test that empty string is treated as None for display properties"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_HOSTNAME, 'webserver01')
+
+    # set to empty string
+    observable.display_type = ""
+    observable.display_value = ""
+
+    # empty strings are falsy, so should show with parentheses
+    assert observable.display_type == f" ({F_HOSTNAME})"
+    assert observable.display_value == " (webserver01)"
+
+@pytest.mark.unit
+def test_display_properties_persist_through_serialization():
+    """test that custom display properties persist through JSON serialization"""
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_URL, 'http://evil.com/malware.exe')
+
+    # set custom display
+    observable.display_type = "Malicious URL"
+    observable.display_value = "Known Phishing Site"
+
+    # save and reload
+    root.save()
+    root = create_root_analysis()
+    root.load()
+
+    # retrieve the observable
+    observable = root.get_observable_by_type(F_URL)
+    assert observable
+
+    # verify custom display persisted
+    assert observable.display_type == f"Malicious URL ({F_URL})"
+    assert observable.display_value == "Known Phishing Site (http://evil.com/malware.exe)"
+
+@pytest.mark.unit
+def test_display_properties_reset_to_none():
+    """test that display properties can be reset to None"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_EMAIL_ADDRESS, 'test@example.com')
+
+    # set custom display
+    observable.display_type = "Corporate Email"
+    observable.display_value = "Test User"
+    assert observable.display_type == f"Corporate Email ({F_EMAIL_ADDRESS})"
+    assert observable.display_value == "Test User (test@example.com)"
+
+    # reset to None
+    observable.display_type = None
+    observable.display_value = None
+
+    # verify back to default behavior
+    assert observable.display_type == F_EMAIL_ADDRESS
+    assert observable.display_value == 'test@example.com'
+
+@pytest.mark.unit
+def test_display_properties_with_special_characters():
+    """test that display properties handle special characters correctly"""
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_FILE_PATH, r'C:\Windows\System32\cmd.exe')
+
+    # set display with special characters
+    observable.display_type = "System Binary"
+    observable.display_value = "Command Prompt (Admin)"
+
+    assert observable.display_type == f"System Binary ({F_FILE_PATH})"
+    assert observable.display_value == r"Command Prompt (Admin) (C:\Windows\System32\cmd.exe)"
+    assert observable.value == r'C:\Windows\System32\cmd.exe'
+
+@pytest.mark.unit
 def test_protected_url_sanitization():
     root = create_root_analysis()
 

@@ -58,6 +58,8 @@ KEY_O_TIME = 'time'
 KEY_O_TAGS = 'tags'
 KEY_O_DIRECTIVES = 'directives'
 KEY_O_LIMITED_ANALYSIS = 'limited_analysis'
+KEY_O_DISPLAY_VALUE = 'display_value'
+KEY_O_DISPLAY_TYPE = 'display_type'
 
 @analysis_bp.route('/submit', methods=['POST'])
 @api_auth_check("alert", "create")
@@ -66,23 +68,22 @@ def submit():
     if KEY_ANALYSIS not in request.values:
         abort(Response("missing {} field (see documentation)".format(KEY_ANALYSIS), 400))
 
-    r = json.loads(request.values[KEY_ANALYSIS])
-    logging.debug("received analysis submission data: {}".format(r))
+    request_dict = json.loads(request.values[KEY_ANALYSIS])
+    logging.debug("received analysis submission data: {}".format(request_dict))
 
     # the specified company needs to match the company of this node
     # TODO eventually we'll have a single node that serves API to all configured companies
 
-    if KEY_COMPANY_NAME in r:
-        logging.info("Received post with company name field supplied: {}".format(r[KEY_COMPANY_NAME]))
-        if r[KEY_COMPANY_NAME] != get_config()['global']['company_name']:
-            abort(Response("wrong company {} (are you sending to the correct system?)".format(r[KEY_COMPANY_NAME]), 400))
+    if KEY_COMPANY_NAME in request_dict:
+        logging.info("Received post with company name field supplied: {}".format(request_dict[KEY_COMPANY_NAME]))
+        if request_dict[KEY_COMPANY_NAME] != get_config()['global']['company_name']:
+            abort(Response("wrong company {} (are you sending to the correct system?)".format(request_dict[KEY_COMPANY_NAME]), 400))
 
-    if KEY_DESCRIPTION not in r:
+    if KEY_DESCRIPTION not in request_dict:
         abort(Response("missing {} field in submission".format(KEY_DESCRIPTION), 400))
 
-
     # does the engine use a different drive for the workload?
-    analysis_mode = r[KEY_ANALYSIS_MODE] if KEY_ANALYSIS_MODE in r else get_config()['service_engine']['default_analysis_mode']
+    analysis_mode = request_dict[KEY_ANALYSIS_MODE] if KEY_ANALYSIS_MODE in request_dict else get_config()['service_engine']['default_analysis_mode']
     root_uuid = str(uuid.uuid4())
     if analysis_mode != ANALYSIS_MODE_CORRELATION:
         _storage_dir = storage_dir_from_uuid(root_uuid)
@@ -94,38 +95,38 @@ def submit():
 
     try:
 
-        root.analysis_mode = r[KEY_ANALYSIS_MODE] if KEY_ANALYSIS_MODE in r else get_config()['service_engine']['default_analysis_mode']
+        root.analysis_mode = request_dict[KEY_ANALYSIS_MODE] if KEY_ANALYSIS_MODE in request_dict else get_config()['service_engine']['default_analysis_mode']
         root.company_id = get_config()['global'].getint('company_id')
-        if KEY_COMPANY_ID in r and r[KEY_COMPANY_ID]:
-            root.company_id =  r[KEY_COMPANY_ID]
-        root.tool = r[KEY_TOOL] if KEY_TOOL in r else 'api'
-        root.tool_instance = r[KEY_TOOL_INSTANCE] if KEY_TOOL_INSTANCE in r else 'api({})'.format(request.remote_addr)
-        root.alert_type = r[KEY_TYPE] if KEY_TYPE in r else get_config()['api']['default_alert_type']
-        root.description = r[KEY_DESCRIPTION]
+        if KEY_COMPANY_ID in request_dict and request_dict[KEY_COMPANY_ID]:
+            root.company_id =  request_dict[KEY_COMPANY_ID]
+        root.tool = request_dict[KEY_TOOL] if KEY_TOOL in request_dict else 'api'
+        root.tool_instance = request_dict[KEY_TOOL_INSTANCE] if KEY_TOOL_INSTANCE in request_dict else 'api({})'.format(request.remote_addr)
+        root.alert_type = request_dict[KEY_TYPE] if KEY_TYPE in request_dict else get_config()['api']['default_alert_type']
+        root.description = request_dict[KEY_DESCRIPTION]
         root.event_time = get_local_timezone().localize(datetime.now())
-        root.queue = r[KEY_QUEUE] if KEY_QUEUE in r else QUEUE_DEFAULT
-        root.instructions = r[KEY_INSTRUCTIONS] if KEY_INSTRUCTIONS in r else None
-        root.extensions = r[KEY_EXTENSIONS] if KEY_EXTENSIONS in r else None
-        if KEY_EVENT_TIME in r:
+        root.queue = request_dict[KEY_QUEUE] if KEY_QUEUE in request_dict else QUEUE_DEFAULT
+        root.instructions = request_dict[KEY_INSTRUCTIONS] if KEY_INSTRUCTIONS in request_dict else None
+        root.extensions = request_dict[KEY_EXTENSIONS] if KEY_EXTENSIONS in request_dict else None
+        if KEY_EVENT_TIME in request_dict:
             try:
-                root.event_time = parse_event_time(r[KEY_EVENT_TIME])
+                root.event_time = parse_event_time(request_dict[KEY_EVENT_TIME])
             except ValueError:
-                abort(Response("invalid event time format for {} (use {} format)".format(r[KEY_EVENT_TIME], EVENT_TIME_FORMAT_JSON_TZ), 400))
+                abort(Response("invalid event time format for {} (use {} format)".format(request_dict[KEY_EVENT_TIME], EVENT_TIME_FORMAT_JSON_TZ), 400))
 
-        root.details = r[KEY_DETAILS] if KEY_DETAILS in r else {}
+        root.details = request_dict[KEY_DETAILS] if KEY_DETAILS in request_dict else {}
 
         # go ahead and allocate storage
         # XXX use temp dir instead...
 
-        if KEY_TAGS in r:
-            for tag in r[KEY_TAGS]:
+        if KEY_TAGS in request_dict:
+            for tag in request_dict[KEY_TAGS]:
                 root.add_tag(tag)
 
         file_observable_dicts: list[dict] = []
 
         # add the observables
-        if KEY_OBSERVABLES in r:
-            for observable_dict in r[KEY_OBSERVABLES]:
+        if KEY_OBSERVABLES in request_dict:
+            for observable_dict in request_dict[KEY_OBSERVABLES]:
                 if observable_dict['type'] == F_FILE:
                     file_observable_dicts.append(observable_dict)
                 else:
@@ -230,7 +231,7 @@ def submit():
             abort(Response("an error occured trying to save the alert - review the logs", 400))
 
         try:
-            root.record_submission(r, file_list)
+            root.record_submission(request_dict, file_list)
         except Exception as e:
             logging.error(f"unable to record submission data for {root.uuid}: {e}")
 

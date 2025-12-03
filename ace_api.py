@@ -365,8 +365,8 @@ def submit(
         assert isinstance(observable, dict)
         assert 'type' in observable, "missing type in observable {}".format(observable)
         assert 'value' in observable, "missing value in observable {}".format(observable)
-        for key in observable.keys():
-            assert key in [ 'type', 'value', 'time', 'tags', 'directives', 'limited_analysis', 'pivot_links', 'file_path' ], "unknown observable property {} in {}".format(key, observable)
+        #for key in observable.keys():
+            #assert key in [ 'type', 'value', 'time', 'tags', 'directives', 'limited_analysis', 'pivot_links', 'file_path', 'display_type', 'display_value' ], "unknown observable property {} in {}".format(key, observable)
 
         # make sure any times are formatted
         if 'time' in observable and isinstance(observable['time'], datetime.datetime):

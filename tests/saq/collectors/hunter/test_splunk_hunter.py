@@ -9,7 +9,7 @@ from saq.analysis.root import RootAnalysis
 from saq.collectors.hunter import HuntManager, HunterCollector
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME, F_HUNT
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME
 from saq.environment import get_data_dir
 from saq.util.time import create_timedelta
 
@@ -166,19 +166,15 @@ def test_splunk_query(manager_kwargs, datadir):
         if submission.root.description == 'Test Splunk Query: 29380 (3 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 36, tzinfo=UTC)
             assert isinstance(submission.root, RootAnalysis)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 29385 (2 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 37, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 29375 (2 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 36, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 31185 (93 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 22, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         else:
             raise RuntimeError(f"invalid description: {submission.description}")
@@ -208,7 +204,6 @@ def test_splunk_query_observable_id_mapping(manager_kwargs, datadir):
     assert isinstance(result, list)
     assert len(result) == 4
     for submission in result:
-        assert submission.root.has_observable_by_spec(F_HUNT, 'Test Splunk Observable ID Mapping')
         assert submission.root.has_observable_by_spec("test_type", "test_value")
 
 @pytest.mark.skip(reason="missing file")
@@ -238,7 +233,6 @@ def test_splunk_query_multiple_observable_id_mapping(manager_kwargs, datadir):
     assert len(result) == 1
     for submission in result:
         assert submission.observables == [
-            {'type': 'hunt', 'value': 'Test Splunk Observable ID Mapping'},
             {'type': 'test_type1', 'value': 'test_value1'},
             {'type': 'test_type2', 'value': 'test_value2'}
         ]
@@ -286,8 +280,234 @@ def test_splunk_hunt_host_config(alt_setup, manager_kwargs, manager_kwargs_alt):
     assert len(manager.hunts) == 1
     splunk_alt_hunt = manager.hunts[0]
     assert splunk_alt_hunt.tool_instance == SPLUNK_ALT_URI
-    
+
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'query_test_1')
     splunk_hunt = manager.hunts[0]
     assert splunk_hunt.tool_instance == SPLUNK_URI
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_auto_append_default():
+    """test that SplunkHuntConfig has auto_append property with default '| fields *'"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="test query",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False
+    )
+
+    assert hasattr(config, "auto_append")
+    assert config.auto_append == "| fields *"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_auto_append_custom():
+    """test that SplunkHuntConfig auto_append property can be overridden"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="test query",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="| fields src_ip dst_ip"
+    )
+
+    assert config.auto_append == "| fields src_ip dst_ip"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_auto_append_empty():
+    """test that SplunkHuntConfig auto_append property can be set to empty string"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="test query",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append=""
+    )
+
+    assert config.auto_append == ""
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_with_default_auto_append(manager_kwargs):
+    """test that SplunkHunt formatted_query appends default '| fields *' to query"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
+
+    formatted = hunt.formatted_query()
+    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields *"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_with_custom_auto_append(manager_kwargs):
+    """test that SplunkHunt formatted_query appends custom auto_append to query"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="| fields src_ip dst_ip"
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
+
+    formatted = hunt.formatted_query()
+    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields src_ip dst_ip"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_with_empty_auto_append(manager_kwargs):
+    """test that SplunkHunt formatted_query with empty auto_append does not append anything"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append=""
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
+
+    formatted = hunt.formatted_query()
+    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_already_has_auto_append(manager_kwargs):
+    """test that SplunkHunt formatted_query does not duplicate auto_append if query already ends with it"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test | fields *",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
+
+    formatted = hunt.formatted_query()
+    # should not duplicate "| fields *"
+    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields *"
+    assert formatted.count("| fields *") == 1
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_timeless_with_auto_append(manager_kwargs):
+    """test that SplunkHunt formatted_query_timeless also appends auto_append"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append=" | fields src_ip"
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    formatted = hunt.formatted_query_timeless()
+    # note: query becomes "{time_spec} index=test" then time_spec is replaced with empty string
+    # resulting in " index=test" then auto_append is added
+    assert formatted == " index=test | fields src_ip"

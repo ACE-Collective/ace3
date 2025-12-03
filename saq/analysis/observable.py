@@ -72,6 +72,9 @@ class Observable(BaseNode):
         # each document becomes a vector embedding
         self.llm_context_documents: list[str] = []
 
+        self._display_type: Optional[str] = None
+        self._display_value: Optional[str] = None
+
     # temporary backwards compatibility
     # TODO this gets moved to some display layer we build when we refactor the gui
     @property
@@ -669,31 +672,26 @@ class Observable(BaseNode):
         return None 
 
     @property
-    def display_type(self):
-        for directive in self.directives:
-            if directive.startswith('display_type_'):
-                return directive[len('display_type_'):]
-        return self.type
+    def display_type(self) -> str:
+        if self._display_type is not None:
+            return f"{self._display_type} ({self.type})"
+        else:
+            return self.type
+
+    @display_type.setter
+    def display_type(self, value: str):
+        self._display_type = value
 
     @property
-    def display_value(self):
-        for directive in self.directives:
-            if directive.startswith('display_value_'):
-                return directive[len('display_value_'):]
-
-        if isinstance(self.value, str):
-            try:
-                return self.value.encode('utf-8', errors='ignore').decode()
-            except Exception as e:
-                logging.warning("unable to decode value: {}".format(e))
+    def display_value(self) -> str:
+        if self._display_value is not None:
+            return f"{self._display_value} ({self.value})"
         else:
             return self.value
 
     @display_value.setter
     def display_value(self, value: str):
-        # remove any existing display value setting
-        self.directives = [_ for _ in self.directives if not _.startswith('display_value_')]
-        self.add_directive(f"display_value_{value}")
+        self._display_value = value
 
     @property
     def display_time(self):

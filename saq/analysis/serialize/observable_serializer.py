@@ -18,7 +18,8 @@ KEY_RELATIONSHIPS = 'relationships'
 KEY_GROUPING_TARGET = 'grouping_target'
 KEY_VOLATILE = 'volatile'
 KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
-
+KEY_DISPLAY_VALUE = 'display_value'
+KEY_DISPLAY_TYPE = 'display_type'
 
 class ObservableSerializer:
     """Handles JSON serialization and deserialization for Observable objects."""
@@ -29,12 +30,6 @@ class ObservableSerializer:
         from saq.analysis.base_node import BaseNode
         result = BaseNode.get_json_data(observable)
         
-        # Include data from component managers
-        #result.update(observable._tag_manager.get_json_data())
-        #result.update(observable._detection_manager.get_json_data())
-        #result.update(observable._sort_manager.get_json_data())
-        
-        # Include observable-specific data
         result.update({
             KEY_ID: observable.uuid,
             KEY_TYPE: observable.type,
@@ -50,6 +45,8 @@ class ObservableSerializer:
             KEY_GROUPING_TARGET: observable._grouping_target,
             KEY_VOLATILE: observable._volatile,
             KEY_LLM_CONTEXT_DOCUMENTS: observable.llm_context_documents,
+            KEY_DISPLAY_VALUE: observable._display_value,
+            KEY_DISPLAY_TYPE: observable._display_type,
         })
         
         return result
@@ -62,12 +59,6 @@ class ObservableSerializer:
         from saq.analysis.base_node import BaseNode
         BaseNode.set_json_data(observable, data)
         
-        # Set component manager data
-        #observable._tag_manager.set_json_data(data)
-        #observable._detection_manager.set_json_data(data)
-        #observable._sort_manager.set_json_data(data)
-
-        # Set observable properties
         if KEY_ID in data:
             observable.uuid = data[KEY_ID]
         if KEY_TYPE in data:
@@ -96,4 +87,7 @@ class ObservableSerializer:
             observable._volatile = data[KEY_VOLATILE]
         if KEY_LLM_CONTEXT_DOCUMENTS in data:
             observable.llm_context_documents = data[KEY_LLM_CONTEXT_DOCUMENTS]
-        
+        if KEY_DISPLAY_VALUE in data:
+            observable._display_value = data[KEY_DISPLAY_VALUE]
+        if KEY_DISPLAY_TYPE in data:
+            observable._display_type = data[KEY_DISPLAY_TYPE]
