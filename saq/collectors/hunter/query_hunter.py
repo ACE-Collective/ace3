@@ -487,8 +487,11 @@ class QueryHunt(Hunt):
                 if observable not in observables:
                     observables.append(observable)
 
-            observables.append(create_observable(F_HUNT, self.name))
-            observables.append(create_observable(F_SIGNATURE_ID, self.uuid))
+            signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
+
+            if signature_id_observable is not None:
+                signature_id_observable.display_value = self.name
+                observables.append(signature_id_observable)
 
             # if we are NOT grouping then each row is an alert by itself
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):

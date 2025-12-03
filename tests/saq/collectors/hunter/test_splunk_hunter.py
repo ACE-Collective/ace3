@@ -9,7 +9,7 @@ from saq.analysis.root import RootAnalysis
 from saq.collectors.hunter import HuntManager, HunterCollector
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME, F_HUNT
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME
 from saq.environment import get_data_dir
 from saq.util.time import create_timedelta
 
@@ -166,19 +166,15 @@ def test_splunk_query(manager_kwargs, datadir):
         if submission.root.description == 'Test Splunk Query: 29380 (3 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 36, tzinfo=UTC)
             assert isinstance(submission.root, RootAnalysis)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 29385 (2 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 37, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 29375 (2 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 36, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         elif submission.root.description == 'Test Splunk Query: 31185 (93 events)':
             assert submission.root.event_time == datetime(2019, 12, 23, 16, 5, 22, tzinfo=UTC)
-            assert submission.root.has_observable_by_spec(F_HUNT, "Test Splunk Query")
             assert submission.root.has_observable_by_spec(F_FILE_NAME, "__init__.py")
         else:
             raise RuntimeError(f"invalid description: {submission.description}")
@@ -208,7 +204,6 @@ def test_splunk_query_observable_id_mapping(manager_kwargs, datadir):
     assert isinstance(result, list)
     assert len(result) == 4
     for submission in result:
-        assert submission.root.has_observable_by_spec(F_HUNT, 'Test Splunk Observable ID Mapping')
         assert submission.root.has_observable_by_spec("test_type", "test_value")
 
 @pytest.mark.skip(reason="missing file")
@@ -238,7 +233,6 @@ def test_splunk_query_multiple_observable_id_mapping(manager_kwargs, datadir):
     assert len(result) == 1
     for submission in result:
         assert submission.observables == [
-            {'type': 'hunt', 'value': 'Test Splunk Observable ID Mapping'},
             {'type': 'test_type1', 'value': 'test_value1'},
             {'type': 'test_type2', 'value': 'test_value2'}
         ]

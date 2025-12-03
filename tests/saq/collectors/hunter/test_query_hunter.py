@@ -14,7 +14,7 @@ import saq.util.time as saq_time
 from saq.collectors.hunter import HuntManager, HunterService, read_persistence_data
 from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_HUNT, F_IPV4, F_SIGNATURE_ID, G_DATA_DIR
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_SIGNATURE_ID, G_DATA_DIR
 from saq.environment import g_obj, get_data_dir
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import log_count, wait_for_log_count
@@ -519,9 +519,7 @@ def test_process_query_results(monkeypatch):
     assert isinstance(submission.root.details["events"], list)
     assert len(submission.root.details["events"]) == 1
     assert submission.root.details["events"][0] == {}
-    assert len(submission.root.observables) == 2 # F_HUNT and F_SIGNATURE_ID
-    hunt_observable = next((o for o in submission.root.observables if o.type == F_HUNT), None)
-    assert hunt_observable.value == "test"
+    assert len(submission.root.observables) == 1 # only F_SIGNATURE_ID
     signature_id_observable = next((o for o in submission.root.observables if o.type == F_SIGNATURE_ID), None)
     assert signature_id_observable.value == hunt.uuid
     assert submission.root.tags == [Tag(name="test_tag")]
@@ -534,11 +532,9 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     submission = submissions[0]
-    assert len(submission.root.observables) == 3
+    assert len(submission.root.observables) == 2
     for observable in submission.root.observables:
-        if observable.type == F_HUNT:
-            assert observable.value == "test"
-        elif observable.type == F_SIGNATURE_ID:
+        if observable.type == F_SIGNATURE_ID:
             assert observable.value == hunt.uuid
         elif observable.type == F_IPV4:
             assert observable.value == "1.2.3.4"
@@ -570,7 +566,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 3
+        assert len(submission.root.observables) == 2
         assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
 
     hunt.config.group_by = "dst"
@@ -581,7 +577,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 2
     for submission in submissions:
-        assert len(submission.root.observables) == 3
+        assert len(submission.root.observables) == 2
         assert submission.root.description == "test (1 event)"
 
     hunt.config.group_by = "ALL"
@@ -592,7 +588,7 @@ def test_process_query_results(monkeypatch):
     assert submissions
     assert len(submissions) == 1
     for submission in submissions:
-        assert len(submission.root.observables) == 4
+        assert len(submission.root.observables) == 3
         assert submission.root.description == "test (2 events)"
 
 
@@ -627,7 +623,7 @@ def test_process_query_results_file_observable(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should have F_HUNT and F_SIGNATURE_ID observables plus the file observable
+    # should have F_SIGNATURE_ID observable plus the file observable
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 1
     file_obs = file_observables[0]
@@ -834,7 +830,7 @@ def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should only have F_HUNT and F_SIGNATURE_ID, no file observable
+    # should only have F_SIGNATURE_ID, no file observable
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 0
 
@@ -868,7 +864,7 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should only have F_HUNT and F_SIGNATURE_ID, no file observable (empty content is skipped)
+    # should only have F_SIGNATURE_ID, no file observable (empty content is skipped)
     file_observables = [o for o in submission.root.observables if o.type == F_FILE]
     assert len(file_observables) == 0
 
@@ -1177,7 +1173,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
     assert len(submissions) == 1
     submission = submissions[0]
 
-    # should only have F_HUNT and F_SIGNATURE_ID observables, no ipv4 observable
+    # should only have F_SIGNATURE_ID observable, no ipv4 observable
     ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
     assert len(ipv4_observables) == 0
 
