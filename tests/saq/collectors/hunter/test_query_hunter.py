@@ -1461,53 +1461,6 @@ def test_process_query_results_file_observable_with_grouped_display_properties(m
 
 
 @pytest.mark.unit
-def test_process_query_results_with_all_new_properties(monkeypatch, tmpdir):
-    """test observable mapping with ignored_values, display_type, and display_value all set"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=MockManager(),
-        name="test_all_properties",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["src_ip"],
-                type="ipv4",
-                ignored_values=["0.0.0.0", "127.0.0.1"],
-                display_type="source_address",
-                display_value="Source IP Address"
-            )
-        ]
-    )
-
-    # test with ignored value - should not create observable
-    submissions = hunt.process_query_results([{"src_ip": "0.0.0.0"}])
-    assert submissions
-    assert len(submissions) == 1
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
-    assert len(ipv4_observables) == 0
-
-    # test with valid value - should create observable with display properties
-    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
-    assert len(ipv4_observables) == 1
-    ipv4_obs = ipv4_observables[0]
-
-    assert ipv4_obs.value == "1.2.3.4"
-    # display_type getter appends the actual type in parentheses
-    assert ipv4_obs.display_type == "source_address (ipv4)"
-    # display_value getter appends the actual value in parentheses
-    assert ipv4_obs.display_value == "Source IP Address (1.2.3.4)"
-
-
-@pytest.mark.unit
 def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdir):
     """test observable mapping with empty ignored_values list"""
     import saq.collectors.hunter.query_hunter

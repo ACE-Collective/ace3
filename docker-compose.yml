@@ -76,6 +76,7 @@ x-common-volumes: &common-volumes
   - ace-sql-readonly:/ace-sql-readonly
   - ace-yara:/opt/ace/etc/yara
   - ./hunts:/opt/ace/hunts
+  - ./etc/yara:/opt/ace/etc/yara
   - ace-auth:/auth
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
