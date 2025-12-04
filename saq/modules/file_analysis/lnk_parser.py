@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 import logging
+import ntpath
 import os
 from typing import Optional, override
 from saq.analysis.analysis import Analysis
@@ -16,6 +17,46 @@ warnings.filterwarnings("ignore", module="LnkParse3")
 
 KEY_ERROR = "error"
 KEY_INFO = "info"
+
+def get_target_path(info: dict) -> Optional[str]:
+    items = info.get("target", {}).get("items", [])
+    if not items:
+        return None
+
+    target_path = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            logging.warning(f"unexpected item type {type(item)} in target path {items}")
+            continue
+
+        item_class = item.get("class")
+        if not item_class:
+            logging.debug(f"no item class for {item} in target path {items}")
+            continue
+
+        if item_class == "Volume Item":
+            volume_name = item.get("data")
+            if not volume_name:
+                logging.debug(f"no volume name for {item} in target path {items}")
+                continue
+
+            target_path.insert(0, volume_name)
+            continue
+
+        if item_class == "File entry":
+            item_name = item.get("primary_name")
+            if not item_name:
+                logging.debug(f"no item name for {item} in target path {items}")
+                continue
+
+            target_path.append(item_name)
+            continue
+
+    if not target_path:
+        return None
+
+    return ntpath.join(*target_path)
 
 class LnkParseAnalysis(Analysis):
 
@@ -68,11 +109,20 @@ class LnkParseAnalysis(Analysis):
 
         return self.info.get("data", {}).get("working_directory")
 
+    @property
+    def target_path(self) -> Optional[str]:
+        if not self.info:
+            return None
+
+        return get_target_path(self.info)
+
     def generate_summary(self) -> str:
         if self.error:
             return f"{self.display_name}: {self.error}"
 
         parts = []
+        if self.target_path:
+            parts.append(f"target path: ({self.target_path})")
         if self.command_line_arguments:
             parts.append(f"command line arguments: ({self.command_line_arguments})")
         if self.icon_location:
