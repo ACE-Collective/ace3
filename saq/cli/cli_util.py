@@ -40,13 +40,11 @@ def recurse_analysis(analysis, level=0, current_tree=[], include_context=False):
         print('{}{}'.format('\t' * level, summary_detail.content))
 
     for observable in analysis.observables:
-        observable_value = observable.value
-        if isinstance(observable, FileObservable):
-            observable_value = observable.file_path
+        observable_value = observable.display_value
 
         display = '{} * {}{}:{}'.format('\t' * level, 
                                         '<' + '!' * len(observable.detections) + '> ' if observable.detections else '', 
-                                         observable.type, 
+                                         observable.display_type, 
                                          observable_value)
         if observable.time is not None:
             display += ' @ {0}'.format(observable.time)

@@ -170,14 +170,20 @@ class BroSMTPStreamAnalyzer(AnalysisModule):
 
                     if source_ipv4:
                         observable = analysis.add_observable_by_spec(F_IPV4, source_ipv4)
+                        if observable:
+                            observable.display_type = "SMTP Source IP"
 
                     if envelope_from:
                         observable = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, envelope_from)
+                        if observable:
+                            observable.display_type = "SMTP Envelope From"
                         self.get_root().description += 'From {} '.format(envelope_from)
 
                     if envelope_to:
                         for to in envelope_to:
                             observable = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, to)
+                            if observable:
+                                observable.display_type = "SMTP Envelope To"
                             if envelope_from:
                                 observable = analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, 
                                                                      create_email_conversation(envelope_from, to))

@@ -711,12 +711,12 @@ class EmailAnalyzer(AnalysisModule):
 
                 from_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if from_address:
-                    from_address.add_tag('mail_from')
+                    from_address.display_type = "Mail From"
 
                     if '@' in address:
                         from_domain = analysis.add_observable_by_spec(F_FQDN, address.split('@')[1])
                         if from_domain:
-                            from_domain.add_tag('from_domain')
+                            from_domain.display_type = "Mail From Domain"
 
         email_details[KEY_ENV_RCPT_TO] = env_rcpt_to
         email_details[KEY_ENV_MAIL_FROM] = env_mail_from
@@ -729,7 +729,7 @@ class EmailAnalyzer(AnalysisModule):
 
                 to_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if to_address and mail_from:
-                    to_address.add_tag('to_address')
+                    to_address.display_type = "Envelope Recipient"
                     analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
         email_details[KEY_TO] = target_email.get_all('to', [])
@@ -743,7 +743,7 @@ class EmailAnalyzer(AnalysisModule):
 
                 to_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if to_address:
-                    to_address.add_tag('mail_to')
+                    to_address.display_type = "Mail To"
                     if mail_from:
                         analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
@@ -753,7 +753,7 @@ class EmailAnalyzer(AnalysisModule):
 
                 cc_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if cc_address:
-                    cc_address.add_tag('cc')
+                    cc_address.display_type = "Mail CC"
                     if mail_from:
                         analysis.add_observable_by_spec(F_EMAIL_CONVERSATION, create_email_conversation(mail_from, address))
 
@@ -763,7 +763,7 @@ class EmailAnalyzer(AnalysisModule):
                 email_details[KEY_X_SENDER] = address
                 x_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if x_sender_address:
-                    x_sender_address.add_tag('x-sender')
+                    x_sender_address.display_type = "Mail X-Sender"
 
         if 'x-sender-id' in target_email:
             address = normalize_email_address(target_email['x-sender-id'])
@@ -771,7 +771,7 @@ class EmailAnalyzer(AnalysisModule):
                 email_details[KEY_X_SENDER_ID] = address
                 x_sender_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if x_sender_id_address:
-                    x_sender_id_address.add_tag('x-sender-id')
+                    x_sender_id_address.display_type = "Mail X-Sender ID"
 
         if 'x-auth-id' in target_email:
             address = normalize_email_address(target_email['x-auth-id'])
@@ -779,7 +779,7 @@ class EmailAnalyzer(AnalysisModule):
                 email_details[KEY_X_AUTH_ID] = address
                 x_auth_id_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if x_auth_id_address:
-                    x_auth_id_address.add_tag('x-auth-id')
+                    x_auth_id_address.display_type = "Mail X-Auth ID"
 
         if 'x-original-sender' in target_email:
             address = normalize_email_address(target_email['x-original-sender'])
@@ -787,7 +787,7 @@ class EmailAnalyzer(AnalysisModule):
                 email_details[KEY_X_ORIGINAL_SENDER] = address
                 x_original_sender_address = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if x_original_sender_address:
-                    x_original_sender_address.add_tag('x-original-sender')
+                    x_original_sender_address.display_type = "Mail X-Original Sender"
 
         if 'reply-to' in target_email:
             address = normalize_email_address(target_email['reply-to'])
@@ -796,7 +796,7 @@ class EmailAnalyzer(AnalysisModule):
                 email_details[KEY_REPLY_TO_ADDRESS] = address
                 reply_to = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if reply_to:
-                    reply_to.add_tag('reply-to')
+                    reply_to.display_type = "Mail Reply To"
 
         if 'return-path' in target_email:
             address = normalize_email_address(target_email['return-path'])
@@ -804,7 +804,7 @@ class EmailAnalyzer(AnalysisModule):
             if address:
                 return_path = analysis.add_observable_by_spec(F_EMAIL_ADDRESS, address)
                 if return_path:
-                    return_path.add_tag('return-path')
+                    return_path.display_type = "Mail Return Path"
 
         if 'subject' in target_email:
             email_details[KEY_SUBJECT] = target_email['subject']
@@ -883,8 +883,7 @@ class EmailAnalyzer(AnalysisModule):
             email_details[KEY_ORIGINATING_IP] = value
             ipv4 = analysis.add_observable_by_spec(F_IPV4, value, o_time=received_time)
             if ipv4:
-                ipv4.add_tag('sender_ip')
-                ipv4.add_tag('x-originating-ip')
+                ipv4.display_type = "Originating IP"
 
         if 'x-sender-ip' in target_email:
             value = target_email['x-sender-ip']
@@ -892,12 +891,15 @@ class EmailAnalyzer(AnalysisModule):
             email_details[KEY_X_SENDER_IP] = value
             ipv4 = analysis.add_observable_by_spec(F_IPV4, value, o_time=received_time)
             if ipv4:
-                ipv4.add_tag('sender_ip')
-                ipv4.add_tag('x-sender-ip')
+                ipv4.display_type = "Sender IP"
 
         # is the subject rfc2822 encoded?
         if KEY_SUBJECT in email_details:
             email_details[KEY_DECODED_SUBJECT] = decode_rfc2822(email_details[KEY_SUBJECT])
+            if email_details[KEY_DECODED_SUBJECT]:
+                decoded_subject_observable = analysis.add_observable_by_spec(F_EMAIL_SUBJECT, email_details[KEY_DECODED_SUBJECT])
+                if decoded_subject_observable:
+                    decoded_subject_observable.display_type = "Decoded Subject"
 
         # get the first and last received header values
         last_received = None

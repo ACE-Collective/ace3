@@ -219,33 +219,43 @@ class X509Analyzer(AnalysisModule):
             logging.info(f"unable to parse common name from {analysis.subject}")
         else:
             common_name = x509.remove_wildcard(analysis.common_name)
-            analysis.add_observable_by_spec(F_FQDN, common_name)
+            cn_fqdn = analysis.add_observable_by_spec(F_FQDN, common_name)
+            if cn_fqdn:
+                cn_fqdn.display_type = "Certificate Common Name"
 
             if not parent_is_url:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{common_name}')
                 if url:
+                    url.display_type = "Certificate Common Name URL (http)"
                     url.add_directive(DIRECTIVE_CRAWL)
                 url = analysis.add_observable_by_spec(F_URL, f'https://{common_name}')
                 if url:
+                    url.display_type = "Certificate Common Name URL (https)"
                     url.add_directive(DIRECTIVE_CRAWL)
 
         # Get Subject Alternative Name data
         for ip_address in x509.san_ip_addresses(cert):
             analysis.add_san_ip_address(ip_address)
-            analysis.add_observable_by_spec(F_IPV4, ip_address)
+            san_ip = analysis.add_observable_by_spec(F_IPV4, ip_address)
+            if san_ip:
+                san_ip.display_type = "Certificate SAN IP Address"
 
         for dns_name in x509.san_dns_names(cert):
             analysis.add_san_dns_name(dns_name)
             # Some certs have wildcards, make sure we submit the nearest FQDN (strip the wildcard)
             dns_name = x509.remove_wildcard(dns_name)
-            analysis.add_observable_by_spec(F_FQDN, dns_name)
+            san_fqdn = analysis.add_observable_by_spec(F_FQDN, dns_name)
+            if san_fqdn:
+                san_fqdn.display_type = "Certificate SAN DNS Name"
 
             if not parent_is_url:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{dns_name}')
                 if url:
+                    url.display_type = "Certificate SAN URL (http)"
                     url.add_directive(DIRECTIVE_CRAWL)
                 url = analysis.add_observable_by_spec(F_URL, f'https://{dns_name}')
                 if url:
+                    url.display_type = "Certificate SAN URL (https)"
                     url.add_directive(DIRECTIVE_CRAWL)
 
         # A certificate's hash (used for tracking) is created from the DER-encoded format version of the

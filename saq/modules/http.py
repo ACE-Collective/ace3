@@ -189,9 +189,13 @@ class BroHTTPStreamAnalyzer(AnalysisModule):
         self.get_root().description = 'BRO HTTP Scanner Detection - {} {}'.format(request_method, request_original_uri)
         self.get_root().event_time = datetime.now() if stream_time is None else stream_time
 
-        self.get_root().add_observable_by_spec(F_IPV4, request_ipv4)
+        request_ip = self.get_root().add_observable_by_spec(F_IPV4, request_ipv4)
+        if request_ip:
+            request_ip.display_type = "HTTP Request IP"
         if reply_ipv4:
-            self.get_root().add_observable_by_spec(F_IPV4, reply_ipv4)
+            reply_ip = self.get_root().add_observable_by_spec(F_IPV4, reply_ipv4)
+            if reply_ip:
+                reply_ip.display_type = "HTTP Reply IP"
             self.get_root().add_observable_by_spec(F_IPV4_CONVERSATION, create_ipv4_conversation(request_ipv4, reply_ipv4))
 
         if 'host' in request_headers_lookup:
@@ -430,10 +434,14 @@ class BrotexHTTPPackageAnalyzer(AnalysisModule):
                 analysis.add_file_observable(F_FILE, file_path, move=True)
 
             if http_request[KEY_SRC_IP]:
-                analysis.add_observable_by_spec(F_IPV4, http_request[KEY_SRC_IP])
+                src_ip = analysis.add_observable_by_spec(F_IPV4, http_request[KEY_SRC_IP])
+                if src_ip:
+                    src_ip.display_type = "HTTP Source IP"
 
             if http_request[KEY_DEST_IP]:
-                analysis.add_observable_by_spec(F_IPV4, http_request[KEY_DEST_IP])
+                dest_ip = analysis.add_observable_by_spec(F_IPV4, http_request[KEY_DEST_IP])
+                if dest_ip:
+                    dest_ip.display_type = "HTTP Destination IP"
 
             if http_request[KEY_SRC_IP] and http_request[KEY_DEST_IP]:
                 analysis.add_observable_by_spec(F_IPV4_CONVERSATION, create_ipv4_conversation(

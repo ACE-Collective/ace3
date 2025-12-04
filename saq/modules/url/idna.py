@@ -88,11 +88,11 @@ class IDNAAnalyzer(AnalysisModule):
         if url.netloc_idna != url.netloc_original:
             idna_observable = analysis.add_observable_by_spec(F_FQDN, url.netloc_idna)
             idna_observable.exclude_analysis(self)
-            idna_observable.add_tag('idna_domain')
+            idna_observable.display_type = "IDNA Domain"
 
         if url.netloc_unicode != url.netloc_original:
             unicode_observable = analysis.add_observable_by_spec(F_FQDN, url.netloc_unicode)
             unicode_observable.exclude_analysis(self)
-            unicode_observable.add_tag('unicode_domain')
+            unicode_observable.display_type = "Unicode Domain"
 
         return AnalysisExecutionResult.COMPLETED

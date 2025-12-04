@@ -84,7 +84,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
                             ipv4 = m.group(1)
                             ipv4_observable = analysis.add_observable_by_spec(F_IPV4, ipv4)
                             if ipv4_observable:
-                                ipv4_observable.add_tag("true_client_ip")
+                                ipv4_observable.display_type = "True Client IP"
                                 extracted_ipv4s.add(ipv4_observable.value)
 
                         m = RE_FORWARDED.search(line)
@@ -93,7 +93,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
                                 ipv4 = m.group(1)
                                 ipv4_observable = analysis.add_observable_by_spec(F_IPV4, ipv4)
                                 if ipv4_observable:
-                                    ipv4_observable.add_tag("forwarded_for")
+                                    ipv4_observable.display_type = "Forwarded For IP"
                                     extracted_ipv4s.add(ipv4_observable.value)
 
                     analysis.details["extracted_ipv4s"] = list(extracted_ipv4s)
