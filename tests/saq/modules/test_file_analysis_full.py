@@ -734,7 +734,7 @@ def test_file_analysis_006_extracted_ole_000_js(root_analysis, datadir):
     root_analysis = alert.root_analysis
     _file = root_analysis.get_observable(_file.uuid)
     assert _file
-    assert any([d for d in root_analysis.all_detection_points if 'compiles as JavaScript' in d.description])
+    assert any([d for d in root_analysis.all_detection_points if 'is a javascript file' in d.description])
 
 @pytest.mark.integration
 def test_open_office_extraction(root_analysis, datadir):
