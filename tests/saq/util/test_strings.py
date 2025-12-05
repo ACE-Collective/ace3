@@ -159,11 +159,11 @@ class TestIsBase64:
             ("   ", False),
             ("\n\t  \n", False),
             
-            # Invalid length (not multiple of 4 after padding)
-            ("Z", False),
-            ("Zm", False),
-            ("Zm9", False),
-            ("Zm9vYmFyIA", False),  # Invalid padding
+            # is_base64 deals with invalid padding
+            ("Z", False), # only invalid case
+            ("Zm", True), # rest are fine because is_base64 deals with invalid padding
+            ("Zm9", True),
+            ("Zm9vYmFyIA", True),
             
             # Valid longer strings
             ("VGhpcyBpcyBhIGxvbmdlciB0ZXN0IHN0cmluZw==", True),
@@ -171,16 +171,16 @@ class TestIsBase64:
         ],
     )
     def test_is_base64(self, value, expected):
-        assert is_base64(value) == expected
+        assert is_base64(value) is expected
 
     @pytest.mark.unit
     def test_is_base64_type_error(self):
         # Non-string types should return False
-        assert is_base64(b"Zm9v") == False
-        assert is_base64(123) == False
-        assert is_base64(None) == False
-        assert is_base64([]) == False
-        assert is_base64({}) == False
+        assert is_base64(b"Zm9v") is False
+        assert is_base64(123) is False
+        assert is_base64(None) is False
+        assert is_base64([]) is False
+        assert is_base64({}) is False
 
     @pytest.mark.unit
     def test_is_base64_valid_standard_variants(self):
@@ -197,10 +197,10 @@ class TestIsBase64:
         
         for test_str in test_strings:
             encoded = base64.b64encode(test_str.encode('utf-8')).decode('ascii')
-            assert is_base64(encoded) == True
+            assert is_base64(encoded) is True
             # Also test without padding
             encoded_no_pad = encoded.rstrip('=')
-            assert is_base64(encoded_no_pad) == True
+            assert is_base64(encoded_no_pad) is True
 
     @pytest.mark.unit
     def test_is_base64_valid_urlsafe_variants(self):
@@ -215,7 +215,7 @@ class TestIsBase64:
         
         for test_str in test_strings:
             encoded = base64.urlsafe_b64encode(test_str.encode('utf-8')).decode('ascii')
-            assert is_base64(encoded) == True
+            assert is_base64(encoded) is True
             # Also test without padding
             encoded_no_pad = encoded.rstrip('=')
-            assert is_base64(encoded_no_pad) == True
+            assert is_base64(encoded_no_pad) is True

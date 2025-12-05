@@ -897,6 +897,8 @@ analysis_module_command_line_analyzer:
   module: saq.modules.command_line
   class: CommandLineAnalyzer
   enabled: true
+  # the minimum length of a base64 encoded string to be extracted from a command line
+  base64_minimum_length: 128
 
 analysis_module_mailbox_email_analyzer:
   id: mailbox_email_analyzer
