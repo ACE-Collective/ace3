@@ -4,6 +4,7 @@ from saq.util.strings import (
     decode_ascii_hex,
     decode_base64,
     format_item_list_for_summary,
+    is_base64,
 )
 
 
@@ -110,3 +111,111 @@ class TestDecodeAsciiHex:
         result = decode_ascii_hex("4d5")
         assert result == b"M"
         assert "dropping trailing character" in caplog.text
+
+
+class TestIsBase64:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            # Valid standard base64 strings
+            ("Zm9v", True),
+            ("Zm9vYmFy", True),
+            ("Zm9vYmFyIA==", True),
+            ("SGVsbG8gV29ybGQ=", True),
+            ("SGVsbG8gV29ybGQh", True),
+            
+            # Valid base64 with whitespace (should be trimmed)
+            (" Zm9v ", True),
+            ("\nZm9vYmFy\n", True),
+            ("\tSGVsbG8=\t", True),
+            
+            # Valid URL-safe base64 strings
+            ("Zm9vYmFy-_", True),
+            ("SGVsbG8gV29ybGQh", True),
+            
+            # Valid base64 with missing padding (should be handled)
+            ("Zm9vYmF", True),
+            ("Zm9vYg", True),
+            ("Zm9v", True),
+            
+            # Invalid base64 strings
+            ("not-base64!", False),
+            ("hello world", False),
+            ("Zm9vYmFy!", False),
+            ("Zm9vYmFy@", False),
+            ("Zm9vYmFy#", False),
+            ("Zm9vYmFy$", False),
+            ("Zm9vYmFy%", False),
+            ("Zm9vYmFy^", False),
+            ("Zm9vYmFy&", False),
+            ("Zm9vYmFy*", False),
+            ("Zm9vYmFy(", False),
+            ("Zm9vYmFy)", False),
+            
+            # Edge cases
+            ("", False),
+            ("   ", False),
+            ("\n\t  \n", False),
+            
+            # Invalid length (not multiple of 4 after padding)
+            ("Z", False),
+            ("Zm", False),
+            ("Zm9", False),
+            ("Zm9vYmFyIA", False),  # Invalid padding
+            
+            # Valid longer strings
+            ("VGhpcyBpcyBhIGxvbmdlciB0ZXN0IHN0cmluZw==", True),
+            ("VGhpcyBpcyBhIGxvbmdlciB0ZXN0IHN0cmluZw", True),
+        ],
+    )
+    def test_is_base64(self, value, expected):
+        assert is_base64(value) == expected
+
+    @pytest.mark.unit
+    def test_is_base64_type_error(self):
+        # Non-string types should return False
+        assert is_base64(b"Zm9v") == False
+        assert is_base64(123) == False
+        assert is_base64(None) == False
+        assert is_base64([]) == False
+        assert is_base64({}) == False
+
+    @pytest.mark.unit
+    def test_is_base64_valid_standard_variants(self):
+        # Test various valid standard base64 encodings
+        import base64
+        
+        test_strings = [
+            "Hello",
+            "Hello World",
+            "Hello World!",
+            "Test123",
+            "Special chars: !@#$%",
+        ]
+        
+        for test_str in test_strings:
+            encoded = base64.b64encode(test_str.encode('utf-8')).decode('ascii')
+            assert is_base64(encoded) == True
+            # Also test without padding
+            encoded_no_pad = encoded.rstrip('=')
+            assert is_base64(encoded_no_pad) == True
+
+    @pytest.mark.unit
+    def test_is_base64_valid_urlsafe_variants(self):
+        # Test various valid URL-safe base64 encodings
+        import base64
+        
+        test_strings = [
+            "Hello",
+            "Hello World",
+            "Test123",
+        ]
+        
+        for test_str in test_strings:
+            encoded = base64.urlsafe_b64encode(test_str.encode('utf-8')).decode('ascii')
+            assert is_base64(encoded) == True
+            # Also test without padding
+            encoded_no_pad = encoded.rstrip('=')
+            assert is_base64(encoded_no_pad) == True
