@@ -658,6 +658,7 @@ def test_no_coverage_missing_node(mock_api_call, engine):
     # this is where we look for nodes in the "ace_2" remote node group (see below)
     db_config = get_database_config(DB_ACE)  # noqa: F821
     get_config().add_database_config("ace_2", DatabaseConfig(
+        name="ace_2",
         hostname=db_config.hostname,
         unix_socket=db_config.unix_socket,
         database='ace-unittest-2',
@@ -708,6 +709,7 @@ def test_full_coverage_missing_node(mock_api_call, engine):
     # this is where we look for nodes in the "ace_2" remote node group (see below)
     db_config = get_database_config(DB_ACE)  # noqa: F821
     get_config().add_database_config("ace_2", DatabaseConfig(
+        name="ace_2",
         hostname=db_config.hostname,
         unix_socket=db_config.unix_socket,
         database='ace-unittest-2',

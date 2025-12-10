@@ -453,34 +453,33 @@ class HuntManager:
            The hunt_filter paramter defines an optional lambda function that takes the Hunt object
            after it is loaded and returns True if the Hunt should be added, False otherwise.
            This is useful for unit testing."""
-        for hunt_config in self._list_hunt_yaml():
-            hunt = self.hunt_cls(manager=self)
-            logging.info(f"loading hunt from {hunt_config}")
+        for hunt_config_file_path in self._list_hunt_yaml():
             try:
-                hunt.load_hunt(hunt_config)
+                logging.info(f"loading hunt from {hunt_config_file_path}")
+                hunt = self.hunt_cls(manager=self, hunt_config_file_path=hunt_config_file_path)
 
                 if hunt_filter(hunt):
-                    logging.debug(f"loaded {hunt} from {hunt_config}")
+                    logging.debug(f"loaded {hunt} from {hunt_config_file_path}")
                     self.add_hunt(hunt)
                 else:
                     logging.debug(f"not loading {hunt} (hunt_filter returned False)")
 
             except InvalidHuntTypeError as e:
                 report_exception()
-                self.skipped_yaml_files.add(hunt_config)
-                logging.warning(f"skipping {hunt_config} for {self}: {e}")
+                self.skipped_yaml_files.add(hunt_config_file_path)
+                logging.warning(f"skipping {hunt_config_file_path} for {self}: {e}")
                 continue
             except Exception as e:
-                logging.error(f"unable to load hunt from {hunt_config}: {e}")
+                logging.error(f"unable to load hunt from {hunt_config_file_path}: {e}")
                 report_exception()
                 try:
-                    self.failed_yaml_files[hunt_config] = (
-                        os.path.getmtime(hunt_config),
-                        os.path.getsize(hunt_config),
-                        sha256(hunt_config)
+                    self.failed_yaml_files[hunt_config_file_path] = (
+                        os.path.getmtime(hunt_config_file_path),
+                        os.path.getsize(hunt_config_file_path),
+                        sha256(hunt_config_file_path)
                     )
                 except Exception as e:
-                    logging.error(f"unable to get mtime for {hunt_config}: {e}")
+                    logging.error(f"unable to get mtime for {hunt_config_file_path}: {e}")
 
         # remember that we loaded the hunts from the configuration file
         # this is used when we receive the signal to reload the hunts

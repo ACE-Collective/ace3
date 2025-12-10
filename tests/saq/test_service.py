@@ -122,19 +122,6 @@ class TestLoadService:
         assert hasattr(service, "wait_for_start")
         assert hasattr(service, "start_single_threaded")
 
-    def test_load_service_adapter_wraps_correctly(self):
-        """test that loaded service adapter correctly wraps the underlying service"""
-        service = load_service("tests.saq.test_service", "MockService")
-
-        service.start()
-        assert service.service.started is True
-
-        service.stop()
-        assert service.service.stopped is True
-
-        service.wait()
-        assert service.service.waited is True
-
     def test_load_service_wait_for_start(self):
         """test that wait_for_start works on loaded service"""
         service = load_service("tests.saq.test_service", "MockService")

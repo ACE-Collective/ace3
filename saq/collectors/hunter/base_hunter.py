@@ -112,10 +112,29 @@ def read_persistence_data(hunt_type: str, hunt_name: str, value_name: str):
 class Hunt:
     """Abstract class that represents a single hunt."""
 
-    def __init__(self, manager: Optional["HuntManager"] = None, config: Optional[HuntConfig] = None):
+    def __init__(
+        self,
+        manager: Optional["HuntManager"] = None,
+        config: Optional[HuntConfig] = None,
+        hunt_config_file_path: Optional[str] = None):
 
         self.manager = manager
-        self.config = config
+        
+        # when we load from a yaml file we record the last modified time of the file
+        # will be set by load_hunt if loading from file
+        self.file_path = None
+        self.last_mtime = None
+        
+        # track all files that make up this hunt configuration (main file + included files)
+        # maps file path -> modification time (None if we couldn't get the mtime)
+        self.included_files: dict[str, float | None] = {}
+        
+        if config is not None:
+            self.config = config
+        elif hunt_config_file_path is not None:
+            self.config = self.load_hunt(hunt_config_file_path)
+        else:
+            raise ValueError("either config or hunt_config_file_path must be provided")
 
         # the thread this hunt is currently executing on, or None if it is not currently executing
         self.execution_thread = None
@@ -136,14 +155,6 @@ class Hunt:
         # by default we use localhost
         # subclasses might use the address or url they are hitting for their queries
         self.tool_instance = 'localhost'
-
-        # when we load from a yaml file we record the last modified time of the file
-        self.file_path = None
-        self.last_mtime = None
-        
-        # track all files that make up this hunt configuration (main file + included files)
-        # maps file path -> modification time (None if we couldn't get the mtime)
-        self.included_files: dict[str, float | None] = {}
 
     #
     # configuration-based properties
