@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from saq.configuration import get_config
+from saq.configuration.schema import GitRepoConfig
 from saq.git import (
     GitRepo,
     get_configured_repos,
@@ -13,59 +15,59 @@ from saq.git import (
 @pytest.mark.unit
 class TestGitRepo:
     def test_gitrepo_creation(self):
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path="/path/to/repo",
             git_url="https://github.com/user/repo.git",
             update_frequency=3600,
             branch="main"
-        )
+        ))
         
-        assert repo.local_path == "/path/to/repo"
-        assert repo.git_url == "https://github.com/user/repo.git"
-        assert repo.update_frequency == 3600
-        assert repo.branch == "main"
+        assert repo.config.local_path == "/path/to/repo"
+        assert repo.config.git_url == "https://github.com/user/repo.git"
+        assert repo.config.update_frequency == 3600
+        assert repo.config.branch == "main"
 
     def test_gitrepo_dataclass_equality(self):
-        repo1 = GitRepo(
+        repo1 = GitRepo(config=GitRepoConfig(
             name="repo1",
             description="repo1",
             local_path="/path/to/repo",
             git_url="https://github.com/user/repo.git",
             update_frequency=3600,
             branch="main"
-        )
+        ))
         
-        repo2 = GitRepo(
+        repo2 = GitRepo(config=GitRepoConfig(
             name="repo1",
             description="repo1",
             local_path="/path/to/repo",
             git_url="https://github.com/user/repo.git",
             update_frequency=3600,
             branch="main"
-        )
+        ))
         
         assert repo1 == repo2
 
     def test_gitrepo_dataclass_inequality(self):
-        repo1 = GitRepo(
+        repo1 = GitRepo(config=GitRepoConfig(
             name="repo1",
             description="repo1",
             local_path="/path/to/repo1",
             git_url="https://github.com/user/repo1.git",
             update_frequency=3600,
             branch="main"
-        )
+        ))
         
-        repo2 = GitRepo(
+        repo2 = GitRepo(config=GitRepoConfig(
             name="repo2",
             description="repo2",
             local_path="/path/to/repo2",
             git_url="https://github.com/user/repo2.git",
             update_frequency=7200,
             branch="develop"
-        )
+        ))
         
         assert repo1 != repo2
 
@@ -76,42 +78,42 @@ class TestRepoExists:
         repo_path = tmpdir.mkdir("test_repo")
         git_dir = repo_path.mkdir(".git")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=str(repo_path),
             git_url="dummy",
             update_frequency=3600,
             branch="main"
-        )
+        ))
 
         assert repo.clone_exists() is True
 
     def test_repo_exists_false_no_git_dir(self, tmpdir):
         repo_path = tmpdir.mkdir("not_a_repo")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=str(repo_path),
             git_url="dummy",
             update_frequency=3600,
             branch="main"
-        )
+        ))
 
         assert repo.clone_exists() is False
 
     def test_repo_exists_false_nonexistent_path(self, tmpdir):
         nonexistent_path = str(tmpdir.join("nonexistent"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=nonexistent_path,
             git_url="dummy",
             update_frequency=3600,
             branch="main"
-        )
+        ))
 
         assert repo.clone_exists() is False
 
@@ -134,14 +136,14 @@ class TestGetRepoBranch:
         repo_path = self.setup_test_repo(tmpdir)
         subprocess.run(["git", "checkout", "-b", "main"], cwd=repo_path, check=True)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="main"
-        )
+        ))
 
         branch = repo.get_repo_branch()
 
@@ -151,14 +153,14 @@ class TestGetRepoBranch:
         repo_path = self.setup_test_repo(tmpdir)
         subprocess.run(["git", "checkout", "-b", "develop"], cwd=repo_path, check=True)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="develop"
-        )
+        ))
 
         branch = repo.get_repo_branch()
 
@@ -167,14 +169,14 @@ class TestGetRepoBranch:
     def test_get_repo_branch_master_default(self, tmpdir):
         repo_path = self.setup_test_repo(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         branch = repo.get_repo_branch()
 
@@ -183,14 +185,14 @@ class TestGetRepoBranch:
     def test_get_repo_branch_nonexistent_repo(self, tmpdir):
         nonexistent_path = str(tmpdir.join("nonexistent"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=nonexistent_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="repo .* does not exist"):
             repo.get_repo_branch()
@@ -198,14 +200,14 @@ class TestGetRepoBranch:
     def test_get_repo_branch_invalid_repo(self, tmpdir):
         not_a_repo = tmpdir.mkdir("not_a_repo")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=str(not_a_repo),
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="repo .* does not exist"):
             repo.get_repo_branch()
@@ -241,14 +243,14 @@ class TestCloneRepo:
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("cloned_repo"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.clone_repo()
 
@@ -261,14 +263,14 @@ class TestCloneRepo:
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("cloned_repo"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="test-branch"
-        )
+        ))
 
         result = repo.clone_repo()
 
@@ -281,14 +283,14 @@ class TestCloneRepo:
         local_path = str(tmpdir.join("cloned_repo"))
         invalid_url = "https://invalid-url-that-does-not-exist.com/repo.git"
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=invalid_url,
             update_frequency=3600,
             branch="main"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="failed to clone repo"):
             repo.clone_repo()
@@ -297,14 +299,14 @@ class TestCloneRepo:
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("cloned_repo"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="nonexistent-branch"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="failed to clone repo"):
             repo.clone_repo()
@@ -334,14 +336,14 @@ class TestChangeRepoBranch:
     def test_change_repo_branch_success(self, tmpdir):
         repo_path = self.setup_multi_branch_repo(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         assert repo.get_repo_branch() == "master"
 
@@ -354,14 +356,14 @@ class TestChangeRepoBranch:
     def test_change_repo_branch_same_branch(self, tmpdir):
         repo_path = self.setup_multi_branch_repo(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         assert repo.get_repo_branch() == "master"
 
@@ -373,14 +375,14 @@ class TestChangeRepoBranch:
     def test_change_repo_branch_nonexistent_branch(self, tmpdir):
         repo_path = self.setup_multi_branch_repo(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="failed to change branch"):
             repo.change_repo_branch("nonexistent-branch")
@@ -388,14 +390,14 @@ class TestChangeRepoBranch:
     def test_change_repo_branch_nonexistent_repo(self, tmpdir):
         nonexistent_path = str(tmpdir.join("nonexistent"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=nonexistent_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="repo .* does not exist"):
             repo.change_repo_branch("main")
@@ -403,14 +405,14 @@ class TestChangeRepoBranch:
     def test_change_repo_branch_invalid_repo(self, tmpdir):
         not_a_repo = tmpdir.mkdir("not_a_repo")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=str(not_a_repo),
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="repo .* does not exist"):
             repo.change_repo_branch("main")
@@ -426,14 +428,14 @@ class TestChangeRepoBranch:
 
         subprocess.run(["git", "checkout", "master"], cwd=repo_path, check=True)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy",
             update_frequency=3600,
             branch="feature"
-        )
+        ))
 
         result = repo.change_repo_branch("feature")
 
@@ -459,14 +461,14 @@ class TestRepoIsUpToDate:
     def test_repo_is_up_to_date_clean_working_tree(self, tmpdir):
         repo_path = self.setup_test_repo(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.repo_is_up_to_date()
 
@@ -478,14 +480,14 @@ class TestRepoIsUpToDate:
         test_file = Path(repo_path) / "test.txt"
         test_file.write_text("modified content")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.repo_is_up_to_date()
 
@@ -497,14 +499,14 @@ class TestRepoIsUpToDate:
         new_file = Path(repo_path) / "new.txt"
         new_file.write_text("new content")
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.repo_is_up_to_date()
 
@@ -517,14 +519,14 @@ class TestRepoIsUpToDate:
         new_file.write_text("staged content")
         subprocess.run(["git", "add", "staged.txt"], cwd=repo_path, check=True)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=repo_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.repo_is_up_to_date()
 
@@ -533,14 +535,14 @@ class TestRepoIsUpToDate:
     def test_repo_is_up_to_date_invalid_repo_path(self, tmpdir):
         invalid_path = str(tmpdir.join("nonexistent"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=invalid_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         assert not repo.repo_is_up_to_date()
 
@@ -570,14 +572,14 @@ class TestRepoIsUpToDate:
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "New commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=str(remote_path),
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         # local repo should not be up to date since remote has new commits
         result = repo.repo_is_up_to_date()
@@ -612,14 +614,14 @@ class TestPullRepo:
     def test_pull_repo_success(self, tmpdir):
         remote_path, local_path = self.setup_remote_and_local_repos(tmpdir)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         result = repo.pull_repo()
 
@@ -631,14 +633,14 @@ class TestPullRepo:
     def test_pull_repo_failure_invalid_repo_path(self, tmpdir):
         invalid_path = str(tmpdir.join("nonexistent"))
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=invalid_path,
             git_url="dummy_url",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="failed to pull latest changes"):
             repo.pull_repo()
@@ -647,14 +649,14 @@ class TestPullRepo:
         repo_path = tmpdir.mkdir("test_repo")
         subprocess.run(["git", "init"], cwd=str(repo_path), check=True)
 
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=str(repo_path),
             git_url="https://invalid-remote.com/repo.git",
             update_frequency=3600,
             branch="master"
-        )
+        ))
 
         with pytest.raises(RuntimeError, match="failed to pull latest changes"):
             repo.pull_repo()
@@ -681,14 +683,14 @@ class TestUpdateRepo:
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("new_repo"))
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
         
         result = repo.update()
         
@@ -701,14 +703,14 @@ class TestUpdateRepo:
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("nested", "path", "repo"))
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
         
         result = repo.update()
         
@@ -722,14 +724,14 @@ class TestUpdateRepo:
         
         subprocess.run(["git", "clone", remote_path, local_path], check=True)
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
         
         result = repo.update()
         
@@ -753,14 +755,14 @@ class TestUpdateRepo:
         local_file = Path(local_path) / "local_change.txt"
         local_file.write_text("local change")
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="master"
-        )
+        ))
         
         result = repo.update()
         
@@ -785,35 +787,35 @@ class TestUpdateRepo:
         
         subprocess.run(["git", "fetch", "origin", "develop"], cwd=local_path, check=True)
         
-        repo_for_check = GitRepo(
+        repo_for_check = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url="dummy",
             update_frequency=3600,
             branch="master"
-        )
+        ))
         assert repo_for_check.get_repo_branch() == "master"
         
-        repo = GitRepo(
+        repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
             local_path=local_path,
             git_url=remote_path,
             update_frequency=3600,
             branch="develop"
-        )
+        ))
         
         result = repo.update()
         
-        repo_for_check = GitRepo(
+        repo_for_check = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
             local_path=local_path,
             git_url="dummy",
             update_frequency=3600,
             branch="develop"
-        )
+        ))
         assert repo_for_check.get_repo_branch() == "develop"
         assert os.path.exists(os.path.join(local_path, "develop.txt"))
 
@@ -821,69 +823,43 @@ class TestUpdateRepo:
 @pytest.mark.unit
 class TestGetConfiguredRepos:
     def test_get_configured_repos_mock_config(self, monkeypatch):
-        mock_repos = [
-            {
-                "name": "repo1",
-                "description": "Test repo 1",
-                "local_path": "/path/to/repo1",
-                "git_url": "https://github.com/user/repo1.git",
-                "update_frequency": 3600,
-                "branch": "main",
-                "ssh_key_path": None
-            },
-            {
-                "name": "repo2",
-                "description": "Test repo 2",
-                "local_path": "/path/to/repo2",
-                "git_url": "https://github.com/user/repo2.git",
-                "update_frequency": 7200,
-                "branch": "develop",
-                "ssh_key_path": None
-            }
-        ]
-        
-        class MockConfig:
-            def get(self, section, key):
-                if section == "git" and key == "repos":
-                    return mock_repos
-                return None
-        
-        def mock_get_config():
-            return MockConfig()
-        
-        monkeypatch.setattr("saq.configuration.config.get_config", mock_get_config)
+        get_config().clear_git_repo_configs()
+        get_config().add_git_repo_config("repo1", GitRepoConfig(
+            name="repo1",
+            description="Test repo 1",
+            local_path="/path/to/repo1",
+            git_url="https://github.com/user/repo1.git",
+            update_frequency=3600,
+            branch="main"
+        ))
+        get_config().add_git_repo_config("repo2", GitRepoConfig(
+            name="repo2",
+            description="Test repo 2",
+            local_path="/path/to/repo2",
+            git_url="https://github.com/user/repo2.git",
+            update_frequency=7200,
+            branch="develop"
+        ))
         
         repos = get_configured_repos()
         
         assert len(repos) == 2
         
-        assert repos[0].name == "repo1"
-        assert repos[0].description == "Test repo 1"
-        assert repos[0].local_path == "/path/to/repo1"
-        assert repos[0].git_url == "https://github.com/user/repo1.git"
-        assert repos[0].update_frequency == 3600
-        assert repos[0].branch == "main"
+        assert repos[0].config.name == "repo1"
+        assert repos[0].config.description == "Test repo 1"
+        assert repos[0].config.local_path == "/path/to/repo1"
+        assert repos[0].config.git_url == "https://github.com/user/repo1.git"
+        assert repos[0].config.update_frequency == 3600
+        assert repos[0].config.branch == "main"
 
-        assert repos[1].name == "repo2"
-        assert repos[1].description == "Test repo 2"
-        assert repos[1].local_path == "/path/to/repo2"
-        assert repos[1].git_url == "https://github.com/user/repo2.git"
-        assert repos[1].update_frequency == 7200
-        assert repos[1].branch == "develop"
+        assert repos[1].config.name == "repo2"
+        assert repos[1].config.description == "Test repo 2"
+        assert repos[1].config.local_path == "/path/to/repo2"
+        assert repos[1].config.git_url == "https://github.com/user/repo2.git"
+        assert repos[1].config.update_frequency == 7200
+        assert repos[1].config.branch == "develop"
 
     def test_get_configured_repos_empty_config(self, monkeypatch):
-        class MockConfig:
-            def get(self, section, key):
-                if section == "git" and key == "repos":
-                    return []
-                return None
-        
-        def mock_get_config():
-            return MockConfig()
-        
-        monkeypatch.setattr("saq.configuration.config.get_config", mock_get_config)
-        
+        get_config().clear_git_repo_configs()
         repos = get_configured_repos()
-        
         assert len(repos) == 0
-        assert repos == []

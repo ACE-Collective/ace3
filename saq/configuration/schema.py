@@ -354,6 +354,15 @@ class APIQueryDefaultsConfig(BaseModel):
     async_delay: int = Field(..., description="The async delay for the analysis.")
     use_index_time: bool = Field(..., description="Whether to use the index time as the time of the query.")
 
+class GitRepoConfig(BaseModel):
+    name: str = Field(..., description="The name of the repo.")
+    description: str = Field(..., description="The description of the repo.")
+    local_path: str = Field(..., description="The local path to the repo.")
+    git_url: str = Field(..., description="The git url of the repo.")
+    update_frequency: int = Field(..., description="The frequency to update the repo in seconds.")
+    branch: str = Field(..., description="The branch to use for the repo.")
+    ssh_key_path: Optional[str] = Field(default=None, description="The path to an ssh key to use for the repo.")
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     llm: Optional[LLMConfig] = None
@@ -427,6 +436,7 @@ class ACEConfig(BaseModel):
         self.__splunk_configs: Optional[dict[str, SplunkConfig]] = None
         self.__api_query_defaults: Optional[dict[str, APIQueryDefaultsConfig]] = None
         self.__hunt_types: Optional[dict[str, HuntTypeConfig]] = None
+        self.__git_repos: Optional[dict[str, GitRepoConfig]] = None
 
     def resolve_all_values(self):
         self.__raw.resolve_all_values()
@@ -465,6 +475,7 @@ class ACEConfig(BaseModel):
         self.load_splunk_configs()
         self.load_hunt_type_configs()
         self.load_api_query_defaults_config()
+        self.load_git_repo_configs()
     #
     # integrations
     #
@@ -884,3 +895,40 @@ class ACEConfig(BaseModel):
             raise ValueError(f"hunt type config for {name} not found")
 
         return self.__hunt_types[name]
+
+    #
+    # git repos
+    #
+
+    @property
+    def git_repos(self) -> list[GitRepoConfig]:
+        if self.__git_repos is None:
+            self._raise_raw_data_error()
+
+        return self.__git_repos.values()
+    
+    def clear_git_repo_configs(self):
+        self.__git_repos = {}
+    
+    def load_git_repo_configs(self):
+        self.__git_repos = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("git_repo_"):
+                continue
+
+            git_repo_name = key[len("git_repo_"):]
+            git_repo_config = GitRepoConfig.model_validate(value)
+            self.add_git_repo_config(git_repo_name, git_repo_config)
+
+    def add_git_repo_config(self, name: str, git_repo_config: GitRepoConfig):
+        self.__git_repos[name] = git_repo_config
+
+    def get_git_repo_config(self, name: str) -> GitRepoConfig:
+        if self.__git_repos is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__git_repos:
+            raise ValueError(f"git repo config for {name} not found")
+
+        return self.__git_repos[name]
