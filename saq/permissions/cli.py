@@ -1,6 +1,5 @@
 from saq.permissions.constants import ALLOW, DENY, WILDCARD
-from saq.permissions.group import get_group_permissions
-from saq.permissions.user import add_user_permission, get_user_permissions
+from saq.permissions.user import get_user_permissions
 from saq.database.pool import get_db
 from saq.cli.cli_main import get_cli_subparsers
 
@@ -87,7 +86,7 @@ add_user_permission_parser.add_argument("--deny", action="store_true", help="Den
 add_user_permission_parser.set_defaults(func=cli_add_user_permission)
 
 def cli_delete_user_permission(args) -> int:
-    from saq.permissions import delete_user_permission, delete_group_permission
+    from saq.permissions import delete_user_permission
     from saq.database.model import User
 
     session = get_db()
