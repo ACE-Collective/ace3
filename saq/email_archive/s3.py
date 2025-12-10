@@ -15,11 +15,11 @@ def _extract_sha256_from_file_name(file_path: str) -> str:
     return os.path.basename(file_path).split('.')[0]
 
 def _get_s3_client() -> boto3.client:
-    return boto3.client("s3", region_name=get_config().email_archive.s3_config.region)
+    return boto3.client("s3", region_name=get_config().email_archive.s3_region)
 
 class EmailArchiveS3(EmailArchiveLocal):
     def email_exists_in_s3(self, sha256_hash: str) -> bool:
-        bucket = get_config().email_archive.s3_config.bucket
+        bucket = get_config().email_archive.s3_bucket
         s3_client = _get_s3_client()
 
         try:
@@ -33,7 +33,7 @@ class EmailArchiveS3(EmailArchiveLocal):
             raise e
 
     def upload_to_s3(self, local_path: str, message_id: str, sha256_hash: str) -> bool:
-        bucket = get_config().email_archive.s3_config.bucket
+        bucket = get_config().email_archive.s3_bucket
         metadata = { "message_id": message_id }
         logging.info(f"uploading email archive {sha256_hash} to {bucket} with metadata {metadata}")
         s3_client = _get_s3_client()
@@ -61,7 +61,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         s3_client = _get_s3_client()
         logging.info(f"downloading email archive {sha256_hash} to {temp_path}")
         s3_client.download_file(
-            get_config().email_archive.s3_config.bucket,
+            get_config().email_archive.s3_bucket,
             sha256_hash,
             temp_path)
 
