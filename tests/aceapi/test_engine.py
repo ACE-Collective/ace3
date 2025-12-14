@@ -9,12 +9,11 @@ import pytest
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import G_TEMP_DIR
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock
-from saq.environment import g
+from saq.environment import get_temp_dir
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
 
@@ -34,8 +33,8 @@ def test_download(test_client):
     result = test_client.get(url_for('engine.download', uuid=root.uuid), headers = { 'x-ice-auth': get_config().api.api_key })
 
     # we should get back a tar file
-    tar_path = os.path.join(g(G_TEMP_DIR), 'download.tar')
-    output_dir = os.path.join(g(G_TEMP_DIR), 'download')
+    tar_path = os.path.join(get_temp_dir(), 'download.tar')
+    output_dir = os.path.join(get_temp_dir(), 'download')
 
     try:
         with open(tar_path, 'wb') as fp:
@@ -71,7 +70,7 @@ def test_download(test_client):
 def test_upload(test_client):
     
     # first create something to upload
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(g(G_TEMP_DIR), 'test_upload'))
+    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(get_temp_dir(), 'test_upload'))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     file_path = root.create_file_path("test.dat")
@@ -81,7 +80,7 @@ def test_upload(test_client):
     root.save()
 
     # create a tar file of the entire thing
-    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=g(G_TEMP_DIR))
+    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=get_temp_dir())
     tar = tarfile.open(fileobj=os.fdopen(fp, 'wb'), mode='w|')
     tar.add(root.storage_dir, '.')
     tar.close()
@@ -105,7 +104,7 @@ def test_upload(test_client):
 def test_upload_move(test_client):
     
     # first create something to upload
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(g(G_TEMP_DIR), 'test_upload'))
+    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(get_temp_dir(), 'test_upload'))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     file_path = root.create_file_path("test.dat")
@@ -125,7 +124,7 @@ def test_upload_move(test_client):
     alert.sync()
 
     # create a tar file of the entire thing
-    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=g(G_TEMP_DIR))
+    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=get_temp_dir())
     tar = tarfile.open(fileobj=os.fdopen(fp, 'wb'), mode='w|')
     tar.add(root.storage_dir, '.')
     tar.close()

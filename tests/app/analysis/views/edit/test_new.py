@@ -541,8 +541,8 @@ def test_new_alert_file_upload_with_actual_file(mock_db_conn, web_client):
                 mock_mkstemp.return_value = (5, '/tmp/test_upload_real')
                 
                 with patch('os.close') as mock_os_close:
-                    with patch('app.analysis.views.edit.new.g') as mock_g:
-                        mock_g.return_value = '/tmp'
+                    with patch('app.analysis.views.edit.new.get_temp_dir') as mock_get_temp_dir:
+                        mock_get_temp_dir.return_value = '/tmp'
                         
                         with patch('app.analysis.views.edit.new.sha256_file') as mock_sha256:
                             mock_sha256.return_value = 'real456sha256hash'
@@ -595,8 +595,8 @@ def test_new_alert_file_upload_with_multipart_form(mock_db_conn, web_client):
                 mock_mkstemp.return_value = (5, '/tmp/test_multipart')
                 
                 with patch('os.close'):
-                    with patch('app.analysis.views.edit.new.g') as mock_g:
-                        mock_g.return_value = '/tmp'
+                    with patch('app.analysis.views.edit.new.get_temp_dir') as mock_get_temp_dir:
+                        mock_get_temp_dir.return_value = '/tmp'
                         
                         with patch('app.analysis.views.edit.new.sha256_file') as mock_sha256:
                             mock_sha256.return_value = 'multipart456hash'

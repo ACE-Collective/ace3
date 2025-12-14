@@ -6,6 +6,7 @@ import pytest
 from saq.configuration.yaml_parser import (
     YAMLConfig,
 )
+from saq.environment import get_global_runtime_settings
 
 
 @pytest.mark.unit
@@ -47,28 +48,15 @@ def test_yaml_config_environment_variable_resolution():
 
 
 @pytest.mark.unit
-def test_yaml_config_encrypted_password_resolution():
+def test_yaml_config_encrypted_password_resolution(monkeypatch):
     """Test encrypted password resolution in YAMLConfig."""
     config = YAMLConfig()
     
-    # Mock encryption not initialized - should return string form
-    from saq.environment import g_obj, set_g
-    from saq.constants import G_ENCRYPTION_INITIALIZED
-    
-    # Save original state
-    original_encryption_state = g_obj(G_ENCRYPTION_INITIALIZED).value
-    
-    try:
-        # Test with encryption not initialized
-        set_g(G_ENCRYPTION_INITIALIZED, False)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_initialized", False)
         
-        # Test encrypted: prefix when encryption not initialized
-        result = config._resolve_value("encrypted:test_key")
-        assert result == "encrypted:test_key"
-        
-    finally:
-        # Restore original state
-        set_g(G_ENCRYPTION_INITIALIZED, original_encryption_state)
+    # Test encrypted: prefix when encryption not initialized
+    result = config._resolve_value("encrypted:test_key")
+    assert result == "encrypted:test_key"
 
 
 @pytest.mark.unit

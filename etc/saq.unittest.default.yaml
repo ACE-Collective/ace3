@@ -367,7 +367,7 @@ analysis_module_crawlphish:
   whitelist_path: etc/unittest_crawlphish.whitelist
   regex_path: etc/unittest_crawlphish.path_regex
   blacklist_path: etc/unittest_crawlphish.blacklist
-  proxies: [GLOBAL]
+  proxies: []
 
 #analysis_module_api_analysis_test:
   #name: api_analysis_test

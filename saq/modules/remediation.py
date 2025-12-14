@@ -1,7 +1,7 @@
 import logging
 from saq.analysis import Analysis
-from saq.constants import G_AUTOMATION_USER_ID, AnalysisExecutionResult
-from saq.environment import g_int
+from saq.constants import AnalysisExecutionResult
+from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.remediation import REMEDIATION_ACTION_REMOVE
 from saq.observables import create_observable
@@ -36,7 +36,7 @@ class AutomatedRemediationAnalyzer(AnalysisModule):
         assert isinstance(analysis, RemediationAction)
         targets = create_observable(observable.type, observable.value).remediation_targets
         for target in targets:
-            target.queue(REMEDIATION_ACTION_REMOVE, g_int(G_AUTOMATION_USER_ID))
+            target.queue(REMEDIATION_ACTION_REMOVE, get_global_runtime_settings().automation_user_id)
             analysis.targets.append({'type': target.type, 'value': target.value})
             logging.info(f"Added auto-remediation entry for {target.type}|{target.value}")
 

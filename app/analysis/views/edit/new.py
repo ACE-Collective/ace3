@@ -9,11 +9,11 @@ import ace_api
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, G_TEMP_DIR, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
-from saq.environment import g
+from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
@@ -133,7 +133,7 @@ ORDER BY
                     else:
                         upload_file = request.files.get(f'observables_values_{index}', None)
                         if upload_file:
-                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(g(G_TEMP_DIR)))
+                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))  # noqa: F821
                             os.close(fp)
 
                             temp_file_paths.append(save_path)

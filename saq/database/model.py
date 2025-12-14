@@ -11,7 +11,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable, get_observable_type_expiration_time
 from saq.analysis.tag import Tag as _Tag
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN, F_URL, G_LOCK_TIMEOUT_SECONDS, QUEUE_DEFAULT
+from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN, F_URL, QUEUE_DEFAULT
 from saq.crypto import decrypt_chunk
 from saq.database.meta import Base
 
@@ -22,7 +22,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
 from saq.disposition import get_dispositions
-from saq.environment import g_int
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.performance import track_execution_time
 from saq.util import find_all_url_domains, validate_uuid
@@ -636,7 +636,7 @@ class Alert(Base):
         with get_db_connection() as db:
             c = db.cursor()
             c.execute("""SELECT uuid FROM locks WHERE uuid = %s AND TIMESTAMPDIFF(SECOND, lock_time, NOW()) < %s""", 
-                     (self.uuid, g_int(G_LOCK_TIMEOUT_SECONDS)))
+                     (self.uuid, get_global_runtime_settings().lock_timeout_seconds))
             return c.fetchone() is not None
 
     #@track_execution_time

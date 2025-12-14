@@ -4,8 +4,7 @@ import os
 import sys
 
 from saq.configuration.config import get_config
-from saq.constants import G_INTEGRATION_CONFIG_PATHS
-from saq.environment import g_list
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.integration.integration_manager import is_integration_enabled
 from saq.integration.integration_util import get_integration_base_dir, get_integration_name_from_path
@@ -126,7 +125,7 @@ def load_integration_component_etc(dir_path: str) -> bool:
         auto_load_config_file = os.path.join(etc_path, "saq.integration.yaml")
         if os.path.exists(auto_load_config_file):
             logging.debug(f"auto loading integration configuration file {auto_load_config_file}")
-            g_list(G_INTEGRATION_CONFIG_PATHS).append(auto_load_config_file)
+            get_global_runtime_settings().integration_config_paths.append(auto_load_config_file)
             #get_config().load_file(auto_load_config_file)
 
     return True

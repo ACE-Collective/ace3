@@ -2,18 +2,18 @@ from multiprocessing import Event, Process
 import uuid
 import pytest
 
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_HTTP, G_LOCK_TIMEOUT_SECONDS, G_SAQ_NODE_ID
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_HTTP
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.node import assign_node_analysis_modes, get_node_included_analysis_modes, get_node_excluded_analysis_modes
-from saq.environment import g, g_obj
+from saq.environment import get_global_runtime_settings
 from tests.saq.helpers import insert_alert
 
 @pytest.mark.integration
 def test_assign_node_analysis_modes():
     # make sure we have a node assigned
-    assert g(G_SAQ_NODE_ID)
+    assert get_global_runtime_settings().saq_node_id
 
     # clear them all
     assign_node_analysis_modes()
@@ -107,7 +107,7 @@ def test_multiprocess_lock():
 @pytest.mark.integration
 def test_expired_lock(monkeypatch: pytest.MonkeyPatch):
     # set locks to expire immediately
-    monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
+    monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
     alert = insert_alert()
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(alert.uuid, lock_uuid)

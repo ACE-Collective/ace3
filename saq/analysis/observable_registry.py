@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import Dict, Optional, Callable, Any
 
 from saq.analysis.errors import ExcessiveObservablesError, ExcessiveFileDataSizeError
-from saq.constants import F_FILE, G_OBSERVABLE_LIMIT
-from saq.environment import g_int
+from saq.constants import F_FILE
+from saq.environment import get_global_runtime_settings
 from saq.analysis.observable import Observable
 
 #
@@ -99,7 +99,7 @@ class ObservableRegistry:
         # Check observable limit
         observable_limit = self._observable_limit
         if observable_limit is None:
-            observable_limit = g_int(G_OBSERVABLE_LIMIT)
+            observable_limit = get_global_runtime_settings().observable_limit
         
         if observable_limit and len(self._store) >= observable_limit:
             logging.warning("too many observables added to registry")

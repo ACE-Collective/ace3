@@ -5,11 +5,11 @@ from unittest.mock import Mock
 from saq.analysis.root import load_root
 from saq.configuration.config import get_config, get_analysis_module_config
 from saq.util.uuid import get_storage_dir
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_CRAWLPHISH, ANALYSIS_TYPE_MANUAL, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, G_ANALYST_DATA_DIR, R_DOWNLOADED_FROM
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_CRAWLPHISH, ANALYSIS_TYPE_MANUAL, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, R_DOWNLOADED_FROM
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.modules.url.crawlphish import CrawlphishAnalysisV2, CrawlphishAnalyzer
 from tests.saq.helpers import log_count
 
@@ -209,7 +209,7 @@ def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, dat
 
     get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH).user_agent_list_path = "test_uas.txt"
 
-    target_path = os.path.join(g(G_ANALYST_DATA_DIR), "test_uas.txt")
+    target_path = os.path.join(get_global_runtime_settings().analyst_data_dir, "test_uas.txt")
     with open(target_path, 'w') as fp:
         fp.write("user-agent-1\nuser-agent-2\n")
 
@@ -265,7 +265,7 @@ def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, dat
     assert file_observable.has_relationship(R_DOWNLOADED_FROM)
 
     # there should be some extra content added to the details
-    assert 'user-agent-1' in analysis.details['extended_information']['GLOBAL']
+    assert 'user-agent-1' in analysis.details['extended_information']['direct']
 
 @pytest.mark.integration
 def test_download_404(root_analysis, monkeypatch):
@@ -303,7 +303,7 @@ def test_download_404(root_analysis, monkeypatch):
     url = root_analysis.get_observable(url.uuid)
     analysis = url.get_and_load_analysis(CrawlphishAnalysisV2)
 
-    assert analysis.proxy_results['GLOBAL'].status_code == 404
+    assert analysis.proxy_results['direct'].status_code == 404
     if 'tor' in analysis.proxy_results:
         assert analysis.proxy_results['tor'].status_code is None
     assert analysis.file_name == 'nonexistent.html'
@@ -319,7 +319,7 @@ def test_download_404(root_analysis, monkeypatch):
 
 @pytest.mark.unit
 def test_load_user_agent_list_file(monkeypatch, test_context):
-    ua_file_path = os.path.join(g(G_ANALYST_DATA_DIR), 'test_uas.txt')
+    ua_file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, 'test_uas.txt')
     with open(ua_file_path, 'w') as fp:
         fp.write("test-ua-1\ntest-ua-2\n")
 
@@ -335,7 +335,7 @@ def test_load_user_agent_list_file(monkeypatch, test_context):
 
 @pytest.mark.unit
 def test_load_user_agent_list_file_with_comments(monkeypatch, test_context):
-    ua_file_path = os.path.join(g(G_ANALYST_DATA_DIR), 'test_uas.txt')
+    ua_file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, 'test_uas.txt')
     with open(ua_file_path, 'w') as fp:
         fp.write("test-ua-1\n# this is a comment\ntest-ua-2\n")
 

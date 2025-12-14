@@ -16,13 +16,11 @@ from saq.configuration.config import (
     get_engine_config,
 )
 from saq.constants import (
-    G_MODULE_STATS_DIR,
-    G_SAQ_NODE,
     LockManagerType,
     WorkloadManagerType,
 )
 from saq.engine.enums import EngineType
-from saq.environment import g, get_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings
 
 def compute_pool_size(pool_size_specification: str|int) -> int:
     """A pool size can be specified as a number of workers, or a percentage of the total number of CPU cores.
@@ -102,7 +100,7 @@ class EngineConfiguration:
         
         # Directory configuration
         self.work_dir = get_engine_config().work_dir
-        self.stats_dir = os.path.join(g(G_MODULE_STATS_DIR), "ace")
+        self.stats_dir = os.path.join(get_global_runtime_settings().module_stats_dir, "ace")
         self.runtime_dir = os.path.join(get_data_dir(), "var", "engine", "ace")
         
         # Feature flags
@@ -118,12 +116,12 @@ class EngineConfiguration:
 
         # translate the special value of LOCAL to whatever the local node is
         self.target_nodes = [
-            g(G_SAQ_NODE) if node == "LOCAL" else node for node in self.target_nodes
+            get_global_runtime_settings().saq_node if node == "LOCAL" else node for node in self.target_nodes
         ]
 
         if self.target_nodes:
             logging.debug(
-                f"target nodes for {g(G_SAQ_NODE)} is limited to {self.target_nodes}"
+                f"target nodes for {get_global_runtime_settings().saq_node} is limited to {self.target_nodes}"
             )
         
         # Observable exclusions (initialized empty)

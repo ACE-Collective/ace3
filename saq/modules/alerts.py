@@ -5,9 +5,9 @@ from typing import Type, Optional
 from pydantic import Field
 
 from saq.configuration.config import get_engine_config
-from saq.constants import DISPOSITION_OPEN, G_FORCED_ALERTS
+from saq.constants import DISPOSITION_OPEN
 from saq.database import get_db_connection
-from saq.environment import g_boolean
+from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.base_module import AnalysisExecutionResult
 from saq.modules.config import AnalysisModuleConfig
@@ -70,11 +70,11 @@ class ACEDetectionAnalyzer(AnalysisModule):
 
     def execute_post_analysis(self) -> AnalysisExecutionResult:
         # do not alert on a root that has been whitelisted
-        if not g_boolean(G_FORCED_ALERTS) and self.get_root().whitelisted:
+        if not get_global_runtime_settings().forced_alerts and self.get_root().whitelisted:
             logging.debug("{} has been whitelisted".format(self.get_root()))
             return AnalysisExecutionResult.COMPLETED
 
-        if g_boolean(G_FORCED_ALERTS) or self.get_root().has_detections():
+        if get_global_runtime_settings().forced_alerts or self.get_root().has_detections():
             logging.info("{} has {} detection points - changing mode to {}".format(
                          self.get_root(), len(self.get_root().all_detection_points), self.target_mode))
             self.get_root().analysis_mode = self.target_mode

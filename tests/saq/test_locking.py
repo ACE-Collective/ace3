@@ -1,10 +1,9 @@
 import uuid
 import pytest
 
-from saq.constants import G_LOCK_TIMEOUT_SECONDS
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock, clear_expired_locks, release_lock
-from saq.environment import g_obj
+from saq.environment import get_global_runtime_settings
 
 @pytest.mark.integration
 def test_lock():
@@ -22,7 +21,7 @@ def test_lock():
     
 @pytest.mark.integration
 def test_lock_timeout(monkeypatch):
-    monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
+    monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
     first_lock_uuid = str(uuid.uuid4())
     second_lock_uuid = str(uuid.uuid4())
     target_lock = str(uuid.uuid4())
@@ -31,7 +30,7 @@ def test_lock_timeout(monkeypatch):
 
 @pytest.mark.integration
 def test_clear_expired_locks(monkeypatch):
-    monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
+    monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
     # insert a lock that is already expired
     target = str(uuid.uuid4())
     lock_uuid = str(uuid.uuid4())

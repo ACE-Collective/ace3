@@ -14,10 +14,9 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.search import search_down
 from saq.brocess import add_httplog
-from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, G_ANALYST_DATA_DIR, G_OTHER_PROXIES, R_DOWNLOADED_FROM, R_REDIRECTED_FROM, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, F_URL, R_DOWNLOADED_FROM, R_REDIRECTED_FROM, AnalysisExecutionResult
 from saq.crawlphish_filter import CrawlphishURLFilter
-from saq.environment import g, g_dict, get_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.proxy import proxies
@@ -559,7 +558,7 @@ class CrawlphishAnalyzer(AnalysisModule):
     @property
     def user_agent_list_path(self) -> str:
         """Returns the path to the file that contains a list of UAs to use."""
-        return os.path.join(g(G_ANALYST_DATA_DIR), self.config.user_agent_list_path)
+        return os.path.join(get_global_runtime_settings().analyst_data_dir, self.config.user_agent_list_path)
 
     @property
     def user_agent_list(self):
@@ -704,12 +703,12 @@ class CrawlphishAnalyzer(AnalysisModule):
 
         if analysis.filtered_status:
             logging.debug("{} is not crawlable: {}".format(url.value, analysis.filtered_status_reason))
-            return False
+            return AnalysisExecutionResult.COMPLETED
 
         parsed_url = filter_result.parsed_url
         if parsed_url is None:
             logging.debug("unable to parse url {}".format(url.value))
-            return False
+            return AnalysisExecutionResult.COMPLETED
 
         formatted_url = urlunparse(parsed_url)
 
@@ -720,18 +719,11 @@ class CrawlphishAnalyzer(AnalysisModule):
 
         # what proxies are we going to use to attempt to download the url?
         # these are attempted in the order specified in the configuration setting
-        proxy_configs = []
-        for name in self.proxies:
-            if name == 'GLOBAL':
-                proxy_configs.append(( name, proxies() ))
-            else:
-                proxy_configs.append(( name, g_dict(G_OTHER_PROXIES)[name] ))
-                
+        proxy_configs = [proxies(_) for _ in self.proxies]
         proxy_result = None
 
         # get referer if there is one
         referer_url = search_down(url, lambda x: isinstance(x, Observable) and x.type == F_URL)
-        logging.debug(referer_url)
         if referer_url:
             self.headers.update({'referer': referer_url.value})
         else:
@@ -739,6 +731,10 @@ class CrawlphishAnalyzer(AnalysisModule):
 
         # set of sha256 hashes of stuff we've already downloaded
         downloaded_files = set()
+
+        # if we're not using a proxy then we go direct
+        if not proxy_configs:
+            proxy_configs = [("direct", {})]
 
         for index, proxy_config in enumerate(proxy_configs):
             proxy_name, proxy_config = proxy_config
@@ -774,7 +770,7 @@ class CrawlphishAnalyzer(AnalysisModule):
                     for part in response.history:
                         proxy_result.history.append(part.url)
 
-                except requests.Timeout as e:
+                except requests.Timeout:
                     proxy_result.error_reason = "request timed out"
                     continue
                 except Exception as e:
@@ -934,4 +930,4 @@ class CrawlphishAnalyzer(AnalysisModule):
 
                 analysis.extended_info[proxy_name][user_agent] = extended_info
 
-        return True
+        return AnalysisExecutionResult.COMPLETED

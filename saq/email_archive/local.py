@@ -16,15 +16,14 @@ from typing import Optional
 from pymysql import IntegrityError
 
 from saq.configuration.config import get_config
-from saq.constants import DB_EMAIL_ARCHIVE, EMAIL_ARCHIVE_FIELD_MESSAGE_ID, EMAIL_ARCHIVE_FIELD_URL, G_EMAIL_ARCHIVE_SERVER_ID
+from saq.constants import DB_EMAIL_ARCHIVE, EMAIL_ARCHIVE_FIELD_MESSAGE_ID, EMAIL_ARCHIVE_FIELD_URL
 from saq.crypto import decrypt, encrypt, is_encryption_initialized
 from saq.database import get_db_connection, execute_with_retry
 from saq.email import normalize_email_address, normalize_message_id
 from saq.email_archive.interface import EmailArchiveInterface
 from saq.email_archive.types import ArchiveEmailResult
-from saq.environment import g_int, get_data_dir, set_g
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.local_locking import LocalLockError, lock_local
-from saq.util import fully_qualified
 from saq.util.hashing import sha256_file
 
 class EmailArchiveLocal(EmailArchiveInterface):
@@ -41,7 +40,7 @@ class EmailArchiveLocal(EmailArchiveInterface):
 
     def get_email_archive_server_id(self) -> int:
         """Returns the email archive id for this server, or None if it has not been set yet."""
-        return g_int(G_EMAIL_ARCHIVE_SERVER_ID)
+        return get_global_runtime_settings().email_archive_server_id
 
     def get_email_archive_local_server_name(self) -> str:
         """Returns the local server name of the email archive server."""
@@ -53,7 +52,7 @@ class EmailArchiveLocal(EmailArchiveInterface):
 
     def initialize_email_archive(self):
         """Initializes the email archive subsystem. Must be called once at application startup."""
-        set_g(G_EMAIL_ARCHIVE_SERVER_ID, self.register_email_archive())
+        get_global_runtime_settings().email_archive_server_id = self.register_email_archive()
         os.makedirs(self.get_archive_dir(), exist_ok=True)
 
     def archive_email(self, file_path: str, message_id: str, recipients: list[str], insert_date: datetime) -> ArchiveEmailResult:

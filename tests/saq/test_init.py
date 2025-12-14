@@ -5,9 +5,7 @@ import pytest
 
 from saq.configuration import get_config
 from saq.configuration.schema import ACEConfig
-from saq.configuration.yaml_parser import YAMLConfig
-from saq.constants import G_SAQ_NODE, G_SAQ_NODE_ID
-from saq.environment import g, g_int, set_g, set_node
+from saq.environment import get_global_runtime_settings, set_node
 from saq.logging import CustomFileHandler, initialize_logging
 
 @pytest.mark.unit
@@ -55,18 +53,18 @@ def test_initialize_logging(datadir, monkeypatch):
 
 @pytest.mark.integration
 def test_set_node():
-    assert g(G_SAQ_NODE) == "localhost"
-    old_node_id = g_int(G_SAQ_NODE_ID)
+    assert get_global_runtime_settings().saq_node == "localhost"
+    old_node_id = get_global_runtime_settings().saq_node_id
     assert isinstance(old_node_id, int)
 
 
     set_node("some_name")
-    assert g(G_SAQ_NODE) == "some_name"
-    assert g_int(G_SAQ_NODE_ID) != old_node_id
+    assert get_global_runtime_settings().saq_node == "some_name"
+    assert get_global_runtime_settings().saq_node_id != old_node_id
 
     # XXX remove this after you fix the reset issue
-    set_g(G_SAQ_NODE_ID, old_node_id)
-    set_g(G_SAQ_NODE, "localhost")
+    get_global_runtime_settings().saq_node_id = old_node_id
+    get_global_runtime_settings().saq_node = "localhost"
 
 @pytest.mark.unit
 def test_get_config():

@@ -367,12 +367,12 @@ class TestJournalEmailCollector:
         with open(email_path, "wb") as f:
             f.write(email_content)
 
-        with patch("saq.collectors.email.journal.g") as mock_g, \
+        with patch("saq.collectors.email.journal.get_temp_dir") as mock_get_temp_dir, \
              patch("saq.collectors.email.journal.uuid4") as mock_uuid4, \
              patch("saq.collectors.email.journal.local_time") as mock_local_time, \
              patch.object(collector, "is_blacklisted") as mock_is_blacklisted:
 
-            mock_g.return_value = str(tmpdir)
+            mock_get_temp_dir.return_value = str(tmpdir)
             mock_uuid4.side_effect = ["email-uuid", "root-uuid"]
             mock_local_time.return_value = datetime(2023, 1, 1, 12, 0, 0)
             mock_is_blacklisted.return_value = False
@@ -415,12 +415,12 @@ class TestJournalEmailCollector:
         )
         collector.message_queue.put(message)
 
-        with patch("saq.collectors.email.journal.g") as mock_g, \
+        with patch("saq.collectors.email.journal.get_temp_dir") as mock_get_temp_dir, \
              patch("saq.collectors.email.journal.uuid4") as mock_uuid4, \
              patch("saq.collectors.email.journal.delete_file") as mock_delete_file, \
              patch.object(collector, "is_blacklisted") as mock_is_blacklisted:
 
-            mock_g.return_value = str(tmpdir)
+            mock_get_temp_dir.return_value = str(tmpdir)
             mock_uuid4.return_value = "email-uuid"
             mock_is_blacklisted.return_value = True
 
@@ -455,12 +455,12 @@ class TestJournalEmailCollector:
         with open(email_path, "wb") as f:
             f.write(email_content)
 
-        with patch("saq.collectors.email.journal.g") as mock_g, \
+        with patch("saq.collectors.email.journal.get_temp_dir") as mock_get_temp_dir, \
              patch("saq.collectors.email.journal.uuid4") as mock_uuid4, \
              patch("saq.collectors.email.journal.local_time") as mock_local_time, \
              patch.object(collector, "is_blacklisted") as mock_is_blacklisted:
 
-            mock_g.return_value = str(tmpdir)
+            mock_get_temp_dir.return_value = str(tmpdir)
             mock_uuid4.side_effect = ["email-uuid", "root-uuid"]
             mock_local_time.return_value = datetime(2023, 1, 1, 12, 0, 0)
             mock_is_blacklisted.return_value = False
@@ -501,12 +501,12 @@ class TestJournalEmailCollector:
         with open(email_path, "wb") as f:
             f.write(email_content)
 
-        with patch("saq.collectors.email.journal.g") as mock_g, \
+        with patch("saq.collectors.email.journal.get_temp_dir") as mock_get_temp_dir, \
              patch("saq.collectors.email.journal.uuid4") as mock_uuid4, \
              patch("saq.collectors.email.journal.local_time") as mock_local_time, \
              patch.object(collector, "is_blacklisted") as mock_is_blacklisted:
 
-            mock_g.return_value = str(tmpdir)
+            mock_get_temp_dir.return_value = str(tmpdir)
             mock_uuid4.side_effect = ["email-uuid", "root-uuid"]
             mock_local_time.return_value = datetime(2023, 1, 1, 12, 0, 0)
             mock_is_blacklisted.return_value = False

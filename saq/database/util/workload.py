@@ -1,10 +1,9 @@
 import logging
 from typing import TYPE_CHECKING
 from saq.configuration.config import get_engine_config
-from saq.constants import G_SAQ_NODE_ID
 from saq.database.retry import execute_with_retry
 from saq.database.util.node import initialize_node
-from saq.environment import g_int
+from saq.environment import get_global_runtime_settings
 from saq.database.pool import get_db_connection
 
 if TYPE_CHECKING:
@@ -27,7 +26,7 @@ def add_workload(root: "RootAnalysis"):
         root.analysis_mode = get_engine_config().default_analysis_mode
 
     # make sure we've initialized our node id
-    if g_int(G_SAQ_NODE_ID) is None:
+    if get_global_runtime_settings().saq_node_id is None:
         initialize_node()
         
     with get_db_connection() as db:
@@ -41,7 +40,7 @@ INSERT INTO workload (
     storage_dir,
     insert_date )
 VALUES ( %s, %s, %s, %s, %s, NOW() )
-ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, g_int(G_SAQ_NODE_ID), root.analysis_mode, root.company_id, root.storage_dir))
+ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, get_global_runtime_settings().saq_node_id, root.analysis_mode, root.company_id, root.storage_dir))
         db.commit()
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
                       root.uuid, root.analysis_mode, root.company_id))

@@ -3,8 +3,8 @@ import logging
 import socket
 from threading import Event, Thread
 from saq.configuration.config import get_service_config
-from saq.constants import G_SEMAPHORES_ENABLED, SERVICE_NETWORK_SEMAPHORE
-from saq.environment import g_boolean
+from saq.constants import SERVICE_NETWORK_SEMAPHORE
+from saq.environment import get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.network_semaphore.config import NetworkSemaphoreConfig
 from saq.network_semaphore.fallback import add_undefined_fallback_semaphore, get_defined_fallback_semaphores, get_undefined_fallback_semaphores, get_undefined_fallback_semaphores_lock, maintain_undefined_semaphores
@@ -241,7 +241,7 @@ class NetworkSemaphore():
         self.semaphore = NetworkSemaphoreClient()
 
     def __enter__(self):
-        if not g_boolean(G_SEMAPHORES_ENABLED):
+        if not get_global_runtime_settings().semaphores_enabled:
             return self
 
         if not self.semaphore.acquire(self.name):

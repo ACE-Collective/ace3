@@ -7,9 +7,9 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DIRECTIVE_ARCHIVE, F_FILE, F_URL, G_ENCRYPTION_INITIALIZED, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DIRECTIVE_ARCHIVE, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
 from saq.email_archive import archive_email, get_email_archive_dir, query_by_message_id
-from saq.environment import g_obj
+from saq.environment import get_global_runtime_settings
 from saq.modules.email.archive import EmailArchiveAction, EmailArchiveResults, EncryptedArchiveAnalysis, EncryptedArchiveAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_str
@@ -50,7 +50,7 @@ def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, 
     assert isinstance(observable, Observable)
 
     with monkeypatch.context() as mp:
-        mp.setattr(g_obj(G_ENCRYPTION_INITIALIZED), "value", False)
+        mp.setattr(get_global_runtime_settings(), "encryption_initialized", False)
         # returns False if encryption is not initialized
         assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 

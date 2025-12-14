@@ -3,11 +3,6 @@ import logging
 import socket
 from typing import Optional
 
-from saq.constants import (
-    G_API_PREFIX,
-    G_SAQ_NODE,
-    G_SAQ_NODE_ID,
-)
 from saq.configuration.config import get_config, get_engine_config
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
@@ -18,7 +13,7 @@ from saq.database.util.node import (
 )
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
-from saq.environment import g, g_int
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 
 
@@ -28,10 +23,10 @@ def update_node_status(
     """Updates the last_update field of the node table for this node."""
 
     if location is None:
-        location = g(G_API_PREFIX)
+        location = get_global_runtime_settings().api_prefix
 
     if node_id is None:
-        node_id = g_int(G_SAQ_NODE_ID)
+        node_id = get_global_runtime_settings().saq_node_id
 
     try:
         with get_db_connection() as db:
@@ -112,7 +107,7 @@ class DistributedNodeManager(NodeManagerInterface):
 
     def update_node_status(self):
         """Updates the last_update field of the node table for this node."""
-        update_node_status(g(G_API_PREFIX), g_int(G_SAQ_NODE_ID))
+        update_node_status(get_global_runtime_settings().api_prefix, get_global_runtime_settings().saq_node_id)
 
     def initialize_node(self):
         """Initialize this node in the database and configure analysis modes."""
@@ -121,7 +116,7 @@ class DistributedNodeManager(NodeManagerInterface):
 
         # assign analysis mode inclusion and exclusion settings
         assign_node_analysis_modes(
-            g_int(G_SAQ_NODE_ID),
+            get_global_runtime_settings().saq_node_id,
             self.local_analysis_modes,
             self.excluded_analysis_modes,
         )
@@ -134,7 +129,7 @@ class DistributedNodeManager(NodeManagerInterface):
             cursor = db.cursor()
             cursor.execute(
                 "SELECT COUNT(*) FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
-                (g(G_SAQ_NODE),),
+                (get_global_runtime_settings().saq_node,),
             )
             result = cursor.fetchone()
             if result:
@@ -143,7 +138,7 @@ class DistributedNodeManager(NodeManagerInterface):
                     db,
                     cursor,
                     "DELETE FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
-                    (g(G_SAQ_NODE),),
+                    (get_global_runtime_settings().saq_node,),
                     commit=True,
                 )
 
@@ -175,21 +170,21 @@ class DistributedNodeManager(NodeManagerInterface):
                             "UPDATE nodes SET is_primary = 0",
                             "UPDATE nodes SET is_primary = 1, last_update = NOW() WHERE id = %s",
                         ],
-                        [tuple(), (g_int(G_SAQ_NODE_ID),)],
+                        [tuple(), (get_global_runtime_settings().saq_node_id,)],
                         commit=True,
                     )
-                    primary_node = g(G_SAQ_NODE)
+                    primary_node = get_global_runtime_settings().saq_node
                     logging.info(
-                        "this node {} has become the primary node".format(g(G_SAQ_NODE))
+                        "this node {} has become the primary node".format(get_global_runtime_settings().saq_node)
                     )
                 else:
                     primary_node = primary_node[0]
 
                 # are we the primary node?
-                if primary_node != g(G_SAQ_NODE):
+                if primary_node != get_global_runtime_settings().saq_node:
                     logging.debug(
                         "node {} is not primary - skipping primary node routines".format(
-                            g(G_SAQ_NODE)
+                            get_global_runtime_settings().saq_node
                         )
                     )
                     return

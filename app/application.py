@@ -11,7 +11,6 @@ from app.blueprints import register_blueprints
 
 from app.integration import register_integration_blueprints
 from saq.configuration.config import get_config
-from saq.constants import G_INSTANCE_TYPE
 from flask_config import get_flask_config
 from flask_login import LoginManager
 from flask_sqlalchemy import SQLAlchemy
@@ -19,7 +18,7 @@ from flask_executor import Executor # XXX what is this for?
 from sqlalchemy import event
 
 from saq.database.pool import set_db
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.ui import get_tag_css_class, human_readable_size
@@ -104,7 +103,7 @@ def create_app(testing: Optional[bool]=False):
 
     login_manager.init_app(flask_app)
 
-    db = CustomSQLAlchemy(engine_options=get_flask_config(g(G_INSTANCE_TYPE)).SQLALCHEMY_DATABASE_OPTIONS)
+    db = CustomSQLAlchemy(engine_options=get_flask_config(get_global_runtime_settings().instance_type).SQLALCHEMY_DATABASE_OPTIONS)
     if not testing:
         # XXX hack: tests will create test contexts but the database pool is global
         # we don't want to change it because things like collectors *also* manage the connections

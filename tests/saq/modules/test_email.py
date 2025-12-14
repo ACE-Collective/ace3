@@ -9,7 +9,7 @@ import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_FILE, F_MESSAGE_ID, F_URL, G_ENCRYPTION_KEY, G_TEMP_DIR, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.crypto import decrypt
 from saq.database.model import load_alert
 from saq.database.pool import get_db_connection
@@ -17,7 +17,7 @@ from saq.email import normalize_email_address
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
-from saq.environment import g, g_obj, get_data_dir, get_local_timezone
+from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.json_encoding import _JSONEncoder
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.correlation import URLEmailPivotAnalysis_v2
@@ -323,8 +323,8 @@ def test_archive_1(root_analysis, datadir):
     assert os.path.exists(archive_results.archive_path)
 
     # make sure we can decrypt it
-    gzip_path = os.path.join(g(G_TEMP_DIR), 'temp.gz')
-    dest_path = os.path.join(g(G_TEMP_DIR), 'temp.email')
+    gzip_path = os.path.join(get_temp_dir(), 'temp.gz')
+    dest_path = os.path.join(get_temp_dir(), 'temp.email')
 
     decrypt(archive_results.archive_path, gzip_path)
     with gzip.open(gzip_path, 'rb') as fp_in:
@@ -433,8 +433,8 @@ def test_archive_2(root_analysis, datadir):
     assert os.path.exists(archive_results.archive_path)
 
     # make sure we can decrypt it
-    gzip_path = os.path.join(g(G_TEMP_DIR), 'temp.gz')
-    dest_path = os.path.join(g(G_TEMP_DIR), 'temp.email')
+    gzip_path = os.path.join(get_temp_dir(), 'temp.gz')
+    dest_path = os.path.join(get_temp_dir(), 'temp.email')
 
     decrypt(archive_results.archive_path, gzip_path)
     with gzip.open(gzip_path, 'rb') as fp_in:
@@ -461,7 +461,7 @@ def test_archive_2(root_analysis, datadir):
 def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
 
     # disable archive encryption
-    monkeypatch.setattr(g_obj(G_ENCRYPTION_KEY), "value", None)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.analysis_mode = "test_groups"
@@ -857,7 +857,7 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
 @pytest.mark.integration
 def test_whitelisting(root_analysis, whitelist_item, datadir):
 
-    whitelist_path = os.path.join(g(G_TEMP_DIR), 'brotex.whitelist')
+    whitelist_path = os.path.join(get_temp_dir(), 'brotex.whitelist')
     get_analysis_module_config('email_analyzer').whitelist_path = whitelist_path
 
     if os.path.exists(whitelist_path):

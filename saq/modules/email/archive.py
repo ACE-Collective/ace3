@@ -8,11 +8,11 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.search import recurse_tree
-from saq.constants import DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, EMAIL_ARCHIVE_FIELD_URL, F_FILE, F_URL, G_ENCRYPTION_INITIALIZED, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
+from saq.constants import DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, EMAIL_ARCHIVE_FIELD_URL, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
 from saq.crypto import decrypt
 from saq.database.pool import get_db_connection
 from saq.email_archive import archive_email, index_email_archive
-from saq.environment import g_boolean
+from saq.environment import get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -58,7 +58,7 @@ class EncryptedArchiveAnalyzer(AnalysisModule):
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
         # do we have the decryption password available?
-        if not g_boolean(G_ENCRYPTION_INITIALIZED):
+        if not get_global_runtime_settings().encryption_initialized:
             return AnalysisExecutionResult.COMPLETED
 
         # encrypted archives end with .gz.e

@@ -8,11 +8,11 @@ from saq.analysis.errors import ExcessiveObservablesError
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_TEST, G_OBSERVABLE_LIMIT
+from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_TEST
 from saq.database.database_observable import get_observable_disposition_history
 from saq.database.model import Alert
 from saq.database.util.alert import ALERT, get_alert_by_uuid
-from saq.environment import g_obj
+from saq.environment import get_global_runtime_settings
 from saq.observables.file import FileObservable
 from saq.observables.generator import create_observable
 from tests.saq.helpers import create_root_analysis, track_io
@@ -116,13 +116,13 @@ def test_is_on_detection_path():
 
 @pytest.mark.unit
 def test_too_many_observables(monkeypatch):
-    monkeypatch.setattr(g_obj(G_OBSERVABLE_LIMIT), "value", 1)
+    monkeypatch.setattr(get_global_runtime_settings(), "observable_limit", 1)
     root = RootAnalysis(tool="test", tool_instance="test", alert_type="test", uuid=str(uuid.uuid4()))
     assert root.add_observable_by_spec(F_TEST, "test")
     with pytest.raises(ExcessiveObservablesError):
         root.add_observable_by_spec(F_TEST, "test2")
 
-    monkeypatch.setattr(g_obj(G_OBSERVABLE_LIMIT), "value", 2)
+    monkeypatch.setattr(get_global_runtime_settings(), "observable_limit", 2)
     assert root.add_observable_by_spec(F_TEST, "test2")
     with pytest.raises(ExcessiveObservablesError):
         root.add_observable_by_spec(F_TEST, "test3")

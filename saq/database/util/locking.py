@@ -3,10 +3,9 @@ import os
 from typing import Optional
 
 import pymysql
-from saq.constants import G_LOCK_TIMEOUT_SECONDS
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
-from saq.environment import g_int
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 
 
@@ -35,7 +34,7 @@ def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) ->
             logging.info("locked {} with {}".format(uuid, lock_uuid))
             return True
 
-    except pymysql.err.IntegrityError as e:
+    except pymysql.err.IntegrityError:
         # if a lock already exists -- make sure it's owned by someone else
         try:
             with get_db_connection() as db:
@@ -49,7 +48,7 @@ def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) ->
                         current_lock_uuid,
                         current_lock_owner,
                         current_lock_timeout,
-                        g_int(G_LOCK_TIMEOUT_SECONDS)))
+                        get_global_runtime_settings().lock_timeout_seconds))
 
                 # assume we already own the lock -- this will be true in subsequent calls
                 # to acquire the lock
@@ -62,7 +61,7 @@ SET
 WHERE 
     uuid = %s 
     AND ( lock_uuid = %s OR TIMESTAMPDIFF(SECOND, lock_time, NOW()) >= %s )
-""", (lock_uuid, lock_owner, uuid, lock_uuid, g_int(G_LOCK_TIMEOUT_SECONDS)))
+""", (lock_uuid, lock_owner, uuid, lock_uuid, get_global_runtime_settings().lock_timeout_seconds))
                 db.commit()
 
                 cursor.execute("SELECT lock_uuid, lock_owner FROM locks WHERE uuid = %s", (uuid,))
@@ -152,7 +151,7 @@ def clear_expired_locks() -> int:
     with get_db_connection() as db:
         c = db.cursor()
         execute_with_retry(db, c, "DELETE FROM locks WHERE TIMESTAMPDIFF(SECOND, lock_time, NOW()) >= %s",
-                                  (g_int(G_LOCK_TIMEOUT_SECONDS),))
+                                  (get_global_runtime_settings().lock_timeout_seconds,))
         db.commit()
         if c.rowcount:
             logging.info("removed {} expired locks".format(c.rowcount))

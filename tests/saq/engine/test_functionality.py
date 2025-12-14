@@ -14,7 +14,7 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, CONFIG_ENGINE, CONFIG_ENGINE_AUTO_REFRESH_FREQUENCY, CONFIG_ENGINE_COPY_FILE_ON_ERROR, CONFIG_GLOBAL, CONFIG_GLOBAL_MAXIMUM_CUMULATIVE_ANALYSIS_WARNING_TIME, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_TEST, F_USER, G_API_PREFIX, G_COMPANY_ID, G_LOCK_TIMEOUT_SECONDS, G_MODULE_STATS_DIR, G_SAQ_NODE, G_SAQ_NODE_ID, G_TEMP_DIR
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_TEST, F_USER
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
@@ -25,7 +25,7 @@ from saq.database.util.workload import add_workload
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
-from saq.environment import g, g_int, g_obj, get_data_dir, reset_node, set_g
+from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
 from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
@@ -95,17 +95,17 @@ def test_acquire_node_id():
     engine = Engine()
 
     # when an Engine starts up it should acquire a node_id for g(G_SAQ_NODE)
-    assert g_int(G_SAQ_NODE_ID)
+    assert get_global_runtime_settings().saq_node_id
     with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute("""SELECT name, location, company_id, is_primary, any_mode
-                        FROM nodes WHERE id = %s""", (g_int(G_SAQ_NODE_ID),))
+                        FROM nodes WHERE id = %s""", (get_global_runtime_settings().saq_node_id,))
         row = cursor.fetchone()
         assert row
         _name, _location, _company_id, _is_primary, _any_mode = row
-        assert _name == g(G_SAQ_NODE)
-        assert _location == g(G_API_PREFIX)
-        assert _company_id == g_int(G_COMPANY_ID)
+        assert _name == get_global_runtime_settings().saq_node
+        assert _location == get_global_runtime_settings().api_prefix
+        assert _company_id == get_global_runtime_settings().company_id
 
 @pytest.mark.integration
 def test_analysis_modes():
@@ -1406,8 +1406,8 @@ def test_file_error_reporting():
 @pytest.mark.integration
 def test_stats():
     # clear engine statistics
-    if os.path.exists(os.path.join(g(G_MODULE_STATS_DIR), 'ace')):
-        shutil.rmtree(os.path.join(g(G_MODULE_STATS_DIR), 'ace'))
+    if os.path.exists(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace')):
+        shutil.rmtree(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
@@ -1420,16 +1420,16 @@ def test_stats():
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     # there should be one subdir in the engine's stats dir
-    assert len(os.listdir(os.path.join(g(G_MODULE_STATS_DIR), 'ace'))) == 1
-    subdir = os.listdir(os.path.join(g(G_MODULE_STATS_DIR), 'ace'))
+    assert len(os.listdir(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))) == 1
+    subdir = os.listdir(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))
     subdir = subdir[0]
 
     # this should have a single stats file in it
-    stats_files = os.listdir(os.path.join(os.path.join(g(G_MODULE_STATS_DIR), 'ace', subdir)))
+    stats_files = os.listdir(os.path.join(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace', subdir)))
     assert len(stats_files) == 1
 
     # and it should not be empty
-    assert os.path.getsize(os.path.join(os.path.join(g(G_MODULE_STATS_DIR), 'ace', subdir, stats_files[0]))) > 0
+    assert os.path.getsize(os.path.join(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace', subdir, stats_files[0]))) > 0
 
 @pytest.mark.integration
 def test_exclusion():
@@ -1681,19 +1681,19 @@ def test_target_nodes():
     root.save()
     root.schedule()
 
-    existing_node = g(G_SAQ_NODE)
-    existing_node_id = g_int(G_SAQ_NODE_ID)
+    existing_node = get_global_runtime_settings().saq_node
+    existing_node_id = get_global_runtime_settings().saq_node_id
 
     # now start another engine on a different "node"
     get_config().global_settings.node = 'second_host'
     reset_node('second_host')
-    set_g(G_SAQ_NODE_ID, None)
+    get_global_runtime_settings().saq_node_id = None
 
-    assert not g(G_SAQ_NODE) == existing_node
-    assert not g_int(G_SAQ_NODE_ID) == existing_node_id
+    assert not get_global_runtime_settings().saq_node == existing_node
+    assert not get_global_runtime_settings().saq_node_id == existing_node_id
 
     engine = Engine()
-    assert engine.node_manager.target_nodes == [g(G_SAQ_NODE)]
+    assert engine.node_manager.target_nodes == [get_global_runtime_settings().saq_node]
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
@@ -1706,11 +1706,11 @@ def test_target_nodes():
     # change our node back
     get_config().global_settings.node = existing_node
     reset_node(existing_node)
-    set_g(G_SAQ_NODE_ID, None)
+    get_global_runtime_settings().saq_node_id = None
 
     # run again -- we should pick it up this time
     engine = Engine()
-    assert engine.node_manager.target_nodes == [g(G_SAQ_NODE)]
+    assert engine.node_manager.target_nodes == [get_global_runtime_settings().saq_node]
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
@@ -1841,12 +1841,12 @@ def test_status_update():
     # do we have an entry in the nodes database table?
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name, location, company_id, last_update FROM nodes WHERE id = %s", (g_int(G_SAQ_NODE_ID),))
+        cursor.execute("SELECT name, location, company_id, last_update FROM nodes WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
         row = cursor.fetchone()
         assert row
-        assert row[0] == g(G_SAQ_NODE)
-        assert row[1] == g(G_API_PREFIX)
-        assert row[2] == g_int(G_COMPANY_ID)
+        assert row[0] == get_global_runtime_settings().saq_node
+        assert row[1] == get_global_runtime_settings().api_prefix
+        assert row[2] == get_global_runtime_settings().company_id
 
 @pytest.mark.integration
 def test_node_modes_update():
@@ -1884,11 +1884,11 @@ def test_primary_node():
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
     
-    assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (g_int(G_SAQ_NODE_ID),))
+        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
         assert cursor.fetchone()
 
 @pytest.mark.integration
@@ -1899,18 +1899,18 @@ def test_primary_node_contest():
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
     
-    assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (g_int(G_SAQ_NODE_ID),))
+        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
         assert cursor.fetchone()
 
     reset_node('another_node')
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
 
-    assert log_count('node {} is not primary'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('node {} is not primary'.format(get_global_runtime_settings().saq_node)) == 1
 
 @pytest.mark.integration
 def test_primary_node_contest_winning():
@@ -1920,17 +1920,17 @@ def test_primary_node_contest_winning():
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
     
-    assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (g_int(G_SAQ_NODE_ID),))
+        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
         assert cursor.fetchone()
 
     # update the node to make it look like it last updated a while ago
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("UPDATE nodes SET last_update = ADDTIME(last_update, '-1:00:00') WHERE id = %s", (g_int(G_SAQ_NODE_ID),))
+        cursor.execute("UPDATE nodes SET last_update = ADDTIME(last_update, '-1:00:00') WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
         db.commit()
 
     reset_node('another_node')
@@ -1938,20 +1938,20 @@ def test_primary_node_contest_winning():
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
 
-    assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
 @pytest.mark.integration
 def test_primary_node_clear_locks(monkeypatch):
     target = str(uuid.uuid4())
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(target, lock_uuid)
-    monkeypatch.setattr(g_obj(G_LOCK_TIMEOUT_SECONDS), "value", 0)
+    monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
     # test having a node become the primary node
     # and then clearing out an expired lock
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
     
-    assert log_count('this node {} has become the primary node'.format(g(G_SAQ_NODE))) == 1
+    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
     assert log_count('removed 1 expired locks') == 1
 
     # make sure the lock is gone
@@ -2195,7 +2195,7 @@ def test_clear_outstanding_locks():
     engine = Engine()
 
     # create an arbitrary lock
-    assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), f'{g(G_SAQ_NODE)}-unittest-12345')
+    assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), f'{get_global_runtime_settings().saq_node}-unittest-12345')
     assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), 'some_other_node.local-unittest-12345')
     
     # should have two locks now
@@ -2491,7 +2491,7 @@ def test_watched_files():
     engine.configuration_manager.load_modules()
 
     # the module creates the file we're going to watch, so wait for that to appear
-    watched_file_path = os.path.join(g(G_TEMP_DIR), 'watched_file')
+    watched_file_path = os.path.join(get_temp_dir(), 'watched_file')
     assert os.path.exists(watched_file_path)
     # and then wait for it to start watching it
     assert log_count(f"watching file {watched_file_path}") == 1

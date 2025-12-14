@@ -6,8 +6,8 @@ from subprocess import PIPE, Popen
 import tempfile
 from typing import override
 from saq.analysis.analysis import Analysis
-from saq.constants import F_FILE, G_TEMP_DIR, AnalysisExecutionResult
-from saq.environment import g
+from saq.constants import F_FILE, AnalysisExecutionResult
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.observables.file import FileObservable
 from saq.util.strings import format_item_list_for_summary
@@ -80,7 +80,7 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # use a temporary directory for this that we can clean up later
-        temp_dir = tempfile.mkdtemp(dir=g(G_TEMP_DIR))
+        temp_dir = tempfile.mkdtemp(dir=get_temp_dir())
 
         try:
             # "2021-04-06 23:33:06 .....        59039        61440  Installer/yWnBJLaF/1302.app/Contents/MacOS/1302"

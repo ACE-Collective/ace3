@@ -3,8 +3,7 @@ from typing import Optional
 
 from saq.collectors.remote_node import RemoteNodeGroup
 from saq.configuration import get_config
-from saq.constants import G_SAQ_NODE
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 
 
 class GroupConfigurationLoader:
@@ -45,7 +44,7 @@ class GroupConfigurationLoader:
                         continue
 
                     if node == "LOCAL":
-                        node = g(G_SAQ_NODE)
+                        node = get_global_runtime_settings().saq_node
 
                     target_nodes.append(node)
 

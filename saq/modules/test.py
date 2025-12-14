@@ -15,8 +15,8 @@ from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_TEST, F_URL, F_USER, G_TEMP_DIR, R_DOWNLOADED_FROM, VALID_OBSERVABLE_TYPES, AnalysisExecutionResult
-from saq.environment import g
+from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, VALID_OBSERVABLE_TYPES, AnalysisExecutionResult
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from tests.saq.helpers import recv_test_message, send_test_message
@@ -45,7 +45,7 @@ class BasicTestAnalysis(TestAnalysis):
 class BasicTestAnalyzer(AnalysisModule):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.watched_file_path = os.path.join(g(G_TEMP_DIR), 'watched_file')
+        self.watched_file_path = os.path.join(get_temp_dir(), 'watched_file')
         with open(self.watched_file_path, 'w') as fp:
             fp.write('test1')
 

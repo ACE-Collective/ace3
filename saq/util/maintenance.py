@@ -8,10 +8,10 @@ from typing import Optional
 
 from ace_api import upload
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, G_SAQ_NODE
+from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
 from saq.database import Alert, get_db, retry_sql_on_deadlock
 from saq.database.pool import get_db_connection
-from saq.environment import g, get_base_dir
+from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error import report_exception
 
 from sqlalchemy.sql.expression import select, delete
@@ -63,7 +63,7 @@ def cleanup_ignored_alerts(days: int, dry_run: bool):
     # delete alerts dispositioned as IGNORE and older than N days
     dry_run_count = 0
     for storage_dir, alert_id in get_db().execute(select(Alert.storage_dir, Alert.id)
-        .where(Alert.location == g(G_SAQ_NODE))
+        .where(Alert.location == get_global_runtime_settings().saq_node)
         .where(Alert.disposition == DISPOSITION_IGNORE)
         .where(Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days))):
 
@@ -90,7 +90,7 @@ def archive_fp_alerts(days: int, dry_run: bool):
     # archive alerts dispositioned as False Positive older than N days
     dry_run_count = 0
     for alert in get_db().query(Alert).filter(
-        Alert.location == g(G_SAQ_NODE),
+        Alert.location == get_global_runtime_settings().saq_node,
         Alert.archived == False,
         Alert.disposition == DISPOSITION_FALSE_POSITIVE,
         Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days)):
@@ -137,7 +137,7 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
             AND insert_date < DATE_SUB(NOW(), INTERVAL %s DAY)
             AND id NOT IN (
                 SELECT alert_id FROM event_mapping
-            )""", (g(G_SAQ_NODE), days))
+            )""", (get_global_runtime_settings().saq_node, days))
 
         for uuid, storage_dir in c:
             alert_index += 1

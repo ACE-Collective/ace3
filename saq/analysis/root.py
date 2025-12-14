@@ -13,8 +13,8 @@ from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.serialize.root_serializer import RootAnalysisSerializer
-from saq.constants import F_FILE, G_COMPANY_ID, G_COMPANY_NAME, G_NODE_COMPANIES, G_SAQ_NODE, G_TEMP_DIR, QUEUE_DEFAULT
-from saq.environment import g, g_int, g_list, get_local_timezone, get_temp_dir
+from saq.constants import F_FILE, QUEUE_DEFAULT
+from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.util import parse_event_time
 from saq.util.time import local_time
 
@@ -67,41 +67,10 @@ class RootAnalysis(Analysis):
         self._remediation = remediation
         self.details = details or {}
         self._action_counters = action_counters if action_counters else {}
-        self._location = location if location else g(G_SAQ_NODE)
+        self._location = location if location else get_global_runtime_settings().saq_node
         self._state = state if state else {}
-
-        # XXX: what is this weird company logic?
-
-        self._company_name = None
-        self._company_id = None
-
-        # if both company_id and company_name were passed, validate agreement
-        if company_name and company_id:
-            _name = [c['name'] for c in g_list(G_NODE_COMPANIES) if c['id'] == company_id][0]
-            if company_name != _name:
-                raise ValueError(f"Company name={company_name} and id={company_id} mismatch. Official: {g_list(G_NODE_COMPANIES)}")
-
-        if company_name:
-            self._company_name = company_name
-            self._company_id = [c['id'] for c in g_list(G_NODE_COMPANIES) if c['name'] == company_name][0]
-
-        if company_id:
-            self._company_id = company_id
-            self._company_name = [c['name'] for c in g_list(G_NODE_COMPANIES) if c['id'] == company_id][0]
-
-        if not self._company_name:
-            try:
-                # we take the default company ownership from the config file (if specified)
-                self._company_name = g(G_COMPANY_NAME)
-            except KeyError:
-                pass
-
-        if not self._company_id:
-            try:
-                # we take the default company ownership from the config file (if specified)
-                self._company_id = g_int(G_COMPANY_ID)
-            except KeyError:
-                pass
+        self._company_name = get_global_runtime_settings().company_name
+        self._company_id = get_global_runtime_settings().company_id
 
         # set to True after load() is called
         self.is_loaded = False
@@ -460,20 +429,6 @@ class RootAnalysis(Analysis):
     def whitelist(self):
         self.add_tag("whitelisted")
 
-    def _get_company_id(self, name):
-        try:
-            return [c['id'] for c in g_list(G_NODE_COMPANIES) if c['name'] == name][0]
-        except:
-            logging.debug(f"no record of company for this node by name={name}")
-            return None
-
-    def _get_company_name(self, _id):
-        try:
-            return [c['name'] for c in g_list(G_NODE_COMPANIES) if c['id'] == _id][0]
-        except:
-            logging.debug(f"no record of company for this node by id={_id}")
-            return None
-
     @property
     def company_name(self):
         """The organzaition this analysis belongs to."""
@@ -482,9 +437,6 @@ class RootAnalysis(Analysis):
     @company_name.setter
     def company_name(self, value):
         self._company_name = value
-        self._company_id = self._get_company_id(value)
-        if not self._company_id:
-            self._company_id = g_int(G_COMPANY_ID)
 
     @property
     def company_id(self):
@@ -493,9 +445,6 @@ class RootAnalysis(Analysis):
     @company_id.setter
     def company_id(self, value):
         self._company_id = value
-        self._company_name = self._get_company_name(value)
-        if not self._company_name:
-            self._company_name = g(G_COMPANY_NAME)
 
     @property
     def submission_json_path(self):
@@ -737,7 +686,7 @@ class RootAnalysis(Analysis):
         new_uuid = str(uuid4())
 
         # use temp space to store this
-        target_dir = os.path.join(g(G_TEMP_DIR), new_uuid)
+        target_dir = os.path.join(get_temp_dir(), new_uuid)  # noqa: F821
 
         logging.debug(f"duplicating root {self.uuid} @ {self.storage_dir} to {new_uuid} @ {target_dir}")
         

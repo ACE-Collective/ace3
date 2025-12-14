@@ -14,8 +14,6 @@ parser.add_argument('-L', '--logging-config-path', required=False, dest='logging
 parser.add_argument('-c', '--config-path', required=False, dest='config_paths', action='append', default=[],
     help="""ACE configuration files. $SAQ_HOME/etc/saq.default.ini is always loaded, additional override default settings.
          This option can be specified multiple times and each file is loaded in order.""")
-parser.add_argument('--log-level', required=False, dest='log_level', default=None,
-    help="Change the root log level.")
 parser.add_argument('-u', '--user-name', required=False, dest='user_name', default=None,
     help="The user name of the ACE user executing the command. This information is required for some commands.")
 parser.add_argument('--start', required=False, dest='start', default=False, action='store_true',
@@ -68,12 +66,13 @@ def main():
     # initialize saq
     initialize_environment(
         saq_home=args.saq_home,
-        log_level=args.log_level,
         config_paths=args.config_paths,
         logging_config_path=args.logging_config_path,
         relative_dir=args.relative_dir,
         encryption_password_plaintext=encryption_password_plaintext,
-        skip_initialize_automation_user=args.skip_initialize_automation_user)
+        skip_initialize_automation_user=args.skip_initialize_automation_user,
+        force_alerts=args.force_alerts,
+    )
 
     if args.debug_on_error:
         def info(type, value, tb):

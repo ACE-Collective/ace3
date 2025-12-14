@@ -10,8 +10,8 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, G_DATA_DIR, ExecutionMode
-from saq.environment import g_obj, get_data_dir
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ExecutionMode
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.util.hashing import sha256
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
@@ -753,7 +753,7 @@ def test_initialize_last_execution_time(monkeypatch, tmpdir):
     data_dir.mkdir()
     p_dir = data_dir / "p"
     p_dir.mkdir()
-    monkeypatch.setattr(g_obj(G_DATA_DIR), "value", str(data_dir))
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
     hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="00:00:10"))
@@ -773,7 +773,7 @@ def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
     data_dir.mkdir()
     p_dir = data_dir / "p"
     p_dir.mkdir()
-    monkeypatch.setattr(g_obj(G_DATA_DIR), "value", str(data_dir))
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
     hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", cron_schedule="*/10 * * * *"))
@@ -793,7 +793,7 @@ def test_next_execution_time_cron_with_previous_execution(monkeypatch, tmpdir):
     data_dir.mkdir()
     p_dir = data_dir / "p"
     p_dir.mkdir()
-    monkeypatch.setattr(g_obj(G_DATA_DIR), "value", str(data_dir))
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="*/10 * * * *"))
 

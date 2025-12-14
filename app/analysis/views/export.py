@@ -18,12 +18,11 @@ from app.analysis.views.session.filters import _reset_filters, create_filter, ha
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import G_SAQ_NODE, G_TEMP_DIR
 from saq.csv_builder import CSV
 from saq.database.model import DispositionBy, Observable, ObservableMapping, Owner, RemediatedBy, Tag, TagMapping, Comment
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock
-from saq.environment import g, get_base_dir
+from saq.environment import get_base_dir, get_global_runtime_settings, get_temp_dir
 from saq.error.reporting import report_exception
 from saq.gui.alert import GUIAlert
 
@@ -140,7 +139,7 @@ def export_alerts_to_csv():
     # only show alerts from this node
     # NOTE: this will not be necessary once alerts are stored externally
     if get_config().gui.local_node_only:
-        query = query.filter(GUIAlert.location == g(G_SAQ_NODE))
+        query = query.filter(GUIAlert.location == get_global_runtime_settings().saq_node)
     elif get_config().gui.display_node_list:
         # alternatively we can display alerts for specific nodes
         # this was added on 05/02/2023 to support a DR mode of operation
@@ -304,7 +303,7 @@ def download_file():
         return response
     elif mode == 'zip':
         try:
-            dest_file = '{}.zip'.format(os.path.join(g(G_TEMP_DIR), str(uuid4())))
+            dest_file = '{}.zip'.format(os.path.join(get_temp_dir(), str(uuid4())))  # noqa: F821
             logging.debug("creating encrypted zip file {} for {}".format(dest_file, full_path))
             p = Popen(['zip', '-e', '--junk-paths', '-P', 'infected', dest_file, full_path])
             p.wait()

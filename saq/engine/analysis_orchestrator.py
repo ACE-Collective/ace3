@@ -11,8 +11,6 @@ from saq.configuration.config import (
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DISPOSITION_OPEN,
-    G_FORCED_ALERTS,
-    G_MODULE_STATS_DIR,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
@@ -23,7 +21,7 @@ from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.errors import AnalysisTimeoutError
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
-from saq.environment import g, g_boolean
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.util import storage_dir_from_uuid
 
@@ -220,7 +218,7 @@ class AnalysisOrchestrator:
             execution_context.root.save()
 
             # record the execution statistics
-            context.record_execution_statistics(elapsed_time, g(G_MODULE_STATS_DIR))
+            context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
 
         except Exception as e:
             elapsed_time = time.time() - start_time
@@ -325,11 +323,11 @@ class AnalysisOrchestrator:
             return
 
         # has this analysis been whitelisted?
-        if not g_boolean(G_FORCED_ALERTS) and execution_context.root.whitelisted:
+        if not get_global_runtime_settings().forced_alerts and execution_context.root.whitelisted:
             logging.info(f"{execution_context.root} has been whitelisted")
             return
 
-        if (execution_context.root.has_detections() or g_boolean(G_FORCED_ALERTS)) and self.config.alerting_enabled:
+        if (execution_context.root.has_detections() or get_global_runtime_settings().forced_alerts) and self.config.alerting_enabled:
             reason = f"{len(execution_context.root.all_detection_points)} detection points" if execution_context.root.has_detections() else "forced alerts enabled"
             logging.info(
                 f"{execution_context.root} has {reason} - changing mode to {ANALYSIS_MODE_CORRELATION}"

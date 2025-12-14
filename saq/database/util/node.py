@@ -1,45 +1,44 @@
 import logging
 import sys
 from typing import Optional
-from saq.constants import G_API_PREFIX, G_COMPANY_ID, G_SAQ_NODE, G_SAQ_NODE_ID
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
-from saq.environment import g, g_int, set_g
+from saq.environment import get_global_runtime_settings
 
 
 def initialize_node():
-    """Populates g_int(G_SAQ_NODE_ID) with the node ID for g(G_NODE). Optionally inserts the node into the database if it does not exist."""
+    """Populates get_global_runtime_settings().saq_node_id with the node ID for g(G_NODE). Optionally inserts the node into the database if it does not exist."""
 
     # have we already called this function?
-    if g_int(G_SAQ_NODE_ID) is not None:
+    if get_global_runtime_settings().saq_node_id is not None:
         return
 
-    set_g(G_SAQ_NODE_ID, None)
+    get_global_runtime_settings().saq_node_id = None
 
     with get_db_connection() as db:
         c = db.cursor()
         # we always default to a local node so that it doesn't get used by remote nodes automatically
-        c.execute("SELECT id FROM nodes WHERE name = %s", (g(G_SAQ_NODE),))
+        c.execute("SELECT id FROM nodes WHERE name = %s", (get_global_runtime_settings().saq_node,))
 
         row = c.fetchone()
         if row is not None:
-            set_g(G_SAQ_NODE_ID, row[0])
-            logging.debug("got existing node id {} for {}".format(g_int(G_SAQ_NODE_ID), g(G_SAQ_NODE)))
+            get_global_runtime_settings().saq_node_id = row[0]
+            logging.debug("got existing node id {} for {}".format(get_global_runtime_settings().saq_node_id, get_global_runtime_settings().saq_node))
 
-        if g_int(G_SAQ_NODE_ID) is None:
+        if get_global_runtime_settings().saq_node_id is None:
             execute_with_retry(db, c, """INSERT INTO nodes ( name, location, company_id, last_update ) 
                                         VALUES ( %s, %s, %s, NOW() )""", 
-                            (g(G_SAQ_NODE), g(G_API_PREFIX), g_int(G_COMPANY_ID)),
+                            (get_global_runtime_settings().saq_node, get_global_runtime_settings().api_prefix, get_global_runtime_settings().company_id),
                             commit=True)
 
-            c.execute("SELECT id FROM nodes WHERE name = %s", (g(G_SAQ_NODE),))
+            c.execute("SELECT id FROM nodes WHERE name = %s", (get_global_runtime_settings().saq_node,))
             row = c.fetchone()
             if row is None:
                 logging.critical("unable to allocate a node_id from the database")
                 sys.exit(1)
             else:
-                set_g(G_SAQ_NODE_ID, row[0])
-                logging.info("allocated node id {} for {}".format(g_int(G_SAQ_NODE_ID), g(G_SAQ_NODE)))
+                get_global_runtime_settings().saq_node_id = row[0]
+                logging.info("allocated node id {} for {}".format(get_global_runtime_settings().saq_node_id, get_global_runtime_settings().saq_node))
 
 def get_available_nodes(company_id, target_analysis_modes):
     assert isinstance(company_id, int)
@@ -86,7 +85,7 @@ def get_node_included_analysis_modes(node_id: Optional[int]=None) -> list[str]:
     """Returns the analysis modes that have been specifically INCLUDED to this node.
     If no node is specified then the current node is assumed."""
     if node_id is None:
-        node_id = g(G_SAQ_NODE_ID)
+        node_id = get_global_runtime_settings().saq_node_id
 
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -97,7 +96,7 @@ def get_node_excluded_analysis_modes(node_id: Optional[int]=None) -> list[str]:
     """Returns the analysis modes that have been specifically EXCLUDED for this node.
     If no node is specified then the current node is assumed."""
     if node_id is None:
-        node_id = g(G_SAQ_NODE_ID)
+        node_id = get_global_runtime_settings().saq_node_id
 
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -108,7 +107,7 @@ def node_supports_any_analysis_mode(node_id: Optional[int]=None) -> bool:
     """Returns True if the given node referenced by ID supports any analysis mode.
     If no node is specified then the current node is assumed."""
     if node_id is None:
-        node_id = g(G_SAQ_NODE_ID)
+        node_id = get_global_runtime_settings().saq_node_id
 
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -124,7 +123,7 @@ def assign_node_analysis_modes(node_id: Optional[int]=None, analysis_modes: Opti
     If node_id is None then the current node is assumed."""
 
     if node_id is None:
-        node_id = g(G_SAQ_NODE_ID)
+        node_id = get_global_runtime_settings().saq_node_id
 
     with get_db_connection() as db:
         cursor = db.cursor()

@@ -4,9 +4,8 @@ from aceapi.blueprints import email_bp
 import logging
 
 
-from saq.constants import G_ENCRYPTION_KEY
 from saq.email_archive import iter_archived_email, email_is_archived
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 
 from flask import request, Response, abort
 
@@ -16,7 +15,7 @@ KEY_MESSAGE_ID = "message_id"
 @email_bp.route('/get_archived_email', methods=['GET'])
 @api_auth_check("email", "read")
 def get_archived_email():
-    if not g(G_ENCRYPTION_KEY):
+    if not get_global_runtime_settings().encryption_key:
         logging.critical("missing saq.ENCRYPTION_PASSWORD in api call to get_archived_email")
         abort(500)
 

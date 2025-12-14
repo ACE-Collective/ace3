@@ -3,8 +3,8 @@ import ipaddress
 import iptools
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
-from saq.constants import F_IPV4, F_IPV4_CONVERSATION, F_IPV4_FULL_CONVERSATION, G_MANAGED_NETWORKS, parse_ipv4_conversation, parse_ipv4_full_conversation
-from saq.environment import g_list
+from saq.constants import F_IPV4, F_IPV4_CONVERSATION, F_IPV4_FULL_CONVERSATION, parse_ipv4_conversation, parse_ipv4_full_conversation
+from saq.environment import get_global_runtime_settings
 from saq.observables.base import ObservableValueError
 from saq.observables.generator import register_observable_type
 
@@ -23,7 +23,7 @@ class IPv4Observable(Observable):
         # type check the value
         try:
             ipaddress.IPv4Address(new_value)
-        except Exception as e:
+        except Exception:
             raise ObservableValueError(f"{new_value} is not a valid ipv4 address")
 
         self._value = new_value.strip()
@@ -41,7 +41,7 @@ class IPv4Observable(Observable):
         """Returns True if this IP address is listed as part of a managed network, False otherwise."""
         # see [network_configuration]
         # these are initialized in the global initialization function
-        for cidr in g_list(G_MANAGED_NETWORKS):
+        for cidr in get_global_runtime_settings().managed_networks:
             try:
                 if self.value in cidr:
                     return True

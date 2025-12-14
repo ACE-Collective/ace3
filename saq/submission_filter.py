@@ -8,8 +8,8 @@ import plyara
 import yara
 
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, G_TEMP_DIR
-from saq.environment import g, get_data_dir
+from saq.constants import F_FILE
+from saq.environment import get_data_dir, get_temp_dir
 from saq.util import abs_path, create_timedelta, local_time
 from yara_scanner import YaraScanner
 
@@ -66,7 +66,7 @@ class SubmissionFilter:
         # temporary directory used for the "all" target
         self.tuning_temp_dir = get_config().collection.tuning_temp_dir
         if not self.tuning_temp_dir:
-            self.tuning_temp_dir = g(G_TEMP_DIR)
+            self.tuning_temp_dir = get_temp_dir()
 
         if not os.path.isabs(self.tuning_temp_dir):
             self.tuning_temp_dir = os.path.join(get_data_dir(), self.tuning_temp_dir)
@@ -119,7 +119,7 @@ class SubmissionFilter:
             tuning_scanners[target] = YaraScanner()
             tuning_rules[target] = tempfile.mkstemp(suffix='.yar',
                                                     prefix=f'tuning_{target}_',
-                                                    dir=g(G_TEMP_DIR))
+                                                    dir=get_temp_dir())
 
         for yara_dir in yara_dirs:
             for yara_file in os.listdir(yara_dir):
@@ -202,7 +202,6 @@ class SubmissionFilter:
         return matches
 
     def get_tuning_matches_submission(self, submission):
-        from saq.json_encoding import _JSONEncoder
         from saq.analysis.root import Submission
 
         assert isinstance(submission, Submission)
@@ -255,7 +254,6 @@ class SubmissionFilter:
         return matches
 
     def get_tuning_matches_all(self, submission):
-        from saq.json_encoding import _JSONEncoder
         from saq.analysis.root import Submission
 
         assert isinstance(submission, Submission)

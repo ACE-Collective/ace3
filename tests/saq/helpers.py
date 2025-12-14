@@ -12,10 +12,10 @@ import uuid
 from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL, G_API_PREFIX
+from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
 from saq.database.model import load_alert
 from saq.database.util.alert import ALERT
-from saq.environment import g, get_base_dir
+from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
@@ -378,7 +378,7 @@ def start_api_server(remote_host=None, ssl_verification=None, listen_address=Non
     api_server_process.start()
 
     if remote_host is None:
-        remote_host = g(G_API_PREFIX)
+        remote_host = get_global_runtime_settings().api_prefix
     if ssl_verification is None:
         ssl_verification = get_config().SSL.ca_chain_path
 

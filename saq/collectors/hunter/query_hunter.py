@@ -22,8 +22,8 @@ from saq.collectors.hunter.decoder import DecoderType, decode_value
 from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_SIGNATURE_ID, G_TEMP_DIR
-from saq.environment import g
+from saq.constants import F_FILE, F_SIGNATURE_ID
+from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
 
@@ -344,7 +344,7 @@ class QueryHunt(Hunt):
 
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=os.path.join(g(G_TEMP_DIR), root_uuid),
+            storage_dir=os.path.join(get_temp_dir(), root_uuid),
             desc=interpolate_event_value(self.name, event),
             analysis_mode=self.analysis_mode,
             tool=f'hunter-{self.type}',
@@ -501,7 +501,7 @@ class QueryHunt(Hunt):
                     submission.root.add_observable(observable)
 
                 for file_content in file_contents:
-                    fd, temp_file_path = mkstemp(dir=g(G_TEMP_DIR))
+                    fd, temp_file_path = mkstemp(dir=get_temp_dir())
                     os.write(fd, file_content.content)
                     os.close(fd)
 
@@ -537,7 +537,7 @@ class QueryHunt(Hunt):
                             event_grouping[grouping_target].root.add_observable(observable)
 
                     for file_content in file_contents:
-                        fd, temp_file_path = mkstemp(dir=g(G_TEMP_DIR))
+                        fd, temp_file_path = mkstemp(dir=get_temp_dir())
                         os.write(fd, file_content.content)
                         os.close(fd)
 

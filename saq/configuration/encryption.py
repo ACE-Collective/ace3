@@ -2,8 +2,7 @@ import base64
 import logging
 
 from saq.configuration.error import EncryptedPasswordError
-from saq.constants import G_ENCRYPTION_KEY
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 
 def export_encrypted_passwords():
     """Returns a JSON dict of all the encrypted passwords with decrypted values."""
@@ -79,7 +78,7 @@ WHERE
             logging.warning(f"request for unknown encrypted password {key}")
             return None
 
-        if g(G_ENCRYPTION_KEY):
+        if get_global_runtime_settings().encryption_key:
             from saq.crypto import decrypt_chunk
             return decrypt_chunk(base64.b64decode(row[0])).decode('utf8')
         else:

@@ -2,8 +2,8 @@ import os
 import re
 
 from saq.configuration.config import get_config
-from saq.constants import G_SAQ_NODE, SERVICE_ENGINE
-from saq.environment import g, get_base_dir, get_data_dir
+from saq.constants import SERVICE_ENGINE
+from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings
 
 
 UUID_REGEX = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
@@ -29,7 +29,7 @@ def get_storage_dir(uuid):
 def storage_dir_from_uuid(uuid):
     """Returns the path (relative to SAQ_HOME) to the storage directory for the given uuid."""
     validate_uuid(uuid)
-    return os.path.relpath(os.path.join(get_data_dir(), g(G_SAQ_NODE), uuid[0:3], uuid), start=get_base_dir())
+    return os.path.relpath(os.path.join(get_data_dir(), get_global_runtime_settings().saq_node, uuid[0:3], uuid), start=get_base_dir())
 
 def workload_storage_dir(uuid):
     """Returns the path (relative to SAQ_HOME) to the storage directory for the current engien for the given uuid."""

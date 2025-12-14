@@ -4,7 +4,6 @@ import shutil
 from typing import Optional
 
 from saq.analysis.root import RootAnalysis
-from saq.constants import G_COMPANY_ID, G_SAQ_NODE, G_SAQ_NODE_ID, G_UNIT_TESTING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.workload import add_workload
@@ -14,7 +13,7 @@ from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.lock_manager.interface import LockManagerInterface
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
-from saq.environment import g, g_boolean, g_int
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.util import storage_dir_from_uuid
 
@@ -64,7 +63,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
         with get_db_connection() as db:
             c = db.cursor()
             where_clause = ["node_id = %s"]
-            params = [g_int(G_SAQ_NODE_ID)]
+            params = [get_global_runtime_settings().saq_node_id]
 
             where_clause = " AND ".join(where_clause)
             params = tuple(params)
@@ -82,10 +81,10 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
         with get_db_connection() as db:
             c = db.cursor()
             where_clause = ["node_id = %s"]
-            params = [g_int(G_SAQ_NODE_ID)]
+            params = [get_global_runtime_settings().saq_node_id]
 
             where_clause.append("company_id = %s")
-            params.append(g_int(G_COMPANY_ID))
+            params.append(get_global_runtime_settings().company_id)
 
             if self.local_analysis_modes:
                 where_clause.append(
@@ -172,19 +171,19 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     db,
                     c,
                     "UPDATE workload SET node_id = %s, storage_dir = %s WHERE uuid = %s",
-                    (g_int(G_SAQ_NODE_ID), target_dir, uuid),
+                    (get_global_runtime_settings().saq_node_id, target_dir, uuid),
                 )
                 execute_with_retry(
                     db,
                     c,
                     "UPDATE delayed_analysis SET node_id = %s, storage_dir = %s WHERE uuid = %s",
-                    (g_int(G_SAQ_NODE_ID), target_dir, uuid),
+                    (get_global_runtime_settings().saq_node_id, target_dir, uuid),
                 )
                 execute_with_retry(
                     db,
                     c,
                     "UPDATE alerts SET location = %s, storage_dir = %s WHERE uuid = %s",
-                    (g(G_SAQ_NODE), target_dir, uuid),
+                    (get_global_runtime_settings().saq_node, target_dir, uuid),
                 )
                 db.commit()
 
@@ -195,7 +194,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 # load the analysis we moved over and change the location there as well
                 root = RootAnalysis(storage_dir=target_dir)
                 root.load()
-                root.location = g(G_SAQ_NODE)
+                root.location = get_global_runtime_settings().saq_node
                 root.save()
 
                 return RootAnalysis(uuid=uuid, storage_dir=target_dir)
@@ -246,7 +245,7 @@ ORDER BY
     delayed_until ASC
 """
 
-        params = [g_int(G_SAQ_NODE_ID)]
+        params = [get_global_runtime_settings().saq_node_id]
 
         with get_db_connection() as db:
             c = db.cursor()
@@ -296,13 +295,13 @@ ORDER BY
 
             if local:
                 where_clause.append("workload.node_id = %s")
-                params.append(g_int(G_SAQ_NODE_ID))
+                params.append(get_global_runtime_settings().saq_node_id)
             else:
                 # if we're looking remotely then we need to make sure we only select work for whatever company
                 # this node belongs to
                 # this is true for instances where you're sharing an ACE resource between multiple companies
                 where_clause.append("workload.company_id = %s")
-                params.append(g_int(G_COMPANY_ID))
+                params.append(get_global_runtime_settings().company_id)
 
             if self.local_analysis_modes:
                 # limit our scope to locally support analysis modes
@@ -332,7 +331,7 @@ ORDER BY
                 ["({})".format(clause) for clause in where_clause]
             )
 
-            if g_boolean(G_UNIT_TESTING):
+            if get_global_runtime_settings().unit_testing:
                 logging.debug(
                     "looking for work with {} ({})".format(
                         where_clause, ",".join([str(_) for _ in params])
@@ -388,7 +387,7 @@ LIMIT 128""".format(
                     continue
 
                 # is this work item on a different node?
-                if node_id != g_int(G_SAQ_NODE_ID):
+                if node_id != get_global_runtime_settings().saq_node_id:
                     # go grab it
                     return self.transfer_work_target(uuid, node_id)
 

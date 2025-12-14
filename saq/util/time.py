@@ -4,9 +4,8 @@ import re
 
 import pytz
 
-from saq.constants import EVENT_TIME_FORMAT, EVENT_TIME_FORMAT_JSON, EVENT_TIME_FORMAT_JSON_TZ, EVENT_TIME_FORMAT_TZ, G_LOCAL_TIMEZONE
-from saq.environment import g, get_local_timezone
-
+from saq.constants import EVENT_TIME_FORMAT, EVENT_TIME_FORMAT_JSON, EVENT_TIME_FORMAT_JSON_TZ, EVENT_TIME_FORMAT_TZ
+from saq.environment import get_global_runtime_settings, get_local_timezone
 
 # Matches DD:HH:MM:SS, HH:MM:SS, MM:SS, or S (at least seconds must be specified)
 _RE_TIMEDELTA_STRING = re.compile(r'^(\d+:)?(\d+:)?(\d+:)?\d+$')
@@ -67,13 +66,13 @@ def parse_event_time(event_time):
         event_time = event_time[:event_time.rfind(':')] + event_time[event_time.rfind(':') + 1:]
         return datetime.strptime(event_time, EVENT_TIME_FORMAT_JSON_TZ)
     elif RE_ET_OLD_JSON_FORMAT.match(event_time):
-        return g(G_LOCAL_TIMEZONE).localize(datetime.strptime(event_time, EVENT_TIME_FORMAT_JSON))
+        return get_global_runtime_settings().local_timezone.localize(datetime.strptime(event_time, EVENT_TIME_FORMAT_JSON))
     else:
         raise ValueError("invalid date format {}".format(event_time))
 
 def local_time():
     """Returns datetime.now() in UTC time zone."""
-    return g(G_LOCAL_TIMEZONE).localize(datetime.now()).astimezone(pytz.UTC)
+    return get_global_runtime_settings().local_timezone.localize(datetime.now()).astimezone(pytz.UTC)
 
 def format_iso8601(d):
     """Given datetime d, return an iso 8601 formatted string YYYY-MM-DDTHH:mm:ss.fff-zz:zz"""

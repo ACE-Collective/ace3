@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Type
 from saq import Observable
 from saq.database.database_observable import observable_is_set_for_detection
 
+from saq.environment import get_global_runtime_settings
 from saq.gui import ObservableAction
 
 # Registry for custom observable presenter classes
@@ -72,10 +73,7 @@ class ObservablePresenter:
             ObservableActionDisableableDetection,
             ObservableActionAdjustExpiration,
         )
-        from saq.constants import G_GUI_WHITELIST_EXCLUDED_OBSERVABLE_TYPES
-        from saq.environment import g
-
-        if self._observable.type in g(G_GUI_WHITELIST_EXCLUDED_OBSERVABLE_TYPES):
+        if self._observable.type in get_global_runtime_settings().gui_whitelist_excluded_observable_types:
             actions = [ObservableActionAddTag()]
         else:
             actions = [

@@ -8,11 +8,11 @@ from app.analysis.views.session.filters import _reset_filters, create_filter, ge
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import CLOSED_EVENT_LIMIT, G_SAQ_NODE
+from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import Campaign, DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping, Comment, Event, User
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.gui.alert import GUIAlert
 from sqlalchemy.orm import selectinload
 
@@ -73,7 +73,7 @@ def manage():
     # only show alerts from this node
     # NOTE: this will not be necessary once alerts are stored externally
     if get_config().gui.local_node_only:
-        query = query.filter(GUIAlert.location == g(G_SAQ_NODE))
+        query = query.filter(GUIAlert.location == get_global_runtime_settings().saq_node)
     elif get_config().gui.display_node_list:
         # alternatively we can display alerts for specific nodes
         # this was added on 05/02/2023 to support a DR mode of operation

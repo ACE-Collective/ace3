@@ -10,8 +10,8 @@ from saq.collectors.base_collector import Collector, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.configuration.config import get_config, get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, G_TEMP_DIR, SERVICE_EMAIL_COLLECTOR
-from saq.environment import g, get_data_dir
+from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, SERVICE_EMAIL_COLLECTOR
+from saq.environment import get_data_dir, get_temp_dir
 
 import yara
 
@@ -122,7 +122,7 @@ class EmailCollector(Collector):
                 # create a new submission request for this
                 root_uuid = str(uuid4())
                 root = RootAnalysis(
-                    storage_dir = os.path.join(g(G_TEMP_DIR), root_uuid),
+                    storage_dir = os.path.join(get_temp_dir(), root_uuid),  # noqa: F821
                     desc = 'ACE Mailbox Scanner Detection - {}'.format(email_file),
                     analysis_mode = ANALYSIS_MODE_EMAIL,
                     tool = 'ACE - Mailbox Scanner',

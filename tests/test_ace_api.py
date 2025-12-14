@@ -13,10 +13,10 @@ from datetime import datetime
 import ace_api
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IPV4, G_API_PREFIX, G_TEMP_DIR
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IPV4
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
-from saq.environment import g
+from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.observables.file import FileObservable
 from saq.util.time import local_time, parse_event_time
 from saq.util.uuid import get_storage_dir, validate_uuid
@@ -26,7 +26,7 @@ from tests.saq.helpers import create_root_analysis, log_count, start_api_server,
 def api_server():
     ace_api.set_default_api_key(get_config().api.api_key)
     api_server_process = start_api_server(
-        remote_host=g(G_API_PREFIX),
+        remote_host=get_global_runtime_settings().api_prefix,
         ssl_verification=get_config().SSL.ca_chain_path,
 
     )
@@ -122,7 +122,7 @@ def _submit(analysis_mode=None,
             observables=None,
             tags=None):
 
-    temp_path = os.path.join(g(G_TEMP_DIR), 'submit_test.dat')
+    temp_path = os.path.join(get_temp_dir(), 'submit_test.dat')
     temp_data = os.urandom(1024)
 
     with open(temp_path, 'wb') as fp:
@@ -261,7 +261,7 @@ def test_resubmit(mock_api_call):
 
     # now resubmit the alert
     result = ace_api.resubmit_alert(uuid)
-    assert not 'error' in result
+    assert 'error' not in result
 
 @pytest.mark.integration
 def test_submit_with_utc_timezone(mock_api_call):
@@ -370,7 +370,7 @@ def test_get_analysis_file(mock_api_call):
 
     assert file_uuid
 
-    output_path = os.path.join(g(G_TEMP_DIR), 'get_file_test.dat')
+    output_path = os.path.join(get_temp_dir(), 'get_file_test.dat')
     assert ace_api.get_analysis_file(uuid, file_uuid, output_file=output_path)
     with open(output_path, 'rb') as fp:
         assert fp.read() == b'Hello, world!'
@@ -417,7 +417,7 @@ def test_download(mock_api_call):
     root.details = { 'hello': 'world' }
     root.save()
 
-    temp_dir = tempfile.mkdtemp(dir=g(G_TEMP_DIR))
+    temp_dir = tempfile.mkdtemp(dir=get_temp_dir())
     try:
         result = ace_api.download(root.uuid, temp_dir)
         assert os.path.join(temp_dir, 'data.json')
@@ -429,7 +429,7 @@ def test_download(mock_api_call):
 
 @pytest.mark.integration
 def test_upload(mock_api_call):
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(g(G_TEMP_DIR), 'unittest'))
+    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(get_temp_dir(), 'unittest'))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
     root.save()
@@ -479,12 +479,12 @@ def test_legacy_submit(mock_api_call):
     alert = ace_api.Alert(description='Test Alert')
     alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
-    temp_path = os.path.join(g(G_TEMP_DIR), 'test.txt')
+    temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
         fp.write('test')
 
     alert.add_attachment_link(temp_path, 'dest/test.txt')
-    alert.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config().SSL.ca_chain_path)
+    alert.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path)
     assert validate_uuid(alert.uuid)
 
     root = RootAnalysis(storage_dir=get_storage_dir(alert.uuid))
@@ -504,7 +504,7 @@ def test_legacy_submit(mock_api_call):
 
 @pytest.mark.integration
 def test_legacy_import(mock_api_call):
-    from ace_api import Alert
+    pass
 
 @pytest.mark.skip(reason="skipping tests with api_server")
 @pytest.mark.system
@@ -519,13 +519,13 @@ def test_legacy_failed_submit(api_server, tmpdir):
     alert = ace_api.Alert(description='Test Alert')
     alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
-    temp_path = os.path.join(g(G_TEMP_DIR), 'test.txt')
+    temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
         fp.write('test')
 
     alert.add_attachment_link(temp_path, 'dest/test.txt')
     with pytest.raises(Exception):
-        alert.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
+        alert.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
 
     assert log_count('unable to submit ') == 1
 
@@ -554,13 +554,13 @@ def test_failed_submit(api_server, tmpdir):
     analysis.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     analysis.add_tag('test')
     analysis.add_user('test_user')
-    temp_path = os.path.join(g(G_TEMP_DIR), 'test.txt')
+    temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
         fp.write('test')
 
     analysis.add_file(temp_path, relative_storage_path='dest/test.txt')
     with pytest.raises(Exception):
-        analysis.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
+        analysis.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
 
     assert log_count('unable to submit ') == 1
 
@@ -587,13 +587,13 @@ def test_submit_failed_alerts(api_server, tmpdir):
     alert = ace_api.Alert(description='Test Alert')
     alert.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     alert.add_tag('test')
-    temp_path = os.path.join(g(G_TEMP_DIR), 'test.txt')
+    temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
         fp.write('test')
 
     alert.add_attachment_link(temp_path, 'dest/test.txt')
     with pytest.raises(Exception):
-        uuid = alert.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
+        uuid = alert.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
 
     assert log_count('unable to submit ') == 1
 
@@ -633,13 +633,13 @@ def test_submit_failed_analysis(api_server, tmpdir):
     analysis = ace_api.Analysis(description='Test Analysis')
     analysis.add_observable_by_spec(F_IPV4, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
     analysis.add_tag('test')
-    temp_path = os.path.join(g(G_TEMP_DIR), 'test.txt')
+    temp_path = os.path.join(get_temp_dir(), 'test.txt')
     with open(temp_path, 'w') as fp:
         fp.write('test')
 
     analysis.add_file(temp_path, relative_storage_path='dest/test.txt')
     with pytest.raises(Exception):
-        uuid = analysis.submit(f'https://{g(G_API_PREFIX)}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
+        uuid = analysis.submit(f'https://{get_global_runtime_settings().api_prefix}', ssl_verification=get_config().SSL.ca_chain_path, fail_dir=fail_dir)
 
     assert log_count('unable to submit ') == 1
 

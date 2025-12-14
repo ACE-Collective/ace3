@@ -3,9 +3,9 @@ import pytest
 
 from saq.analysis.root import RootAnalysis
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION, G_COMPANY_ID, G_SAQ_NODE
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION
 from saq.database.pool import get_db_connection
-from saq.environment import g, g_int
+from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_submission
@@ -13,7 +13,7 @@ from tests.saq.helpers import create_submission
 @pytest.fixture
 def remote_node() -> RemoteNode:
     return RemoteNode(
-        1, g(G_SAQ_NODE), "location", 1, local_time(), ANALYSIS_MODE_ANALYSIS, 1)
+        1, get_global_runtime_settings().saq_node, "location", 1, local_time(), ANALYSIS_MODE_ANALYSIS, 1)
 
 @pytest.mark.unit
 def test_remote_node_is_local(remote_node):
@@ -86,4 +86,4 @@ def remote_node_group() -> RemoteNodeGroup:
         workload_type_id = cursor.lastrowid
         db.commit()
 
-    return RemoteNodeGroup("test", 100, True, g_int(G_COMPANY_ID), DB_COLLECTION, group_id, workload_type_id, Event())
+    return RemoteNodeGroup("test", 100, True, get_global_runtime_settings().company_id, DB_COLLECTION, group_id, workload_type_id, Event())

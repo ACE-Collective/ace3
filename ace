@@ -31,12 +31,12 @@ from saq.configuration import get_config
 from sqlalchemy import and_, or_
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, G_COMPANY_ID, G_COMPANY_NAME, G_ENCRYPTION_KEY, G_FORCED_ALERTS, G_SAQ_NODE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B, VALID_OBSERVABLE_TYPES
+from saq.constants import ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B, VALID_OBSERVABLE_TYPES
 from saq.database.model import Persistence, PersistenceSource, Remediation
 from saq.database.pool import get_db
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
-from saq.environment import g, g_boolean, g_int, get_base_dir, get_data_dir
+from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.observables.file import FileObservable
 from saq.remediation import REMEDIATION_STATUS_IN_PROGRESS, REMEDIATION_STATUS_NEW
@@ -762,7 +762,7 @@ def correlate(args):
                 logging.info("{} was whitelisted".format(root))
                 continue
 
-            if g_boolean(G_FORCED_ALERTS) or root.has_detections():
+            if get_config().global_settings.forced_alerts or root.has_detections():
                 from ace_api import upload
                 try:
                     logging.info("uploading {}".format(root))
@@ -1401,7 +1401,7 @@ def rebuild_index(args):
     if args.resync_all:
         with get_db_connection() as db:
             c = db.cursor()
-            c.execute("""SELECT storage_dir FROM alerts WHERE location = %s""", (g(G_SAQ_NODE),))
+            c.execute("""SELECT storage_dir FROM alerts WHERE location = %s""", (get_global_runtime_settings().saq_node,))
             for row in c:
                 storage_dirs.append(row[0])
     else:
@@ -1450,7 +1450,6 @@ def import_alerts(args):
     """Imports one or more alerts from the given directories."""
     from saq.constants import ANALYSIS_MODE_CORRELATION
     from saq import RootAnalysis
-    from saq.environment import g
     from saq.database.util.alert import ALERT, get_alert_by_uuid
 
     for _dir in args.dirs:
@@ -1483,9 +1482,9 @@ def import_alerts(args):
             #alert.reset()
 
         # change a few more things
-        alert.location = g(G_SAQ_NODE)
-        alert.company_id = g(G_COMPANY_ID)
-        alert.company_name = g(G_COMPANY_NAME)
+        alert.location = get_global_runtime_settings().saq_node
+        alert.company_id = get_config().global_settings.company_id
+        alert.company_name = get_config().global_settings.company_name
         alert.analysis_mode = ANALYSIS_MODE_CORRELATION
 
         # sync it to the database
@@ -1860,7 +1859,7 @@ def display_remediation_requests(args):
     #print(['ID', 'STATUS', 'TYPE', 'ACTION', 'DATE', 'TARGET']))
     row_format = "{:<8}{:<10}{:<8}{:<9}{:<20} {}"
     print(row_format.format('ID', 'STATUS', 'TYPE', 'ACTION', 'DATE', 'TARGET'))
-    for r in get_db().query(Remediation).filter(Remediation.company_id == g_int(G_COMPANY_ID),
+    for r in get_db().query(Remediation).filter(Remediation.company_id == get_config().global_settings.company_id,
                                               Remediation.status.in_([REMEDIATION_STATUS_NEW, 
                                                                       REMEDIATION_STATUS_IN_PROGRESS]))\
                                       .order_by(Remediation.id):
@@ -2714,7 +2713,7 @@ config_encryption_parser = encryption_sp.add_parser('config',
 config_encryption_sp = config_encryption_parser.add_subparsers(dest='config_enc_cmd')
 
 def set_encrypted_password(args):
-    if g(G_ENCRYPTION_KEY) is None:
+    if get_global_runtime_settings().encryption_key is None:
         logging.error("missing encryption password (use the -p option or start the ecs service)\n")
         sys.exit(1)
 
@@ -2938,16 +2937,16 @@ def display_workload(args):
 
     with get_db_connection() as db:
         c = db.cursor()
-        c.execute("SELECT analysis_mode, COUNT(*) FROM workload WHERE company_id = %s GROUP BY analysis_mode ORDER BY analysis_mode", (g_int(G_COMPANY_ID),))
-        print(f" -- WORKLOAD ({g(G_COMPANY_NAME)}) --")
+        c.execute("SELECT analysis_mode, COUNT(*) FROM workload WHERE company_id = %s GROUP BY analysis_mode ORDER BY analysis_mode", (get_config().global_settings.company_id,))
+        print(f" -- WORKLOAD ({get_config().global_settings.company_name}) --")
         print("{: <15}{}".format('MODE', 'COUNT'))
         for analysis_mode, count in c:
             print("{: <15}{}".format(analysis_mode, count))
 
         db.commit()
         print()
-        print(f" -- DELAYED WORKLOAD ({g(G_SAQ_NODE)})--")
-        c.execute("SELECT storage_dir, analysis_module, COUNT(*) FROM delayed_analysis JOIN nodes ON delayed_analysis.node_id = nodes.id WHERE nodes.name = %s GROUP BY storage_dir, analysis_module", (g(G_SAQ_NODE),))
+        print(f" -- DELAYED WORKLOAD ({get_global_runtime_settings().saq_node})--")
+        c.execute("SELECT storage_dir, analysis_module, COUNT(*) FROM delayed_analysis JOIN nodes ON delayed_analysis.node_id = nodes.id WHERE nodes.name = %s GROUP BY storage_dir, analysis_module", (get_global_runtime_settings().saq_node,))
         print("{: <36} {: <20} {}".format('UUID', 'MODULE', 'COUNT'))
         for storage_dir, analysis_module, count in c:
             storage_dir = os.path.basename(storage_dir)
@@ -2956,8 +2955,8 @@ def display_workload(args):
 
         db.commit()
         print()
-        print(f" -- LOCKS ({g(G_SAQ_NODE)}) --")
-        c.execute("SELECT uuid, lock_uuid, lock_time, lock_owner FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%') ORDER BY lock_time", (g(G_SAQ_NODE),))
+        print(f" -- LOCKS ({get_global_runtime_settings().saq_node}) --")
+        c.execute("SELECT uuid, lock_uuid, lock_time, lock_owner FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%') ORDER BY lock_time", (get_global_runtime_settings().saq_node,))
         print("{: <36} {: <36} {: <19} {}".format('UUID', 'LOCK', 'TIME', 'OWNER'))
         for _uuid, lock_uuid, lock_time, lock_owner in c:
             print("{: <36} {: <36} {: <19} {}".format(_uuid, lock_uuid, str(lock_time), lock_owner))

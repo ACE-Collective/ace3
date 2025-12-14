@@ -5,9 +5,8 @@ import os.path
 from typing import Optional
 
 from saq.configuration.config import get_config
-from saq.constants import G_ANALYST_DATA_DIR
 from saq.database import Event, EventStatus, get_db
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 
 from yaml import load as yaml_load
@@ -46,7 +45,7 @@ def load_auto_close_criteria(file_path: Optional[str]=None) -> list[AutoCloseCri
     """Returns the list of configured auto close criteria.
     Returns an empty list if none can be loaded."""
     if file_path is None:
-        file_path = os.path.join(g(G_ANALYST_DATA_DIR), get_config().events.autoclose_path)
+        file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, get_config().events.autoclose_path)
 
     with open(file_path, "r") as fp:
         content = yaml_load(fp, Loader=Loader)

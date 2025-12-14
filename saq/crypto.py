@@ -18,8 +18,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import hmac
 
 from saq.configuration.config import get_config
-from saq.constants import G_ENCRYPTION_INITIALIZED, G_ENCRYPTION_KEY, G_INSTANCE_TYPE, INSTANCE_TYPE_DEV
-from saq.environment import g, g_boolean, set_g
+from saq.constants import INSTANCE_TYPE_DEV
+from saq.environment import get_global_runtime_settings
 
 CHUNK_SIZE = 64 * 1024
 
@@ -38,7 +38,7 @@ class InvalidPasswordError(Exception):
 
 def is_encryption_initialized() -> bool:
     """Returns True if encryption has been initialized."""
-    return g_boolean(G_ENCRYPTION_INITIALIZED)
+    return get_global_runtime_settings().encryption_initialized
 
 def encryption_key_set():
     """Returns True if the encryption key has been set, False otherwise."""
@@ -104,14 +104,14 @@ def set_encryption_password(password, old_password=None, key=None):
         # did we provide a password for it?
         if old_password is not None:
             # get the existing encryption password
-            set_g(G_ENCRYPTION_KEY, get_aes_key(old_password))
+            get_global_runtime_settings().encryption_key = get_aes_key(old_password)
 
-    if g(G_ENCRYPTION_KEY) is None:
+    if get_global_runtime_settings().encryption_key is None:
         # otherwise we just make a new one
         if key is None:
-            set_g(G_ENCRYPTION_KEY, os.urandom(32))
+            get_global_runtime_settings().encryption_key = os.urandom(32)
         else:
-            set_g(G_ENCRYPTION_KEY, key)
+            get_global_runtime_settings().encryption_key = key
 
     # now we compute the key to use to encrypt the encryption key using the user-supplied password
     salt = os.urandom(get_config().encryption.salt_size)
@@ -130,14 +130,14 @@ def set_encryption_password(password, old_password=None, key=None):
     user_encryption_key = result[:32] # the first 32 bytes is the user encryption key
     verification_key = result[32:] # and the second 32 bytes is used for password verification
     set_database_config_value(CONFIG_KEY_ENCRYPTION_VERIFICATION, verification_key)
-    encrypted_encryption_key = encrypt_chunk(g(G_ENCRYPTION_KEY), password=user_encryption_key)
+    encrypted_encryption_key = encrypt_chunk(get_global_runtime_settings().encryption_key, password=user_encryption_key)
     set_database_config_value(CONFIG_KEY_ENCRYPTION_KEY, encrypted_encryption_key)
     set_database_config_value(CONFIG_KEY_ENCRYPTION_SALT, salt)
     set_database_config_value(CONFIG_KEY_ENCRYPTION_ITERATIONS, iterations)
 
 def _get_password(password: Optional[Union[bytes, str]]=None) -> bytes:
     if password is None:
-        return g(G_ENCRYPTION_KEY)
+        return get_global_runtime_settings().encryption_key
 
     if isinstance(password, str):
         digest = hashes.Hash(hashes.SHA256())
@@ -256,12 +256,12 @@ def initialize_encryption(encryption_password_plaintext: Optional[str]=None, pro
     try:
         # are we prompting for the decryption password?
         if encryption_password_plaintext:
-            set_g(G_ENCRYPTION_KEY, get_aes_key(encryption_password_plaintext))
+            get_global_runtime_settings().encryption_key = get_aes_key(encryption_password_plaintext)
         elif prompt_for_missing_password:
             while True:
                 encryption_password_plaintext = getpass("Enter the decryption password:")
                 try:
-                    set_g(G_ENCRYPTION_KEY, get_aes_key(encryption_password_plaintext))
+                    get_global_runtime_settings().encryption_key = get_aes_key(encryption_password_plaintext)
                 except InvalidPasswordError:
                     logging.error("invalid encryption password")
                     continue
@@ -277,7 +277,7 @@ def initialize_encryption(encryption_password_plaintext: Optional[str]=None, pro
                 encryption_password_plaintext = os.environ['SAQ_ENC']
                 # Leave the SAQ_ENC variable in place if we are in the dev container environment.
                 # This fixes the ability to load encrypted passwords when the container first starts up.
-                if g(G_INSTANCE_TYPE) != INSTANCE_TYPE_DEV:
+                if get_global_runtime_settings().instance_type != INSTANCE_TYPE_DEV:
                     del os.environ["SAQ_ENC"]
 
                 #if encryption_password_plaintext == "test":
@@ -285,7 +285,7 @@ def initialize_encryption(encryption_password_plaintext: Optional[str]=None, pro
 
             if encryption_password_plaintext is not None:
                 try:
-                    set_g(G_ENCRYPTION_KEY, get_aes_key(encryption_password_plaintext))
+                    get_global_runtime_settings().encryption_key = get_aes_key(encryption_password_plaintext)
                 except InvalidPasswordError:
                     logging.error("encryption password is wrong")
                 finally:
@@ -295,4 +295,4 @@ def initialize_encryption(encryption_password_plaintext: Optional[str]=None, pro
         logging.error(f"unable to get encryption key: {e}")
         raise e
 
-    set_g(G_ENCRYPTION_INITIALIZED, True)
+    get_global_runtime_settings().encryption_initialized = True

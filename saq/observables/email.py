@@ -7,7 +7,7 @@ from saq.constants import CONFIG_GLOBAL, CONFIG_GLOBAL_LOCAL_EMAIL_DOMAINS, F_EM
 from saq.database.model import Remediation
 from saq.database.pool import get_db, get_db_connection
 from saq.email import is_local_email_domain, normalize_email_address, normalize_message_id
-from saq.environment import g_list
+from saq.configuration.config import get_config
 from saq.gui import ObservableActionAddLocalEmailDomain
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
@@ -48,7 +48,7 @@ class EmailAddressObservable(CaselessObservable):
         """Returns True if this email address uses a managed domain."""
         email_domain = self.value.split('@')[1]
 
-        for fqdn in g_list(CONFIG_GLOBAL, CONFIG_GLOBAL_LOCAL_EMAIL_DOMAINS):
+        for fqdn in get_config().global_settings.local_email_domains:
             if is_subdomain(email_domain, fqdn):
                 return True
 

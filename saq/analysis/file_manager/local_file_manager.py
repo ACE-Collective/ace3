@@ -4,8 +4,8 @@ import shutil
 from typing import Any, Optional
 
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
-from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR, G_SAQ_HOME
-from saq.environment import g
+from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
+from saq.environment import get_base_dir
 from saq.util.hashing import sha256_file
 from saq.error import report_exception
 
@@ -42,7 +42,7 @@ class LocalFileManager(FileManagerInterface):
     @property
     def json_path(self) -> str:
         """Path to the JSON file that stores this alert."""
-        return os.path.join(g(G_SAQ_HOME), self._storage_dir, 'data.json')
+        return os.path.join(get_base_dir(), self._storage_dir, 'data.json')
         
     @property
     def submission_json_path(self) -> str:
@@ -52,7 +52,7 @@ class LocalFileManager(FileManagerInterface):
     def initialize_storage(self):
         """Initialize the storage directory structure."""
         try:
-            target_dir = os.path.join(g(G_SAQ_HOME), self._storage_dir)
+            target_dir = os.path.join(get_base_dir(), self._storage_dir)
             if not os.path.exists(target_dir):
                 os.makedirs(target_dir)
 
@@ -70,12 +70,12 @@ class LocalFileManager(FileManagerInterface):
     def ensure_storage_directories(self):
         """Ensure the storage and .ace directories exist."""
         # make sure the containing directory exists
-        if not os.path.exists(os.path.join(g(G_SAQ_HOME), self._storage_dir)):
-            os.makedirs(os.path.join(g(G_SAQ_HOME), self._storage_dir))
+        if not os.path.exists(os.path.join(get_base_dir(), self._storage_dir)):
+            os.makedirs(os.path.join(get_base_dir(), self._storage_dir))
 
         # analysis details go into a hidden directory
-        if not os.path.exists(os.path.join(g(G_SAQ_HOME), self._storage_dir, '.ace')):
-            os.makedirs(os.path.join(g(G_SAQ_HOME), self._storage_dir, '.ace'))
+        if not os.path.exists(os.path.join(get_base_dir(), self._storage_dir, '.ace')):
+            os.makedirs(os.path.join(get_base_dir(), self._storage_dir, '.ace'))
 
     def create_file_path(self, relative_path: str) -> str:
         """

@@ -7,10 +7,7 @@ from typing import Any, Optional
 from deepmerge import Merger
 import yaml
 
-from saq.constants import (
-    G_ENCRYPTION_INITIALIZED,
-)
-from saq.environment import g_boolean
+from saq.environment import get_global_runtime_settings
 from saq.configuration.encryption import decrypt_password
 
 ENV_PREFIX = "env:"
@@ -64,7 +61,7 @@ class YAMLConfig:
 
             if value.startswith(ENCRYPTED_PREFIX):
                 key = value[len(ENCRYPTED_PREFIX) :]
-                if not g_boolean(G_ENCRYPTION_INITIALIZED):
+                if not get_global_runtime_settings().encryption_initialized:
                     return value
 
                 return self._get_decrypted_password(key)

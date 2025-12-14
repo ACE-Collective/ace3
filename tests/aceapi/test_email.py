@@ -3,11 +3,11 @@ import pytest
 from flask import url_for
 
 from saq.configuration.config import get_config
-from saq.constants import DB_EMAIL_ARCHIVE, G_ENCRYPTION_KEY
+from saq.constants import DB_EMAIL_ARCHIVE
 from saq.database.pool import get_db_connection
 from saq.email_archive import archive_email, register_email_archive
 from saq.email_archive.types import EmailArchiveTargetType
-from saq.environment import g, set_g
+from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 
 TEST_MESSAGE_ID = "<test-message-id@example.com>"
@@ -71,8 +71,8 @@ def test_get_archived_email_unknown_message_id(test_client):
 def test_get_archived_email_missing_encryption_key(test_client, archived_email):
     """test that missing encryption key returns 500"""
     # temporarily remove the encryption key
-    original_key = g(G_ENCRYPTION_KEY)
-    set_g(G_ENCRYPTION_KEY, None)
+    original_key = get_global_runtime_settings().encryption_key
+    get_global_runtime_settings().encryption_key = None
 
     try:
         result = test_client.get(
@@ -84,7 +84,7 @@ def test_get_archived_email_missing_encryption_key(test_client, archived_email):
         assert result.status_code == 500
     finally:
         # restore the encryption key
-        set_g(G_ENCRYPTION_KEY, original_key)
+        get_global_runtime_settings().encryption_key = original_key
 
 
 @pytest.mark.integration

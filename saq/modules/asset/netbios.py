@@ -24,8 +24,8 @@ import tempfile
 from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.constants import F_ASSET, F_HOSTNAME, F_USER, G_DEFAULT_ENCODING, G_TEMP_DIR, AnalysisExecutionResult
-from saq.environment import g
+from saq.constants import F_ASSET, F_HOSTNAME, F_USER, AnalysisExecutionResult
+from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 
@@ -141,8 +141,8 @@ class NetBIOSAnalyzer(AnalysisModule):
             args.insert(0, self.config.ssh_host)
             args.insert(0, 'ssh')
 
-        with tempfile.TemporaryFile(dir=g(G_TEMP_DIR)) as fp:
-            with tempfile.TemporaryFile(dir=g(G_TEMP_DIR)) as stderr_fp:
+        with tempfile.TemporaryFile(dir=get_temp_dir()) as fp:
+            with tempfile.TemporaryFile(dir=get_temp_dir()) as stderr_fp:
                 p = Popen(args, stdout=fp, stderr=stderr_fp)
                 try:
                     p.wait(timeout=10)
@@ -164,7 +164,7 @@ class NetBIOSAnalyzer(AnalysisModule):
                 fp.seek(0)
 
                 for line in fp:
-                    if re.match(r'^137/udp\s+open\s+netbios-ns$', line.decode(g(G_DEFAULT_ENCODING))):
+                    if re.match(r'^137/udp\s+open\s+netbios-ns$', line.decode(get_global_runtime_settings().default_encoding)):
                         logging.debug("{} responded to a netbios query".format(asset))
                         analysis.netbios_open = True
                         continue
@@ -172,7 +172,7 @@ class NetBIOSAnalyzer(AnalysisModule):
                     if not analysis.netbios_open:
                         continue
 
-                    m = re.search(r'NetBIOS name: ([^,]+), NetBIOS user: ([^,]+), NetBIOS MAC: (..:..:..:..:..:..)', line.decode(g(G_DEFAULT_ENCODING)))
+                    m = re.search(r'NetBIOS name: ([^,]+), NetBIOS user: ([^,]+), NetBIOS MAC: (..:..:..:..:..:..)', line.decode(get_global_runtime_settings().default_encoding))
                     if m:
                         (name, user, mac) = m.groups()
                         analysis.netbios_name = name
@@ -183,7 +183,7 @@ class NetBIOSAnalyzer(AnalysisModule):
                             name, user, mac, asset))
                         continue
 
-                    m = re.search(r'\s([^<\s]+)<00>\s+Flags:\s+<group><active>', line.decode(g(G_DEFAULT_ENCODING)))
+                    m = re.search(r'\s([^<\s]+)<00>\s+Flags:\s+<group><active>', line.decode(get_global_runtime_settings().default_encoding))
                     if m:
                         (domain,) = m.groups()
                         analysis.netbios_domain = domain

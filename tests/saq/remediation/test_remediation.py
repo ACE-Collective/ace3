@@ -1,11 +1,10 @@
 import uuid
 import pytest
-from saq.constants import G_AUTOMATION_USER_ID
 from saq.database import Remediation, Alert, Observable
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.email_archive import archive_email
-from saq.environment import g_int
+from saq.environment import get_global_runtime_settings
 from saq.observables import FQDNObservable, URLObservable
 from saq.remediation import REMEDIATION_ACTION_REMOVE, REMEDIATION_ACTION_RESTORE, REMEDIATION_STATUS_COMPLETED, REMEDIATION_STATUS_IN_PROGRESS, RemediationDelay, RemediationError, RemediationFailure, RemediationIgnore, RemediationService, RemediationSuccess, RemediationTarget, Remediator, get_remediation_targets
 from saq.util.time import local_time
@@ -125,7 +124,7 @@ from tests.saq.helpers import create_root_analysis
 def test_remediation_target(processing, state, css, restore_key, history):
     # add all remediation history
     for remediation in history:
-        remediation.user_id = g_int(G_AUTOMATION_USER_ID)
+        remediation.user_id = get_global_runtime_settings().automation_user_id
         get_db().add(remediation)
     get_db().commit()
 
@@ -156,7 +155,7 @@ def test_remediation_target_queue():
 
     # queue a remediation of a target
     target = RemediationTarget('email', '<test@test.com>|jdoe@site.com')
-    target.queue(REMEDIATION_ACTION_REMOVE, g_int(G_AUTOMATION_USER_ID))
+    target.queue(REMEDIATION_ACTION_REMOVE, get_global_runtime_settings().automation_user_id)
 
     # fetch targets with Remediation service
     targets = service.get_targets()
@@ -164,7 +163,7 @@ def test_remediation_target_queue():
     assert targets[0].type == target.type
     assert targets[0].key == target.value
     assert targets[0].restore_key is None
-    assert targets[0].user_id == g_int(G_AUTOMATION_USER_ID)
+    assert targets[0].user_id == get_global_runtime_settings().automation_user_id
     assert targets[0].action == REMEDIATION_ACTION_REMOVE
     assert targets[0].status == REMEDIATION_STATUS_IN_PROGRESS
     assert targets[0].successful
@@ -175,7 +174,7 @@ def test_remediation_target_queue():
 def test_remediation_target_stop_remediation():
     # queue a target for removal
     target = RemediationTarget('email', '<test@test.com>|jdoe@site.com')
-    target.queue(REMEDIATION_ACTION_REMOVE, g_int(G_AUTOMATION_USER_ID))
+    target.queue(REMEDIATION_ACTION_REMOVE, get_global_runtime_settings().automation_user_id)
     
     # reload target
     target = RemediationTarget('email', '<test@test.com>|jdoe@site.com')
@@ -231,7 +230,7 @@ def test_remediation(result1, result2, status, success, restore_key):
     service.remediators.append(MockRemediator('test2', result2))
 
     # queue target
-    RemediationTarget('email', '<test@test.com>|jdoe@site.com').queue(REMEDIATION_ACTION_REMOVE, g_int(G_AUTOMATION_USER_ID))
+    RemediationTarget('email', '<test@test.com>|jdoe@site.com').queue(REMEDIATION_ACTION_REMOVE, get_global_runtime_settings().automation_user_id)
 
     # remediate target with remediation service
     target = service.get_targets()[0]
@@ -259,7 +258,7 @@ def test_message_id_remediation_targets(archived_email):
     from saq.observables import MessageIDObservable
 
     # add some remediation history
-    history = Remediation(type='email', key="<test@test.com>|foo@company.com", action='remove', user_id=g_int(G_AUTOMATION_USER_ID))
+    history = Remediation(type='email', key="<test@test.com>|foo@company.com", action='remove', user_id=get_global_runtime_settings().automation_user_id)
     get_db().add(history)
     get_db().commit()
 

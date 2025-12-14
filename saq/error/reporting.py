@@ -3,23 +3,17 @@ import logging
 import os
 import shutil
 import sys
-import traceback
 from typing import TYPE_CHECKING, Optional
 
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import G_DUMP_TRACEBACKS
 if TYPE_CHECKING:
     from saq.engine.execution_context import EngineExecutionContext
-from saq.environment import g_boolean, get_data_dir
+from saq.environment import get_data_dir
 
 
 def report_exception(execution_context: Optional["EngineExecutionContext"]=None):
 
     exc_type, reported_exception, tb = sys.exc_info()
-
-    # spit it out to stdout first
-    if g_boolean(G_DUMP_TRACEBACKS):
-        traceback.print_exc()
 
     try:
         output_dir = os.path.join(get_data_dir(), get_config().global_settings.error_reporting_dir)

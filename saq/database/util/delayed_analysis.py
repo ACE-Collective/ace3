@@ -1,10 +1,9 @@
 import logging
 
 import pymysql
-from saq.constants import G_SAQ_NODE_ID
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
-from saq.environment import g_int
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 
 
@@ -36,13 +35,13 @@ def add_delayed_analysis_request(root, observable, analysis_module, hours, minut
                                   hours, 
                                   minutes, 
                                   seconds, 
-                                  g_int(G_SAQ_NODE_ID), 
+                                  get_global_runtime_settings().saq_node_id,
                                   root.storage_dir 
                               ))
             db.commit()
 
             logging.info("added delayed analysis uuid {} observable_uuid {} analysis_module {} delayed for {}:{}:{} node {} storage_dir {}".format(
-                         root.uuid, observable.uuid, analysis_module.name, hours, minutes, seconds, g_int(G_SAQ_NODE_ID), root.storage_dir))
+                         root.uuid, observable.uuid, analysis_module.name, hours, minutes, seconds, get_global_runtime_settings().saq_node_id, root.storage_dir))
 
     except pymysql.err.IntegrityError as ie:
         logging.warning(str(ie))

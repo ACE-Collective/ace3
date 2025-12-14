@@ -13,7 +13,7 @@ from requests import HTTPError
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
-from saq.constants import ANALYSIS_MODE_ANALYSIS, G_INSTANCE_TYPE, G_SAQ_NODE, G_SAQ_NODE_ID, G_TEMP_DIR, G_UNIT_TESTING, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
+from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
 from saq.crypto import set_encryption_password
 from saq.database import get_db
 from saq.database.pool import get_db_connection
@@ -21,7 +21,7 @@ from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
-from saq.environment import g, get_base_dir, get_data_dir, initialize_environment, set_g, set_node
+from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_node
 
 
 import pytest
@@ -55,7 +55,7 @@ def global_setup(request):
     yield
 
     # clean up the temp dir
-    shutil.rmtree(g(G_TEMP_DIR))
+    shutil.rmtree(get_temp_dir())
 
 def execute_global_setup():
 
@@ -65,7 +65,7 @@ def execute_global_setup():
         saq_home = os.environ['SAQ_HOME']
 
     # XXX get rid of this
-    set_g(G_UNIT_TESTING, True)
+    get_global_runtime_settings().unit_testing = True
 
     data_dir = os.path.join(saq_home, "data_unittest")
     if os.path.exists(data_dir):
@@ -92,8 +92,8 @@ def execute_global_setup():
     # set a fake encryption password
     set_encryption_password("test")
 
-    set_g(G_SAQ_NODE, None)
-    set_g(G_SAQ_NODE_ID, None)
+    get_global_runtime_settings().saq_node = None
+    get_global_runtime_settings().saq_node_id = None
 
     # what node is this?
     node = get_config().global_settings.node
@@ -103,7 +103,7 @@ def execute_global_setup():
     set_node(node)
 
     # load the configuration first
-    if g(G_INSTANCE_TYPE) != INSTANCE_TYPE_UNITTEST:
+    if get_global_runtime_settings().instance_type != INSTANCE_TYPE_UNITTEST:
         raise Exception('*** CRITICAL ERROR ***: invalid instance_type setting in configuration for unit testing')
 
     # additional logging required for testing

@@ -14,9 +14,9 @@ from saq.bro import parse_bro_smtp
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_BRO_SMTP, DIRECTIVE_ARCHIVE, DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_ORIGINAL_SMTP, DIRECTIVE_RENAME_ANALYSIS, F_EMAIL_ADDRESS, F_FILE, F_IPV4, G_TEMP_DIR, SERVICE_BRO_SMTP_COLLECTOR
+from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_BRO_SMTP, DIRECTIVE_ARCHIVE, DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_ORIGINAL_SMTP, DIRECTIVE_RENAME_ANALYSIS, F_EMAIL_ADDRESS, F_FILE, F_IPV4, SERVICE_BRO_SMTP_COLLECTOR
 from saq.email import normalize_email_address
-from saq.environment import g, get_data_dir
+from saq.environment import get_data_dir, get_temp_dir
 from saq.error import report_exception
 from saq.service import ACEServiceInterface
 
@@ -69,10 +69,10 @@ class BroSMTPStreamCollector(Collector):
             logging.info(f"found smtp stream {stream_file_name}")
 
             # parse each email into a temp directory
-            target_dir = tempfile.mkdtemp(dir=g(G_TEMP_DIR), prefix=f'{stream_file_name}.emails')
+            target_dir = tempfile.mkdtemp(dir=get_temp_dir(), prefix=f'{stream_file_name}.emails')
 
             try:
-                for email in parse_bro_smtp(stream_file_path, g(G_TEMP_DIR)):
+                for email in parse_bro_smtp(stream_file_path, get_temp_dir()):
                     observables = []
 
                     if email.source_ipv4:

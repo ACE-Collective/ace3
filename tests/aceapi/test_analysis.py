@@ -10,9 +10,9 @@ import pytz
 
 from saq.analysis.root import KEY_PLAYBOOK_URL
 from saq.configuration.config import get_config
-from saq.constants import DIRECTIVE_NO_SCAN, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_IPV4, F_USER, G_SAQ_NODE, G_SAQ_NODE_ID
+from saq.constants import DIRECTIVE_NO_SCAN, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_IPV4, F_USER
 from saq.database.pool import get_db_connection
-from saq.environment import g, g_int, get_data_dir, get_local_timezone
+from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
 from saq.util.time import parse_event_time
 
@@ -102,7 +102,7 @@ def test_api_analysis_submit(test_client):
     assert row
     assert row[0]
     assert row[1] == uuid
-    assert row[2] == g_int(G_SAQ_NODE_ID)
+    assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
     result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ice-auth': get_config().api.api_key })
@@ -132,7 +132,7 @@ def test_api_analysis_submit(test_client):
     assert result['locks'] is None
     assert isinstance(result['workload']['id'], int)
     assert result['workload']['uuid'] == uuid
-    assert result['workload']['node_id'] == g_int(G_SAQ_NODE_ID)
+    assert result['workload']['node_id'] == get_global_runtime_settings().saq_node_id
     assert result['workload']['analysis_mode'] == 'analysis'
     assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
 
@@ -250,7 +250,7 @@ def test_api_analysis_submit_queue(test_client):
     assert row
     assert row[0]
     assert row[1] == uuid
-    assert row[2] == g_int(G_SAQ_NODE_ID)
+    assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
     result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ice-auth': get_config().api.api_key })
@@ -280,7 +280,7 @@ def test_api_analysis_submit_queue(test_client):
     assert result['locks'] is None
     assert isinstance(result['workload']['id'], int)
     assert result['workload']['uuid'] == uuid
-    assert result['workload']['node_id'] == g_int(G_SAQ_NODE_ID)
+    assert result['workload']['node_id'] == get_global_runtime_settings().saq_node_id
     assert result['workload']['analysis_mode'] == 'analysis'
     assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
 
@@ -393,10 +393,10 @@ def test_api_analysis_submit_invalid(test_client):
     def _get_alert_dir_count():
         """Returns a tuple of subdir_count, alert_count where subdir_count is the count of sub directories in the node directory,
             and alert_count is the count of sub directories in the subdirs (the alert directories)."""
-        subdirs = os.listdir(os.path.join(get_data_dir(), g(G_SAQ_NODE)))
+        subdirs = os.listdir(os.path.join(get_data_dir(), get_global_runtime_settings().saq_node))
         count = 0
         for subdir in subdirs:
-            count += len(os.listdir(os.path.join(get_data_dir(), g(G_SAQ_NODE), subdir)))
+            count += len(os.listdir(os.path.join(get_data_dir(), get_global_runtime_settings().saq_node, subdir)))
 
         return len(subdirs), count
 
@@ -569,7 +569,7 @@ rule test_filter {
     assert 'result' in result
     result = result['result']
     assert result['uuid']
-    assert not 'tuning_matches' in result
+    assert 'tuning_matches' not in result
 
     result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ice-auth': get_config().api.api_key })
     assert result.status_code == 200

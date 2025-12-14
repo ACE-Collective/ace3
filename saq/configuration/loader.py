@@ -3,8 +3,7 @@ import sys
 from typing import Optional
 
 
-from saq.environment import g_boolean, g_list, get_base_dir
-from saq.constants import G_INTEGRATION_CONFIG_PATHS, G_UNIT_TESTING
+from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.configuration.yaml_parser import YAMLConfig
 
 
@@ -31,7 +30,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
 
     # load any (automatically loaded) integration configuration files
     # these are autopopulated by the integration loader
-    for config_path in g_list(G_INTEGRATION_CONFIG_PATHS):
+    for config_path in get_global_runtime_settings().integration_config_paths:
         if not os.path.exists(config_path):
             sys.stderr.write(f"WARNING: integration config path {config_path} specified in G_INTEGRATION_CONFIG_PATHS does not exist\n")
         else:
@@ -56,7 +55,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
         else:
             config.load_file(config_path)
 
-    if g_boolean(G_UNIT_TESTING):
+    if get_global_runtime_settings().unit_testing:
         # unit testing loads different configurations
         config.load_file(os.path.join(get_base_dir(), "etc", "saq.unittest.default.yaml"))
 
@@ -69,7 +68,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
             config.load_file(path_yaml)
 
     _load_optional(db_auto_yaml)
-    if not g_boolean(G_UNIT_TESTING):
+    if not get_global_runtime_settings().unit_testing:
         _load_optional(local_yaml)
 
     config.apply_path_references()

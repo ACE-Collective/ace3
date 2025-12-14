@@ -17,13 +17,13 @@ from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.configuration.config import get_config, get_database_config, get_engine_config, get_service_config
 from saq.configuration.schema import DatabaseConfig
-from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, DB_COLLECTION, G_COMPANY_ID, G_SAQ_NODE, G_SAQ_NODE_ID, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, DB_COLLECTION, QUEUE_DEFAULT
 from saq.database.model import PersistenceSource
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import initialize_node
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
-from saq.environment import g, g_int, get_data_dir, set_g
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import log_count, search_log_condition, wait_for_log_count
 
@@ -121,7 +121,7 @@ def engine():
 @pytest.mark.integration
 def test_add_group():
     collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test', 100, True, g_int(G_COMPANY_ID), 'ace', target_node_as_company_id=None)
+    tg1 = collector_service.create_group_loader()._create_group('test', 100, True, get_global_runtime_settings().company_id, 'ace', target_node_as_company_id=None)
     collector_service.remote_node_groups.append(tg1)
     
     with get_db_connection() as db:
@@ -136,7 +136,7 @@ def test_add_group():
 
         # when we do it a second time, we should get the name group ID since we used the same name
         collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-        tg1 = collector_service.create_group_loader()._create_group('test', 100, True, g_int(G_COMPANY_ID), 'ace', target_node_as_company_id=None)
+        tg1 = collector_service.create_group_loader()._create_group('test', 100, True, get_global_runtime_settings().company_id, 'ace', target_node_as_company_id=None)
         collector_service.remote_node_groups.append(tg1)
         
         cursor.execute("SELECT id, name FROM work_distribution_groups")
@@ -179,7 +179,7 @@ def test_missing_groups():
 def test_startup():
     # make sure we can start one up, see it collect nothing, and then shut down gracefully
     collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test', 100, True, g_int(G_COMPANY_ID), 'ace')
+    tg1 = collector_service.create_group_loader()._create_group('test', 100, True, get_global_runtime_settings().company_id, 'ace')
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
     assert collector_service.wait_for_start(timeout=5)
@@ -197,8 +197,8 @@ def test_work_item():
                 yield create_submission()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace')
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, g_int(G_COMPANY_ID), 'ace')
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, get_global_runtime_settings().company_id, 'ace')
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
@@ -243,7 +243,7 @@ def test_submit(engine):
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -281,7 +281,7 @@ def test_submit_api(mock_api_call, engine):
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -321,7 +321,7 @@ def test_threaded_remote_node_single_submission(mock_api_call, engine):
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace', thread_count=2)
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace', thread_count=2)
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
     assert collector_service.wait_for_start(timeout=5)
@@ -366,7 +366,7 @@ def test_threaded_remote_node_multi_submissions(mock_api_call, engine):
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace', batch_size=1, thread_count=2)
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace', batch_size=1, thread_count=2)
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
     assert collector_service.wait_for_start(timeout=5)
@@ -416,7 +416,7 @@ def test_threaded_remote_node_multi_submissions_with_large_batch(engine):
     #engine.node_manager.update_node_status()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace', batch_size=2, thread_count=2)
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace', batch_size=2, thread_count=2)
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
     assert collector_service.wait_for_start(timeout=5)
@@ -451,16 +451,16 @@ def test_submit_target_nodes(mock_api_call):
 
             yield self.available_work.pop()
 
-    _node_id = g_int(G_SAQ_NODE_ID)
-    _node = g(G_SAQ_NODE)
-    set_g(G_SAQ_NODE, 'node_1')
-    set_g(G_SAQ_NODE_ID, None)
+    _node_id = get_global_runtime_settings().saq_node_id
+    _node = get_global_runtime_settings().saq_node
+    get_global_runtime_settings().saq_node = 'node_1'
+    get_global_runtime_settings().saq_node_id = None
     initialize_node()
-    node_1_id = g_int(G_SAQ_NODE_ID)
-    set_g(G_SAQ_NODE, 'node_2')
-    set_g(G_SAQ_NODE_ID, None)
+    node_1_id = get_global_runtime_settings().saq_node_id
+    get_global_runtime_settings().saq_node = 'node_2'
+    get_global_runtime_settings().saq_node_id = None
     initialize_node()
-    node_2_id = g_int(G_SAQ_NODE_ID)
+    node_2_id = get_global_runtime_settings().saq_node_id
 
     # we have two nodes at this point
     assert isinstance(node_1_id, int)
@@ -475,7 +475,7 @@ def test_submit_target_nodes(mock_api_call):
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
     # add a group that only targets node_1 
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, g_int(G_COMPANY_ID), 'ace', target_nodes=['node_1'])
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, get_global_runtime_settings().company_id, 'ace', target_nodes=['node_1'])
     collector_service.remote_node_groups.append(tg1)
 
     # and then take node_1 offline
@@ -500,7 +500,7 @@ def test_submit_target_nodes(mock_api_call):
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
     # add a group that only targets node_1 
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, g_int(G_COMPANY_ID), 'ace', target_nodes=['node_1'])
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, get_global_runtime_settings().company_id, 'ace', target_nodes=['node_1'])
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -521,9 +521,9 @@ def test_coverage(engine):
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 50, True, g_int(G_COMPANY_ID), 'ace') # 50% coverage
-    tg3 = collector_service.create_group_loader()._create_group('test_group_3', 10, True, g_int(G_COMPANY_ID), 'ace') # 10% coverage, full_coverage = yes
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 50, True, get_global_runtime_settings().company_id, 'ace') # 50% coverage
+    tg3 = collector_service.create_group_loader()._create_group('test_group_3', 10, True, get_global_runtime_settings().company_id, 'ace') # 10% coverage, full_coverage = yes
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.remote_node_groups.append(tg3)
@@ -576,7 +576,7 @@ def test_fail_submit_full_coverage(engine): # NOTE we do not start the api serve
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -618,7 +618,7 @@ def test_fail_submit_no_coverage(engine):
     # we do NOT start the API server making it unavailable
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, g_int(G_COMPANY_ID), 'ace') # 100% coverage, full_coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, False, get_global_runtime_settings().company_id, 'ace') # 100% coverage, full_coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -668,8 +668,8 @@ def test_no_coverage_missing_node(mock_api_call, engine):
     ))
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage, full_coverage = yes
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, False, g_int(G_COMPANY_ID), 'ace_2') # 100% coverage, full_coverage = no
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage, full_coverage = yes
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, False, get_global_runtime_settings().company_id, 'ace_2') # 100% coverage, full_coverage = no
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
@@ -719,8 +719,8 @@ def test_full_coverage_missing_node(mock_api_call, engine):
     ))
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage, full_coverage = yes
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, g_int(G_COMPANY_ID), 'ace_2') # 100% coverage, full_coverage = no
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage, full_coverage = yes
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, get_global_runtime_settings().company_id, 'ace_2') # 100% coverage, full_coverage = no
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
@@ -765,7 +765,7 @@ def test_cleanup_files(tmpdir, engine):
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
     collector_service.config.delete_files = True
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -797,7 +797,7 @@ def test_recovery(mock_api_call, engine, monkeypatch):
                 yield None
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
 
     def fail_execute_api_call(*args, **kwargs):
@@ -829,7 +829,7 @@ def test_recovery(mock_api_call, engine, monkeypatch):
     # NOW "start" the API server
     # and then start up the collector
     collector_service = CollectorService(collector=_custom_collector_2(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
 
     for _ in range(10):
@@ -886,8 +886,8 @@ def test_node_assignment(engine):
             yield self.available_work.pop()
     
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start_single_threaded(execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION, execute_nodes=False)
@@ -919,8 +919,8 @@ def test_node_default_assignment(engine):
             yield self.available_work.pop()
     
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start_single_threaded(execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION, execute_nodes=False)
@@ -954,8 +954,8 @@ def test_node_invalid_assignment(engine):
             yield self.available_work.pop()
     
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
-    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
+    tg2 = collector_service.create_group_loader()._create_group('test_group_2', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.remote_node_groups.append(tg2)
     collector_service.start_single_threaded(execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION, execute_nodes=False)
@@ -1005,7 +1005,7 @@ condition:
             yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, g_int(G_COMPANY_ID), 'ace') # 100% coverage
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
@@ -1049,7 +1049,7 @@ def test_initialize_service_environment():
 def test_add_group_loader():
     collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
     assert not collector_service.remote_node_groups
-    node = collector_service.create_group_loader()._create_group("test_name", 100, True, g_int(G_COMPANY_ID), DB_COLLECTION)
+    node = collector_service.create_group_loader()._create_group("test_name", 100, True, get_global_runtime_settings().company_id, DB_COLLECTION)
     collector_service.remote_node_groups.append(node)
     assert isinstance(node, RemoteNodeGroup)
     assert collector_service.remote_node_groups

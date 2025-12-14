@@ -6,11 +6,11 @@ import pytest
 
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
 from saq.constants import (
-    CONFIG_ANALYSIS_MODULE_ENABLED,
     ANALYSIS_MODE_ANALYSIS,
 )
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
+from saq.environment import get_global_runtime_settings
 from saq.modules.test import BasicTestAnalyzer
 
 
@@ -261,10 +261,8 @@ def test_engine_configuration_loads_from_config():
     # Test target_nodes
     expected_target_nodes = get_engine_config().target_nodes
     # Note: target_nodes may have LOCAL translated to actual node name
-    from saq.constants import G_SAQ_NODE
-    from saq.environment import g
     expected_target_nodes = [
-        g(G_SAQ_NODE) if node == "LOCAL" else node for node in expected_target_nodes
+        get_global_runtime_settings().saq_node if node == "LOCAL" else node for node in expected_target_nodes
     ]
     assert config.target_nodes == expected_target_nodes
 
@@ -590,14 +588,12 @@ def test_compute_pool_size_zero_values():
 def test_engine_configuration_directories():
     """Test that directory properties are set correctly."""
     from saq.environment import get_data_dir
-    from saq.constants import G_MODULE_STATS_DIR
-    from saq.environment import g
     import os
 
     config = EngineConfiguration()
 
     # Check stats_dir
-    expected_stats_dir = os.path.join(g(G_MODULE_STATS_DIR), "ace")
+    expected_stats_dir = os.path.join(get_global_runtime_settings().module_stats_dir, "ace")
     assert config.stats_dir == expected_stats_dir
 
     # Check runtime_dir

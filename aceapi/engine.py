@@ -17,9 +17,8 @@ import uuid as uuidlib
 
 from aceapi.json import json_result
 from saq.configuration.config import get_engine_config
-from saq.constants import G_COMPANY_ID, G_COMPANY_NAME, G_SAQ_NODE, G_TEMP_DIR
 from saq.database.pool import get_db_connection
-from saq.environment import g, g_int
+from saq.environment import get_global_runtime_settings, get_temp_dir
 
 from saq.analysis import RootAnalysis
 from saq.error import report_exception
@@ -48,7 +47,7 @@ def download(uuid):
 
     logging.info("received request to download {} to {}".format(uuid, request.remote_addr))
 
-    path = os.path.join(g(G_TEMP_DIR), f"download_{uuid}_{str(uuidlib.uuid4())}.tar")
+    path = os.path.join(get_temp_dir(), f"download_{uuid}_{str(uuidlib.uuid4())}.tar")  # noqa: F821
     tar = tarfile.open(path, mode='w')
     tar.add(target_dir, '.')
     tar.close()
@@ -145,7 +144,7 @@ def upload(uuid):
     logging.debug("target directory for {} is {}".format(uuid, target_dir))
 
     # save the tar file so we can extract it
-    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(uuid), dir=g(G_TEMP_DIR))
+    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(uuid), dir=get_temp_dir())  # noqa: F821
     os.close(fp)
 
     try:
@@ -160,9 +159,9 @@ def upload(uuid):
         root.load()
 
         #root.storage_dir = target_dir
-        root.location = g(G_SAQ_NODE)
-        root.company_id = g_int(G_COMPANY_ID)
-        root.company_name = g(G_COMPANY_NAME)
+        root.location = get_global_runtime_settings().saq_node
+        root.company_id = get_global_runtime_settings().company_id
+        root.company_name = get_global_runtime_settings().company_name
         root.save()
 
         if is_alert and move:

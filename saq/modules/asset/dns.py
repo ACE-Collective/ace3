@@ -5,8 +5,8 @@ from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.configuration.config import get_config
-from saq.constants import F_ASSET, F_FQDN, F_HOSTNAME, F_IPV4, G_DEFAULT_ENCODING, G_LOCAL_DOMAINS, AnalysisExecutionResult
-from saq.environment import g, g_list
+from saq.constants import F_ASSET, F_FQDN, F_HOSTNAME, F_IPV4, AnalysisExecutionResult
+from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.util.strings import format_item_list_for_summary
@@ -117,7 +117,7 @@ class DNSAnalyzer(AnalysisModule):
                 domain = '.'.join(observable.value.split('.')[1:])
                 if domain.startswith('.'):
                     domain = domain[1:]
-                    if domain in g_list(G_LOCAL_DOMAINS):
+                    if domain in get_global_runtime_settings().local_domains:
                         logging.debug("{} identified as local domain".format(observable))
                         is_local_domain = True
             else:
@@ -142,7 +142,7 @@ class DNSAnalyzer(AnalysisModule):
 
         # if we have a hostname then we try all the local domains we know about as well
         if observable.type == F_HOSTNAME:
-            for local_domain in g_list(G_LOCAL_DOMAINS):
+            for local_domain in get_global_runtime_settings().local_domains:
                 for local_domain in get_config().global_settings.local_domains:
                     target_queries.append(f'{observable.value}.{local_domain}')
 
@@ -167,7 +167,7 @@ class DNSAnalyzer(AnalysisModule):
                     if not answer_section:
                         continue
 
-                    m = re.match(r'^\S+\s+[0-9]+\s+IN\s+PTR\s+(\S+)$', line.decode(g(G_DEFAULT_ENCODING)))
+                    m = re.match(r'^\S+\s+[0-9]+\s+IN\s+PTR\s+(\S+)$', line.decode(get_global_runtime_settings().default_encoding))
                     if m:
                         (fqdn,) = m.groups()
                         analysis.dns_resolved = True

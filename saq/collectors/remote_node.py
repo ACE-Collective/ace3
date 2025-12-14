@@ -13,11 +13,11 @@ import urllib3
 from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, G_SAQ_NODE, G_UNIT_TESTING, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, WORK_SUBMITTED
 from saq.database import ALERT, execute_with_retry, get_db, get_db_connection
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
-from saq.environment import g, g_boolean, get_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error import report_exception
 from saq.util.uuid import storage_dir_from_uuid
 
@@ -61,7 +61,7 @@ class RemoteNode:
     @property
     def is_local(self) -> bool:
         """Returns True if this RemoteNode refers to the local node."""
-        return self.name == g(G_SAQ_NODE) 
+        return self.name == get_global_runtime_settings().saq_node 
 
     def submit(self, submission: Submission):
         assert isinstance(submission, Submission)
@@ -297,7 +297,7 @@ WHERE
 
         # if we get nothing from this query then no work is available for this group
         if not available_modes:
-            if g_boolean(G_UNIT_TESTING):
+            if get_global_runtime_settings().unit_testing:
                 logging.debug("no work available for {}".format(self))
             return NO_WORK_AVAILABLE
 

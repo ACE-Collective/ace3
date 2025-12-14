@@ -15,7 +15,7 @@ splunk_config_default:
   # are we using this splunk server?
   enabled: true
   # the splunk query server
-  host:
+  host: localhost
   port: 443
   # user account information for splunk
   username:

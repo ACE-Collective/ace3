@@ -6,15 +6,12 @@ from typing import Optional, Type, Union
 
 from pydantic import Field
 
-from saq.constants import (
-    G_SAQ_NODE,
-)
 
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
@@ -117,7 +114,7 @@ class Engine():
         self.single_threaded_worker: Optional[Worker] = None
 
     def __str__(self):
-        return "Engine ({})".format(g(G_SAQ_NODE))
+        return "Engine ({})".format(get_global_runtime_settings().saq_node)
 
     def _set_state(self, state: EngineState):
         """Sets the state of the engine."""

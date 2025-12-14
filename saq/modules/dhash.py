@@ -4,8 +4,8 @@ import os.path
 from typing import Optional, override
 
 from saq.analysis import Analysis
-from saq.constants import F_FILE, DIRECTIVE_DHASH, G_ANALYST_DATA_DIR, AnalysisExecutionResult
-from saq.environment import g
+from saq.constants import F_FILE, DIRECTIVE_DHASH, AnalysisExecutionResult
+from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import is_image
 from saq.util.strings import format_item_list_for_summary
@@ -87,7 +87,7 @@ class DHashImageAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         # the images we want to look for are stored in the analyst data repo
-        source_dir = os.path.join(g(G_ANALYST_DATA_DIR), "dhash")
+        source_dir = os.path.join(get_global_runtime_settings().analyst_data_dir, "dhash")
         if not os.path.isdir(source_dir):
             logging.warning(f"missing dhash source directory {source_dir}")
             return AnalysisExecutionResult.COMPLETED

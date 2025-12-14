@@ -16,8 +16,8 @@ from saq.collectors.base_collector import Collector, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.configuration.config import get_config, get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, G_TEMP_DIR, SERVICE_JOURNAL_EMAIL_COLLECTOR
-from saq.environment import g
+from saq.constants import ANALYSIS_MODE_EMAIL, ANALYSIS_TYPE_MAILBOX, DIRECTIVE_ARCHIVE, DIRECTIVE_NO_SCAN, DIRECTIVE_ORIGINAL_EMAIL, SERVICE_JOURNAL_EMAIL_COLLECTOR
+from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
 from saq.storage.minio import get_minio_client
 from saq.util.filesystem import delete_file
@@ -251,7 +251,7 @@ class JournalEmailCollector(Collector):
             logging.info(f"got {journal_email_message_location}")
 
             # temp directory for the email and the submission
-            email_path = os.path.join(g(G_TEMP_DIR), str(uuid4()))
+            email_path = os.path.join(get_temp_dir(), str(uuid4()))  # noqa: F821
             logging.info(f"downloading email {journal_email_message_location.object_key} to {email_path}")
             self.client.fget_object(journal_email_message_location.bucket_name, journal_email_message_location.object_key, email_path)
 
@@ -260,7 +260,7 @@ class JournalEmailCollector(Collector):
                 continue
 
             root_uuid = str(uuid4())
-            storage_dir = os.path.join(g(G_TEMP_DIR), root_uuid)
+            storage_dir = os.path.join(get_temp_dir(), root_uuid)  # noqa: F821
 
             root = RootAnalysis(
                 uuid = root_uuid,

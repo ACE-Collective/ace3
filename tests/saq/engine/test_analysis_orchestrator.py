@@ -1,11 +1,12 @@
 import pytest
 from unittest.mock import Mock, patch
 
-from saq.constants import ANALYSIS_MODE_CORRELATION, G_FORCED_ALERTS
+from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
+from saq.environment import get_global_runtime_settings
 from tests.saq.helpers import create_root_analysis
 
 
@@ -72,7 +73,7 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
         execution_context.root.analysis_mode = "test_mode"
         execution_context.root.add_tag("whitelisted")
         
-        monkeypatch.setattr("saq.engine.analysis_orchestrator.g_boolean", lambda x: forced_alerts and x == G_FORCED_ALERTS)
+        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", forced_alerts)
         
         orchestrator._handle_detection_points(execution_context)
         
@@ -90,7 +91,7 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
         monkeypatch.setattr(execution_context.root, 'has_detections', Mock(return_value=True))
         mock_detection_points = ["detection1", "detection2"]
         monkeypatch.setattr(type(execution_context.root), 'all_detection_points', property(lambda self: mock_detection_points))
-        monkeypatch.setattr("saq.engine.analysis_orchestrator.g_boolean", lambda x: False)
+        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", False)
         
         orchestrator._handle_detection_points(execution_context)
         
@@ -106,7 +107,7 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
         
         # Mock has_detections to return False
         monkeypatch.setattr(execution_context.root, 'has_detections', Mock(return_value=False))
-        monkeypatch.setattr("saq.engine.analysis_orchestrator.g_boolean", lambda x: forced_alerts and x == G_FORCED_ALERTS)
+        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", forced_alerts)
         
         orchestrator._handle_detection_points(execution_context)
         
@@ -126,7 +127,7 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
         if has_detections:
             mock_detection_points = ["detection1"]
             monkeypatch.setattr(type(execution_context.root), 'all_detection_points', property(lambda self: mock_detection_points))
-        monkeypatch.setattr("saq.engine.analysis_orchestrator.g_boolean", lambda x: forced_alerts and x == G_FORCED_ALERTS)
+        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", forced_alerts)
         
         orchestrator._handle_detection_points(execution_context)
 

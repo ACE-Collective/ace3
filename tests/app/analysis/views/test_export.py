@@ -5,11 +5,11 @@ import pytest
 from flask import url_for
 
 from saq.configuration import get_config
-from saq.constants import F_TEST, G_AUTOMATION_USER_ID
+from saq.constants import F_TEST
 from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.environment import g
+from saq.environment import get_global_runtime_settings
 from saq.observables.testing import TestObservable
 from saq.util.time import local_time
 
@@ -79,7 +79,7 @@ def test_export_alerts_to_csv_with_alerts(web_client, root_analysis):
     alert = ALERT(root_analysis)
     
     # Add a comment to test comments column
-    comment = Comment(uuid=alert.uuid, comment="Test comment", user_id=g(G_AUTOMATION_USER_ID))
+    comment = Comment(uuid=alert.uuid, comment="Test comment", user_id=get_global_runtime_settings().automation_user_id)
     get_db().add(comment)
     get_db().commit()
 
