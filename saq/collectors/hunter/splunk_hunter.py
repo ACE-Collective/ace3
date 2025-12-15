@@ -13,6 +13,7 @@ from typing import Optional
 
 from pydantic import Field
 import pytz
+from splunklib.results import Message
 
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
@@ -135,7 +136,16 @@ class SplunkHunt(QueryHunt):
 
             # stop if we are done
             if search_result is not None:
-                return search_result
+                # Splunk can return messages in the results, so we need to filter them out
+                final_result = []
+                for result in search_result:
+                    if isinstance(result, Message):
+                        logging.info(f"Splunk returned a message for this search: {result}")
+                        continue
+
+                    final_result.append(result)
+
+                return final_result
 
             # stop if the search failed
             if searcher.search_failed():

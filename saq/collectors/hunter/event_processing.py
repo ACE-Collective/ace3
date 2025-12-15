@@ -93,23 +93,46 @@ def extract_event_value(event: dict, lookup_type: str, field_path: str) -> tuple
         return (True, resolved_value)
 
 
-def interpolate_event_value(value: str, event: dict) -> str:
-    """Interpolates event data into the given value."""
-    if not isinstance(value, str):
-        return value
+def interpolate_event_value(value: str, event: dict) -> list[str]:
+    """Interpolates event data into the given value.
 
-    if not isinstance(event, dict):
-        return value
+    This supports fields that resolve to either scalar values or lists:
+    - If a placeholder resolves to a scalar, it is interpolated normally.
+    - If a placeholder resolves to a list, each element is interpolated separately.
+    - If multiple placeholders resolve to lists, all combinations are returned.
+    """
+    assert isinstance(value, str)
+    assert isinstance(event, dict)
 
+    # if there are no interpolation patterns, then we just return the value as is
     if not _FIELD_PATTERN.search(value):
-        return value
+        return [value]
 
-    def replace(match: re.Match[str]) -> str:
+    # We build the output by treating the string as a sequence of segments.
+    # Each segment is a list of possible strings:
+    # - Literal text segments have a single option.
+    # - Placeholder segments may have multiple options (if their value is a list).
+    segments: list[list[str]] = []
+    last_index = 0
+
+    for match in _FIELD_PATTERN.finditer(value):
+        # literal text before this match
+        if match.start() > last_index:
+            literal = value[last_index : match.start()]
+            segments.append([literal])
+
         lookup_type = match.group(1)  # can be None, empty string, FIELD_LOOKUP_TYPE_KEY, or FIELD_LOOKUP_TYPE_DOT
         field_path = match.group(2).strip()
 
+        # default behavior if something goes wrong with this placeholder:
+        # keep the original text for this match
+        default_segment = [match.group(0)]
+
         if not field_path:
-            return match.group(0)
+            # empty lookup, leave placeholder as-is
+            segments.append(default_segment)
+            last_index = match.end()
+            continue
 
         field_path = _unescape_lookup_value(field_path)
 
@@ -119,16 +142,58 @@ def interpolate_event_value(value: str, event: dict) -> str:
 
         # validate lookup type
         if lookup_type not in (FIELD_LOOKUP_TYPE_KEY, FIELD_LOOKUP_TYPE_DOT):
-            return match.group(0)
+            segments.append(default_segment)
+            last_index = match.end()
+            continue
 
         success, resolved_value = extract_event_value(event, lookup_type, field_path)
 
         if not success:
-            return match.group(0)
+            segments.append(default_segment)
+            last_index = match.end()
+            continue
 
+        # Build the list of replacement options for this placeholder.
         if resolved_value is None:
-            return ""
+            # Preserve previous behavior: None becomes empty string.
+            segment_values = [""]
 
-        return str(resolved_value)
+        elif isinstance(resolved_value, list):
+            # Each element of the list becomes a separate interpolation.
+            # Convert elements to strings, treating None as empty string.
+            if not resolved_value:
+                # An empty list yields no options; this effectively results in no
+                # combinations that include this placeholder.
+                segment_values = []
+            else:
+                segment_values = [
+                    "" if item is None else str(item) for item in resolved_value
+                ]
 
-    return _FIELD_PATTERN.sub(replace, value)
+        else:
+            segment_values = [str(resolved_value)]
+
+        # If there are no options (empty list), then there are no valid
+        # combinations that include this placeholder.
+        if not segment_values:
+            return []
+
+        segments.append(segment_values)
+        last_index = match.end()
+
+    # trailing literal text after the last match
+    if last_index < len(value):
+        segments.append([value[last_index:]])
+
+    # Now compute the cartesian product across all segments to generate all
+    # interpolated strings.
+    results: list[str] = [""]
+    for segment_options in segments:
+        new_results: list[str] = []
+        for base in results:
+            for option in segment_options:
+                new_results.append(base + option)
+
+        results = new_results
+
+    return results

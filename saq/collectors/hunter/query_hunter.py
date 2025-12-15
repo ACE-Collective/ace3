@@ -74,6 +74,7 @@ class QueryHuntConfig(HuntConfig):
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config().query_hunter.max_result_count, description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
+    ignored_values: list[str] = Field(default_factory=list, description="A global list of values to ignore that applies to all observable mappings.")
 
 class FileContent(BaseModel):
     file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
@@ -84,8 +85,36 @@ class FileContent(BaseModel):
     display_type: Optional[str] = Field(default=None, description="The display type to use for the file observable.")
     display_value: Optional[str] = Field(default=None, description="The display value to use for the file observable.")
 
+def interpret_event_value(observable_mapping: ObservableMapping, event: dict) -> list[str]:
+    """Interprets the event value(s) for the given event and observable mapping.
+
+    Returns a list of observed, interpolated values."""
+    assert isinstance(observable_mapping, ObservableMapping)
+    assert isinstance(event, dict)
+
+    result: list[str] = []
+
+    # is the value for this mapping not computed?
+    if observable_mapping.value is None:
+        # then we just take the value
+        observed_value = event[observable_mapping.fields[0]] # hard coded to first field
+    else:
+        # otherwise we interpolate the value from the event
+        observed_value = interpolate_event_value(observable_mapping.value, event)
+
+    # we always return a list of values, even if there is only one
+    if not isinstance(observed_value, list):
+        result = [observed_value]
+    else:
+        result = observed_value
+
+    # if any of the results are bytes, convert them into strings using utf-8
+    return [_.decode("utf-8", errors="ignore") if isinstance(_, bytes) else str(_) for _ in result]
+
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
+
+    config: QueryHuntConfig
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -332,9 +361,12 @@ class QueryHunt(Hunt):
     def create_root_analysis(self, event: dict) -> RootAnalysis:
         import uuid as uuidlib
         root_uuid = str(uuidlib.uuid4())
-        extensions = {
-            KEY_PLAYBOOK_URL: interpolate_event_value(self.playbook_url, event),
-        }
+        extensions = {}
+        if self.playbook_url:
+            for url_value in interpolate_event_value(self.playbook_url, event):
+                extensions.update({
+                    KEY_PLAYBOOK_URL: url_value,
+                })
 
         if self.icon_configuration:
             extensions[KEY_ICON_CONFIGURATION] = self.icon_configuration.model_dump()
@@ -342,10 +374,24 @@ class QueryHunt(Hunt):
         if self.alert_template:
             extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
+        description = ", ".join(interpolate_event_value(self.name, event))
+        if not description:
+            description = "(no description)"
+        else:
+            # sanity check the description length
+            description = description[:4096]
+
+        #instructions_list = interpolate_event_value(self.instructions, event)
+        #if not instructions_list:
+            #instructions = None
+        #else:
+            ## otherwise just use the first instruction
+            #instructions = instructions_list[0]
+
         root = RootAnalysis(
             uuid=root_uuid,
             storage_dir=os.path.join(g(G_TEMP_DIR), root_uuid),
-            desc=interpolate_event_value(self.name, event),
+            desc=description,
             analysis_mode=self.analysis_mode,
             tool=f'hunter-{self.type}',
             tool_instance=self.tool_instance,
@@ -358,16 +404,19 @@ class QueryHunt(Hunt):
             },
             event_time=None,
             queue=self.queue,
-            instructions=interpolate_event_value(self.description, event),
             extensions=extensions)
 
         root.initialize_storage()
 
         for tag in self.tags:
-            root.add_tag(interpolate_event_value(tag, event))
+            for tag_value in interpolate_event_value(tag, event):
+                root.add_tag(tag_value)
 
         for pivot_link in self.pivot_links:
-            root.add_pivot_link(interpolate_event_value(pivot_link["url"], event), interpolate_event_value(pivot_link.get("icon", None), event), interpolate_event_value(pivot_link["text"], event))
+            for pivot_link_url_value in interpolate_event_value(pivot_link["url"], event):
+                for pivot_link_icon_value in interpolate_event_value(pivot_link.get("icon", None), event):
+                    for pivot_link_text_value in interpolate_event_value(pivot_link["text"], event):
+                        root.add_pivot_link(pivot_link_url_value, pivot_link_icon_value, pivot_link_text_value)
 
         return root
 
@@ -412,80 +461,84 @@ class QueryHunt(Hunt):
                 if not all_fields_present:
                     continue
 
-                # compute the value
-                # if the value is not specified, then we take the value from the event
-                # and if there are more than one fields specified, then we just take the first one
-                if observable_mapping.value is None:
-                    observed_value = event[observable_mapping.fields[0]] # hard coded to first field
-                else:
-                    # otherwise we interpolate the value from the event
-                    observed_value = interpolate_event_value(observable_mapping.value, event)
+                # used for file content observables to store the decoded value
+                decoded_observed_value: Optional[bytes] = None
 
-                # if the value is empty we ignore it
-                if not observed_value:
-                    continue
-
-                # if the value is in the ignored values list, then we ignore it
-                if observable_mapping.ignored_values and observed_value in observable_mapping.ignored_values:
-                    continue
-
-                if observable_mapping.file_decoder is not None:
-                    observed_value = decode_value(observed_value, observable_mapping.file_decoder)
-
-                # create the observable
-                if observable_mapping.type == F_FILE:
-                    # if we're treating the value of this field as file content but the value is a string,
-                    # then we need to encode it as bytes
-                    if isinstance(observed_value, str):
-                        observed_value = observed_value.encode('utf-8')
-
-                    if not isinstance(observed_value, bytes):
-                        logging.error(f"expected bytes for file content, got {type(observed_value)} for event {event} in hunt {self}")
+                # iterate through the list of all interpolated values for this observable mapping
+                for observed_value in interpret_event_value(observable_mapping, event):
+                    # if the value is empty we ignore it
+                    if not observed_value:
                         continue
 
-                    target_file_name = interpolate_event_value(observable_mapping.file_name, event)
-                    # interpolate directives and tags from event fields
-                    interpolated_directives = [interpolate_event_value(d, event) for d in observable_mapping.directives]
-                    interpolated_tags = [interpolate_event_value(t, event) for t in observable_mapping.tags]
-                    file_contents.append(FileContent(
-                        file_name=target_file_name,
-                        content=observed_value,
-                        directives=interpolated_directives,
-                        tags=interpolated_tags,
-                        volatile=observable_mapping.volatile,
-                        display_type=observable_mapping.display_type,
-                        display_value=observable_mapping.display_value
-                    ))
+                    # if the value is in the global ignored list, then we ignore it
+                    if self.config.ignored_values and observed_value in self.config.ignored_values:
+                        continue
 
-                    continue
-                
-                observable = create_observable(observable_mapping.type, observed_value, volatile=observable_mapping.volatile)
+                    # if the value is in the ignored values list (for this observable mapping), then we ignore it
+                    if observable_mapping.ignored_values and observed_value in observable_mapping.ignored_values:
+                        continue
 
-                if observable is None:
-                    logging.error(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
-                    continue
+                    # create the observable
+                    if observable_mapping.type == F_FILE:
+                        if observable_mapping.file_decoder is not None:
+                            decoded_observed_value = decode_value(observed_value, observable_mapping.file_decoder)
 
-                # did we specify that the time be recorded?
-                if observable_mapping.time:
-                    observable.time = event_time
+                        # if we don't specify a decoder then we assume the value is a string and encode it as utf8 bytes
+                        if decoded_observed_value is None:
+                            decoded_observed_value = observed_value.encode('utf-8')
 
-                # add any specified directives
-                for directive in observable_mapping.directives:
-                    observable.add_directive(interpolate_event_value(directive, event))
+                        for target_file_name in interpolate_event_value(observable_mapping.file_name, event):
+                            # interpolate directives and tags from event fields
+                            interpolated_directives = []
+                            for directive in observable_mapping.directives:
+                                interpolated_directives.extend(interpolate_event_value(directive, event))
 
-                # and any specified tags
-                for tag in observable_mapping.tags:
-                    observable.add_tag(interpolate_event_value(tag, event))
+                            interpolated_tags = []
+                            for tag in observable_mapping.tags:
+                                interpolated_tags.extend(interpolate_event_value(tag, event))
 
-                if observable_mapping.display_type is not None:
-                    observable.display_type = observable_mapping.display_type
+                            file_contents.append(FileContent(
+                                file_name=target_file_name,
+                                content=decoded_observed_value,
+                                directives=interpolated_directives,
+                                tags=interpolated_tags,
+                                volatile=observable_mapping.volatile,
+                                display_type=observable_mapping.display_type,
+                                display_value=observable_mapping.display_value
+                            ))
 
-                if observable_mapping.display_value is not None:
-                    observable.display_value = observable_mapping.display_value
+                        continue
+                    
+                    # otherwise it's just a normal observable
+                    observable = create_observable(observable_mapping.type, observed_value, volatile=observable_mapping.volatile)
 
-                # add it to our list if we haven't already added it
-                if observable not in observables:
-                    observables.append(observable)
+                    if observable is None:
+                        logging.error(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
+                        continue
+
+                    # did we specify that the time be recorded?
+                    if observable_mapping.time:
+                        observable.time = event_time
+
+                    # add any specified directives
+                    for directive in observable_mapping.directives:
+                        for directive_value in interpolate_event_value(directive, event):
+                            observable.add_directive(directive_value)
+
+                    # and any specified tags
+                    for tag in observable_mapping.tags:
+                        for tag_value in interpolate_event_value(tag, event):
+                            observable.add_tag(tag_value)
+
+                    if observable_mapping.display_type is not None:
+                        observable.display_type = observable_mapping.display_type
+
+                    if observable_mapping.display_value is not None:
+                        observable.display_value = observable_mapping.display_value
+
+                    # add it to our list if we haven't already added it
+                    if observable not in observables:
+                        observables.append(observable)
 
             signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
 

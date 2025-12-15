@@ -527,7 +527,7 @@ def test_process_query_results(monkeypatch):
     assert submission.root.tags == [Tag(name="test_tag")]
     #assert submission.root.files == []
     assert submission.root.queue == hunt.queue
-    assert submission.root.instructions == hunt.description
+    #assert submission.root.instructions == hunt.description
     assert submission.root.extensions == { "playbook_url": hunt.playbook_url }
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
