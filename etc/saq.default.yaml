@@ -1124,12 +1124,17 @@ analysis_module_email_logger:
   brocess_logging_enabled: true
   # this enables JSON logging to a file, suitable for any logging system that supports JSON
   json_logging_enabled: false
+
   # enabled logging directly to fluent-bit
   fluent_bit_logging_enabled: true
   # the hostname of the fluent-bit server
   fluent_bit_hostname: fluent-bit
   fluent_bit_port: 24224
-  fluent_bit_tag: phishfinder
+  fluent_bit_tags: 
+    main: phishfinder-main
+    urls: phishfinder-urls
+    headers: phishfinder-headers
+
   # JSON logging file path relative to DATA_DIR
   # the file name is passed through strftime
   # https://docs.python.org/3/library/datetime.html#strftime-strptime-behavior

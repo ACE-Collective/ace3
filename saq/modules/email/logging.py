@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, Type
-from pydantic import Field
+from pydantic import BaseModel, Field
 import simdjson as json
 import logging
 import os
@@ -39,13 +39,18 @@ class EmailHistoryRecord:
         md5, ext = os.path.splitext(file_name)
         return md5
 
+class FluentBitTags(BaseModel):
+    main: str = Field(..., description="the main tag for fluent-bit logging")
+    urls: Optional[str] = Field(default=None, description="(optional) send extracted urls to a separate log source")
+    headers: Optional[str] = Field(default=None, description="(optional) send extracted headers to a separate log source")
+
 class EmailLoggingConfig(AnalysisModuleConfig):
     splunk_log_enabled: bool = Field(..., description="whether to enable splunk logging")
     splunk_log_subdir: str = Field(..., description="the subdirectory inside of splunk_log_dir (see [splunk_logging]) that contains the logs")
     json_logging_enabled: bool = Field(..., description="whether to enable JSON logging")
     json_log_path_format: str = Field(..., description="the path to the JSON log file")
     brocess_logging_enabled: bool = Field(..., description="whether to enable brocess logging")
-    fluent_bit_tag: str = Field(..., description="the tag to use for fluent-bit logging")
+    fluent_bit_tags: FluentBitTags = Field(..., description="the tags to use for fluent-bit logging")
     fluent_bit_logging_enabled: bool = Field(..., description="whether to enable fluent-bit logging")
     fluent_bit_hostname: str = Field(..., description="the hostname of the fluent-bit server")
     fluent_bit_port: int = Field(..., description="the port of the fluent-bit server")
@@ -74,13 +79,26 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         # brocess log settings
         self.brocess_logging_enabled = self.config.brocess_logging_enabled
-        self.fluent_bit_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_main_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_urls_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_headers_sender: Optional[sender.FluentSender] = None
 
         if self.config.fluent_bit_logging_enabled:
-            self.fluent_bit_sender = sender.FluentSender(
-                self.config.fluent_bit_tag,
+            self.fluent_bit_main_sender = sender.FluentSender(
+                self.config.fluent_bit_tags.main,
                 host=self.config.fluent_bit_hostname,
                 port=self.config.fluent_bit_port)
+
+            if self.config.fluent_bit_tags.urls:
+                self.fluent_bit_urls_sender = sender.FluentSender(
+                    self.config.fluent_bit_tags.urls,
+                    host=self.config.fluent_bit_hostname,
+                    port=self.config.fluent_bit_port)
+
+            if self.config.fluent_bit_tags.headers:
+                self.fluent_bit_headers_sender = sender.FluentSender(
+                    self.config.fluent_bit_tags.headers,
+                    host=self.config.fluent_bit_hostname)
 
     def verify_environment(self):
         if self.splunk_log_enabled:
@@ -222,7 +240,37 @@ class EmailLoggingAnalyzer(AnalysisModule):
     def export_to_fluent_bit(self, entry: dict) -> bool:
         # convert the date into a timestamp for splunk
         entry["timestamp"] = str(datetime.strptime(entry["date"], '%Y-%m-%d %H:%M:%S.%f %z').timestamp())
-        self.fluent_bit_sender.emit(None, entry)
+        if not entry.get("message_id"):
+            logging.warning(f"missing message_id for {entry}")
+        else:
+            # are we sending extracted urls to a separate log source?
+            if self.fluent_bit_urls_sender:
+                for url in entry["extracted_urls"]:
+                    url_entry = {
+                        "timestamp": entry["timestamp"],
+                        "message_id": entry["message_id"],
+                        "url": url,
+                    }
+                    self.fluent_bit_urls_sender.emit(None, url_entry)
+
+            # remove from the main entry
+            del entry["extracted_urls"]
+
+            # are we sending extracted headers to a separate log source?
+            if self.fluent_bit_headers_sender:
+                for index, header in enumerate(entry["headers"]):
+                    header_entry = {
+                        "timestamp": entry["timestamp"],
+                        "message_id": entry["message_id"],
+                        "header": header,
+                        "index": index,
+                    }
+                    self.fluent_bit_headers_sender.emit(None, header_entry)
+
+                # remove from the main entry
+                del entry["headers"]
+
+        self.fluent_bit_main_sender.emit(None, entry)
         return True
 
     def export_to_splunk(self, entry):

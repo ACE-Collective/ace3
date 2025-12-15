@@ -76,7 +76,7 @@ pipeline:
       reserve_data: on
 
     - name: parser
-      match: phishfinder
+      match: phishfinder-*
       key_name: log
       parser: phishfinder_json
       reserve_data: on
@@ -169,6 +169,6 @@ pipeline:
 
     - name: file
       path: /data/logs
-      match: "phishfinder"
+      match: "phishfinder-*"
       format: out_file
       workers: 1
