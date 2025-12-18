@@ -374,13 +374,6 @@ class QueryHunt(Hunt):
         if self.alert_template:
             extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
-        description = ", ".join(interpolate_event_value(self.name, event))
-        if not description:
-            description = "(no description)"
-        else:
-            # sanity check the description length
-            description = description[:4096]
-
         #instructions_list = interpolate_event_value(self.instructions, event)
         #if not instructions_list:
             #instructions = None
@@ -391,7 +384,8 @@ class QueryHunt(Hunt):
         root = RootAnalysis(
             uuid=root_uuid,
             storage_dir=os.path.join(get_temp_dir(), root_uuid),
-            desc=description,
+            desc=self.name,
+            instructions=self.description,
             analysis_mode=self.analysis_mode,
             tool=f'hunter-{self.type}',
             tool_instance=self.tool_instance,
