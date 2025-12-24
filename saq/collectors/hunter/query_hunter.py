@@ -408,9 +408,8 @@ class QueryHunt(Hunt):
 
         for pivot_link in self.pivot_links:
             for pivot_link_url_value in interpolate_event_value(pivot_link["url"], event):
-                for pivot_link_icon_value in interpolate_event_value(pivot_link.get("icon", None), event):
-                    for pivot_link_text_value in interpolate_event_value(pivot_link["text"], event):
-                        root.add_pivot_link(pivot_link_url_value, pivot_link_icon_value, pivot_link_text_value)
+                for pivot_link_text_value in interpolate_event_value(pivot_link["text"], event):
+                    root.add_pivot_link(pivot_link_url_value, pivot_link.get("icon", None), pivot_link_text_value)
 
         return root
 
