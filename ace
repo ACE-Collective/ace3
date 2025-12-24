@@ -135,20 +135,20 @@ def execute_hunt(args):
 
         observables = []
         for observable in submission.root.observables:
-            observable_json = observable.json
-            #observable_json = {
-                #'type': observable.type,
-                #'value': observable.value,
-                #'time': observable.time,
-                #'tags': [t.name for t in observable.tags],
-                #'directives': observable.directives,
-                #'limited_analysis': observable.limited_analysis,
-                ##'pivot_links': observable.pivot_links,
-                ##'file_path': observable.file_path,
-            #}
+            #observable_json = observable.json
+            observable_json = {
+                'type': observable.type,
+                'value': observable.value,
+                'time': observable.time,
+                'tags': [t.name for t in observable.tags],
+                'directives': observable.directives,
+                'limited_analysis': observable.limited_analysis,
+                #'pivot_links': observable.pivot_links,
+                #'file_path': observable.file_path,
+            }
 
-            #if isinstance(observable, FileObservable):
-                #observable_json['file_path'] = observable.file_path
+            if isinstance(observable, FileObservable):
+                observable_json['file_path'] = observable.file_path
 
             observables.append(observable_json)
 
@@ -156,7 +156,7 @@ def execute_hunt(args):
             result = ace_api.submit(
                 submission.root.description,
                 remote_host=args.submit_alerts,
-                ssl_verification=get_config().global_settings.ssl_ca_chain_path,
+                ssl_verification=get_config().SSL.ca_chain_path,
                 analysis_mode=submission.root.analysis_mode,
                 tool=submission.root.tool,
                 tool_instance=submission.root.tool_instance,
