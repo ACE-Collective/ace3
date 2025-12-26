@@ -8,13 +8,14 @@ from saq.observables.generator import create_observable
 from saq.remediation.target import RemediationTarget
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 
-def queue_remediation(target: RemediationTarget, action: RemediationAction, user_id: int) -> int:
+def queue_remediation(target: RemediationTarget, action: RemediationAction, user_id: int, restore_key: Optional[str]=None) -> int:
     remediation = Remediation(
         action=action.value,
         name=target.remediator_name,
         type=target.observable_type,
         key=target.observable_value,
-        user_id=user_id
+        user_id=user_id,
+        restore_key=restore_key
     )
     get_db().add(remediation)
     get_db().flush() # to get the id of the remediation
@@ -94,3 +95,24 @@ def delete_current_remediation(target: RemediationTarget) -> bool:
     get_db().execute(delete)
     get_db().commit()
     return True
+
+def get_current_restore_key(target: RemediationTarget) -> Optional[str]:
+    """Returns the current restore key for the given target."""
+    db_result = (
+        get_db()
+        .query(Remediation)
+        .filter(
+            Remediation.name == target.remediator_name,
+            Remediation.type == target.observable_type,
+            Remediation.key == target.observable_value,
+            Remediation.action == RemediationAction.REMOVE.value,
+            Remediation.result == RemediatorStatus.SUCCESS.value
+        )
+        .order_by(Remediation.id.desc())
+        .first()
+    )
+
+    if db_result is None:
+        return None
+
+    return db_result.restore_key

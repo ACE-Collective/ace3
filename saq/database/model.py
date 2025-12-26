@@ -1754,6 +1754,9 @@ class Remediation(Base):
         String,
         nullable=False)
 
+    # the meaning of this column diffs based on the action
+    # REMOVE: the *resulting* restore key to use if you need to restore this remediation (restore_key is OUTPUT)
+    # RESTORE: the restore key *value* to use if you need to restore this remediation (restore_key is INPUT)
     restore_key = Column(
         String,
         nullable=True,

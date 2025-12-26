@@ -37,7 +37,7 @@ class RemediationWorker(RemediationListener):
     # ------------------------------------------------------------------------
 
     def start(self):
-        logging.info(f"starting {self.remediator.config.thread_count}")
+        logging.info(f"starting {self.remediator.config.thread_count} threads for remediator {self.remediator.name}")
         for index in range(self.remediator.config.thread_count):
             startup_event = Event()
             self.startup_events.append(startup_event)
@@ -93,7 +93,8 @@ class RemediationWorker(RemediationListener):
         except Exception as e:
             # set the remediator result to error and log the error
             remediator_result = RemediatorResult(status=RemediatorStatus.ERROR, message=f"{e.__class__.__name__}: {e}")
-            logging.warning(f"{self.remediator.name} failed to {target.action.value} {target.type} {target.key}: {e}")
+            logging.error(f"{self.remediator.name} failed to {target.action.value} {target.type} {target.key}: {e}")
+            #report_exception()
 
         update = Remediation.__table__.update()
         update = update.values(

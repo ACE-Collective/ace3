@@ -56,7 +56,7 @@ class RemediatorResult(BaseModel):
 class RemediationWorkItem(BaseModel):
     id: int = Field(..., description="The database id of the remediation.")
     action: RemediationAction = Field(..., description="The action of the remediation.")
-    name: str = Field(..., description="The name of the remediator that initiated the remediation.")
-    type: str = Field(..., description="The type of the remediation.")
-    key: str = Field(..., description="The key of the remediation.")
+    name: str = Field(..., description="The name of the remediator that initiated the remediation.") # remediator "name" (office365_email, etc...)
+    type: str = Field(..., description="The type of the remediation.") # observable type
+    key: str = Field(..., description="The key of the remediation.") # observable value
     restore_key: Optional[str] = Field(default=None, description="The restore key of the remediation.")

@@ -56,9 +56,9 @@ class RemediationTarget:
         return get_current_remediation(self)
 
     # insert a remediation entry into the database which is then processed by the remediation service
-    def queue_remediation(self, action: RemediationAction, user_id: int) -> int:
+    def queue_remediation(self, action: RemediationAction, user_id: int, restore_key: Optional[str]=None) -> int:
         from saq.remediation.database import queue_remediation
-        return queue_remediation(self, action, user_id)
+        return queue_remediation(self, action, user_id, restore_key)
 
     def cancel_current_remediation(self) -> bool:
         from saq.remediation.database import cancel_current_remediation
