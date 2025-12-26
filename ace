@@ -155,8 +155,7 @@ def execute_hunt(args):
             result = ace_api.submit(
                 submission.root.description,
                 remote_host=args.submit_alerts,
-                ssl_verification=get_config().SSL.ca_chain_path,
-                ssl_verification=get_config().SSL.ca_chain_path,
+                ssl_verification=get_global_runtime_settings().ca_chain_path,
                 analysis_mode=submission.root.analysis_mode,
                 tool=submission.root.tool,
                 tool_instance=submission.root.tool_instance,
