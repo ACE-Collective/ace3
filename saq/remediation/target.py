@@ -81,6 +81,7 @@ class DefaultObservableRemediationInterface(ObservableRemediationInterface):
         """By default we return an empty list of remediation targets."""
         return []
 
+# mapping observable type to a list of remediation interfaces that support that type
 OBSERVABLE_REMEDIATION_INTERFACE_REGISTRY: dict[str, list[ObservableRemediationInterface]] = {}
 
 def reset_observable_remediation_interface_registry():

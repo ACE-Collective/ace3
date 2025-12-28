@@ -8,6 +8,15 @@ service_remediation:
   lock_timeout_seconds: 300
   delay_time_seconds: 60
 
+remediator_test:
+  name: test
+  display_name: Test Remediator
+  description: For testing the remediation system in ACE.
+  observable_type: test
+  python_module: saq.remediation.test
+  python_class: TestRemediator
+  thread_count: 1
+
 analysis_module_automated_remediation:
   name: automated_remediation
   python_module: saq.modules.remediation

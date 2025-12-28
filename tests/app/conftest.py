@@ -23,6 +23,12 @@ def analyst(global_setup):
 
     yield analyst.id
 
+    # clean up any remediations that reference this user before deleting the user
+    from saq.database.pool import get_db
+    from saq.database.model import Remediation
+    get_db().query(Remediation).filter(Remediation.user_id == analyst.id).delete()
+    get_db().commit()
+
     delete_user("john")
 
 @pytest.fixture(autouse=True, scope="function")

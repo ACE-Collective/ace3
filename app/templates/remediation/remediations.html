@@ -1,0 +1,188 @@
+            <table id="remediations_table" class="table table-hover table-condensed">
+                <thead>
+                    <tr>
+                        <th>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="remediation_select_all"></input>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- ID -->
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="id">ID</span>
+                                {% if sort_filter == "id" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input id="r_filter_id" type="text" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_id')}}"/>
+                            </div>
+                        </th>
+                        <!-- Remediator -->
+                        <th>
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="remediator">Remediator</span>
+                                {% if sort_filter == "remediator" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="remediator_names" id="r_filter_remediator" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_remediator')}}"/>
+                                <datalist id="remediator_names">
+                                    {% for remediator_name in remediator_names %}
+                                    <option value="{{remediator_name}}">{{remediator_name}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <!-- Type -->
+                        <th>
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="type">Type</span>
+                                {% if sort_filter == "type" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="remediation_types" id="r_filter_type" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_type')}}"/>
+                                <datalist id="remediation_types">
+                                    {% for remediation_type in remediation_types %}
+                                    <option value="{{remediation_type}}">{{remediation_type}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <!-- Value -->
+                        <th style="width: 45%;">
+                            <div>
+                                <span>Value</span>
+                            </div>
+                            <div>
+                                <input id="r_filter_value" type="text" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_value')}}"/>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Analyst -->
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="analyst">Analyst</span>
+                                {% if sort_filter == "analyst" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="analyst_names" id="r_filter_analyst" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_analyst')}}"/>
+                                <datalist id="analyst_names">
+                                    {% for analyst_name in analyst_names %}
+                                    <option value="{{analyst_name}}">{{analyst_name}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Action -->
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="action">Action</span>
+                                {% if sort_filter == "action" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="remediation_actions" id="r_filter_action" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_action')}}"/>
+                                <datalist id="remediation_actions">
+                                    {% for remediation_action in remediation_actions %}
+                                    <option value="{{remediation_action}}">{{remediation_action}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Status -->
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="status">Status</span>
+                                {% if sort_filter == "status" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="remediation_statuses" id="r_filter_status" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_status')}}"/>
+                                <datalist id="remediation_statuses">
+                                    {% for remediation_status in remediation_statuses %}
+                                    <option value="{{remediation_status}}">{{remediation_status}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Result -->
+                            <div>
+                                <span id="th_r_sort_filter" style="cursor:pointer" sort_filter="result">Result</span>
+                                {% if sort_filter == "result" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_r_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="remediator_statuses" id="r_filter_result" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('r_filter_result')}}"/>
+                                <datalist id="remediator_statuses">
+                                    {% for remediator_status in remediator_statuses %}
+                                    <option value="{{remediator_status}}">{{remediator_status}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <button id="btn_apply_filters" type="button" class="btn btn-outline-dark btn-xs w-50" title="clear filters"><span class="bi bi-funnel">Apply</span></button>
+                            <button id="btn_clear_filters" type="button" class="btn btn-outline-dark btn-xs w-50" title="clear filters"><span class="bi bi-x">Clear</span></button>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for remediation in remediations %}
+                    <tr remediation_id="{{remediation.id}}">
+                        <td>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="remediation_id_{{remediation.id}}" remediation_id="{{remediation.id}}"></input>
+                            </div>
+                        </td>
+                        <td>{{ remediation.id }}</td>
+                        <td>{{ remediation.name }}</td>
+                        <td>{{ remediation.type }}</td>
+                        <td>{{ remediation.key }}</td>
+                        <td>{{ remediation.user.display_name }}</td>
+                        <td>{{ remediation.action }}</td>
+                        <td>{{ remediation.status }}</td>
+                        <td>{{ remediation.result }}</td>
+                        <td class="text-end" style="white-space: nowrap;">
+                            <button type="button" class="btn btn-outline-dark btn-xs w-100" remediation_id="{{remediation.id}}" name="btn_view_history_{{remediation.id}}" title="view history"><span class="bi bi-clock-history"></span> View History</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>

@@ -95,6 +95,8 @@
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('analysis.manage') }}">Alerts</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('remediation.manage') }}">Remediations</a></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Signatures</a>
                     </li>
@@ -601,6 +603,9 @@
     </div>
 </div>
 {% endblock alert_ownership_changed_modal %}
+
+{% block custom_modals %}
+{% endblock custom_modals %}
 
 <!-- datastore to pass data to the modal -->
 <script type="text/javascript">

@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block control_panel %}
+<div class="container-fluid">
+    <!-- control panel -->
+    <div class="row">
+        <div class="col">
+            <button type="button" id="btn_refresh" class="btn btn-outline-success"><span class="bi bi-arrow-clockwise"></span> Refresh</button>
+            <button type="button" id="btn_add_remediation" class="btn btn-outline-danger"><span class="bi bi-magic"></span> Add Remediation</button>
+            <button type="button" id="btn_mass_remediation" class="btn btn-outline-danger"><span class="bi bi-magic"></span> Mass Remediation</button>
+            <button type="button" id="btn_restore" class="btn btn-outline-success"><span class="bi bi-magic"></span> Restore Selected</button>
+            <button type="button" id="btn_retry" class="btn btn-outline-dark"><span class="bi bi-arrow-clockwise"></span> Retry Selected</button>
+            <button type="button" id="btn_cancel" class="btn btn-outline-dark"><span class="bi bi-x"></span> Cancel Selected</button>
+            <button type="button" id="btn_delete" class="btn btn-outline-dark"><span class="bi bi-trash"></span> Delete Selected</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-8">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col">
+                        <h4>Remediations</h4>
+                    </div>
+                    <div class="col text-end">
+                        <div style="white-space: nowrap; display: inline-block;">
+                            <button id="btn_r_page_start" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-start"></span></button>
+                            <button id="btn_r_page_backward" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-backward"></span></button>
+                            <span id="r_page_count">0 to 0 of 0</span>
+                            <button id="btn_r_page_forward" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-forward"></span></button>
+                            <button id="btn_r_page_end" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-end"></span></button>
+                            <button id="btn_r_page_size_edit" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-pencil-square"></span></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="remediations_panel" style="max-height: 70vh; overflow-y: auto;"></div>
+        </div> <!-- end column -->
+        <div class="col-4">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col">
+                        <h4>History</h4>
+                    </div>
+                    <div class="col text-end">
+                        <div style="white-space: nowrap; display: inline-block;">
+                            <button id="btn_rh_page_start" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-start"></span></button>
+                            <button id="btn_rh_page_backward" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-backward"></span></button>
+                            <span id="rh_page_count">0 to 0 of 0</span>
+                            <button id="btn_rh_page_forward" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-forward"></span></button>
+                            <button id="btn_rh_page_end" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-skip-end"></span></button>
+                            <button id="btn_rh_page_size_edit" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-pencil-square"></span></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="remediation_history_panel" style="max-height: 70vh; overflow-y: auto;"></div>
+        </div>
+    </div> <!-- end row -->
+</div> <!-- end container -->
+{% endblock %}
+
+{% block custom_modals %}
+<div class="modal fade" id="r_page_size_edit_modal" tabindex="-1" role="dialog" aria-labelledby="r_page_size_edit_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="r_page_size_edit_modal_label">Edit Page Size</h5>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col">
+                        <label for="r_page_size">Set Page Size</label>
+                        <input type="number" class="form-control" id="r_page_size" name="r_page_size" value="{{ page_size }}">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="btn_r_page_size_edit_apply">Save changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="rh_page_size_edit_modal" tabindex="-1" role="dialog" aria-labelledby="rh_page_size_edit_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="rh_page_size_edit_modal_label">Edit Page Size</h5>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col">
+                        <label for="rh_page_size">Set Page Size</label>
+                        <input type="number" class="form-control" id="rh_page_size" name="rh_page_size" value="{{ rh_page_size }}">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="btn_rh_page_size_edit_apply">Save changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="add_remediation_modal" tabindex="-1" role="dialog" aria-labelledby="add_remediation_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="add_remediation_modal_label">Add Remediation</h5>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col">
+                        <label for="add_remediation_observable_type">Type</label>
+                        <input list="observable_types" id="add_remediation_observable_type" name="add_remediation_observable_type" class="form-control">
+                        <datalist id="observable_types">
+                            {% for observable_type in observable_types %}
+                            <option value="{{observable_type}}">{{observable_type}}</option>
+                            {% endfor %}
+                        </datalist>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col">
+                        <label for="add_remediation_observable_value">Value</label>
+                        <input type="text" class="form-control" id="add_remediation_observable_value" name="add_remediation_observable_value" value="" placeholder="Enter Value">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Nope</button>
+                <button type="button" class="btn btn-primary" id="btn_execute_add_remediation">Remediate</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="mass_remediation_modal" tabindex="-1" role="dialog" aria-labelledby="mass_remediation_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mass_remediation_modal_label">Mass Remediation</h5>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col">
+                        <label for="mass_remediation_observable_type">Type</label>
+                        <input list="observable_types" id="mass_remediation_observable_type" name="mass_remediation_observable_type" class="form-control">
+                        <datalist id="observable_types">
+                            {% for observable_type in observable_types %}
+                            <option value="{{observable_type}}">{{observable_type}}</option>
+                            {% endfor %}
+                        </datalist>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col">
+                        <label for="mass_remediation_observable_value">Value</label>
+                        <textarea class="form-control" id="mass_remediation_observable_value" name="mass_remediation_observable_value" placeholder="Paste Values (one per line)" rows="10"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <!-- not sure I actually need this, copy paste should be enough -->
+                <!-- <button type="button" class="btn btn-outline-info" id="btm_mass_remediation_upload_file">Upload File</button> -->
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                <button type="button" class="btn btn-outline-danger" id="btn_execute_mass_remediation">Mass Remediate</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock custom_modals %}
+
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/manage_remediations.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

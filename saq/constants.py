@@ -241,6 +241,16 @@ OBSERVABLE_DESCRIPTIONS = {
     F_YARA_STRING: 'yara rule and string name',
 }
 
+OBSERVABLE_VALUE_TEMPLATES = {
+    F_EMAIL_DELIVERY: 'message_id|mailbox',
+    F_FILE_LOCATION: 'hostname@full_path',
+    F_IPV4_CONVERSATION: 'src_dst',
+    F_IPV4_FULL_CONVERSATION: 'src_ipv4:src_port:dst_ipv4:dst_port',
+    F_MAC_ADDRESS: '00:00:00:00:00:00',
+    F_SHA256: 'sha256',
+    F_YARA_STRING: 'rule:string',
+}
+
 VALID_OBSERVABLE_TYPES = sorted([
     F_ASSET,
     F_AV_STREETNAME,
