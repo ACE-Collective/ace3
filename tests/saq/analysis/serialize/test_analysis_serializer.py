@@ -1,11 +1,7 @@
 import pytest
-import uuid
 
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.pivot_link import PivotLink
-from saq.analysis.detectable import DetectionManager
-from saq.analysis.taggable import TagManager
-from saq.analysis.sortable import SortManager
 from saq.analysis.serialize.analysis_serializer import (
     AnalysisSerializer,
     KEY_UUID,

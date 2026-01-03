@@ -21,7 +21,7 @@ from saq.database.pool import set_db
 from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
-from saq.util.ui import get_tag_css_class, human_readable_size
+from saq.util.ui import get_tag_css_class, get_tag_level, human_readable_size
 
 # TODO: find something else to use besides this LoginManager
 login_manager = LoginManager()
@@ -141,6 +141,7 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.filters['basename'] = os.path.basename
     flask_app.jinja_env.filters['human_readable_size'] = human_readable_size
     flask_app.jinja_env.filters['get_tag_css_class'] = get_tag_css_class
+    flask_app.jinja_env.filters['get_tag_level'] = get_tag_level
     flask_app.jinja_env.filters['dict_from_json_string'] = dict_from_json_string
     flask_app.jinja_env.filters['pprint_json_dict'] = pprint_json_dict
 

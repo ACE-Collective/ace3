@@ -96,7 +96,7 @@
                             {% endif %}
                             {% if alert_tags[alert.uuid]|length != 0 %}
                                 {% for tag in alert_tags[alert.uuid] %}
-                                    <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="add_filter('Tag', ['{{tag.name}}'])">{{tag.name}}</span>
+                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="add_filter('Tag', ['{{tag.name}}'])">{{tag.name}}</span>
                                 {% endfor %}
                             {% endif %}
                             {% if alert.remediation_status == 'success' %}

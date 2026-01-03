@@ -1,10 +1,8 @@
-
 from uuid import uuid4
 from typing import TYPE_CHECKING, Optional
 
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.event_source import EventSource
-from saq.analysis.tag import Tag
 
 if TYPE_CHECKING:
     from saq.analysis.analysis_tree.analysis_tree_manager import AnalysisTreeManager
@@ -24,15 +22,12 @@ class BaseNode():
 
         self.uuid:str = uuid or str(uuid4())
 
-        self.tags:list[Tag] = []
+        self.tags:list[str] = []
         self.detections:list[DetectionPoint] = []
         self.sort_order:int = sort_order
 
         # composition-based component managers
         self._event_source = EventSource()
-        #self._tag_manager = TagManager(tags=self._tags)
-        #self._detection_manager = DetectionManager(detections=self._detections)
-        #self._sort_manager = SortManager(sort_order)
 
         # a reference to the RootAnalysis object this analysis belongs to (injected)
         self._analysis_tree_manager: Optional["AnalysisTreeManager"] = None
@@ -85,15 +80,14 @@ class BaseNode():
 
     def add_tag(self, tag: str):
         assert isinstance(tag, str)
-        if tag in [t.name for t in self.tags]:
+        if tag in self.tags:
             return
 
-        t = Tag(name=tag)
-        self.tags.append(t)
+        self.tags.append(tag)
         
     def remove_tag(self, tag: str):
         assert isinstance(tag, str)
-        targets = [t for t in self.tags if t.name == tag]
+        targets = [t for t in self.tags if t == tag]
         for target in targets:
             self.tags.remove(target)
 
@@ -102,7 +96,7 @@ class BaseNode():
 
     def has_tag(self, tag_value):
         """Returns True if this object has this tag."""
-        return tag_value in [x.name for x in self.tags]
+        return tag_value in self.tags
 
     # detection management
     # ------------------------------------------------------------------------

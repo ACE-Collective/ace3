@@ -1,11 +1,9 @@
-import logging
-from typing import TYPE_CHECKING, List, Union
+from typing import TYPE_CHECKING, Union
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.analysis_tree.analysis_tree_query import AnalysisTreeQueryEngine
 from saq.analysis.observable import Observable
 from saq.analysis.search import search_down
-from saq.analysis.tag import Tag
 from saq.analysis.detection_point import DetectionPoint
 
 if TYPE_CHECKING:
@@ -40,7 +38,7 @@ class AnalysisTreeAnalytics:
             is not None
         )
 
-    def get_all_tags(self) -> list[Tag]:
+    def get_all_tags(self) -> list[str]:
         """Return all unique tags for the entire analysis tree."""
         result = []
 
@@ -78,9 +76,10 @@ class AnalysisTreeAnalytics:
 
     def calculate_priority(self) -> int:
         """Calculates and returns the priority score for the analysis tree."""
+        from saq.util.ui import get_tag_score
         score = 0
         for tag in self.get_all_tags():
-            score += tag.score
+            score += get_tag_score(tag)
         return score
 
     def get_tree_statistics(self) -> dict:

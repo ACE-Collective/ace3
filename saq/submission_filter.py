@@ -30,7 +30,7 @@ tool = {submission.root.tool}
 tool_instance = {submission.root.tool_instance}
 type = {submission.root.alert_type}
 event_time = {submission.root.event_time}
-tags = {','.join([tag.name for tag in submission.root.tags])}
+tags = {','.join(submission.root.tags)}
 
 {observables_json}
 

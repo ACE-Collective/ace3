@@ -96,7 +96,7 @@ def execute_hunt(args):
                 if o.time:
                     output += " - {}".format(o.time)
                 if o.tags:
-                    output += " tags [{}]".format(','.join([t.name for t in o.tags]))
+                    output += " tags [{}]".format(','.join(o.tags))
                 if o.directives:
                     output += " direc [{}]".format(','.join(o.directives))
                 #if o.pivot_links:
@@ -139,7 +139,7 @@ def execute_hunt(args):
                 'type': observable.type,
                 'value': observable.value,
                 'time': observable.time,
-                'tags': [t.name for t in observable.tags],
+                'tags': observable.tags,
                 'directives': observable.directives,
                 'limited_analysis': observable.limited_analysis,
                 #'pivot_links': observable.pivot_links,
@@ -163,7 +163,7 @@ def execute_hunt(args):
                 event_time=submission.root.event_time,
                 details=submission.root.details,
                 observables=observables,
-                tags=[t.name for t in submission.root.tags],
+                tags=submission.root.tags,
                 queue=submission.root.queue,
                 instructions=submission.root.instructions,
                 extensions=submission.root.extensions,

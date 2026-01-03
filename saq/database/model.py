@@ -9,7 +9,6 @@ import pymysql
 from sqlalchemy import BLOB, BOOLEAN, DATE, DATETIME, TIMESTAMP, VARBINARY, BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable, get_observable_type_expiration_time
-from saq.analysis.tag import Tag as _Tag
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN, F_URL, QUEUE_DEFAULT
 from saq.crypto import decrypt_chunk
@@ -694,7 +693,7 @@ class Alert(Base):
         c.execute("""DELETE FROM tag_mapping WHERE alert_id = %s""", ( self.id, ))
         c.execute("""DELETE FROM observable_tag_index WHERE alert_id = %s""", ( self.id, ))
 
-        tag_names = tuple([ tag.name for tag in self.root_analysis.all_tags ])
+        tag_names = tuple(self.root_analysis.all_tags)
         if tag_names:
             sql = "INSERT IGNORE INTO tags ( name ) VALUES {}".format(','.join(['(%s)' for name in tag_names]))
             c.execute(sql, tag_names)
@@ -769,9 +768,9 @@ class Alert(Base):
         for observable in all_observables:
             for tag in observable.tags:
                 try:
-                    tag_id = tag_mapping[tag.name]
+                    tag_id = tag_mapping[tag]
                 except KeyError:
-                    logging.debug(f"missing tag mapping for tag {tag.name} in observable {observable} alert {self.uuid}")
+                    logging.debug(f"missing tag mapping for tag {tag} in observable {observable} alert {self.uuid}")
                     continue
 
                 observable_id = observable_mapping[f'{observable.type}{observable.sha256_hash.lower()}']
@@ -1222,7 +1221,7 @@ class Event(Base):
     def all_sandbox_samples(self) -> list[_Observable]:
         all_sandbox_samples = []
         for file_observable in self.all_file_observables:
-            if any('sandbox_sample' in tag.name.lower() for tag in file_observable.tags):
+            if any('sandbox_sample' in tag.lower() for tag in file_observable.tags):
                 all_sandbox_samples.append(file_observable)
 
         return all_sandbox_samples
@@ -1865,7 +1864,7 @@ class RemediationHistory(Base):
         nullable=False, 
         default='NEW')
 
-class Tag(_Tag, Base):
+class Tag(Base):
     
     __tablename__ = 'tags'
 

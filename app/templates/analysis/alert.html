@@ -92,7 +92,7 @@
         <td class="col-md-2">Tags</td>
         <td class="col-md-10">
             {% for tag in alert.root_analysis.all_tags %}
-            <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag.name}}']}])">{{tag.name}}</span>
+            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{tag}}</span>
             {% endfor %}
         </td>
     </tr>
@@ -290,8 +290,8 @@
 
                     {# add tags #}
                     {% for tag in node.obj.tags %}
-                        {% if tag.level != 'hidden' %}
-                            <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="set_filters({'Tag':['{{tag}}']})">{{ tag }}</span>
+                        {% if tag | get_tag_level != 'hidden' %}
+                            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters({'Tag':['{{tag}}']})">{{ tag }}</span>
                         {% endif %}
                     {% endfor %}
                 {% else %}

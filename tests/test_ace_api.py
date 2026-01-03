@@ -169,8 +169,8 @@ def test_submit(mock_api_call):
     assert root.description == 'testing'
     assert root.details == {'hello': 'world'}
     assert root.event_time == _get_localized_submit_time()
-    assert root.tags[0].name == 'alert_tag_1'
-    assert root.tags[1].name == 'alert_tag_2'
+    assert root.tags[0] == 'alert_tag_1'
+    assert root.tags[1] == 'alert_tag_2'
     # NOTE that this is 4 instead of 2 since adding a file adds a F_FILE observable type
     assert len(root.all_observables) == 4
 
@@ -225,8 +225,8 @@ def test_resubmit(mock_api_call):
     assert root.description == 'testing'
     assert root.details == {'hello': 'world'}
     assert root.event_time == _get_localized_submit_time()
-    assert root.tags[0].name == 'alert_tag_1'
-    assert root.tags[1].name == 'alert_tag_2'
+    assert root.tags[0] == 'alert_tag_1'
+    assert root.tags[1] == 'alert_tag_2'
     # NOTE that this is 4 instead of 2 since adding a file adds a F_FILE observable type
     assert len(root.all_observables) == 4
 

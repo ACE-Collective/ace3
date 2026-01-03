@@ -51,7 +51,7 @@ def recurse_analysis(analysis, level=0, current_tree=[], include_context=False):
         if observable.directives:
             display += ' {{ {} }} '.format(', '.join([x for x in observable.directives]))
         if observable.tags:
-            display += ' [ {} ] '.format(', '.join([x.name for x in observable.tags]))
+            display += ' [ {} ] '.format(', '.join(observable.tags))
         if observable.volatile:
             display += ' <VOLATILE> '
         #if observable.pivot_links:

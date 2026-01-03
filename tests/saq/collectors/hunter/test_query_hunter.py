@@ -7,7 +7,6 @@ import shutil
 import pytest
 import yaml
 
-from saq.analysis.tag import Tag
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
 from saq.configuration.schema import HuntTypeConfig
@@ -524,7 +523,7 @@ def test_process_query_results(monkeypatch):
     assert len(submission.root.observables) == 1 # only F_SIGNATURE_ID
     signature_id_observable = next((o for o in submission.root.observables if o.type == F_SIGNATURE_ID), None)
     assert signature_id_observable.value == hunt.uuid
-    assert submission.root.tags == [Tag(name="test_tag")]
+    assert submission.root.tags == ["test_tag"]
     #assert submission.root.files == []
     assert submission.root.queue == hunt.queue
     #assert submission.root.instructions == hunt.description
@@ -941,9 +940,8 @@ def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
     assert len(file_observables) == 1
     file_obs = file_observables[0]
 
-    tag_names = [t.name for t in file_obs.tags]
-    assert "suspicious" in tag_names
-    assert "needs_review" in tag_names
+    assert "suspicious" in file_obs.tags
+    assert "needs_review" in file_obs.tags
 
 
 @pytest.mark.unit
@@ -1056,9 +1054,8 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
     assert len(file_observables) == 1
     file_obs = file_observables[0]
 
-    tag_names = [t.name for t in file_obs.tags]
-    assert "source:splunk" in tag_names
-    assert "static_tag" in tag_names
+    assert "source:splunk" in file_obs.tags
+    assert "static_tag" in file_obs.tags
 
 
 @pytest.mark.unit
@@ -1098,9 +1095,8 @@ def test_process_query_results_file_observable_with_all_properties(monkeypatch, 
 
     # verify all properties are set correctly
     assert DIRECTIVE_SANDBOX in file_obs.directives
-    tag_names = [t.name for t in file_obs.tags]
-    assert "high_priority" in tag_names
-    assert "malware_candidate" in tag_names
+    assert "high_priority" in file_obs.tags
+    assert "malware_candidate" in file_obs.tags
     assert file_obs.volatile
 
 
@@ -1143,8 +1139,7 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
 
     for file_obs in file_observables:
         assert DIRECTIVE_SANDBOX in file_obs.directives
-        tag_names = [t.name for t in file_obs.tags]
-        assert "grouped_tag" in tag_names
+        assert "grouped_tag" in file_obs.tags
         assert not file_obs.volatile
 
 

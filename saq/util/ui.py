@@ -45,8 +45,45 @@ def create_histogram_string(data):
                                            str(r[2])[:4], u"\u25A0" * (int(r[2] / 2)))
     return txt
 
-def get_tag_css_class(tag):
+def get_tag_css_class(tag: str) -> str:
+    """Returns the CSS class to use for the given tag."""
+    # first get the level assigned to the tag
+    level = get_tag_level(tag)
+
     try:
-        return get_config().tag_css_class.get(tag, 'label-default')
+        return get_config().tag_css_class.get(level, 'label-default')
     except Exception:
         return 'label-default'
+
+def get_tag_level(tag_name: str) -> str:
+    """Get the tag level from a tag name string."""
+    from saq.constants import TAG_LEVEL_INFO
+    # note that a tag can have the form of tag_name:random_stuff
+    if ':' in tag_name:
+        tag_name = tag_name.split(':', 1)[0]
+    
+    # does this tag exist in the configuration file?
+    level = get_config().tags.get(tag_name)
+    if not level:
+        level = TAG_LEVEL_INFO
+    
+    return level
+
+def get_tag_score(tag_name: str) -> int:
+    """Get the tag score from a tag name string."""
+    from saq.constants import TAG_LEVEL_FALSE_POSITIVE, TAG_LEVEL_INFO, TAG_LEVEL_WARNING, TAG_LEVEL_ALERT, TAG_LEVEL_CRITICAL
+    
+    level = get_tag_level(tag_name)
+    
+    if level == TAG_LEVEL_FALSE_POSITIVE:
+        return 0
+    elif level == TAG_LEVEL_INFO:
+        return 0
+    elif level == TAG_LEVEL_WARNING:
+        return 1
+    elif level == TAG_LEVEL_ALERT:
+        return 3
+    elif level == TAG_LEVEL_CRITICAL:
+        return 10
+    else:
+        return 0

@@ -89,7 +89,7 @@ def getFilters():
 def filter_special_tags(tags):
     # we don't show "special" tags in the display
     special_tag_names = [tag for tag in get_config().tags.keys() if get_config().tags[tag] == 'special']
-    return [tag for tag in tags if tag.name not in special_tag_names]
+    return [tag for tag in tags if tag not in special_tag_names]
 
 def get_existing_filter(filter_name: str, inverted: bool):
     filters = session.get("filters")

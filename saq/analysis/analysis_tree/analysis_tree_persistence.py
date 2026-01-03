@@ -6,7 +6,6 @@ from saq.analysis.file_manager.file_manager_interface import FileManagerInterfac
 from saq.analysis.observable_registry import ObservableRegistry
 from saq.analysis.persistence_manager import AnalysisDetailsPersistenceManager
 from saq.analysis.serialize.observable_registry_serializer import ObservableRegistrySerializer
-from saq.analysis.tag import Tag
 from saq.analysis.detection_point import DetectionPoint
 from saq.constants import F_FILE
 
@@ -207,14 +206,6 @@ class AnalysisTreePersistenceManager:
         for analysis in self.query_engine.all_analysis:
             analysis._load_observable_references()
 
-        # Load Tag objects for analysis
-        for analysis in self.query_engine.all_analysis:
-            analysis.tags = [Tag(json=t) for t in analysis.tags]
-
-        # Load Tag objects for observables
-        for observable in self.observable_registry.store.values():
-            observable.tags = [Tag(json=t) for t in observable.tags]
-
         # Load DetectionPoints
         for analysis in self.query_engine.all_analysis:
             analysis.detections = [
@@ -237,9 +228,8 @@ class AnalysisTreePersistenceManager:
         1. Load Analysis objects in Observables
         2. Inject managers into analysis objects
         3. Load Observable references in Analysis objects
-        4. Load Tag objects for analysis and observables
-        5. Load DetectionPoints for analysis and observables
-        6. Load Relationships for observables
+        4. Load DetectionPoints for analysis and observables
+        5. Load Relationships for observables
         """
         # load the Analysis objects in the Observables
         for observable in self.observable_registry.store.values():
@@ -254,14 +244,6 @@ class AnalysisTreePersistenceManager:
         for analysis in self.query_engine.all_analysis:
             # load all observable references
             analysis._load_observable_references()
-
-        # load Tag objects for analysis
-        for analysis in self.query_engine.all_analysis:
-            analysis.tags = [Tag(json=t) for t in analysis.tags]
-
-        # load Tag objects for observables
-        for observable in self.observable_registry.store.values():
-            observable.tags = [Tag(json=t) for t in observable.tags]
 
         # load DetectionPoints
         for analysis in self.query_engine.all_analysis:

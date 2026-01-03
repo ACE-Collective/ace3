@@ -64,9 +64,9 @@ class ConfigurationDefinedTaggingAnalyzer(AnalysisModule):
         alerted_tags = set()
         for obj in self.get_root().all:
             for tag in obj.tags:
-                if self.is_alertable_tag(tag.name) and tag.name not in alerted_tags:
-                    self.get_root().add_detection_point(f"tag {tag.name} is configured to be alertable")
-                    alerted_tags.add(tag.name)
+                if self.is_alertable_tag(tag) and tag not in alerted_tags:
+                    self.get_root().add_detection_point(f"tag {tag} is configured to be alertable")
+                    alerted_tags.add(tag)
 
         return AnalysisExecutionResult.COMPLETED
 

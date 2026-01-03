@@ -13,7 +13,6 @@ from saq.analysis.file_manager.file_manager_interface import FileManagerInterfac
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.observable_registry import ObservableRegistry
-from saq.analysis.tag import Tag
 from saq.analysis.detection_point import DetectionPoint
 from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_OBSERVABLE_ADDED
 
@@ -299,7 +298,7 @@ class AnalysisTreeManager:
         """Returns True if the target object or any node down to (but not including) the root has a detection point."""
         return self.analytics.is_on_detection_path(target_object)
 
-    def get_all_tags(self) -> list[Tag]:
+    def get_all_tags(self) -> list[str]:
         """Return all unique tags for the entire analysis tree."""
         return self.analytics.get_all_tags()
 

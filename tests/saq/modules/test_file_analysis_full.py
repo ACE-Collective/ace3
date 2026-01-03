@@ -554,7 +554,7 @@ def test_file_analysis_004_yara_006_whitelist(yss_server, root_analysis, datadir
     # the file should have a single tag
     assert len(_file.tags) == 1
     # the tag should be "whitelisted"
-    assert _file.tags[0].name == "whitelisted"
+    assert _file.tags[0] == "whitelisted"
     # the root analysis object should be whitelisted
     assert root_analysis.whitelisted
 

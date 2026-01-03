@@ -1,5 +1,4 @@
-import logging
-from typing import TYPE_CHECKING, Type
+from typing import Type
 
 from saq import Observable
 from saq.database.database_observable import observable_is_set_for_detection
@@ -67,18 +66,15 @@ class ObservablePresenter:
         from saq.gui import (
             ObservableActionUnWhitelist,
             ObservableActionWhitelist,
-            ObservableActionAddTag,
             ObservableActionSeparator,
             ObservableActionEnableDetection,
             ObservableActionDisableableDetection,
             ObservableActionAdjustExpiration,
         )
         if self._observable.type in get_global_runtime_settings().gui_whitelist_excluded_observable_types:
-            actions = [ObservableActionAddTag()]
+            actions = []
         else:
             actions = [
-                ObservableActionAddTag(),
-                ObservableActionSeparator(),
                 ObservableActionWhitelist(),
                 ObservableActionUnWhitelist(),
             ]

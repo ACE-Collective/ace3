@@ -17,7 +17,7 @@ from saq.database.pool import get_db
 from saq.database.util.observable_detection import get_all_observable_detections
 from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
-from saq.util.ui import create_histogram_string
+from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
 
 
@@ -278,10 +278,10 @@ def index():
     all_tags = alert.root_analysis.all_tags
 
     # sort the tags by score
-    alert_tags = filter_special_tags(sorted(all_tags, key=lambda x: (-x.score, x.name.lower())))
+    alert_tags = filter_special_tags(sorted(all_tags, key=lambda x: (-get_tag_score(x), x.lower())))
     # we don't show "special" tags in the display
     special_tag_names = [tag for tag in get_config().tags.keys() if get_config().tags[tag] == 'special']
-    alert_tags = [tag for tag in alert_tags if tag.name not in special_tag_names]
+    alert_tags = [tag for tag in alert_tags if tag not in special_tag_names]
 
     # XXX refactor this omg
     # get all of the current observable detection data 

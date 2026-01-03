@@ -3,8 +3,7 @@ import logging
 from saq.configuration.config import get_config
 from saq.constants import TAG_LEVEL_ALERT, TAG_LEVEL_CRITICAL, TAG_LEVEL_FALSE_POSITIVE, TAG_LEVEL_INFO, TAG_LEVEL_WARNING
 
-
-class Tag:
+class Tag_DEPRECATED:
     """Gives a bit of metadata to an observable or analysis.  Tags defined in the configuration file are also signals for detection."""
 
     def __init__(self, name=None, json=None):

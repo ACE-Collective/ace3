@@ -71,8 +71,8 @@
 
 {# add tags #}
 {% for tag in _observable.tags %}
-    {% if tag.level != 'hidden' %}
-        <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
+    {% if tag | get_tag_level != 'hidden' %}
+        <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
     {% endif %}
 {% endfor %}
 
@@ -102,7 +102,7 @@
 
 {# add tags mapped in database #}
 {% for tag in _observable.mapped_tags %}
-    <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
+    <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
 {% endfor %}
 
 {# add preview #}
