@@ -114,7 +114,7 @@ class RemoteNode:
             return temp_root.uuid
 
         except Exception as e:
-            logging.warning("submission irregularity for {}: {}".format(submission, e))
+            logging.warning("submission irregularity for {}: {} ({})".format(submission, e, type(e)))
             report_exception()
             raise e
 

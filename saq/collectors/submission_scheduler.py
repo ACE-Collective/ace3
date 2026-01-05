@@ -76,7 +76,7 @@ class SubmissionScheduler:
         
         # Assign this work to each target group
         for remote_node_group in target_groups:
-            logging.debug(f"assigning {work_id} to remote node group {remote_node_group}")
+            logging.info(f"assigning {work_id} to remote node group {remote_node_group}")
             self.workload_repository.assign_work_to_group(work_id, remote_node_group.group_id)
         
         return work_id

@@ -118,7 +118,6 @@ class AnalysisDependency:
 
         source_observable = self.observable_registry.get_by_id(self.source_observable_id)
         if not source_observable:
-            breakpoint()
             raise RuntimeError("source observable {} not found".format(self.source_observable_id))
 
         source_analysis = self.observable_registry.get_by_id(self.source_observable_id).get_analysis(self.source_analysis_type)

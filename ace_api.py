@@ -142,6 +142,9 @@ def set_default_remote_host(remote_host):
     global default_remote_host
     default_remote_host = remote_host
 
+def get_default_remote_host():
+    return default_remote_host
+
 def set_default_ssl_ca_path(ssl_verification):
     """Sets the default SSL verification mode. Behavior: 
       
@@ -155,9 +158,15 @@ def set_default_ssl_ca_path(ssl_verification):
     global default_ssl_verification
     default_ssl_verification = ssl_verification
 
+def get_default_ssl_ca_path():
+    return default_ssl_verification
+
 def set_default_api_key(api_key):
     global default_api_key
     default_api_key = api_key
+
+def get_default_api_key():
+    return default_api_key
 
 # list of api commands
 api_commands = []

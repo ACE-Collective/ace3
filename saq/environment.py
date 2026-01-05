@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 
+import iptools
 from pydantic import BaseModel, Field
 import pytz
 import tzlocal
@@ -43,7 +44,7 @@ class GlobalRuntimeSettings(BaseModel):
     local_timezone_str: str = Field(default_factory=lambda: tzlocal.get_localzone_name(), description="local timezone for this system (should be UTC)")
     lock_timeout_seconds: int = Field(default=5 * 60, description="how long a lock can be held and not refreshed before it is considered expired")
     log_directory: str = Field(default="logs", description="global logging directory (relative to DATA_DIR)")
-    managed_networks: list = Field(default_factory=list, description="list of iptools.IpRange objects defined in [network_configuration]")
+    managed_network_cidrs: list[str] = Field(default_factory=list, description="list of CIDR notation for managed networks")
     module_stats_dir: str = Field(default="stats/modules", description="directory containing module statistical runtime info")
     observable_limit: int = Field(default=0, description="")
     saq_home: str = Field(default="/opt/ace", description="base installation directory of ace")
@@ -58,10 +59,18 @@ class GlobalRuntimeSettings(BaseModel):
     def local_timezone(self) -> tzinfo:
         return pytz.timezone(self.local_timezone_str)
 
+    @property
+    def managed_networks(self) -> list[iptools.IpRange]:
+        return [iptools.IpRange(cidr) for cidr in self.managed_network_cidrs]
+
 GLOBAL_RUNTIME_SETTINGS = GlobalRuntimeSettings()
 
 def get_global_runtime_settings() -> GlobalRuntimeSettings:
     return GLOBAL_RUNTIME_SETTINGS
+
+def set_global_runtime_settings(global_runtime_settings: GlobalRuntimeSettings):
+    global GLOBAL_RUNTIME_SETTINGS
+    GLOBAL_RUNTIME_SETTINGS = global_runtime_settings
 
 #
 # utility function aliases
@@ -326,15 +335,8 @@ def initialize_environment(
                 )
             del os.environ[proxy_key.upper()]
 
-    # load global constants
-    import iptools
-
-    # for cidr in CONFIG['network_configuration']['managed_networks'].split(','):
     for cidr in get_config().network_configuration.managed_networks:
-        try:
-            get_global_runtime_settings().managed_networks.append(iptools.IpRange(cidr.strip()))
-        except Exception as e:
-            logging.error("invalid managed network {}: {}".format(cidr, str(e)))
+        get_global_runtime_settings().managed_network_cidrs.append(cidr.strip())
 
     # make sure we've got the automation user set up
     # XXX move this to database initialization time

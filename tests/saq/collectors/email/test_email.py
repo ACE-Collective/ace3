@@ -15,7 +15,7 @@ from saq.database.pool import get_db_connection
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.environment import get_base_dir, get_data_dir
-from tests.saq.helpers import log_count, search_log, wait_for_log_count, wait_for_process
+from tests.saq.helpers import log_count, search_log, search_log_regex, wait_for_log_count, wait_for_process
 
 @pytest.fixture(autouse=True, scope="function")
 def setup(monkeypatch):
@@ -131,20 +131,12 @@ rule assignment: unittest {
     # look for all the expected log entries
     assert log_count('found email') == 1
     assert log_count('scheduled ACE Mailbox Scanner Detection -') == 1
-    
-    # see that it got assigned
-    assert log_count('assigning email') == 1
 
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        # after this is executed we should have an assignment to unittest but not qa
-        cursor.execute("""SELECT COUNT(*) FROM work_distribution JOIN work_distribution_groups ON work_distribution.group_id = work_distribution_groups.id
-                        WHERE work_distribution_groups.name = %s""", ('unittest',))
-        assert cursor.fetchone()[0] == 1
+    # assigning email /opt/ace/data_unittest/var/incoming/amc/2026010421/3ddcedc4-b314-4f5b-a751-4ea04ad32cc0 to groups unittest
+    assert search_log_regex(re.compile(r'^assigning email (.+) to groups unittest$'))
 
-        cursor.execute("""SELECT COUNT(*) FROM work_distribution JOIN work_distribution_groups ON work_distribution.group_id = work_distribution_groups.id
-                        WHERE work_distribution_groups.name = %s""", ('qa',))
-        assert cursor.fetchone()[0] == 0
+    # assigning 1596 to remote node group RemoteNodeGroup(name=unittest, coverage=100, full_delivery=True, company_id=1, database=ace)
+    assert search_log_regex(re.compile(r'^assigning \d+ to remote node group RemoteNodeGroup\(name=unittest, coverage=100, full_delivery=True, company_id=1, database=ace\)'))
 
 @pytest.mark.system
 def test_complete_processing(datadir):

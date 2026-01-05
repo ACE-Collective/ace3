@@ -7,6 +7,7 @@ import shutil
 import socket
 import sys
 import tempfile
+from typing import Optional
 import uuid
 
 from requests import HTTPError
@@ -21,7 +22,7 @@ from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
-from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_node
+from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
 import pytest
@@ -58,6 +59,98 @@ def global_setup(request):
     # clean up the temp dir
     shutil.rmtree(get_temp_dir())
 
+def execute_global_db_setup(
+    existing_nodes: Optional[list] = None,
+    existing_email_archive_server: Optional[list] = None,
+    existing_unit_test_user: Optional[tuple] = None,
+    existing_automation_user: Optional[tuple] = None,
+    existing_db_config: Optional[list] = None):
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM alerts")
+        cursor.execute("DELETE FROM workload")
+        cursor.execute("DELETE FROM observables")
+        cursor.execute("DELETE FROM observable_mapping")
+        cursor.execute("DELETE FROM tags")
+        cursor.execute("INSERT INTO tags ( `id`, `name` ) VALUES ( 1, 'whitelisted' )")
+        cursor.execute("DELETE FROM events")
+        cursor.execute("DELETE FROM remediation")
+        cursor.execute("DELETE FROM messages")
+        cursor.execute("DELETE FROM persistence")
+        cursor.execute("DELETE FROM persistence_source")
+        cursor.execute("DELETE FROM company WHERE name != 'default'")
+        #cursor.execute("DELETE FROM nodes WHERE is_local = 1")
+        cursor.execute("DELETE FROM nodes")
+        if existing_nodes is not None:
+            for node in existing_nodes:
+                cursor.execute("INSERT INTO nodes (id, name, location, company_id, last_update, is_primary, any_mode) VALUES (%s, %s, %s, %s, %s, %s, %s)", node)
+        #cursor.execute("UPDATE nodes SET is_primary = 0")
+        cursor.execute("DELETE FROM locks")
+        cursor.execute("DELETE FROM delayed_analysis")
+        cursor.execute("DELETE FROM users")
+        cursor.execute("DELETE FROM malware")
+        cursor.execute("DELETE FROM `config`")
+        cursor.execute("DELETE FROM incoming_workload")
+        cursor.execute("DELETE FROM incoming_workload_type")
+        cursor.execute("DELETE FROM work_distribution")
+        cursor.execute("DELETE FROM work_distribution_groups")
+        cursor.execute("DELETE FROM event_mapping")
+        cursor.execute("DELETE FROM event_prevention_tool")
+        cursor.execute("DELETE FROM event_remediation")
+        cursor.execute("DELETE FROM event_risk_level")
+        cursor.execute("DELETE FROM event_status")
+        cursor.execute("DELETE FROM event_type")
+        cursor.execute("DELETE FROM event_vector")
+        cursor.execute("DELETE FROM events")
+        cursor.execute("DELETE FROM campaign")
+        cursor.execute("DELETE FROM comments")
+        cursor.execute("DELETE FROM auth_group")
+        cursor.execute("DELETE FROM auth_group_user")
+        cursor.execute("DELETE FROM auth_permission_catalog")
+        cursor.execute("DELETE FROM auth_user_permission")
+        cursor.execute("DELETE FROM auth_group_permission")
+
+        if existing_automation_user is not None:
+            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", existing_automation_user)
+            cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (existing_automation_user[0], "*", "*"))
+
+        if existing_unit_test_user is not None:
+            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", existing_unit_test_user)
+            cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (existing_unit_test_user[0], "*", "*"))
+
+        if existing_db_config is not None:
+            for row in existing_db_config:
+                cursor.execute("INSERT INTO `config` (`key`, `value`) VALUES (%s, %s)", (row[0], row[1]))
+
+        db.commit()
+
+    with get_db_connection("brocess") as db:
+        cursor = db.cursor()
+        cursor.execute("""DELETE FROM httplog""")
+        cursor.execute("""DELETE FROM smtplog""")
+        db.commit()
+        # TODO instead of using harded values pull the limits from the config
+        cursor.execute("""INSERT INTO httplog ( host, numconnections, firstconnectdate ) 
+                    VALUES ( 'local', 1000, UNIX_TIMESTAMP(NOW()) ),
+                            ( 'xyz', 1000, UNIX_TIMESTAMP(NOW()) ),
+                            ( 'test1.local', 70, UNIX_TIMESTAMP(NOW()) ),
+                            ( 'test2.local', 69, UNIX_TIMESTAMP(NOW()) )""")
+        db.commit()
+
+    with get_db_connection('email_archive') as db:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM archive")
+        cursor.execute("DELETE FROM archive_index")
+        cursor.execute("DELETE FROM archive_server")
+        cursor.execute("DELETE FROM email_history")
+
+        if existing_email_archive_server is not None:
+            for row in existing_email_archive_server:
+                cursor.execute("INSERT INTO archive_server (server_id, hostname) VALUES (%s, %s)", row)
+
+        db.commit()
+
 def execute_global_setup():
 
     # where is ACE?
@@ -83,6 +176,8 @@ def execute_global_setup():
         config_paths=[], 
         logging_config_path=os.path.join(get_base_dir(), "etc", "logging_configs", "unittest_logging.yaml"), 
         relative_dir=None)
+
+    execute_global_db_setup()
 
     # clear the tracking
     clear_all_tracking()
@@ -127,108 +222,16 @@ def execute_global_setup():
     os.mkdir(work_dir)
     get_config().get_service_config(SERVICE_ENGINE).work_dir = work_dir
 
-    initialize_unittest_logging()
+    user = add_user("unittest", "unittest@localhost", "unittest", "unittest")
+    add_user_permission(user.id, "*", "*")
 
+    initialize_unittest_logging()
 
 @pytest.fixture(autouse=True, scope="function")
 def global_function_setup(request):
 
-    # clear work directory
-    work_dir = get_config().get_service_config(SERVICE_ENGINE).work_dir
-    assert os.path.exists(work_dir)
-    shutil.rmtree(work_dir)
-    os.mkdir(work_dir)
-
     # reset emitter to default state
     reset_emitter()
-
-    # don't reset the database on tests marked as a unit test
-    if needs_full_reset(request):
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("DELETE FROM alerts")
-            cursor.execute("DELETE FROM workload")
-            cursor.execute("DELETE FROM observables")
-            cursor.execute("DELETE FROM observable_mapping")
-            cursor.execute("DELETE FROM tags")
-            cursor.execute("INSERT INTO tags ( `id`, `name` ) VALUES ( 1, 'whitelisted' )")
-            cursor.execute("DELETE FROM events")
-            cursor.execute("DELETE FROM remediation")
-            cursor.execute("DELETE FROM messages")
-            cursor.execute("DELETE FROM persistence")
-            cursor.execute("DELETE FROM persistence_source")
-            cursor.execute("DELETE FROM company WHERE name != 'default'")
-            #cursor.execute("DELETE FROM nodes WHERE is_local = 1")
-            cursor.execute("DELETE FROM nodes")
-            cursor.execute("UPDATE nodes SET is_primary = 0")
-            cursor.execute("DELETE FROM locks")
-            cursor.execute("DELETE FROM delayed_analysis")
-            cursor.execute("DELETE FROM users")
-            cursor.execute("DELETE FROM malware")
-            cursor.execute("DELETE FROM `config`")
-            cursor.execute("DELETE FROM incoming_workload")
-            cursor.execute("DELETE FROM incoming_workload_type")
-            cursor.execute("DELETE FROM work_distribution")
-            cursor.execute("DELETE FROM work_distribution_groups")
-            cursor.execute("DELETE FROM event_mapping")
-            cursor.execute("DELETE FROM event_prevention_tool")
-            cursor.execute("DELETE FROM event_remediation")
-            cursor.execute("DELETE FROM event_risk_level")
-            cursor.execute("DELETE FROM event_status")
-            cursor.execute("DELETE FROM event_type")
-            cursor.execute("DELETE FROM event_vector")
-            cursor.execute("DELETE FROM events")
-            cursor.execute("DELETE FROM campaign")
-            cursor.execute("DELETE FROM comments")
-            cursor.execute("DELETE FROM auth_group")
-            cursor.execute("DELETE FROM auth_group_user")
-            cursor.execute("DELETE FROM auth_permission_catalog")
-            cursor.execute("DELETE FROM auth_user_permission")
-            cursor.execute("DELETE FROM auth_group_permission")
-
-            db.commit()
-
-            user = add_user("unittest", "unittest@localhost", "unittest", "unittest")
-            add_user_permission(user.id, "*", "*")
-            UNITTEST_USER_ID = user.id
-
-            #from app.models import User
-            #user = User()
-            #user.username = 'unittest'
-            #user.email = 'unittest@localhost'
-            #user.password = 'unittest'
-            #cursor.execute("""
-                #INSERT INTO users ( username, email, password_hash ) VALUES ( %s, %s, %s )""",
-                #(user.username, user.email, user.password_hash))
-
-            #db.commit()
-            #db.refresh(user)
-
-            # grant all permissions to the unittest user
-            #add_user_permission(user.id, "*", "*")
-
-        with get_db_connection("brocess") as db:
-            cursor = db.cursor()
-            cursor.execute("""DELETE FROM httplog""")
-            cursor.execute("""DELETE FROM smtplog""")
-            db.commit()
-            # TODO instead of using harded values pull the limits from the config
-            cursor.execute("""INSERT INTO httplog ( host, numconnections, firstconnectdate ) 
-                        VALUES ( 'local', 1000, UNIX_TIMESTAMP(NOW()) ),
-                                ( 'xyz', 1000, UNIX_TIMESTAMP(NOW()) ),
-                                ( 'test1.local', 70, UNIX_TIMESTAMP(NOW()) ),
-                                ( 'test2.local', 69, UNIX_TIMESTAMP(NOW()) )""")
-            db.commit()
-
-        with get_db_connection('email_archive') as db:
-            c = db.cursor()
-            c.execute("DELETE FROM archive")
-            c.execute("DELETE FROM archive_index")
-            c.execute("DELETE FROM archive_server")
-            c.execute("DELETE FROM email_history")
-            db.commit()
-
-        execute_global_setup()
 
     # XXX we're initializing AND THEN we're resetting the database
 
@@ -238,15 +241,78 @@ def global_function_setup(request):
     # make a deep copy of the current configuration
     config_copy = copy.deepcopy(get_config())
 
+    # make a deep copy of the global runtime settings
+    global_runtime_settings_copy = copy.deepcopy(get_global_runtime_settings())
+
     # reset the observable remediation interface registry
     reset_observable_remediation_interface_registry()
 
+    existing_nodes = None
+
+    # remember the nodes as they originally existed
+    if needs_full_reset(request):
+        # clear work directory
+        work_dir = get_config().get_service_config(SERVICE_ENGINE).work_dir
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir)
+
+        os.mkdir(work_dir)
+
+        # clear data directory
+        if os.path.exists(get_data_dir()):
+            shutil.rmtree(get_data_dir())
+
+        os.mkdir(get_data_dir())
+        initialize_data_dir()
+
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT id, name, location, company_id, last_update, is_primary, any_mode FROM nodes")
+            existing_nodes = cursor.fetchall()
+
+            cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted FROM users WHERE username = 'unittest'")
+            existing_unit_test_user = cursor.fetchone()
+
+            cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted FROM users WHERE username = 'ace'")
+            existing_automation_user = cursor.fetchone()
+
+            cursor.execute("SELECT `key`, `value` FROM `config`")
+            existing_db_config = cursor.fetchall()
+
+        # record email archive server configuration
+        with get_db_connection("email_archive") as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT server_id, hostname FROM archive_server")
+            existing_email_archive_server = cursor.fetchall()
+
+    # look at this garbage lol
+    import ace_api
+    default_remote_host = ace_api.get_default_remote_host()
+    default_ssl_ca_path = ace_api.get_default_ssl_ca_path()
+    default_api_key = ace_api.get_default_api_key()
+
     yield
+
+    ace_api.set_default_remote_host(default_remote_host)
+    ace_api.set_default_ssl_ca_path(default_ssl_ca_path)
+    ace_api.set_default_api_key(default_api_key)
+
+    # don't reset the database on tests marked as a unit test
+    if needs_full_reset(request):
+        execute_global_db_setup(
+            existing_nodes,
+            existing_email_archive_server,
+            existing_unit_test_user,
+            existing_automation_user,
+            existing_db_config)
 
     reset_unittest_logging()
 
     # restore the original configuration
     set_config(config_copy)
+
+    # restore the original global runtime settings
+    set_global_runtime_settings(global_runtime_settings_copy)
 
     # SQLAlchemy session management
     db_session = get_db()

@@ -19,6 +19,8 @@ from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
+import pytest
+
 # expected values
 EV_TEST_DATE = datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)
 
@@ -645,3 +647,10 @@ def wait_for_process(process: Process):
     process.join(10)
     if process.is_alive():
         raise RuntimeError("engine did not stop")
+
+def reset_minio_email_archive_bucket():
+    from saq.storage.minio import get_minio_client
+    client = get_minio_client()
+    objects = client.list_objects(bucket_name=get_config().email_archive.s3_bucket, recursive=True)
+    for object in objects:
+        client.remove_object(bucket_name=get_config().email_archive.s3_bucket, object_name=object.object_name)
