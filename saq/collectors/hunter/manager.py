@@ -388,11 +388,11 @@ class HuntManager:
         for hunt in self._hunts: # order doesn't matter here
             try:
                 if hunt.running:
-                    logging.info("cancelling {hunt}")
+                    logging.info(f"cancelling {hunt}")
                     hunt.cancel()
                     hunt.wait()
             except Exception:
-                logging.info("unable to cancel {hunt}: {e}")
+                logging.info(f"unable to cancel {hunt}: {e}")
 
     def set_concurrency_limit(self, limit):
         """Sets the concurrency limit for this type of hunt.
