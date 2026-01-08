@@ -56,6 +56,10 @@ def main():
         print("do not run ace as root please")
         sys.exit(1)
 
+    # ACE assumes the cwd is /opt/ace
+    if os.getcwd() != '/opt/ace':
+        os.chdir('/opt/ace')
+
     # parse the command line arguments
     args = parser.parse_args()
 
