@@ -31,7 +31,7 @@ from saq.configuration import get_config
 from sqlalchemy import and_, or_
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B, VALID_OBSERVABLE_TYPES
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B, VALID_OBSERVABLE_TYPES
 from saq.database.model import Persistence, PersistenceSource, Remediation
 from saq.database.pool import get_db
 from saq.engine.engine_configuration import EngineConfiguration
@@ -151,7 +151,20 @@ def execute_hunt(args):
 
             observables.append(observable_json)
 
-        if args.submit_alerts is not None:
+        if args.submit_alerts_local:
+            from saq.database.util.alert import ALERT
+
+            # we duplicate because we could be sending multiple copies to multiple remote nodes
+            new_root = submission.root.duplicate()
+            new_root.move(storage_dir_from_uuid(new_root.uuid))
+            new_root.save()
+
+            # if we received a submission for correlation mode then we go ahead and add it to the database
+            if new_root.analysis_mode == ANALYSIS_MODE_CORRELATION:
+                ALERT(new_root)
+
+            new_root.schedule()
+        elif args.submit_alerts is not None:
             result = ace_api.submit(
                 submission.root.description,
                 remote_host=args.submit_alerts,
@@ -192,6 +205,8 @@ execute_hunt_parser.add_argument('-d', '--details', required=False, default=Fals
     help="Include the details of the submissions in the output.")
 execute_hunt_parser.add_argument('--submit-alerts', required=False, default=None, 
     help="Submit as alerts to the given host[:port]")
+execute_hunt_parser.add_argument('--submit-alerts-local', required=False, default=False, action='store_true', 
+    help="Submit as alerts to the local ACE instance")
 execute_hunt_parser.add_argument('--query-result-file', required=False, default=None,
     help="Valid only for query hunts. Save the raw query results to the given file.")
 execute_hunt_parser.set_defaults(func=execute_hunt)
