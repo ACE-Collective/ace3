@@ -55,7 +55,7 @@ global:
   # this is important for email scanning
   local_email_domains: []
   # set to yes to log all SQL commands executed by the server
-  log_sql: false
+  log_sql: true
   # set to yes to log all SQL commands and their execution time
   log_sql_exec_times: false
   # set this to True to enable semaphores
@@ -914,6 +914,20 @@ analysis_module_html_data_url_extraction:
   enabled: true
   # the maximum number of bytes to read from the file
   max_bytes: 104857600
+
+analysis_module_html_js_extraction:
+  name: html_js_extraction
+  python_module: saq.modules.file_analysis.html_js_extraction
+  python_class: HTMLJavaScriptExtractor
+  enabled: true
+  # minimum size in bytes for a script to be extracted
+  min_script_size: 10
+  # whether to extract inline event handlers (onclick, onload, etc.)
+  extract_event_handlers: true
+  # maximum size in bytes for inline event handlers
+  max_event_handler_size: 8192
+  # skip extraction of duplicate scripts (by SHA256 hash)
+  deduplicate: true
 
 analysis_module_onenote_extraction:
   name: onenote_extraction
@@ -1866,6 +1880,7 @@ module_group_file:
     - file_type
     - hidden_mime
     - html_data_url_extraction
+    - html_js_extraction
     - ilspy
     - java_class_decompiler
     - lnk_parser
