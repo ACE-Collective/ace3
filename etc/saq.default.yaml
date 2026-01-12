@@ -38,7 +38,7 @@ global:
   analyst_data_dir: data/external/analyst-data
   # if you need to override the default temp directory, set this to the path
   # if the path is relative, it is relative to the SAQ_HOME directory
-  #tmp_dir: var/tmp
+  #tmp_dir: /tmp/ace
   # directory that contains any stack traces for review (relative to DATA_DIR)
   error_reporting_dir: error_reports
   # list of email addresses (comma separated) that get these reports sent to them automatically

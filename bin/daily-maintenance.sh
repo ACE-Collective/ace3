@@ -28,7 +28,7 @@ if [ ! -d "$DATA_DIR" ]; then
 fi
 
 LOG_DIR="$DATA_DIR/logs"
-TEMP_DIR=$(ace config -g G_TEMP_DIR)
+TEMP_DIR=$(ace config -g -v temp_dir)
 ERROR_REPORT_DIR=$(ace config -v global.error_reporting_dir)
 
 # we have special support for this in the ace command
@@ -54,23 +54,23 @@ find -L data/error_reports -maxdepth 1 -type f -mtime +$DELETE_ERROR_REPORTS_OLD
 find -L data/error_reports -maxdepth 1 -mtime +$DELETE_ERROR_REPORTS_OLDER_THAN -type d -exec rm -rf '{}' \;
 
 # delete any archive files older than 30 days
-#find data/archive -type f -mtime +30 -delete
+find data/archive -type f -mtime +30 -delete
 
 # clean up the unix sockets for the process server that are no longer being used by any process
 find -L data/var -maxdepth 1 -name '*.socket' | while read s; do if ! ( lsof -U | fgrep "$s" > /dev/null ); then rm "$s"; fi; done
 
 # delete any temp files older than a day
-if [ -d $TEMP_DIR ]; then 
-    find -L $TEMP_DIR -maxdepth 1 -mindepth 1 -mtime +1 -user ace -print0 | xargs -0 rm -rf
+if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then 
+    find -L "$TEMP_DIR" -maxdepth 1 -mindepth 1 -mtime +1 -user ace -print0 | xargs -0 rm -rf
 fi
 
 # clear out splunk logs
-if [ -d $DATA_DIR/splunk_logs ]; then
+if [ -d "$DATA_DIR/splunk_logs" ]; then
     find data/splunk_logs -type f -name '*.log' -mtime +1 -delete
 fi
 
 # get a summary of the current disk usage
-find $DATA_DIR -maxdepth 1 -mindepth 1 \! -name '*archive' -print0 | du -chs --files0-from=- > data/disk_usage.txt
+find "$DATA_DIR" -maxdepth 1 -mindepth 1 \! -name '*archive' -print0 | du -chs --files0-from=- > data/disk_usage.txt
 
 # delete splunk performance data older than 30 days
 if [ -d $DATA_DIR/splunk_perf ]; then
