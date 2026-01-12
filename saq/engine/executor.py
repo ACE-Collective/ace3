@@ -53,6 +53,8 @@ from saq.modules.interfaces import AnalysisModuleInterface
 from saq.network_semaphore.client import NetworkSemaphore
 from saq.util import local_time
 
+from fluent import sender
+
 
 class ObservableExclusionResult(Enum):
     EXCLUDED = "excluded"
@@ -178,44 +180,38 @@ class AnalysisExecutionContext:
         """
         # save module execution time metrics
         try:
+            engine_config = get_engine_config()
+            if not engine_config.metrics_logging.enabled:
+                return
+
+            fluent_bit_sender = sender.FluentSender(
+                engine_config.metrics_logging.fluent_bit_tag,
+                host=engine_config.metrics_logging.fluent_bit_hostname,
+                port=engine_config.metrics_logging.fluent_bit_port)
+
+            current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
             # how long did all the analysis take combined?
             _total = 0.0
             for key in self.total_analysis_time.keys():
                 _total += self.total_analysis_time[key]
 
             for key in self.total_analysis_time.keys():
-                subdir_name = os.path.join(
-                    stats_dir, "ace", local_time().strftime("%Y%m%d")
-                )
-                if not os.path.isdir(subdir_name):
-                    try:
-                        os.makedirs(subdir_name, exist_ok=True)
-                    except Exception as e:
-                        logging.error(
-                            "unable to create new stats subdir {}: {}".format(
-                                subdir_name, e
-                            )
-                        )
-                        continue
-
-                percentage = "?"
+                percentage = 0.0
                 if elapsed_time:
-                    percentage = "{0:.2f}%".format(
-                        (self.total_analysis_time[key] / elapsed_time) * 100.0
-                    )
+                    percentage = (self.total_analysis_time[key] / elapsed_time) * 100.0
+
                 if not elapsed_time:
                     elapsed_time = 0
 
-                output_line = "{} ({}) [{:.2f}:{:.2f}] - {}\n".format(
-                    timedelta(seconds=self.total_analysis_time[key]),
-                    percentage,
-                    _total,
-                    elapsed_time,
-                    self.root.uuid,
-                )
-
-                with open(os.path.join(subdir_name, "{}.stats".format(key)), "a") as fp:
-                    fp.write(output_line)
+                fluent_bit_sender.emit(None, {
+                    "timestamp": current_time,
+                    "module": key,
+                    "analysis_time_seconds": self.total_analysis_time[key],
+                    "percentage": percentage,
+                    "total_analysis_time_seconds": _total,
+                    "total_time_seconds": elapsed_time,
+                    "root_uuid": self.root.uuid,
+                })
 
         except Exception as e:
             logging.error("unable to record statistics: {}".format(e))

@@ -70,7 +70,7 @@ def parse_event_time(event_time):
     else:
         raise ValueError("invalid date format {}".format(event_time))
 
-def local_time():
+def local_time() -> datetime:
     """Returns datetime.now() in UTC time zone."""
     return get_global_runtime_settings().local_timezone.localize(datetime.now()).astimezone(pytz.UTC)
 

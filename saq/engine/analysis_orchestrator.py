@@ -218,7 +218,9 @@ class AnalysisOrchestrator:
             execution_context.root.save()
 
             # record the execution statistics
-            context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
+            engine_config = get_engine_config()
+            if engine_config.metrics_logging.enabled:
+                context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
 
         except Exception as e:
             elapsed_time = time.time() - start_time

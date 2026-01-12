@@ -1997,6 +1997,13 @@ service_engine:
   log_analysis_timeout_as_warning: false
   # By default alerting is enabled. If this is set to no then the engine will not check to see if an analysis should become an alert.
   alerting_enabled: true
+  metrics_logging:
+    # set this to false to disable metrics logging
+    enabled: true
+    # the hostname of the fluent-bit server
+    fluent_bit_hostname: fluent-bit
+    fluent_bit_port: 24224
+    fluent_bit_tag: metrics
 
 # COLLECTION GROUPS
 # Defines where collectors send submissions to.

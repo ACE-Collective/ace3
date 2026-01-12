@@ -4,7 +4,6 @@ import json
 from multiprocessing import cpu_count
 import os
 import re
-import shutil
 import signal
 import uuid
 import pytest
@@ -1403,33 +1402,225 @@ def test_file_error_reporting():
     with open(os.path.join(dir_path, 'test.txt'), 'r') as fp:
         assert fp.read() == 'Hello, world!'
 
-@pytest.mark.integration
-def test_stats():
-    # clear engine statistics
-    if os.path.exists(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace')):
-        shutil.rmtree(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))
+@pytest.mark.unit
+def test_record_execution_statistics_basic(tmpdir):
+    """test that record_execution_statistics returns early when metrics logging is disabled"""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
 
+    # create a root analysis
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_1')
-    root.save()
-    root.schedule()
 
-    engine = Engine()
-    engine.configuration_manager.enable_module('basic_test')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+    # create an execution context
+    context = AnalysisExecutionContext(root)
 
-    # there should be one subdir in the engine's stats dir
-    assert len(os.listdir(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))) == 1
-    subdir = os.listdir(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace'))
-    subdir = subdir[0]
+    # add some mock module execution times
+    context.total_analysis_time["module_a"] = 2.5
+    context.total_analysis_time["module_b"] = 1.5
+    context.total_analysis_time["module_c"] = 3.0
 
-    # this should have a single stats file in it
-    stats_files = os.listdir(os.path.join(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace', subdir)))
-    assert len(stats_files) == 1
+    # mock the engine config with metrics logging disabled
+    mock_engine_config = MagicMock()
+    mock_engine_config.metrics_logging.enabled = False
 
-    # and it should not be empty
-    assert os.path.getsize(os.path.join(os.path.join(get_global_runtime_settings().module_stats_dir, 'ace', subdir, stats_files[0]))) > 0
+    # mock the fluent sender
+    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            # record statistics
+            elapsed_time = 10.0
+            stats_dir = str(tmpdir)
+            context.record_execution_statistics(elapsed_time, stats_dir)
+
+            # verify fluent sender was never created when metrics logging is disabled
+            mock_sender_class.assert_not_called()
+
+
+@pytest.mark.unit
+def test_record_execution_statistics_with_fluent_bit(tmpdir):
+    """test that record_execution_statistics sends metrics to fluent bit when enabled"""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    # create a root analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    # create an execution context
+    context = AnalysisExecutionContext(root)
+
+    # add some mock module execution times
+    context.total_analysis_time["module_a"] = 2.5
+    context.total_analysis_time["module_b"] = 1.5
+
+    # mock the engine config to enable metrics logging
+    mock_engine_config = MagicMock()
+    mock_engine_config.metrics_logging.enabled = True
+    mock_engine_config.metrics_logging.fluent_bit_tag = "test_tag"
+    mock_engine_config.metrics_logging.fluent_bit_hostname = "localhost"
+    mock_engine_config.metrics_logging.fluent_bit_port = 24224
+
+    # mock the fluent sender
+    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+
+            # record statistics
+            elapsed_time = 10.0
+            stats_dir = str(tmpdir)
+            context.record_execution_statistics(elapsed_time, stats_dir)
+
+            # verify fluent sender was created only once
+            mock_sender_class.assert_called_once_with(
+                "test_tag",
+                host="localhost",
+                port=24224
+            )
+
+            # verify emit was called twice (once for each module)
+            assert mock_sender.emit.call_count == 2
+
+            # check the log events that were emitted
+            calls = mock_sender.emit.call_args_list
+
+            # first call should be for module_a
+            assert calls[0][0][0] is None  # first arg to emit
+            log_event_a = calls[0][0][1]  # second arg to emit
+            assert log_event_a["module"] == "module_a"
+            assert log_event_a["analysis_time_seconds"] == 2.5
+            assert log_event_a["percentage"] == 25.0  # 2.5 / 10.0 * 100
+            assert log_event_a["total_analysis_time_seconds"] == 4.0  # 2.5 + 1.5
+            assert log_event_a["total_time_seconds"] == 10.0
+            assert log_event_a["root_uuid"] == root.uuid
+            assert "timestamp" in log_event_a
+
+            # second call should be for module_b
+            log_event_b = calls[1][0][1]
+            assert log_event_b["module"] == "module_b"
+            assert log_event_b["analysis_time_seconds"] == 1.5
+            assert log_event_b["percentage"] == 15.0  # 1.5 / 10.0 * 100
+            assert log_event_b["total_analysis_time_seconds"] == 4.0
+            assert log_event_b["total_time_seconds"] == 10.0
+
+
+@pytest.mark.unit
+def test_record_execution_statistics_zero_elapsed_time(tmpdir):
+    """test that record_execution_statistics handles zero elapsed time"""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    # create a root analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    # create an execution context
+    context = AnalysisExecutionContext(root)
+
+    # add some mock module execution times
+    context.total_analysis_time["module_a"] = 1.0
+
+    # mock the engine config to enable metrics logging
+    mock_engine_config = MagicMock()
+    mock_engine_config.metrics_logging.enabled = True
+    mock_engine_config.metrics_logging.fluent_bit_tag = "test_tag"
+    mock_engine_config.metrics_logging.fluent_bit_hostname = "localhost"
+    mock_engine_config.metrics_logging.fluent_bit_port = 24224
+
+    # mock the fluent sender
+    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender = MagicMock()
+            mock_sender_class.return_value = mock_sender
+
+            # record statistics with zero elapsed time
+            elapsed_time = 0.0
+            stats_dir = str(tmpdir)
+            context.record_execution_statistics(elapsed_time, stats_dir)
+
+            # verify emit was called
+            assert mock_sender.emit.call_count == 1
+
+            # check the log event
+            log_event = mock_sender.emit.call_args[0][1]
+            assert log_event["percentage"] == 0.0  # should be 0 when elapsed_time is 0
+            assert log_event["total_time_seconds"] == 0  # should be 0 when elapsed_time is 0
+
+
+@pytest.mark.unit
+def test_record_execution_statistics_no_modules(tmpdir):
+    """test that record_execution_statistics handles no modules"""
+    from saq.engine.executor import AnalysisExecutionContext
+
+    # create a root analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    # create an execution context with no module execution times
+    context = AnalysisExecutionContext(root)
+
+    # record statistics - should complete without error
+    elapsed_time = 10.0
+    stats_dir = str(tmpdir)
+    context.record_execution_statistics(elapsed_time, stats_dir)
+
+
+@pytest.mark.unit
+def test_record_execution_statistics_exception_handling(tmpdir):
+    """test that record_execution_statistics handles exceptions gracefully"""
+    from saq.engine.executor import AnalysisExecutionContext
+    from unittest.mock import MagicMock, patch
+
+    # create a root analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    # create an execution context
+    context = AnalysisExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+
+    # mock the engine config to enable metrics logging
+    mock_engine_config = MagicMock()
+    mock_engine_config.metrics_logging.enabled = True
+    mock_engine_config.metrics_logging.fluent_bit_tag = "test_tag"
+    mock_engine_config.metrics_logging.fluent_bit_hostname = "localhost"
+    mock_engine_config.metrics_logging.fluent_bit_port = 24224
+
+    # mock the fluent sender to raise an exception
+    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+            mock_sender_class.side_effect = Exception("connection failed")
+
+            # record statistics - should not raise an exception
+            elapsed_time = 10.0
+            stats_dir = str(tmpdir)
+            context.record_execution_statistics(elapsed_time, stats_dir)
+
+            # function should complete successfully despite the exception
+
+
+@pytest.mark.unit
+def test_record_execution_statistics_with_multiple_modules(tmpdir):
+    """test that record_execution_statistics correctly handles multiple modules"""
+    from saq.engine.executor import AnalysisExecutionContext
+
+    # create a root analysis
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    # create an execution context
+    context = AnalysisExecutionContext(root)
+
+    # add multiple mock module execution times
+    context.total_analysis_time["module_a"] = 1.0
+    context.total_analysis_time["module_b"] = 2.0
+    context.total_analysis_time["module_c"] = 3.0
+    context.total_analysis_time["module_d"] = 4.0
+
+    # record statistics - should complete without error
+    elapsed_time = 15.0
+    stats_dir = str(tmpdir)
+    context.record_execution_statistics(elapsed_time, stats_dir)
 
 @pytest.mark.integration
 def test_exclusion():

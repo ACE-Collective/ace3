@@ -15,6 +15,12 @@ parsers:
     time_format: "%Y-%m-%d %H:%M:%S,%L"
     time_keep: true
 
+  - name: metrics
+    format: json
+    time_key: timestamp
+    time_format: "%Y-%m-%d %H:%M:%S,%L"
+    time_keep: true
+
   - name: phishfinder_json
     format: json
     time_key: date
@@ -76,6 +82,12 @@ pipeline:
       reserve_data: on
 
     - name: parser
+      match: metrics
+      key_name: log
+      parser: metrics
+      reserve_data: on
+
+    - name: parser
       match: phishfinder-*
       key_name: log
       parser: phishfinder_json
@@ -123,6 +135,12 @@ pipeline:
       match: "ace-*"
       format: template
       template: '[{asctime}] [{filename}:{lineno}] [{threadName}] [{process}] [{severity}] - {message}'
+      workers: 1
+
+    - name: file
+      path: /data/logs
+      match: metrics
+      format: out_file
       workers: 1
 
     - name: file

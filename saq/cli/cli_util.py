@@ -28,7 +28,7 @@ def recurse_analysis(analysis, level=0, current_tree=[], include_context=False):
                               '<' + '!' * len(analysis.detections) + '> ' if analysis.detections else '', 
                               analysis.summary if analysis.summary is not None else analysis.display_name)
     if analysis.tags:
-        display += ' [ {} ] '.format(', '.join([x.name for x in analysis.tags]))
+        display += ' [ {} ] '.format(', '.join(analysis.tags))
     
     print(display)
 

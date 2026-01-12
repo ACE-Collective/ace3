@@ -4,7 +4,7 @@ import signal
 from multiprocessing import Event, Process
 from typing import Optional, Type, Union
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 
 from saq.engine.engine_configuration import EngineConfiguration
@@ -17,6 +17,12 @@ from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
 from saq.engine.enums import EngineState, EngineExecutionMode
 from saq.configuration.schema import ServiceConfig
+
+class EngineServiceMetricsLoggingConfig(BaseModel):
+    enabled: bool = Field(..., description="set this to false to disable metrics logging")
+    fluent_bit_hostname: str = Field(..., description="the hostname of the fluent-bit server")
+    fluent_bit_port: int = Field(..., description="the port of the fluent-bit server")
+    fluent_bit_tag: str = Field(..., description="the tag to use for fluent-bit logging")
 
 class EngineServiceConfig(ServiceConfig):
     # analysis pool settings
@@ -60,7 +66,8 @@ class EngineServiceConfig(ServiceConfig):
     # By default alerting is enabled. If this is set to no then the engine will not check to see if an analysis should become an alert.
     alerting_enabled: bool = Field(..., description="By default alerting is enabled. If this is set to no then the engine will not check to see if an analysis should become an alert")
     pool_size_limit: Optional[int] = Field(default=None, description="The maximum number of workers that can be created for any analysis mode")
-
+    # metrics logging configuration
+    metrics_logging: EngineServiceMetricsLoggingConfig = Field(..., description="metrics logging configuration")
 
 class Engine():
     """Analysis Correlation Engine with Unified Controller"""
