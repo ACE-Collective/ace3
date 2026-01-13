@@ -10,7 +10,7 @@ from saq import x509
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
-from saq.constants import F_IPV4, F_SHA1, SUMMARY_DETAIL_FORMAT_PRE, AnalysisExecutionResult, register_directive
+from saq.constants import F_IP, F_IPV4, F_SHA1, SUMMARY_DETAIL_FORMAT_PRE, AnalysisExecutionResult, register_directive
 from saq.modules import AnalysisModule
 
 KEY_SHODAN_RESULTS = 'shodan_results'
@@ -64,7 +64,7 @@ class ShodanAnalysis(Analysis):
 
     def generate_summary(self):
         if self.shodan_results:
-            if self.observable.type == F_IPV4:
+            if self.observable.type in [ F_IP, F_IPV4 ]:
                 result = f"Shodan Results: dns ({','.join(self.dns)}) open ports ({','.join(map(str, self.open_ports))})"
                 if self.vulns:
                     result += f" vulns ({', '.join(self.vulns)})"
@@ -87,7 +87,7 @@ class ShodanAnalyzer(AnalysisModule):
 
     @property
     def valid_observable_types(self):
-        return [F_IPV4, F_SHA1]
+        return [F_IP, F_IPV4, F_SHA1]
 
     @property
     def required_directives(self):
@@ -103,7 +103,7 @@ class ShodanAnalyzer(AnalysisModule):
 
         # Query Shodan depending on the type of observable
         try:
-            if observable.type == F_IPV4:
+            if observable.type in [ F_IP, F_IPV4 ]:
                 analysis.shodan_results = self.search_host(observable.value)
             elif observable.type == F_SHA1:
                 analysis.shodan_results = self.search_cert(observable.value)

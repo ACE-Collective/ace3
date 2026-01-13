@@ -14,7 +14,7 @@ import dateutil
 import pytz
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_FILE, F_FQDN, F_IPV4, F_MESSAGE_ID, F_USER_AGENT, AnalysisExecutionResult, create_email_conversation, create_email_delivery
+from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, F_EMAIL_ADDRESS, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_FILE, F_FQDN, F_IP, F_MESSAGE_ID, F_USER_AGENT, AnalysisExecutionResult, create_email_conversation, create_email_delivery
 from saq.email import decode_rfc2822, is_local_email_domain, normalize_email_address, normalize_message_id
 from saq.environment import get_base_dir, get_data_dir, get_local_timezone
 from saq.error.reporting import report_exception
@@ -890,7 +890,7 @@ class EmailAnalyzer(AnalysisModule):
             value = target_email['x-originating-ip']
             value = re.sub(r'[^0-9\.]', '', value) # these seem to have extra characters added
             email_details[KEY_ORIGINATING_IP] = value
-            ipv4 = analysis.add_observable_by_spec(F_IPV4, value, o_time=received_time)
+            ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
             if ipv4:
                 ipv4.display_type = "Originating IP"
 
@@ -898,7 +898,7 @@ class EmailAnalyzer(AnalysisModule):
             value = target_email['x-sender-ip']
             value = re.sub(r'[^0-9\.]', '', value)  # these seem to have extra characters added
             email_details[KEY_X_SENDER_IP] = value
-            ipv4 = analysis.add_observable_by_spec(F_IPV4, value, o_time=received_time)
+            ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
             if ipv4:
                 ipv4.display_type = "Sender IP"
 
@@ -1287,7 +1287,7 @@ class EmailAnalyzer(AnalysisModule):
                                             normalize_email_address(address)))
 
             if x_originating_ip:
-                analysis.add_observable_by_spec(F_IPV4, x_originating_ip)
+                analysis.add_observable_by_spec(F_IP, x_originating_ip)
 
         return True
 

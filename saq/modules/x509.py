@@ -8,7 +8,7 @@ from typing import override
 from saq import x509
 from saq.analysis import Analysis, RootAnalysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import F_FILE, F_FQDN, F_SHA256, F_IPV4, F_URL, DIRECTIVE_CRAWL, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_IP, F_SHA256, F_URL, DIRECTIVE_CRAWL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import FileTypeAnalysis
 from saq.util.filesystem import get_local_file_path
@@ -236,7 +236,7 @@ class X509Analyzer(AnalysisModule):
         # Get Subject Alternative Name data
         for ip_address in x509.san_ip_addresses(cert):
             analysis.add_san_ip_address(ip_address)
-            san_ip = analysis.add_observable_by_spec(F_IPV4, ip_address)
+            san_ip = analysis.add_observable_by_spec(F_IP, ip_address)
             if san_ip:
                 san_ip.display_type = "Certificate SAN IP Address"
 

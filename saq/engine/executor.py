@@ -29,6 +29,7 @@ from saq.constants import (
     EVENT_RELATIONSHIP_ADDED,
     EVENT_TAG_ADDED,
     F_FILE,
+    F_IP,
     F_IPV4,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
@@ -731,7 +732,7 @@ class AnalysisExecutor:
         excluded = False
         if work_item.observable.type in self.config.observable_exclusions:
             exclusions = self.config.observable_exclusions[work_item.observable.type]
-            if work_item.observable.type == F_IPV4:
+            if work_item.observable.type in [ F_IP, F_IPV4 ]:
                 exclusions = [iptools.IpRange(x) for x in exclusions]
             for exclusion in exclusions:
                 try:
