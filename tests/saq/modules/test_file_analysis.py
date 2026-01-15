@@ -4,7 +4,6 @@ import os
 import pytest
 
 from saq.analysis import Observable
-from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_SYNCHRONY, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, SynchronyFileAnalysis, SynchronyFileAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
@@ -538,28 +537,6 @@ def test_synchrony_analyzer_skips_json_files(datadir, test_context, monkeypatch)
     # should be None because JSON files are skipped
     assert analysis is None
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.unit
 def test_empty_file_hash(datadir, test_context):
     root = create_root_analysis(analysis_mode='test_single')
@@ -635,3 +612,24 @@ def test_qrcode_shipping_label(datadir, test_context):
     assert result == AnalysisExecutionResult.COMPLETED
     analysis = observable.get_and_load_analysis(QRCodeAnalysis)
     assert analysis is None
+
+@pytest.mark.unit
+def test_qrcode_pdf_with_qr_code_at_end(datadir, test_context):
+    """Tests that a QR code at the end of a PDF is extracted correctly."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "sample_pdf_with_qr_code.pdf")
+    
+    analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE)))
+    
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(QRCodeAnalysis)
+    assert isinstance(analysis, QRCodeAnalysis)
+    assert analysis.extracted_text == "https://sever.emmetcrcs.org/#"
+    assert len(analysis.get_observables_by_type(F_FILE)) == 1
+    with open(analysis.get_observables_by_type(F_FILE)[0].full_path, 'r') as fp:
+        text = fp.read()
+        assert text.strip() == "https://sever.emmetcrcs.org/#"
