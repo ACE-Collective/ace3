@@ -944,6 +944,10 @@ class EmailAnalyzer(AnalysisModule):
                     # the actual message-id will be in one of the payloads of the email
                     for payload in target.get_payload():
                         if 'message-id' in payload and payload['message-id'].strip() == target_message_id:
+                            # Even though we skip extracting the target email as a file,
+                            # we still need to recursively process its payload to extract
+                            # any embedded files (e.g., PDF in the body)
+                            _recursive_parser(payload)
                             return
 
                     # if we are going to extract it then we name it here
@@ -1034,9 +1038,17 @@ class EmailAnalyzer(AnalysisModule):
                         extracted_file.add_directive(DIRECTIVE_RENDER)
 
                 # tracking attachments for logging purposes
-                attachments.append((len(payload), target.get_content_type(), 
+                attachments.append((len(payload), target.get_content_type(),
                                     extracted_file.file_path, hashlib.sha256(payload).hexdigest()))
-                 
+
+                # If this was a message/rfc822, recursively process its payload
+                # to extract any embedded files (e.g., PDF attachments in the inner email body)
+                if target.get_content_type() == 'message/rfc822':
+                    inner_payload = target.get_payload()
+                    if inner_payload:
+                        for inner_part in inner_payload:
+                            _recursive_parser(inner_part)
+
             # otherwise, if it's a multi-part then we want to recurse into it
             elif target.is_multipart():
                 for part in target.get_payload():

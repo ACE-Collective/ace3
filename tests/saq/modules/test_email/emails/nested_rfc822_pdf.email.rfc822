@@ -1,0 +1,76 @@
+Return-Path: <journal@testcompany.onmicrosoft.com>
+Delivered-To: journal@testmail.example.com
+Received: from mail.example.com (mail.example.com [10.0.0.1])
+	by smtp.example.local (Postfix) with ESMTPS id ABC123
+	for <journal@testmail.example.com>; Mon, 13 Jan 2026 10:30:00 +0000 (UTC)
+Content-Type: multipart/mixed;
+	boundary="_outer-boundary-1234_"
+Subject: Test Email with Nested PDF
+To: recipient@example.com
+From: Test Sender <sender@example.com>
+MIME-Version: 1.0
+Sender:
+	<MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@testcompany.onmicrosoft.com>
+Message-ID: <outer-message-id-1234@journal.report.generator>
+Date: Mon, 13 Jan 2026 10:30:00 +0000
+X-MS-PublicTrafficType: Email
+X-MS-Journal-Report: test-journal-id-1234
+X-MS-Exchange-Parent-Message-Id:
+	<target-message-id-5678@example.com>
+Auto-Submitted: auto-generated
+X-MS-Exchange-Generated-Message-Source: Journal Agent
+
+--_outer-boundary-1234_
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+Sender: sender@example.com
+Subject: Test Email with Nested PDF
+Message-Id: <target-message-id-5678@example.com>
+Recipient: recipient@example.com
+
+--_outer-boundary-1234_
+Content-Type: message/rfc822
+
+Received: from smtp.example.com (10.0.0.2)
+ by mail.example.com (10.0.0.1) with Microsoft SMTP Server
+ id 15.20.0.0; Mon, 13 Jan 2026 10:29:59 +0000
+From: Test Sender <sender@example.com>
+To: recipient@example.com
+Subject: Test Email with Nested PDF
+Message-ID: <target-message-id-5678@example.com>
+Date: Mon, 13 Jan 2026 10:29:55 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed;
+	boundary="_inner-boundary-5678_"
+X-MS-Exchange-Organization-MessageDirectionality: Incoming
+
+--_inner-boundary-5678_
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+This is a test email with a nested PDF attachment embedded in an inner message/rfc822 part.
+
+--_inner-boundary-5678_
+Content-Type: message/rfc822
+
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename=test_document.pdf
+From: Test Sender <sender@example.com>
+To: recipient@example.com
+Subject: Test Email with Nested PDF
+Message-ID: <target-message-id-5678@example.com>
+Date: Mon, 13 Jan 2026 10:29:55 +0000
+MIME-Version: 1.0
+Content-Type: application/pdf; name=test_document.pdf
+
+JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2Jq
+CjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2Jq
+CjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIg
+NzkyXSA+PgplbmRvYmoKeHJlZgowIDQKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAw
+MDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAp0cmFpbGVyCjw8
+IC9TaXplIDQgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjE5NgolJUVPRgo=
+
+--_inner-boundary-5678_--
+
+--_outer-boundary-1234_--

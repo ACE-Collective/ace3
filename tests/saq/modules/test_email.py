@@ -850,6 +850,55 @@ def test_o365_journal_email_parsing(root_analysis, datadir):
     assert isinstance(email_analysis.attachments, list)
     assert len(email_analysis.attachments) == 0
 
+@pytest.mark.integration
+def test_nested_rfc822_pdf_extraction(root_analysis, datadir):
+    """Test that PDFs embedded in nested message/rfc822 parts are properly extracted.
+
+    This tests a specific email structure where:
+    - Outer email is multipart/mixed (O365 journal wrapper)
+    - Contains a message/rfc822 part (the journaled email)
+    - That inner email contains another message/rfc822 part
+    - The innermost message/rfc822 has Content-Type: application/pdf directly
+      (the PDF is the body of that inner email, not a separate MIME part)
+
+    Without the fix, the PDF would not be extracted because the code would skip
+    processing the inner message/rfc822 when it matched the target message-id.
+    """
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/nested_rfc822_pdf.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+    assert email_analysis.parsing_error is None
+
+    # Find the extracted PDF file
+    pdf_observables = [
+        obs for obs in root_analysis.all_observables
+        if obs.type == F_FILE and obs.file_name and 'test_document.pdf' in obs.file_name
+    ]
+    assert len(pdf_observables) >= 1, "PDF should be extracted from nested message/rfc822"
+
+    # Verify the PDF content is valid (starts with %PDF-)
+    pdf_observable = pdf_observables[0]
+    with open(pdf_observable.full_path, 'rb') as f:
+        pdf_content = f.read()
+    assert pdf_content.startswith(b'%PDF-'), "Extracted file should be a valid PDF"
+
+
 @pytest.mark.parametrize("whitelist_item", [
     "smtp_from:ap@someothercompany.com",
     "smtp_to:lulu.zingzing@company.com",
