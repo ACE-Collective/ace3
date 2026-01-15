@@ -41,7 +41,7 @@ class HunterService(ACEServiceInterface):
         self.submission_queue = Queue()
         self.collector = HunterCollector(self.submission_queue)
         self.collector_service = CollectorService(self.collector, config=get_service_config(SERVICE_HUNTER))
-        self.hunt_managers = {} # key = hunt_type, value = HuntManager
+        self.hunt_managers: dict[str, HuntManager] = {} # key = hunt_type, value = HuntManager
 
     @override
     def start(self):

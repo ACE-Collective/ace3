@@ -391,7 +391,7 @@ class HuntManager:
                     logging.info(f"cancelling {hunt}")
                     hunt.cancel()
                     hunt.wait()
-            except Exception:
+            except Exception as e:
                 logging.info(f"unable to cancel {hunt}: {e}")
 
     def set_concurrency_limit(self, limit):
@@ -447,6 +447,9 @@ class HuntManager:
             logging.debug(f"releasing concurrency semaphore for hunt type {self.hunt_type}")
             semaphore.release()
 
+    def load_hunt_from_config(self, hunt_config_file_path: str):
+        return self.hunt_cls(manager=self, hunt_config_file_path=hunt_config_file_path)
+
     def load_hunts_from_config(self, hunt_filter=lambda hunt: True):
         """Loads the hunts from the configuration settings.
            Returns True if all of the hunts were loaded correctly, False if any errors occurred.
@@ -456,7 +459,7 @@ class HuntManager:
         for hunt_config_file_path in self._list_hunt_yaml():
             try:
                 logging.info(f"loading hunt from {hunt_config_file_path}")
-                hunt = self.hunt_cls(manager=self, hunt_config_file_path=hunt_config_file_path)
+                hunt = self.load_hunt_from_config(hunt_config_file_path)
 
                 if hunt_filter(hunt):
                     logging.debug(f"loaded {hunt} from {hunt_config_file_path}")
