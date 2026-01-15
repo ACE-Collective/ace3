@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import re
@@ -100,6 +101,8 @@ class QRCodeFilter:
 
 class QRCodeAnalyzerConfig(AnalysisModuleConfig):
     filter_path: Optional[str] = Field(default=None, description="Path to a list of strings to exclude from the results relative to ANALYST_DATA_DIR.")
+    pdf_first_pages: int = Field(default=3, description="Number of pages to scan from the beginning of a PDF.")
+    pdf_last_pages: int = Field(default=3, description="Number of pages to scan from the end of a PDF.")
 
 class QRCodeAnalyzer(AnalysisModule):
     @classmethod
@@ -118,6 +121,14 @@ class QRCodeAnalyzer(AnalysisModule):
     def qrcode_filter_path(self):
         return os.path.join(get_global_runtime_settings().analyst_data_dir, self.config.filter_path) if self.config.filter_path else None
 
+    @property
+    def pdf_first_pages(self):
+        return self.config.pdf_first_pages
+
+    @property
+    def pdf_last_pages(self):
+        return self.config.pdf_last_pages
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.hash import FileHashAnalyzer
 
@@ -135,47 +146,87 @@ class QRCodeAnalyzer(AnalysisModule):
         if not is_image(local_file_path) and not is_pdf_result:
             return AnalysisExecutionResult.COMPLETED
 
-        target_file_path = local_file_path
+        # Determine which files to scan for QR codes
         if is_pdf_result:
-            # if this is a PDF then we need to convert it into an image first
-            target_file_path = f"{local_file_path}.png"
-            logging.info(f"converting {local_file_path} to png @ {target_file_path}")
-            process = Popen(["gs", "-sDEVICE=pngalpha", "-o", target_file_path, "-r144", local_file_path], stdout=PIPE, stderr=PIPE)
+            # Convert PDF to PNG images (one per page) using %d pattern
+            target_file_pattern = f"{local_file_path}-%d.png"
+            logging.info(f"converting {local_file_path} to png @ {target_file_pattern}")
+            process = Popen(["gs", "-sDEVICE=pngalpha", "-o", target_file_pattern, "-r144", local_file_path], stdout=PIPE, stderr=PIPE)
             _stdout, _stderr = process.communicate()
-            if not os.path.exists(target_file_path):
+
+            # Find all generated page PNGs
+            target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+            if not target_file_paths:
                 logging.warning(f"conversion of {local_file_path} to png failed")
                 return AnalysisExecutionResult.COMPLETED
 
-        logging.info(f"looking for a QR code in {target_file_path}")
-        process = Popen(["zbarimg", "-q", "--raw", "--nodbus", target_file_path], stdout=PIPE, stderr=PIPE, text=True)
-        _stdout, _stderr = process.communicate()
+            # Limit to first M and last N pages for QR code scanning
+            total_pages = len(target_file_paths)
+            first_n = self.pdf_first_pages
+            last_n = self.pdf_last_pages
 
-        # invert the image and scan that too
-        inverted_target_file_path = f"{target_file_path}.inverted.png"
-        try:
-            image = Image.open(target_file_path).convert("RGB")
-            image_inverted = ImageOps.invert(image)
-            image_inverted.save(inverted_target_file_path)
-        except Exception as e:
-            logging.warning(f"unable to invert image {target_file_path}: {e}")
+            if total_pages > first_n + last_n:
+                pages_to_scan = set(target_file_paths[:first_n] + target_file_paths[-last_n:])
+                pages_to_skip = [p for p in target_file_paths if p not in pages_to_scan]
+                target_file_paths = sorted(pages_to_scan)
+                # Clean up skipped page PNGs immediately
+                for skip_path in pages_to_skip:
+                    try:
+                        os.unlink(skip_path)
+                    except Exception as e:
+                        logging.error(f"unable to remove skipped page {skip_path}: {e}")
+                logging.info(f"PDF has {total_pages} pages, scanning first {first_n} and last {last_n} pages")
+            else:
+                logging.info(f"PDF has {total_pages} pages, scanning all pages")
 
-        _stdout_inverted = None
-        _stderr_inverted = None
-        if os.path.exists(inverted_target_file_path):
-            logging.info(f"looking for a QR code in {inverted_target_file_path}")
-            process = Popen(["zbarimg", "-q", "--raw", "--nodbus", inverted_target_file_path], stdout=PIPE, stderr=PIPE, text=True)
-            _stdout_inverted, _stderr_inverted = process.communicate()
+            is_temp_files = True
+        else:
+            target_file_paths = [local_file_path]
+            is_temp_files = False
+
+        # Scan each page/image for QR codes
+        _stdout = ""
+        _stderr = ""
+        _stdout_inverted = ""
+        _stderr_inverted = ""
+
+        for target_file_path in target_file_paths:
+            logging.info(f"looking for a QR code in {target_file_path}")
+            process = Popen(["zbarimg", "-q", "--raw", "--nodbus", target_file_path], stdout=PIPE, stderr=PIPE, text=True)
+            page_stdout, page_stderr = process.communicate()
+            if page_stdout:
+                _stdout += page_stdout
+            if page_stderr:
+                _stderr += page_stderr
+
+            # invert the image and scan that too
+            inverted_target_file_path = f"{target_file_path}.inverted.png"
             try:
-                os.unlink(inverted_target_file_path)
+                image = Image.open(target_file_path).convert("RGB")
+                image_inverted = ImageOps.invert(image)
+                image_inverted.save(inverted_target_file_path)
             except Exception as e:
-                logging.error(f"unable to remove {inverted_target_file_path}: {e}")
+                logging.warning(f"unable to invert image {target_file_path}: {e}")
 
-        if target_file_path != local_file_path:
-            # if we created a temporary file, go ahead and delete it as we won't need it anymore
-            try:
-                os.unlink(target_file_path)
-            except Exception as e:
-                logging.error(f"unable to remove {target_file_path}: {e}")
+            if os.path.exists(inverted_target_file_path):
+                logging.info(f"looking for a QR code in {inverted_target_file_path}")
+                process = Popen(["zbarimg", "-q", "--raw", "--nodbus", inverted_target_file_path], stdout=PIPE, stderr=PIPE, text=True)
+                page_stdout_inverted, page_stderr_inverted = process.communicate()
+                if page_stdout_inverted:
+                    _stdout_inverted += page_stdout_inverted
+                if page_stderr_inverted:
+                    _stderr_inverted += page_stderr_inverted
+                try:
+                    os.unlink(inverted_target_file_path)
+                except Exception as e:
+                    logging.error(f"unable to remove {inverted_target_file_path}: {e}")
+
+            # Clean up temporary PNG file if created from PDF
+            if is_temp_files:
+                try:
+                    os.unlink(target_file_path)
+                except Exception as e:
+                    logging.error(f"unable to remove {target_file_path}: {e}")
 
         extracted_urls = []
         for _stdout, is_inverted in [ (_stdout, False), (_stdout_inverted, True) ]:

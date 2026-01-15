@@ -1439,6 +1439,9 @@ analysis_module_qrcode:
   enabled: true
   # path to a list of strings to exclude from the results relative to ANALYST_DATA_DIR
   filter_path: qrcode.filter
+  # number of pages to scan from the beginning and end of a PDF
+  pdf_first_pages: 3
+  pdf_last_pages: 3
 
 analysis_module_hidden_mime:
   name: hidden_mime
