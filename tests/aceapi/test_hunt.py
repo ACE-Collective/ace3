@@ -410,7 +410,7 @@ def test_validate_hunt_invalid_yaml_syntax(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "yaml syntax error" in data["error"].lower()
@@ -435,7 +435,7 @@ def test_validate_hunt_missing_required_field_uuid(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "error" in data
@@ -460,7 +460,7 @@ def test_validate_hunt_missing_required_field_name(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "error" in data
@@ -485,7 +485,7 @@ def test_validate_hunt_missing_required_field_type(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "error" in data
@@ -510,7 +510,7 @@ def test_validate_hunt_missing_required_field_frequency(test_client, auth_header
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "error" in data
@@ -536,7 +536,7 @@ def test_validate_hunt_invalid_frequency_format(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "error" in data
@@ -562,7 +562,7 @@ def test_validate_hunt_unknown_hunt_type(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     # Note: The error message uses hunt_dict.type_ (with underscore) due to Pydantic alias
@@ -679,7 +679,7 @@ def test_validate_hunt_empty_hunts_list_target_not_found(test_client, auth_heade
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "not found" in data["error"].lower()
@@ -696,7 +696,7 @@ def test_validate_hunt_target_not_in_hunts(test_client, auth_headers):
         },
         headers=auth_headers
     )
-    assert result.status_code == 200
+    assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "not found" in data["error"].lower()
@@ -746,3 +746,639 @@ def test_validate_hunt_multiple_hunts_all_valid(test_client, auth_headers):
         assert result.status_code == 200
         data = result.get_json()
         assert data["valid"] is True
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Execution Arguments Validation
+# =============================================================================
+
+@pytest.mark.integration
+@pytest.mark.parametrize("execution_arguments,error_contains", [
+    # Invalid type for analyze_results (non-coercible to bool)
+    ({"analyze_results": "invalid"}, "execution_arguments"),
+    ({"analyze_results": []}, "execution_arguments"),
+    ({"analyze_results": {}}, "execution_arguments"),
+    # Invalid type for create_alerts (non-coercible to bool)
+    ({"create_alerts": "nope"}, "execution_arguments"),
+    # Invalid type for queue (must be string)
+    ({"queue": 123}, "execution_arguments"),
+    ({"queue": ["default"]}, "execution_arguments"),
+    # Invalid type for start_time (must be string or None)
+    ({"start_time": 123}, "execution_arguments"),
+])
+def test_validate_hunt_execution_arguments_invalid_types(test_client, auth_headers, execution_arguments, error_contains):
+    """Verify invalid execution_arguments field types return validation error."""
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock()
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": execution_arguments
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert error_contains in data["error"].lower()
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Time Parsing (QueryHunt)
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_execution_query_hunt_missing_start_time(test_client, auth_headers):
+    """Verify QueryHunt without start_time returns clear error."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        # Create a mock that passes isinstance check for QueryHunt
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "start_time is required" in data["error"]
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_query_hunt_missing_end_time(test_client, auth_headers):
+    """Verify QueryHunt without end_time returns clear error."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "end_time is required" in data["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("invalid_time,field_name", [
+    ("2025-01-15 12:00:00", "start_time"),  # Wrong format (dashes instead of slashes)
+    ("01-15-2025:12:00:00", "start_time"),  # Wrong separator
+    ("01/15/2025 12:00:00", "start_time"),  # Space instead of colon
+    ("15/01/2025:12:00:00", "start_time"),  # DD/MM/YYYY instead of MM/DD/YYYY
+    ("not-a-date", "start_time"),  # Completely invalid
+    ("", "start_time"),  # Empty string
+    ("01/15/2025:25:00:00", "start_time"),  # Invalid hour
+    ("01/15/2025:12:60:00", "start_time"),  # Invalid minute
+])
+def test_validate_hunt_execution_invalid_start_time_format(test_client, auth_headers, invalid_time, field_name):
+    """Verify invalid start_time format returns clear error with expected format."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": invalid_time,
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "start_time" in data["error"].lower()
+        assert "MM/DD/YYYY:HH:MM:SS" in data["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("invalid_time", [
+    "2025-01-15 12:00:00",  # Wrong format
+    "not-a-date",  # Completely invalid
+    "",  # Empty string
+])
+def test_validate_hunt_execution_invalid_end_time_format(test_client, auth_headers, invalid_time):
+    """Verify invalid end_time format returns clear error with expected format."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": invalid_time
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "end_time" in data["error"].lower()
+        assert "MM/DD/YYYY:HH:MM:SS" in data["error"]
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Timezone Handling
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_execution_invalid_timezone(test_client, auth_headers):
+    """Verify invalid timezone returns clear error."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00",
+                    "timezone": "Invalid/Timezone"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "invalid timezone" in data["error"].lower()
+        assert "Invalid/Timezone" in data["error"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("timezone", [
+    "America/New_York",
+    "Europe/London",
+    "Asia/Tokyo",
+    "UTC",
+    "US/Eastern",
+])
+def test_validate_hunt_execution_valid_timezones(test_client, auth_headers, timezone):
+    """Verify valid timezones are accepted."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        # Mock execute to return empty list (no submissions)
+        mock_hunt.execute.return_value = []
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00",
+                    "timezone": timezone
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Execution Success Cases
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_execution_success_no_analyze_no_alerts(test_client, auth_headers):
+    """Verify successful execution without analyze_results or create_alerts."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        # Create mock submission with mock root
+        mock_root = Mock(spec=RootAnalysis)
+        mock_root.json = {"uuid": "test-uuid-123", "description": "Test Hunt"}
+        mock_root.details = {"query": "test query", "events": []}
+        mock_submission = Mock(spec=Submission)
+        mock_submission.root = mock_root
+
+        mock_hunt.execute.return_value = [mock_submission]
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert "roots" in data
+        assert "logs" in data
+        assert len(data["roots"]) == 1
+        assert data["roots"][0]["details"] == {"query": "test query", "events": []}
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_success_with_analyze_results(test_client, auth_headers):
+    """Verify successful execution with analyze_results=True."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        with patch("aceapi.hunt.storage_dir_from_uuid") as mock_storage_dir:
+            mock_storage_dir.return_value = "/tmp/test-storage"
+
+            mock_manager = Mock()
+            mock_hunt = Mock(spec=QueryHunt)
+
+            # Create mock submission with mock root
+            mock_root = Mock(spec=RootAnalysis)
+            mock_root.json = {"uuid": "test-uuid-123", "description": "Test Hunt"}
+            mock_root.details = {"query": "test query"}
+
+            # Mock the duplicate method to return a new mock root
+            mock_new_root = Mock(spec=RootAnalysis)
+            mock_new_root.json = {"uuid": "new-uuid-456", "description": "Test Hunt"}
+            mock_new_root.details = {"query": "test query"}
+            mock_new_root.uuid = "new-uuid-456"
+            mock_root.duplicate.return_value = mock_new_root
+
+            mock_submission = Mock(spec=Submission)
+            mock_submission.root = mock_root
+
+            mock_hunt.execute.return_value = [mock_submission]
+            mock_manager.load_hunt_from_config.return_value = mock_hunt
+            mock_instance = mock_hunter_service.return_value
+            mock_instance.hunt_managers = {"test": mock_manager}
+            mock_instance.load_hunt_managers = Mock()
+
+            result = test_client.post(
+                HUNT_VALIDATE_URL,
+                json={
+                    "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                    "target": "test.yaml",
+                    "execution_arguments": {
+                        "start_time": "01/15/2025:10:00:00",
+                        "end_time": "01/15/2025:12:00:00",
+                        "analyze_results": True
+                    }
+                },
+                headers=auth_headers
+            )
+
+            assert result.status_code == 200
+            data = result.get_json()
+            assert data["valid"] is True
+            assert "roots" in data
+            # Verify duplicate was called
+            mock_root.duplicate.assert_called_once()
+            # Verify move, save, and schedule were called on the new root
+            mock_new_root.move.assert_called_once_with("/tmp/test-storage")
+            mock_new_root.save.assert_called()
+            mock_new_root.schedule.assert_called_once()
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_success_with_create_alerts(test_client, auth_headers):
+    """Verify successful execution with create_alerts=True."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+    from saq.constants import ANALYSIS_MODE_CORRELATION
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        with patch("aceapi.hunt.storage_dir_from_uuid") as mock_storage_dir:
+            with patch("aceapi.hunt.ALERT") as mock_alert:
+                mock_storage_dir.return_value = "/tmp/test-storage"
+
+                mock_manager = Mock()
+                mock_hunt = Mock(spec=QueryHunt)
+
+                # Create mock submission with mock root
+                mock_root = Mock(spec=RootAnalysis)
+                mock_root.json = {"uuid": "test-uuid-123", "description": "Test Hunt"}
+                mock_root.details = {"query": "test query"}
+
+                # Mock the duplicate method to return a new mock root
+                mock_new_root = Mock(spec=RootAnalysis)
+                mock_new_root.json = {"uuid": "new-uuid-456", "description": "Test Hunt"}
+                mock_new_root.details = {"query": "test query"}
+                mock_new_root.uuid = "new-uuid-456"
+                mock_root.duplicate.return_value = mock_new_root
+
+                mock_submission = Mock(spec=Submission)
+                mock_submission.root = mock_root
+
+                mock_hunt.execute.return_value = [mock_submission]
+                mock_manager.load_hunt_from_config.return_value = mock_hunt
+                mock_instance = mock_hunter_service.return_value
+                mock_instance.hunt_managers = {"test": mock_manager}
+                mock_instance.load_hunt_managers = Mock()
+
+                result = test_client.post(
+                    HUNT_VALIDATE_URL,
+                    json={
+                        "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                        "target": "test.yaml",
+                        "execution_arguments": {
+                            "start_time": "01/15/2025:10:00:00",
+                            "end_time": "01/15/2025:12:00:00",
+                            "create_alerts": True
+                        }
+                    },
+                    headers=auth_headers
+                )
+
+                assert result.status_code == 200
+                data = result.get_json()
+                assert data["valid"] is True
+                # Verify ALERT was called
+                mock_alert.assert_called_once_with(mock_new_root)
+                # Verify analysis_mode was set to correlation
+                assert mock_new_root.analysis_mode == ANALYSIS_MODE_CORRELATION
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_success_with_custom_queue(test_client, auth_headers):
+    """Verify successful execution with custom queue."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        with patch("aceapi.hunt.storage_dir_from_uuid") as mock_storage_dir:
+            mock_storage_dir.return_value = "/tmp/test-storage"
+
+            mock_manager = Mock()
+            mock_hunt = Mock(spec=QueryHunt)
+
+            mock_root = Mock(spec=RootAnalysis)
+            mock_root.json = {"uuid": "test-uuid-123"}
+            mock_root.details = {}
+
+            mock_new_root = Mock(spec=RootAnalysis)
+            mock_new_root.json = {"uuid": "new-uuid-456"}
+            mock_new_root.details = {}
+            mock_new_root.uuid = "new-uuid-456"
+            mock_root.duplicate.return_value = mock_new_root
+
+            mock_submission = Mock(spec=Submission)
+            mock_submission.root = mock_root
+
+            mock_hunt.execute.return_value = [mock_submission]
+            mock_manager.load_hunt_from_config.return_value = mock_hunt
+            mock_instance = mock_hunter_service.return_value
+            mock_instance.hunt_managers = {"test": mock_manager}
+            mock_instance.load_hunt_managers = Mock()
+
+            result = test_client.post(
+                HUNT_VALIDATE_URL,
+                json={
+                    "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                    "target": "test.yaml",
+                    "execution_arguments": {
+                        "start_time": "01/15/2025:10:00:00",
+                        "end_time": "01/15/2025:12:00:00",
+                        "analyze_results": True,
+                        "queue": "custom-queue"
+                    }
+                },
+                headers=auth_headers
+            )
+
+            assert result.status_code == 200
+            data = result.get_json()
+            assert data["valid"] is True
+            # Verify queue was set
+            assert mock_new_root.queue == "custom-queue"
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_empty_submissions(test_client, auth_headers):
+    """Verify execution with no submissions returns empty roots."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.execute.return_value = []
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert data["roots"] == []
+        assert "logs" in data
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Execution Error Cases
+# =============================================================================
+
+@pytest.mark.integration
+def test_validate_hunt_execution_raises_exception(test_client, auth_headers):
+    """Verify hunt execution exception returns wrapped error message."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.execute.side_effect = Exception("Connection failed to SIEM")
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 400
+        data = result.get_json()
+        assert data["valid"] is False
+        assert "error executing hunt" in data["error"].lower()
+        assert "Connection failed to SIEM" in data["error"]
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_non_query_hunt_no_time_required(test_client, auth_headers):
+    """Verify non-QueryHunt types don't require start_time/end_time."""
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        # This is NOT a QueryHunt, just a regular hunt
+        mock_hunt = Mock()
+        mock_hunt.execute.return_value = []
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {}  # No time parameters
+            },
+            headers=auth_headers
+        )
+
+        # Should succeed because it's not a QueryHunt
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_logs_collected(test_client, auth_headers):
+    """Verify logs are collected during execution."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    import logging
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+
+        def execute_with_logging(**kwargs):
+            logging.info("Test log message from hunt execution")
+            return []
+
+        mock_hunt.execute.side_effect = execute_with_logging
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert "logs" in data
+        # Check that logs contain our test message
+        log_messages = " ".join(data["logs"])
+        assert "Test log message from hunt execution" in log_messages
