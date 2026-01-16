@@ -88,7 +88,7 @@ class Alert(Base):
 
     def load(self):
         self._root_analysis = RootAnalysis(storage_dir=self.storage_dir)
-        self._root_analysis.load()
+        return self._root_analysis.load()
 
         #try:
             #result = super().load(*args, **kwargs)

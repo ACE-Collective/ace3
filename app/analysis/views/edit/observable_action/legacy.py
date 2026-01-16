@@ -32,7 +32,7 @@ def observable_action():
         if not alert.load():
             return "Unable to load alert.", 500
 
-        observable = alert.observable_store[observable_uuid]
+        observable = alert.root_analysis.observable_store[observable_uuid]
 
         logging.info("AUDIT: user %s used action %s for observable %s in alert %s", 
                     current_user, action_id, observable, alert)
@@ -47,7 +47,7 @@ def observable_action():
                 logging.info("user {} added directive {} to {}".format(current_user, DIRECTIVE_COLLECT_FILE, observable))
                 observable.add_directive(DIRECTIVE_COLLECT_FILE)
                 alert.sync()
-                alert.schedule()
+                alert.root_analysis.schedule()
                 return "File collection requested.", 200
             except Exception:
                 logging.error("unable to mark observable {} for file collection".format(observable))
