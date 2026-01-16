@@ -11,7 +11,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.presenter import create_analysis_presenter, create_observable_presenter
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import CLOSED_EVENT_LIMIT, F_FILE, VALID_OBSERVABLE_TYPES
+from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES
 from saq.database.model import Campaign, Comment, Company, Malware, User, Event
 from saq.database.pool import get_db
 from saq.database.util.observable_detection import get_all_observable_detections
@@ -377,6 +377,7 @@ def index():
         db=get_db(),
         current_time=datetime.now(),
         observable_types=VALID_OBSERVABLE_TYPES,
+        directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES},
         display_tree=display_tree,
         prune_display_tree=session['prune'],
         prune_volatile=session['prune_volatile'],

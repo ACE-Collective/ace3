@@ -141,6 +141,21 @@
                     <input type="text" class="form-control" id="add_observable_time" name="add_observable_time" value="" placeholder="YYYY-MM-DD HH:MM:SS"/>
                     </div>
                 </div>
+                <div class="row" style="margin-top: 10px;">
+                    <div class="col">
+                    Directives (optional)
+                    <div id="add_observable_directives_text_container" style="display: none">
+                        <input class="form-control" type="text" name="add_observable_directives" id="add_observable_directives_text" value="" placeholder="Comma-separated directives">
+                    </div>
+                    <div id="add_observable_directives_multiselect_container">
+                        <select class="form-select" name="add_observable_directives[]" id="add_observable_directives_multiselect" multiple>
+                        {% for directive in directives %}
+                            <option value="{{directive}}" title="{{ directives[directive] }}">{{directive}}</option>
+                        {% endfor %}
+                        </select>
+                    </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"></input>

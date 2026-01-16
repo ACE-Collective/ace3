@@ -59,9 +59,40 @@ $(document).ready(function() {
         $("#option_" + disposition).click();
     });
 
+    // Reset directive selection when add observable modal opens
+    $('#add_observable_modal').on('show.bs.modal', function () {
+        $("#add_observable_directives_multiselect").val([]);
+        $("#add_observable_directives_text").val("");
+        $("#add_observable_directives_multiselect_container").show();
+        $("#add_observable_directives_text_container").hide();
+    });
+
     $("#add_observable_type").change(function (e) {
         const observable_type = $("#add_observable_type option:selected").text();
         var add_observable_input = document.getElementById("add_observable_value");
+        var directives_multiselect = $("#add_observable_directives_multiselect");
+        var directives_multiselect_container = $("#add_observable_directives_multiselect_container");
+        var directives_text_container = $("#add_observable_directives_text_container");
+
+        // Reset directive selection
+        directives_multiselect.val([]);
+        $("#add_observable_directives_text").val("");
+
+        // Toggle directive input type based on observable type
+        if (['email_address', 'user'].includes(observable_type)) {
+            directives_multiselect_container.hide();
+            directives_text_container.show();
+        } else {
+            directives_text_container.hide();
+            directives_multiselect_container.show();
+        }
+
+        // Auto-select 'sandbox' for file types
+        if (observable_type === 'file') {
+            directives_multiselect.val(['sandbox']);
+        }
+
+        // Handle observable value input type changes
         if (!['email_conversation', 'email_delivery', 'ipv4_conversation', 'ipv4_full_conversation', 'file'].includes(observable_type)) {
             add_observable_input.parentNode.removeChild(add_observable_input);
             $("#add_observable_value_content").append('<input type="text" class="form-control" id="add_observable_value" name="add_observable_value" value="" placeholder="Enter Value"/>');

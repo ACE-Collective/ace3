@@ -5,7 +5,7 @@ from flask import flash, redirect, request, url_for
 from flask_login import current_user
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.constants import ANALYSIS_MODE_CORRELATION
+from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
@@ -48,6 +48,16 @@ def add_observable():
         flash("invalid observable time format")
         return redirection
 
+    # get the directives from the form
+    directives = request.form.getlist('add_observable_directives[]')
+    if not directives:
+        o_directives_text = request.form.get('add_observable_directives', '')
+        if o_directives_text:
+            for directive in o_directives_text.split(','):
+                d = directive.strip()
+                if d != '' and d in VALID_DIRECTIVES:
+                    directives.append(d)
+
     #if o_type not in VALID_OBSERVABLE_TYPES:
         #flash("invalid observable type {0}".format(o_type))
         #return redirection
@@ -80,7 +90,14 @@ def add_observable():
             flash("internal error")
             return redirection
 
-        alert.root_analysis.add_observable_by_spec(o_type, o_value, None if o_time == '' else o_time)
+        observable = alert.root_analysis.add_observable_by_spec(o_type, o_value, None if o_time == '' else o_time)
+
+        # apply directives to the observable
+        if observable and directives:
+            for directive in directives:
+                if directive in VALID_DIRECTIVES:
+                    observable.add_directive(directive)
+            logging.info(f"AUDIT: user {current_user} added directives {directives} to observable {observable}")
 
         # switch back into correlation mode (we may be in a different post-correlation mode at this point)
         alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
