@@ -437,9 +437,8 @@ def email_file():
     subject = request.form.get("subject", "ACE file attached from {}".format(alert.description))
 
     # find the observable with this uuid
-    try:
-        file_observable = alert.root_analysis.get_observable(file_uuid)
-    except KeyError:
+    file_observable = alert.root_analysis.get_observable(file_uuid)
+    if file_observable is None:
         logging.error("missing file observable uuid {0} for alert {1} user {2}".format(
                 file_uuid, alert, current_user))
         flash("internal error")
