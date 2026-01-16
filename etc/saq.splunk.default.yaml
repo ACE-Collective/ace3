@@ -1,5 +1,5 @@
-api_query_defaults_splunk:
-  name: splunk
+api_query_defaults_default:
+  name: default
   wide_duration_before: "01:00:00:00"
   wide_duration_after: "01:00:00:00"
   narrow_duration_before: "00:01:00:00"
@@ -55,3 +55,4 @@ hunt_type_splunk:
 
 config:
   splunk_local: etc/saq.splunk.yaml
+  splunk_modules: etc/saq.splunk_modules.yaml

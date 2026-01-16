@@ -678,4 +678,23 @@ api_query_defaults_test_api:
   use_index_time: true
 
 splunk_config_default:
+  name: default
+  enabled: true
   host: localhost
+  port: 443
+  username:
+  password:
+  token:
+  timezone: UTC
+  performance_logging_dir: splunk_perf
+
+splunk_config_test_api:
+  name: test_api
+  enabled: true
+  host: localhost
+  port: 443
+  username:
+  password:
+  token:
+  timezone: UTC
+  performance_logging_dir: splunk_perf
