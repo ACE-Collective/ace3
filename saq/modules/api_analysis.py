@@ -19,7 +19,7 @@ import re
 import time
 from typing import Optional, Type, Union
 
-from pydantic import Field
+from pydantic import BaseModel, Field, model_validator
 
 from saq.analysis import Analysis, Observable
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
@@ -38,6 +38,52 @@ KEY_QUESTION = 'question'
 KEY_GUI_LINK = 'gui_link'
 
 
+class APIObservableMapping(BaseModel):
+    """Observable mapping configuration for API analyzers.
+
+    Supports mapping query result fields to observables with optional tags, directives,
+    and display settings.
+
+    Example configuration:
+        observable_mapping:
+          - field: src_ip
+            type: ipv4
+            tags:
+              - external
+              - suspicious
+            directives:
+              - analyze_ip
+            time: true
+
+          - fields: [user, username]  # Multiple fields - first non-null wins
+            type: user
+            tags:
+              - from_splunk
+    """
+    field: Optional[str] = Field(default=None, description="Single field to map to an observable")
+    fields: list[str] = Field(default_factory=list, description="Multiple fields to check (first non-null value wins)")
+    type: str = Field(..., description="The observable type to create (e.g., ipv4, user, fqdn)")
+    tags: list[str] = Field(default_factory=list, description="Tags to add to the observable")
+    directives: list[str] = Field(default_factory=list, description="Directives to add to the observable")
+    time: bool = Field(default=False, description="Whether to use the event time as the observable time")
+    ignored_values: list[str] = Field(default_factory=list, description="Values to skip when creating observables")
+    display_type: Optional[str] = Field(default=None, description="The display type to use for the observable")
+    display_value: Optional[str] = Field(default=None, description="The display value to use for the observable")
+
+    @model_validator(mode='after')
+    def validate_field_or_fields(self):
+        """Ensure either field or fields is specified."""
+        if not self.field and not self.fields:
+            raise ValueError("Either 'field' or 'fields' must be specified in observable mapping")
+        return self
+
+    def get_fields(self) -> list[str]:
+        """Returns the list of fields to check, whether from field or fields."""
+        if self.field:
+            return [self.field]
+        return self.fields
+
+
 class BaseAPIAnalyzerConfig(AnalysisModuleConfig):
     question: str = Field(..., description="The question to use for the analysis.")
     summary: str = Field(..., description="The summary to use for the analysis.")
@@ -48,7 +94,10 @@ class BaseAPIAnalyzerConfig(AnalysisModuleConfig):
     wide_duration_after: Optional[str] = Field(default=None, description="The wide duration after the analysis.")
     narrow_duration_before: Optional[str] = Field(default=None, description="The narrow duration before the analysis.")
     narrow_duration_after: Optional[str] = Field(default=None, description="The narrow duration after the analysis.")
-    observable_mapping: Optional[list[dict[str, str]]] = Field(default=None, description="The observable mapping for the analysis.")
+    observable_mapping: list[APIObservableMapping] = Field(
+        default_factory=list,
+        description="Observable mapping configuration with support for tags, directives, and display settings."
+    )
     correlation_delay: Optional[str] = Field(default=None, description="The correlation delay for the analysis.")
     max_result_count: Optional[int] = Field(default=None, description="The max result count for the analysis.")
     query_timeout: Optional[int] = Field(default=None, description="The query timeout for the analysis.")
@@ -221,6 +270,7 @@ class BaseAPIAnalyzer(AnalysisModule):
         # ex. QRadarAPIAnalyzer = 'qradar'
         # SplunkAPIAnalyzer = 'splunk' or 'splunkx'
         self.api_defaults = get_config().get_api_query_defaults_config(self.config.api_name)
+        self.api = self.config.api_name  # Used in logging statements
 
         # load the query query for this instance
         if self.config.query is not None:
@@ -267,15 +317,8 @@ class BaseAPIAnalyzer(AnalysisModule):
         else:
             self.narrow_duration_after = create_timedelta(self.api_defaults.narrow_duration_after)
 
-        # load the observable mapping for this query
-        # NOTE that the keys (result field names) are case sensitive
-        # example: map_literally_anything = result_field_name = observable_type
-        self.observable_mapping = {}  # key = result field name, value = observable_type
-        if self.config.observable_mapping is not None:
-            for key in self.config.observable_mapping.keys():
-                if key.startswith('map_'):
-                    result_field, observable_type = [_.strip() for _ in self.config.observable_mapping[key].split('=', 2)]
-                    self.observable_mapping[result_field] = observable_type
+        # observable mappings are now stored directly from config as list[APIObservableMapping]
+        # the config type handles validation via Pydantic
 
         # are we delaying correlational queries?
         self.correlation_delay = None
@@ -337,7 +380,7 @@ class BaseAPIAnalyzer(AnalysisModule):
         for i in range(len(self.multi_values_base)):
             self.target_query = self.target_query.replace(self.multi_values_base[i], self._escape_value(self.multi_values[i]))
 
-        source_time = kwargs.get('source_event_time') or observable.time or observable.root.event_time or self.get_root().event_time
+        source_time = kwargs.get('source_event_time') or observable.time or self.get_root().event_time
         if source_time is None:
             source_time = datetime.datetime.now()
             logging.error("Analysis event_time is None! Using current time for analysis instead")
@@ -363,10 +406,11 @@ class BaseAPIAnalyzer(AnalysisModule):
 
     def extract_result_observables(self, analysis, result: dict, observable: Observable = None, result_time: Union[str, datetime.datetime] =
                                         None) -> None:
-        """ Cycle through result keys in order to extract mapped observables and add to alert.
+        """ Cycle through observable mappings and extract observables from query results.
 
-            REQUIRED in order to 'automatically' add observables from field mapping -- recommended to use in self.query_results.
-            Includes a call for each extracted observable to the optional process_field_mapping, which will simply pass if unimplemented.
+            Processes each configured observable mapping, checking the specified field(s) in the result.
+            For mappings with multiple fields, the first non-null value is used.
+            Applies configured tags, directives, and display settings to created observables.
 
             Args:
                 analysis: the respective Analysis object to which we are adding observables.
@@ -375,19 +419,52 @@ class BaseAPIAnalyzer(AnalysisModule):
                 result_time: (optional) str or datetime.datetime that contains the datetime of query result
 
         """
-        for result_field in result.keys():
-            if result[result_field] is None:
+        for mapping in self.config.observable_mapping:
+            # Get fields to check from the mapping
+            fields_to_check = mapping.get_fields()
+
+            # Find first non-null, non-ignored value
+            value = None
+            matched_field = None
+            for field in fields_to_check:
+                if field in result and result[field] is not None:
+                    field_value = result[field]
+                    # Skip ignored values
+                    if field_value in mapping.ignored_values:
+                        continue
+                    value = field_value
+                    matched_field = field
+                    break
+
+            if value is None:
                 continue
 
-            # do we have this field mapped?
-            if result_field in self.observable_mapping:
-                observable = analysis.add_observable_by_spec(self.observable_mapping[result_field],
-                                                     self.filter_observable_value(result_field,
-                                                                                  self.observable_mapping[result_field],
-                                                                                  result[result_field]),
-                                                     o_time=result_time)
+            # Apply value filter
+            value = self.filter_observable_value(matched_field, mapping.type, value)
 
-            self.process_field_mapping(analysis, observable, result, result_field, result_time)
+            # Determine observable time
+            obs_time = result_time if mapping.time else None
+
+            # Add the observable
+            new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
+
+            if new_observable:
+                # Apply tags
+                for tag in mapping.tags:
+                    new_observable.add_tag(tag)
+
+                # Apply directives
+                for directive in mapping.directives:
+                    new_observable.add_directive(directive)
+
+                # Apply display settings
+                if mapping.display_type is not None:
+                    new_observable.display_type = mapping.display_type
+                if mapping.display_value is not None:
+                    new_observable.display_value = mapping.display_value
+
+            # Call hook for custom processing
+            self.process_field_mapping(analysis, new_observable, result, matched_field, result_time)
 
     def filter_observable_value(self, result_field, observable_type, observable_value):
         """Called for each observable value added to analysis.
