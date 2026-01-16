@@ -1,0 +1,35 @@
+# Example analysis module definition
+#
+# NOTE: After creating a YAML-based analysis module, you must also add it to
+# one of the "module groups", such as "module_group_correlation". Check the
+# saq.default.yaml config file for how those are configured.
+#
+# analysis_module_proxy_domain_lookup:
+#   name: proxy_domain_lookup
+#   python_module: saq.modules.splunk
+#   python_class: SplunkAPIAnalyzer
+#   enabled: true
+#   api_name: default
+#   valid_observable_types: [domain]
+#   question: "Was this domain seen in proxy logs?"
+#   summary: "Proxy correlation"
+#   query: |
+#     index=network_zscaler_web (transport=HTTPS OR transport=HTTP) hostname="<O_VALUE>"
+#     | eval full_url = lower(transport) . "://" . url
+#   use_index_time: true
+#   narrow_duration_before: "00:24:00:00"
+#   narrow_duration_after: "00:24:00:00"
+#   observable_mapping:
+#     - field: src_ip
+#       type: ip
+#       display_type: Source IP
+#     - field: src_translated_ip
+#       type: ip
+#       display_type: Source IP
+#     - field: dest_ip
+#       type: ip
+#       display_type: Destination IP
+#     - field: full_url
+#       type: url
+#     - field: user
+#       type: email_address
