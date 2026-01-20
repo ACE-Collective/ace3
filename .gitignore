@@ -165,7 +165,11 @@ data_unittest
 
 # any site directory
 **/site/
-hunts/site
+
+# hunts
+hunts/*
+!hunts/sample/
+!hunts/test/
 
 # symlinks
 logs
@@ -182,6 +186,7 @@ docs/
 
 # ai
 CLAUDE.md
+.claude/
 .cursor/
 
 # integrations
