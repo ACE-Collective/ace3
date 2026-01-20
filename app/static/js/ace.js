@@ -278,3 +278,156 @@ function loadMoreClosedEvents() {
       .catch(function(err){ alert('DOH: ' + err.message); });
   })();
 }
+
+/**
+ * Renders JSON data as a collapsible tree structure in the specified container.
+ * All nested objects/arrays start collapsed by default, showing only top-level keys.
+ *
+ * @param {any} data - The JSON data to render (object, array, or primitive)
+ * @param {HTMLElement|string} container - The container element or its ID
+ * @param {Object} options - Optional configuration
+ * @param {boolean} options.collapsed - Whether to start collapsed (default: true)
+ * @param {string} options.emptyMessage - Message to show when data is empty (default: 'No data available')
+ */
+function renderJsonTree(data, container, options) {
+    options = options || {};
+    var startCollapsed = options.collapsed !== false;
+    var emptyMessage = options.emptyMessage || 'No data available';
+
+    var targetElement = typeof container === 'string'
+        ? document.getElementById(container)
+        : container;
+
+    if (!targetElement) {
+        console.error('renderJsonTree: container not found');
+        return;
+    }
+
+    function renderValue(value) {
+        if (value === null) {
+            return '<span style="color: #999;">null</span>';
+        } else if (typeof value === 'boolean') {
+            return '<span style="color: #0d6efd;">' + value + '</span>';
+        } else if (typeof value === 'number') {
+            return '<span style="color: #198754;">' + value + '</span>';
+        } else if (typeof value === 'string') {
+            return '<span style="color: #6c757d;">"' + escape_html(value) + '"</span>';
+        }
+        return escape_html(String(value));
+    }
+
+    function isExpandable(value) {
+        return value !== null && typeof value === 'object';
+    }
+
+    function renderNode(key, value, collapsed) {
+        var li = document.createElement('li');
+        li.style.listStyleType = 'none';
+        li.style.marginTop = '2px';
+
+        if (isExpandable(value)) {
+            var isArray = Array.isArray(value);
+            var childCount = isArray ? value.length : Object.keys(value).length;
+            var bracket = isArray ? '[' : '{';
+            var closeBracket = isArray ? ']' : '}';
+
+            var toggle = document.createElement('i');
+            toggle.className = collapsed ? 'bi bi-chevron-right' : 'bi bi-chevron-down';
+            toggle.style.cursor = 'pointer';
+            toggle.style.marginRight = '4px';
+            toggle.style.fontSize = '0.8em';
+
+            var keySpan = document.createElement('span');
+            keySpan.style.fontWeight = 'bold';
+            keySpan.style.color = '#0d6efd';
+            keySpan.style.cursor = 'pointer';
+            keySpan.textContent = key !== null ? key + ': ' : '';
+
+            var preview = document.createElement('span');
+            preview.style.color = '#999';
+            preview.textContent = bracket + childCount + ' item' + (childCount !== 1 ? 's' : '') + closeBracket;
+
+            var childUl = document.createElement('ul');
+            childUl.style.marginLeft = '20px';
+            childUl.style.paddingLeft = '0';
+            childUl.style.display = collapsed ? 'none' : 'block';
+
+            if (isArray) {
+                value.forEach(function(item, index) {
+                    childUl.appendChild(renderNode(index, item, true));
+                });
+            } else {
+                Object.keys(value).forEach(function(k) {
+                    childUl.appendChild(renderNode(k, value[k], true));
+                });
+            }
+
+            function toggleNode() {
+                if (childUl.style.display === 'none') {
+                    childUl.style.display = 'block';
+                    toggle.className = 'bi bi-chevron-down';
+                } else {
+                    childUl.style.display = 'none';
+                    toggle.className = 'bi bi-chevron-right';
+                }
+            }
+
+            toggle.addEventListener('click', toggleNode);
+            keySpan.addEventListener('click', toggleNode);
+
+            li.appendChild(toggle);
+            li.appendChild(keySpan);
+            li.appendChild(preview);
+            li.appendChild(childUl);
+        } else {
+            var bullet = document.createElement('span');
+            bullet.innerHTML = '&bull; ';
+            bullet.style.marginRight = '4px';
+            bullet.style.color = '#999';
+
+            var keySpan = document.createElement('span');
+            keySpan.style.fontWeight = 'bold';
+            keySpan.style.color = '#0d6efd';
+            keySpan.textContent = key !== null ? key + ': ' : '';
+
+            var valueSpan = document.createElement('span');
+            valueSpan.innerHTML = renderValue(value);
+
+            li.appendChild(bullet);
+            li.appendChild(keySpan);
+            li.appendChild(valueSpan);
+        }
+
+        return li;
+    }
+
+    // Check for empty data
+    var isEmpty = data === null || data === undefined ||
+        (Array.isArray(data) && data.length === 0) ||
+        (typeof data === 'object' && Object.keys(data).length === 0);
+
+    if (isEmpty) {
+        targetElement.innerHTML = '<em>' + escape_html(emptyMessage) + '</em>';
+        return;
+    }
+
+    var ul = document.createElement('ul');
+    ul.style.paddingLeft = '0';
+    ul.style.marginBottom = '0';
+
+    if (Array.isArray(data)) {
+        data.forEach(function(item, index) {
+            ul.appendChild(renderNode('Event ' + (index + 1), item, startCollapsed));
+        });
+    } else if (typeof data === 'object' && data !== null) {
+        Object.keys(data).forEach(function(key) {
+            ul.appendChild(renderNode(key, data[key], startCollapsed));
+        });
+    } else {
+        var li = document.createElement('li');
+        li.innerHTML = renderValue(data);
+        ul.appendChild(li);
+    }
+
+    targetElement.appendChild(ul);
+}

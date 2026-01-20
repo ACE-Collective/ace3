@@ -60,19 +60,24 @@
 <div class="card mt-4">
     <div class="card-header bg-white">
         <h5 class="card-title mb-0">
-            Raw Splunk Details 
-            <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_raw_splunk_details" aria-expanded="false" aria-controls="collapse_raw_splunk_details" class="text-decoration-none ms-2">
+            Raw Splunk Details
+            <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_raw_splunk_details_{{ unique_reference }}" aria-expanded="false" aria-controls="collapse_raw_splunk_details_{{ unique_reference }}" class="text-decoration-none ms-2">
                 <small>(show/hide)</small>
             </a>
         </h5>
     </div>
-    <div class="card-body p-4 bg-light raw-log collapse" id="collapse_raw_splunk_details" style="word-break:break-all; -webkit-text-size-adjust: 110%">
-        {% for event in analysis.details.get("events", []) %}
-            {% for key, value in event.items() %}
-                {% if value != None %}{{ (key | pprint) }}: {{ value | pprint | escape}} <br>{% endif %}
-            {% endfor %}
-        {% endfor %}
+    <div class="card-body p-4 bg-light raw-log collapse" id="collapse_raw_splunk_details_{{ unique_reference }}" style="word-break:break-all; -webkit-text-size-adjust: 110%">
+        <div id="json-tree-{{ unique_reference }}"></div>
     </div>
 </div>
+
+<script type="text/javascript">
+    // Uses renderJsonTree from app/static/js/ace.js
+    renderJsonTree(
+        {{ analysis.details.get("events", []) | tojson }},
+        'json-tree-{{ unique_reference }}',
+        { emptyMessage: 'No events data available' }
+    );
+</script>
 
 {% endblock %}
