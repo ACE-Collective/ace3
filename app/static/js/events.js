@@ -201,7 +201,7 @@ function load_event_alerts(event_id) {
 
     (function() {
         const params = new URLSearchParams({ event_id: event_id });
-        fetch('manage_event_summary?' + params.toString(), { credentials: 'same-origin' })
+        fetch('manage_event_details?' + params.toString(), { credentials: 'same-origin' })
         .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } return resp.text(); })
         .then(function(html){ $('#event_row_' + event_id).after(html); })
         .catch(function(err){ alert('DOH: ' + err.message); });
@@ -233,7 +233,7 @@ function edit_event(event_id) {
         url: 'edit_event_modal',
         data: { event_id: event_id },
         success: function(data, textStatus, jqXHR) {
-            $('#edit_event_insert').after(data);
+            $('#edit_event_body_container').html(data);
             $('input[name="event_time"]').datetimepicker({
                 timezone: 0,
               showSecond: false,

@@ -95,6 +95,8 @@
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('analysis.manage') }}">Alerts</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('events.manage') }}">Events</a></li>
+                    <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('remediation.manage') }}">Remediations</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item">
@@ -114,7 +116,6 @@
                     <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Settings</a>
                     </li>
-                    <!--<li class="nav-item"><a class="nav-link" href="{{ url_for('events.manage') }}">Events</a></li>-->
                 {% endif %}
             </ul>
             <ul class="navbar-nav">
@@ -168,9 +169,10 @@
                             <h1 class="modal-title fs-5">Edit Event</h1>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
+                        <div id="edit_event_body_container"></div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
-                            <button type="submit" class="btn btn-output-primary" id="btn-edit-event">Save</button>
+                            <button type="submit" class="btn btn-primary" id="btn-edit-event">Save</button>
                         </div>
                     </div>
                 </form>

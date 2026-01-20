@@ -52,7 +52,7 @@ function toggleNewCampaignInput() {
 }
 
 function new_malware_option() {
-  var index = new Date().valueOf()
+  var index = new Date().valueOf();
   (function() {
     const params = new URLSearchParams({ index: index });
     fetch('new_malware_option?' + params.toString(), { credentials: 'same-origin' })

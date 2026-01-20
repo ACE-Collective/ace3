@@ -264,10 +264,9 @@ def manage():
                            vectors=vectors,
                            observable_types=observable_types)
 
-# XXX what does this do??
-@events.route('/manage_event_summary', methods=['GET'])
+@events.route('/manage_event_details', methods=['GET'])
 @require_permission('event', 'read')
-def manage_event_summary():
+def manage_event_details():
     event_id = request.args['event_id']
     event = get_db().query(Event).filter(Event.id == event_id).one()
 

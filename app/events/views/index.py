@@ -55,7 +55,6 @@ def index():
         phish_body=phish_body,
         screenshots=screenshots,
         user_analysis=event.all_user_analysis,
-        sandbox_reports=event.all_sandbox_reports,
         url_histogram=create_histogram_string(event.all_url_domain_counts),
         urls='\n'.join(sorted(list(event.all_urls))),
         observables=event.all_observables_sorted,

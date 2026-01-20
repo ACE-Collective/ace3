@@ -12,7 +12,7 @@
             <button id="btn-show-remove-tag" type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#tag_remove_modal" uuid=""><span class="bi bi-tags"></span> Remove Tag(s)</button>
             <button type="button" class="btn btn-outline-dark" onclick="show_remediation_targets(get_all_checked_alerts())"><span class="bi bi-magic"></span> Remediation</button>
             <a class="button btn btn-outline-dark" href="{{ url_for('analysis.export_alerts_to_csv') }}"><span class="bi bi-filetype-csv"></span> Export to CSV</a>
-            <!--<button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#event_modal"><span class="bi bi-plus"></span> Add to Event</button>-->
+            <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#event_modal"><span class="bi bi-plus"></span> Add to Event</button>
         </div>
     </div>
 </div>
@@ -91,7 +91,9 @@
                             <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
                             {% if alert.event_mapping %}
                                 {% for em in alert.event_mapping %}
-                                    <span class="badge text-bg-primary"><span class="bi bi-lightning"></span> <b><a style="color: white;" target="_blank" href="{{url_for('events.index', direct=em.event.id)}}">{{em.event.name}}</a></b></span>
+                                <a class="btn btn-outline-primary btn-xs" target="_blank" href="{{ url_for('events.index', direct=em.event.id) }}">
+                                    <span class="bi bi-lightning"></span> {{ em.event.name }}
+                                </a>
                                 {% endfor %}
                             {% endif %}
                             {% if alert_tags[alert.uuid]|length != 0 %}

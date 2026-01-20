@@ -24,6 +24,35 @@
 {% endblock %}
 
 {% block page_content %}
+<style>
+    /* Constrain badge columns to reasonable widths */
+    .table thead th:nth-child(8),  /* Threat Type column */
+    .table tbody td:nth-child(8) {
+        width: 120px;
+        max-width: 120px;
+    }
+    
+    .table thead th:nth-child(9),  /* Threat Name column */
+    .table tbody td:nth-child(9) {
+        width: 120px;
+        max-width: 120px;
+    }
+    
+    /* Allow Event column to take more space */
+    .table thead th:nth-child(5),  /* Event column */
+    .table tbody td:nth-child(5) {
+        width: auto;
+        min-width: 300px;
+    }
+    
+    /* Ensure badges wrap nicely in constrained columns */
+    .table tbody td:nth-child(8) .badge,
+    .table tbody td:nth-child(9) .badge {
+        display: inline-block;
+        margin: 2px;
+        word-wrap: break-word;
+    }
+</style>
 <div class="container-fluid">
     <div class="row">
         <div class="col-md-12">
@@ -61,7 +90,7 @@
                                                 {% if event_tags[event.id]|length != 0 %}
                                                     <br>
                                                 {% for tag in event_tags[event.id] %}
-                                                    <span class="badge text-bg-{{tag.css_class}}" style="cursor:pointer" onmousedown="add_filter('{{tag.name}}')">{{tag.name}}</span>
+                                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="add_filter('{{tag.name}}')">{{tag.name}}</span>
                                                 {% endfor %}
                                                 {% endif %}
                         </td>

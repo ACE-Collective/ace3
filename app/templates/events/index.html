@@ -21,9 +21,11 @@
                             <div class="card-body">
                                 <div class="row mb-2">
                                     <div class="col-md-12">
+                                        <!--
                                         <button class="btn btn-outline-dark btn-sm" type="button" onclick="close_event()" title="Close Event">
                                             <span class="bi bi-folder-check"></span> Close Event
                                         </button>
+                                        -->
                                         <button class="btn btn-outline-dark btn-sm" type="button" onclick="edit_event('{{event.id}}')" title="Edit Event">
                                             <span class="bi bi-pencil"></span> Edit Event
                                         </button>
@@ -36,9 +38,11 @@
                                         <button class="btn btn-outline-dark btn-sm" type="button" id="copy_link_action_{{ unique_reference }}" title="Copy Link to Clipboard">
                                             <span class="bi bi-link"></span> Copy Link to Clipboard
                                         </button>
+                                        <!--
                                         <button class="btn btn-outline-dark btn-sm" type="button" title="Send Event" data-bs-toggle="modal" data-bs-target="#send-event-to-modal">
                                             <span class="bi bi-upload"></span> Send Event
                                         </button>
+                                        -->
                                         <!--<button type="button" id="btn-show-detect-op" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#detect_op_modal" data-page="analysis">
                                             <span class="bi bi-lightning"></span> Create Detection Op
                                         </button>-->
@@ -54,7 +58,7 @@
                                             <span class="bi bi-tag"></span>  Add Tag(s)
                                         </button>
                                         {% for tag in event_tags %}
-                                            <span class="badge text-bg-{{tag.css_class}}">{{tag.name}}</span>
+                                            <span class="badge text-bg-{{tag.name | get_tag_css_class}}">{{tag.name}}</span>
                                         {% endfor %}
                                     </div>
                                 </div>
@@ -105,18 +109,17 @@
                                 -->
 
                                 <div class="card mb-3">
-                                    {% include "events/event_summary.html" %}
+                                    {% include "events/event_details.html" %}
                                 </div>
 
                                 <div class="card mb-3">
                                     {% include "events/alert_summary.html" %}
                                 </div>
 
+                                {#
                                 <div class="card mb-3">
                                     {% include "events/detection_summary.html" %}
                                 </div>
-
-                                {#
 
                                 {% if emails %}
                                     <div class="card">

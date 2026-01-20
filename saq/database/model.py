@@ -25,6 +25,7 @@ from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 from saq.performance import track_execution_time
 from saq.util import find_all_url_domains, validate_uuid
+from saq.util.ui import get_tag_score
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -415,7 +416,7 @@ class Alert(Base):
         tags = {}
         for tag_mapping in self.tag_mappings:
             tags[tag_mapping.tag.name] = tag_mapping.tag
-        return sorted([x for x in tags.values()], key=lambda x: (-x.score, x.name.lower()))
+        return sorted([x for x in tags.values()], key=lambda x: (-get_tag_score(x.name), x.name.lower()))
 
     # we also save these database properties to the JSON data
 
@@ -1004,7 +1005,7 @@ class Event(Base):
     type = relationship('EventType', lazy='joined')
     type_id = Column(Integer, ForeignKey('event_type.id'), nullable=False)
     malware = relationship('MalwareMapping', passive_deletes=True, passive_updates=True)
-    #alert_mappings = relationship('EventMapping', passive_deletes=True, passive_updates=True)
+    alert_mappings = relationship('EventMapping', back_populates='event', passive_deletes=True, passive_updates=True)
     companies = relationship('CompanyMapping', passive_deletes=True, passive_updates=True)
     event_time = Column(DATETIME, nullable=True)
     alert_time = Column(DATETIME, nullable=True)
@@ -1155,7 +1156,7 @@ class Event(Base):
             .join(EventMapping, Alert.id == EventMapping.alert_id) \
             .filter(EventMapping.event_id == self.id).distinct().all()
 
-        return sorted([result[0] for result in results])
+        return sorted([result[0] for result in results], key=lambda x: (-get_tag_score(x), x.lower()))
 
     @property
     def wiki(self) -> str:
@@ -1166,37 +1167,6 @@ class Event(Base):
         return next((a for a in self.alert_objects if a.has_email_analysis and a.has_renderer_screenshot), None)
 
     @property
-    def all_sandbox_reports(self) -> list[dict]:
-        from saq.modules.sandbox import merge_sandbox_reports
-
-        # Build a dict of the sandbox reports with the sample's MD5 as the key:
-        # {'sample_md5': [{sandbox1_report}, {sandbox2_report}...]}
-        sandbox_reports = {}
-
-        for alert in self.alert_objects:
-            alert_sandbox_analyses = set()
-
-            for analysis in alert_sandbox_analyses:
-                if hasattr(analysis, 'report') and analysis.report:
-                    if isinstance(analysis.report, dict):
-                        if analysis.report['md5']:
-                            if analysis.report['md5'] not in sandbox_reports:
-                                sandbox_reports[analysis.report['md5']] = []
-
-                            if analysis.report not in sandbox_reports[analysis.report['md5']]:
-                                sandbox_reports[analysis.report['md5']].append(analysis.report)
-                    else:
-                        logging.warning(f'{type(analysis)} analysis.report: {analysis.report}')
-
-        # Now merge all of the sandbox reports in each MD5's list:
-        # [{merged_sandbox_report}, {merged2_sandbox_report}...]
-        merged_sandbox_reports = []
-        for sample_md5 in sandbox_reports:
-            merged_sandbox_reports.append(merge_sandbox_reports(sandbox_reports[sample_md5]))
-
-        return merged_sandbox_reports
-
-    @property
     def all_file_observables(self) -> list[_Observable]:
         file_observables = []
 
@@ -1205,26 +1175,6 @@ class Event(Base):
                 file_observables.append(observable)
 
         return file_observables
-
-    @property
-    def all_sandbox_dropped_files(self):
-        from saq.modules.sandbox import DroppedFileList
-
-        all_dropped_files = DroppedFileList()
-        for sandbox_report in self.all_sandbox_reports:
-            for dropped_file in sandbox_report['dropped_files']:
-                all_dropped_files.append(dropped_file)
-
-        return all_dropped_files
-
-    @property
-    def all_sandbox_samples(self) -> list[_Observable]:
-        all_sandbox_samples = []
-        for file_observable in self.all_file_observables:
-            if any('sandbox_sample' in tag.lower() for tag in file_observable.tags):
-                all_sandbox_samples.append(file_observable)
-
-        return all_sandbox_samples
 
     @property
     def all_email_file_observables(self) -> list[_Observable]:
@@ -1499,7 +1449,7 @@ class EventMapping(Base):
     alert_id = Column(Integer, ForeignKey('alerts.id'), primary_key=True)
 
     alert = relationship('Alert', backref='event_mapping')
-    event = relationship('Event', backref='alert_mappings')
+    event = relationship('Event', back_populates='alert_mappings')
 
 class EventTagMapping(Base):
     __tablename__ = 'event_tag_mapping'

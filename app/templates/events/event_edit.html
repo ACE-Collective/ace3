@@ -101,9 +101,10 @@
       <tr><th>Remediation Time</th><td style="padding-right:10px;"><input class="form-control" style="width:auto;" type="text" id="remediation_time" name="remediation_time" value="{{event.remediation_time}}" placeholder="None"/></td></tr>
   </table><br>
       {% endif %}
-  <h4>Threat
-    <button onclick="new_malware_option()" type="button" class="btn btn-default btn-sm"><span class="bi bi-plus"></span> Add</button>
-  </h4>
+  <div style="display: flex; align-items: center; margin-top: 10px; margin-bottom: 10px;">
+    <strong style="margin-right: 10px;">Threat</strong>
+    <button onclick="new_malware_option()" type="button" class="btn btn-outline-dark btn-xs"><span class="bi bi-plus"></span> Add</button>
+  </div>
   {% for mal in malware %}
   {% if mal.name in event.malware_names %}
   <div id="malware_option_{{mal.id}}">
@@ -117,8 +118,8 @@
             {% endfor %}
           </select>
         </td>
-        <td style="width:auto;">
-          <button onclick="remove_malware_option('{{mal.id}}')" type="button" class="close"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
+        <td>
+          <button onclick="remove_malware_option('{{mal.id}}')" type="button" class="btn btn-outline-dark btn-xs">delete</button>
         </td>
       </tr>
       <tr id="new_malware_info_{{mal.id}}" style="display:none;">

@@ -24,7 +24,7 @@ def edit_event_modal():
     #
     # If the event status is already set to closed, then the closed status will appear in the Edit Event window so that
     # you can edit things about the event after the fact without needing to re-open and re-close it.
-    closed_status = get_config().get('events', 'closed_status', fallback='CLOSED')
+    closed_status = get_config().events.closed_status
     if event.status.value == closed_status:
         statuses = get_db().query(EventStatus).order_by(EventStatus.value.asc()).all()
     else:
@@ -78,7 +78,7 @@ def edit_event():
     event = get_db().query(Event).filter(Event.id == event_id).one()
     event.campaign = campaign
 
-    if event.status.value != get_config().get('events', 'closed_status', fallback='CLOSED'):
+    if event.status.value != get_config().events.closed_status:
         none_values = ['', 'None', None]
 
         event_time = request.form.get('event_time', None)
