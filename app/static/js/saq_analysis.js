@@ -266,6 +266,49 @@ $(document).ready(function() {
         timeFormat: 'HH:mm:ss'
     });
 
+    // Handle "Jump To Analysis" links with smooth scrolling and highlight
+    function scrollToAndHighlight(targetId) {
+        var target = document.getElementById(targetId);
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.classList.add('jump-highlight');
+            setTimeout(function() {
+                target.classList.remove('jump-highlight');
+            }, 1500);
+        }
+    }
+
+    // Handle clicks on "Jump To Analysis" links
+    $(document).on('click', 'a[href^="#"]', function(e) {
+        var href = $(this).attr('href');
+        if (href && href.length > 1) {
+            var targetId = href.substring(1);
+            var target = document.getElementById(targetId);
+            if (target) {
+                e.preventDefault();
+                history.pushState(null, null, href);
+                scrollToAndHighlight(targetId);
+            }
+        }
+    });
+
+    // Handle initial page load with hash in URL
+    if (window.location.hash && window.location.hash.length > 1) {
+        function tryScrollToHash() {
+            setTimeout(function() {
+                scrollToAndHighlight(window.location.hash.substring(1));
+            }, 100);
+        }
+
+        if (document.readyState === 'complete') {
+            // Page already fully loaded, scroll now
+            tryScrollToHash();
+        } else {
+            // Wait for page to finish loading
+            $(window).on('load', tryScrollToHash);
+        }
+    }
+
 });
 
 // attachment downloading
