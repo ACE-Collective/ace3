@@ -511,3 +511,13 @@ nav[data-toggle="toc"] {
     display: none;
   }
 }
+
+/* Jump To Analysis highlight animation */
+@keyframes highlight-flash {
+    0% { background-color: #ffeb3b; }
+    100% { background-color: transparent; }
+}
+
+.jump-highlight {
+    animation: highlight-flash 2.0s ease-out;
+}

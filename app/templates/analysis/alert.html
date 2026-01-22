@@ -245,7 +245,7 @@
 {% macro display_tree_node(node) %}
     {% if (not prune_display_tree or node.visible) and node.should_render %}
         {% if not node.is_root_analysis %}
-            <li class="saq-analysis-li">
+            <li class="saq-analysis-li" id="{% if not node.is_analysis and node.reference_node is none %}{{node.obj.uuid}}{% else %}{{node.uuid}}{% endif %}">
                 {# add collapse button if collapsible #}
                 {% if node.is_collapsible(prune_display_tree) %}
                     <i class="toggle-icon bi bi-chevron-down" onclick=collapseTree(this)></i>
@@ -311,7 +311,7 @@
         {# recursively display child nodes #}
         {% if not node.is_analysis and node.reference_node is not none %}
             {% if node.reference_node.is_collapsible(prune_display_tree) %} 
-                <ul><li class="saq-analysis-li"><span class="saq-analysis-bullet">&bull;</span><a href="#{{node.reference_node.uuid}}">Jump To Analysis</a></li></ul>
+                <ul><li class="saq-analysis-li"><span class="saq-analysis-bullet">&bull;</span><a href="#{{node.reference_node.obj.uuid}}">Jump To Analysis</a></li></ul>
             {% endif %}
         {% else %}
             <ul>
