@@ -114,6 +114,7 @@ class TestFileCollectionWorkItem:
             type="file_location",
             key="host1@/path/to/file.exe",
             alert_uuid="test-uuid-123",
+            storage_dir="/tmp/test",
             retry_count=2,
             max_retries=10,
         )
@@ -122,6 +123,7 @@ class TestFileCollectionWorkItem:
         assert work_item.type == "file_location"
         assert work_item.key == "host1@/path/to/file.exe"
         assert work_item.alert_uuid == "test-uuid-123"
+        assert work_item.storage_dir == "/tmp/test"
         assert work_item.retry_count == 2
         assert work_item.max_retries == 10
 
@@ -134,5 +136,6 @@ class TestFileCollectionWorkItem:
             key="host@/file",
         )
         assert work_item.alert_uuid is None
+        assert work_item.storage_dir is None
         assert work_item.retry_count == 0
         assert work_item.max_retries == 10

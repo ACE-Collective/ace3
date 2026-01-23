@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import pytest
 
 from saq.constants import F_FILE_LOCATION
@@ -382,18 +384,21 @@ def test_get_file_collection_history():
         alert_uuid="test-alert-uuid-history",
     )
 
-    # add history entries
+    # add history entries with explicit timestamps to ensure deterministic ordering
+    now = datetime.utcnow()
     history1 = FileCollectionHistory(
         file_collection_id=collection_id,
         result=FileCollectorStatus.HOST_OFFLINE.value,
         message="First attempt - host offline",
         status=FileCollectionStatus.IN_PROGRESS.value,
+        insert_date=now - timedelta(minutes=5),
     )
     history2 = FileCollectionHistory(
         file_collection_id=collection_id,
         result=FileCollectorStatus.SUCCESS.value,
         message="Second attempt - success",
         status=FileCollectionStatus.COMPLETED.value,
+        insert_date=now,
     )
     get_db().add(history1)
     get_db().add(history2)
