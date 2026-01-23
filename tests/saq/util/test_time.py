@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime
 
 from saq.environment import get_local_timezone
-from saq.util.time import parse_event_time, parse_iso8601
+from saq.util.time import calculate_backoff_delay, parse_event_time, parse_iso8601
 
 @pytest.mark.unit
 def test_util_000_date_parsing():
@@ -81,3 +81,53 @@ def test_util_001_parse_iso8601(iso_string, year, month, day, hour, minute, seco
     assert result.microsecond == microsecond
     assert result.tzinfo
     assert int(result.tzinfo.utcoffset(None).total_seconds()) == tz_offset_seconds
+
+
+#
+# Tests for calculate_backoff_delay
+#
+
+
+@pytest.mark.unit
+def test_calculate_backoff_delay_initial():
+    """Test calculate_backoff_delay returns initial delay for attempt 0."""
+    delay = calculate_backoff_delay(attempt=0, initial_delay=60, max_delay=3600)
+    assert delay == 60
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("attempt,expected", [
+    (0, 60),
+    (1, 120),
+    (2, 240),
+    (3, 480),
+    (4, 960),
+    (5, 1920),
+])
+def test_calculate_backoff_delay_exponential(attempt, expected):
+    """Test calculate_backoff_delay doubles with each attempt."""
+    delay = calculate_backoff_delay(attempt, initial_delay=60, max_delay=3600)
+    assert delay == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("attempt,expected", [
+    (6, 3600),   # 3840 -> capped to 3600
+    (7, 3600),   # 7680 -> capped to 3600
+    (10, 3600),  # 61440 -> capped to 3600
+])
+def test_calculate_backoff_delay_capped_at_max(attempt, expected):
+    """Test calculate_backoff_delay is capped at max_delay."""
+    delay = calculate_backoff_delay(attempt, initial_delay=60, max_delay=3600)
+    assert delay == expected
+
+
+@pytest.mark.unit
+def test_calculate_backoff_delay_custom_values():
+    """Test calculate_backoff_delay with custom initial and max values."""
+    # Fast initial with low max (for testing)
+    assert calculate_backoff_delay(0, initial_delay=10, max_delay=100) == 10
+    assert calculate_backoff_delay(1, initial_delay=10, max_delay=100) == 20
+    assert calculate_backoff_delay(2, initial_delay=10, max_delay=100) == 40
+    assert calculate_backoff_delay(3, initial_delay=10, max_delay=100) == 80
+    assert calculate_backoff_delay(4, initial_delay=10, max_delay=100) == 100  # capped
