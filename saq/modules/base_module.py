@@ -227,6 +227,19 @@ class AnalysisModule(FileWatcherMixin):
         return self.config.requires_detection_path
 
     @property
+    def allow_reanalysis_on_failure(self) -> bool:
+        """Returns True if this analysis module allows re-analysis when the previous analysis failed.
+
+        When True, if an observable already has a completed analysis from this module
+        but that analysis has a truthy 'error' attribute, the module will be allowed
+        to run again (the failed analysis will be removed first).
+
+        Override this property in subclasses to enable retry behavior.
+        Defaults to False.
+        """
+        return False
+
+    @property
     def cache(self):
         """Returns whether caching is enabled for this module."""
         return self.config.cache
@@ -468,8 +481,26 @@ class AnalysisModule(FileWatcherMixin):
 
                 # has this analysis completed?
                 if current_analysis.completed:
-                    logging.debug("already analyzed {} with {}".format(obj, self))
-                    return False
+                    # Check if this module allows re-analysis on failure and the analysis failed
+                    if self.allow_reanalysis_on_failure and hasattr(current_analysis, 'error'):
+                        # Load details to get the actual error value from disk
+                        current_analysis.load_details()
+                        if current_analysis.error:
+                            # Remove the failed analysis to allow retry
+                            logging.info(
+                                f"removing failed analysis {current_analysis} from {obj} "
+                                f"to allow retry by {self}"
+                            )
+                            module_path = current_analysis.module_path
+                            if module_path in obj.analysis:
+                                del obj.analysis[module_path]
+                            # Continue - don't return False, allow reanalysis
+                        else:
+                            logging.debug("already analyzed {} with {}".format(obj, self))
+                            return False
+                    else:
+                        logging.debug("already analyzed {} with {}".format(obj, self))
+                        return False
 
             # is this observable a file and do we have a file size limit for this module?
             if obj.type == F_FILE and self.file_size_limit > 0:
