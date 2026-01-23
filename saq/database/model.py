@@ -1810,9 +1810,161 @@ class RemediationHistory(Base):
         nullable=False)
 
     status = Column(
-        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'), 
-        nullable=False, 
+        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
+        nullable=False,
         default='NEW')
+
+
+class FileCollection(Base):
+    """Tracks file collection requests that can be retried when hosts are offline."""
+
+    __tablename__ = 'file_collection'
+
+    id = Column(
+        Integer,
+        primary_key=True)
+
+    # corresponds to the observable type this collection is for (e.g., file_location)
+    type = Column(
+        String,
+        nullable=False)
+
+    # corresponds to the `name` of the FileCollector that will handle this collection
+    name = Column(
+        String,
+        nullable=False)
+
+    # the observable value (e.g., hostname@/path/to/file)
+    key = Column(
+        String,
+        nullable=False)
+
+    insert_date = Column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    update_time = Column(
+        TIMESTAMP,
+        nullable=True,
+        index=True,
+        server_default=None)
+
+    # user who requested collection (nullable for automated collections)
+    user_id = Column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=True)
+
+    user = relationship('User', backref='file_collections')
+
+    # link to the originating alert (required - files are stored in alert's directory)
+    alert_uuid = Column(
+        String(36),
+        nullable=False,
+        index=True)
+
+    result = Column(
+        Enum('DELAYED', 'ERROR', 'FAILED', 'SUCCESS', 'CANCELLED', 'HOST_OFFLINE', 'FILE_NOT_FOUND'),
+        nullable=True)
+
+    result_message = Column(
+        Text,
+        nullable=True)
+
+    lock = Column(
+        String(36),
+        nullable=True)
+
+    lock_time = Column(
+        DateTime,
+        nullable=True)
+
+    status = Column(
+        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
+        nullable=False,
+        default='NEW')
+
+    retry_count = Column(
+        Integer,
+        nullable=False,
+        default=0)
+
+    max_retries = Column(
+        Integer,
+        nullable=False,
+        default=10)
+
+    # path to the collected file after successful collection
+    collected_file_path = Column(
+        String,
+        nullable=True)
+
+    # SHA256 hash of the collected file
+    collected_file_sha256 = Column(
+        String(64),
+        nullable=True)
+
+    @property
+    def json(self):
+        return {
+            'id': self.id,
+            'type': self.type,
+            'name': self.name,
+            'key': self.key,
+            'insert_date': self.insert_date,
+            'update_time': self.update_time,
+            'user_id': self.user_id,
+            'alert_uuid': self.alert_uuid,
+            'result': self.result,
+            'result_message': self.result_message,
+            'status': self.status,
+            'retry_count': self.retry_count,
+            'max_retries': self.max_retries,
+            'collected_file_path': self.collected_file_path,
+            'collected_file_sha256': self.collected_file_sha256,
+        }
+
+    def __str__(self):
+        return f"FileCollection: {self.name} - {self.type} - {self.status} - {self.key} - {self.result}"
+
+
+class FileCollectionHistory(Base):
+    """Tracks the history of file collection attempts."""
+
+    __tablename__ = 'file_collection_history'
+
+    id = Column(
+        Integer,
+        primary_key=True)
+
+    file_collection_id = Column(
+        Integer,
+        ForeignKey('file_collection.id'),
+        nullable=False)
+
+    file_collection = relationship('FileCollection', backref='history')
+
+    insert_date = Column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    result = Column(
+        Enum('DELAYED', 'ERROR', 'FAILED', 'SUCCESS', 'CANCELLED', 'HOST_OFFLINE', 'FILE_NOT_FOUND'),
+        nullable=False)
+
+    message = Column(
+        Text,
+        nullable=False)
+
+    status = Column(
+        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
+        nullable=False,
+        default='NEW')
+
 
 class Tag(Base):
     

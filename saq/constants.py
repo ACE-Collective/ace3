@@ -815,6 +815,7 @@ SERVICE_JOURNAL_EMAIL_COLLECTOR = "journal_email_collector"
 SERVICE_LLM_EMBEDDING = "llm_embedding"
 SERVICE_NETWORK_SEMAPHORE = "network_semaphore"
 SERVICE_REMEDIATION = "remediation"
+SERVICE_FILE_COLLECTION = "file_collection"
 SERVICE_REMOTE_EMAIL_COLLECTOR = "remote_email_collector"
 SERVICE_YARA_SCANNER = "yara"
 

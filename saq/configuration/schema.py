@@ -371,6 +371,30 @@ class RemediatorConfig(BaseModel):
     python_class: str = Field(..., description="The class of the remediator.")
     thread_count: int = Field(default=1, description="The maximum number of threads for the remediator.")
 
+
+class FileCollectorConfig(BaseModel):
+    """Configuration for a file collector implementation."""
+    name: str = Field(..., description="The name of the file collector.")
+    display_name: str = Field(..., description="The display name of the file collector.")
+    description: str = Field(..., description="The description of the file collector.")
+    observable_type: str = Field(..., description="The observable type the collector works on (e.g., file_location).")
+    python_module: str = Field(..., description="The module of the file collector.")
+    python_class: str = Field(..., description="The class of the file collector.")
+    thread_count: int = Field(default=1, description="The maximum number of threads for the collector.")
+    initial_retry_delay_seconds: int = Field(
+        default=60,
+        description="Initial delay between collection retry attempts."
+    )
+    max_retry_delay_seconds: int = Field(
+        default=3600,
+        description="Maximum delay between retry attempts (1 hour default)."
+    )
+    max_collection_time_seconds: int = Field(
+        default=604800,
+        description="Maximum total time to keep retrying collection (7 days default)."
+    )
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     llm: Optional[LLMConfig] = None
@@ -446,6 +470,7 @@ class ACEConfig(BaseModel):
         self.__hunt_types: Optional[dict[str, HuntTypeConfig]] = None
         self.__git_repos: Optional[dict[str, GitRepoConfig]] = None
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
+        self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
 
     def resolve_all_values(self):
         self.__raw.resolve_all_values()
@@ -486,6 +511,7 @@ class ACEConfig(BaseModel):
         self.load_api_query_defaults_config()
         self.load_git_repo_configs()
         self.load_remediator_configs()
+        self.load_file_collector_configs()
     #
     # integrations
     #
@@ -967,3 +993,36 @@ class ACEConfig(BaseModel):
             raise ValueError(f"remediator config for {name} not found")
 
         return self.__remediators[name]
+
+    #
+    # file collectors
+    #
+
+    @property
+    def file_collectors(self) -> list[FileCollectorConfig]:
+        if self.__file_collectors is None:
+            self._raise_raw_data_error()
+
+        return self.__file_collectors.values()
+
+    def load_file_collector_configs(self):
+        self.__file_collectors = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("file_collector_"):
+                continue
+
+            file_collector_config = FileCollectorConfig.model_validate(value)
+            self.add_file_collector_config(file_collector_config.name, file_collector_config)
+
+    def add_file_collector_config(self, name: str, file_collector_config: FileCollectorConfig):
+        self.__file_collectors[name] = file_collector_config
+
+    def get_file_collector_config(self, name: str) -> FileCollectorConfig:
+        if self.__file_collectors is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__file_collectors:
+            raise ValueError(f"file collector config for {name} not found")
+
+        return self.__file_collectors[name]
