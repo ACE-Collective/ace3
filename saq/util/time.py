@@ -103,3 +103,24 @@ def splunktime_to_saqtime(splunk_time):
     """Convert a splunk time in 2015-02-19T09:50:49.000-05:00 format to SAQ time format YYYY-MM-DD HH:MM:SS."""
     assert isinstance(splunk_time, str)
     return parse_event_time(splunk_time).strftime(EVENT_TIME_FORMAT_JSON_TZ)
+
+
+def calculate_backoff_delay(
+    attempt: int,
+    initial_delay: int,
+    max_delay: int
+) -> int:
+    """Calculate delay with exponential backoff.
+
+    Uses the formula: delay = min(max_delay, initial_delay * 2^attempt)
+
+    Args:
+        attempt: The current attempt number (0-indexed).
+        initial_delay: The initial delay in seconds.
+        max_delay: The maximum delay in seconds.
+
+    Returns:
+        The delay in seconds for this attempt.
+    """
+    delay = initial_delay * (2 ** attempt)
+    return min(delay, max_delay)
