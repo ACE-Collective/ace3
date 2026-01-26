@@ -1,5 +1,6 @@
 import base64
 import logging
+from datetime import datetime, date
 from typing import Optional
 import uuid
 import warnings
@@ -14,7 +15,7 @@ from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN
 from saq.crypto import decrypt_chunk
 from saq.database.meta import Base
 
-from sqlalchemy.orm import reconstructor, relationship, validates, aliased
+from sqlalchemy.orm import reconstructor, relationship, validates, aliased, mapped_column, Mapped
 from sqlalchemy.orm.session import Session
 
 from saq.database.pool import get_db, get_db_connection
@@ -112,110 +113,110 @@ class Alert(Base):
 
     __tablename__ = 'alerts'
 
-    id = Column(
-        Integer, 
+    id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True)
 
-    company_id = Column(
+    company_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('company.id'),
         nullable=True)
 
-    company = relationship('Company', foreign_keys=[company_id])
+    company: Mapped[Optional["Company"]] = relationship('Company', foreign_keys=[company_id])
 
-    uuid = Column(
-        String(36), 
-        unique=True, 
+    uuid: Mapped[str] = mapped_column(
+        String(36),
+        unique=True,
         nullable=False)
 
-    location = Column(
+    location: Mapped[str] = mapped_column(
         String(253),
         unique=False,
         nullable=False)
 
-    storage_dir = Column(
-        String(512), 
-        unique=True, 
+    storage_dir: Mapped[str] = mapped_column(
+        String(512),
+        unique=True,
         nullable=False)
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    event_time = Column(
+    event_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True)
 
-    tool = Column(
+    tool: Mapped[str] = mapped_column(
         String(256),
         nullable=False)
 
-    tool_instance = Column(
+    tool_instance: Mapped[str] = mapped_column(
         String(1024),
         nullable=False)
 
-    alert_type = Column(
+    alert_type: Mapped[str] = mapped_column(
         String(64),
         nullable=False)
 
-    description = Column(
+    description: Mapped[str] = mapped_column(
         String(1024),
         nullable=False)
 
-    priority = Column(
+    priority: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0)
 
-    disposition = Column(
+    disposition: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
         default=DISPOSITION_OPEN)
 
-    queue = Column(
+    queue: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
         default=QUEUE_DEFAULT)
 
-    disposition_user_id = Column(
+    disposition_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    disposition_time = Column(
-        TIMESTAMP, 
-        nullable=True)
-
-    owner_id = Column(
-        Integer,
-        ForeignKey('users.id'),
-        nullable=True)
-
-    owner_time = Column(
+    disposition_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True)
 
-    archived = Column(
-        BOOLEAN, 
-        nullable=False,
-        default=False)
-
-    removal_user_id = Column(
+    owner_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    removal_time = Column(
+    owner_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
+    archived: Mapped[bool] = mapped_column(
+        BOOLEAN,
+        nullable=False,
+        default=False)
+
+    removal_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id'),
+        nullable=True)
+
+    removal_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True)
 
     # relationships
-    disposition_user = relationship('User', foreign_keys=[disposition_user_id])
-    owner = relationship('User', foreign_keys=[owner_id])
-    remover = relationship('User', foreign_keys=[removal_user_id])
+    disposition_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[disposition_user_id])
+    owner: Mapped[Optional["User"]] = relationship('User', foreign_keys=[owner_id])
+    remover: Mapped[Optional["User"]] = relationship('User', foreign_keys=[removal_user_id])
     #observable_mapping = relationship('ObservableMapping')
-    tag_mappings = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
+    tag_mappings: Mapped[list["TagMapping"]] = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
     #delayed_analysis = relationship('DelayedAnalysis')
 
     def get_observables(self):
@@ -389,7 +390,7 @@ class Alert(Base):
         #TIMESTAMP, 
         #nullable=True)
 
-    detection_count = Column(
+    detection_count: Mapped[Optional[int]] = mapped_column(
         Integer,
         default=0)
 
@@ -881,15 +882,15 @@ def load_alert_by_storage_dir(storage_dir: str) -> Optional[Alert]:
 
 class Campaign(Base):
     __tablename__ = 'campaign'
-    id = Column(Integer, nullable=False, primary_key=True)
-    name = Column(String(128), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
 
 class Company(Base):
 
     __tablename__ = 'company'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(128), unique=True, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
 
     @property
     def json(self):
@@ -901,120 +902,120 @@ class Config(Base):
 
     __tablename__ = 'config'
 
-    key = Column(String(512), primary_key=True)
-    value = Column(Text, nullable=False)
+    key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
 
 class DelayedAnalysis(Base):
 
     __tablename__ = 'delayed_analysis'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    uuid = Column(
+    uuid: Mapped[str] = mapped_column(
         String(36),
         nullable=False,
         index=True)
 
-    observable_uuid = Column(
+    observable_uuid: Mapped[str] = mapped_column(
         String(36),
         nullable=False)
 
-    analysis_module = Column(
+    analysis_module: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True)
 
-    delayed_until = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    delayed_until: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True)
 
-    node_id = Column(
+    node_id: Mapped[int] = mapped_column(
         Integer,
-        nullable=False, 
+        nullable=False,
         index=True)
 
-    storage_dir = Column(
-        String(1024), 
-        unique=False, 
+    storage_dir: Mapped[str] = mapped_column(
+        String(1024),
+        unique=False,
         nullable=False)
 
 
 class EventStatus(Base):
     __tablename__ = 'event_status'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class EventRemediation(Base):
     __tablename__ = 'event_remediation'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class EventVector(Base):
     __tablename__ = 'event_vector'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class EventRiskLevel(Base):
     __tablename__ = 'event_risk_level'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class EventPreventionTool(Base):
     __tablename__ = 'event_prevention_tool'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class EventType(Base):
     __tablename__ = 'event_type'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    value = Column(String(50), nullable=False, unique=True)
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    value: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
 
 class Event(Base):
     __tablename__ = 'events'
 
-    id = Column(Integer, nullable=False, primary_key=True)
-    uuid = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
-    creation_date = Column(DATE, nullable=False)
-    name = Column(String(128), nullable=False)
-    status = relationship('EventStatus')
-    status_id = Column(Integer, ForeignKey('event_status.id'), nullable=False)
-    remediation = relationship('EventRemediation')
-    remediation_id = Column(Integer, ForeignKey('event_remediation.id'), nullable=False)
-    comment = Column(Text)
-    vector = relationship('EventVector', lazy='joined')
-    vector_id = Column(Integer, ForeignKey('event_vector.id'), nullable=False)
-    risk_level = relationship('EventRiskLevel')
-    risk_level_id = Column(Integer, ForeignKey('event_risk_level.id'), nullable=False)
-    prevention_tool = relationship('EventPreventionTool')
-    prevention_tool_id = Column(Integer, ForeignKey('event_prevention_tool.id'), nullable=False)
-    campaign_id = Column(Integer, ForeignKey('campaign.id'), nullable=True)
-    campaign = relationship('Campaign', foreign_keys=[campaign_id])
-    type = relationship('EventType', lazy='joined')
-    type_id = Column(Integer, ForeignKey('event_type.id'), nullable=False)
-    malware = relationship('MalwareMapping', passive_deletes=True, passive_updates=True)
-    alert_mappings = relationship('EventMapping', back_populates='event', passive_deletes=True, passive_updates=True)
-    companies = relationship('CompanyMapping', passive_deletes=True, passive_updates=True)
-    event_time = Column(DATETIME, nullable=True)
-    alert_time = Column(DATETIME, nullable=True)
-    ownership_time = Column(DATETIME, nullable=True)
-    disposition_time = Column(DATETIME, nullable=True)
-    contain_time = Column(DATETIME, nullable=True)
-    remediation_time = Column(DATETIME, nullable=True)
-    owner_id = Column(Integer, ForeignKey('users.id'), nullable=True)
-    owner = relationship('User', foreign_keys=[owner_id])
+    id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    creation_date: Mapped[date] = mapped_column(DATE, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped["EventStatus"] = relationship('EventStatus')
+    status_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_status.id'), nullable=False)
+    remediation: Mapped["EventRemediation"] = relationship('EventRemediation')
+    remediation_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_remediation.id'), nullable=False)
+    comment: Mapped[Optional[str]] = mapped_column(Text)
+    vector: Mapped["EventVector"] = relationship('EventVector', lazy='joined')
+    vector_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_vector.id'), nullable=False)
+    risk_level: Mapped["EventRiskLevel"] = relationship('EventRiskLevel')
+    risk_level_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_risk_level.id'), nullable=False)
+    prevention_tool: Mapped["EventPreventionTool"] = relationship('EventPreventionTool')
+    prevention_tool_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_prevention_tool.id'), nullable=False)
+    campaign_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('campaign.id'), nullable=True)
+    campaign: Mapped[Optional["Campaign"]] = relationship('Campaign', foreign_keys=[campaign_id])
+    type: Mapped["EventType"] = relationship('EventType', lazy='joined')
+    type_id: Mapped[int] = mapped_column(Integer, ForeignKey('event_type.id'), nullable=False)
+    malware: Mapped[list["MalwareMapping"]] = relationship('MalwareMapping', passive_deletes=True, passive_updates=True)
+    alert_mappings: Mapped[list["EventMapping"]] = relationship('EventMapping', back_populates='event', passive_deletes=True, passive_updates=True)
+    companies: Mapped[list["CompanyMapping"]] = relationship('CompanyMapping', passive_deletes=True, passive_updates=True)
+    event_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    alert_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    ownership_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    disposition_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    contain_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    remediation_time: Mapped[Optional[datetime]] = mapped_column(DATETIME, nullable=True)
+    owner_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('users.id'), nullable=True)
+    owner: Mapped[Optional["User"]] = relationship('User', foreign_keys=[owner_id])
 
     @property
     def json(self):
@@ -1282,25 +1283,25 @@ class Event(Base):
 
 
 class Lock(Base):
-    
+
     __tablename__ = 'locks'
 
-    uuid = Column(
+    uuid: Mapped[str] = mapped_column(
         String(36),
         primary_key=True)
 
-    lock_uuid = Column(
+    lock_uuid: Mapped[str] = mapped_column(
         String(36),
         nullable=False,
         unique=False,
         index=True)
-    
-    lock_time = Column(
-        TIMESTAMP, 
-        nullable=False, 
+
+    lock_time: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True)
 
-    lock_owner = Column(
+    lock_owner: Mapped[Optional[str]] = mapped_column(
         String(512),
         nullable=True)
 
@@ -1315,16 +1316,16 @@ class Malware(Base):
 
     __tablename__ = 'malware'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(128), unique=True, index=True)
-    threats = relationship("Threat", passive_deletes=True, passive_updates=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
+    threats: Mapped[list["Threat"]] = relationship("Threat", passive_deletes=True, passive_updates=True)
 
 class Threat(Base):
 
     __tablename__ = 'malware_threat_mapping'
 
-    malware_id = Column(Integer, ForeignKey('malware.id'), primary_key=True)
-    type = Column(Enum('UNKNOWN','KEYLOGGER','INFOSTEALER','DOWNLOADER','BOTNET','RAT','RANSOMWARE','ROOTKIT','FRAUD','CUSTOMER_THREAT','WIPER','TRAFFIC_DIRECTION_SYSTEM'), primary_key=True, nullable=False)
+    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id'), primary_key=True)
+    type: Mapped[str] = mapped_column(Enum('UNKNOWN','KEYLOGGER','INFOSTEALER','DOWNLOADER','BOTNET','RAT','RANSOMWARE','ROOTKIT','FRAUD','CUSTOMER_THREAT','WIPER','TRAFFIC_DIRECTION_SYSTEM'), primary_key=True, nullable=False)
 
     def __str__(self):
         return self.type
@@ -1333,54 +1334,54 @@ class ObservableMapping(Base):
 
     __tablename__ = 'observable_mapping'
 
-    observable_id = Column(
+    observable_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('observables.id'),
         primary_key=True)
 
-    alert_id = Column(
+    alert_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('alerts.id'),
         primary_key=True)
 
-    alert = relationship('Alert', backref='observable_mappings')
-    observable = relationship('Observable', backref='observable_mappings')
+    alert: Mapped["Alert"] = relationship('Alert', backref='observable_mappings')
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_mappings')
 
 class ObservableRemediationMapping(Base):
 
     __tablename__ = 'observable_remediation_mapping'
 
-    observable_id = Column(
+    observable_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('observables.id'),
         primary_key=True)
 
-    remediation_id = Column(
+    remediation_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('remediation.id'),
         primary_key=True)
 
-    observable = relationship('Observable', backref='observable_remediation_mappings')
-    remediation = relationship('Remediation', backref='observable_remediation_mappings')
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_remediation_mappings')
+    remediation: Mapped["Remediation"] = relationship('Remediation', backref='observable_remediation_mappings')
 
 # this is used to automatically map tags to observables
 # same as the etc/site_tags.csv really, just in the database
 class ObservableTagMapping(Base):
-    
+
     __tablename__ = 'observable_tag_mapping'
 
-    observable_id = Column(
+    observable_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('observables.id'),
         primary_key=True)
 
-    tag_id = Column(
+    tag_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('tags.id'),
         primary_key=True)
 
-    observable = relationship('Observable', backref='observable_tag_mapping')
-    tag = relationship('Tag', backref='observable_tag_mapping')
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_tag_mapping')
+    tag: Mapped["Tag"] = relationship('Tag', backref='observable_tag_mapping')
 
 
 # this is used to map what observables had what tags in what alerts
@@ -1393,49 +1394,49 @@ class ObservableTagIndex(Base):
 
     __tablename__ = 'observable_tag_index'
 
-    observable_id = Column(
+    observable_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('observables.id'),
         primary_key=True)
 
-    tag_id = Column(
+    tag_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('tags.id'),
         primary_key=True)
 
-    alert_id = Column(
+    alert_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('alerts.id'),
         primary_key=True)
 
-    observable = relationship('Observable', backref='observable_tag_index')
-    tag = relationship('Tag', backref='observable_tag_index')
-    alert = relationship('Alert', backref='observable_tag_index')
+    observable: Mapped["Observable"] = relationship('Observable', backref='observable_tag_index')
+    tag: Mapped["Tag"] = relationship('Tag', backref='observable_tag_index')
+    alert: Mapped["Alert"] = relationship('Alert', backref='observable_tag_index')
 
 class TagMapping(Base):
 
     __tablename__ = 'tag_mapping'
 
-    tag_id = Column(
+    tag_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('tags.id'),
         primary_key=True)
 
-    alert_id = Column(
+    alert_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('alerts.id'),
         primary_key=True)
 
-    alert = relationship('Alert', backref='tag_mapping', overlaps="tag_mappings")
-    tag = relationship('Tag', backref='tag_mapping')
+    alert: Mapped["Alert"] = relationship('Alert', backref='tag_mapping', overlaps="tag_mappings")
+    tag: Mapped["Tag"] = relationship('Tag', backref='tag_mapping')
 
 class CompanyMapping(Base):
 
     __tablename__ = 'company_mapping'
 
-    event_id = Column(Integer, ForeignKey('events.id'), primary_key=True)
-    company_id = Column(Integer, ForeignKey('company.id'), primary_key=True)
-    company = relationship("Company")
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey('company.id'), primary_key=True)
+    company: Mapped["Company"] = relationship("Company")
 
     @property
     def name(self):
@@ -1445,27 +1446,27 @@ class EventMapping(Base):
 
     __tablename__ = 'event_mapping'
 
-    event_id = Column(Integer, ForeignKey('events.id'), primary_key=True)
-    alert_id = Column(Integer, ForeignKey('alerts.id'), primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
+    alert_id: Mapped[int] = mapped_column(Integer, ForeignKey('alerts.id'), primary_key=True)
 
-    alert = relationship('Alert', backref='event_mapping')
-    event = relationship('Event', back_populates='alert_mappings')
+    alert: Mapped["Alert"] = relationship('Alert', backref='event_mapping')
+    event: Mapped["Event"] = relationship('Event', back_populates='alert_mappings')
 
 class EventTagMapping(Base):
     __tablename__ = 'event_tag_mapping'
 
-    event_id = Column(
+    event_id: Mapped[int] = mapped_column(
             Integer,
             ForeignKey('events.id'),
             primary_key=True)
 
-    tag_id = Column(
+    tag_id: Mapped[int] = mapped_column(
             Integer,
             ForeignKey('tags.id'),
             primary_key=True)
 
-    event = relationship('Event', backref='event_tag_mapping')
-    tag = relationship('Tag', backref='event_tag_mapping')
+    event: Mapped["Event"] = relationship('Event', backref='event_tag_mapping')
+    tag: Mapped["Tag"] = relationship('Tag', backref='event_tag_mapping')
 
 
 
@@ -1473,9 +1474,9 @@ class MalwareMapping(Base):
 
     __tablename__ = 'malware_mapping'
 
-    event_id = Column(Integer, ForeignKey('events.id'), primary_key=True)
-    malware_id = Column(Integer, ForeignKey('malware.id'), primary_key=True)
-    malware = relationship("Malware")
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
+    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id'), primary_key=True)
+    malware: Mapped["Malware"] = relationship("Malware")
 
     @property
     def threats(self):
@@ -1489,11 +1490,11 @@ class Message(Base):
 
     __tablename__ = 'messages'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True)
 
-    content = Column(
+    content: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
@@ -1501,30 +1502,30 @@ class MessageRouting(Base):
 
     __tablename__ = 'message_routing'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True)
 
-    message_id = Column(
+    message_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey('messages.id'),
         nullable=False)
 
-    message = relationship('Message', foreign_keys=[message_id], backref='routing')
+    message: Mapped["Message"] = relationship('Message', foreign_keys=[message_id], backref='routing')
 
-    route = Column(
+    route: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
-    destination = Column(
+    destination: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
-    lock = Column(
+    lock: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True)
 
-    lock_time = Column(
+    lock_time: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
@@ -1532,53 +1533,53 @@ class Nodes(Base):
 
     __tablename__ = 'nodes'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(1024), nullable=False)
-    location = Column(String(1024), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(1024), nullable=False)
+    location: Mapped[str] = mapped_column(String(1024), nullable=False)
 
 class Observable(Base):
 
     __tablename__ = 'observables'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    type = Column(
+    type: Mapped[str] = mapped_column(
         String(64),
         nullable=False)
 
-    sha256 = Column(
+    sha256: Mapped[bytes] = mapped_column(
         VARBINARY(32),
         nullable=False)
 
-    value = Column(
+    value: Mapped[bytes] = mapped_column(
         BLOB,
         nullable=False)
 
-    for_detection = Column(
+    for_detection: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
         default=False)
 
-    expires_on = Column(
+    expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
-    fa_hits = Column(
+    fa_hits: Mapped[Optional[int]] = mapped_column(
         Integer,
         nullable=True)
 
-    enabled_by = Column(
+    enabled_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    detection_context = Column(
+    detection_context: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
 
-    batch_id = Column(
+    batch_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True)
 
@@ -1586,8 +1587,8 @@ class Observable(Base):
     def display_value(self):
         return self.value.decode('utf8', errors='ignore')
 
-    tags = relationship('ObservableTagIndex', passive_deletes=True, passive_updates=True, overlaps="observable,observable_tag_index")
-    enabled_by_user = relationship('User')
+    tags: Mapped[list["ObservableTagIndex"]] = relationship('ObservableTagIndex', passive_deletes=True, passive_updates=True, overlaps="observable,observable_tag_index")
+    enabled_by_user: Mapped[Optional["User"]] = relationship('User')
 
     @property
     def json(self):
@@ -1607,13 +1608,13 @@ class Observable(Base):
 class PersistenceSource(Base):
 
     __tablename__ = 'persistence_source'
-    
-    id = Column(
+
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
         autoincrement=True)
 
-    name = Column(
+    name: Mapped[str] = mapped_column(
         String(256),
         nullable=False)
 
@@ -1621,38 +1622,38 @@ class Persistence(Base):
 
     __tablename__ = 'persistence'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True,
         autoincrement=True)
 
-    source_id = Column(
+    source_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('persistence_source.id'),
     )
 
-    permanent = Column(
+    permanent: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         server_default=text('0'))
 
-    uuid = Column(
+    uuid: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    value = Column(
+    value: Mapped[Optional[bytes]] = mapped_column(
         BLOB(),
         nullable=True)
 
-    last_update = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    last_update: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    created_at = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
@@ -1660,65 +1661,65 @@ class Remediation(Base):
 
     __tablename__ = 'remediation'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
     # corresponds to the observable type this remediation is for
-    type = Column(
+    type: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
     # corresponds to the `name` of the Remediator that initiated this remediation
-    name = Column(
+    name: Mapped[str] = mapped_column(
         String,
         nullable=False
     )
 
-    action = Column(
+    action: Mapped[str] = mapped_column(
         Enum('remove', 'restore'),
         nullable=False,
         default='remove')
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    update_time = Column(
-        TIMESTAMP, 
-        nullable=True, 
+    update_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True,
         index=True,
         server_default=None)
 
-    user_id = Column(
+    user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=False)
 
-    user = relationship('User', backref='remediations')
+    user: Mapped["User"] = relationship('User', backref='remediations')
 
-    key = Column(
+    key: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
     # the meaning of this column diffs based on the action
     # REMOVE: the *resulting* restore key to use if you need to restore this remediation (restore_key is OUTPUT)
     # RESTORE: the restore key *value* to use if you need to restore this remediation (restore_key is INPUT)
-    restore_key = Column(
+    restore_key: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
         default=None)
 
-    result = Column(
+    result: Mapped[Optional[str]] = mapped_column(
         Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED'),
         nullable=True)
 
-    comment = Column(
+    comment: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True)
-    
+
     @property
     def alert_uuids(self):
         """If the comment is a comma separated list of alert uuids, then that list is provided here as a property.
@@ -1736,15 +1737,15 @@ class Remediation(Base):
 
         return result
 
-    lock = Column(
-        String(36), 
+    lock: Mapped[Optional[str]] = mapped_column(
+        String(36),
         nullable=True)
 
-    lock_time = Column(
+    lock_time: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
-    status = Column(
+    status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
         default='NEW')
@@ -1786,30 +1787,30 @@ class RemediationHistory(Base):
 
     __tablename__ = 'remediation_history'
 
-    id = Column(
-        Integer, 
+    id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True)
 
-    remediation_id = Column(
-        Integer, 
-        ForeignKey('remediation.id'), 
+    remediation_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('remediation.id'),
         nullable=False)
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
-        index=True, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    result = Column(
+    result: Mapped[str] = mapped_column(
         Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED'),
         nullable=False)
 
-    message = Column(
-        Text, 
+    message: Mapped[str] = mapped_column(
+        Text,
         nullable=False)
 
-    status = Column(
+    status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
         default='NEW')
@@ -1820,89 +1821,89 @@ class FileCollection(Base):
 
     __tablename__ = 'file_collection'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
     # corresponds to the observable type this collection is for (e.g., file_location)
-    type = Column(
+    type: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
     # corresponds to the `name` of the FileCollector that will handle this collection
-    name = Column(
+    name: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
     # the observable value (e.g., hostname@/path/to/file)
-    key = Column(
+    key: Mapped[str] = mapped_column(
         String,
         nullable=False)
 
-    insert_date = Column(
+    insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    update_time = Column(
+    update_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True,
         index=True,
         server_default=None)
 
     # user who requested collection (nullable for automated collections)
-    user_id = Column(
+    user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    user = relationship('User', backref='file_collections')
+    user: Mapped[Optional["User"]] = relationship('User', backref='file_collections')
 
     # link to the originating alert (required - files are stored in alert's directory)
-    alert_uuid = Column(
+    alert_uuid: Mapped[str] = mapped_column(
         String(36),
         nullable=False,
         index=True)
 
-    result = Column(
+    result: Mapped[Optional[str]] = mapped_column(
         Enum('DELAYED', 'ERROR', 'FAILED', 'SUCCESS', 'CANCELLED', 'HOST_OFFLINE', 'FILE_NOT_FOUND'),
         nullable=True)
 
-    result_message = Column(
+    result_message: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
 
-    lock = Column(
+    lock: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True)
 
-    lock_time = Column(
+    lock_time: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
-    status = Column(
+    status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
         default='NEW')
 
-    retry_count = Column(
+    retry_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0)
 
-    max_retries = Column(
+    max_retries: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=10)
 
     # path to the collected file after successful collection
-    collected_file_path = Column(
+    collected_file_path: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True)
 
     # SHA256 hash of the collected file
-    collected_file_sha256 = Column(
+    collected_file_sha256: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True)
 
@@ -1935,46 +1936,46 @@ class FileCollectionHistory(Base):
 
     __tablename__ = 'file_collection_history'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    file_collection_id = Column(
+    file_collection_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('file_collection.id'),
         nullable=False)
 
-    file_collection = relationship('FileCollection', backref='history')
+    file_collection: Mapped["FileCollection"] = relationship('FileCollection', backref='history')
 
-    insert_date = Column(
+    insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    result = Column(
+    result: Mapped[str] = mapped_column(
         Enum('DELAYED', 'ERROR', 'FAILED', 'SUCCESS', 'CANCELLED', 'HOST_OFFLINE', 'FILE_NOT_FOUND'),
         nullable=False)
 
-    message = Column(
+    message: Mapped[str] = mapped_column(
         Text,
         nullable=False)
 
-    status = Column(
+    status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
         default='NEW')
 
 
 class Tag(Base):
-    
+
     __tablename__ = 'tags'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    name = Column(
+    name: Mapped[str] = mapped_column(
         String(256),
         nullable=False)
 
@@ -2004,20 +2005,20 @@ class User(UserMixin, Base):
 
     __tablename__ = 'users'
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(64), unique=True, index=True)
-    email = Column(String(64), unique=True, index=True)
-    password_hash = Column(String(256))
-    omniscience = Column(Integer, nullable=False, default=0)
-    timezone = Column(String(512))
-    display_name = Column(String(1024))
-    queue = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(256))
+    omniscience: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    timezone: Mapped[Optional[str]] = mapped_column(String(512))
+    display_name: Mapped[Optional[str]] = mapped_column(String(1024))
+    queue: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
         default=QUEUE_DEFAULT)
-    enabled = Column(Boolean, unique=False, default=True)
-    apikey_hash = Column(String(64), nullable=True, default=None)
-    apikey_encrypted = Column(BLOB, nullable=True, default=None)
+    enabled: Mapped[Optional[bool]] = mapped_column(Boolean, unique=False, default=True)
+    apikey_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
+    apikey_encrypted: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True, default=None)
 
     def __str__(self):
         return self.username
@@ -2077,51 +2078,51 @@ class AuthGroup(Base):
 
     __tablename__ = 'auth_group'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    name = Column(
+    name: Mapped[str] = mapped_column(
         String(512),
         nullable=False,
         unique=True)
 
-    permissions = relationship('AuthGroupPermission', passive_deletes=True, passive_updates=True, back_populates='group')
+    permissions: Mapped[list["AuthGroupPermission"]] = relationship('AuthGroupPermission', passive_deletes=True, passive_updates=True, back_populates='group')
 
 class AuthGroupUser(Base):
 
     __tablename__ = 'auth_group_user'
 
-    group_id = Column(
+    group_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('auth_group.id'),
         primary_key=True)
 
-    user_id = Column(
+    user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         primary_key=True)
 
-    group = relationship('AuthGroup')
-    user = relationship('User')
+    group: Mapped["AuthGroup"] = relationship('AuthGroup')
+    user: Mapped["User"] = relationship('User')
 
 class AuthPermissionCatalog(Base):
 
     __tablename__ = 'auth_permission_catalog'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    major = Column(
+    major: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    minor = Column(
+    minor: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    description = Column(
+    description: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
 
@@ -2132,40 +2133,40 @@ class AuthUserPermission(Base):
         UniqueConstraint('user_id', 'major', 'minor', 'effect', name='u_user_perm'),
     )
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True)
 
-    user_id = Column(
+    user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=False)
 
-    major = Column(
+    major: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    minor = Column(
+    minor: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    effect = Column(
+    effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
         nullable=False,
         default='ALLOW')
 
-    created_at = Column(
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    created_by = Column(
+    created_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    user = relationship('User', foreign_keys=[user_id])
-    created_by_user = relationship('User', foreign_keys=[created_by])
+    user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
+    created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
 
 class AuthGroupPermission(Base):
 
@@ -2174,109 +2175,109 @@ class AuthGroupPermission(Base):
         UniqueConstraint('group_id', 'major', 'minor', 'effect', name='u_group_perm'),
     )
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True)
 
-    group_id = Column(
+    group_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('auth_group.id'),
         nullable=False)
 
-    major = Column(
+    major: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    minor = Column(
+    minor: Mapped[str] = mapped_column(
         String(512),
         nullable=False)
 
-    effect = Column(
+    effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
         nullable=False,
         default='ALLOW')
 
-    created_at = Column(
+    created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    created_by = Column(
+    created_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=True)
 
-    group = relationship('AuthGroup', back_populates='permissions')
-    created_by_user = relationship('User', foreign_keys=[created_by])
+    group: Mapped["AuthGroup"] = relationship('AuthGroup', back_populates='permissions')
+    created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
 
 class Comment(Base):
 
     __tablename__ = 'comments'
 
-    comment_id = Column(
+    comment_id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
-    user_id = Column(
+    user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('users.id'),
         nullable=False)
 
-    uuid = Column(
-        String(36), 
+    uuid: Mapped[str] = mapped_column(
+        String(36),
         ForeignKey('alerts.uuid'),
         nullable=False)
 
-    comment = Column(Text)
+    comment: Mapped[Optional[str]] = mapped_column(Text)
 
     # many to one
-    user = relationship('User', backref='comments')
+    user: Mapped["User"] = relationship('User', backref='comments')
 
 
 class Workload(Base):
 
     __tablename__ = 'workload'
 
-    id = Column(
+    id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
-    uuid = Column(
-        String(36), 
+    uuid: Mapped[str] = mapped_column(
+        String(36),
         nullable=False,
         unique=True)
 
-    node_id = Column(
+    node_id: Mapped[int] = mapped_column(
         Integer,
-        nullable=False, 
+        nullable=False,
         index=True)
 
-    analysis_mode = Column(
+    analysis_mode: Mapped[str] = mapped_column(
         String(256),
         nullable=False,
         index=True)
 
-    insert_date = Column(
-        TIMESTAMP, 
-        nullable=False, 
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
         index=True)
 
-    company_id = Column(
+    company_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('company.id'),
         nullable=True)
 
-    company = relationship('Company', foreign_keys=[company_id])
+    company: Mapped[Optional["Company"]] = relationship('Company', foreign_keys=[company_id])
 
-    storage_dir = Column(
-        String(1024), 
-        unique=True, 
+    storage_dir: Mapped[str] = mapped_column(
+        String(1024),
+        unique=True,
         nullable=False)
 
 # NOTE there is no database relationship between these tables
