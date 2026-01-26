@@ -111,7 +111,7 @@ services:
       - ace-auth:/auth
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   fluent-bit:
@@ -523,7 +523,25 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
+      - ace
+
+  file-collection:
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-file-collection
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      ace:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start file_collection"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks:
       - ace
 
   # this is the service you will attach to for development purposes

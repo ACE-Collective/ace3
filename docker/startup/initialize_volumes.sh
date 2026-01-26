@@ -10,7 +10,7 @@ for path in /opt/ace/data /opt/ace/ssl /docker-entrypoint-initdb.d /ace-sql-read
 do
     if [ -d "${path}" ]
     then
-        if [[ $(stat -c "$U" ${path}) != "ace" ]]
+        if [[ $(stat -c "%U" ${path}) != "ace" ]]
         then
             chown ace:ace ${path}
         fi

@@ -1,0 +1,153 @@
+            <!-- Pagination data embedded for JavaScript to avoid extra API call -->
+            <div id="fc_pagination_data" data-offset="{{ page_offset }}" data-size="{{ page_size }}" data-total="{{ total_count }}" style="display:none;"></div>
+            <table id="collections_table" class="table table-hover table-condensed">
+                <thead>
+                    <tr>
+                        <th>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="collection_select_all"></input>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- ID -->
+                            <div>
+                                <span id="th_fc_sort_filter" style="cursor:pointer" sort_filter="id">ID</span>
+                                {% if sort_filter == "id" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input id="fc_filter_id" type="text" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_id')}}"/>
+                            </div>
+                        </th>
+                        <!-- Collector -->
+                        <th>
+                            <div>
+                                <span id="th_fc_sort_filter" style="cursor:pointer" sort_filter="collector">Collector</span>
+                                {% if sort_filter == "collector" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="collector_names" id="fc_filter_collector" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_collector')}}"/>
+                                <datalist id="collector_names">
+                                    {% for collector_name in collector_names %}
+                                    <option value="{{collector_name}}">{{collector_name}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <!-- Type -->
+                        <th>
+                            <div>
+                                <span id="th_fc_sort_filter" style="cursor:pointer" sort_filter="type">Type</span>
+                                {% if sort_filter == "type" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="collection_types" id="fc_filter_type" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_type')}}"/>
+                                <datalist id="collection_types">
+                                    {% for collection_type in collection_types %}
+                                    <option value="{{collection_type}}">{{collection_type}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <!-- Value -->
+                        <th style="width: 35%;">
+                            <div>
+                                <span>Value</span>
+                            </div>
+                            <div>
+                                <input id="fc_filter_value" type="text" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_value')}}"/>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Status -->
+                            <div>
+                                <span id="th_fc_sort_filter" style="cursor:pointer" sort_filter="status">Status</span>
+                                {% if sort_filter == "status" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="collection_statuses" id="fc_filter_status" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_status')}}"/>
+                                <datalist id="collection_statuses">
+                                    {% for collection_status in collection_statuses %}
+                                    <option value="{{collection_status}}">{{collection_status}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Result -->
+                            <div>
+                                <span id="th_fc_sort_filter" style="cursor:pointer" sort_filter="result">Result</span>
+                                {% if sort_filter == "result" %}
+                                    {% if sort_filter_direction == "desc" %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-up" sort_direction="asc" style="cursor:pointer"></span>
+                                    {% else %}
+                                        <span id="th_fc_sort_direction" class="bi bi-arrow-down" sort_direction="desc" style="cursor:pointer"></span>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                            <div>
+                                <input list="collection_results" id="fc_filter_result" class="form-control w-100" style="font-size: xx-small;" value="{{filter_values.get('fc_filter_result')}}"/>
+                                <datalist id="collection_results">
+                                    {% for collection_result in collection_results %}
+                                    <option value="{{collection_result}}">{{collection_result}}</option>
+                                    {% endfor %}
+                                </datalist>
+                            </div>
+                        </th>
+                        <th>
+                            <!-- Attempt Count -->
+                            <div>
+                                <span>Attempts</span>
+                            </div>
+                        </th>
+                        <th>
+                            <button id="btn_apply_filters" type="button" class="btn btn-outline-dark btn-xs w-50" title="apply filters"><span class="bi bi-funnel">Apply</span></button>
+                            <button id="btn_clear_filters" type="button" class="btn btn-outline-dark btn-xs w-50" title="clear filters"><span class="bi bi-x">Clear</span></button>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for collection in collections %}
+                    <tr collection_id="{{collection.id}}">
+                        <td>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="collection_id_{{collection.id}}" collection_id="{{collection.id}}"></input>
+                            </div>
+                        </td>
+                        <td>{{ collection.id }}</td>
+                        <td>{{ collection.name }}</td>
+                        <td>{{ collection.type }}</td>
+                        <td title="{{ collection.key }}">{{ collection.key[:50] }}{% if collection.key|length > 50 %}...{% endif %}</td>
+                        <td>{{ collection.status }}</td>
+                        <td>{{ collection.result or '' }}</td>
+                        <td>{{ collection.retry_count }}</td>
+                        <td class="text-end" style="white-space: nowrap;">
+                            <button type="button" class="btn btn-outline-dark btn-xs w-100" collection_id="{{collection.id}}" name="btn_view_history_{{collection.id}}" title="view history"><span class="bi bi-clock-history"></span> History</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
