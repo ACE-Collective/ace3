@@ -442,7 +442,7 @@ def mock_api_call(test_client, monkeypatch):
         if timeout is not None:
             kwargs['timeout'] = timeout
         if api_key is not None:
-            kwargs['headers'] = { "x-ice-auth": api_key }
+            kwargs['headers'] = { "x-ace-auth": api_key }
 
         response = func(command, **kwargs)
 

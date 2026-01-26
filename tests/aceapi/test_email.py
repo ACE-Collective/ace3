@@ -38,7 +38,7 @@ def test_get_archived_email_success(test_client, archived_email):
     result = test_client.get(
         url_for('email.get_archived_email'),
         query_string={'message_id': TEST_MESSAGE_ID},
-        headers={'x-ice-auth': get_config().api.api_key},
+        headers={'x-ace-auth': get_config().api.api_key},
     )
 
     assert result.status_code == 200
@@ -52,7 +52,7 @@ def test_get_archived_email_missing_message_id(test_client):
     """test that missing message_id parameter returns 400"""
     result = test_client.get(
         url_for('email.get_archived_email'),
-        headers={'x-ice-auth': get_config().api.api_key},
+        headers={'x-ace-auth': get_config().api.api_key},
     )
 
     assert result.status_code == 400
@@ -64,7 +64,7 @@ def test_get_archived_email_unknown_message_id(test_client):
     result = test_client.get(
         url_for('email.get_archived_email'),
         query_string={'message_id': '<unknown-message-id@example.com>'},
-        headers={'x-ice-auth': get_config().api.api_key},
+        headers={'x-ace-auth': get_config().api.api_key},
     )
 
     assert result.status_code == 404
@@ -81,7 +81,7 @@ def test_get_archived_email_missing_encryption_key(test_client, archived_email):
         result = test_client.get(
             url_for('email.get_archived_email'),
             query_string={'message_id': TEST_MESSAGE_ID},
-            headers={'x-ice-auth': get_config().api.api_key},
+            headers={'x-ace-auth': get_config().api.api_key},
         )
 
         assert result.status_code == 500
@@ -123,7 +123,7 @@ def test_get_archived_email_remote_server(test_client, tmpdir, patch_email_archi
     result = test_client.get(
         url_for('email.get_archived_email'),
         query_string={'message_id': TEST_REMOTE_MESSAGE_ID},
-        headers={'x-ice-auth': get_config().api.api_key},
+        headers={'x-ace-auth': get_config().api.api_key},
         follow_redirects=False
     )
 

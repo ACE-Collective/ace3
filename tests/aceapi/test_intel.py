@@ -66,7 +66,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -83,7 +83,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -100,7 +100,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -123,7 +123,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -148,7 +148,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -178,7 +178,7 @@ def test_set_observable(test_client):
         })
     }
 
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
     result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
     get_db().close()
@@ -190,7 +190,7 @@ def test_set_observable(test_client):
 def test_set_observable_as_user(test_client):
     user = get_db().query(User).first()
     api_key = set_user_api_key(user.id)
-    client_kwargs = { "headers": { 'x-ice-auth': set_user_api_key(user.id) } }
+    client_kwargs = { "headers": { 'x-ace-auth': set_user_api_key(user.id) } }
 
     root = create_root_analysis()
     root.add_observable_by_spec(F_FQDN, "test.com")
@@ -247,7 +247,7 @@ def test_set_observable_as_user(test_client):
 
 @pytest.mark.integration
 def test_get_observable(test_client):
-    client_kwargs = { "headers": { 'x-ice-auth': get_config().api.api_key } }
+    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
 
     result = test_client.get(url_for('intel.get_observables'), **client_kwargs)
     assert result.status_code == 200

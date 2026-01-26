@@ -237,7 +237,7 @@ def _execute_api_call(command,
     if timeout is not None:
         kwargs['timeout'] = timeout
     if api_key is not None:
-        kwargs['headers'] = { "x-ice-auth": api_key }
+        kwargs['headers'] = { "x-ace-auth": api_key }
 
     response = func('https://{}/api/{}'.format(remote_host, command), **kwargs)
     response.raise_for_status()
