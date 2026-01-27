@@ -1929,6 +1929,7 @@ module_group_email:
 module_group_common:
   name: common
   modules:
+    - command_line_analyzer
     - configuration_defined_tagging
     - correlated_tag_analyzer
     - observable_detection
