@@ -578,6 +578,7 @@ CREATE TABLE `observables` (
   `batch_id` varchar(36) CHARACTER SET ascii NULL DEFAULT NULL COMMENT 'a uuid used to group together observables for frequency analysis',
   PRIMARY KEY (`id`),
   UNIQUE KEY `i_type_sha256` (`type`,`sha256`),
+  KEY `i_obs_type` (`type`),
   KEY `i_obs_sha256` (`sha256`),
   KEY `i_obs_value` (`value`(767)),
   KEY `i_batch_id` (`batch_id`),

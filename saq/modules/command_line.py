@@ -7,7 +7,8 @@ from typing import Type
 
 from pydantic import Field
 from saq.analysis import Analysis
-from saq.constants import F_COMMAND_LINE, F_FILE_LOCATION, F_FILE_PATH, R_EXECUTED_ON, create_file_location, AnalysisExecutionResult
+from saq.analysis.observable import Observable
+from saq.constants import DIRECTIVE_COLLECT_FILE, F_COMMAND_LINE, F_FILE_LOCATION, F_FILE_PATH, R_EXECUTED_ON, create_file_location, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.util.filesystem import is_nt_path
@@ -76,7 +77,7 @@ class CommandLineAnalyzer(AnalysisModule):
     def base64_minimum_length(self):
         return self.config.base64_minimum_length
 
-    def execute_analysis(self, command_line) -> AnalysisExecutionResult:
+    def execute_analysis(self, command_line: Observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(command_line)
         assert isinstance(analysis, CommandLineAnalysis)
 
@@ -106,6 +107,8 @@ class CommandLineAnalyzer(AnalysisModule):
                 if command_line.has_relationship(R_EXECUTED_ON):
                     hostname = command_line.get_relationship_by_type(R_EXECUTED_ON).target
                     file_location = analysis.add_observable_by_spec(F_FILE_LOCATION,create_file_location(hostname.value, token))
+                    if file_location is not None and command_line.has_directive(DIRECTIVE_COLLECT_FILE):
+                        file_location.add_directive(DIRECTIVE_COLLECT_FILE)
 
             if is_base64(token):
                 decoded_data = decode_base64(token)

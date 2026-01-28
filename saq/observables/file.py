@@ -51,6 +51,10 @@ class FileObservable(Observable):
         # two of these are equal if they have the same content AND the same metadata
         return self.value == other.value and self.file_path == other.file_path
 
+    def __hash__(self):
+        # the value of a FileObservable is the sha256 hash of the file, so we can just hash that
+        return hash(self.value)
+
     def __str__(self) -> str:
         return self.file_path
 

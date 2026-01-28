@@ -39,6 +39,14 @@ QUERY_DETAILS_EVENTS = "events"
 
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
+class RelationshipMappingTarget(BaseModel):
+    type: str = Field(..., description="The type of target to create")
+    value: str = Field(..., description="The value of the target")
+
+class RelationshipMapping(BaseModel):
+    type: str = Field(..., description="The type of relationship to create")
+    target: RelationshipMappingTarget = Field(..., description="The target of the relationship")
+
 class ObservableMapping(BaseModel):
     fields: list[str] = Field(..., default_factory=list, description="One or more fields to map to an observable")
     field_lookup_type: Optional[str] = Field(default=FIELD_LOOKUP_TYPE_KEY, description="The type of lookup to perform for the fields.")
@@ -53,6 +61,7 @@ class ObservableMapping(BaseModel):
     ignored_values: list[str] = Field(default_factory=list, description="A list of values to ignore when mapping the observable.")
     display_type: Optional[str] = Field(default=None, description="The display type to use for the observable.")
     display_value: Optional[str] = Field(default=None, description="The display value to use for the observable.")
+    relationships: list[RelationshipMapping] = Field(default_factory=list, description="The relationships to add to the observable")
 
     @model_validator(mode='after')
     def validate_display_value_for_file_type(self):
@@ -93,6 +102,9 @@ def interpret_event_value(observable_mapping: ObservableMapping, event: dict) ->
     assert isinstance(event, dict)
 
     result: list[str] = []
+
+    if not observable_mapping.fields:
+        raise ValueError(f"no fields specified for observable mapping {observable_mapping}")
 
     # is the value for this mapping not computed?
     if observable_mapping.value is None:
@@ -282,7 +294,7 @@ class QueryHunt(Hunt):
         return local_time() >= self.next_execution_time
 
     def load_query_from_file(self, path: str) -> str:
-        with open(abs_path(self.query_file_path), 'r') as fp:
+        with open(abs_path(path), 'r') as fp:
             result = fp.read()
 
             #if self.strip_comments:
@@ -312,7 +324,7 @@ class QueryHunt(Hunt):
             return False
 
         try:
-            return self.query_last_mtime != os.path.getmtime(self.query_file_path)
+            return self.query_last_mtime != os.path.getmtime(abs_path(self.query_file_path))
         except FileNotFoundError:
             return True
         except Exception as e:
@@ -417,7 +429,7 @@ class QueryHunt(Hunt):
         if query_results is None:
             return None
 
-        submissions = [] # of Submission objects
+        submissions: list[Submission] = [] # of Submission objects
 
         def _create_submission(event: dict):
             return Submission(self.create_root_analysis(event))
@@ -426,6 +438,9 @@ class QueryHunt(Hunt):
 
         # this is used when grouping is specified but some events don't have that field
         missing_group = None
+
+        # this is used to keep track of which observables need to have relationship mapped
+        relationship_tracking: dict[Observable, list[RelationshipMapping]] = {}
 
         # map results to observables
         for event in query_results:
@@ -529,6 +544,10 @@ class QueryHunt(Hunt):
                     if observable_mapping.display_value is not None:
                         observable.display_value = observable_mapping.display_value
 
+                    # track any relationships that we'll need to map in later
+                    if observable_mapping.relationships:
+                        relationship_tracking[observable] = observable_mapping.relationships
+
                     # add it to our list if we haven't already added it
                     if observable not in observables:
                         observables.append(observable)
@@ -605,9 +624,20 @@ class QueryHunt(Hunt):
                     elif event_time < event_grouping[grouping_target].root.event_time:
                         event_grouping[grouping_target].root.event_time = event_time
 
+            # apply relationships to the observables
+            for submission in submissions:
+                for observable in submission.root.observables:
+                    if observable in relationship_tracking:
+                        for relationship_mapping in relationship_tracking[observable]:
+                            for potential_target_value in interpolate_event_value(relationship_mapping.target.value, event):
+                                target_observable = submission.root.get_observable_by_spec(relationship_mapping.target.type, potential_target_value)
+                                if target_observable is not None:
+                                    observable.add_relationship(relationship_mapping.type, target_observable)
+
         # update the descriptions of grouped alerts with the event counts
         if self.group_by is not None:
             for submission in submissions:
                 submission.root.description += f' ({len(submission.root.details.get(QUERY_DETAILS_EVENTS, []))} event{"" if len(submission.root.details.get(QUERY_DETAILS_EVENTS, [])) == 1 else "s"})'
+
 
         return submissions

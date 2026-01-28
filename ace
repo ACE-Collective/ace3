@@ -99,6 +99,8 @@ def execute_hunt(args):
                     output += " tags [{}]".format(','.join(o.tags))
                 if o.directives:
                     output += " direc [{}]".format(','.join(o.directives))
+                if o.relationships:
+                    output += " rels [{}]".format(','.join([f"{r.r_type} -> {r.target.type}:{r.target.value}" for r in o.relationships]))
                 #if o.pivot_links:
                     #for pv in o.pivot_links:
                         #output += f" pivot ({pv.url})[{pv.text}]"

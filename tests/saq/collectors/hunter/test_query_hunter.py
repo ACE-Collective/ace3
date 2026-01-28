@@ -12,9 +12,9 @@ import saq.collectors.hunter.query_hunter as query_hunter_module
 from saq.configuration.schema import HuntTypeConfig
 import saq.util.time as saq_time
 from saq.collectors.hunter import HuntManager, HunterService, read_persistence_data
-from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig
+from saq.collectors.hunter.query_hunter import ObservableMapping, QueryHunt, QueryHuntConfig, RelationshipMapping, RelationshipMappingTarget
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_SIGNATURE_ID
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_SIGNATURE_ID, R_EXECUTED_ON, R_RELATED_TO, F_HOSTNAME, F_COMMAND_LINE
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import log_count, wait_for_log_count
@@ -1557,3 +1557,344 @@ def test_query_hunt_config_auto_append_custom():
     )
 
     assert config.auto_append == "| custom command"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_mapping(monkeypatch):
+    """test observable mapping with relationship to another observable"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            # target observable (hostname) - must be defined first so it exists when relationship is applied
+            ObservableMapping(
+                fields=["hostname"],
+                type=F_HOSTNAME,
+            ),
+            # source observable (command_line) with relationship to hostname
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="${hostname}"
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    submissions = hunt.process_query_results([{
+        "cmdline": "powershell.exe -enc AAAA",
+        "hostname": "workstation01"
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # find the command_line observable
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+    assert cmdline_observable.value == "powershell.exe -enc AAAA"
+
+    # find the hostname observable
+    hostname_observable = next((o for o in submission.root.observables if o.type == F_HOSTNAME), None)
+    assert hostname_observable is not None
+    assert hostname_observable.value == "workstation01"
+
+    # verify the relationship exists
+    assert len(cmdline_observable.relationships) == 1
+    relationship = cmdline_observable.relationships[0]
+    assert relationship.r_type == R_EXECUTED_ON
+    assert relationship.target == hostname_observable
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_missing_target(monkeypatch):
+    """test that relationship is skipped when target observable doesn't exist"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship_missing",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            # source observable with relationship to a non-existent target
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="${hostname}"  # hostname field exists but no hostname observable mapping
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    # event has hostname field but no observable mapping creates a hostname observable
+    submissions = hunt.process_query_results([{
+        "cmdline": "powershell.exe -enc AAAA",
+        "hostname": "workstation01"
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # find the command_line observable
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+
+    # no hostname observable should exist
+    hostname_observable = next((o for o in submission.root.observables if o.type == F_HOSTNAME), None)
+    assert hostname_observable is None
+
+    # relationship should not be created since target doesn't exist
+    assert len(cmdline_observable.relationships) == 0
+
+
+@pytest.mark.unit
+def test_process_query_results_with_multiple_relationships(monkeypatch):
+    """test observable with multiple relationships"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_multi_relationship",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            # target observables
+            ObservableMapping(
+                fields=["hostname"],
+                type=F_HOSTNAME,
+            ),
+            ObservableMapping(
+                fields=["src_ip"],
+                type=F_IPV4,
+            ),
+            # source observable with multiple relationships
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="${hostname}"
+                        )
+                    ),
+                    RelationshipMapping(
+                        type=R_RELATED_TO,
+                        target=RelationshipMappingTarget(
+                            type=F_IPV4,
+                            value="${src_ip}"
+                        )
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    submissions = hunt.process_query_results([{
+        "cmdline": "powershell.exe -enc AAAA",
+        "hostname": "workstation01",
+        "src_ip": "192.168.1.100"
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # find the command_line observable
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+
+    # verify both relationships exist
+    assert len(cmdline_observable.relationships) == 2
+
+    # check for executed_on relationship to hostname
+    executed_on_rel = next((r for r in cmdline_observable.relationships if r.r_type == R_EXECUTED_ON), None)
+    assert executed_on_rel is not None
+    assert executed_on_rel.target.type == F_HOSTNAME
+    assert executed_on_rel.target.value == "workstation01"
+
+    # check for related_to relationship to ipv4
+    related_to_rel = next((r for r in cmdline_observable.relationships if r.r_type == R_RELATED_TO), None)
+    assert related_to_rel is not None
+    assert related_to_rel.target.type == F_IPV4
+    assert related_to_rel.target.value == "192.168.1.100"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_and_grouping(monkeypatch):
+    """test relationship mapping with grouped events"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship_grouped",
+        group_by="hostname",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["hostname"],
+                type=F_HOSTNAME,
+            ),
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="${hostname}"
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"cmdline": "cmd.exe /c dir", "hostname": "workstation01"},
+        {"cmdline": "powershell.exe Get-Process", "hostname": "workstation01"},
+        {"cmdline": "whoami", "hostname": "workstation02"},
+    ])
+    assert submissions
+    assert len(submissions) == 2
+
+    # find submission for workstation01
+    ws01_submission = next((s for s in submissions if "workstation01" in s.root.description), None)
+    assert ws01_submission is not None
+
+    # find command_line observables for workstation01
+    ws01_cmdlines = [o for o in ws01_submission.root.observables if o.type == F_COMMAND_LINE]
+    assert len(ws01_cmdlines) == 2
+
+    # each command_line should have a relationship to hostname
+    ws01_hostname = next((o for o in ws01_submission.root.observables if o.type == F_HOSTNAME), None)
+    assert ws01_hostname is not None
+
+    for cmdline_obs in ws01_cmdlines:
+        assert len(cmdline_obs.relationships) == 1
+        assert cmdline_obs.relationships[0].r_type == R_EXECUTED_ON
+        assert cmdline_obs.relationships[0].target == ws01_hostname
+
+
+@pytest.mark.unit
+def test_relationship_mapping_model_validation():
+    """test RelationshipMapping and RelationshipMappingTarget Pydantic model validation"""
+    from pydantic import ValidationError
+
+    # valid relationship mapping
+    mapping = RelationshipMapping(
+        type=R_EXECUTED_ON,
+        target=RelationshipMappingTarget(
+            type=F_HOSTNAME,
+            value="${hostname}"
+        )
+    )
+    assert mapping.type == R_EXECUTED_ON
+    assert mapping.target.type == F_HOSTNAME
+    assert mapping.target.value == "${hostname}"
+
+    # test that type is required for RelationshipMapping
+    with pytest.raises(ValidationError):
+        RelationshipMapping(
+            target=RelationshipMappingTarget(type=F_HOSTNAME, value="test")
+        )
+
+    # test that target is required for RelationshipMapping
+    with pytest.raises(ValidationError):
+        RelationshipMapping(type=R_EXECUTED_ON)
+
+    # test that type is required for RelationshipMappingTarget
+    with pytest.raises(ValidationError):
+        RelationshipMappingTarget(value="test")
+
+    # test that value is required for RelationshipMappingTarget
+    with pytest.raises(ValidationError):
+        RelationshipMappingTarget(type=F_HOSTNAME)
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_static_target_value(monkeypatch):
+    """test relationship with a static (non-interpolated) target value"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_static_relationship",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            # target observable with static value
+            ObservableMapping(
+                fields=["src_ip"],
+                type=F_IPV4,
+                value="10.0.0.1"  # static value
+            ),
+            # source observable with relationship to static target
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_RELATED_TO,
+                        target=RelationshipMappingTarget(
+                            type=F_IPV4,
+                            value="10.0.0.1"  # static value matching target
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    submissions = hunt.process_query_results([{
+        "cmdline": "ping 10.0.0.1",
+        "src_ip": "anything"  # field value is ignored due to static value in mapping
+    }])
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # find the command_line observable
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+
+    # find the ipv4 observable
+    ipv4_observable = next((o for o in submission.root.observables if o.type == F_IPV4), None)
+    assert ipv4_observable is not None
+    assert ipv4_observable.value == "10.0.0.1"
+
+    # verify the relationship exists
+    assert len(cmdline_observable.relationships) == 1
+    relationship = cmdline_observable.relationships[0]
+    assert relationship.r_type == R_RELATED_TO
+    assert relationship.target == ipv4_observable
