@@ -52,6 +52,7 @@ pysip
 PySocks
 pytesseract
 pytest
+pytest-asyncio
 pytest-datadir
 pytest-print
 pytest-pythonpath
