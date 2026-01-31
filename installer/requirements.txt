@@ -87,3 +87,11 @@ numpy
 pandas
 tqdm
 qdrant-client
+
+# FastAPI
+fastapi
+uvicorn[standard]
+python-multipart
+pyjwt
+aiomysql
+bcrypt

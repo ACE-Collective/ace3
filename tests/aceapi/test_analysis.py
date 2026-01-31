@@ -38,7 +38,7 @@ def test_api_analysis_submit(test_client):
             'extensions': { KEY_PLAYBOOK_URL: "http://playbook" },
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
@@ -51,7 +51,7 @@ def test_api_analysis_submit(test_client):
     uuid = result['uuid']
     #_id = result['id']
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     result = result.get_json()
     assert result
     assert 'result' in result
@@ -105,22 +105,22 @@ def test_api_analysis_submit(test_client):
     assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
-    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ace-auth': get_config().api.api_key })
     result = result.get_json()
     assert result
     result = result['result']
     assert 'hello' in result
     assert result['hello'] == 'world'
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     assert result.data == b'Hello, world!'
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     assert result.data == b'Hello, world!'
 
-    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     result = result.get_json()
     assert result
@@ -136,7 +136,7 @@ def test_api_analysis_submit(test_client):
     assert result['workload']['analysis_mode'] == 'analysis'
     assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
 
-    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code, 200
     result = result.get_json()
     assert result
@@ -193,7 +193,7 @@ def test_api_analysis_submit_queue(test_client):
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
@@ -201,7 +201,7 @@ def test_api_analysis_submit_queue(test_client):
     result = result['result']
     assert result['uuid']
     uuid = result['uuid']
-    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     result = result.get_json()
     assert result
     assert 'result' in result
@@ -253,22 +253,22 @@ def test_api_analysis_submit_queue(test_client):
     assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
-    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ace-auth': get_config().api.api_key })
     result = result.get_json()
     assert result
     result = result['result']
     assert 'hello' in result
     assert result['hello'] == 'world'
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     assert result.data == b'Hello, world!'
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     assert result.data == b'Hello, world!'
 
-    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     result = result.get_json()
     assert result
@@ -284,7 +284,7 @@ def test_api_analysis_submit_queue(test_client):
     assert result['workload']['analysis_mode'] == 'analysis'
     assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
 
-    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
     result = result.get_json()
     assert result
@@ -320,7 +320,7 @@ def test_api_analysis_submit_queue(test_client):
 
 @pytest.mark.integration
 def test_api_analysis_submit_invalid(test_client):
-    result = test_client.post(url_for('analysis.submit'), data={}, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.post(url_for('analysis.submit'), data={}, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
     assert result.data.decode() == 'missing analysis field (see documentation)'
 
@@ -342,7 +342,7 @@ def test_api_analysis_submit_invalid(test_client):
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     assert result.status_code == 400
     assert result.data.decode() == 'wrong company invalid_company_name (are you sending to the correct system?)'
@@ -363,7 +363,7 @@ def test_api_analysis_submit_invalid(test_client):
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     assert result.status_code == 400
     assert result.data.decode() == 'missing description field in submission'
@@ -384,7 +384,7 @@ def test_api_analysis_submit_invalid(test_client):
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     assert result.status_code == 400
     assert 'invalid event time format' in result.data.decode()
@@ -421,7 +421,7 @@ def test_api_analysis_submit_invalid(test_client):
                 'tags': [ 'alert_tag_1', 'alert_tag_2' ],
             }, cls=_JSONEncoder),
             'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-        }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+        }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     #assert result.status_code == 400
     #assert result.data.decode() == 'an observable is missing the value field'
@@ -447,7 +447,7 @@ def test_api_analysis_submit_invalid(test_client):
                 'tags': [ 'alert_tag_1', 'alert_tag_2' ],
             }, cls=_JSONEncoder),
             'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-        }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+        }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     #assert result.status_code == 400
     #assert result.data.decode(), 'an observable is missing the type field'
@@ -472,7 +472,7 @@ def test_api_analysis_submit_invalid(test_client):
                 'tags': [ 'alert_tag_1', 'alert_tag_2' ],
             }, cls=_JSONEncoder),
             'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-        }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+        }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     #assert result.status_code == 400
     #assert 'an observable has an invalid time format' in result.data.decode()
@@ -482,11 +482,11 @@ def test_api_analysis_submit_invalid(test_client):
 
 @pytest.mark.integration
 def test_api_analysis_invalid_status(test_client):
-    result = test_client.get(url_for('analysis.get_status', uuid='invalid'), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_status', uuid='invalid'), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
 
     test_uuid = str(uuid.uuid4())
-    result = test_client.get(url_for('analysis.get_status', uuid=test_uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_status', uuid=test_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
     assert result.data.decode() == 'invalid uuid {}'.format(test_uuid)
 
@@ -530,7 +530,7 @@ rule test_filter {
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
@@ -539,7 +539,7 @@ rule test_filter {
     assert result['uuid']
     assert 'tuning_matches' in result
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
 
     # remove the tuning rule
@@ -562,7 +562,7 @@ rule test_filter {
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
@@ -571,7 +571,7 @@ rule test_filter {
     assert result['uuid']
     assert 'tuning_matches' not in result
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
 
     # test tuning by file
@@ -604,7 +604,7 @@ rule test_files {
             'tags': [ 'alert_tag_1', 'alert_tag_2' ],
         }, cls=_JSONEncoder),
         'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
@@ -613,5 +613,5 @@ rule test_files {
     assert result['uuid']
     assert 'tuning_matches' in result
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400

@@ -277,6 +277,7 @@ services:
     depends_on:
       - http-app
       - http-api
+      - http-api-v2
       - fluent-bit
     volumes:
       - ./etc/nginx/conf.d.external:/etc/nginx/conf.d:ro
@@ -300,6 +301,7 @@ services:
     depends_on:
       - http-app
       - http-api
+      - http-api-v2
       - fluent-bit
     volumes: 
       - ./etc/nginx/conf.d:/etc/nginx/conf.d:ro
@@ -346,7 +348,26 @@ services:
       - "3031"
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
+      - ace
+
+  http-api-v2:
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-api-v2
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      - ace
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_uvicorn:application --host 0.0.0.0 --port 3032 --workers 12 --timeout-keep-alive 300"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    expose:
+      - "3032"
+    cap_add:
+      - SYS_PTRACE
+    networks:
       - ace
 
   redis:

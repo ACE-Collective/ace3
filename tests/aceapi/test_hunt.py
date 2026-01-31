@@ -27,7 +27,7 @@ HUNT_VALIDATE_URL = "/hunt/validate"
 @pytest.fixture
 def auth_headers():
     """Returns authentication headers for API requests."""
-    return {"x-ice-auth": get_config().api.api_key}
+    return {"x-ace-auth": get_config().api.api_key}
 
 
 # =============================================================================

@@ -23,7 +23,7 @@ KEY_API_AUTH_NAME = "name"
 API_AUTH_TYPE_CONFIG = "config"
 API_AUTH_TYPE_USER = "user"
 
-API_HEADER_NAME = "x-ice-auth"
+API_HEADER_NAME = "x-ace-auth"
 
 def _get_config_api_key_match(auth_sha256: str) -> ApiAuthResult:
     """Returns an ApiAuthResult object if the given auth token is stored as a configuration value under [apikeys], None otherwise."""

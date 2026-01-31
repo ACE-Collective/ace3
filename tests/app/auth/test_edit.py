@@ -261,8 +261,8 @@ class TestEditUsers:
             assert target_user.enabled == False
             
             # Verify password was changed
-            from werkzeug.security import check_password_hash
-            assert check_password_hash(target_user.password_hash, "NewPass456!")
+            from saq.database.model import verify_password_hash
+            assert verify_password_hash("NewPass456!", target_user.password_hash)
             
             # Verify permissions were updated
             permission = db.query(AuthUserPermission).filter(

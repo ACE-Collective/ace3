@@ -78,6 +78,10 @@ def login():
         return render_template('auth/login.html', form=form)
 
     if user is not None and user.verify_password(form.password.data):
+        # TODO: This is temporary and should be removed once every user is migrated to bcrypt
+        # Commit any changes made by verify_password (e.g., password hash migration)
+        get_db().commit()
+
         if not user.enabled:
             flash('User is disabled.')
             return render_template('auth/login.html', form=form)

@@ -1,23 +1,57 @@
 import base64
 import logging
-from datetime import datetime, date
-from typing import Optional
 import uuid
 import warnings
+from datetime import date, datetime
+from typing import Optional
 
-from flask_login import UserMixin
+import bcrypt
 import pymysql
-from sqlalchemy import BLOB, BOOLEAN, DATE, DATETIME, TIMESTAMP, VARBINARY, BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, text
+from flask_login import UserMixin
+from sqlalchemy import (
+    BLOB,
+    BOOLEAN,
+    DATE,
+    DATETIME,
+    TIMESTAMP,
+    VARBINARY,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import (
+    Mapped,
+    aliased,
+    mapped_column,
+    reconstructor,
+    relationship,
+    validates,
+)
+from sqlalchemy.orm.session import Session
+from werkzeug.security import check_password_hash as werkzeug_check_password_hash
+
 from saq.analysis.analysis import Analysis
-from saq.analysis.observable import Observable as _Observable, get_observable_type_expiration_time
+from saq.analysis.observable import Observable as _Observable
+from saq.analysis.observable import get_observable_type_expiration_time
+from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_OPEN, F_FILE, F_FQDN, F_URL, QUEUE_DEFAULT
+from saq.constants import (
+    DISPOSITION_DELIVERY,
+    DISPOSITION_OPEN,
+    F_FILE,
+    F_FQDN,
+    F_URL,
+    QUEUE_DEFAULT,
+)
 from saq.crypto import decrypt_chunk
 from saq.database.meta import Base
-
-from sqlalchemy.orm import reconstructor, relationship, validates, aliased, mapped_column, Mapped
-from sqlalchemy.orm.session import Session
-
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
@@ -28,9 +62,20 @@ from saq.performance import track_execution_time
 from saq.util import find_all_url_domains, validate_uuid
 from saq.util.ui import get_tag_score
 
-from werkzeug.security import generate_password_hash, check_password_hash
 
-from saq.analysis.root import RootAnalysis
+def verify_password_hash(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash, supporting both werkzeug (legacy) and bcrypt formats."""
+    if hashed_password.startswith("$2"):
+        # Bcrypt hash ($2a$, $2b$, $2y$)
+        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    else:
+        # Legacy werkzeug hash (pbkdf2, scrypt, etc.)
+        return werkzeug_check_password_hash(hashed_password, plain_password)
+
+
+def hash_password(plain_password: str) -> str:
+    """Hash password using bcrypt."""
+    return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
 
 
 class Alert(Base):
@@ -2065,10 +2110,23 @@ class User(UserMixin, Base):
     
     @password.setter
     def password(self, value):
-        self.password_hash = generate_password_hash(value)
+        self.password_hash = hash_password(value)
 
     def verify_password(self, value):
-        return check_password_hash(self.password_hash, value)
+        """Verify password and migrate legacy hashes to bcrypt.
+
+        If verification succeeds and the stored hash is a legacy werkzeug format,
+        the hash is automatically updated to bcrypt. The caller must commit the
+        session to persist this change.
+        """
+        if verify_password_hash(value, self.password_hash):
+            # Migrate legacy werkzeug hash to bcrypt on successful verification
+            # TODO: Remove this migration block once all users are migrated
+            if not self.password_hash.startswith("$2"):
+                self.password_hash = hash_password(value)
+                logging.info(f"migrated werkzeug hash to bcrypt for user {self.username}")
+            return True
+        return False
 
 Owner = aliased(User)
 DispositionBy = aliased(User)

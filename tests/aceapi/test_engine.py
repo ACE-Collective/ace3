@@ -30,7 +30,7 @@ def test_download(test_client):
     root.save()
 
     # ask for a download
-    result = test_client.get(url_for('engine.download', uuid=root.uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('engine.download', uuid=root.uuid), headers = { 'x-ace-auth': get_config().api.api_key })
 
     # we should get back a tar file
     tar_path = os.path.join(get_temp_dir(), 'download.tar')
@@ -92,7 +92,7 @@ def test_upload(test_client):
                                         'overwrite': False,
                                         'sync': True,
                                     }),
-                                    'archive': (fp, os.path.basename(tar_path))}, headers = { 'x-ice-auth': get_config().api.api_key })
+                                    'archive': (fp, os.path.basename(tar_path))}, headers = { 'x-ace-auth': get_config().api.api_key })
 
     # make sure it uploaded
     root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
@@ -137,7 +137,7 @@ def test_upload_move(test_client):
                                         'sync': False,
                                         'move': True,
                                     }),
-                                    'archive': (fp, os.path.basename(tar_path))}, headers = { 'x-ice-auth': get_config().api.api_key })
+                                    'archive': (fp, os.path.basename(tar_path))}, headers = { 'x-ace-auth': get_config().api.api_key })
 
     # make sure it moved
     get_db().close() # clear the stale session
@@ -169,7 +169,7 @@ def test_clear(test_client):
     assert acquire_lock(root.uuid, lock_uuid)
 
     # clear it
-    result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=lock_uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=lock_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 200
 
     # make sure the directory is gone
@@ -194,7 +194,7 @@ def test_clear_invalid_lock(test_client):
     assert acquire_lock(root.uuid, lock_uuid)
 
     # clear it but with the wrong lock uuid
-    result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=str(uuid.uuid4())), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('engine.clear', uuid=root.uuid, lock_uuid=str(uuid.uuid4())), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
 
     # directory is still there
@@ -219,7 +219,7 @@ def test_clear_unknown_uuid(test_client):
     assert acquire_lock(root.uuid, lock_uuid)
 
     # clear it with the wrong uuid
-    result = test_client.get(url_for('engine.clear', uuid=str(uuid.uuid4()), lock_uuid=lock_uuid), headers = { 'x-ice-auth': get_config().api.api_key })
+    result = test_client.get(url_for('engine.clear', uuid=str(uuid.uuid4()), lock_uuid=lock_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
     assert result.status_code == 400
 
     # directory is still there

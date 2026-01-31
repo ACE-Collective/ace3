@@ -104,7 +104,7 @@ def test_bro_http_submission(test_client, datadir):
                     (reply_fp, 'CZZiJd1zicZKNMMrV1.0.reply'),
                     (reply_entity_fp, 'CZZiJd1zicZKNMMrV1.0.reply.entity'),
                     (request_fp, 'CZZiJd1zicZKNMMrV1.0.request'), ],
-        }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+        }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     ready_fp.close()
     reply_fp.close()

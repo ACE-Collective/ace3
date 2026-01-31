@@ -129,7 +129,7 @@ def test_mailbox_submission(test_client, root_analysis, datadir):
                 'tags': [ ],
             }, cls=_JSONEncoder),
             'file': (fp, 'rfc822.email'),
-            }, content_type='multipart/form-data', headers = { 'x-ice-auth': get_config().api.api_key })
+            }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
 
     result = result.get_json()
     assert result
