@@ -9,7 +9,7 @@ import ace_api
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES, VALID_OBSERVABLE_TYPES, create_file_location
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES, create_file_location
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
@@ -255,7 +255,7 @@ ORDER BY
 def new_alert_observable():
     index = request.args['index']
     directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
-    return render_template('analysis/new_alert_observable.html', observable_types=VALID_OBSERVABLE_TYPES, directives=directives, index=index)
+    return render_template('analysis/new_alert_observable.html', directives=directives, index=index)
 
 # I can't remember why this is named /file
 @analysis.route('/file', methods=['GET'])
@@ -288,8 +288,7 @@ ORDER BY
     directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
 
     date = datetime.now().strftime("%m-%d-%Y %H:%M:%S")
-    return render_template('analysis/analyze_file.html', 
-                           observable_types=VALID_OBSERVABLE_TYPES,
+    return render_template('analysis/analyze_file.html',
                            date=date,
                            directives=directives,
                            available_nodes=available_nodes,

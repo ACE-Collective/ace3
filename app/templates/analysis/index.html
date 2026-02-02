@@ -125,10 +125,6 @@
                 <div class="row">
                     <div class="col">
                     <select class="form-control" name="add_observable_type" id="add_observable_type">
-                        <option value="" SELECTED>Select Type</option>
-                        {% for observable_type in observable_types %}
-                        <option value="{{observable_type}}">{{observable_type}}</option>
-                        {% endfor %}
                     </select>
                     </div>
                     <div class="col" id="add_observable_value_content">
@@ -227,5 +223,11 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/observable_types.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
+<script type="text/javascript">
+$(document).ready(function() {
+    populateObservableTypeSelect('#add_observable_type', { includeBlank: true, blankLabel: 'Select Type' });
+});
+</script>
 {% endblock %}
