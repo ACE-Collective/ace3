@@ -139,6 +139,11 @@ def add_to_event():
     if 'checked' in session:
         del session['checked']
 
+    # Check if we should redirect back to the events manage page
+    redirect_to = request.form.get('redirect_to', None)
+    if redirect_to == 'events_manage':
+        return redirect(url_for('events.manage'))
+
     return redirect(url_for('analysis.manage'))
 
 @analysis.route('/load_more_events', methods=['POST', 'GET'])
