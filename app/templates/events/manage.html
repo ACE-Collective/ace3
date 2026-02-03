@@ -218,11 +218,7 @@
                     <tr>
                         <th>Observable Type</th>
                         <td>
-                            <select class="form-control" name="filter_observable_type">
-                                <option value="ANY" {% if filter_state['filter_observable_type'] == 'ANY' %}SELECTED{% endif %}>ANY</option>
-                                {% for observable_type in observable_types %}
-                                    <option value="{{ observable_type }}" {% if filter_state['filter_observable_type'] == observable_type %}SELECTED{% endif %}>{{ observable_type }}</option>
-                                {% endfor %}
+                            <select class="form-control" name="filter_observable_type" id="filter_observable_type" data-default-value="{{ filter_state['filter_observable_type'] }}">
                             </select>
                         </td>
                     </tr>
@@ -275,5 +271,12 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/observable_types.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/events.js') }}?version={{ ACE_VERSION }}"></script>
+<script type="text/javascript">
+$(document).ready(function() {
+    var defaultValue = document.getElementById('filter_observable_type').getAttribute('data-default-value') || 'ANY';
+    populateObservableTypeSelect('#filter_observable_type', { includeAny: true, defaultValue: defaultValue });
+});
+</script>
 {% endblock %}

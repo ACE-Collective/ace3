@@ -150,7 +150,7 @@ async def verify_flask_session(
         s = URLSafeTimedSerializer(
             get_config().gui.secret_key,
             salt="cookie-session",
-            signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha512},
+            signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
         )
         data = s.loads(cookie)
     except Exception:

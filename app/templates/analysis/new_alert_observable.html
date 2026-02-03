@@ -9,9 +9,6 @@
         </td>
         <td style="padding-right:10px;padding-bottom:4px;">
           <select class="form-select" style="width:100%;" name="observables_types_{{index}}" id="observables_types_{{index}}" onchange="new_alert_observable_type_changed('{{index}}')">
-            {% for observable_type in observable_types %}
-            <option value="{{observable_type}}" {% if observable_type == "file" %}SELECTED{% endif %}>{{observable_type}}</option>
-            {% endfor %}
           </select>
         </td>
         <td id="new_alert_observable_value_{{index}}" style="padding-right:10px;padding-bottom:4px;">

@@ -22,7 +22,7 @@ def _make_flask_session_cookie(user_id) -> str:
     s = URLSafeTimedSerializer(
         get_config().gui.secret_key,
         salt="cookie-session",
-        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha512},
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
     )
     return s.dumps({"_user_id": str(user_id)})
 

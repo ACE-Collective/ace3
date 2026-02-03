@@ -243,7 +243,6 @@ def manage():
     statuses = get_db().query(EventStatus).order_by(EventStatus.value.asc()).all()
     types = get_db().query(EventType).order_by(EventType.value.asc()).all()
     vectors = get_db().query(EventVector).order_by(EventVector.value.asc()).all()
-    observable_types = sorted([ot[0] for ot in get_db().query(Observable.type).distinct()])
 
     # Query events for the event modal
     open_events = get_db().query(Event).filter(Event.status.has(value='OPEN')).order_by(Event.creation_date.desc()).all()
@@ -270,7 +269,6 @@ def manage():
                            tags=valid_tags,
                            types=types,
                            vectors=vectors,
-                           observable_types=observable_types,
                            open_events=open_events,
                            internal_collection_events=internal_collection_events,
                            closed_events=closed_events,

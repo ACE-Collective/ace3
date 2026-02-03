@@ -989,6 +989,65 @@ def _add_remediation_type_value_arguments(_parser):
 # start GUI (non-apache version)
 #
 
+def create_api_v2_proxy():
+    """Create a WSGI app that proxies requests to the FastAPI v2 API server.
+
+    DispatcherMiddleware strips the /api/v2 prefix before calling this app,
+    so PATH_INFO will be e.g. /observable-types/ which matches FastAPI routes
+    directly.
+    """
+    import urllib.request
+    import urllib.error
+
+    api_host = os.environ.get('ACE_API_V2_HOST', 'http-api-v2')
+    api_port = os.environ.get('ACE_API_V2_PORT', '3032')
+
+    def proxy_app(environ, start_response):
+        method = environ.get('REQUEST_METHOD', 'GET')
+        path = environ.get('PATH_INFO', '/')
+        query_string = environ.get('QUERY_STRING', '')
+        url = f'http://{api_host}:{api_port}{path}'
+        if query_string:
+            url = f'{url}?{query_string}'
+
+        # Read the request body if present
+        content_length = environ.get('CONTENT_LENGTH')
+        body = None
+        if content_length:
+            try:
+                body = environ['wsgi.input'].read(int(content_length))
+            except (ValueError, KeyError):
+                pass
+
+        # Forward relevant headers (including cookies for auth)
+        headers = {}
+        if environ.get('CONTENT_TYPE'):
+            headers['Content-Type'] = environ['CONTENT_TYPE']
+        if environ.get('HTTP_COOKIE'):
+            headers['Cookie'] = environ['HTTP_COOKIE']
+        if environ.get('HTTP_ACCEPT'):
+            headers['Accept'] = environ['HTTP_ACCEPT']
+
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            resp = urllib.request.urlopen(req)
+            status = f'{resp.status} {resp.reason}'
+            resp_headers = [(k, v) for k, v in resp.getheaders() if k.lower() not in ('transfer-encoding',)]
+            resp_body = resp.read()
+            start_response(status, resp_headers)
+            return [resp_body]
+        except urllib.error.HTTPError as e:
+            status = f'{e.code} {e.reason}'
+            resp_headers = [(k, v) for k, v in e.headers.items() if k.lower() not in ('transfer-encoding',)]
+            resp_body = e.read()
+            start_response(status, resp_headers)
+            return [resp_body]
+        except (urllib.error.URLError, OSError) as e:
+            start_response('502 Bad Gateway', [('Content-Type', 'text/plain')])
+            return [f'API v2 proxy error: {e}'.encode()]
+
+    return proxy_app
+
 def start_gui(args):
     from app import create_app
     from werkzeug.serving import run_simple
@@ -1007,6 +1066,7 @@ def start_gui(args):
     app.config['SESSION_COOKIE_PATH'] = '/'
     app.wsgi_app = DispatcherMiddleware(not_found, {
         "/ace": app.wsgi_app,
+        "/api/v2": create_api_v2_proxy(),
     })
 
     # add the "do" template command
