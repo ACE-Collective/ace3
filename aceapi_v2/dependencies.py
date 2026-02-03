@@ -5,6 +5,7 @@ Supports dual authentication:
 - JWT Bearer Token (OAuth2 password flow) - for user GUI authentication
 """
 
+import hashlib
 import logging
 from typing import Annotated, Callable, Optional
 
@@ -74,9 +75,27 @@ async def get_current_auth(
     # TODO: temporary, remove when Flask GUI is retired)
     flask_cookie = request.cookies.get("session")
     if flask_cookie:
+        # TEMPORARY DEBUG: log session cookie for comparison with Flask app (remove after debugging)
+        cookie_hash = hashlib.sha256(flask_cookie.encode("utf-8", errors="replace")).hexdigest()[:16]
+        raw_cookie_header_len = len(request.headers.get("cookie", ""))
+        logging.info(
+            "[DEBUG SESSION COOKIE] API v2 received session cookie: len=%d hash=%s Cookie_header_len=%d value=%s",
+            len(flask_cookie),
+            cookie_hash,
+            raw_cookie_header_len,
+            flask_cookie,
+        )
         result = await verify_flask_session(flask_cookie, session)
         if result:
             return result
+        logging.info(
+            "[DEBUG SESSION COOKIE] API v2 session cookie present but verification failed (see verify_flask_session logs)"
+        )
+    else:
+        logging.info(
+            "[DEBUG SESSION COOKIE] API v2 received no session cookie; Cookie header present=%s",
+            "cookie" in [h.lower() for h in request.headers.keys()],
+        )
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

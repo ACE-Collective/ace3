@@ -1,10 +1,11 @@
 import base64
+import hashlib
 import json
 import logging
 import os
 from subprocess import PIPE, Popen
 from typing import Optional
-from flask import Flask
+from flask import Flask, request
 import urllib
 
 from app.blueprints import register_blueprints
@@ -149,5 +150,19 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.add_extension('jinja2.ext.do')
 
     initialize_presenters()
+
+    # TEMPORARY DEBUG: log session cookie for comparison with API v2 (remove after debugging)
+    @flask_app.before_request
+    def _log_session_cookie_for_debug():
+        cookie_name = flask_app.config.get("SESSION_COOKIE_NAME", "session")
+        val = request.cookies.get(cookie_name)
+        if val is not None:
+            cookie_hash = hashlib.sha256(val.encode("utf-8", errors="replace")).hexdigest()[:16]
+            logging.info(
+                "[DEBUG SESSION COOKIE] Flask app received session cookie: len=%d hash=%s value=%s",
+                len(val),
+                cookie_hash,
+                val,
+            )
 
     return flask_app
