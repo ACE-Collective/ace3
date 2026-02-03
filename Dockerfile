@@ -246,6 +246,7 @@ USER root
 # so we copy each individual thing we need
 COPY --chown=ace:ace ace ace_api.py ace_uwsgi.py analyst_on_ace.png ansistrm.py api_uwsgi.py api_uvicorn.py flask_config.py load_environment pytest.ini /opt/ace/
 COPY --chown=ace:ace aceapi /opt/ace/aceapi
+COPY --chown=ace:ace aceapi_v2 /opt/ace/aceapi_v2
 COPY --chown=ace:ace app /opt/ace/app
 COPY --chown=ace:ace bin /opt/ace/bin
 COPY --chown=ace:ace bro /opt/ace/bro
