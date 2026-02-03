@@ -11,7 +11,9 @@ import os
 
 import aceapi_v2
 from saq.configuration import initialize_configuration
+from saq.configuration.config import get_config, resolve_configuration
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
+from saq.crypto import initialize_encryption
 from saq.logging import initialize_logging
 
 # get SAQ_HOME from environment (set by container startup)
@@ -27,6 +29,11 @@ elif not os.path.isabs(logging_config_path):
 # initialize configuration and logging (minimal init for FastAPI)
 initialize_configuration(config_paths=None)
 initialize_logging(logging_config_path)
+
+# initialize encryption so that encrypted config values (e.g. gui.secret_key)
+# get resolved — required for Flask session cookie verification
+initialize_encryption()
+resolve_configuration(get_config())
 
 # create fastapi application
 application = aceapi_v2.create_app()

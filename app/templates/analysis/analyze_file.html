@@ -92,9 +92,6 @@
         </td>
         <td style="padding-right:10px;padding-bottom:4px;">
           <select class="form-control" style="width:100%;" name="observables_types_0" id="observables_types_0" onchange="new_alert_observable_type_changed('0')">
-            {% for observable_type in observable_types %}
-            <option value="{{observable_type}}" {% if observable_type == "file" %}selected{% endif %}>{{observable_type}}</option>
-            {% endfor %}
           </select>
         </td>
         <td id="new_alert_observable_value_0" style="padding-right:10px;padding-bottom:4px;">
@@ -140,11 +137,14 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/observable_types.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/new_alert.js') }}?version={{ ACE_VERSION }}"></script>
 <script type="text/javascript">
 $(document).ready(function() {
     // Enable popovers
     $('[data-bs-toggle="popover"]').popover();
+    // Populate observable type select from API
+    populateObservableTypeSelect('#observables_types_0', { defaultValue: 'file' });
 });
 </script>
 {% endblock %}

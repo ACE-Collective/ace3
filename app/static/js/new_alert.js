@@ -34,6 +34,7 @@ function new_alert_observable() {
     })
     .then(function(data){
       $('#new_alert_observables').append(data);
+      populateObservableTypeSelect('#observables_types_' + index, { defaultValue: 'file' });
       $('input[name="observables_times_' + index + '"]').datetimepicker({
         showSecond: true,
         dateFormat: 'mm-dd-yy',
