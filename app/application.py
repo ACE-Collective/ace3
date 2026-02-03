@@ -165,4 +165,23 @@ def create_app(testing: Optional[bool]=False):
                 val,
             )
 
+    # TEMPORARY DEBUG: log secret key fingerprint when we send a session cookie (remove after debugging)
+    @flask_app.after_request
+    def _log_secret_key_fingerprint_on_set_cookie(response):
+        set_cookie = response.headers.get("Set-Cookie") or response.headers.get("set-cookie")
+        if set_cookie is not None and "session=" in set_cookie:
+            key = flask_app.config.get("SECRET_KEY") or ""
+            key_hash = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:16]
+            first_repr = repr(key[:1]) if key else "''"
+            last_repr = repr(key[-1:]) if key else "''"
+            logging.info(
+                "[DEBUG SESSION COOKIE] Flask app sent Set-Cookie session: secret_key_len=%d "
+                "secret_key_hash=%s secret_key_first=%s secret_key_last=%s",
+                len(key),
+                key_hash,
+                first_repr,
+                last_repr,
+            )
+        return response
+
     return flask_app

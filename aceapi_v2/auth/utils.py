@@ -153,16 +153,23 @@ async def verify_flask_session(
     Temporary: remove when Flask GUI is retired.
     """
     # TEMPORARY DEBUG: extra diagnostics for session cookie verification (remove after debugging)
-    secret_key = get_config().gui.secret_key
+    secret_key = get_config().gui.secret_key or ""
     cookie_hash = hashlib.sha256(cookie.encode("utf-8", errors="replace")).hexdigest()[:16]
+    key_hash = hashlib.sha256(secret_key.encode("utf-8", errors="replace")).hexdigest()[:16]
+    key_first_repr = repr(secret_key[:1]) if secret_key else "''"
+    key_last_repr = repr(secret_key[-1:]) if secret_key else "''"
     logging.info(
         "[DEBUG SESSION COOKIE] API v2 verify_flask_session: cookie_len=%d cookie_hash=%s "
-        "cookie_first50=%r cookie_last50=%r secret_key_len=%d",
+        "cookie_first50=%r cookie_last50=%r secret_key_len=%d secret_key_hash=%s "
+        "secret_key_first=%s secret_key_last=%s",
         len(cookie),
         cookie_hash,
         cookie[:50] if len(cookie) >= 50 else cookie,
         cookie[-50:] if len(cookie) >= 50 else "",
-        len(secret_key) if secret_key else 0,
+        len(secret_key),
+        key_hash,
+        key_first_repr,
+        key_last_repr,
     )
     try:
         s = URLSafeTimedSerializer(
