@@ -4,6 +4,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.observable_types.router import _cache
 from saq.database.model import Observable
 
 pytestmark = pytest.mark.integration
@@ -11,6 +12,13 @@ pytestmark = pytest.mark.integration
 
 class TestObservableTypes:
     """Test the observable types endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """Clear the observable types cache before each test."""
+        _cache.clear()
+        yield
+        _cache.clear()
 
     @pytest.mark.asyncio
     async def test_list_observable_types_requires_auth(
