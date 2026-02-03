@@ -101,7 +101,7 @@ def require_permission(major: str, minor: str) -> Callable:
     ) -> ApiAuthResult:
         if auth.auth_type == API_AUTH_TYPE_USER:
             if not user_has_permission(auth.auth_user_id, major, minor):
-                logging.error(
+                logging.warning(
                     f"user {auth.auth_user_id} does not have permission {major}.{minor}"
                 )
                 raise HTTPException(status_code=403, detail="Permission denied")

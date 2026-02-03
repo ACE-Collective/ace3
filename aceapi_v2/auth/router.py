@@ -1,6 +1,7 @@
 """Authentication router for ACE API v2."""
 
 from dataclasses import dataclass
+import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -39,6 +40,8 @@ async def authenticate_user(
     Returns:
         AuthenticatedUser if authentication succeeds, None otherwise
     """
+    logging.info(f"authenticating user {username}")
+
     try:
         result = await session.execute(
             select(User).where(User.username == username, User.enabled == True)  # noqa: E712
@@ -50,9 +53,12 @@ async def authenticate_user(
         if user.verify_password(password):
             # Note: verify_password may update password_hash for legacy hash migration.
             # The session will commit this change when the request completes.
+            logging.info(f"authentication successful for user {username}")
             return AuthenticatedUser(id=user.id, username=user.username)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"error authenticating user {username}: {e}")
+
+    logging.info(f"authentication failed for user {username}")
     return None
 
 
