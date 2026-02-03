@@ -385,6 +385,27 @@ $(document).ready(function() {
         $("#event-tag-form").submit();
     });
 
+    $("#btn-create-event").click(function(e) {
+        // Pre-select "New Event" radio option
+        $("#option_NEW").prop("checked", true);
+        // Show the new event dialog fields
+        $("#new_event_dialog").show();
+        // Show the save button
+        $("#btn-add-to-event").show();
+        // Clear any previous event name/comment
+        $("#event_name").val("");
+        $("#event_comment").val("");
+        // Add hidden field to redirect back to events page after creation
+        if ($("#event-form input[name='redirect_to']").length === 0) {
+            $("#event-form").append('<input type="hidden" name="redirect_to" value="events_manage" />');
+        }
+    });
+
+    // Clean up redirect_to field when event modal is closed
+    $("#event_modal").on("hidden.bs.modal", function() {
+        $("#event-form input[name='redirect_to']").remove();
+    });
+
     $("#event-tag-form").submit(function(e) {
         let event_form = $("#event-tag-form");
         let current_page = $("#btn-show-add-event-tags").data("page");

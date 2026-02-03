@@ -6,6 +6,7 @@ from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.filters import FILTER_TYPE_CHECKBOX, FILTER_TYPE_MULTISELECT, FILTER_TYPE_SELECT, FILTER_TYPE_TEXT, SearchFilter
 from saq.configuration.config import get_config
+from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import Alert, Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
@@ -244,6 +245,13 @@ def manage():
     vectors = get_db().query(EventVector).order_by(EventVector.value.asc()).all()
     observable_types = sorted([ot[0] for ot in get_db().query(Observable.type).distinct()])
 
+    # Query events for the event modal
+    open_events = get_db().query(Event).filter(Event.status.has(value='OPEN')).order_by(Event.creation_date.desc()).all()
+    internal_collection_events = get_db().query(Event).filter(Event.status.has(value='INTERNAL COLLECTION')).order_by(Event.creation_date.desc()).all()
+    closed_events_query = get_db().query(Event).filter(Event.status.has(value='CLOSED')).order_by(Event.creation_date.desc()).limit(CLOSED_EVENT_LIMIT).all()
+    end_of_list = len(closed_events_query) < CLOSED_EVENT_LIMIT
+    closed_events = closed_events_query
+
     return render_template('events/manage.html',
                            all_users=all_users,
                            campaigns=campaigns,
@@ -262,7 +270,11 @@ def manage():
                            tags=valid_tags,
                            types=types,
                            vectors=vectors,
-                           observable_types=observable_types)
+                           observable_types=observable_types,
+                           open_events=open_events,
+                           internal_collection_events=internal_collection_events,
+                           closed_events=closed_events,
+                           end_of_list=end_of_list)
 
 @events.route('/manage_event_details', methods=['GET'])
 @require_permission('event', 'read')

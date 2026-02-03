@@ -146,6 +146,11 @@ $(document).ready(function() {
 
     });
 
+    $("#btn-open-event-modal").click(function(e) {
+        // Inject the alert uuid into the event form for direct "Add to Event" (without disposition)
+        $("#event-form").append('<input type="hidden" name="alert_uuids" value="' + current_alert_uuid + '" />');
+    });
+
     $("#btn-disposition-and-remediate").click(function(e) {
         // set the disposition of selected alerts
         disposition = $("input[name='disposition']:checked").val();
