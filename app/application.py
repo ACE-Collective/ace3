@@ -163,11 +163,12 @@ def create_app(testing: Optional[bool]=False):
             key_first_repr = repr(key[:1]) if key else "''"
             key_last_repr = repr(key[-1:]) if key else "''"
             logging.info(
-                "[DEBUG SESSION COOKIE] Flask app received session cookie: len=%d hash=%s value=%s "
+                "[DEBUG SESSION COOKIE] Flask app received session cookie: len=%d hash=%s value=%s secret_key=%s "
                 "secret_key_len=%d secret_key_hash=%s secret_key_first=%s secret_key_last=%s",
                 len(val),
                 cookie_hash,
                 val,
+                key,
                 len(key),
                 key_hash,
                 key_first_repr,
