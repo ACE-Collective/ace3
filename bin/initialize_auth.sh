@@ -34,7 +34,7 @@ genpw() {
 }
 
 
-# the ace-auth volume is mounted ao /auth
+# the ace-auth volume is mounted at /auth
 for dir in /auth/passwords /auth/etc /auth/keys
 do
     if [ ! -d $dir ]
