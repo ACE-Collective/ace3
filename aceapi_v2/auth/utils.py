@@ -2,6 +2,7 @@
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Optional
 
 import jwt
@@ -78,12 +79,16 @@ def verify_token(token: str, expected_type: str = "access") -> Optional[TokenDat
         token_type = payload.get("type")
 
         if username is None or token_type != expected_type:
+            logging.warning(f"invalid token: {token}")
             return None
 
+        logging.info(f"valid token for {username} (token type {token_type})")
         return TokenData(username=username, user_id=user_id, token_type=token_type)
     except jwt.ExpiredSignatureError:
+        logging.info(f"expired token: {token}")
         return None
     except jwt.InvalidTokenError:
+        logging.warning(f"invalid token: {token}")
         return None
 
 
@@ -99,6 +104,7 @@ def _get_config_api_key_match(auth_sha256: str) -> ApiAuthResult:
             valid_key_value is not None
             and auth_sha256.lower() == valid_key_value.strip().lower()
         ):
+            logging.info(f"valid API key for {valid_key_name}")
             return ApiAuthResult(
                 auth_type=API_AUTH_TYPE_CONFIG, auth_name=valid_key_name
             )
@@ -153,7 +159,8 @@ async def verify_flask_session(
             signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
         )
         data = s.loads(cookie)
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error verifying Flask session cookie: {e}")
         return None
 
     user_id = data.get("_user_id")
