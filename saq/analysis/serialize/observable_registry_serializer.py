@@ -58,4 +58,15 @@ class ObservableRegistrySerializer:
         for uuid in invalid_uuids:
             if uuid in registry._store:
                 del registry._store[uuid]
-        
+
+        # Resolve relationship targets from UUID strings to Observable objects
+        # This must happen after all observables are loaded into the registry
+        for observable in registry.store.values():
+            for relationship in observable.relationships:
+                # If the target is a string UUID, resolve it to an Observable object
+                if isinstance(relationship.target, str):
+                    target_observable = registry.get_by_id(relationship.target)
+                    if target_observable:
+                        relationship.target = target_observable
+                    else:
+                        logging.warning(f"Could not resolve relationship target UUID {relationship.target} for observable {observable.uuid}")
