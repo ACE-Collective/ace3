@@ -19,6 +19,7 @@ from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
 from saq.util.ui import create_histogram_string, get_tag_score
 from saq.util.url import find_all_url_domains
+from aceapi_v2.observable_types.service import get_observable_types_sync
 
 
 class TreeNode:
@@ -397,4 +398,5 @@ def index():
         # Skip file observables. The calculations will include their hash observables instead.
         num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
+        observable_types=get_observable_types_sync(),
     )
