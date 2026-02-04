@@ -41,7 +41,7 @@ class ObservableSerializer:
             KEY_LINKS: observable._links,
             KEY_LIMITED_ANALYSIS: observable._limited_analysis,
             KEY_EXCLUDED_ANALYSIS: observable._excluded_analysis,
-            KEY_RELATIONSHIPS: observable._relationships,
+            KEY_RELATIONSHIPS: [r.json for r in observable._relationships],
             KEY_GROUPING_TARGET: observable._grouping_target,
             KEY_VOLATILE: observable._volatile,
             KEY_LLM_CONTEXT_DOCUMENTS: observable.llm_context_documents,
@@ -80,7 +80,21 @@ class ObservableSerializer:
         if KEY_EXCLUDED_ANALYSIS in data:
             observable._excluded_analysis = data[KEY_EXCLUDED_ANALYSIS]
         if KEY_RELATIONSHIPS in data:
-            observable._relationships = data[KEY_RELATIONSHIPS]
+            from saq.analysis.relationship import Relationship
+            # Handle both list of dicts (correct JSON format) and list of Relationship objects (legacy)
+            relationships = []
+            for rel_data in data[KEY_RELATIONSHIPS]:
+                if isinstance(rel_data, dict):
+                    # Convert dict to Relationship object
+                    rel = Relationship()
+                    rel.json = rel_data
+                    relationships.append(rel)
+                elif isinstance(rel_data, Relationship):
+                    # Already a Relationship object (legacy format)
+                    relationships.append(rel_data)
+                else:
+                    raise ValueError(f"Invalid relationship data type: {type(rel_data)}")
+            observable._relationships = relationships
         if KEY_GROUPING_TARGET in data:
             observable._grouping_target = data[KEY_GROUPING_TARGET]
         if KEY_VOLATILE in data:

@@ -40,9 +40,13 @@ class Relationship:
 
     @property
     def json(self):
+        from saq.analysis.observable import Observable
+        # it's possible that the target is a string (in the event the observable could not be found when deserializing)
+        # handle both Observable objects and string UUIDs
+        target_uuid = self.target.uuid if isinstance(self.target, Observable) else self.target
         return {
             KEY_RELATIONSHIP_TYPE: self.r_type,
-            KEY_RELATIONSHIP_TARGET: self.target.uuid
+            KEY_RELATIONSHIP_TARGET: target_uuid
         }
 
     @json.setter

@@ -61,8 +61,9 @@ def sample_observable():
     observable._excluded_analysis = ["excluded_module1"]
     
     # Add relationships
-    relationship1 = Relationship("contains", "related-observable-1")
-    relationship2 = Relationship("extracted_from", "related-observable-2")
+    from saq.constants import R_EXTRACTED_FROM, R_DOWNLOADED_FROM
+    relationship1 = Relationship(R_DOWNLOADED_FROM, "related-observable-1")
+    relationship2 = Relationship(R_EXTRACTED_FROM, "related-observable-2")
     observable._relationships = [relationship1, relationship2]
     
     # Set grouping target
@@ -138,12 +139,17 @@ def test_serialize_full_observable(sample_observable):
     assert result[KEY_VOLATILE] is True
     assert result[KEY_LLM_CONTEXT_DOCUMENTS] == ["doc1", "doc2", "doc3"]
     
-    # Check relationships (should be a list of relationship objects)
+    # Check relationships (should be a list of relationship dicts)
     assert len(result[KEY_RELATIONSHIPS]) == 2
-    assert result[KEY_RELATIONSHIPS][0].target == "related-observable-1"
-    assert result[KEY_RELATIONSHIPS][0].r_type == "contains"
-    assert result[KEY_RELATIONSHIPS][1].target == "related-observable-2"
-    assert result[KEY_RELATIONSHIPS][1].r_type == "extracted_from"
+    # Verify relationships are dicts, not objects
+    assert isinstance(result[KEY_RELATIONSHIPS][0], dict)
+    assert isinstance(result[KEY_RELATIONSHIPS][1], dict)
+    # Verify dict structure
+    from saq.constants import R_EXTRACTED_FROM, R_DOWNLOADED_FROM
+    assert result[KEY_RELATIONSHIPS][0]['target'] == "related-observable-1"
+    assert result[KEY_RELATIONSHIPS][0]['type'] == R_DOWNLOADED_FROM
+    assert result[KEY_RELATIONSHIPS][1]['target'] == "related-observable-2"
+    assert result[KEY_RELATIONSHIPS][1]['type'] == R_EXTRACTED_FROM
 
 
 @pytest.mark.unit
@@ -213,8 +219,9 @@ def test_deserialize_full_data():
     observable = MockObservable()
     
     # Create relationships for test data
-    test_relationship1 = Relationship("contains", "rel-obs-1")
-    test_relationship2 = Relationship("extracted_from", "rel-obs-2")
+    from saq.constants import R_EXTRACTED_FROM, R_DOWNLOADED_FROM
+    test_relationship1 = Relationship(R_DOWNLOADED_FROM, "rel-obs-1")
+    test_relationship2 = Relationship(R_EXTRACTED_FROM, "rel-obs-2")
     
     # Sample data dictionary
     data = {
@@ -443,7 +450,7 @@ def test_serialize_observable_with_complex_analysis():
 def test_deserialize_with_complex_analysis():
     """Test deserializing with complex analysis data."""
     observable = MockObservable()
-    
+
     complex_analysis = {
         "scanner": {
             "threats": ["malware1", "malware2"],
@@ -454,13 +461,172 @@ def test_deserialize_with_complex_analysis():
             "categories": ["suspicious", "analysis"]
         }
     }
-    
+
     data = {
         KEY_ANALYSIS: complex_analysis
     }
-    
+
     ObservableSerializer.deserialize(observable, data)
-    
+
     assert observable.analysis == complex_analysis
     assert observable.analysis["scanner"]["threats"] == ["malware1", "malware2"]
     assert observable.analysis["enrichment"]["reputation"]["score"] == 90
+
+
+@pytest.mark.unit
+def test_serialize_relationships_as_dicts():
+    """Test that relationships are serialized as dicts, not Relationship objects."""
+    import json
+    from saq.analysis.root import RootAnalysis
+    from saq.constants import R_EXTRACTED_FROM
+
+    # Create RootAnalysis with initialized storage
+    root = RootAnalysis()
+    root.initialize_storage()
+
+    # Add two observables
+    o1 = root.add_observable_by_spec(F_TEST, "observable1")
+    o2 = root.add_observable_by_spec(F_TEST, "observable2")
+
+    # Add relationship from o1 to o2
+    o1.add_relationship(R_EXTRACTED_FROM, o2)
+
+    # Serialize o1
+    result = ObservableSerializer.serialize(o1)
+
+    # Assert relationships is a list
+    assert isinstance(result[KEY_RELATIONSHIPS], list)
+    assert len(result[KEY_RELATIONSHIPS]) == 1
+
+    # Assert each item is a dict, not a Relationship object
+    rel = result[KEY_RELATIONSHIPS][0]
+    assert isinstance(rel, dict), f"Expected dict, got {type(rel)}"
+
+    # Assert dict has correct keys
+    assert "type" in rel
+    assert "target" in rel
+
+    # Assert target is a UUID string, not an Observable object
+    assert isinstance(rel["target"], str), f"Expected string UUID, got {type(rel['target'])}"
+    assert rel["target"] == o2.uuid
+
+
+@pytest.mark.unit
+def test_observable_json_is_json_serializable():
+    """Test that Observable.json returns data that can be JSON encoded without custom encoder."""
+    import json
+    from saq.analysis.root import RootAnalysis
+    from saq.constants import R_DOWNLOADED_FROM
+
+    # Create RootAnalysis with initialized storage
+    root = RootAnalysis()
+    root.initialize_storage()
+
+    # Add two observables with relationship
+    o1 = root.add_observable_by_spec(F_TEST, "observable1")
+    o2 = root.add_observable_by_spec(F_TEST, "observable2")
+    o1.add_relationship(R_DOWNLOADED_FROM, o2)
+
+    # Get o1's JSON
+    o1_json = o1.json
+
+    # Attempt standard JSON encoding (NO custom encoder)
+    json_str = json.dumps(o1_json)
+
+    # Parse back
+    parsed = json.loads(json_str)
+
+    # Verify relationships are dicts with correct keys
+    assert "relationships" in parsed
+    assert isinstance(parsed["relationships"], list)
+    assert len(parsed["relationships"]) == 1
+    assert isinstance(parsed["relationships"][0], dict)
+    assert "type" in parsed["relationships"][0]
+    assert "target" in parsed["relationships"][0]
+
+
+@pytest.mark.unit
+def test_relationship_dict_structure_after_serialization():
+    """Test that relationship dict structure matches expected format with correct types."""
+    from saq.analysis.root import RootAnalysis
+    from saq.constants import R_DOWNLOADED_FROM, R_EXTRACTED_FROM, VALID_RELATIONSHIP_TYPES
+
+    # Create RootAnalysis
+    root = RootAnalysis()
+    root.initialize_storage()
+
+    # Add observables
+    o1 = root.add_observable_by_spec(F_TEST, "observable1")
+    o2 = root.add_observable_by_spec(F_TEST, "observable2")
+    o3 = root.add_observable_by_spec(F_TEST, "observable3")
+
+    # Add multiple relationships
+    o1.add_relationship(R_DOWNLOADED_FROM, o2)
+    o1.add_relationship(R_EXTRACTED_FROM, o3)
+
+    # Serialize
+    result = o1.json
+
+    # Assert relationships is a list of 2 dicts
+    assert isinstance(result["relationships"], list)
+    assert len(result["relationships"]) == 2
+
+    # Check each relationship dict
+    for rel in result["relationships"]:
+        # Assert it's a dict, not a Relationship object
+        assert isinstance(rel, dict), f"Expected dict, got {type(rel)}"
+
+        # Assert it has the correct keys
+        assert "type" in rel
+        assert "target" in rel
+
+        # Assert type is a valid relationship type string
+        assert rel["type"] in VALID_RELATIONSHIP_TYPES
+
+        # Assert target is a string (UUID), not an Observable object
+        assert isinstance(rel["target"], str), f"Expected string UUID, got {type(rel['target'])}"
+
+        # Assert target matches one of the observable UUIDs
+        assert rel["target"] in [o2.uuid, o3.uuid]
+
+
+@pytest.mark.unit
+def test_observable_serialization_round_trip_with_json_encoding():
+    """Test full round-trip through actual JSON encoding/decoding."""
+    import json
+    from saq.analysis.root import RootAnalysis
+    from saq.constants import R_EXTRACTED_FROM, R_DOWNLOADED_FROM
+
+    # Create RootAnalysis with multiple observables and relationships
+    root = RootAnalysis()
+    root.initialize_storage()
+
+    o1 = root.add_observable_by_spec(F_TEST, "observable1")
+    o2 = root.add_observable_by_spec(F_TEST, "observable2")
+    o3 = root.add_observable_by_spec(F_TEST, "observable3")
+
+    o1.add_relationship(R_EXTRACTED_FROM, o2)
+    o1.add_relationship(R_DOWNLOADED_FROM, o3)
+
+    # Serialize observable
+    serialized = o1.json
+
+    # Encode to JSON string (NO custom encoder)
+    json_str = json.dumps(serialized)
+
+    # Decode back
+    parsed = json.loads(json_str)
+
+    # Verify relationships structure is preserved
+    assert "relationships" in parsed
+    assert len(parsed["relationships"]) == 2
+
+    # Verify all relationship data is correct
+    rel_types = {rel["type"] for rel in parsed["relationships"]}
+    assert R_EXTRACTED_FROM in rel_types
+    assert R_DOWNLOADED_FROM in rel_types
+
+    # Verify targets are preserved as UUID strings
+    rel_targets = {rel["target"] for rel in parsed["relationships"]}
+    assert o2.uuid in rel_targets
+    assert o3.uuid in rel_targets
