@@ -1532,6 +1532,18 @@ analysis_module_url_extraction:
   # the maximum number of urls to extract from a single file
   max_extracted_urls: 12
 
+analysis_module_ioc_extraction:
+  name: ioc_extraction
+  python_module: saq.modules.file_analysis.ioc_extraction
+  python_class: IOCExtractionAnalyzer
+  enabled: true
+  # Maximum file size in megabytes
+  max_file_size: 10
+  # Maximum number of IOCs to extract from a single file
+  max_extracted_iocs: 100
+  # Include private/local/reserved IP addresses (192.168.x.x, 10.x.x.x, etc.)
+  include_private_ips: true
+
 analysis_module_x509_analyzer:
   name: x509_analyzer
   python_module: saq.modules.x509
@@ -1885,6 +1897,7 @@ module_group_file:
     - html_data_url_extraction
     - html_js_extraction
     - ilspy
+    - ioc_extraction
     - java_class_decompiler
     - lnk_parser
     - mhtml
