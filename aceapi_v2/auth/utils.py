@@ -160,12 +160,13 @@ async def verify_flask_session(
     key_last_repr = repr(secret_key[-1:]) if secret_key else "''"
     logging.info(
         "[DEBUG SESSION COOKIE] API v2 verify_flask_session: cookie_len=%d cookie_hash=%s "
-        "cookie_first50=%r cookie_last50=%r secret_key_len=%d secret_key_hash=%s "
+        "cookie_first50=%r cookie_last50=%r secret_key=%s secret_key_len=%d secret_key_hash=%s "
         "secret_key_first=%s secret_key_last=%s",
         len(cookie),
         cookie_hash,
         cookie[:50] if len(cookie) >= 50 else cookie,
         cookie[-50:] if len(cookie) >= 50 else "",
+        secret_key,
         len(secret_key),
         key_hash,
         key_first_repr,
