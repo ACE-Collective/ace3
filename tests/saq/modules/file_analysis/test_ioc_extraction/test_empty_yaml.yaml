@@ -1,0 +1,18 @@
+# Empty YAML file for testing - only iocsearcher section, no custom patterns
+iocsearcher:
+  url:
+    type: url
+  fqdn:
+    type: fqdn
+  ip4:
+    type: ip
+  ip6:
+    type: ip
+  email:
+    type: email_address
+  md5:
+    type: md5
+  sha1:
+    type: sha1
+  sha256:
+    type: sha256

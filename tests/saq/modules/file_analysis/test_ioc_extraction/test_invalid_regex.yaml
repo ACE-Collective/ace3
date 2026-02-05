@@ -1,0 +1,16 @@
+iocsearcher:
+  url:
+    type: url
+  fqdn:
+    type: fqdn
+
+custom_patterns:
+  - name: "Bad Pattern"
+    pattern: "[invalid(("
+    type: indicator
+  - name: "Good Pattern"
+    pattern: "GOOD-(\\d+)"
+    type: indicator
+
+exclude_patterns:
+  - "[also bad(("

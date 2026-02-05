@@ -1539,10 +1539,9 @@ analysis_module_ioc_extraction:
   enabled: true
   # Maximum file size in megabytes
   max_file_size: 10
-  # Maximum number of IOCs to extract from a single file
-  max_extracted_iocs: 100
   # Include private/local/reserved IP addresses (192.168.x.x, 10.x.x.x, etc.)
   include_private_ips: true
+  extraction_config_path: etc/default_ioc_extraction.yaml
 
 analysis_module_x509_analyzer:
   name: x509_analyzer

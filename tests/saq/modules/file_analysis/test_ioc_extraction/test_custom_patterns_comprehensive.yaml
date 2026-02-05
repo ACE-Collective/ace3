@@ -1,0 +1,19 @@
+iocsearcher:
+  url:
+    type: url
+  fqdn:
+    type: fqdn
+
+custom_patterns:
+  # Pattern with all attributes (directives, tags, display_type) AND capture group
+  - name: "Azure Correlation ID"
+    pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    type: azure_correlation_id
+    directives:
+      - azure_lookup
+    tags:
+      - azure
+      - correlation
+    display_type: Azure Correlation ID
+
+exclude_patterns: []

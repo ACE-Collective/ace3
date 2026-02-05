@@ -88,6 +88,7 @@ x-common-volumes: &common-volumes
   - ace-auth:/auth
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
+  - ./data/external:/opt/ace/data/external
 
 services:
 
