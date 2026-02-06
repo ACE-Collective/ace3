@@ -358,9 +358,4 @@ def initialize_environment(
     from saq.phishkit import initialize_phishkit
     initialize_phishkit()
 
-    from saq.remediation.target import register_observable_remediation_interface
-    from saq.remediation.test import TestObservableRemediationInterface
-    from saq.constants import F_TEST
-    register_observable_remediation_interface(F_TEST, TestObservableRemediationInterface())
-
     logging.debug("SAQ initialized")
