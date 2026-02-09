@@ -1,0 +1,44 @@
+# Observable Modifier Rules Configuration
+#
+# This file defines rules that the ObservableModifierAnalyzer evaluates against
+# every observable in an alert. When a rule's conditions match, its actions are
+# applied to the observable (e.g., adding directives, tags, or analysis limits).
+#
+# Schema:
+#
+# rules:
+#   - name: "Human-readable rule name"
+#     description: "Optional description"
+#     enabled: true  # default true; set false to disable without removing
+#
+#     conditions:
+#       # Alert-level conditions (checked via root analysis)
+#       alert_tags: [tag1, tag2]           # Alert must have ALL of these tags
+#       alert_type: "splunk - something"   # Alert type must match (exact string)
+#       queue: "external"                  # Alert queue must match (exact string)
+#
+#       # Observable-level conditions
+#       observable_types: [file]           # Observable type must be one of these
+#       value_pattern: ".*\\.html$"        # Regex match on observable value
+#       file_name_pattern: ".*\\.html$"   # Regex match on file name (file observables only)
+#       has_tags: [some_tag]               # Observable must have ALL of these tags
+#       has_directives: [some_directive]   # Observable must have ALL of these directives
+#
+#       # Analysis tree conditions
+#       tree_conditions:
+#         - analysis_type: "saq.modules.email.rfc822:EmailAnalysis"
+#           scope: ancestors  # "ancestors" (default) or "global" (searches entire tree)
+#           details_match:
+#             email.from_address: "soc@third-party.com"  # dot-notation, regex values
+#
+#     actions:
+#       add_directives: [extract_iocs]
+#       add_tags: [soc_escalation_ioc]
+#       add_detection_points: ["Matched observable modifier rule: suspicious file"]
+#       exclude_analysis: ["saq.modules.sandbox:SandboxAnalyzer"]
+#       limit_analysis: ["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"]
+#
+# All condition fields are optional. Multiple conditions within a rule use AND logic.
+# Multiple rules are evaluated independently.
+
+rules: []
