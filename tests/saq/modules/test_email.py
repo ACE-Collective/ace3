@@ -222,14 +222,14 @@ def test_splunk_logging(root_analysis, datadir, monkeypatch):
     assert len(url_fields) == 3
 
     smtp_fields = smtp_logs[0].split('\x1e')
-    assert len(smtp_fields) == 25
+    assert len(smtp_fields) == 26
     
     with open(fields_file, 'r') as fp:
         fields = fp.readline().strip()
 
     assert fields == ('date,attachment_count,attachment_hashes,attachment_names,attachment_sizes,attachment_types,bcc,'
                                 'cc,env_mail_from,env_rcpt_to,extracted_urls,first_received,headers,last_received,mail_from,'
-                                'mail_to,message_id,originating_ip,path,reply_to,size,subject,user_agent,archive_path,x_mailer')
+                                'mail_to,message_id,originating_ip,path,reply_to,size,subject,subject_raw,user_agent,archive_path,x_mailer')
 
 @pytest.mark.integration
 def test_update_brocess(root_analysis, datadir):
@@ -1073,3 +1073,33 @@ def test_export_to_brocess_large_email(test_context):
         _cursor.execute("SELECT source, destination, numconnections FROM smtplog WHERE source = %s AND destination = %s AND numconnections = 1", (mail_from[:255], mail_to[:255]))
         result = _cursor.fetchone()
         assert result
+
+@pytest.mark.integration
+@pytest.mark.parametrize("email_file,expected_subject,expected_subject_raw", [
+    ("emails/splunk_logging.email.rfc822", "canary #3", "canary #3"),
+    ("emails/encoded_subject.email.rfc822", "Test Encoded Subject", "=?UTF-8?B?VGVzdCBFbmNvZGVkIFN1YmplY3Q=?="),
+])
+def test_log_entry_subject(root_analysis, datadir, email_file, expected_subject, expected_subject_raw):
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / email_file))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("file_type", "test_groups")
+    engine.configuration_manager.enable_module("email_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    assert file_observable
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+
+    log_entry = email_analysis.log_entry
+    assert log_entry is not None
+    assert log_entry["subject"] == expected_subject
+    assert log_entry["subject_raw"] == expected_subject_raw

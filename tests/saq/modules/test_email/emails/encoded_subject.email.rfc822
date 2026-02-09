@@ -1,0 +1,15 @@
+Return-Path: <sender@example.com>
+Delivered-To: recipient@example.com
+Received: from mail.example.com (mail.example.com [192.0.2.1])
+	by mx.example.com (Postfix) with ESMTPS id ABC123
+	for <recipient@example.com>; Mon, 01 Jan 2024 12:00:00 +0000 (UTC)
+From: Sender <sender@example.com>
+To: recipient@example.com
+Subject: =?UTF-8?B?VGVzdCBFbmNvZGVkIFN1YmplY3Q=?=
+Message-ID: <test-encoded-subject@example.com>
+Date: Mon, 01 Jan 2024 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+This is a test email with an RFC 2047 encoded subject.
