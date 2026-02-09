@@ -1539,9 +1539,14 @@ analysis_module_ioc_extraction:
   enabled: true
   # Maximum file size in megabytes
   max_file_size: 10
-  # Include private/local/reserved IP addresses (192.168.x.x, 10.x.x.x, etc.)
-  include_private_ips: true
-  extraction_config_path: etc/default_ioc_extraction.yaml
+  extraction_config_path: etc/ioc_extraction.yaml
+
+analysis_module_observable_modifier:
+  name: observable_modifier
+  python_module: saq.modules.util.observable_modifier
+  python_class: ObservableModifierAnalyzer
+  enabled: true
+  rules_config_path: etc/observable_modifier_rules.yaml
 
 analysis_module_x509_analyzer:
   name: x509_analyzer
@@ -1945,6 +1950,7 @@ module_group_common:
     - configuration_defined_tagging
     - correlated_tag_analyzer
     - observable_detection
+    - observable_modifier
     - protected_url_analyzer
     - site_tagger
     - user_defined_tagging

@@ -516,7 +516,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_DHASH: 'compare the dhash of the image against known images',
     DIRECTIVE_EXCLUDE_ALL: 'instructs ACE to NOT analyze this observable at all',
     DIRECTIVE_EXTRACT_EMAIL: 'extract email from exchange or o365',
-    DIRECTIVE_EXTRACT_IOCS: 'extract IOCs from the file using iocsearcher',
+    DIRECTIVE_EXTRACT_IOCS: 'extract IOCs from the file',
     DIRECTIVE_EXTRACT_PCAP: 'extract PCAP for the given observable and given time',
     DIRECTIVE_EXTRACT_URLS: 'extract URLs from the given file',
     DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL: 'extract URLs from the given file and treat domain names as URLs',
@@ -1289,6 +1289,7 @@ ANALYSIS_MODULE_NETBIOS_ANALYZER = "netbios_analyzer"
 ANALYSIS_MODULE_NETWORK_IDENTIFIER = "network_identifier"
 ANALYSIS_MODULE_NOWHITESPACE_ANALYZER = "nowhitespace_analyzer"
 ANALYSIS_MODULE_OBSERVABLE_DETECTION = "observable_detection"
+ANALYSIS_MODULE_OBSERVABLE_MODIFIER = "observable_modifier"
 ANALYSIS_MODULE_OFFICE_FILE_ARCHIVER = "office_file_archiver"
 ANALYSIS_MODULE_OFFICE_XML_REL = "office_xml_rel"
 ANALYSIS_MODULE_OFFICEPARSER3 = "officeparser3"

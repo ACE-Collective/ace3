@@ -201,18 +201,16 @@ def test_empty_yaml_works_gracefully(test_context, datadir):
 
     analysis = observable.get_and_load_analysis(IOCExtractionAnalysis)
     assert analysis is not None
-    # iocsearcher should still work normally
     assert analysis.details["total_count"] > 0
-    assert analysis.details["excluded_count"] == 0
+    assert len(analysis.details["ignored"]) == 0
 
 
 @pytest.mark.unit
 def test_missing_yaml_extracts_no_iocs(test_context):
     """Test that a missing YAML file doesn't crash and extracts no IOCs.
 
-    With the refactored configuration, a missing YAML means no iocsearcher
-    mappings are loaded, so no IOCs will be extracted (only custom patterns
-    would work, but there are none without a config file).
+    With the refactored configuration, a missing YAML means no patterns
+    are loaded, so no IOCs will be extracted.
     """
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
@@ -243,7 +241,7 @@ def test_missing_yaml_extracts_no_iocs(test_context):
 
 
 @pytest.mark.unit
-def test_comprehensive_ioc_extraction(test_context):
+def test_comprehensive_ioc_extraction(test_context, datadir):
     """Comprehensive test for IOC extraction covering all IOC types, relationships, deduplication, and skipped types.
 
     This test consolidates:
@@ -292,12 +290,10 @@ def test_comprehensive_ioc_extraction(test_context):
     observable = root.add_file_observable(target_path)
     observable.add_directive(DIRECTIVE_EXTRACT_IOCS)
 
-    analyzer = AnalysisModuleAdapter(IOCExtractionAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_IOC_EXTRACTION)))
-    analyzer.root = root
+    adapter, _ = _create_analyzer(test_context, datadir, "test_comprehensive_ioc_extraction.yaml")
+    adapter.root = root
 
-    result = analyzer.execute_analysis(observable)
+    result = adapter.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
 
     analysis = observable.get_and_load_analysis(IOCExtractionAnalysis)
@@ -336,9 +332,6 @@ def test_comprehensive_ioc_extraction(test_context):
     # Verify R_EXTRACTED_FROM relationships
     for obs in analysis.observables:
         assert obs.has_relationship(R_EXTRACTED_FROM), f"Observable {obs} missing R_EXTRACTED_FROM relationship"
-
-    # Verify skipped_types tracking
-    assert isinstance(analysis.details['skipped_types'], list)
 
 
 @pytest.mark.unit
@@ -455,6 +448,5 @@ def test_exclude_patterns(test_context, datadir):
     assert "a1b2c3d4-e5f6-7890-abcd-ef1234567890" in analysis.details["iocs"]["azure_correlation_id"]
     assert "99999999-aaaa-bbbb-cccc-dddddddddddd" not in analysis.details["iocs"].get("azure_correlation_id", [])
 
-    # Verify excluded_count is accurate (at least 2: example.com URL and 99999999-... correlation ID)
-    assert "excluded_count" in analysis.details
-    assert analysis.details["excluded_count"] >= 2
+    # Verify ignored list is accurate (at least 2: example.com URL and 99999999-... correlation ID)
+    assert len(analysis.details["ignored"]) >= 2

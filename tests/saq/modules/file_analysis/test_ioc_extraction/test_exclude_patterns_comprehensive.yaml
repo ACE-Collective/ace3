@@ -1,22 +1,15 @@
-iocsearcher:
-  url:
-    type: url
-  fqdn:
-    type: fqdn
-  ip4:
-    type: ip
-  ip6:
-    type: ip
-  email:
-    type: email_address
+# Test file for exclude/ignore patterns on both URL and custom pattern IOCs.
 
-custom_patterns:
-  - name: "Azure Correlation ID"
-    pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+patterns:
+  - pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
     type: azure_correlation_id
+    ignored_patterns:
+      - "^99999999-"
 
-exclude_patterns:
-  # Excludes iocsearcher IOCs (URLs containing example.com)
-  - "example\\.com"
-  # Excludes custom pattern results (specific correlation ID)
-  - "^99999999-"
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns:
+    - "example\\.com"

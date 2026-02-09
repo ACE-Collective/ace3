@@ -138,6 +138,16 @@ class RootAnalysisAdapter:
     def add_detection_point(self, description, details=None):
         return self._root.add_detection_point(description, details)
 
+    def has_tag(self, tag: str) -> bool:
+        return self._root.has_tag(tag)
+
+    def add_tag(self, tag: str):
+        return self._root.add_tag(tag)
+
+    @property
+    def tags(self) -> list:
+        return self._root.tags
+
 
 class ObservableAdapter:
     """Adapter that wraps an Observable to implement ObservableInterface."""

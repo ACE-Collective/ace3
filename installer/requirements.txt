@@ -23,7 +23,6 @@ glom
 hexdump
 html2text
 idna
-iocsearcher
 iptools
 Jinja2
 ldap3

@@ -1,16 +1,10 @@
-iocsearcher:
-  url:
-    type: url
-  fqdn:
-    type: fqdn
+# Test file with an invalid regex pattern and a valid one.
+# The invalid pattern should log a warning but not crash the module.
 
-custom_patterns:
-  - name: "Bad Pattern"
-    pattern: "[invalid(("
-    type: indicator
-  - name: "Good Pattern"
-    pattern: "GOOD-(\\d+)"
+patterns:
+  - pattern: "GOOD-(\\d+)"
     type: indicator
 
-exclude_patterns:
-  - "[also bad(("
+urls:
+  ignored_patterns:
+    - "[also bad(("
