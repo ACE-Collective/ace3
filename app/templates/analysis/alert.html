@@ -40,18 +40,18 @@
         <td class="col-md-2">Instance</td>
         <td class="col-md-10">{{alert.tool_instance}}</td>
     </tr>
-    {% if alert.playbook_url %}
+    {% if alert.root_analysis.playbook_url %}
     <tr>
         <td class="col-md-2">Playbook URL</td>
         <td class="col-md-10">
-            <a target="_blank" href="{{alert.playbook_url}}">{{ alert.playbook_url }}</a>
+            <a target="_blank" href="{{alert.root_analysis.playbook_url}}">{{ alert.root_analysis.playbook_url }}</a>
         </td>
     </tr>
     {% endif %}
     <tr>
         <td class="col-md-2">Alert Type</td>
         <td class="col-md-10">
-        {% if alert.wiki and not alert.playbook_url %}
+        {% if alert.wiki and not alert.root_analysis.playbook_url %}
             <a target="_blank" href="{{ alert.wiki }}">{{ alert.alert_type }}</a>
         {% else %}
             {{alert.alert_type}}
