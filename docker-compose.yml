@@ -110,6 +110,7 @@ services:
       - ace-sql-readonly:/ace-sql-readonly
       - ./ssl:/opt/ace/ssl
       - ace-auth:/auth
+      - ./data/external:/opt/ace/data/external
     cap_add:
       - SYS_PTRACE
     networks:
