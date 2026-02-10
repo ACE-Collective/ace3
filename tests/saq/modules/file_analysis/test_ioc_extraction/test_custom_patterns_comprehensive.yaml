@@ -1,0 +1,18 @@
+# Test file for custom pattern extraction with directives, tags, display_type, and capture groups.
+
+patterns:
+  - pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    type: azure_correlation_id
+    directives:
+      - azure_lookup
+    tags:
+      - azure
+      - correlation
+    display_type: Azure Correlation ID
+
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns: []

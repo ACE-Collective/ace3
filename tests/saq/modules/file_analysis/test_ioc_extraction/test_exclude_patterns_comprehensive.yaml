@@ -1,0 +1,15 @@
+# Test file for exclude/ignore patterns on both URL and custom pattern IOCs.
+
+patterns:
+  - pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+    type: azure_correlation_id
+    ignored_patterns:
+      - "^99999999-"
+
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns:
+    - "example\\.com"

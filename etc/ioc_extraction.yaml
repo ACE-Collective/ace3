@@ -1,0 +1,118 @@
+# IOC Extraction Configuration
+#
+# The IOC extraction analysis module works in two main steps:
+#
+# 1. Re-fang the input text to try and convert obfuscated IOCs back to their
+#    original form (e.g. hxxp://example[.]com -> http://example.com)
+#
+# 2. Use regular expressions to extract IOCs from the re-fanged text.
+#
+# NOTE: If the file you are extracting IOCs from is HTML, the IOC extraction
+# will be performed on the visible text only (i.e. HTML tags will be stripped out).
+#
+# NOTE: You do not need to specify a pattern for URLs. They are automatically extracted
+# using the same method that ACE uses to extract URLs using the "extract_urls" directive.
+
+# The refang_patterns section defines the re-fanging patterns used to convert
+# obfuscated IOCs back to their original form.
+#
+# Example:
+# refang_patterns:
+#   'http':
+#     - '(?i)hxxp'
+#   '.':
+#     - '\[\s*\.\s*\]'
+#     - '\(\s*.\s*\)'
+
+refang_patterns:
+  'http':
+    - '(?i)hxxp'
+  ':':
+    - '[\[\(]\s*:\s*[\]\)]'
+  '://':
+    - '[\[\(]\s*:\//\s*[\]\)]'
+  '.':
+    - '[\[\(]\s*\.\s*[\]\)]'
+    - '\s+dot\s+'
+  '@':
+    - '[\[\(]\s*(?:@|at)\s*[\]\)]'
+
+# The patterns section defines the regular expressions used to extract IOCs from
+# text files during analysis.
+#
+# Each entry requires at least the following fields:
+#   - pattern: A Python-compatible regular expression
+#   - type: The ACE observable type to create
+#
+# Optional fields:
+#   - directives: List of directives to add to extracted observables
+#   - tags: List of tags to add to extracted observables
+#   - volatile: Whether to add as volatile (default: false)
+#   - display_type: Custom display type for the UI
+#   - ignored_patterns: List of regex patterns used to ignore extracted IOC values
+#
+# If the regex contains a capture group, the first group is used as the extracted value.
+# If there are no capture groups, the entire match is used.
+#
+# Example:
+#
+# patterns:
+#   - pattern: "correlationId:\\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+#     type: azure_correlation_id
+#     ignored_patterns:
+#       - "00000000-0000-0000-0000-00000000000"
+
+patterns:
+  # IPv4 addresses
+  - pattern: '\b(?<!\d\.)(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?!\.\d)\b'
+    type: ip
+
+  # IPv6 addresses
+  - pattern: '(?i)(?<![:\w])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|:(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}|::)(?![:\w])'
+    type: ip
+    ignored_patterns:
+      # Exclude matches that use mixed case letters, which are likely false positives
+      - '(?=.*[a-f])(?=.*[A-F])'
+
+  # MD5 hashes (32 hex characters)
+  - pattern: '(?i)\b[0-9a-f]{32}\b'
+    type: md5
+    ignored_patterns:
+      # Exclude matches that use mixed case letters, which are likely false positives
+      - '(?=.*[a-f])(?=.*[A-F])'
+
+  # SHA1 hashes (40 hex characters)
+  - pattern: '(?i)\b[0-9a-f]{40}\b'
+    type: sha1
+    ignored_patterns:
+      # Exclude matches that use mixed case letters, which are likely false positives
+      - '(?=.*[a-f])(?=.*[A-F])'
+
+  # SHA256 hashes (64 hex characters)
+  - pattern: '(?i)\b[0-9a-f]{64}\b'
+    type: sha256
+    ignored_patterns:
+      # Exclude matches that use mixed case letters, which are likely false positives
+      - '(?=.*[a-f])(?=.*[A-F])'
+
+  # Email addresses (excludes substrings inside angle-bracketed message IDs)
+  - pattern: '(?<![<.;!#$%&''*+/=?^`{|}~-])\b[a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
+    type: email_address
+
+  # Email message IDs (RFC 2822 angle-bracketed msg-id)
+  - pattern: '<[a-zA-Z0-9;!#$%&''*+\-/=?^_`{|}~]+(?:\.[a-zA-Z0-9;!#$%&''*+\-/=?^_`{|}~]+)*@[a-zA-Z0-9;!#$%&''*+\-/=?^_`{|}~]+(?:\.[a-zA-Z0-9;!#$%&''*+\-/=?^_`{|}~]+)*>'
+    type: message_id
+
+  # CVE identifiers
+  - pattern: '(?i)\bCVE-\d{4}-\d{4,}\b'
+    type: cve
+
+# The urls section defines the configuration for URL extraction, which happens automatically.
+#
+# 
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns: []

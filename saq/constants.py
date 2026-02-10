@@ -480,6 +480,7 @@ DIRECTIVE_DELAY = 'delay'
 DIRECTIVE_DHASH = 'dhash'
 DIRECTIVE_EXCLUDE_ALL = 'exclude_all'
 DIRECTIVE_EXTRACT_EMAIL = 'extract_email'
+DIRECTIVE_EXTRACT_IOCS = 'extract_iocs'
 DIRECTIVE_EXTRACT_PCAP = 'extract_pcap'
 DIRECTIVE_EXTRACT_URLS = 'extract_urls'
 DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL = 'extract_urls_domain_as_url'
@@ -515,6 +516,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_DHASH: 'compare the dhash of the image against known images',
     DIRECTIVE_EXCLUDE_ALL: 'instructs ACE to NOT analyze this observable at all',
     DIRECTIVE_EXTRACT_EMAIL: 'extract email from exchange or o365',
+    DIRECTIVE_EXTRACT_IOCS: 'extract IOCs from the file',
     DIRECTIVE_EXTRACT_PCAP: 'extract PCAP for the given observable and given time',
     DIRECTIVE_EXTRACT_URLS: 'extract URLs from the given file',
     DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL: 'extract URLs from the given file and treat domain names as URLs',
@@ -550,6 +552,7 @@ GUI_DIRECTIVES = [
     DIRECTIVE_CRAWL,
     DIRECTIVE_CRAWL_EXTRACTED_URLS,
     DIRECTIVE_EXTRACT_EMAIL,
+    DIRECTIVE_EXTRACT_IOCS,
     DIRECTIVE_EXTRACT_PCAP,
     DIRECTIVE_EXTRACT_URLS,
     DIRECTIVE_FORCE_DOWNLOAD,
@@ -1273,6 +1276,7 @@ ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION = "html_data_url_extraction"
 ANALYSIS_MODULE_HTML_JS_EXTRACTION = "html_js_extraction"
 ANALYSIS_MODULE_IDNA_ANALYZER = "idna_analyzer"
 ANALYSIS_MODULE_ILSPY = "ilspy"
+ANALYSIS_MODULE_IOC_EXTRACTION = "ioc_extraction"
 ANALYSIS_MODULE_JAVA_CLASS_DECOMPILER = "java_class_decompiler"
 ANALYSIS_MODULE_LNK_PARSER = "lnk_parser"
 ANALYSIS_MODULE_MAILBOX_EMAIL_ANALYZER = "mailbox_email_analyzer"
@@ -1285,6 +1289,7 @@ ANALYSIS_MODULE_NETBIOS_ANALYZER = "netbios_analyzer"
 ANALYSIS_MODULE_NETWORK_IDENTIFIER = "network_identifier"
 ANALYSIS_MODULE_NOWHITESPACE_ANALYZER = "nowhitespace_analyzer"
 ANALYSIS_MODULE_OBSERVABLE_DETECTION = "observable_detection"
+ANALYSIS_MODULE_OBSERVABLE_MODIFIER = "observable_modifier"
 ANALYSIS_MODULE_OFFICE_FILE_ARCHIVER = "office_file_archiver"
 ANALYSIS_MODULE_OFFICE_XML_REL = "office_xml_rel"
 ANALYSIS_MODULE_OFFICEPARSER3 = "officeparser3"

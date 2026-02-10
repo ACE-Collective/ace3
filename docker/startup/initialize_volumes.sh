@@ -6,7 +6,7 @@
 # this ensures that the volumes are owned by ace instead
 #
 
-for path in /opt/ace/data /opt/ace/ssl /docker-entrypoint-initdb.d /ace-sql-readonly /auth /home/ace
+for path in /opt/ace/data /opt/ace/data/external /opt/ace/ssl /docker-entrypoint-initdb.d /ace-sql-readonly /auth /home/ace
 do
     if [ -d "${path}" ]
     then

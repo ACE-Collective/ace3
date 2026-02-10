@@ -1,0 +1,10 @@
+# Test file with an invalid regex pattern and a valid one.
+# The invalid pattern should log a warning but not crash the module.
+
+patterns:
+  - pattern: "GOOD-(\\d+)"
+    type: indicator
+
+urls:
+  ignored_patterns:
+    - "[also bad(("

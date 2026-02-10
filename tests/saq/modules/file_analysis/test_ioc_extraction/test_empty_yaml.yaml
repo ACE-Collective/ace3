@@ -1,0 +1,9 @@
+# Empty YAML file for testing - no custom patterns, just URL extraction
+patterns: []
+
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns: []
