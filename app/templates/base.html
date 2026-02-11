@@ -200,7 +200,6 @@
                     <div class="modal-body" id="event-primary-container">
                     <ul class="nav nav-tabs" id="tabContent" role="tablist">
                         <li class="nav-item" role="presentation"><button type="button" class="nav-link active" id="open-events-tab" data-bs-target="#open-events" data-bs-toggle="tab">Open Events</button></li>
-                        <li class="nav-item" role="presentation"><button type="button" class="nav-link" id="internal-collection-events-tab" data-bs-target="#internal-collection-events" data-bs-toggle="tab">Internal Collection Events</button></li>
                         <li class="nav-item" role="presentation"><button type="button" class="nav-link" id="closed-events-tab" data-bs-target="#closed-events" data-bs-toggle="tab">Closed Events</button></li>
                     </ul>
                     <div class="tab-content" id="event-tabs">
@@ -212,15 +211,6 @@
                             {% endfor %}
                         {% else %}
                             No open events.
-                        {% endif %}
-                        </div>
-                        <div class="tab-pane fade" id="internal-collection-events" role="tabpanel" aria-labelledby="internal-collection-events-tab">
-                        {% if internal_collection_events %}
-                            {% for event in internal_collection_events %}
-                                <div class="radio" id="event_container_div_{{event.id}}"><label><input type="radio" name="event" value="{{event.id}}" id="option_{{event.id}}" onclick="toggleNewEventDialog();showEventSaveButton()"><span id="event_match_{{event.id}}"></span>{{event.creation_date}} - {{event.type.value}} - {{event.vector.value}} - {{event.name}}</label></div>
-                            {% endfor %}
-                        {% else %}
-                            No internal collection events.
                         {% endif %}
                         </div>
                         <div class="tab-pane fade" id="closed-events" role="tabpanel" aria-labelledby="closed-events-tab">

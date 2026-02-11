@@ -26,7 +26,7 @@ def manage():
     filters = {
             'event_daterange': SearchFilter('event_daterange', FILTER_TYPE_TEXT, ''),
             'filter_event_disposition': SearchFilter('filter_event_disposition', FILTER_TYPE_MULTISELECT, list(get_dispositions().keys())),
-            'filter_event_status': SearchFilter('filter_event_status', FILTER_TYPE_MULTISELECT, ['OPEN', 'INTERNAL COLLECTION']),
+            'filter_event_status': SearchFilter('filter_event_status', FILTER_TYPE_MULTISELECT, ['OPEN']),
             'filter_event_owner': SearchFilter('filter_event_owner', FILTER_TYPE_MULTISELECT, default_owners),
             'filter_event_type': SearchFilter('filter_event_type', FILTER_TYPE_SELECT, 'ANY'),
             'filter_event_vector': SearchFilter('filter_event_vector', FILTER_TYPE_SELECT, 'ANY'),
@@ -247,7 +247,6 @@ def manage():
 
     # Query events for the event modal
     open_events = get_db().query(Event).filter(Event.status.has(value='OPEN')).order_by(Event.creation_date.desc()).all()
-    internal_collection_events = get_db().query(Event).filter(Event.status.has(value='INTERNAL COLLECTION')).order_by(Event.creation_date.desc()).all()
     closed_events_query = get_db().query(Event).filter(Event.status.has(value='CLOSED')).order_by(Event.creation_date.desc()).limit(CLOSED_EVENT_LIMIT).all()
     end_of_list = len(closed_events_query) < CLOSED_EVENT_LIMIT
     closed_events = closed_events_query
@@ -271,7 +270,6 @@ def manage():
                            types=types,
                            vectors=vectors,
                            open_events=open_events,
-                           internal_collection_events=internal_collection_events,
                            closed_events=closed_events,
                            end_of_list=end_of_list,
                            observable_types=get_observable_types_sync())
