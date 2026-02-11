@@ -311,7 +311,7 @@ class IOCExtractionAnalyzer(AnalysisModule):
             try:
                 os.write(fd, text.encode("utf-8"))
                 text_file_obs = analysis.add_file_observable(
-                    temp_path, target_path="refanged_text.txt", move=True
+                    temp_path, target_path=f"{_file.file_path}.refanged.txt", move=True
                 )
             finally:
                 os.close(fd)
