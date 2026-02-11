@@ -77,13 +77,8 @@ class MessageIDAnalyzerV2(AnalysisModule):
             logging.info(f"email {message_id.value} is not archived")
             return AnalysisExecutionResult.COMPLETED
 
-        file_name = f"{message_id.value}.rfc822"
-        
-        # Some message IDs can be extremely long, so instead we hash them
-        # so that the resulting file name/path is not too long for the filesystem.
-        if len(file_name) > 200:
-            hash_prefix = hashlib.sha256(message_id.value.encode()).hexdigest()[:32]
-            file_name = f"{hash_prefix}.rfc822"
+        # Hash the message ID to avoid filesystem name length limits.
+        file_name = f"{hashlib.sha256(message_id.value.encode()).hexdigest()}.rfc822"
         target_path = self.get_root().create_file_path(file_name)
         analysis = None
 

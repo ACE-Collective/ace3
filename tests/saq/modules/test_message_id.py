@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 from saq.configuration import get_config
@@ -49,7 +51,8 @@ def test_message_id_analyzer_v2(test_context, tmpdir, monkeypatch):
     analyzer.execute_analysis(observable)
     analysis = observable.get_and_load_analysis(analyzer.generated_analysis_type)
     observable = analysis.get_observable_by_type(F_FILE)
-    assert observable.file_name == "<test@local>.rfc822"
+    expected_name = f"{hashlib.sha256('<test@local>'.encode()).hexdigest()}.rfc822"
+    assert observable.file_name == expected_name
     assert observable.has_tag("decrypted_email")
     with open(observable.full_path, "r") as fp:
         assert fp.read() == "This is a test."
@@ -90,11 +93,12 @@ def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir, monkeyp
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
-    target_path = root.create_file_path("<test@local>.rfc822")
+    hashed_name = f"{hashlib.sha256('<test@local>'.encode()).hexdigest()}.rfc822"
+    target_path = root.create_file_path(hashed_name)
     with open(target_path, "w") as fp:
         fp.write("Already exists.")
 
-    file_observable = root.add_file_observable("<test@local>.rfc822")
+    file_observable = root.add_file_observable(hashed_name)
 
     def mock_iter_archived_email(message_id: str):
         yield b"This is a test."
@@ -105,7 +109,7 @@ def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir, monkeyp
     analyzer.execute_analysis(observable)
     analysis = observable.get_and_load_analysis(analyzer.generated_analysis_type)
     observable = analysis.get_observable_by_type(F_FILE)
-    assert observable.file_name == "<test@local>.rfc822"
+    assert observable.file_name == hashed_name
     assert observable.has_tag("decrypted_email")
     with open(observable.full_path, "r") as fp:
         assert fp.read() == "Already exists."

@@ -179,13 +179,8 @@ class EmailCollectionBaseProcessor(ABC, Persistable):
 
     def handle_unmatched_locally(self, message: EmailObject) -> None:
         """Save unmatched emails to disk."""
-        file_name = f"msg_{message.message_id}.eml"
-
-        # Some message IDs can be extremely long, so instead we hash them
-        # so that the resulting file name/path is not too long for the filesystem.
-        if len(file_name) > 200:
-            hash_prefix = hashlib.sha256(message.message_id.encode()).hexdigest()[:32]
-            file_name = f"msg_{hash_prefix}.eml"
+        # Hash the message ID to avoid filesystem name length limits.
+        file_name = f"msg_{hashlib.sha256(message.message_id.encode()).hexdigest()}.eml"
         path = os.path.join(self.save_local_dir, file_name)
         logging.debug(f"email remote collector didn't match message; writing email to {path}")
         mode = 'w' if isinstance(message.mime_content, str) else 'wb'
