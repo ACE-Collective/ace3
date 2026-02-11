@@ -1,5 +1,4 @@
 import logging
-import os
 import traceback
 import uuid
 from flask import request
@@ -7,12 +6,10 @@ from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.configuration.config import get_config
-from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_FILE_SEND_TO, ACTION_URL_CRAWL, ANALYSIS_MODE_CORRELATION, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
+from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_URL_CRAWL, ANALYSIS_MODE_CORRELATION, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.error.reporting import report_exception
-from saq.file_upload import rsync
 
 #
 # refactor this to use registered handlers
@@ -53,23 +50,6 @@ def observable_action():
                 logging.error("unable to mark observable {} for file collection".format(observable))
                 report_exception()
                 return "request failed - check logs", 500
-
-        elif action_id == ACTION_FILE_SEND_TO:
-            try:
-                remote_host = request.form.get("hostname")
-                remote_path = get_config().raw._data[f"send_to_{remote_host}"].get("remote_path")
-
-                rsync(
-                    alert=alert,
-                    file_observable=observable,
-                    remote_host=remote_host,
-                    remote_path=remote_path,
-                )
-            except Exception as error:
-                logging.error(f"unable to send file {observable} to {remote_host}:{remote_path} due to error: {error}")
-                return f"Error: {error}", 400
-            else:
-                return os.path.join(remote_path, alert.uuid), 200
 
         elif action_id in [ACTION_URL_CRAWL, ACTION_FILE_RENDER]:
             from saq.modules.url import CrawlphishAnalyzer

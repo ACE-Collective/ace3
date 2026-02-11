@@ -9,7 +9,6 @@ import os
 import smtplib
 from subprocess import PIPE, Popen
 from uuid import uuid4
-import uuid
 import zipfile
 from flask import flash, make_response, redirect, request, send_from_directory, session, url_for
 from flask_login import current_user
@@ -21,7 +20,6 @@ from saq.configuration.config import get_config
 from saq.csv_builder import CSV
 from saq.database.model import DispositionBy, Observable, ObservableMapping, Owner, RemediatedBy, Tag, TagMapping, Comment
 from saq.database.pool import get_db
-from saq.database.util.locking import acquire_lock
 from saq.environment import get_base_dir, get_global_runtime_settings, get_temp_dir
 from saq.error.reporting import report_exception
 from saq.gui.alert import GUIAlert
@@ -197,37 +195,6 @@ def export_alerts_to_csv():
     output.headers["Content-Disposition"] = "attachment; filename=export.csv"
     output.headers["Content-type"] = "text/csv"
     return output
-
-@analysis.route('/send_alert_to', methods=['POST'])
-@require_permission('alert', 'read')
-def send_alert_to():
-    remote_host = request.json['remote_host']
-    if f"send_to_{remote_host}" not in get_config().raw._data:    
-        return f"Unknown remote host: {remote_host}", 400
-
-    remote_path = get_config().raw._data[f"send_to_{remote_host}"].get("remote_path")
-    alert_uuid = request.json['alert_uuid']
-
-    # NOTE: If we require the alert to be locked first, it can't be sent to the remote host until it finished analyzing.
-    # This also prevents multiple people from trying to transfer the alert at the same time.
-    lock_uuid = str(uuid.uuid4())
-    if not acquire_lock(alert_uuid, lock_uuid):
-        return f"Unable to lock alert {alert_uuid}", 500
-
-    try:
-        # Alerts might be large, so execute the rsync in the background instead of possibly timing out the GUI
-        from saq.background_exec import add_background_task, BG_TASK_RSYNC_ALERT
-        add_background_task(BG_TASK_RSYNC_ALERT, alert_uuid, remote_host, remote_path, lock_uuid)
-
-    except Exception as error:
-        logging.error(f"unable to send alert {alert_uuid} to {remote_host}:{remote_path} due to error: {error}")
-        return f"Error: {error}", 400
-    
-    # Instead of using "finally" to release the lock on the alert, the lock is released in the rsync function. This is
-    # because the rsync function is executed in the background, so this send_alert_to function would release the lock
-    # before the rsync function actually completes.
-
-    return os.path.join(remote_path, alert_uuid), 200
 
 @analysis.route('/download_file', methods=['GET', "POST"])
 @require_permission('alert', 'read')

@@ -9,7 +9,7 @@ from saq.analysis.presenter.observable_presenter import ObservablePresenter, reg
 from saq.analysis.serialize.observable_serializer import KEY_VALUE
 from saq.configuration.config import get_config
 from saq.constants import DIRECTIVE_VIEW_IN_BROWSER, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
-from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionFileSendTo, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
+from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
 from saq.util.hashing import is_sha256_hex
@@ -291,10 +291,6 @@ class FileObservable(Observable):
             result.append(ObservableActionUploadToVt())
             result.append(ObservableActionViewInVt())
             
-            if any([x for x in get_config().keys() if x.startswith("send_to_")]):
-                result.append(ObservableActionSeparator())
-                result.append(ObservableActionFileSendTo())
-            
             result.append(ObservableActionSeparator())
             result.append(ObservableActionFileRender())
 
@@ -381,7 +377,6 @@ class FileObservablePresenter(ObservablePresenter):
             ObservableActionViewAsHex,
             ObservableActionViewAsText,
             ObservableActionViewInBrowser,
-            ObservableActionFileSendTo,
             ObservableActionFileRender,
         )
         from saq.gui import ObservableActionSeparator
@@ -391,7 +386,6 @@ class FileObservablePresenter(ObservablePresenter):
             ObservableActionViewAsHex(),
             ObservableActionViewAsText(),
             ObservableActionViewInBrowser(),
-            ObservableActionFileSendTo(),
             ObservableActionFileRender(),
             ObservableActionSeparator(),
         ]

@@ -143,7 +143,7 @@ function set_observable_detection_status() {
 }
 
 function close_event() {
-    if (! confirm("Did you review the observables?")) {
+    if (! confirm("Are you sure you want to close this event?")) {
         return;
     }
 
@@ -152,7 +152,7 @@ function close_event() {
     (function() {
         fetch('close_event', { method: 'POST', credentials: 'same-origin' })
         .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
-        .then(function(){ alert('Event is closed. Uploading data to TIP in the background.'); })
+        .then(function(){ location.reload(); })
         .catch(function(err){ alert('DOH: ' + err.message); });
     })();
 }
@@ -287,42 +287,6 @@ function add_filter(tag) {
     tag_filter_form_input.append(`<option value="${tag}" SELECTED> ${tag} </option>`);
     filter_form.submit();
 }
-
-// This function is called from the "Send event to.." modal dialog
-$(document).on('click', '#btn-send-event-to-send', function() {
-    // append the selected host to the formData
-    var selectedHost = $("#event-selected-host").val()
-  
-    data = {
-      "remote_host": selectedHost,
-      "event_uuid": $("input[name=event_uuid]").val(),
-    }
-    
-    // send a request to the API
-    (function() {
-      fetch('send_event_to', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-        credentials: 'same-origin'
-      })
-      .then(function(resp){
-        return resp.text().then(function(text){
-          if (!resp.ok) { throw new Error(text || resp.statusText); }
-          return text;
-        });
-      })
-      .then(function(text){
-        alert('Sending event to ' + selectedHost + ' at ' + text);
-      })
-      .catch(function(err){
-        alert('DOH: ' + err.message);
-      })
-      .finally(function(){
-        $('#send-event-to-modal').modal('hide');
-      });
-    })();
-  });
 
 $(document).ready(function() {
     $('input[name="event_daterange"]').daterangepicker({
