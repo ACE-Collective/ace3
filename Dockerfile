@@ -46,7 +46,6 @@ RUN apt-get update && \
         ca-certificates \
         coreutils \
         curl \
-        de4dot \
         default-jre \
         default-mysql-client \
         dirmngr \
@@ -117,6 +116,16 @@ RUN apt-get update && \
         zlib1g-dev \
     && apt-get clean  \
     && rm -rf /var/lib/apt/lists/*
+
+# install de4dot separately - Mono's GAC assembly registration crashes under
+# Rosetta/QEMU emulation, so we handle the post-install failure gracefully.
+# This does not have an impact on native amd64 systems.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends de4dot || true) && \
+    rm -f /var/lib/dpkg/info/libdnlib2.1-cil.postinst && \
+    dpkg --configure libdnlib2.1-cil de4dot && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # install microsoft's official package signing key
 RUN curl -fsSLk https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb && \
