@@ -30,12 +30,15 @@ INSERT INTO `auth_permission_catalog` (`major`, `minor`, `description`) VALUES
 -- give the built-in users full access
 INSERT INTO `auth_user_permission` (`user_id`, `major`, `minor`) VALUES (1, '*', '*');
 INSERT INTO `auth_user_permission` (`user_id`, `major`, `minor`) VALUES (2, '*', '*');
+INSERT INTO `analysis_mode_priority` (`analysis_mode`, `priority`) VALUES ('correlation', 1);
 COMMIT;
 
 USE `ace-unittest`;
 INSERT INTO company ( id, name ) VALUES ( 1, 'default' );
+INSERT INTO `analysis_mode_priority` (`analysis_mode`, `priority`) VALUES ('correlation', 1);
 COMMIT;
 
 USE `ace-unittest-2`;
 INSERT INTO company ( id, name ) VALUES ( 1, 'default' );
+INSERT INTO `analysis_mode_priority` (`analysis_mode`, `priority`) VALUES ('correlation', 1);
 COMMIT;
