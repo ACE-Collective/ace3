@@ -6,6 +6,8 @@ from app.blueprints import events
 from saq.configuration.config import get_config
 from saq.database.model import Campaign, Event, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventType, EventVector, Malware, MalwareMapping, Threat, User
 from saq.database.pool import get_db
+from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.threat_types.service import get_threat_types
 
 @events.route('/edit_event_modal', methods=['GET'])
 @login_required
@@ -33,6 +35,7 @@ def edit_event_modal():
     types = get_db().query(EventType).order_by(EventType.value.asc()).all()
     vectors = get_db().query(EventVector).order_by(EventVector.value.asc()).all()
     all_users = get_db().query(User).all()
+    threat_types = run_async_with_session(get_threat_types)
     return render_template('events/event_edit.html',
                            all_users=all_users,
                            event=event,
@@ -43,7 +46,8 @@ def edit_event_modal():
                            risk_levels=risk_levels,
                            statuses=statuses,
                            types=types,
-                           vectors=vectors)
+                           vectors=vectors,
+                           threat_types=threat_types)
 
 @events.route('/edit_event', methods=['POST'])
 @require_permission('event', 'write')
@@ -143,10 +147,13 @@ def edit_event():
                     get_db().add(mal)
                     get_db().flush()
 
-                for threat_selection in threats:
-                    threat = get_db().query(Threat).filter(Threat.malware_id == mal.id, Threat.type == threat_selection).one_or_none()
+                for threat_type_id in threats:
+                    threat = get_db().query(Threat).filter(
+                        Threat.malware_id == mal.id,
+                        Threat.threat_type_id == int(threat_type_id)
+                    ).one_or_none()
                     if threat is None:
-                        threat = Threat(malware_id=mal.id, type=threat_selection)
+                        threat = Threat(malware_id=mal.id, threat_type_id=int(threat_type_id))
                         get_db().add(threat)
                         get_db().flush()
             else:

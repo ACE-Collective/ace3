@@ -17,7 +17,8 @@ from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
-from aceapi_v2.observable_types.service import get_observable_types_sync
+from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.observable_types.service import get_observable_types
 
 @analysis.route('/new_alert', methods=['POST'])
 @require_permission('alert', 'create')
@@ -256,7 +257,7 @@ ORDER BY
 def new_alert_observable():
     index = request.args['index']
     directives = {directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in GUI_DIRECTIVES}
-    return render_template('analysis/new_alert_observable.html', directives=directives, index=index, observable_types=get_observable_types_sync())
+    return render_template('analysis/new_alert_observable.html', directives=directives, index=index, observable_types=run_async_with_session(get_observable_types))
 
 # I can't remember why this is named /file
 @analysis.route('/file', methods=['GET'])
@@ -296,4 +297,4 @@ ORDER BY
                            queue=current_user.queue,
                            tab='advanced',
                            timezones=pytz.common_timezones,
-                           observable_types=get_observable_types_sync())
+                           observable_types=run_async_with_session(get_observable_types))
