@@ -3,6 +3,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from tempfile import mkstemp
 from typing import Optional, Type, override
 
 import yaml
@@ -14,11 +15,11 @@ from saq.analysis.analysis import Analysis
 from saq.constants import (
     DIRECTIVE_EXTRACT_IOCS,
     F_FILE,
-    R_EXTRACTED_FROM,
     F_URL,
+    R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
-from saq.environment import get_base_dir
+from saq.environment import get_base_dir, get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -261,6 +262,7 @@ class IOCExtractionAnalyzer(AnalysisModule):
                 text = raw_text
 
         # Re-fang the text until no more changes occur
+        original_text = text
         changed = True
         while changed:
             changed = False
@@ -300,6 +302,23 @@ class IOCExtractionAnalyzer(AnalysisModule):
 
         # Build analysis from surviving IOCs
         analysis = self.create_analysis(_file)
+
+        # Add a file observable for the text that was actually analyzed (after re-fanging)
+        # and relate it to the original file observable
+        if text != original_text:
+            # Write re-fanged text to temp file, then add as file observable
+            fd, temp_path = mkstemp(dir=get_temp_dir(), suffix=".txt")
+            try:
+                os.write(fd, text.encode("utf-8"))
+                text_file_obs = analysis.add_file_observable(
+                    temp_path, target_path=f"{_file.file_path}.refanged.txt", move=True
+                )
+            finally:
+                os.close(fd)
+                
+            if text_file_obs:
+                text_file_obs.display_type = "Re-fanged Text"
+                text_file_obs.add_relationship(R_EXTRACTED_FROM, _file)
 
         for (ioc_type, ioc_value), compiled_config in self._observables_to_add.items():
             # Track in details
