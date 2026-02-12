@@ -168,12 +168,6 @@ def manage():
     if event_query_results:
         open_events = event_query_results
 
-    internal_collection_events = []
-    event_query_results = get_db().query(Event).filter(Event.status.has(value='INTERNAL COLLECTION')).order_by(Event.creation_date.desc())\
-        .all()
-    if event_query_results:
-        internal_collection_events = event_query_results
-
     closed_events = []
     end_of_closed_events_list = True
     event_query_results = get_db().query(Event).filter(Event.status.has(value='CLOSED')).order_by(Event.creation_date.desc())\
@@ -207,7 +201,6 @@ def manage():
 
         # event data
         open_events=open_events,
-        internal_collection_events=internal_collection_events,
         closed_events=closed_events,
         end_of_list=end_of_closed_events_list,
         campaigns=get_db().query(Campaign).order_by(Campaign.name.asc()).all(),

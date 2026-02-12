@@ -3074,7 +3074,6 @@ build_suricata_db_parser.set_defaults(func=build_suricata_db)
 #
 
 def close_event(args):
-    from saq.background_exec import add_background_task, BG_TASK_CLOSE_EVENT
     from saq.database import Event, EventStatus
     from saq.error import report_exception
     from saq.event import get_auto_close_events
@@ -3106,8 +3105,6 @@ def close_event(args):
         get_db().rollback()
     else:
         get_db().commit()
-        for event_id in event_ids:
-            add_background_task(BG_TASK_CLOSE_EVENT, event_id)
 
     sys.exit(0)
 

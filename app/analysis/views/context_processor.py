@@ -1,7 +1,5 @@
-import logging
 from uuid import uuid4
 from app.blueprints import analysis
-from saq.configuration.config import get_config
 
 # additional functions to make available to the templates
 @analysis.context_processor
@@ -10,17 +8,6 @@ def generic_functions():
         return str(uuid4())
 
     return { 'generate_unique_reference': generate_unique_reference }
-
-@analysis.context_processor
-def send_to_hosts():
-    hosts = {}
-    try:
-        config_keys = [x for x in get_config().raw._data.keys() if x.startswith('send_to_')]
-        hosts = [get_config().raw._data[x] for x in config_keys]
-    except Exception as e:
-        logging.error(f"no hosts properly configured to send to: {e}")
-
-    return dict(send_to_hosts=hosts)
 
 @analysis.after_request
 def add_header(response):

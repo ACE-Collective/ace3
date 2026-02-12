@@ -1,4 +1,4 @@
-from app.events.views.export import send_event_to, export_events_to_csv
+from app.events.views.export import export_events_to_csv
 from app.events.views.index import index
 from app.events.views.manage import manage, manage_event_details
 from app.events.views.edit.alerts import remove_alerts

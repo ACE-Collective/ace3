@@ -99,49 +99,6 @@ def test_export_alerts_to_csv_with_alerts(web_client, root_analysis):
 
 
 @pytest.mark.integration
-def test_send_alert_to_missing_params(web_client):
-    """Test send_alert_to with missing parameters."""
-    # This will raise a KeyError which Flask handles as 500
-    with pytest.raises(Exception):
-        web_client.post(url_for("analysis.send_alert_to"), json={})
-
-
-@pytest.mark.integration  
-def test_send_alert_to_missing_config(web_client, root_analysis):
-    """Test send_alert_to with missing configuration for remote host."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # This will raise a KeyError for missing config section
-    response = web_client.post(url_for("analysis.send_alert_to"),
-                    json={
-                        'remote_host': 'nonexistent_host',
-                        'alert_uuid': alert.uuid
-                    })
-
-    assert response.status_code == 400
-
-
-@pytest.mark.integration
-@patch('saq.background_exec.add_background_task')
-def test_send_alert_to_success(mock_add_task, web_client, root_analysis, monkeypatch):
-    """Test successful send_alert_to operation."""
-    monkeypatch.setitem(get_config().raw._data, "send_to_test_host", {"remote_path": "/test/path"})
-    
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    result = web_client.post(url_for("analysis.send_alert_to"),
-                           json={
-                               'remote_host': 'test_host',
-                               'alert_uuid': alert.uuid
-                           })
-    assert result.status_code == 200
-    assert b"/test/path" in result.data
-    mock_add_task.assert_called_once()
-
-
-@pytest.mark.integration
 def test_download_file_no_alert(web_client):
     """Test download_file when no alert is loaded."""
     result = web_client.get(url_for("analysis.download_file"))

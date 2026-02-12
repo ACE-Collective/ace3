@@ -226,13 +226,6 @@ service_default:
   description: default unconfigured service
   enabled: true
 
-service_background_executor:
-  name: background_executor
-  python_module: saq.background_exec
-  python_class: BackgroundExecutor
-  description: Background Process Executor
-  enabled: true
-
 service_email_collector:
   name: email_collector
   python_module: saq.collectors.email.scanner

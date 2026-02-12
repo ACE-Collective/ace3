@@ -331,11 +331,6 @@ def index():
     event_query_results = get_db().query(Event).filter(Event.status.has(value='OPEN')).order_by(Event.creation_date.desc()).all()
     if event_query_results:
         open_events = event_query_results
-    internal_collection_events = []
-    event_query_results = get_db().query(Event).filter(Event.status.has(value='INTERNAL COLLECTION')).order_by(Event.creation_date.desc())\
-        .all()
-    if event_query_results:
-        internal_collection_events = event_query_results
     closed_events = []
     end_of_closed_events_list = True
     event_query_results = get_db().query(Event).filter(Event.status.has(value='CLOSED')).order_by(Event.creation_date.desc())\
@@ -383,7 +378,6 @@ def index():
         prune_volatile=session['prune_volatile'],
         open_events=open_events,
         closed_events=closed_events,
-        internal_collection_events=internal_collection_events,
         end_of_list=end_of_closed_events_list,
         malware=malware,
         companies=companies,
