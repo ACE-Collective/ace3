@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from typing import Optional, override
@@ -76,7 +77,9 @@ class MessageIDAnalyzerV2(AnalysisModule):
             logging.info(f"email {message_id.value} is not archived")
             return AnalysisExecutionResult.COMPLETED
 
-        target_path = self.get_root().create_file_path(f"{message_id.value}.rfc822")
+        # Hash the message ID to avoid filesystem name length limits.
+        file_name = f"{hashlib.sha256(message_id.value.encode()).hexdigest()}.rfc822"
+        target_path = self.get_root().create_file_path(file_name)
         analysis = None
 
         try:
