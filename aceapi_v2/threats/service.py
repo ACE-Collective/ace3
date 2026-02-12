@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from saq.database.model import Threat, ThreatType
+from saq.database.model import Malware, Threat, ThreatType
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 async def get_threats(session: AsyncSession, malware_id: int | None = None) -> list[Threat]:
     stmt = (
         select(Threat)
+        .join(Malware, Threat.malware_id == Malware.id)
         .join(ThreatType)
         .options(selectinload(Threat.threat_type))
-        .order_by(Threat.malware_id, ThreatType.name)
+        .order_by(Malware.name)
     )
     if malware_id is not None:
         stmt = stmt.where(Threat.malware_id == malware_id)
