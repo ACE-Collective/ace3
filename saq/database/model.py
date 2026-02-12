@@ -1167,7 +1167,7 @@ class Event(Base):
         threats = {}
         for mal in self.malware:
             for threat in mal.threats:
-                threats[threat.type] = True
+                threats[str(threat)] = True
         return threats.keys()
 
     @property
@@ -1365,15 +1365,23 @@ class Malware(Base):
     name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
     threats: Mapped[list["Threat"]] = relationship("Threat", passive_deletes=True, passive_updates=True)
 
+class ThreatType(Base):
+
+    __tablename__ = 'threat_type'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
+
 class Threat(Base):
 
     __tablename__ = 'malware_threat_mapping'
 
     malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id'), primary_key=True)
-    type: Mapped[str] = mapped_column(Enum('UNKNOWN','KEYLOGGER','INFOSTEALER','DOWNLOADER','BOTNET','RAT','RANSOMWARE','ROOTKIT','FRAUD','CUSTOMER_THREAT','WIPER','TRAFFIC_DIRECTION_SYSTEM'), primary_key=True, nullable=False)
+    threat_type_id: Mapped[int] = mapped_column(Integer, ForeignKey('threat_type.id'), primary_key=True)
+    threat_type: Mapped["ThreatType"] = relationship("ThreatType")
 
     def __str__(self):
-        return self.type
+        return self.threat_type.name
 
 class ObservableMapping(Base):
 
