@@ -426,13 +426,15 @@ SET
     status = 'LOCKED',
     lock_time = NOW(),
     lock_uuid = %s
-WHERE 
+WHERE
     group_id = %s
-    AND work_id IN ( SELECT * FROM ( 
+    AND work_id IN ( SELECT * FROM (
         SELECT
             incoming_workload.id
         FROM
-            incoming_workload JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
+            incoming_workload
+            JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
+            LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
         WHERE
             incoming_workload.type_id = %s
             AND work_distribution.group_id = %s
@@ -442,7 +444,7 @@ WHERE
                 OR ( work_distribution.status = 'LOCKED' AND TIMESTAMPDIFF(minute, work_distribution.lock_time, NOW()) >= 10 )
             )
         ORDER BY
-            incoming_workload.id ASC
+            COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
         LIMIT %s ) AS t1 )
 """.format(','.join(['%s' for _ in available_modes]))
             params = [ work_lock_uuid, self.group_id, self.workload_type_id, self.group_id ]
@@ -456,16 +458,18 @@ WHERE
         # available to be submitted to
 
         sql = """
-SELECT 
+SELECT
     incoming_workload.id,
     incoming_workload.mode,
     incoming_workload.work
 FROM
-    incoming_workload JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
+    incoming_workload
+    JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
+    LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
 WHERE
     work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
 ORDER BY
-    incoming_workload.id ASC
+    COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
 """
         params = [ work_lock_uuid ]
         cursor.execute(sql, tuple(params))
