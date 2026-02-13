@@ -123,7 +123,7 @@ RUN apt-get update && \
 RUN apt-get update && \
     (apt-get install -y --no-install-recommends de4dot || true) && \
     rm -f /var/lib/dpkg/info/libdnlib2.1-cil.postinst && \
-    dpkg --configure libdnlib2.1-cil de4dot && \
+    (dpkg --configure libdnlib2.1-cil de4dot || true) && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
