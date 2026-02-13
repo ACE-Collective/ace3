@@ -8,7 +8,7 @@ from saq.database.model import Config
 from saq.database.model import DelayedAnalysis
 from saq.database.model import Event, EventStatus, EventType, EventPreventionTool, EventRemediation, EventRiskLevel, EventVector
 from saq.database.model import Lock, LockedException
-from saq.database.model import Malware, Threat
+from saq.database.model import Malware, ThreatType, Threat
 from saq.database.model import ObservableMapping, ObservableRemediationMapping, ObservableTagMapping, ObservableTagIndex, TagMapping, CompanyMapping, EventMapping, EventTagMapping, MalwareMapping
 from saq.database.model import Message, MessageRouting
 from saq.database.model import Nodes

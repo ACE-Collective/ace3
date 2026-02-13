@@ -114,7 +114,7 @@
           <select class="form-control" name="malware_selection_{{mal.id}}" id="malware_selection_{{mal.id}}" onchange="malware_selection_changed('{{mal.id}}')">
             <option value="NEW">NEW</option>
             {% for mal2 in malware %}
-            <option value="{{mal2.id}}" {% if mal2.name == mal.name %}SELECTED{% endif %}>{{mal2.name}}</option>
+            <option value="{{mal2.id}}" {% if mal2.name == mal.name %}SELECTED{% endif %}>{{mal2.name}}{% if mal2.threats %}: {{ mal2.threats|join(', ') }}{% endif %}</option>
             {% endfor %}
           </select>
         </td>
@@ -125,18 +125,9 @@
       <tr id="new_malware_info_{{mal.id}}" style="display:none;">
         <td colspan="2">
           <div style="width:100%;"><input class="form-control" type="text" id="mal_name" name="mal_name_{{mal.id}}"></div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="botnet"> botnet</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="fraud"> fraud</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="downloader"> downloader</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="infostealer"> infostealer</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="keylogger"> keylogger</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="ransomware"> ransomware</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="rat"> rat</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="rootkit"> rootkit</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="customer threat"> customer threat</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="wiper"> wiper</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="traffic_direction_system"> traffic direction system</div>
-          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="advanced_persistent_threat"> advanced persistent threat</div>
+          {% for tt in threat_types %}
+          <div class="col-xs-3"><input type="checkbox" name="threats_{{mal.id}}" value="{{tt.id}}"> {{tt.name}}</div>
+          {% endfor %}
         </td>
       </tr>
     </table>

@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.cache import TTLCache
 from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth
+from aceapi_v2.observable_types import service
 from aceapi_v2.observable_types.schemas import ObservableTypeRead
-from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.schemas import ListResponse
 
 # All routes in this router require authentication
@@ -32,7 +32,7 @@ async def list_observable_types(
         _cache.set_cache_headers(response)
         return cached
 
-    types = await get_observable_types(session)
+    types = await service.get_observable_types(session)
     data = ListResponse(data=[ObservableTypeRead(name=t) for t in types])
     _cache.set("observable_types", data)
     _cache.set_cache_headers(response)

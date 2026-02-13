@@ -10,7 +10,8 @@ from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import Alert, Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
-from aceapi_v2.observable_types.service import get_observable_types_sync
+from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.observable_types.service import get_observable_types
 
 @events.route('/manage', methods=['GET', 'POST'])
 @require_permission('event', 'read')
@@ -272,7 +273,7 @@ def manage():
                            open_events=open_events,
                            closed_events=closed_events,
                            end_of_list=end_of_list,
-                           observable_types=get_observable_types_sync())
+                           observable_types=run_async_with_session(get_observable_types))
 
 @events.route('/manage_event_details', methods=['GET'])
 @require_permission('event', 'read')

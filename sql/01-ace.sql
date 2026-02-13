@@ -404,6 +404,27 @@ CREATE TABLE `malware_mapping` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `threat_type`
+--
+
+DROP TABLE IF EXISTS `threat_type`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `threat_type` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(256) NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `ix_threat_type_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+INSERT INTO `threat_type` (`name`) VALUES
+  ('unknown'), ('keylogger'), ('infostealer'), ('downloader'),
+  ('botnet'), ('rat'), ('ransomware'), ('rootkit'), ('fraud'),
+  ('customer threat'), ('wiper'), ('traffic direction system'),
+  ('advanced persistent threat');
+
+--
 -- Table structure for table `malware_threat_mapping`
 --
 
@@ -412,9 +433,11 @@ DROP TABLE IF EXISTS `malware_threat_mapping`;
 /*!40101 SET character_set_client = utf8 */;
 CREATE TABLE `malware_threat_mapping` (
   `malware_id` int(11) NOT NULL,
-  `type` enum('UNKNOWN','KEYLOGGER','INFOSTEALER','DOWNLOADER','BOTNET','RAT','RANSOMWARE','ROOTKIT','FRAUD','CUSTOMER_THREAT', 'WIPER', 'TRAFFIC_DIRECTION_SYSTEM') NOT NULL,
-  PRIMARY KEY (`malware_id`,`type`),
-  CONSTRAINT `malware_threat_mapping_ibfk_1` FOREIGN KEY (`malware_id`) REFERENCES `malware` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+  `threat_type_id` int(11) NOT NULL,
+  PRIMARY KEY (`malware_id`,`threat_type_id`),
+  KEY `fk_mttm_threat_type` (`threat_type_id`),
+  CONSTRAINT `malware_threat_mapping_ibfk_1` FOREIGN KEY (`malware_id`) REFERENCES `malware` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_mttm_threat_type` FOREIGN KEY (`threat_type_id`) REFERENCES `threat_type` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
