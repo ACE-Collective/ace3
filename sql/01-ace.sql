@@ -483,6 +483,21 @@ CREATE TABLE `node_modes_excluded` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `analysis_mode_priority`
+--
+
+DROP TABLE IF EXISTS `analysis_mode_priority`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `analysis_mode_priority` (
+  `analysis_mode` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci NOT NULL,
+  `priority` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`analysis_mode`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+COMMENT='Priority for analysis modes. Higher values = higher priority. Modes not listed default to 0.';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `nodes`
 --
 

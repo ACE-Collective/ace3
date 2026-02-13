@@ -663,7 +663,6 @@ ACTION_SYMANTEC_DLP_ALLOW_RECIPIENT = 'symantec_dlp_allow_recipient'
 ACTION_SYMANTEC_DLP_ALLOW_RECIPIENT_DOMAIN = 'symantec_dlp_allow_recipient_domain'
 ACTION_FILE_DOWNLOAD = 'file_download'
 ACTION_FILE_DOWNLOAD_AS_ZIP = 'file_download_as_zip'
-ACTION_FILE_SEND_TO = 'file_send_to'
 ACTION_FILE_UPLOAD_VT = 'file_upload_vt'
 ACTION_FILE_UPLOAD_FALCON_SANDBOX = 'file_upload_falcon_sandbox'
 ACTION_FILE_UPLOAD_VX = 'file_upload_vx'
@@ -807,7 +806,6 @@ GUI_TABS = [
 # service constants
 #
 
-SERVICE_BACKGROUND_EXECUTOR = "background_executor"
 SERVICE_BRO_HTTP_COLLECTOR = "bro_http_collector"
 SERVICE_BRO_SMTP_COLLECTOR = "bro_smtp_collector"
 SERVICE_CRON = "cron"

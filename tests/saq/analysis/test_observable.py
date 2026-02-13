@@ -85,10 +85,6 @@ def test_observable_expires_on(db_event):
     db_event.campaign = threat_actor
     get_db().commit()
 
-    # Pretend to close the event and call the _nullify_expires_on_if_threat_actor function, which normally gets called
-    # as part of event_closing_tasks() when the event is actually closed.
-    #_nullify_expires_on_if_threat_actor(db_event)
-
     # Get the final expires_on time of the observable in the alert
     expires_on_closed = get_db().query(Observable.expires_on) \
         .join(ObservableMapping, Observable.id == ObservableMapping.observable_id) \

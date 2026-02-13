@@ -1,0 +1,10 @@
+refang_patterns:
+  ".":
+    - "\\[\\.]"
+
+urls:
+  directives: []
+  tags: []
+  volatile: false
+  display_type: IOC
+  ignored_patterns: []

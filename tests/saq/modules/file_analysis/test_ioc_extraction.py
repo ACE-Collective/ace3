@@ -14,6 +14,7 @@ from saq.constants import (
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
+from saq.observables.file import FileObservable
 from saq.modules.file_analysis.ioc_extraction import (
     IOCExtractionAnalyzer,
     IOCExtractionAnalysis,
@@ -450,3 +451,44 @@ def test_exclude_patterns(test_context, datadir):
 
     # Verify ignored list is accurate (at least 2: example.com URL and 99999999-... correlation ID)
     assert len(analysis.details["ignored"]) >= 2
+
+
+@pytest.mark.unit
+def test_refang_creates_file_observable(test_context, datadir):
+    """Test that re-fanged text is written to a file observable, not passed as bytes."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    # Content with defanged URL
+    content = "Visit https://example[.]com/path for info"
+
+    target_path = root.create_file_path("test_refang.txt")
+    with open(target_path, "w") as fp:
+        fp.write(content)
+
+    observable = root.add_file_observable(target_path)
+    observable.add_directive(DIRECTIVE_EXTRACT_IOCS)
+
+    adapter, _ = _create_analyzer(test_context, datadir, "test_refang.yaml")
+    adapter.root = root
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(IOCExtractionAnalysis)
+    assert analysis is not None
+
+    # Verify a FileObservable with "Re-fanged Text" display type exists
+    refang_obs = None
+    for obs in analysis.observables:
+        if isinstance(obs, FileObservable) and "Re-fanged Text" in (obs.display_type or ""):
+            refang_obs = obs
+            break
+    assert refang_obs is not None, "Expected a FileObservable with 'Re-fanged Text' display type"
+
+    # Verify the re-fanged file observable has R_EXTRACTED_FROM relationship
+    assert refang_obs.has_relationship(R_EXTRACTED_FROM)
+
+    # Verify the refanged URL was extracted (proving the refanging worked)
+    assert F_URL in analysis.details["iocs"]
+    assert any("example.com" in url for url in analysis.details["iocs"][F_URL])

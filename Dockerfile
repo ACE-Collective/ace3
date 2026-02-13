@@ -46,6 +46,7 @@ RUN apt-get update && \
         ca-certificates \
         coreutils \
         curl \
+        de4dot \
         default-jre \
         default-mysql-client \
         dirmngr \

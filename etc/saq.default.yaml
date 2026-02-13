@@ -55,7 +55,7 @@ global:
   # this is important for email scanning
   local_email_domains: []
   # set to yes to log all SQL commands executed by the server
-  log_sql: true
+  log_sql: false
   # set to yes to log all SQL commands and their execution time
   log_sql_exec_times: false
   # set this to True to enable semaphores
@@ -224,13 +224,6 @@ service_default:
   python_module: saq.service
   python_class: DisabledService
   description: default unconfigured service
-  enabled: true
-
-service_background_executor:
-  name: background_executor
-  python_module: saq.background_exec
-  python_class: BackgroundExecutor
-  description: Background Process Executor
   enabled: true
 
 service_email_collector:
