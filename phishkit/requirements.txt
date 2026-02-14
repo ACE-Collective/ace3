@@ -1,5 +1,5 @@
 celery[redis]
 pydantic
-minio
+boto3
 pyyaml
 python-magic

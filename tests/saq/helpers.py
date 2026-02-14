@@ -648,9 +648,16 @@ def wait_for_process(process: Process):
     if process.is_alive():
         raise RuntimeError("engine did not stop")
 
-def reset_minio_email_archive_bucket():
-    from saq.storage.minio import get_minio_client
-    client = get_minio_client()
-    objects = client.list_objects(bucket_name=get_config().email_archive.s3_bucket, recursive=True)
-    for object in objects:
-        client.remove_object(bucket_name=get_config().email_archive.s3_bucket, object_name=object.object_name)
+def reset_s3_email_archive_bucket():
+    from saq.storage.s3 import get_s3_client
+    client = get_s3_client()
+    bucket = get_config().email_archive.s3_bucket
+    kwargs = {"Bucket": bucket}
+    while True:
+        response = client.list_objects_v2(**kwargs)
+        for obj in response.get("Contents", []):
+            client.delete_object(Bucket=bucket, Key=obj["Key"])
+        if response.get("IsTruncated"):
+            kwargs["ContinuationToken"] = response["NextContinuationToken"]
+        else:
+            break

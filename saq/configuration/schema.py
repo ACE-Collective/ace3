@@ -98,14 +98,14 @@ class RabbitMQConfig(BaseModel):
     host: str = Field(..., description="rabbitmq host")
     port: int = Field(..., description="rabbitmq port")
 
-class MinioConfig(BaseModel):
-    host: str = Field(..., description="minio host")
-    port: int = Field(..., description="minio port")
-    access_key: str = Field(..., description="minio access key")
-    secret_key: str = Field(..., description="minio secret key")
+class S3Config(BaseModel):
+    host: str = Field(..., description="s3-compatible storage host")
+    port: int = Field(..., description="s3-compatible storage port")
+    access_key: str = Field(..., description="s3 access key")
+    secret_key: str = Field(..., description="s3 secret key")
     secure: bool = Field(..., description="set to use SSL")
     cert_check: bool = Field(..., description="set to validate SSL certification")
-    region: Optional[str] = Field(description="leave empty for MinIO server")
+    region: Optional[str] = Field(description="s3 region")
 
 class RedisConfig(BaseModel):
     name: str = Field(..., description="redis name")
@@ -213,7 +213,7 @@ class MessagingConfig(BaseModel):
     batch_size: int = Field(..., description="how many requests to lock for dispatch at a single time")
 
 class EmailArchiveConfig(BaseModel):
-    target: str = Field(..., description="possible values: minio, s3")
+    target: str = Field(..., description="possible values: local, s3")
     primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
     s3_bucket: str = Field(..., description="the bucket to use for the email archive")
     s3_region: Optional[str] = Field(default=None, description="the region to use for the email archive")
@@ -400,7 +400,7 @@ class ACEConfig(BaseModel):
     llm: Optional[LLMConfig] = None
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
-    minio: Optional[MinioConfig] = None
+    s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None
     redis_local: Optional[RedisConfig] = Field(default=None, alias="redis-local")
     qdrant: Optional[QdrantConfig] = None

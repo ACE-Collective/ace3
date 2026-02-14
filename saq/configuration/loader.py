@@ -61,6 +61,7 @@ def load_configuration(config_paths: Optional[list[str]] = None):
 
     # optional auto-generated passwords and API keys
     db_auto_yaml = "/docker-entrypoint-initdb.d/saq.database.passwords.yaml"
+    s3_test_yaml = "/docker-entrypoint-initdb.d/saq.s3.test.passwords.yaml"
     local_yaml = "etc/saq.yaml"
 
     def _load_optional(path_yaml: str) -> None:
@@ -68,7 +69,9 @@ def load_configuration(config_paths: Optional[list[str]] = None):
             config.load_file(path_yaml)
 
     _load_optional(db_auto_yaml)
-    if not get_global_runtime_settings().unit_testing:
+    if get_global_runtime_settings().unit_testing:
+        _load_optional(s3_test_yaml)
+    else:
         _load_optional(local_yaml)
 
     config.apply_path_references()

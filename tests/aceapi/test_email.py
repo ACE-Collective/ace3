@@ -9,13 +9,13 @@ from saq.email_archive import archive_email, register_email_archive
 from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
-from tests.saq.helpers import reset_minio_email_archive_bucket
+from tests.saq.helpers import reset_s3_email_archive_bucket
 
 TEST_MESSAGE_ID = "<test-message-id@example.com>"
 TEST_REMOTE_MESSAGE_ID = "<remote-message-id@example.com>"
 TEST_RECIPIENT = "test@local"
 
-@pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.MINIO])
+@pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.S3])
 def patch_email_archive_target_type(monkeypatch, request):
     monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: request.param)
     return request.param
@@ -24,7 +24,7 @@ def patch_email_archive_target_type(monkeypatch, request):
 @pytest.fixture
 def archived_email(tmpdir):
     """create an archived email for testing"""
-    reset_minio_email_archive_bucket()
+    reset_s3_email_archive_bucket()
 
     email = tmpdir / "test_email.eml"
     email.write_binary(b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body")

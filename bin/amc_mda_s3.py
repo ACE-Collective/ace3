@@ -11,7 +11,8 @@ from tempfile import NamedTemporaryFile
 from typing import Optional
 import uuid
 
-from minio import Minio
+import boto3
+from botocore.config import Config as BotoConfig
 import requests
 import yara
 
@@ -131,25 +132,27 @@ def main(args) -> int:
         else:
             s3_credentials = get_s3_credentials_from_args(args)
 
-        minio_client = Minio(
-            endpoint=args.endpoint,
-            access_key=s3_credentials.access_key,
-            secret_key=s3_credentials.secret_key,
-            session_token=s3_credentials.session_token,
-            secure=args.secure,
-            region=s3_credentials.region
+        protocol = "https" if args.secure else "http"
+        endpoint_url = f"{protocol}://{args.endpoint}"
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=s3_credentials.access_key,
+            aws_secret_access_key=s3_credentials.secret_key,
+            aws_session_token=s3_credentials.session_token,
+            region_name=s3_credentials.region,
+            config=BotoConfig(signature_version="s3v4"),
         )
 
         if args.create_bucket:
-            minio_client.make_bucket(args.bucket)
-
+            s3_client.create_bucket(Bucket=args.bucket)
 
         fp.seek(0, os.SEEK_END)
         length = fp.tell()
         fp.seek(0)
 
-        # upload the file to minio
-        minio_client.put_object(args.bucket, unique_key, fp, length=length)
+        # upload the file to s3
+        s3_client.put_object(Bucket=args.bucket, Key=unique_key, Body=fp, ContentLength=length)
 
         # print the unique key to standard output
         logger.info(f"uploaded file to {unique_key}")
@@ -165,11 +168,10 @@ if __name__ == "__main__":
     parser.add_argument("--bucket", help="The bucket to upload the file to.")
     parser.add_argument("--create-bucket", action="store_true", default=False, help="Whether to create the bucket if it does not exist.")
 
-    #parser.add_argument("--key", required=True, help='The key to upload the file to.')
     parser.add_argument("--spool-size-mb", type=int, default=1, help="The size of the spooled buffer to use.")
-    parser.add_argument("--endpoint", default="minio:9000", help="The endpoint of the minio server. For AWS use s3.amazonaws.com")
-    parser.add_argument("--access-key", help="The access key of the minio server.")
-    parser.add_argument("--secret-key", help="The secret key of the minio server.")
+    parser.add_argument("--endpoint", default="garagehq:3900", help="The endpoint of the s3-compatible server. For AWS use s3.amazonaws.com")
+    parser.add_argument("--access-key", help="The access key for the s3-compatible server.")
+    parser.add_argument("--secret-key", help="The secret key for the s3-compatible server.")
     parser.add_argument("--secure", action="store_true", default=False, help="Whether to use SSL.")
     parser.add_argument("--use-ec2-metadata", action="store_true", default=False, help="Whether to use EC2 metadata to get the access key and secret key.")
     parser.add_argument("--region", help="Optional region to use. If not provided, the region will be inferred.")
@@ -207,5 +209,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main(args))
     except Exception as e:
-        logger.error(f"minio upload failed: {e}")
+        logger.error(f"s3 upload failed: {e}")
         sys.exit(1)
