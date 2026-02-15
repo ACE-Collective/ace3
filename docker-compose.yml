@@ -4,7 +4,7 @@
 #
 #
 # these set the default output docker image tags
-# 
+#
 # ACE3_IMAGE_URL
 # ACE3_PHISHKIT_MANAGER_IMAGE_URL
 # ACE3_PHISHKIT_IMAGE_URL
@@ -94,6 +94,7 @@ services:
 
   # ensures file permissions on named volumes are correct
   ace-root-volume-initialize:
+    platform: linux/amd64
     environment: *common-env
     user: root
     build:
@@ -117,6 +118,7 @@ services:
       - ace
 
   fluent-bit:
+    platform: linux/amd64
     environment: *common-env
     image: ${FLUENT_BIT_DOCKER_IMAGE:-fluent/fluent-bit:latest}
     ports:
@@ -131,11 +133,12 @@ services:
     volumes:
       - ./etc/fluent-bit/fluent-bit.yaml:/fluent-bit/etc/fluent-bit.yaml:ro
       - ace-data:/data
-    networks: 
+    networks:
       - ace
 
   # performs all first-time initialization routines that do not require the db
   ace-initialize:
+    platform: linux/amd64
     environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
@@ -146,10 +149,11 @@ services:
     cap_add:
       - SYS_PTRACE
     hostname: ace
-    networks: 
+    networks:
       - ace
 
   ace-db:
+    platform: linux/amd64
     image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
@@ -181,10 +185,11 @@ services:
     ports:
       - "3306:3306"
     hostname: ${ACE_DB_HOST:-ace-db}
-    networks: 
+    networks:
       - ace
 
   ace-db-readonly:
+    platform: linux/amd64
     image: ${MYSQL_DOCKER_IMAGE:-mysql:9.2}
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
@@ -216,10 +221,11 @@ services:
     ports:
       - "3307:3306"
     hostname: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
-    networks: 
+    networks:
       - ace
 
   qdrant:
+    platform: linux/amd64
     environment:
       QDRANT__SERVICE__ENABLE_TLS: 1
       QDRANT__TLS__CERT: /ssl/ace.cert.pem
@@ -252,7 +258,8 @@ services:
 
   # performs all first-time initialization routines that require the db
   ace-setup:
-    environment: 
+    platform: linux/amd64
+    environment:
       <<: *common-env
       FLUENT_BIT_TAG: ace-setup
     image: ${ACE3_IMAGE_URL:-ace3:latest}
@@ -264,10 +271,11 @@ services:
     cap_add:
       - SYS_PTRACE
     hostname: ace
-    networks: 
+    networks:
       - ace
 
   ace-http-external:
+    platform: linux/amd64
     image: ${NGINX_DOCKER_IMAGE:-nginx:latest}
     restart: always
     logging:
@@ -288,10 +296,11 @@ services:
     hostname: ace-http-external
     ports:
       - "9443:443"
-    networks: 
+    networks:
       - ace
 
   ace-http:
+    platform: linux/amd64
     image: ${NGINX_DOCKER_IMAGE:-nginx:latest}
     restart: always
     logging:
@@ -305,17 +314,18 @@ services:
       - http-api
       - http-api-v2
       - fluent-bit
-    volumes: 
+    volumes:
       - ./etc/nginx/conf.d:/etc/nginx/conf.d:ro
       - ./app/static:/opt/ace/app/static:ro
       - ./ssl:/opt/ace/ssl:ro
     hostname: ace-http
     ports:
       - "8443:443"
-    networks: 
+    networks:
       - ace
 
   http-app:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -331,10 +341,11 @@ services:
       - "3030"
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   http-api:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -354,6 +365,7 @@ services:
       - ace
 
   http-api-v2:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -373,6 +385,7 @@ services:
       - ace
 
   redis:
+    platform: linux/amd64
     image: ${REDIS_DOCKER_IMAGE:-redis:latest}
     ports:
       - "6379:6379"
@@ -399,10 +412,11 @@ services:
     command: ["redis-server", "/auth/etc/redis/redis.conf"]
     volumes:
       - ace-auth:/auth
-    networks: 
+    networks:
       - ace
 
   http-debug:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -418,10 +432,11 @@ services:
       - "5000:5000"
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   network-semaphore:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -438,10 +453,11 @@ services:
       - SYS_PTRACE
     ports:
       - "53559:53559"
-    networks: 
+    networks:
       - ace
 
   git:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -454,10 +470,11 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   cron:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -470,10 +487,11 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   yara:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -488,10 +506,11 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   embedding-service:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -508,10 +527,11 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   remediation:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -530,6 +550,7 @@ services:
       - ace
 
   file-collection:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -549,6 +570,7 @@ services:
 
   # this is the service you will attach to for development purposes
   dev:
+    platform: linux/amd64
     environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     #depends_on:
@@ -562,10 +584,11 @@ services:
       - SYS_PTRACE
     ports:
       - "5001:5000"
-    networks: 
+    networks:
       - ace
 
   ace:
+    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -588,10 +611,11 @@ services:
     hostname: ace
     cap_add:
       - SYS_PTRACE
-    networks: 
+    networks:
       - ace
 
   rabbitmq:
+    platform: linux/amd64
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
     image: ${RABBITMQ_DOCKER_IMAGE:-rabbitmq}
@@ -628,6 +652,7 @@ services:
       - ace
 
   garagehq:
+    platform: linux/amd64
     image: ${GARAGEHQ_DOCKER_IMAGE:-dxflrs/garage:v2.1.0}
     depends_on:
       ace-initialize:
@@ -653,6 +678,7 @@ services:
       - ace-auth:/auth
 
   minio:
+    platform: linux/amd64
     environment:
       MINIO_ROOT_USER: "ace3"
     image: ${MINIO_DOCKER_IMAGE:-minio/minio:latest}
@@ -682,6 +708,7 @@ services:
       - ace
 
   minio-init:
+    platform: linux/amd64
     environment:
       RABBITMQ_HOSTNAME: ${RABBITMQ_HOSTNAME:-rabbitmq}
     image: ${MINIO_MC_DOCKER_IMAGE:-minio/mc:latest}
@@ -700,6 +727,7 @@ services:
       - ace
 
   phishkit-init:
+    platform: linux/amd64
     build:
       context: ./phishkit
       dockerfile: Dockerfile.phishkit
@@ -710,6 +738,7 @@ services:
     entrypoint: /bin/true
 
   phishkit:
+    platform: linux/amd64
     environment:
       MINIO_HOST: ${MINIO_HOSTNAME:-minio}
       MINIO_PORT: 9000
