@@ -96,63 +96,6 @@ then
     echo "${REDIS_PASSWORD}" > /auth/passwords/redis
 fi
 
-if [ ! -d /auth/etc/garagehq ]
-then
-    echo "initializing garagehq authentication"
-    mkdir -p /auth/etc/garagehq
-    if [ -z "$GARAGEHQ_RPC_SECRET" ]
-    then
-        echo "generating random rpc secret for garagehq"
-        GARAGEHQ_RPC_SECRET=$(openssl rand -hex 32)
-    fi
-
-    if [ -z "$GARAGEHQ_ADMIN_TOKEN" ]
-    then
-        echo "generating random admin token for garagehq"
-        GARAGEHQ_ADMIN_TOKEN=$(openssl rand -base64 32)
-    fi
-
-    if [ -z "$GARAGEHQ_METRICS_TOKEN" ]
-    then
-        echo "generating random metrics token for garagehq"
-        GARAGEHQ_METRICS_TOKEN=$(openssl rand -base64 32)
-    fi
-
-    echo "${GARAGEHQ_RPC_SECRET}" > /auth/passwords/garagehq-rpc-secret
-    echo "${GARAGEHQ_ADMIN_TOKEN}" > /auth/passwords/garagehq-admin-token
-    echo "${GARAGEHQ_METRICS_TOKEN}" > /auth/passwords/garagehq-metrics-token
-
-    cat > /auth/etc/garagehq/garage.toml <<EOF
-metadata_dir = "/data/meta"
-data_dir = "/data/data"
-db_engine = "sqlite"
-
-replication_factor = 1
-
-rpc_bind_addr = "[::]:3901"
-rpc_public_addr = "127.0.0.1:3901"
-rpc_secret = "${GARAGEHQ_RPC_SECRET}"
-
-[s3_api]
-s3_region = "garage"
-api_bind_addr = "[::]:3900"
-root_domain = ".s3.garage.localhost"
-
-[s3_web]
-bind_addr = "[::]:3902"
-root_domain = ".web.garage.localhost"
-index = "index.html"
-
-[k2v_api]
-api_bind_addr = "[::]:3904"
-
-[admin]
-api_bind_addr = "[::]:3903"
-admin_token = "${GARAGEHQ_ADMIN_TOKEN}"
-metrics_token = "${GARAGEHQ_METRICS_TOKEN}"
-EOF
-fi
-
 if [ ! -d /auth/etc/rabbitmq ]
 then
     echo "initializing rabbitmq authentication"

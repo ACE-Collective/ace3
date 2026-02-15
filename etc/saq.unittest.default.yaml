@@ -655,10 +655,14 @@ test_api:
   username: user
   password: pass
 
+storage:
+  target: local
+  base_dir: data_unittest/storage
+
 # s3 test credentials are loaded from ace-auth mount (garage-init writes garage-test-* keys)
-s3:
-  access_key: file:/auth/passwords/garage-test-access-key
-  secret_key: file:/auth/passwords/garage-test-secret-key
+# s3:
+#   access_key: file:/auth/passwords/garage-test-access-key
+#   secret_key: file:/auth/passwords/garage-test-secret-key
 
 service_llm_embedding:
   enabled: false

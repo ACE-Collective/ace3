@@ -649,7 +649,16 @@ def wait_for_process(process: Process):
         raise RuntimeError("engine did not stop")
 
 def reset_s3_email_archive_bucket():
-    from saq.storage.s3 import get_s3_client
+    try:
+        from saq.storage.s3 import get_s3_client
+    except Exception:
+        logging.warning("boto3 not available, skipping s3 email archive bucket reset")
+        return
+
+    if get_config().s3 is None:
+        logging.debug("s3 configuration not available, skipping s3 email archive bucket reset")
+        return
+
     client = get_s3_client()
     bucket = get_config().email_archive.s3_bucket
     kwargs = {"Bucket": bucket}

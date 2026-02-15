@@ -12,14 +12,23 @@ from pathlib import Path
 from typing import Union, Optional
 from urllib.parse import urljoin
 
-import boto3
-import botocore.exceptions
-from botocore.config import Config as BotoConfig
+try:
+    import boto3
+    import botocore.exceptions
+    from botocore.config import Config as BotoConfig
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
 
 
 from saq.configuration.config import get_config
 from saq.storage.interface import StorageInterface
 from saq.storage.error import StorageError
+
+
+def _require_boto3():
+    if not HAS_BOTO3:
+        raise StorageError("boto3 is required for S3 storage - install it with: pip install boto3")
 
 @dataclass
 class S3Credentials:
@@ -30,6 +39,7 @@ class S3Credentials:
 
 def get_s3_credentials_from_config() -> S3Credentials:
     """Get the S3 credentials from the configuration."""
+    _require_boto3()
     return S3Credentials(
         access_key=get_config().s3.access_key,
         secret_key=get_config().s3.secret_key,
@@ -37,6 +47,7 @@ def get_s3_credentials_from_config() -> S3Credentials:
 
 def get_s3_client():
     """Returns an S3-compatible client configured with the current configuration."""
+    _require_boto3()
 
     s3_credentials = get_s3_credentials_from_config()
 
@@ -90,6 +101,8 @@ class S3Storage(StorageInterface):
             session_token: Session token for temporary credentials (optional)
             config: Custom configuration dict (optional), supports 'verify' key
         """
+        _require_boto3()
+
         self.host = host
         self.port = port
         self.secure = secure

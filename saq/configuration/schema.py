@@ -98,6 +98,10 @@ class RabbitMQConfig(BaseModel):
     host: str = Field(..., description="rabbitmq host")
     port: int = Field(..., description="rabbitmq port")
 
+class StorageConfig(BaseModel):
+    target: str = Field(default="local", description="storage target: local or s3")
+    base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
+
 class S3Config(BaseModel):
     host: str = Field(..., description="s3-compatible storage host")
     port: int = Field(..., description="s3-compatible storage port")
@@ -400,6 +404,7 @@ class ACEConfig(BaseModel):
     llm: Optional[LLMConfig] = None
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
+    storage: Optional[StorageConfig] = None
     s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None
     redis_local: Optional[RedisConfig] = Field(default=None, alias="redis-local")

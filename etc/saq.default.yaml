@@ -142,16 +142,20 @@ rabbitmq:
   host: rabbitmq
   port: 5672
 
-s3:
-  host: garagehq
-  port: 3900
-  access_key: file:/auth/passwords/garage-access-key
-  secret_key: file:/auth/passwords/garage-secret-key
-  # set to use SSL
-  secure: false
-  # set to validate SSL certification
-  cert_check: false
-  region: garage
+storage:
+  target: local
+  base_dir: data/storage
+
+# s3:
+#   host: garagehq
+#   port: 3900
+#   access_key: file:/auth/passwords/garage-access-key
+#   secret_key: file:/auth/passwords/garage-secret-key
+#   # set to use SSL
+#   secure: false
+#   # set to validate SSL certification
+#   cert_check: false
+#   region: garage
 
 # global redis settings
 redis:
@@ -244,15 +248,18 @@ service_journal_email_collector:
   name: journal_email_collector
   python_module: saq.collectors.email.journal
   python_class: JournalEmailCollectorService
-  description: Journal Email Collector - collects journal emails from an S3 bucket
+  description: Journal Email Collector - collects journal emails from a local directory or S3 bucket
   enabled: true
   workload_type: journal
+  # source type: local or s3
+  source: local
+  # local source settings
+  source_directory: data/journal-emails
   delete_files: true
-  # how often to poll the s3 bucket for new emails (in seconds)
+  # how often to poll for new emails (in seconds)
   collection_frequency: 5
-  # the s3 bucket to poll for journal emails
+  # s3 source settings (only used when source is s3)
   bucket_name: journal-emails
-  # delete s3 objects after (successful) collection
   delete_s3_objects: true
   # any email that matches these rules are ignored
   blacklist_yara_rule_path: etc/blacklist.yar
@@ -468,7 +475,7 @@ messaging:
 message_routing: {}
 
 email_archive:
-  target: s3 # possible values: local, s3
+  target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
