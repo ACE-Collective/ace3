@@ -45,16 +45,28 @@ def get_s3_credentials_from_config() -> S3Credentials:
         secret_key=get_config().s3.secret_key,
         region=get_config().s3.region)
 
-def get_s3_client():
-    """Returns an S3-compatible client configured with the current configuration."""
+def get_s3_client(region: Optional[str] = None):
+    """Returns an S3 client.
+
+    If a self-hosted S3-compatible configuration exists (get_config().s3), returns
+    a client configured with explicit endpoint and credentials for that service.
+
+    Otherwise, returns a native AWS S3 client that uses the standard boto3
+    credential chain (IAM roles, environment variables, etc.)."""
     _require_boto3()
 
+    s3_config = get_config().s3
+    if s3_config is None:
+        # AWS-native path: let boto3 handle credentials via IAM roles, env vars, etc.
+        return boto3.client("s3", region_name=region)
+
+    # Self-hosted S3-compatible path (e.g. MinIO, GarageHQ)
     s3_credentials = get_s3_credentials_from_config()
 
-    host = get_config().s3.host
-    port = get_config().s3.port
-    secure = get_config().s3.secure
-    cert_check = get_config().s3.cert_check
+    host = s3_config.host
+    port = s3_config.port
+    secure = s3_config.secure
+    cert_check = s3_config.cert_check
 
     protocol = "https" if secure else "http"
     endpoint_url = f"{protocol}://{host}:{port}"

@@ -23,7 +23,7 @@ def _extract_sha256_from_file_name(file_path: str) -> str:
 class EmailArchiveS3(EmailArchiveLocal):
     def email_exists_in_s3(self, sha256_hash: str) -> bool:
         bucket = get_config().email_archive.s3_bucket
-        s3_client = get_s3_client()
+        s3_client = get_s3_client(region=get_config().email_archive.s3_region)
 
         try:
             s3_client.head_object(Bucket=bucket, Key=sha256_hash)
@@ -39,7 +39,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         bucket = get_config().email_archive.s3_bucket
         metadata = { "message_id": message_id }
         logging.info("uploading email archive %s to %s with metadata %s", sha256_hash, bucket, metadata)
-        s3_client = get_s3_client()
+        s3_client = get_s3_client(region=get_config().email_archive.s3_region)
         s3_client.upload_file(local_path, bucket, sha256_hash, ExtraArgs={"Metadata": metadata})
         logging.debug("uploaded email archive %s to %s", sha256_hash, bucket)
         return True
@@ -61,7 +61,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         fd, temp_path = tempfile.mkstemp(prefix=f'archive_{sha256_hash}.', suffix='.gz.e', dir=os.path.dirname(target_path))
         os.close(fd)
 
-        s3_client = get_s3_client()
+        s3_client = get_s3_client(region=get_config().email_archive.s3_region)
         logging.info("downloading email archive %s to %s", sha256_hash, temp_path)
         s3_client.download_file(
             get_config().email_archive.s3_bucket,
