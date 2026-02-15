@@ -264,12 +264,12 @@ def main():
             continue
 
         # grant ace3api access to all buckets
-        print(f"    granting ace3api access...")
+        print("    granting ace3api access...")
         grant_bucket_permission(session, bucket_id, ace3api_creds["access_key"])
 
         # grant ace3apitest access only to test buckets
         if bucket_name in TEST_BUCKETS:
-            print(f"    granting ace3apitest access...")
+            print("    granting ace3apitest access...")
             grant_bucket_permission(session, bucket_id, ace3apitest_creds["access_key"])
 
     # touch marker file

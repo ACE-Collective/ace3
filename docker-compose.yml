@@ -712,7 +712,6 @@ services:
     environment:
       S3_HOST: ${GARAGEHQ_HOSTNAME:-garagehq}
       S3_PORT: 3900
-      S3_ACCESS_KEY: ace3api
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     hostname: phishkit
     build:
