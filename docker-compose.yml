@@ -658,6 +658,7 @@ services:
   garage-init:
     environment:
       GARAGE_ADMIN_TOKEN: ${GARAGEHQ_ADMIN_TOKEN:-}
+      GARAGE_NODE_CAPACITY_GB: ${GARAGE_NODE_CAPACITY_GB:-100}
     image: python:3.12-slim
     depends_on:
       garagehq:

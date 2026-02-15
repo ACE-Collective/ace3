@@ -16,11 +16,25 @@ from urllib3.util.retry import Retry
 
 # constants
 GARAGE_ADMIN_URL = "http://garagehq:3903"
-CAPACITY_100GB = 100 * 1024 * 1024 * 1024  # 107374182400
+DEFAULT_CAPACITY_GB = 100
 AUTH_DIR = "/auth/passwords"
 INIT_MARKER = "/data/.init_done"
 BUCKETS = ["ace3", "ace3test", "journal-emails", "ace-email-archive", "ace-email-archive-test"]
 TEST_BUCKETS = {"ace3test", "ace-email-archive-test"}
+
+
+def get_node_capacity_bytes() -> int:
+    """return node capacity in bytes from GARAGE_NODE_CAPACITY_GB (default 100)"""
+    raw = os.environ.get("GARAGE_NODE_CAPACITY_GB", str(DEFAULT_CAPACITY_GB))
+    try:
+        gb = int(raw)
+    except ValueError:
+        sys.stderr.write(f"ERROR: GARAGE_NODE_CAPACITY_GB must be an integer, got {raw!r}\n")
+        sys.exit(1)
+    if gb <= 0:
+        sys.stderr.write("ERROR: GARAGE_NODE_CAPACITY_GB must be positive\n")
+        sys.exit(1)
+    return gb * (1024 * 1024 * 1024)
 
 
 def load_admin_token() -> str:
@@ -98,12 +112,13 @@ def configure_cluster_layout(session: requests.Session):
     print(f"  node ID: {node_id}")
 
     # update layout
+    capacity_bytes = get_node_capacity_bytes()
     layout_update = {
         "roles": [
             {
                 "id": node_id,
                 "zone": "dc1",
-                "capacity": CAPACITY_100GB,
+                "capacity": capacity_bytes,
                 "tags": []
             }
         ]
