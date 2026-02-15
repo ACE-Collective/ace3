@@ -84,6 +84,7 @@ x-common-volumes: &common-volumes
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
   - ./data/external:/opt/ace/data/external
+  - ace-phishkit:/phishkit
 
 services:
 
@@ -710,8 +711,6 @@ services:
   phishkit:
     platform: linux/amd64
     environment:
-      S3_HOST: ${GARAGEHQ_HOSTNAME:-garagehq}
-      S3_PORT: 3900
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     hostname: phishkit
     build:
@@ -730,8 +729,6 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
-      garage-init:
-        condition: service_completed_successfully
       redis:
         condition: service_healthy
       fluent-bit:

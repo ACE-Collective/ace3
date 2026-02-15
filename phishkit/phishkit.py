@@ -11,8 +11,7 @@ import os
 from subprocess import PIPE, Popen
 import uuid
 from celery import Celery
-import boto3
-from botocore.config import Config as BotoConfig
+import shutil
 from yaml import load, SafeLoader
 import magic
 
@@ -30,12 +29,6 @@ if os.path.exists("/auth/passwords/rabbitmq"):
 else:
     rabbitmq_password = ""
 
-if os.path.exists("/auth/passwords/garage-secret-key"):
-    with open("/auth/passwords/garage-secret-key", "r") as fp:
-        s3_password = fp.read().strip()
-else:
-    s3_password = ""
-
 app = Celery(
     "phishkit",
     backend=f"redis://ace3:{redis_password}@redis:6379/7",
@@ -47,36 +40,9 @@ app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
 def ping() -> str:
     return "pong"
 
-def _get_s3_client():
-    """Create a boto3 S3 client configured for the local S3-compatible storage."""
-    endpoint_url = f"http://{os.getenv('S3_HOST')}:{os.getenv('S3_PORT')}"
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
-        aws_secret_access_key=s3_password,
-        region_name="garage",
-        config=BotoConfig(signature_version="s3v4"),
-    )
-
 def _process_output(job_id: str, output_dir: str) -> str:
-    # connect to s3-compatible storage
-    s3 = _get_s3_client()
-
-    # collect all the output files and put them in s3
-    bucket_name = "ace3"
-    file_prefix = f"phishkit/output/{job_id}"
-    logging.info(f"looking for files in {output_dir}")
-    for root, _, files in os.walk(output_dir):
-        for file in files:
-            file_path = os.path.join(root, file)
-            relative_file_path = os.path.relpath(file_path, output_dir)
-            file_destination = f"{file_prefix}/{relative_file_path}"
-            logger.info(f"uploading {file_path} to {bucket_name}/{file_destination}")
-            s3.upload_file(file_path, bucket_name, file_destination)
-
-    # return the object prefix
-    return file_prefix
+    """Returns the output directory path for the completed scan job."""
+    return output_dir
 
 def _correct_file_extension(file_path: str) -> str:
     """Attempts to correct the file extension of the given file based on the mime type.
@@ -109,7 +75,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(bucket: str, file_path: str) -> str:
+def scan_file(file_path: str) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -117,14 +83,11 @@ def scan_file(bucket: str, file_path: str) -> str:
     os.makedirs(input_dir)
     os.makedirs(output_dir)
 
-    logger.info(f"started file job {job_id} for {bucket}/{file_path}")
+    logger.info("started file job %s for %s", job_id, file_path)
 
-    # create a place to put the rendered file
+    # copy the file into the job input directory
     target_file_path = f"{input_dir}/{os.path.basename(file_path)}"
-
-    # download the file from s3-compatible storage
-    s3 = _get_s3_client()
-    s3.download_file(bucket, file_path, target_file_path)
+    shutil.copy2(file_path, target_file_path)
 
     # correct the file extension
     target_file_path = _correct_file_extension(target_file_path)

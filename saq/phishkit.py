@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Optional, Union
 import uuid
 
@@ -7,8 +8,6 @@ from celery.exceptions import TimeoutError
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.configuration.config import get_config
-from saq.constants import BUCKET_ACE3
-from saq.storage.factory import get_storage_system
 
 def initialize_phishkit():
     from phishkit.phishkit import app
@@ -24,36 +23,40 @@ def ping_phishkit() -> str:
     result = pk_ping.delay()
     return result.get(timeout=5)
 
-def _download_files(bucket_name: str, prefix: str, output_dir: str) -> list[str]:
-    # make sure the output directory exists
+def _copy_files(source_dir: str, output_dir: str) -> list[str]:
+    """Copy all files from source_dir into output_dir, preserving relative paths."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # list all the files and download them
     files = []
-    for remote_path in get_storage_system().list_objects(BUCKET_ACE3, recursive=True, prefix=prefix):
-        local_file_path = os.path.join(output_dir, os.path.relpath(remote_path, start=prefix))
-        get_storage_system().download_file(BUCKET_ACE3, remote_path, local_file_path)
-        files.append(local_file_path)
+    for root, _, filenames in os.walk(source_dir):
+        for filename in filenames:
+            src_path = os.path.join(root, filename)
+            relative_path = os.path.relpath(src_path, start=source_dir)
+            dest_path = os.path.join(output_dir, relative_path)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+            files.append(dest_path)
 
     return files
 
 def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_file as pk_scan_file
 
-    # upload the file to storage first
-    upload_prefix = f"phishkit/uploads/{uuid.uuid4()}"
-    remote_file_path = f"{upload_prefix}/{os.path.basename(file_path)}"
-    get_storage_system().upload_file(file_path, BUCKET_ACE3, remote_file_path)
+    # copy the file to the shared volume so the celery worker can access it
+    shared_dir = f"/phishkit/input/{uuid.uuid4()}"
+    os.makedirs(shared_dir, exist_ok=True)
+    shared_file_path = os.path.join(shared_dir, os.path.basename(file_path))
+    shutil.copy2(file_path, shared_file_path)
 
     # scan the file
-    result = pk_scan_file.delay(BUCKET_ACE3, remote_file_path)
+    result = pk_scan_file.delay(shared_file_path)
 
     if is_async:
         return result.id
     else:
-        # download the files
-        download_prefix = result.get(timeout=timeout)
-        return _download_files(BUCKET_ACE3, download_prefix, output_dir)
+        # copy the results from the shared volume
+        result_dir = result.get(timeout=timeout)
+        return _copy_files(result_dir, output_dir)
 
 def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_url as pk_scan_url
@@ -62,16 +65,16 @@ def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float =
     if is_async:
         return result.id
     else:
-        # download the files
-        prefix = result.get(timeout=timeout)
-        return _download_files(BUCKET_ACE3, prefix, output_dir)
+        # copy the results from the shared volume
+        result_dir = result.get(timeout=timeout)
+        return _copy_files(result_dir, output_dir)
 
 def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -> Optional[list[str]]:
     """Gets the result of a scan asynchronously. Returns the list of files if the scan is complete, otherwise None."""
     result = AsyncResult(result_id)
     try:
-        prefix = result.get(timeout=5)
-        return _download_files(BUCKET_ACE3, prefix, output_dir)
+        result_dir = result.get(timeout=5)
+        return _copy_files(result_dir, output_dir)
     except TimeoutError:
         return None
 
