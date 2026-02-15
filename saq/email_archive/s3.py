@@ -3,7 +3,12 @@ import os
 import tempfile
 from typing import Optional
 
-import botocore.exceptions
+try:
+    import botocore.exceptions  # noqa
+    HAS_BOTOCORE = True
+except ImportError:
+    HAS_BOTOCORE = False
+
 from saq.configuration.config import get_config
 from saq.email_archive.local import EmailArchiveLocal
 from saq.storage.s3 import get_s3_client

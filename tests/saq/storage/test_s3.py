@@ -11,6 +11,7 @@ import pytest
 import uuid
 from pathlib import Path
 
+pytest.importorskip("boto3")
 
 from saq.configuration.config import get_config
 from saq.storage.s3 import S3Storage
@@ -22,6 +23,8 @@ pytestmark = pytest.mark.integration
 def s3_config():
     """Get S3 configuration from the system config."""
     config = get_config().s3
+    if config is None:
+        pytest.skip("s3 configuration not available")
     return {
         "host": config.host,
         "port": config.port,

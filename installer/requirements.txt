@@ -1,6 +1,5 @@
 beautifulsoup4
 black
-boto3
 celery[redis]
 certifi
 construct

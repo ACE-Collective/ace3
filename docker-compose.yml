@@ -16,7 +16,6 @@
 # MYSQL_DOCKER_IMAGE
 # NGINX_DOCKER_IMAGE
 # RABBITMQ_DOCKER_IMAGE
-# GARAGEHQ_DOCKER_IMAGE
 # QDRANT_DOCKER_IMAGE
 # DOCKER_IN_DOCKER_IMAGE
 # UBUNTU_DOCKER_IMAGE
@@ -32,9 +31,6 @@
 # REDIS_PASSWORD
 # RABBITMQ_PASSWORD
 # QDRANT_API_KEY
-# GARAGEHQ_RPC_SECRET
-# GARAGEHQ_ADMIN_TOKEN
-# GARAGEHQ_METRICS_TOKEN
 # FLASK_SECRET_KEY (used by flask to encrypt and verify session data)
 #
 # host name overrides if services are running on different hosts
@@ -42,7 +38,6 @@
 # ACE_DB_READONLY_HOST
 # RABBITMQ_HOSTNAME
 # REDIS_HOSTNAME
-# GARAGEHQ_HOSTNAME
 # QDRANT_HOSTNAME
 #
 # configuration options
@@ -63,9 +58,6 @@ x-common-env: &common-env
   REDIS_PASSWORD: ${REDIS_PASSWORD:-}
   RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-}
   QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-  GARAGEHQ_RPC_SECRET: ${GARAGEHQ_RPC_SECRET:-}
-  GARAGEHQ_ADMIN_TOKEN: ${GARAGEHQ_ADMIN_TOKEN:-}
-  GARAGEHQ_METRICS_TOKEN: ${GARAGEHQ_METRICS_TOKEN:-}
   ACE_API_KEY: ${ACE_API_KEY:-}
   FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-}
   AWS_REGION:
@@ -84,6 +76,7 @@ x-common-volumes: &common-volumes
   - ace-user-home:/home/ace
   - ./ssl:/opt/ace/ssl
   - ./data/external:/opt/ace/data/external
+  - ace-phishkit:/phishkit
 
 services:
 
@@ -646,55 +639,6 @@ services:
     networks:
       - ace
 
-  garagehq:
-    platform: linux/amd64
-    image: ${GARAGEHQ_DOCKER_IMAGE:-dxflrs/garage:v2.1.0}
-    depends_on:
-      ace-initialize:
-        condition: service_completed_successfully
-      fluent-bit:
-        condition: service_started
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: localhost:24224
-        tag: garagehq
-        fluentd-async: "true"
-    restart: always
-    hostname: ${GARAGEHQ_HOSTNAME:-garagehq}
-    ports:
-      - "3900:3900"
-      - "3901:3901"
-      - "3902:3902"
-      - "3903:3903"
-    entrypoint: "/garage -c /auth/etc/garagehq/garage.toml server"
-    healthcheck:
-      test: ["CMD", "/garage", "-c", "/auth/etc/garagehq/garage.toml", "status"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    volumes:
-      - ace-garage:/data
-      - ace-auth:/auth
-    networks:
-      - ace
-
-  garage-init:
-    environment:
-      GARAGE_ADMIN_TOKEN: ${GARAGEHQ_ADMIN_TOKEN:-}
-    image: python:3.12-slim
-    depends_on:
-      garagehq:
-        condition: service_healthy
-    command: /bin/sh -c "pip install -q requests && python3 /tmp/garage-init.py"
-    volumes:
-      - ace-garage:/data
-      - ace-auth:/auth
-      - ./bin/garage-init.py:/tmp/garage-init.py
-    networks:
-      - ace
-
   phishkit-init:
     platform: linux/amd64
     build:
@@ -709,9 +653,6 @@ services:
   phishkit:
     platform: linux/amd64
     environment:
-      S3_HOST: ${GARAGEHQ_HOSTNAME:-garagehq}
-      S3_PORT: 3900
-      S3_ACCESS_KEY: ace3api
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     hostname: phishkit
     build:
@@ -730,8 +671,6 @@ services:
         condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
-      garage-init:
-        condition: service_completed_successfully
       redis:
         condition: service_healthy
       fluent-bit:
@@ -761,8 +700,6 @@ volumes:
     name: ace-yara
   ace-hunt:
     name: ace-hunt
-  ace-garage:
-    name: ace-garage
   ace-phishkit:
     name: ace-phishkit
   ace-auth:

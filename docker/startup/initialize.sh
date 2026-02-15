@@ -23,7 +23,7 @@ then
         -days 3650 \
         -nodes \
         -subj "/C=US/ST=Ohio/L=Springfield/O=CompanyName/OU=CompanySectionName/CN=ace" \
-        -addext "subjectAltName=DNS:ace,DNS:ace-db,DNS:ace-db-readonly,DNS:ace-http-external,DNS:ace-http,DNS:garagehq,DNS:phishkit,DNS:qdrant,DNS:rabbitmq,DNS:redis,DNS:localhost,IP:127.0.0.1"
+        -addext "subjectAltName=DNS:ace,DNS:ace-db,DNS:ace-db-readonly,DNS:ace-http-external,DNS:ace-http,DNS:phishkit,DNS:qdrant,DNS:rabbitmq,DNS:redis,DNS:localhost,IP:127.0.0.1"
 
     # create the client certificate for testing external access
     echo "creating client certificate and key"
@@ -99,6 +99,7 @@ for dir in \
     data/var \
     data/scan_failures \
     data/storage \
+    data/journal-emails \
     data/stats/modules/ace \
     data/archive/email \
     data/archive/smtp_stream \

@@ -7,11 +7,12 @@ from typing import Any, Optional
 from deepmerge import Merger
 import yaml
 
-from saq.environment import get_global_runtime_settings
+from saq.environment import get_global_runtime_settings, get_base_dir
 from saq.configuration.encryption import decrypt_password
 
 ENV_PREFIX = "env:"
 ENCRYPTED_PREFIX = "encrypted:"
+FILE_PREFIX = "file:"
 
 custom_merger = Merger(
     # type strategies
@@ -65,6 +66,13 @@ class YAMLConfig:
                     return value
 
                 return self._get_decrypted_password(key)
+
+            if value.startswith(FILE_PREFIX):
+                path = value[len(FILE_PREFIX):]
+                if not os.path.isabs(path):
+                    path = os.path.join(get_base_dir(), path)
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read().rstrip()
 
         # otherwise no special handling
         return value
@@ -268,6 +276,12 @@ class YAMLConfig:
                                         f"configuration referenced unknown environment variable {var}"
                                     )
                                 value[index] = os.environ[var]
+                            elif item.startswith("file:"):
+                                file_path = item[len("file:"):]
+                                if not os.path.isabs(file_path):
+                                    file_path = os.path.join(get_base_dir(), file_path)
+                                with open(file_path, "r", encoding="utf-8") as f:
+                                    value[index] = f.read().rstrip()
                 elif isinstance(value, str):
                     if value.startswith("encrypted:"):
                         # decrypt string values that start with "encrypted:"
@@ -286,6 +300,12 @@ class YAMLConfig:
                                 f"configuration referenced unknown environment variable {var}"
                             )
                         mapping[key] = os.environ[var]
+                    elif value.startswith("file:"):
+                        file_path = value[len("file:"):]
+                        if not os.path.isabs(file_path):
+                            file_path = os.path.join(get_base_dir(), file_path)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            mapping[key] = f.read().rstrip()
 
         # process all values in the configuration
         for key, value in self._data.items():

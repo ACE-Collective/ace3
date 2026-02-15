@@ -6,7 +6,7 @@ import pytest
 from saq.configuration.yaml_parser import (
     YAMLConfig,
 )
-from saq.environment import get_global_runtime_settings
+from saq.environment import get_global_runtime_settings, get_base_dir
 
 
 @pytest.mark.unit
@@ -562,3 +562,72 @@ section1:
     assert config._data["section1"]["key1"] == "value1"  # Original value preserved
     assert config._data["section1"]["key2"] == "updated_value2"  # Value updated
     assert config._data["section1"]["key3"] == "value3"  # New value added
+
+
+@pytest.mark.unit
+def test_yaml_config_file_prefix_absolute_path(tmpdir):
+    """Test file: prefix resolution with an absolute path."""
+    secret_file = tmpdir.join("secret.txt")
+    secret_file.write("my_secret_value")
+
+    config = YAMLConfig()
+    result = config._resolve_value(f"file:{secret_file}")
+    assert result == "my_secret_value"
+
+
+@pytest.mark.unit
+def test_yaml_config_file_prefix_relative_path(tmpdir, monkeypatch):
+    """Test file: prefix resolution with a relative path."""
+    sub = tmpdir.mkdir("secrets")
+    secret_file = sub.join("db_password.txt")
+    secret_file.write("relative_secret")
+
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
+
+    config = YAMLConfig()
+    result = config._resolve_value("file:secrets/db_password.txt")
+    assert result == "relative_secret"
+
+
+@pytest.mark.unit
+def test_yaml_config_file_prefix_missing_file():
+    """Test file: prefix raises FileNotFoundError for missing files."""
+    config = YAMLConfig()
+    with pytest.raises(FileNotFoundError):
+        config._resolve_value("file:/nonexistent/path/to/secret.txt")
+
+
+@pytest.mark.unit
+def test_yaml_config_file_prefix_strips_trailing_whitespace(tmpdir):
+    """Test file: prefix strips trailing whitespace from file contents."""
+    secret_file = tmpdir.join("secret_with_newlines.txt")
+    secret_file.write("secret\n\n")
+
+    config = YAMLConfig()
+    result = config._resolve_value(f"file:{secret_file}")
+    assert result == "secret"
+
+
+@pytest.mark.unit
+def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
+    """Test resolve_all_values handles file: prefix in dict values and list items."""
+    secret1 = tmpdir.join("secret1.txt")
+    secret1.write("dict_secret\n")
+    secret2 = tmpdir.join("secret2.txt")
+    secret2.write("list_secret\n")
+
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
+
+    config = YAMLConfig()
+    config._data = {
+        "section": {
+            "password": f"file:{secret1}",
+            "tokens": [f"file:{secret2}", "plain_value"],
+        }
+    }
+
+    config.resolve_all_values()
+
+    assert config._data["section"]["password"] == "dict_secret"
+    assert config._data["section"]["tokens"][0] == "list_secret"
+    assert config._data["section"]["tokens"][1] == "plain_value"

@@ -175,12 +175,6 @@ pipeline:
 
     - name: file
       path: /data/logs
-      match: "garagehq"
-      format: out_file
-      workers: 1
-
-    - name: file
-      path: /data/logs
       match: "phishkit"
       format: out_file
       workers: 1
