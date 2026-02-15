@@ -11,7 +11,8 @@ import os
 from subprocess import PIPE, Popen
 import uuid
 from celery import Celery
-from minio import Minio
+import boto3
+from botocore.config import Config as BotoConfig
 from yaml import load, SafeLoader
 import magic
 
@@ -29,11 +30,11 @@ if os.path.exists("/auth/passwords/rabbitmq"):
 else:
     rabbitmq_password = ""
 
-if os.path.exists("/auth/passwords/minio"):
-    with open("/auth/passwords/minio", "r") as fp:
-        minio_password = fp.read().strip()
+if os.path.exists("/auth/passwords/garage-secret-key"):
+    with open("/auth/passwords/garage-secret-key", "r") as fp:
+        s3_password = fp.read().strip()
 else:
-    minio_password = ""
+    s3_password = ""
 
 app = Celery(
     "phishkit",
@@ -46,16 +47,23 @@ app.conf.broker_transport_options = {"global_keyprefix": "phishkit"}
 def ping() -> str:
     return "pong"
 
-def _process_output(job_id: str, output_dir: str) -> str:
-    # connect to minio
-    minio = Minio(
-        f"{os.getenv('MINIO_HOST')}:{os.getenv('MINIO_PORT')}",
-        access_key=os.getenv("MINIO_ACCESS_KEY"),
-        secret_key=minio_password,
-        secure=False,  # HTTP, not HTTPS
+def _get_s3_client():
+    """Create a boto3 S3 client configured for the local S3-compatible storage."""
+    endpoint_url = f"http://{os.getenv('S3_HOST')}:{os.getenv('S3_PORT')}"
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
+        aws_secret_access_key=s3_password,
+        region_name="garage",
+        config=BotoConfig(signature_version="s3v4"),
     )
 
-    # collect all the output files and put them in minio
+def _process_output(job_id: str, output_dir: str) -> str:
+    # connect to s3-compatible storage
+    s3 = _get_s3_client()
+
+    # collect all the output files and put them in s3
     bucket_name = "ace3"
     file_prefix = f"phishkit/output/{job_id}"
     logging.info(f"looking for files in {output_dir}")
@@ -65,7 +73,7 @@ def _process_output(job_id: str, output_dir: str) -> str:
             relative_file_path = os.path.relpath(file_path, output_dir)
             file_destination = f"{file_prefix}/{relative_file_path}"
             logger.info(f"uploading {file_path} to {bucket_name}/{file_destination}")
-            minio.fput_object(bucket_name, file_destination, file_path)
+            s3.upload_file(file_path, bucket_name, file_destination)
 
     # return the object prefix
     return file_prefix
@@ -114,14 +122,9 @@ def scan_file(bucket: str, file_path: str) -> str:
     # create a place to put the rendered file
     target_file_path = f"{input_dir}/{os.path.basename(file_path)}"
 
-    # download the file from minio
-    minio = Minio(
-        f"{os.getenv('MINIO_HOST')}:{os.getenv('MINIO_PORT')}",
-        access_key=os.getenv("MINIO_ACCESS_KEY"),
-        secret_key=minio_password,
-        secure=False,  # HTTP, not HTTPS
-    )
-    minio.fget_object(bucket, file_path, target_file_path)
+    # download the file from s3-compatible storage
+    s3 = _get_s3_client()
+    s3.download_file(bucket, file_path, target_file_path)
 
     # correct the file extension
     target_file_path = _correct_file_extension(target_file_path)

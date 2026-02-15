@@ -3208,7 +3208,7 @@ s3_upload_parser = s3_sp.add_parser("upload")
 s3_upload_parser.add_argument("--file", help="The file to upload.")
 s3_upload_parser.add_argument("--bucket", help="The bucket to upload the file to.")
 s3_upload_parser.add_argument("--key", help="The key to upload the file to.")
-s3_upload_parser.add_argument("--config", help="The configuration to use for the MinIO client.")
+s3_upload_parser.add_argument("--config", help="The configuration to use for the S3 client.")
 s3_upload_parser.set_defaults(func=s3_upload_file)
 
 # TODO find a better way to do this

@@ -142,17 +142,16 @@ rabbitmq:
   host: rabbitmq
   port: 5672
 
-minio:
-  host: minio
-  port: 9000
+s3:
+  host: garagehq
+  port: 3900
   access_key: ace3api
-  secret_key: encrypted:minio.password
+  secret_key: encrypted:s3.password
   # set to use SSL
   secure: false
-  # set to valicate SSL certification
+  # set to validate SSL certification
   cert_check: false
-  # leave empty for MinIO server
-  region:
+  region: garage
 
 # global redis settings
 redis:
@@ -249,8 +248,10 @@ service_journal_email_collector:
   enabled: true
   workload_type: journal
   delete_files: true
-  # this collector can run continuously without spinning the cpu
-  collection_frequency: 0
+  # how often to poll the s3 bucket for new emails (in seconds)
+  collection_frequency: 5
+  # the s3 bucket to poll for journal emails
+  bucket_name: journal-emails
   # delete s3 objects after (successful) collection
   delete_s3_objects: true
   # any email that matches these rules are ignored
@@ -467,14 +468,14 @@ messaging:
 message_routing: {}
 
 email_archive:
-  target: minio # possible values: minio, s3
+  target: s3 # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
 
   # s3 settings
   # controls which section of the config to use for the s3 config
-  s3_config: minio
+  s3_config: s3
   # the bucket to use for the email archive
   s3_bucket: ace-email-archive
   # the region to use for the email archive

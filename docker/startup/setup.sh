@@ -34,9 +34,9 @@ if [ -f "/auth/passwords/redis" ] && [ ! -f "/auth/passwords/redis.loaded" ]; th
     ace enc config set redis.password --load-from-file /auth/passwords/redis && touch /auth/passwords/redis.loaded
 fi
 
-if [ -f "/auth/passwords/minio" ] && [ ! -f "/auth/passwords/minio.loaded" ]; then
-    echo "loading minio auth into ace"
-    ace enc config set minio.password --load-from-file /auth/passwords/minio && touch /auth/passwords/minio.loaded
+if [ -f "/auth/passwords/garage-secret-key" ] && [ ! -f "/auth/passwords/garage-secret-key.loaded" ]; then
+    echo "loading s3 auth into ace"
+    ace enc config set s3.password --load-from-file /auth/passwords/garage-secret-key && touch /auth/passwords/garage-secret-key.loaded
 fi
 
 if [ -f "/auth/passwords/rabbitmq" ] && [ ! -f "/auth/passwords/rabbitmq.loaded" ]; then
@@ -62,4 +62,18 @@ fi
 if [ -f "/auth/keys/flask-secret-key" ]; then
     echo "loading flask secret key into ace"
     ace enc config set flask.secret_key --load-from-file /auth/keys/flask-secret-key
+fi
+
+# write S3 test credentials for unit tests
+# garage-init generates the API keys and saves them to /auth/passwords/
+# the test config needs these actual credentials since GarageHQ auto-generates them
+if [ -f "/auth/passwords/garage-test-access-key" ] && [ -f "/auth/passwords/garage-test-secret-key" ]; then
+    S3_TEST_ACCESS_KEY=$(cat /auth/passwords/garage-test-access-key)
+    S3_TEST_SECRET_KEY=$(cat /auth/passwords/garage-test-secret-key)
+    cat > /docker-entrypoint-initdb.d/saq.s3.test.passwords.yaml <<EOF
+s3:
+  access_key: ${S3_TEST_ACCESS_KEY}
+  secret_key: ${S3_TEST_SECRET_KEY}
+EOF
+    echo "wrote S3 test credentials to saq.s3.test.passwords.yaml"
 fi

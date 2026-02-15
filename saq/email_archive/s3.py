@@ -2,11 +2,12 @@ import logging
 import os
 import tempfile
 from typing import Optional
+
+import botocore.exceptions
 from saq.configuration.config import get_config
 from saq.email_archive.local import EmailArchiveLocal
+from saq.storage.s3 import get_s3_client
 
-import boto3
-import botocore.exceptions
 
 def _extract_sha256_from_file_name(file_path: str) -> str:
     """Given a local email archive file path, extract the sha256 hash from the file name."""
@@ -14,20 +15,17 @@ def _extract_sha256_from_file_name(file_path: str) -> str:
     # file name should be sha256_hash.lower().gz.e
     return os.path.basename(file_path).split('.')[0]
 
-def _get_s3_client() -> boto3.client:
-    return boto3.client("s3", region_name=get_config().email_archive.s3_region)
-
 class EmailArchiveS3(EmailArchiveLocal):
     def email_exists_in_s3(self, sha256_hash: str) -> bool:
         bucket = get_config().email_archive.s3_bucket
-        s3_client = _get_s3_client()
+        s3_client = get_s3_client()
 
         try:
             s3_client.head_object(Bucket=bucket, Key=sha256_hash)
             return True
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == "404":
-                logging.debug(f"email {sha256_hash} does not exist in s3: {e}")
+                logging.debug("email %s does not exist in s3: %s", sha256_hash, e)
                 return False
 
             raise e
@@ -35,10 +33,10 @@ class EmailArchiveS3(EmailArchiveLocal):
     def upload_to_s3(self, local_path: str, message_id: str, sha256_hash: str) -> bool:
         bucket = get_config().email_archive.s3_bucket
         metadata = { "message_id": message_id }
-        logging.info(f"uploading email archive {sha256_hash} to {bucket} with metadata {metadata}")
-        s3_client = _get_s3_client()
+        logging.info("uploading email archive %s to %s with metadata %s", sha256_hash, bucket, metadata)
+        s3_client = get_s3_client()
         s3_client.upload_file(local_path, bucket, sha256_hash, ExtraArgs={"Metadata": metadata})
-        logging.debug(f"uploaded email archive {sha256_hash} to {bucket}")
+        logging.debug("uploaded email archive %s to %s", sha256_hash, bucket)
         return True
 
     def download_from_s3(self, target_path: str) -> str:
@@ -58,8 +56,8 @@ class EmailArchiveS3(EmailArchiveLocal):
         fd, temp_path = tempfile.mkstemp(prefix=f'archive_{sha256_hash}.', suffix='.gz.e', dir=os.path.dirname(target_path))
         os.close(fd)
 
-        s3_client = _get_s3_client()
-        logging.info(f"downloading email archive {sha256_hash} to {temp_path}")
+        s3_client = get_s3_client()
+        logging.info("downloading email archive %s to %s", sha256_hash, temp_path)
         s3_client.download_file(
             get_config().email_archive.s3_bucket,
             sha256_hash,
@@ -80,14 +78,13 @@ class EmailArchiveS3(EmailArchiveLocal):
 
         # have we already uploaded this file?
         if self.email_exists_in_s3(sha256_hash):
-            logging.info(f"email {sha256_hash} already exists in S3")
+            logging.info("email %s already exists in s3", sha256_hash)
             return sha256_hash
 
         # upload it to S3
         self.upload_to_s3(local_path, message_id, sha256_hash)
 
         # NOTE we're basically using the old (local) system as a cache for the S3 data
-        #os.unlink(local_path)
 
         # return the S3 path
         return sha256_hash
@@ -98,7 +95,7 @@ class EmailArchiveS3(EmailArchiveLocal):
         if not os.path.exists(target_path):
             self.download_from_s3(target_path)
 
-        # and then iteratate on it
+        # and then iterate on it
         yield from super().iter_decrypt_email(target_path, chunk_size)
 
     def archive_email_is_local(self, message_id: str) -> bool:

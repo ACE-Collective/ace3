@@ -20,7 +20,7 @@ from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_data_dir
 from saq.util.time import local_time
 
-@pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.MINIO])
+@pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.S3])
 def patch_email_archive_target_type(monkeypatch, request):
     monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: request.param)
     return request.param

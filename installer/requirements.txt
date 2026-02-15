@@ -28,7 +28,6 @@ Jinja2
 ldap3
 LnkParse3
 lxml
-minio
 msoffcrypto-tool
 numpy
 olefile
@@ -36,7 +35,6 @@ oletools
 opencv-python
 pcodedmp
 pefile
-pika
 Pillow
 plyara
 progress

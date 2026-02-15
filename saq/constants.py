@@ -1178,16 +1178,16 @@ CONFIG_RABBITMQ_PASSWORD = "password"
 CONFIG_RABBITMQ_HOST = "host"
 CONFIG_RABBITMQ_PORT = "port"
 
-# minio
-CONFIG_MINIO = "minio"
-CONFIG_MINIO_HOST = "host"
-CONFIG_MINIO_PORT = "port"
-CONFIG_MINIO_ACCESS_KEY = "access_key"
-CONFIG_MINIO_SECRET_KEY = "secret_key"
-CONFIG_MINIO_SECURE = "secure"
-CONFIG_MINIO_CERT_CHECK = "cert_check"
-CONFIG_MINIO_REGION = "region"
-CONFIG_MINIO_USE_EC2_METADATA = "use_ec2_metadata"
+# s3-compatible storage
+CONFIG_S3 = "s3"
+CONFIG_S3_HOST = "host"
+CONFIG_S3_PORT = "port"
+CONFIG_S3_ACCESS_KEY = "access_key"
+CONFIG_S3_SECRET_KEY = "secret_key"
+CONFIG_S3_SECURE = "secure"
+CONFIG_S3_CERT_CHECK = "cert_check"
+CONFIG_S3_REGION = "region"
+CONFIG_S3_USE_EC2_METADATA = "use_ec2_metadata"
 
 # redis
 CONFIG_REDIS = "redis"

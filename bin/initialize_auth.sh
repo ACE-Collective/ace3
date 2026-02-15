@@ -96,19 +96,6 @@ then
     echo "${REDIS_PASSWORD}" > /auth/passwords/redis
 fi
 
-if [ ! -d /auth/etc/minio ]
-then
-    echo "initializing minio authentication"
-    mkdir -p /auth/etc/minio
-    if [ -z "$MINIO_PASSWORD" ]
-    then
-        echo "generating random password for minio"
-        MINIO_PASSWORD=$(genpw 12 16)
-    fi
-
-    echo "${MINIO_PASSWORD}" > /auth/passwords/minio
-fi
-
 if [ ! -d /auth/etc/garagehq ]
 then
     echo "initializing garagehq authentication"

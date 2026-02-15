@@ -2,14 +2,14 @@
 Storage factory for creating and configuring storage adapters.
 
 This module provides a factory class that creates storage adapters based on
-the current configuration, currently supporting MinIO storage.
+the current configuration, currently supporting S3-compatible storage.
 """
 
 import logging
 
 from saq.configuration.config import get_config
 from saq.storage.adapter import StorageAdapter
-from saq.storage.minio import MinIOStorage
+from saq.storage.s3 import S3Storage
 from saq.storage.error import StorageError
 
 STORAGE_SYSTEM = None
@@ -18,23 +18,20 @@ STORAGE_SYSTEM = None
 class StorageFactory:
     """
     Factory class for creating storage adapters.
-    
+
     This factory creates and configures storage adapters based on the current
-    configuration. It currently supports MinIO storage and can be extended
+    configuration. It currently supports S3-compatible storage and can be extended
     to support additional storage backends in the future.
     """
-    
+
     @staticmethod
     def get_storage_system() -> StorageAdapter:
         """
         Create and return a storage adapter configured for the current storage system.
-        
-        Currently returns a MinIO storage adapter configured from the application
-        configuration.
-        
+
         Returns:
             StorageAdapter: A configured storage adapter
-            
+
         Raises:
             StorageError: If storage creation fails due to configuration issues
         """
@@ -42,16 +39,15 @@ class StorageFactory:
 
         if STORAGE_SYSTEM is not None:
             return STORAGE_SYSTEM
-        
+
         try:
-            minio_config = get_config().minio
-            
-            # Extract MinIO configuration values
-            host = minio_config.host
-            port = minio_config.port
-            access_key = minio_config.access_key
-            secret_key = minio_config.secret_key
-            
+            s3_config = get_config().s3
+
+            host = s3_config.host
+            port = s3_config.port
+            access_key = s3_config.access_key
+            secret_key = s3_config.secret_key
+
             # Validate required configuration
             if not all([host, port, access_key, secret_key]):
                 missing = []
@@ -63,14 +59,14 @@ class StorageFactory:
                     missing.append("access_key")
                 if not secret_key:
                     missing.append("secret_key")
-                
-                raise StorageError(f"Missing required MinIO configuration: {', '.join(missing)}")
-            
+
+                raise StorageError(f"missing required S3 configuration: {', '.join(missing)}")
+
             # Convert port to integer
             try:
                 port_int = int(port)
             except (ValueError, TypeError):
-                raise StorageError(f"Invalid MinIO port configuration: {port}")
+                raise StorageError(f"invalid S3 port configuration: {port}")
 
             return StorageFactory.create_storage_with_config(
                 host=host,
@@ -79,17 +75,15 @@ class StorageFactory:
                 secret_key=secret_key,
                 secure=False
             )
-            
+
         except StorageError:
-            # Re-raise storage errors
             raise
 
         except Exception as e:
-            # Wrap other errors in StorageError
-            error_msg = f"Failed to create storage adapter: {str(e)}"
+            error_msg = f"failed to create storage adapter: {str(e)}"
             logging.error(error_msg)
             raise StorageError(error_msg)
-    
+
     @staticmethod
     def create_storage_with_config(
         host: str,
@@ -100,49 +94,42 @@ class StorageFactory:
     ) -> StorageAdapter:
         """
         Create a storage adapter with explicit configuration.
-        
-        This method allows creating storage adapters with custom configuration
-        instead of reading from the application configuration.
-        
+
         Args:
-            host: MinIO server hostname or IP address
-            port: MinIO server port
-            access_key: MinIO access key
-            secret_key: MinIO secret key
+            host: S3-compatible server hostname or IP address
+            port: S3-compatible server port
+            access_key: S3 access key
+            secret_key: S3 secret key
             secure: Whether to use HTTPS (default: False)
-            
+
         Returns:
             StorageAdapter: A configured storage adapter
-            
+
         Raises:
             StorageError: If storage creation fails
         """
         try:
-            minio_storage = MinIOStorage(
+            s3_storage = S3Storage(
                 host=host,
                 port=port,
                 access_key=access_key,
                 secret_key=secret_key,
                 secure=secure
             )
-            
-            storage_adapter = StorageAdapter(minio_storage)
+
+            storage_adapter = StorageAdapter(s3_storage)
             return storage_adapter
-            
+
         except Exception as e:
-            error_msg = f"Failed to create storage adapter with custom config: {str(e)}"
+            error_msg = f"failed to create storage adapter with custom config: {str(e)}"
             logging.error(error_msg)
             raise StorageError(error_msg)
 
 
-# Convenience function for backward compatibility
 def get_storage_system() -> StorageAdapter:
     """
     Convenience function to create a storage adapter.
-    
-    This function provides a simple way to get a configured storage adapter
-    without needing to instantiate the factory class.
-    
+
     Returns:
         StorageAdapter: A configured storage adapter
     """
@@ -150,6 +137,6 @@ def get_storage_system() -> StorageAdapter:
 
     if STORAGE_SYSTEM is not None:
         return STORAGE_SYSTEM
-    
+
     STORAGE_SYSTEM = StorageFactory.get_storage_system()
     return STORAGE_SYSTEM
