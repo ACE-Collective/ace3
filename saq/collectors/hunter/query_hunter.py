@@ -77,6 +77,7 @@ class QueryHuntConfig(HuntConfig):
     use_index_time: bool = Field(..., description="Whether to use the index time as the time of the query.")
     offset: Optional[str] = Field(default=None, description="An optional offset to run the query at.")
     group_by: Optional[str] = Field(default=None, description="The field to group the results by.")
+    description_field: Optional[str] = Field(default=None, description="The event field to use for the alert description suffix. If not set, the group_by field value is used.")
     query_file_path: Optional[str] = Field(alias="search", default=None, description="The path to the search query file.")
     query: Optional[str] = Field(default=None, description="The search query to execute.")
     observable_mapping: list[ObservableMapping] = Field(default_factory=list, description="The mapping of fields to observables.")
@@ -171,6 +172,10 @@ class QueryHunt(Hunt):
     @property
     def group_by(self) -> Optional[str]:
         return self.config.group_by
+
+    @property
+    def description_field(self) -> Optional[str]:
+        return self.config.description_field
 
     @property
     def query_file_path(self) -> Optional[str]:
@@ -562,6 +567,14 @@ class QueryHunt(Hunt):
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
                 submission = _create_submission(event)
                 submission.root.event_time = event_time
+
+                if self.description_field is not None and self.description_field in event:
+                    description_value = event[self.description_field]
+                    if isinstance(description_value, list):
+                        description_value = description_value[0] if description_value else ""
+                    if description_value:
+                        submission.root.description += f': {description_value}'
+
                 for observable in observables:
                     submission.root.add_observable(observable)
 
@@ -594,7 +607,13 @@ class QueryHunt(Hunt):
                     if grouping_target not in event_grouping:
                         event_grouping[grouping_target] = _create_submission(event)
                         if grouping_target != "ALL":
-                            event_grouping[grouping_target].root.description += f': {grouping_target}'
+                            if self.description_field is not None and self.description_field in event:
+                                description_value = event[self.description_field]
+                                if isinstance(description_value, list):
+                                    description_value = description_value[0] if description_value else grouping_target
+                                event_grouping[grouping_target].root.description += f': {description_value}'
+                            else:
+                                event_grouping[grouping_target].root.description += f': {grouping_target}'
                         submissions.append(event_grouping[grouping_target])
 
                     for observable in observables:

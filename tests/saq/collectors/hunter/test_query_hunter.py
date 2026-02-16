@@ -55,6 +55,7 @@ def default_hunt(
     use_index_time=True,
     query="index=test sourcetype=test test_string",
     group_by="field1",
+    description_field=None,
     **kwargs):
 
     config = QueryHuntConfig(
@@ -73,6 +74,7 @@ def default_hunt(
         full_coverage=full_coverage,
         use_index_time=use_index_time,
         group_by=group_by,
+        description_field=description_field,
         **kwargs
     )
 
@@ -1898,3 +1900,141 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
     relationship = cmdline_observable.relationships[0]
     assert relationship.r_type == R_RELATED_TO
     assert relationship.target == ipv4_observable
+
+
+@pytest.mark.unit
+def test_description_field_with_grouping(monkeypatch):
+    """test that description_field overrides group_by value in alert descriptions"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test",
+        group_by="alert_id",
+        description_field="alert_title",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "alert_id": "id-001", "alert_title": "Suspicious Login"},
+        {"src": "1.2.3.5", "alert_id": "id-001", "alert_title": "Suspicious Login"},
+        {"src": "5.6.7.8", "alert_id": "id-002", "alert_title": "Malware Detected"},
+    ])
+    assert len(submissions) == 2
+
+    for submission in submissions:
+        # description should use alert_title, NOT alert_id
+        assert "id-001" not in submission.root.description
+        assert "id-002" not in submission.root.description
+        assert "Suspicious Login" in submission.root.description or "Malware Detected" in submission.root.description
+
+
+@pytest.mark.unit
+def test_description_field_ungrouped(monkeypatch):
+    """test that description_field appends to description when no grouping"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test",
+        group_by=None,
+        description_field="alert_title",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "alert_title": "Suspicious Login"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].root.description == "test: Suspicious Login"
+
+
+@pytest.mark.unit
+def test_description_field_fallback_when_missing(monkeypatch):
+    """test that when description_field is set but missing from event, falls back to group_by value"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test",
+        group_by="alert_id",
+        description_field="alert_title",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    # event has alert_id but NOT alert_title
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "alert_id": "id-001"},
+    ])
+    assert len(submissions) == 1
+    # should fall back to group_by value (alert_id)
+    assert ": id-001" in submissions[0].root.description
+
+
+@pytest.mark.unit
+def test_description_field_ignored_for_group_all(monkeypatch):
+    """test that description_field is ignored when group_by=ALL"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test",
+        group_by="ALL",
+        description_field="alert_title",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "alert_title": "Suspicious Login"},
+        {"src": "5.6.7.8", "alert_title": "Malware Detected"},
+    ])
+    assert len(submissions) == 1
+    # description should NOT contain alert_title values — just name + event count
+    assert submissions[0].root.description == "test (2 events)"
+
+
+@pytest.mark.unit
+def test_description_field_backward_compat(monkeypatch):
+    """test that without description_field, behavior is identical to before"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test",
+        group_by="src",
+        description_field=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ]
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+        {"src": "1.2.3.5"},
+    ])
+    assert len(submissions) == 2
+    for submission in submissions:
+        assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
