@@ -1159,7 +1159,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
             ObservableMapping(
                 fields=["src_ip"],
                 type="ipv4",
-                ignored_values=["0.0.0.0", "127.0.0.1"]
+                ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
             )
         ]
     )
@@ -1210,7 +1210,7 @@ def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, 
             ObservableMapping(
                 fields=["src_ip"],
                 type="ipv4",
-                ignored_values=["0.0.0.0"]
+                ignored_values=[r"0\.0\.0\.0"]
             )
         ]
     )
@@ -1483,6 +1483,47 @@ def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdi
     ipv4_observables = [o for o in submission.root.observables if o.type == F_IPV4]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "0.0.0.0"
+
+
+@pytest.mark.unit
+def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir):
+    """test that ignored_values supports regex patterns via re.fullmatch()"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_ignored_values_regex",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["src_ip"],
+                type="ipv4",
+                ignored_values=[r"10\.0\..*"]
+            )
+        ]
+    )
+
+    # 10.0.1.1 should be ignored by the regex pattern
+    submissions = hunt.process_query_results([{"src_ip": "10.0.1.1"}])
+    assert submissions
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 0
+
+    # 10.0.255.3 should also be ignored
+    submissions = hunt.process_query_results([{"src_ip": "10.0.255.3"}])
+    assert submissions
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 0
+
+    # 192.168.1.1 should NOT be ignored
+    submissions = hunt.process_query_results([{"src_ip": "192.168.1.1"}])
+    assert submissions
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
+    assert len(ipv4_observables) == 1
+    assert ipv4_observables[0].value == "192.168.1.1"
 
 
 @pytest.mark.unit
