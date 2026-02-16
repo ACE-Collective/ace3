@@ -92,3 +92,12 @@ find -L "$DATA_DIR/stats/modules" -maxdepth 2 -mindepth 2 -type d -mtime +$DELET
 # delete scan_failures older than 1 days
 SCAN_FAILURES_DIR="$DATA_DIR/$(ace config -v service_yara.scan_failure_dir)"
 find -L "$SCAN_FAILURES_DIR" -maxdepth 1 -mindepth 1 -type f -mtime +1 -delete
+
+# delete phishkit data older than 3 days
+if [ -d /phishkit/input ]; then
+    find /phishkit/input -maxdepth 1 -mindepth 1 -type d -mtime +3 -exec rm -rf '{}' \;
+fi
+
+if [ -d /phishkit/output ]; then
+    find /phishkit/output -maxdepth 1 -mindepth 1 -type d -mtime +3 -exec rm -rf '{}' \;
+fi
