@@ -182,7 +182,7 @@ def test_api_observable_mapping_model():
     assert mapping.tags == ["external", "suspicious"]
     assert mapping.directives == ["analyze_ip"]
     assert mapping.time is True
-    assert mapping.ignored_values == ["0.0.0.0", "127.0.0.1"]
+    assert mapping.ignored_values == [r"0\.0\.0\.0", r"127\.0\.0\.1"]
     assert mapping.display_type == "custom_ip"
     assert mapping.display_value == "Source IP"
 
