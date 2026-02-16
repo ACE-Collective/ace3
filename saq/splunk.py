@@ -4,13 +4,21 @@ import logging
 import os
 import os.path
 import re
+import ssl
 import time
 import urllib.parse
 
 from datetime import UTC, datetime, timedelta
+from http import client as http_client
+from io import BytesIO
 from requests.exceptions import HTTPError, Timeout, ProxyError, ConnectionError
-from typing import Optional, Tuple, List
+from typing import TYPE_CHECKING, Optional, Tuple, List
 
+if TYPE_CHECKING:
+    from saq.configuration.schema import ProxyConfig
+
+from splunklib import __version__ as splunklib_version
+from splunklib.binding import _spliturl
 from splunklib.client import Job
 import splunklib.client as client
 from splunklib.results import JSONResultsReader
@@ -20,9 +28,66 @@ from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
 
-#
-# NOTE: proxy support is missing
-#
+
+def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
+    """Returns a splunklib-compatible HTTP request handler that tunnels through an HTTP CONNECT proxy."""
+
+    def connect(scheme, host, port):
+        conn_kwargs = {}
+        if timeout is not None:
+            conn_kwargs["timeout"] = timeout
+
+        ssl_context = ssl._create_unverified_context()
+
+        if scheme == "https":
+            # HTTPSConnection applies TLS after the CONNECT tunnel is established,
+            # targeting the tunnel host — even when the proxy itself is plain HTTP.
+            proxy_conn = http_client.HTTPSConnection(
+                proxy_host, proxy_port,
+                context=ssl_context,
+                **conn_kwargs,
+            )
+            proxy_conn.set_tunnel(host, port)
+        elif proxy_scheme == "https":
+            proxy_conn = http_client.HTTPSConnection(
+                proxy_host, proxy_port,
+                context=ssl_context,
+                **conn_kwargs,
+            )
+        else:
+            proxy_conn = http_client.HTTPConnection(proxy_host, proxy_port, **conn_kwargs)
+
+        return proxy_conn
+
+    def request(url, message, **kwargs):
+        scheme, host, port, path = _spliturl(url)
+        body = message.get("body", "")
+        head = {
+            "Content-Length": str(len(body)),
+            "Host": host,
+            "User-Agent": f"splunk-sdk-python/{splunklib_version}",
+            "Accept": "*/*",
+            "Connection": "Close",
+        }
+        for key, value in message["headers"]:
+            head[key] = value
+
+        connection = connect(scheme, host, port)
+        try:
+            connection.request(message.get("method", "GET"), path, body, head)
+            if timeout is not None:
+                connection.sock.settimeout(timeout)
+            response = connection.getresponse()
+            return {
+                "status": response.status,
+                "reason": response.reason,
+                "headers": dict(response.getheaders()),
+                "body": BytesIO(response.read()),
+            }
+        finally:
+            connection.close()
+
+    return request
 
 def extract_event_timestamp(event:dict) -> datetime:
     """Extracts the event time from the event as a datetime
@@ -57,7 +122,7 @@ class SplunkQueryObject:
         username: Optional[str] = None,
         password: Optional[str] = None,
         token: Optional[str] = None,
-        proxies: Optional[dict] = None,
+        proxies: Optional["ProxyConfig"] = None,
         user_context: Optional[str] = None,
         app: Optional[str] = None,
         dispatch_state: Optional[str]=None,
@@ -104,6 +169,13 @@ class SplunkQueryObject:
             connect_kwargs["token"] = token
         else:
             raise ValueError("username and password or token must be provided")
+
+        if proxies is not None:
+            connect_kwargs["handler"] = _proxy_handler(
+                proxy_host=proxies.host,
+                proxy_port=proxies.port,
+                proxy_scheme=proxies.transport,
+            )
 
         self.client = client.connect(**connect_kwargs)
 
