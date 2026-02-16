@@ -32,14 +32,25 @@ class GitRepo:
         """Returns True if the local repo clone exists at local_path, False otherwise."""
         return os.path.isdir(os.path.join(self.config.local_path, ".git"))
 
+    def _run_git_command(self, args: list[str], error_message: str) -> tuple[str, str]:
+        """Runs a git command with timeout and error handling."""
+        process = subprocess.Popen(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+        try:
+            stdout, stderr = process.communicate(timeout=self.config.git_command_timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        if process.returncode != 0:
+            raise RuntimeError(f"{error_message}: {stderr}")
+        return stdout, stderr
+
     def clone_repo(self) -> bool:
         """Clones the repo at the given URL to the given local path and branch."""
-        process = subprocess.Popen(["git", "clone", self.config.git_url, self.config.local_path, "--branch", self.config.branch], 
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to clone repo {self.config.git_url} to {self.config.local_path}: {stderr}")
-
+        self._run_git_command(
+            ["git", "clone", self.config.git_url, self.config.local_path, "--branch", self.config.branch],
+            f"failed to clone repo {self.config.git_url} to {self.config.local_path}",
+        )
         return True
 
     def get_repo_branch(self) -> str:
@@ -47,24 +58,21 @@ class GitRepo:
         if not self.clone_exists():
             raise RuntimeError(f"repo {self.config.local_path} does not exist")
 
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "rev-parse", "--abbrev-ref", "HEAD"], 
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to get branch of repo {self.config.local_path}: {stderr}")
-
+        stdout, _ = self._run_git_command(
+            ["git", "-C", self.config.local_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            f"failed to get branch of repo {self.config.local_path}",
+        )
         return stdout.strip()
 
     def change_repo_branch(self, branch: str) -> bool:
         """Changes the branch of the repo at the given path."""
         if not self.clone_exists():
             raise RuntimeError(f"repo {self.config.local_path} does not exist")
-        
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "checkout", branch], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to change branch of repo {self.config.local_path} to {branch}: {stderr}")
 
+        self._run_git_command(
+            ["git", "-C", self.config.local_path, "checkout", branch],
+            f"failed to change branch of repo {self.config.local_path} to {branch}",
+        )
         return True
 
     def repo_is_up_to_date(self) -> bool:
@@ -73,16 +81,16 @@ class GitRepo:
             return False
 
         # fetch remote first
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "fetch", "--all"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to fetch remote of repo {self.config.local_path}: {stderr}")
+        self._run_git_command(
+            ["git", "-C", self.config.local_path, "fetch", "--all"],
+            f"failed to fetch remote of repo {self.config.local_path}",
+        )
 
         # check if there are local changes (dirty working tree, staged changes, untracked files)
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "status", "--porcelain"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to check if repo {self.config.local_path} is up to date: {stderr}")
+        stdout, _ = self._run_git_command(
+            ["git", "-C", self.config.local_path, "status", "--porcelain"],
+            f"failed to check if repo {self.config.local_path} is up to date",
+        )
 
         # if there are local changes, repo is not up to date
         if stdout.strip() != "":
@@ -90,8 +98,16 @@ class GitRepo:
 
         # check if local branch is behind remote branch
         remote_branch = f"origin/{self.config.branch}"
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "rev-list", "--count", f"HEAD..{remote_branch}"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
+        process = subprocess.Popen(
+            ["git", "-C", self.config.local_path, "rev-list", "--count", f"HEAD..{remote_branch}"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=self.config.git_command_timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
         if process.returncode != 0:
             # if remote branch doesn't exist or other error, assume up to date
             return True
@@ -102,11 +118,10 @@ class GitRepo:
 
     def pull_repo(self) -> bool:
         """Pulls the latest changes from the given URL to the given local path and branch."""
-        process = subprocess.Popen(["git", "-C", self.config.local_path, "pull", self.config.git_url, self.config.branch], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(f"failed to pull latest changes from {self.config.git_url} to {self.config.local_path}: {stderr}")
-
+        self._run_git_command(
+            ["git", "-C", self.config.local_path, "pull", self.config.git_url, self.config.branch],
+            f"failed to pull latest changes from {self.config.git_url} to {self.config.local_path}",
+        )
         return True
 
     def update(self) -> bool:
@@ -166,7 +181,12 @@ class GitManagerService(ACEServiceInterface):
 
     def run(self, repo: GitRepo):
         while not self.shutdown_event.is_set():
-            repo.update()
+            try:
+                repo.update()
+            except subprocess.TimeoutExpired:
+                logging.warning("git command timed out for repo %s", repo.config.name)
+            except Exception:
+                logging.error("unexpected error updating repo %s", repo.config.name, exc_info=True)
             self.shutdown_event.wait(repo.config.update_frequency)
 
     def start_single_threaded(self):
