@@ -100,6 +100,7 @@ services:
       - ./ssl:/opt/ace/ssl
       - ace-auth:/auth
       - ./data/external:/opt/ace/data/external
+      - ace-phishkit:/phishkit
     cap_add:
       - SYS_PTRACE
     networks:
