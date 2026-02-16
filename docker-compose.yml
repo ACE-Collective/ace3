@@ -94,12 +94,14 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
     volumes:
+      - .:/opt/ace
       - ace-data:/opt/ace/data
       - ace-sql:/docker-entrypoint-initdb.d
       - ace-sql-readonly:/ace-sql-readonly
       - ./ssl:/opt/ace/ssl
       - ace-auth:/auth
       - ./data/external:/opt/ace/data/external
+      - ace-phishkit:/phishkit
     cap_add:
       - SYS_PTRACE
     networks:
