@@ -365,6 +365,7 @@ class GitRepoConfig(BaseModel):
     update_frequency: int = Field(..., description="The frequency to update the repo in seconds.")
     branch: str = Field(..., description="The branch to use for the repo.")
     ssh_key_path: Optional[str] = Field(default=None, description="The path to an ssh key to use for the repo.")
+    git_command_timeout: int = Field(default=30, description="The timeout in seconds for git commands.")
 
 class RemediatorConfig(BaseModel):
     name: str = Field(..., description="The name of the remediator.")

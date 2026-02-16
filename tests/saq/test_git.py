@@ -1,12 +1,15 @@
+import logging
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig
 from saq.git import (
+    GitManagerService,
     GitRepo,
     get_configured_repos,
 )
@@ -100,6 +103,31 @@ class TestGitRepo:
 
         assert "GIT_SSH_COMMAND" in env
         assert env["GIT_SSH_COMMAND"] == "ssh -i /path/to/ssh/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
+
+    def test_git_command_timeout_defaults_to_30(self):
+        repo = GitRepo(config=GitRepoConfig(
+            name="repo",
+            description="repo",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=3600,
+            branch="main"
+        ))
+
+        assert repo.config.git_command_timeout == 30
+
+    def test_git_command_timeout_can_be_set(self):
+        repo = GitRepo(config=GitRepoConfig(
+            name="repo",
+            description="repo",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=3600,
+            branch="main",
+            git_command_timeout=60
+        ))
+
+        assert repo.config.git_command_timeout == 60
 
     def test_env_property_with_empty_ssh_key_path(self):
         repo = GitRepo(config=GitRepoConfig(
@@ -908,3 +936,136 @@ class TestGetConfiguredRepos:
         get_config().clear_git_repo_configs()
         repos = get_configured_repos()
         assert len(repos) == 0
+
+
+@pytest.mark.unit
+class TestRunGitCommand:
+    def _make_repo(self, timeout=30):
+        return GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=3600,
+            branch="main",
+            git_command_timeout=timeout,
+        ))
+
+    @patch("saq.git.subprocess.Popen")
+    def test_successful_command_returns_stdout_stderr(self, mock_popen):
+        mock_process = MagicMock()
+        mock_process.communicate.return_value = ("output\n", "")
+        mock_process.returncode = 0
+        mock_popen.return_value = mock_process
+
+        repo = self._make_repo()
+        stdout, stderr = repo._run_git_command(["git", "status"], "failed")
+
+        assert stdout == "output\n"
+        assert stderr == ""
+        mock_process.communicate.assert_called_once_with(timeout=30)
+
+    @patch("saq.git.subprocess.Popen")
+    def test_nonzero_return_code_raises_runtime_error(self, mock_popen):
+        mock_process = MagicMock()
+        mock_process.communicate.return_value = ("", "fatal: not a git repository")
+        mock_process.returncode = 1
+        mock_popen.return_value = mock_process
+
+        repo = self._make_repo()
+
+        with pytest.raises(RuntimeError, match="command failed"):
+            repo._run_git_command(["git", "status"], "command failed")
+
+    @patch("saq.git.subprocess.Popen")
+    def test_timeout_raises_and_kills_process(self, mock_popen):
+        mock_process = MagicMock()
+        mock_process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="git", timeout=30),
+            ("", ""),
+        ]
+        mock_popen.return_value = mock_process
+
+        repo = self._make_repo(timeout=30)
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            repo._run_git_command(["git", "fetch"], "fetch failed")
+
+        mock_process.kill.assert_called_once()
+
+
+@pytest.mark.unit
+class TestRunLoop:
+    def _make_repo(self):
+        return GitRepo(config=GitRepoConfig(
+            name="test-repo",
+            description="test",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=0,
+            branch="main",
+        ))
+
+    def test_timeout_expired_is_caught_and_logged_as_warning(self, caplog):
+        service = GitManagerService()
+        repo = self._make_repo()
+
+        call_count = 0
+
+        def fake_update():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise subprocess.TimeoutExpired(cmd="git", timeout=30)
+            service.shutdown_event.set()
+
+        repo.update = fake_update
+
+        with caplog.at_level(logging.WARNING):
+            service.run(repo)
+
+        assert any("git command timed out for repo test-repo" in r.message for r in caplog.records)
+        assert call_count == 2
+
+    def test_general_exception_is_caught_and_logged_as_error(self, caplog):
+        service = GitManagerService()
+        repo = self._make_repo()
+
+        call_count = 0
+
+        def fake_update():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("something went wrong")
+            service.shutdown_event.set()
+
+        repo.update = fake_update
+
+        with caplog.at_level(logging.ERROR):
+            service.run(repo)
+
+        assert any("unexpected error updating repo test-repo" in r.message for r in caplog.records)
+        assert call_count == 2
+
+    def test_shutdown_event_wait_called_regardless_of_exception(self):
+        service = GitManagerService()
+        repo = self._make_repo()
+
+        wait_calls = []
+
+        def tracking_wait(timeout=None):
+            wait_calls.append(timeout)
+            service.shutdown_event.set()
+            return True
+
+        service.shutdown_event.wait = tracking_wait
+
+        def failing_update():
+            raise RuntimeError("boom")
+
+        repo.update = failing_update
+        service.run(repo)
+
+        assert len(wait_calls) == 1
+        assert wait_calls[0] == 0
