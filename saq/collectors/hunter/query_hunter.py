@@ -58,10 +58,11 @@ class ObservableMapping(BaseModel):
     directives: list[str] = Field(default_factory=list, description="The directives to add to the observable")
     tags: list[str] = Field(default_factory=list, description="The tags to add to the observable")
     volatile: bool = Field(default=False, description="Whether to add the observable as volatile. Volatile observables are added for the purposes of detection.")
-    ignored_values: list[str] = Field(default_factory=list, description="A list of values to ignore when mapping the observable.")
+    ignored_values: list[str] = Field(default_factory=list, description="A list of regex patterns to ignore when mapping the observable. Patterns are matched with re.fullmatch().")
     display_type: Optional[str] = Field(default=None, description="The display type to use for the observable.")
     display_value: Optional[str] = Field(default=None, description="The display value to use for the observable.")
     relationships: list[RelationshipMapping] = Field(default_factory=list, description="The relationships to add to the observable")
+    _ignored_value_patterns: list[re.Pattern] = []
 
     @model_validator(mode='after')
     def validate_display_value_for_file_type(self):
@@ -69,6 +70,20 @@ class ObservableMapping(BaseModel):
         if self.type == F_FILE and self.display_value is not None:
             raise ValueError(f"display_value is not supported for file type observables (type={self.type})")
         return self
+
+    @model_validator(mode='after')
+    def compile_ignored_value_patterns(self):
+        """Pre-compile ignored_values into regex patterns."""
+        for p in self.ignored_values:
+            try:
+                self._ignored_value_patterns.append(re.compile(p))
+            except re.error as e:
+                logging.error(f"invalid ignored_values regex pattern {p!r}: {e}")
+        return self
+
+    def is_ignored_value(self, value: str) -> bool:
+        """Check if a value matches any ignored_values regex pattern."""
+        return any(p.fullmatch(value) for p in self._ignored_value_patterns)
 
 class QueryHuntConfig(HuntConfig):
     time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
@@ -84,7 +99,22 @@ class QueryHuntConfig(HuntConfig):
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config().query_hunter.max_result_count, description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
-    ignored_values: list[str] = Field(default_factory=list, description="A global list of values to ignore that applies to all observable mappings.")
+    ignored_values: list[str] = Field(default_factory=list, description="A global list of regex patterns to ignore that applies to all observable mappings. Patterns are matched with re.fullmatch().")
+    _ignored_value_patterns: list[re.Pattern] = []
+
+    @model_validator(mode='after')
+    def compile_ignored_value_patterns(self):
+        """Pre-compile ignored_values into regex patterns."""
+        for p in self.ignored_values:
+            try:
+                self._ignored_value_patterns.append(re.compile(p))
+            except re.error as e:
+                logging.error(f"invalid ignored_values regex pattern {p!r}: {e}")
+        return self
+
+    def is_ignored_value(self, value: str) -> bool:
+        """Check if a value matches any ignored_values regex pattern."""
+        return any(p.fullmatch(value) for p in self._ignored_value_patterns)
 
 class FileContent(BaseModel):
     file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
@@ -484,11 +514,11 @@ class QueryHunt(Hunt):
                         continue
 
                     # if the value is in the global ignored list, then we ignore it
-                    if self.config.ignored_values and observed_value in self.config.ignored_values:
+                    if self.config.ignored_values and self.config.is_ignored_value(observed_value):
                         continue
 
                     # if the value is in the ignored values list (for this observable mapping), then we ignore it
-                    if observable_mapping.ignored_values and observed_value in observable_mapping.ignored_values:
+                    if observable_mapping.ignored_values and observable_mapping.is_ignored_value(observed_value):
                         continue
 
                     # create the observable

@@ -175,14 +175,14 @@ def test_api_observable_mapping_model():
         tags=["external", "suspicious"],
         directives=["analyze_ip"],
         time=True,
-        ignored_values=["0.0.0.0", "127.0.0.1"],
+        ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"],
         display_type="custom_ip",
         display_value="Source IP"
     )
     assert mapping.tags == ["external", "suspicious"]
     assert mapping.directives == ["analyze_ip"]
     assert mapping.time is True
-    assert mapping.ignored_values == ["0.0.0.0", "127.0.0.1"]
+    assert mapping.ignored_values == [r"0\.0\.0\.0", r"127\.0\.0\.1"]
     assert mapping.display_type == "custom_ip"
     assert mapping.display_value == "Source IP"
 
@@ -302,7 +302,7 @@ def test_extract_result_observables_ignored_values(test_context):
                 APIObservableMapping(
                     field="src_ip",
                     type="ipv4",
-                    ignored_values=["0.0.0.0", "127.0.0.1"]
+                    ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
                 )
             ]
         )
@@ -326,3 +326,51 @@ def test_extract_result_observables_ignored_values(test_context):
 
         assert len(analysis.observables) == 1
         assert analysis.observables[0].value == "10.0.0.1"
+
+
+@pytest.mark.unit
+def test_extract_result_observables_ignored_values_regex(test_context):
+    """Test that ignored_values supports regex patterns via re.fullmatch()."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    field="src_ip",
+                    type="ipv4",
+                    ignored_values=[r"10\.0\..*"]
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        # 10.0.1.1 should be ignored by the regex pattern
+        result = {"src_ip": "10.0.1.1"}
+        analyzer.extract_result_observables(analysis, result, observable)
+        assert len(analysis.observables) == 0
+
+        # 10.0.255.3 should also be ignored
+        result = {"src_ip": "10.0.255.3"}
+        analyzer.extract_result_observables(analysis, result, observable)
+        assert len(analysis.observables) == 0
+
+        # 192.168.1.1 should NOT be ignored
+        result = {"src_ip": "192.168.1.1"}
+        analyzer.extract_result_observables(analysis, result, observable)
+        assert len(analysis.observables) == 1
+        assert analysis.observables[0].value == "192.168.1.1"

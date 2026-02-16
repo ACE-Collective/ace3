@@ -66,9 +66,10 @@ class APIObservableMapping(BaseModel):
     tags: list[str] = Field(default_factory=list, description="Tags to add to the observable")
     directives: list[str] = Field(default_factory=list, description="Directives to add to the observable")
     time: bool = Field(default=False, description="Whether to use the event time as the observable time")
-    ignored_values: list[str] = Field(default_factory=list, description="Values to skip when creating observables")
+    ignored_values: list[str] = Field(default_factory=list, description="Regex patterns to skip when creating observables. Patterns are matched with re.fullmatch().")
     display_type: Optional[str] = Field(default=None, description="The display type to use for the observable")
     display_value: Optional[str] = Field(default=None, description="The display value to use for the observable")
+    _ignored_value_patterns: list[re.Pattern] = []
 
     @model_validator(mode='after')
     def validate_field_or_fields(self):
@@ -76,6 +77,20 @@ class APIObservableMapping(BaseModel):
         if not self.field and not self.fields:
             raise ValueError("Either 'field' or 'fields' must be specified in observable mapping")
         return self
+
+    @model_validator(mode='after')
+    def compile_ignored_value_patterns(self):
+        """Pre-compile ignored_values into regex patterns."""
+        for p in self.ignored_values:
+            try:
+                self._ignored_value_patterns.append(re.compile(p))
+            except re.error as e:
+                logging.error(f"invalid ignored_values regex pattern {p!r}: {e}")
+        return self
+
+    def is_ignored_value(self, value: str) -> bool:
+        """Check if a value matches any ignored_values regex pattern."""
+        return any(p.fullmatch(value) for p in self._ignored_value_patterns)
 
     def get_fields(self) -> list[str]:
         """Returns the list of fields to check, whether from field or fields."""
@@ -430,7 +445,7 @@ class BaseAPIAnalyzer(AnalysisModule):
                 if field in result and result[field] is not None:
                     field_value = result[field]
                     # Skip ignored values
-                    if field_value in mapping.ignored_values:
+                    if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
                         continue
                     value = field_value
                     matched_field = field
