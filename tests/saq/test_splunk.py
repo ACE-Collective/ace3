@@ -1,11 +1,17 @@
 from datetime import UTC, datetime
 from unittest.mock import Mock, patch
+
 import pytest
-from requests.exceptions import HTTPError, Timeout, ProxyError, ConnectionError
+from requests.exceptions import ConnectionError, HTTPError, ProxyError, Timeout
 
 from saq.configuration import get_config
-from saq.configuration.schema import SplunkConfig
-from saq.splunk import SplunkClient, SplunkQueryObject, extract_event_timestamp
+from saq.configuration.schema import ProxyConfig, SplunkConfig
+from saq.splunk import (
+    SplunkClient,
+    SplunkQueryObject,
+    _proxy_handler,
+    extract_event_timestamp,
+)
 from tests.saq.mock_datetime import MOCK_NOW
 
 
@@ -542,3 +548,144 @@ def test_splunk_client_init_with_token():
         assert call_kwargs['token'] == 'mytoken123'
         assert 'username' not in call_kwargs
         assert 'password' not in call_kwargs
+
+
+@pytest.mark.unit
+def test_proxy_handler_creates_tunnel_for_https():
+    """HTTPS targets use HTTPSConnection with set_tunnel for TLS after CONNECT."""
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080)
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_cls:
+        handler(
+            "https://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    mock_cls.assert_called_once()
+    mock_conn.set_tunnel.assert_called_once_with("splunk.example.com", 8089)
+    mock_conn.request.assert_called_once()
+    mock_conn.close.assert_called_once()
+
+
+@pytest.mark.unit
+def test_proxy_handler_no_tunnel_for_http():
+    """HTTP targets use HTTPConnection with no tunnel."""
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080)
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPConnection", return_value=mock_conn):
+        handler(
+            "http://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    mock_conn.set_tunnel.assert_not_called()
+
+
+@pytest.mark.unit
+def test_proxy_handler_https_target_always_uses_https_connection():
+    """HTTPS targets always use HTTPSConnection regardless of proxy_scheme."""
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080, proxy_scheme="http")
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_https, \
+         patch("saq.splunk.http_client.HTTPConnection") as mock_http:
+        handler(
+            "https://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    mock_https.assert_called_once()
+    mock_http.assert_not_called()
+
+
+@pytest.mark.unit
+def test_proxy_handler_http_target_uses_http_connection():
+    """HTTP targets with HTTP proxy use HTTPConnection (no TLS needed)."""
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080, proxy_scheme="http")
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPSConnection") as mock_https, \
+         patch("saq.splunk.http_client.HTTPConnection", return_value=mock_conn) as mock_http:
+        handler(
+            "http://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    mock_http.assert_called_once()
+    mock_https.assert_not_called()
+
+
+@pytest.mark.unit
+def test_proxy_handler_http_target_https_proxy():
+    """HTTP targets with HTTPS proxy use HTTPSConnection (TLS to proxy)."""
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=443, proxy_scheme="https")
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_https, \
+         patch("saq.splunk.http_client.HTTPConnection") as mock_http:
+        handler(
+            "http://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    mock_https.assert_called_once()
+    mock_http.assert_not_called()
+    mock_conn.set_tunnel.assert_not_called()
+
+
+@pytest.mark.unit
+def test_splunk_query_object_passes_handler_when_proxied():
+    """When proxies is provided, a handler kwarg is passed to client.connect."""
+    proxy = ProxyConfig(name="test", transport="http", host="proxy.local", port=8080)
+
+    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
+        SplunkQueryObject(
+            host="splunk.example.com",
+            port=8089,
+            username="user",
+            password="pass",
+            proxies=proxy,
+        )
+
+    mock_connect.assert_called_once()
+    call_kwargs = mock_connect.call_args[1]
+    assert "handler" in call_kwargs
+    assert callable(call_kwargs["handler"])
+
+
+@pytest.mark.unit
+def test_splunk_query_object_no_handler_without_proxy():
+    """When proxies is None, no handler kwarg is passed (backward compat)."""
+    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
+        SplunkQueryObject(
+            host="splunk.example.com",
+            port=8089,
+            username="user",
+            password="pass",
+        )
+
+    mock_connect.assert_called_once()
+    call_kwargs = mock_connect.call_args[1]
+    assert "handler" not in call_kwargs
