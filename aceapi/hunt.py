@@ -196,6 +196,9 @@ def validate_hunt():
                 except Exception as e:
                     return jsonify({"valid": False, "error": f"error executing hunt: {e}"}), 400
 
+                if submissions is None:
+                    submissions = []
+
                 roots: list[RootAnalysis] = []
                 for submission in submissions:
                     if execution_arguments.analyze_results or execution_arguments.create_alerts:
