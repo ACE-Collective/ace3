@@ -19,7 +19,7 @@ class LockManagerInterface(ABC):
         
     @abstractmethod
     def stop_keepalive(self) -> None:
-        """Stop the keepalive thread and release the current lock."""
+        """Stop the keepalive thread. Does not release the lock; the caller (e.g. workload manager) owns release."""
         pass
         
     @abstractmethod

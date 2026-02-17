@@ -70,7 +70,7 @@ class DistributedLockManager(LockManagerInterface):
         return True
         
     def stop_keepalive(self) -> None:
-        """Stop the keepalive thread and release the current lock."""
+        """Stop the keepalive thread. Does not release the lock; the caller (e.g. workload manager) owns release."""
         if self._control_event is None:
             logging.debug("No keepalive thread running")
             return
@@ -82,17 +82,9 @@ class DistributedLockManager(LockManagerInterface):
         if self._keepalive_thread and self._keepalive_thread.is_alive():
             self._keepalive_thread.join()
             
-        # Clean up
+        # Clean up thread state only; do not release the lock (workload manager owns release)
         self._control_event = None
         self._keepalive_thread = None
-        
-        # Release the lock
-        if self._current_lock_target:
-            try:
-                release_lock(self._current_lock_target, self.lock_uuid)
-            except Exception as e:
-                logging.error(f"Failed to release lock on {self._current_lock_target}: {e}")
-                
         self._current_lock_target = None
         
     def acquire_lock(self, target_uuid: str) -> bool:
