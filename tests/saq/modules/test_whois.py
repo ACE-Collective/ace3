@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_WHOIS_ANALYZER, F_FQDN, AnalysisExecutionResult
@@ -434,6 +434,59 @@ def test_whois_analyzer_negative_time_delta(test_context, monkeypatch):
     assert analysis.error is None
     assert analysis.age_created_in_days == "0"
     assert analysis.age_last_updated_in_days == "0"
+
+
+@pytest.mark.unit
+def test_whois_analyzer_tz_aware_creation_date(test_context, monkeypatch):
+    """Test whois analysis when whois returns tz-aware creation_date (avoids naive/aware subtraction error)."""
+    # Whois can return aware datetimes (e.g. tzoffset('UTC', 0)); "now" is UTC-aware - subtraction must not raise
+    creation_date = datetime(1997, 3, 29, 5, 0, tzinfo=timezone.utc)
+    updated_date = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+
+    mock_whois_result = {
+        "domain_name": "EXAMPLE.ORG",
+        "registrar": "Example Registrar",
+        "creation_date": creation_date,
+        "updated_date": updated_date,
+        "name_servers": ["ns1.example.org"],
+        "text": "mock whois text",
+    }
+
+    class MockWhoisResult:
+        def __init__(self, data):
+            self.data = data
+            self.text = data.get("text", "mock whois text")
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+    mock_result = MockWhoisResult(mock_whois_result)
+
+    def mock_whois(domain):
+        return mock_result
+
+    monkeypatch.setattr("saq.modules.whois.whois.whois", mock_whois)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "example.org")
+
+    analyzer = WhoisAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_WHOIS_ANALYZER),
+    )
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_analysis(WhoisAnalysis)
+    assert analysis is not None
+    assert analysis.error is None
+    assert analysis.age_created_in_days is not None
+    assert analysis.age_created_in_days.isdigit()
+    assert analysis.age_last_updated_in_days is not None
+    assert analysis.age_last_updated_in_days.isdigit()
 
 
 @pytest.mark.unit

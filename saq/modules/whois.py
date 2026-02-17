@@ -15,7 +15,7 @@ consider:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from saq.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
@@ -312,11 +312,21 @@ class WhoisAnalyzer(AnalysisModule):
                 f"whois result for {observable} contains unexpected updated date format/contents."
             )
 
-        _now = datetime.now()
+        _now = datetime.now(timezone.utc)
 
         analysis.datetime_of_analysis = _now.isoformat(" ")
 
         def age_in_days_as_string(past, present):
+            past = (
+                past.astimezone(timezone.utc)
+                if past.tzinfo is not None
+                else past.replace(tzinfo=timezone.utc)
+            )
+            present = (
+                present.astimezone(timezone.utc)
+                if present.tzinfo is not None
+                else present.replace(tzinfo=timezone.utc)
+            )
             _delta = present - past
             # Days are negative if past is actually after the
             # present. Probably an indication of time zone issues so

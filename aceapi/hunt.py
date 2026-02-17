@@ -192,9 +192,14 @@ def validate_hunt():
             
             try:
                 try:
+                    # Don't persist execution state; validation runs must not affect scheduled automation
+                    hunt.manual_hunt = True
                     submissions = hunt.execute(**exec_kwargs)
                 except Exception as e:
                     return jsonify({"valid": False, "error": f"error executing hunt: {e}"}), 400
+
+                if submissions is None:
+                    submissions = []
 
                 roots: list[RootAnalysis] = []
                 for submission in submissions:

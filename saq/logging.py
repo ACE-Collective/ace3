@@ -91,11 +91,12 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
         sys.stderr.write("unable to load logging configuration from {}: {}".format(logging_config_path, e))
         raise e
 
-    # adjust all the plyara loggers
+    # adjust the logging on third party libraries as needed
     logging.getLogger('plyara').setLevel(logging.ERROR)
     logging.getLogger('plyara.core').setLevel(logging.ERROR)
     logging.getLogger('plyara.util').setLevel(logging.ERROR)
     logging.getLogger('olevba').setLevel(logging.CRITICAL)
+    logging.getLogger('whois').setLevel(logging.CRITICAL)
 
     # log all SQL commands if we are running in debug mode
     if log_sql:
