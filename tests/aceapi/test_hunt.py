@@ -1275,6 +1275,40 @@ def test_validate_hunt_execution_empty_submissions(test_client, auth_headers):
         assert "logs" in data
 
 
+@pytest.mark.integration
+def test_validate_hunt_execution_returns_none(test_client, auth_headers):
+    """Verify execution when hunt.execute() returns None is handled (e.g. search failed/cancelled)."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.execute.return_value = None
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 200
+        data = result.get_json()
+        assert data["valid"] is True
+        assert data["roots"] == []
+        assert "logs" in data
+
+
 # =============================================================================
 # Integration Tests for /hunt/validate Endpoint - Execution Error Cases
 # =============================================================================
