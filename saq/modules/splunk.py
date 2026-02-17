@@ -1,12 +1,13 @@
 # vim: sw=4:ts=4:et:cc=120
 
+import re
 from datetime import datetime
 from typing import Type, Optional
 from pydantic import Field
 import pytz
 
 from saq.configuration.config import get_splunk_config
-from saq.modules.api_analysis import BaseAPIAnalysis, BaseAPIAnalyzer, AnalysisDelay, BaseAPIAnalyzerConfig
+from saq.modules.api_analysis import BaseAPIAnalysis, BaseAPIAnalyzer, BaseAPIAnalysisPresenter, AnalysisDelay, BaseAPIAnalyzerConfig
 from saq.modules.config import AnalysisModuleConfig
 from saq.splunk import extract_event_timestamp, SplunkClient
 from saq.util import format_iso8601, parse_event_time
@@ -19,6 +20,9 @@ from saq.util import format_iso8601, parse_event_time
 # <O_TYPE> is replaced by the type of the observable
 # <O_TIMESPEC> is replaced by the formatted timerange (done all in one to allow searching by index time)
 #
+
+from saq.analysis.presenter.analysis_presenter import register_analysis_presenter
+
 
 class SplunkAPIAnalyzerConfig(BaseAPIAnalyzerConfig):
     use_index_time: bool = Field(default=False, description="Whether to use the index time as the time of the query.")
@@ -162,6 +166,12 @@ class SplunkAPIAnalyzer(BaseAPIAnalyzer):
         pass
 
     def process_query_results(self, query_results, analysis, observable):
+        # Extract column order from "| table col1 col2 ..." if present
+        if analysis.query:
+            m = re.search(r'\|\s*table\s+(.+?)(?:\||$)', analysis.query, re.IGNORECASE)
+            if m:
+                analysis.details['table_columns'] = m.group(1).split()
+
         for event in query_results:
             event_time = extract_event_timestamp(event)
             self.process_splunk_event(analysis, observable, event, event_time)
@@ -200,4 +210,4 @@ class SplunkAPIAnalyzer(BaseAPIAnalyzer):
         # return results
         return results
 
-
+register_analysis_presenter(SplunkAPIAnalysis, BaseAPIAnalysisPresenter)

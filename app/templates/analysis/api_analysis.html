@@ -1,8 +1,114 @@
 {% if analysis.details %}
-    {% if 'gui_link' in analysis.details and analysis.details['gui_link'] != None %}
-        <h2><a href="{{ analysis.details['gui_link'] }}" target="_blank">Search in GUI</a></h2>
+
+{# --- GUI Link --- #}
+{% if analysis.details.get('gui_link') %}
+<div class="mb-3">
+    <a class="btn btn-sm btn-outline-primary" href="{{ analysis.details['gui_link'] }}" target="_blank">
+        <i class="bi bi-box-arrow-up-right"></i> Open in Splunk
+    </a>
+</div>
+{% endif %}
+
+{# --- Question / Summary --- #}
+{% if analysis.details.get('question') or analysis.details.get('query_summary') %}
+<div class="mb-3 text-muted small">
+    {% if analysis.details.get('question') %}
+        <strong>{{ analysis.details['question'] }}</strong><br>
     {% endif %}
-<pre>
-{{ analysis_presenter.details | pprint }}
-</pre>
+    {% if analysis.details.get('query_summary') %}
+        {{ analysis.details['query_summary'] }}
+    {% endif %}
+</div>
+{% endif %}
+
+{# --- Error --- #}
+{% if analysis.details.get('query_error') %}
+<div class="alert alert-danger" role="alert">
+    <strong>Query Error:</strong> {{ analysis.details['query_error'] }}
+</div>
+{% endif %}
+
+{# --- Query (collapsible, collapsed by default) --- #}
+{% if analysis.details.get('query') %}
+<div class="mb-3">
+    <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#queryCollapse" role="button" aria-expanded="false" aria-controls="queryCollapse">
+        <i class="bi bi-code-slash"></i> Show Query
+    </a>
+    <div class="collapse mt-2" id="queryCollapse">
+        <pre class="bg-light border rounded p-2" style="white-space: pre-wrap; word-break: break-all;"><code>{{ analysis.details['query'] }}</code></pre>
+    </div>
+</div>
+{% endif %}
+
+{# --- Query Results --- #}
+{% if analysis.details.get('query_results') %}
+    {% set results = analysis.details['query_results'] %}
+    {% if results is iterable and results is not string and results is not mapping and results|length > 0 and results[0] is mapping %}
+        {# Tabular results: list of dicts. Use table_columns from query if available for proper ordering. #}
+        {% if analysis.details.get('table_columns') %}
+            {% set columns = analysis.details['table_columns'] %}
+        {% else %}
+            {% set columns = results[0].keys()|list %}
+        {% endif %}
+        <div class="mb-3" style="overflow-x: auto; max-height: 600px; overflow-y: auto;">
+            <table class="table table-bordered table-striped table-sm mb-0" id="apiResultsTable">
+                <thead class="table-light" style="position: sticky; top: 0;">
+                    <tr>
+                        {% for col in columns %}
+                        <th style="cursor: pointer; user-select: none;" data-col-index="{{ loop.index0 }}">{{ col }} <i class="bi bi-arrow-down-up text-muted small"></i></th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in results %}
+                    <tr>
+                        {% for col in columns %}
+                        <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ row.get(col, '') }}">{{ row.get(col, '') }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <script>
+        $(function() {
+            var $table = $('#apiResultsTable');
+            var sortCol = -1, sortAsc = true;
+            $table.find('thead th').on('click', function() {
+                var idx = $(this).data('col-index');
+                if (sortCol === idx) { sortAsc = !sortAsc; } else { sortCol = idx; sortAsc = true; }
+                // Update icons
+                $table.find('thead th i').attr('class', 'bi bi-arrow-down-up text-muted small');
+                $(this).find('i').attr('class', 'bi ' + (sortAsc ? 'bi-arrow-up' : 'bi-arrow-down') + ' small');
+                // Sort rows
+                var $tbody = $table.find('tbody');
+                var rows = $tbody.find('tr').get();
+                rows.sort(function(a, b) {
+                    var va = $(a).children('td').eq(idx).text().trim();
+                    var vb = $(b).children('td').eq(idx).text().trim();
+                    // Try numeric comparison
+                    var na = Number(va), nb = Number(vb);
+                    if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
+                    return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+                });
+                $.each(rows, function(i, row) { $tbody.append(row); });
+            });
+        });
+        </script>
+    {% else %}
+        {# Non-tabular results: fall back to pprint #}
+        <pre>{{ results | pprint }}</pre>
+    {% endif %}
+{% endif %}
+
+{# --- Raw Details (collapsible) --- #}
+<div class="mt-3">
+    <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#rawDetailsCollapse" role="button" aria-expanded="false" aria-controls="rawDetailsCollapse">
+        <i class="bi bi-braces"></i> Raw Details
+    </a>
+    <div class="collapse mt-2" id="rawDetailsCollapse">
+        <pre class="bg-light border rounded p-2">{{ analysis.details | pprint }}</pre>
+    </div>
+</div>
+
 {% endif %}

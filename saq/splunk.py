@@ -21,7 +21,7 @@ from splunklib import __version__ as splunklib_version
 from splunklib.binding import _spliturl
 from splunklib.client import Job
 import splunklib.client as client
-from splunklib.results import JSONResultsReader
+from splunklib.results import JSONResultsReader, Message
 
 from saq.configuration.config import get_proxy_config, get_splunk_config
 from saq.environment import get_data_dir
@@ -416,7 +416,12 @@ class SplunkQueryObject:
 
             # return the results
             results_reader = JSONResultsReader(job.results(count="0", output_mode="json"))
-            results = [result for result in results_reader]
+            results = []
+            for item in results_reader:
+                if isinstance(item, Message):
+                    logging.info(f"splunk message ({item.type}): {item.message}")
+                else:
+                    results.append(item)
             logging.info(f"got results for {job.name}")
             self.end_time = local_time()
             self.record_splunk_query_performance(job)
