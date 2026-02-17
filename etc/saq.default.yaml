@@ -1090,7 +1090,7 @@ analysis_module_user_analyzer:
   name: user_analyzer
   python_module: saq.modules.user
   python_class: UserAnalyzer
-  enabled: true
+  enabled: false
 
 analysis_module_email_conversation_frequency_analyzer:
   name: email_conversation_frequency_analyzer
