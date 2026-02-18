@@ -198,7 +198,12 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
             # convert html to text
             try:
-                with open(os.path.join(self.get_root().storage_dir, source_email.body.value), 'r', errors='ignore') as fp:
+                target_path = os.path.join(self.get_root().storage_dir, source_email.body.value)
+                if not os.path.exists(target_path):
+                    analysis.error = f"email body file {target_path} does not exist"
+                    return AnalysisExecutionResult.COMPLETED
+
+                with open(target_path, 'r', errors='ignore') as fp:
                     logging.debug(f"parsing {source_email.body.value} for html")
                     analysis.email_body = html2text(fp.read())[:self.byte_limit]
 
@@ -217,15 +222,15 @@ class ZipEncryptionAnalyzer(AnalysisModule):
                     try:
                         analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
                     except Exception as e:
-                        logging.error(f"Error encountered when trying to crack password for {_file}: {e}")
+                        logging.error(f"error encountered when trying to crack password for {_file}: {e}")
                         return AnalysisExecutionResult.COMPLETED
 
             except Exception as e:
-                logging.error(f"Error encountered when building password wordlist for {_file}: {e}")
+                logging.error(f"error encountered when building password wordlist for {_file}: {e}")
                 return AnalysisExecutionResult.COMPLETED
 
         if not analysis.password:
-            analysis.error = f"ZipEncryptionAnalyzer not crack password!"
+            analysis.error = "ZipEncryptionAnalyzer was unable to crack the password"
             return AnalysisExecutionResult.COMPLETED
 
         # got the password!
