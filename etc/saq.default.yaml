@@ -1075,7 +1075,7 @@ analysis_module_active_directory_analyzer:
   name: active_directory_analyzer
   python_module: saq.modules.asset.active_directory
   python_class: ActiveDirectoryAnalyzer
-  enabled: true
+  enabled: false
 
 analysis_module_snort_signature_analysis_v1:
   name: snort_signature_analysis_v1
