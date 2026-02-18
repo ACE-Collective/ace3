@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import uuid
 from typing import Optional, Type
 
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import REDIS_DB_BG_TASKS, SERVICE_LLM_EMBEDDING
 from saq.database.pool import get_db
+from saq.database.util.locking import acquire_lock, release_lock
 from saq.error.reporting import report_exception
 from saq.llm.embedding.vector import vectorize
 from saq.redis_client import get_redis_connection
@@ -102,12 +104,21 @@ class EmbeddingWorker:
             get_db().remove()
 
     def execute_task(self, task: EmbeddingTask):
-        from saq.database.model import load_alert
-        alert = load_alert(task.alert_uuid)
-        if alert:
-            vectorize(alert)
-        else:
-            logging.info(f"alert {task.alert_uuid} not found")
+        lock_uuid = str(uuid.uuid4())
+
+        if not acquire_lock(task.alert_uuid, lock_uuid, lock_owner=str(self)):
+            logging.warning(f"unable to acquire lock on {task.alert_uuid}, skipping embedding task")
+            return
+
+        try:
+            from saq.database.model import load_alert
+            alert = load_alert(task.alert_uuid)
+            if alert:
+                vectorize(alert)
+            else:
+                logging.info(f"alert {task.alert_uuid} not found")
+        finally:
+            release_lock(task.alert_uuid, lock_uuid)
 
 class EmbeddingManager:
     def __init__(self):
