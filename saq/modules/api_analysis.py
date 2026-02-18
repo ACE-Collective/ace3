@@ -30,7 +30,7 @@ from saq.configuration import get_config
 from saq.constants import AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.observables.mapping import BaseObservableMapping, FieldsMode
+from saq.observables.mapping import BaseObservableMapping
 from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
@@ -59,7 +59,7 @@ class APIObservableMapping(BaseObservableMapping):
               - analyze_ip
             time: true
 
-          - fields: [user, username]  # Multiple fields - first non-null wins
+          - fields: [user, username]
             type: user
             tags:
               - from_splunk
@@ -421,39 +421,17 @@ class BaseAPIAnalyzer(AnalysisModule):
 
         """
         for mapping in self.config.observable_mapping:
-            fields_to_check = mapping.get_fields()
             obs_time = result_time if mapping.time else None
 
-            if mapping.fields_mode == FieldsMode.ANY:
-                # ANY mode: create a separate observable for each present, non-ignored field
-                for field in fields_to_check:
-                    if field not in result or result[field] is None:
-                        continue
-                    field_value = result[field]
-                    if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
-                        continue
+            for field_group in mapping.resolve_fields(lambda f: f in result and result[f] is not None):
+                # Use the first field in the group for the observable value
+                matched_field = field_group[0]
+                field_value = result[matched_field]
 
-                    value = self.filter_observable_value(field, mapping.type, field_value)
-                    new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
-                    self._apply_mapping_properties(new_observable, mapping)
-                    self.process_field_mapping(analysis, new_observable, result, field, result_time)
-            else:
-                # ALL mode (default): first non-null, non-ignored value wins
-                value = None
-                matched_field = None
-                for field in fields_to_check:
-                    if field in result and result[field] is not None:
-                        field_value = result[field]
-                        if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
-                            continue
-                        value = field_value
-                        matched_field = field
-                        break
-
-                if value is None:
+                if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
                     continue
 
-                value = self.filter_observable_value(matched_field, mapping.type, value)
+                value = self.filter_observable_value(matched_field, mapping.type, field_value)
                 new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
                 self._apply_mapping_properties(new_observable, mapping)
                 self.process_field_mapping(analysis, new_observable, result, matched_field, result_time)

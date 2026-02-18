@@ -251,7 +251,7 @@ def test_extract_result_observables_with_tags(test_context):
 
 @pytest.mark.unit
 def test_extract_result_observables_multiple_fields(test_context):
-    """Test that multiple fields mapping uses first non-null value."""
+    """Test that multiple fields mapping uses first field's value when all fields are present."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
         mock_splunk = MockSplunk()
         mock_splunk_client.return_value = mock_splunk
@@ -279,13 +279,13 @@ def test_extract_result_observables_multiple_fields(test_context):
         observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
-        # First field is null, second has value
-        result = {"user": None, "username": "jsmith", "account": "admin"}
+        # All fields present - first field's value is used
+        result = {"user": "jdoe", "username": "jsmith", "account": "admin"}
 
         analyzer.extract_result_observables(analysis, result, observable)
 
         assert len(analysis.observables) == 1
-        assert analysis.observables[0].value == "jsmith"
+        assert analysis.observables[0].value == "jdoe"
 
 
 @pytest.mark.unit
@@ -505,7 +505,7 @@ def test_extract_result_observables_fields_mode_all(test_context):
 
 @pytest.mark.unit
 def test_extract_result_observables_fields_mode_all_missing(test_context):
-    """Test that fields_mode=all still creates observable when some fields are missing (first non-null wins)."""
+    """Test that fields_mode=all creates no observable when some fields are missing."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
         mock_splunk = MockSplunk()
         mock_splunk_client.return_value = mock_splunk
@@ -534,12 +534,11 @@ def test_extract_result_observables_fields_mode_all_missing(test_context):
         observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
-        # only src_ip present - should still create observable (first non-null wins)
+        # only src_ip present - ALL mode requires all fields, so no observable
         result = {"src_ip": "10.0.0.1"}
         analyzer.extract_result_observables(analysis, result, observable)
 
-        assert len(analysis.observables) == 1
-        assert analysis.observables[0].value == "10.0.0.1"
+        assert len(analysis.observables) == 0
 
 
 @pytest.mark.unit

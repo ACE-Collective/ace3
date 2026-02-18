@@ -4,7 +4,7 @@ import logging
 import re
 
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -75,3 +75,24 @@ class BaseObservableMapping(BaseModel):
         if self.field:
             return [self.field]
         return self.fields
+
+    def resolve_fields(self, is_field_present: Callable[[str], bool]) -> list[list[str]]:
+        """Determine which field groups to process based on fields_mode.
+
+        Args:
+            is_field_present: callable that takes a field name and returns True if
+                the field is present and non-null in the event/result.
+
+        Returns:
+            A list of field groups to process. Each group is a list of field names.
+            - ALL mode: [[all_fields]] if every field is present, else []
+            - ANY mode: [[field1], [field2], ...] for each present field
+        """
+        fields = self.get_fields()
+        if self.fields_mode == FieldsMode.ANY:
+            return [[f] for f in fields if is_field_present(f)]
+        else:
+            # ALL mode: every field must be present
+            if all(is_field_present(f) for f in fields):
+                return [fields]
+            return []

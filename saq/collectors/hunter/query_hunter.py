@@ -564,40 +564,20 @@ class QueryHunt(Hunt):
             file_contents: list[FileContent] = []
 
             for observable_mapping in self.observable_mapping:
-                if observable_mapping.fields_mode == FieldsMode.ANY:
-                    # ANY mode: create a separate observable for each present field independently
-                    fields_to_process = []
-                    for field_name in observable_mapping.fields:
-                        try:
-                            success, _ = extract_event_value(event, observable_mapping.field_lookup_type, field_name)
-                            if success:
-                                fields_to_process.append(field_name)
-                        except PathAccessError:
-                            pass
+                def _is_field_present(field_name, _event=event, _mapping=observable_mapping):
+                    try:
+                        success, _ = extract_event_value(_event, _mapping.field_lookup_type, field_name)
+                        return success
+                    except PathAccessError:
+                        return False
 
-                    for field_name in fields_to_process:
-                        self._process_observable_values(
-                            observable_mapping, event, event_time, observables, file_contents,
-                            relationship_tracking, field_override=field_name)
-                else:
-                    # ALL mode (default): all fields must be present before creating an observable
-                    all_fields_present = True
-                    for field_name in observable_mapping.fields:
-                        try:
-                            success, _ = extract_event_value(event, observable_mapping.field_lookup_type, field_name)
-                            if not success:
-                                all_fields_present = False
-                                break
-                        except PathAccessError:
-                            all_fields_present = False
-                            break
-
-                    if not all_fields_present:
-                        continue
-
+                for field_group in observable_mapping.resolve_fields(_is_field_present):
+                    # ANY mode: field_group is a single field, use as field_override
+                    # ALL mode: field_group is all fields, no override needed (value template uses all)
+                    field_override = field_group[0] if len(field_group) == 1 else None
                     self._process_observable_values(
                         observable_mapping, event, event_time, observables, file_contents,
-                        relationship_tracking)
+                        relationship_tracking, field_override=field_override)
 
             signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
 
