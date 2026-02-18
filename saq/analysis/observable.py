@@ -81,6 +81,22 @@ class Observable(BaseNode):
         from saq.database.database_observable import get_observable_disposition_history
         return get_observable_disposition_history(self)
 
+    @property
+    def faqueue_hits(self):
+        return self._faqueue_hits
+
+    @faqueue_hits.setter
+    def faqueue_hits(self, value):
+        self._faqueue_hits = value
+
+    @property
+    def faqueue_search_url(self):
+        return self._faqueue_search_url
+
+    @faqueue_search_url.setter
+    def faqueue_search_url(self, value):
+        self._faqueue_search_url = value
+
     # JSON serialization methods
     # ------------------------------------------------------------------------
 
