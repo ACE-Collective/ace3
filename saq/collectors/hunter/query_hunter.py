@@ -556,7 +556,7 @@ class QueryHunt(Hunt):
                     observable = create_observable(observable_mapping.type, observed_value, volatile=observable_mapping.volatile)
 
                     if observable is None:
-                        logging.error(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
+                        logging.warning(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
                         continue
 
                     # did we specify that the time be recorded?
