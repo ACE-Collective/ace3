@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from splunklib import __version__ as splunklib_version
 from splunklib.binding import _spliturl
-from splunklib.client import Job
+from splunklib.client import AuthenticationError, Job
 import splunklib.client as client
 from splunklib.results import JSONResultsReader, Message
 
@@ -448,6 +448,10 @@ class SplunkQueryObject:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
             return None, []
+
+        except AuthenticationError as e:
+            logging.warning(f"invalid credentials OR splunk session token expired: {e}")
+            return job, None
 
         except Exception as e:
             logging.error(f'Search failed: {e}')

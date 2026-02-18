@@ -465,17 +465,18 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             with open(target_path, 'w', encoding='utf-8') as fp:
                 fp.write(script_content)
 
-            # Create file observable
-            file_observable = analysis.add_file_observable(target_path, volatile=True)
-            if file_observable:
-                file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-                file_observable.exclude_analysis(self)  # Don't re-analyze our own output
-                _file.copy_directives_to(file_observable)
-                tracking_list.append(file_observable.file_path)
-                logging.info(f"extracted {script_type} JavaScript to {filename}")
-
         except Exception as e:
             logging.error(f"failed to save script to {target_path}: {e}")
+            return 
+
+        file_observable = analysis.add_file_observable(target_path, volatile=True)
+        if file_observable:
+            file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            file_observable.exclude_analysis(self)  # Don't re-analyze our own output
+            _file.copy_directives_to(file_observable)
+            tracking_list.append(file_observable.file_path)
+            logging.debug(f"extracted {script_type} JavaScript to {filename}")
+
 
     def _compute_hash(self, content: str) -> str:
         """Compute SHA256 hash of content."""
