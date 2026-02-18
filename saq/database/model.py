@@ -655,7 +655,6 @@ class Alert(Base):
         session.commit()
         if build_index:
             self.build_index()
-            submit_embedding_task(self.uuid)
 
 
         #self.root_analysis.save() # save this alert now that it has the id

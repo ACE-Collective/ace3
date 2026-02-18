@@ -258,6 +258,9 @@ class AnalysisOrchestrator:
         # handle cleanup if analysis mode supports it
         self._handle_cleanup(execution_context)
 
+        # submit alert for embedding vectorization when analysis is fully complete
+        self._submit_alert_for_embedding_if_complete(execution_context)
+
     def _check_outstanding_work_and_handle_detections(self, execution_context: EngineExecutionContext):
         """Check for outstanding work and handle detection points if no work remains."""
         
@@ -462,7 +465,21 @@ class AnalysisOrchestrator:
 
         except Exception as e:
             logging.error(f"trouble checking finished status of {execution_context.root}: {e}")
-            report_exception() 
+            report_exception()
+
+    def _submit_alert_for_embedding_if_complete(self, execution_context: EngineExecutionContext):
+        """Submit the alert for embedding vectorization when analysis is fully complete (no outstanding work)."""
+        if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
+            return
+        try:
+            with get_db_connection() as db:
+                cursor = db.cursor()
+                if self._check_for_outstanding_work(cursor, execution_context):
+                    return
+                self._submit_alert_for_embedding_vectorization(execution_context)
+        except Exception as e:
+            logging.error(f"trouble submitting {execution_context.root} for embedding vectorization: {e}")
+            report_exception()
 
     def _submit_alert_for_embedding_vectorization(self, execution_context: EngineExecutionContext):
         """Submit the alert for embedding vectorization."""
