@@ -1,12 +1,18 @@
 import datetime
 from unittest.mock import Mock, patch
+
 import pytest
 
+from saq.analysis import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_SPLUNK_API, F_EMAIL_SUBJECT, F_IPV4
-from saq.analysis import RootAnalysis
 from saq.modules.api_analysis import AnalysisDelay, APIObservableMapping
-from saq.modules.splunk import SplunkAPIAnalyzer, SplunkAPIAnalysis, SplunkAPIAnalyzerConfig
+from saq.modules.splunk import (
+    SplunkAPIAnalysis,
+    SplunkAPIAnalyzer,
+    SplunkAPIAnalyzerConfig,
+)
+from saq.observables.mapping import FieldsMode
 from tests.saq.mock_datetime import MOCK_NOW
 
 
@@ -374,3 +380,224 @@ def test_extract_result_observables_ignored_values_regex(test_context):
         analyzer.extract_result_observables(analysis, result, observable)
         assert len(analysis.observables) == 1
         assert analysis.observables[0].value == "192.168.1.1"
+
+
+@pytest.mark.unit
+def test_extract_result_observables_fields_mode_any(test_context):
+    """Test that fields_mode=any creates a separate observable for each present field."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    fields=["src_ip", "dst_ip"],
+                    type="ipv4",
+                    fields_mode=FieldsMode.ANY,
+                    tags=["from_splunk"]
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        result = {"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2"}
+        analyzer.extract_result_observables(analysis, result, observable)
+
+        assert len(analysis.observables) == 2
+        values = sorted([o.value for o in analysis.observables])
+        assert values == ["10.0.0.1", "10.0.0.2"]
+        # verify tags applied to both
+        for obs in analysis.observables:
+            assert "from_splunk" in obs.tags
+
+
+@pytest.mark.unit
+def test_extract_result_observables_fields_mode_any_partial(test_context):
+    """Test that fields_mode=any creates observables only for present fields."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    fields=["src_ip", "dst_ip"],
+                    type="ipv4",
+                    fields_mode=FieldsMode.ANY,
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        # only src_ip is present
+        result = {"src_ip": "10.0.0.1", "other": "value"}
+        analyzer.extract_result_observables(analysis, result, observable)
+
+        assert len(analysis.observables) == 1
+        assert analysis.observables[0].value == "10.0.0.1"
+
+
+@pytest.mark.unit
+def test_extract_result_observables_fields_mode_all(test_context):
+    """Test that fields_mode=all uses first non-null value (default behavior)."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    fields=["src_ip", "dst_ip"],
+                    type="ipv4",
+                    fields_mode=FieldsMode.ALL,
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        # both fields present - should create observable from first field
+        result = {"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2"}
+        analyzer.extract_result_observables(analysis, result, observable)
+
+        assert len(analysis.observables) == 1
+        assert analysis.observables[0].value == "10.0.0.1"
+
+
+@pytest.mark.unit
+def test_extract_result_observables_fields_mode_all_missing(test_context):
+    """Test that fields_mode=all still creates observable when some fields are missing (first non-null wins)."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    fields=["src_ip", "dst_ip"],
+                    type="ipv4",
+                    fields_mode=FieldsMode.ALL,
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        # only src_ip present - should still create observable (first non-null wins)
+        result = {"src_ip": "10.0.0.1"}
+        analyzer.extract_result_observables(analysis, result, observable)
+
+        assert len(analysis.observables) == 1
+        assert analysis.observables[0].value == "10.0.0.1"
+
+
+@pytest.mark.unit
+def test_extract_result_observables_fields_mode_all_no_match(test_context):
+    """Test that fields_mode=all creates no observable when no fields are present."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test",
+            observable_mapping=[
+                APIObservableMapping(
+                    fields=["src_ip", "dst_ip"],
+                    type="ipv4",
+                    fields_mode=FieldsMode.ALL,
+                )
+            ]
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        analysis = analyzer.create_analysis(observable)
+
+        # no matching fields present - should NOT create observable
+        result = {"other": "value"}
+        analyzer.extract_result_observables(analysis, result, observable)
+
+        assert len(analysis.observables) == 0
+
+
+@pytest.mark.unit
+def test_api_observable_mapping_fields_mode_validation():
+    """Test that APIObservableMapping accepts valid fields_mode values."""
+    # Default is ALL
+    mapping = APIObservableMapping(field="src_ip", type="ipv4")
+    assert mapping.fields_mode == FieldsMode.ALL
+
+    # Explicit ANY
+    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ANY)
+    assert mapping.fields_mode == FieldsMode.ANY
+
+    # Explicit ALL
+    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ALL)
+    assert mapping.fields_mode == FieldsMode.ALL
+
+    # String values should also work (Pydantic coercion)
+    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode="any")
+    assert mapping.fields_mode == FieldsMode.ANY
+
+    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode="all")
+    assert mapping.fields_mode == FieldsMode.ALL
