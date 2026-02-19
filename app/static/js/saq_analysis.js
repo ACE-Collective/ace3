@@ -470,6 +470,23 @@ function set_owner(alert_uuid) {
     })();
 }
 
+function toggleCollapseAll(button) {
+    var card = $(button).closest('.card');
+    var isCollapsing = $(button).find('i').hasClass('bi-arrows-collapse');
+
+    if (isCollapsing) {
+        card.find('.toggle-icon.bi-chevron-down').each(function() {
+            collapseTree(this);
+        });
+        $(button).html('<i class="bi bi-arrows-expand"></i> Expand All');
+    } else {
+        card.find('.toggle-icon.bi-chevron-right').each(function() {
+            collapseTree(this);
+        });
+        $(button).html('<i class="bi bi-arrows-collapse"></i> Collapse All');
+    }
+}
+
 // collapses ul that exist under li
 function collapseTree(element) {
     var nextElement = $(element).parent().next();
