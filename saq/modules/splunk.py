@@ -170,7 +170,7 @@ class SplunkAPIAnalyzer(BaseAPIAnalyzer):
         if analysis.query:
             m = re.search(r'\|\s*table\s+(.+?)(?:\||$)', analysis.query, re.IGNORECASE)
             if m:
-                analysis.details['table_columns'] = m.group(1).split()
+                analysis.details['table_columns'] = [c.strip().rstrip(',') for c in m.group(1).split()]
 
         for event in query_results:
             event_time = extract_event_timestamp(event)
