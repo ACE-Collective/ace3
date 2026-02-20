@@ -433,6 +433,14 @@ service_monitoring:
       python_module: saq.monitoring.monitors.distributed_workload_monitor
       python_class: DistributedWorkloadMonitor
       frequency: 5
+    - name: distributed_delayed_analysis
+      python_module: saq.monitoring.monitors.distributed_delayed_analysis_monitor
+      python_class: DistributedDelayedAnalysisMonitor
+      frequency: 5
+    - name: distributed_locks
+      python_module: saq.monitoring.monitors.distributed_locks_monitor
+      python_class: DistributedLocksMonitor
+      frequency: 5
     - name: local_workload
       python_module: saq.monitoring.monitors.local_workload_monitor
       python_class: LocalWorkloadMonitor
