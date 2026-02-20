@@ -3,6 +3,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 from requests.exceptions import ConnectionError, HTTPError, ProxyError, Timeout
+from splunklib.binding import HTTPError as SplunkHTTPError
+from splunklib.client import AuthenticationError
 
 from saq.configuration import get_config
 from saq.configuration.schema import ProxyConfig, SplunkConfig
@@ -441,6 +443,41 @@ def test_query_async_error(exception, expected_result):
         assert job is None
         assert result == expected_result
         assert splunk.cancelled == (expected_result is not None)
+
+
+@pytest.mark.unit
+def test_query_async_authentication_error():
+    class MockSplunk(SplunkQueryObject):
+        def complete(self, job):
+            self.cancelled = False
+            # construct a valid AuthenticationError with mocked splunklib internals
+            mock_response = Mock()
+            mock_response.status = 401
+            mock_response.reason = "Unauthorized"
+            mock_response.body = Mock(read=lambda: b"Session expired")
+            mock_response.headers = {}
+            cause = SplunkHTTPError(mock_response)
+            raise AuthenticationError("session expired", cause=cause)
+        def cancel(self, job):
+            self.cancelled = True
+        def delete_search_job(self, job):
+            self.cancelled = True
+            return True
+
+    # create mock job
+    mock_job = Mock()
+    mock_job.name = "123"
+
+    # create mock client
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        job, result = splunk.query_async("whatever", job=mock_job)
+        assert job is mock_job
+        assert result is None
+        assert splunk.cancelled is False
 
 
 @pytest.mark.unit

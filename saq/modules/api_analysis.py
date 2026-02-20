@@ -19,14 +19,18 @@ import re
 import time
 from typing import Optional, Type, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field
 
 from saq.analysis import Analysis, Observable
-from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
+from saq.analysis.presenter.analysis_presenter import (
+    AnalysisPresenter,
+    register_analysis_presenter,
+)
 from saq.configuration import get_config
 from saq.constants import AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.observables.mapping import BaseObservableMapping
 from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
@@ -38,7 +42,7 @@ KEY_QUESTION = 'question'
 KEY_GUI_LINK = 'gui_link'
 
 
-class APIObservableMapping(BaseModel):
+class APIObservableMapping(BaseObservableMapping):
     """Observable mapping configuration for API analyzers.
 
     Supports mapping query result fields to observables with optional tags, directives,
@@ -55,48 +59,12 @@ class APIObservableMapping(BaseModel):
               - analyze_ip
             time: true
 
-          - fields: [user, username]  # Multiple fields - first non-null wins
+          - fields: [user, username]
             type: user
             tags:
               - from_splunk
     """
-    field: Optional[str] = Field(default=None, description="Single field to map to an observable")
-    fields: list[str] = Field(default_factory=list, description="Multiple fields to check (first non-null value wins)")
-    type: str = Field(..., description="The observable type to create (e.g., ipv4, user, fqdn)")
-    tags: list[str] = Field(default_factory=list, description="Tags to add to the observable")
-    directives: list[str] = Field(default_factory=list, description="Directives to add to the observable")
-    time: bool = Field(default=False, description="Whether to use the event time as the observable time")
-    ignored_values: list[str] = Field(default_factory=list, description="Regex patterns to skip when creating observables. Patterns are matched with re.fullmatch().")
-    display_type: Optional[str] = Field(default=None, description="The display type to use for the observable")
-    display_value: Optional[str] = Field(default=None, description="The display value to use for the observable")
-    _ignored_value_patterns: list[re.Pattern] = []
-
-    @model_validator(mode='after')
-    def validate_field_or_fields(self):
-        """Ensure either field or fields is specified."""
-        if not self.field and not self.fields:
-            raise ValueError("Either 'field' or 'fields' must be specified in observable mapping")
-        return self
-
-    @model_validator(mode='after')
-    def compile_ignored_value_patterns(self):
-        """Pre-compile ignored_values into regex patterns."""
-        for p in self.ignored_values:
-            try:
-                self._ignored_value_patterns.append(re.compile(p))
-            except re.error as e:
-                logging.error(f"invalid ignored_values regex pattern {p!r}: {e}")
-        return self
-
-    def is_ignored_value(self, value: str) -> bool:
-        """Check if a value matches any ignored_values regex pattern."""
-        return any(p.fullmatch(value) for p in self._ignored_value_patterns)
-
-    def get_fields(self) -> list[str]:
-        """Returns the list of fields to check, whether from field or fields."""
-        if self.field:
-            return [self.field]
-        return self.fields
+    pass
 
 
 class BaseAPIAnalyzerConfig(AnalysisModuleConfig):
@@ -419,12 +387,30 @@ class BaseAPIAnalyzer(AnalysisModule):
             except:
                 raise ValueError(f"{self.name} query is not valid JSON: {self.target_query}")
 
+    def _apply_mapping_properties(self, new_observable, mapping: APIObservableMapping) -> None:
+        """Apply tags, directives, and display settings from a mapping to an observable."""
+        if new_observable is None:
+            return
+
+        for tag in mapping.tags:
+            new_observable.add_tag(tag)
+
+        for directive in mapping.directives:
+            new_observable.add_directive(directive)
+
+        if mapping.display_type is not None:
+            new_observable.display_type = mapping.display_type
+        if mapping.display_value is not None:
+            new_observable.display_value = mapping.display_value
+
     def extract_result_observables(self, analysis, result: dict, observable: Observable = None, result_time: Union[str, datetime.datetime] =
                                         None) -> None:
         """ Cycle through observable mappings and extract observables from query results.
 
             Processes each configured observable mapping, checking the specified field(s) in the result.
-            For mappings with multiple fields, the first non-null value is used.
+            For mappings with multiple fields:
+              - fields_mode='all' (default): all fields must be present; first field's value is used.
+              - fields_mode='any': each present field creates a separate observable.
             Applies configured tags, directives, and display settings to created observables.
 
             Args:
@@ -435,51 +421,20 @@ class BaseAPIAnalyzer(AnalysisModule):
 
         """
         for mapping in self.config.observable_mapping:
-            # Get fields to check from the mapping
-            fields_to_check = mapping.get_fields()
-
-            # Find first non-null, non-ignored value
-            value = None
-            matched_field = None
-            for field in fields_to_check:
-                if field in result and result[field] is not None:
-                    field_value = result[field]
-                    # Skip ignored values
-                    if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
-                        continue
-                    value = field_value
-                    matched_field = field
-                    break
-
-            if value is None:
-                continue
-
-            # Apply value filter
-            value = self.filter_observable_value(matched_field, mapping.type, value)
-
-            # Determine observable time
             obs_time = result_time if mapping.time else None
 
-            # Add the observable
-            new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
+            for field_group in mapping.resolve_fields(lambda f: f in result and result[f] is not None):
+                # Use the first field in the group for the observable value
+                matched_field = field_group[0]
+                field_value = result[matched_field]
 
-            if new_observable:
-                # Apply tags
-                for tag in mapping.tags:
-                    new_observable.add_tag(tag)
+                if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
+                    continue
 
-                # Apply directives
-                for directive in mapping.directives:
-                    new_observable.add_directive(directive)
-
-                # Apply display settings
-                if mapping.display_type is not None:
-                    new_observable.display_type = mapping.display_type
-                if mapping.display_value is not None:
-                    new_observable.display_value = mapping.display_value
-
-            # Call hook for custom processing
-            self.process_field_mapping(analysis, new_observable, result, matched_field, result_time)
+                value = self.filter_observable_value(matched_field, mapping.type, field_value)
+                new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
+                self._apply_mapping_properties(new_observable, mapping)
+                self.process_field_mapping(analysis, new_observable, result, matched_field, result_time)
 
     def filter_observable_value(self, result_field, observable_type, observable_value):
         """Called for each observable value added to analysis.

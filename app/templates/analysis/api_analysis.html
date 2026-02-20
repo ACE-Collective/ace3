@@ -50,12 +50,26 @@
         {% else %}
             {% set columns = results[0].keys()|list %}
         {% endif %}
+        <style>
+            #apiResultsTable { table-layout: auto; }
+            #apiResultsTable th { position: relative; }
+            #apiResultsTable th .col-resize {
+                position: absolute; right: 0; top: 0; bottom: 0; width: 5px;
+                cursor: col-resize; z-index: 1;
+            }
+            #apiResultsTable th .col-resize:hover,
+            #apiResultsTable th .col-resize.active { background: rgba(0,0,0,0.15); }
+            #apiResultsTable td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        </style>
         <div class="mb-3" style="overflow-x: auto; max-height: 600px; overflow-y: auto;">
             <table class="table table-bordered table-striped table-sm mb-0" id="apiResultsTable">
                 <thead class="table-light" style="position: sticky; top: 0;">
                     <tr>
                         {% for col in columns %}
-                        <th style="cursor: pointer; user-select: none;" data-col-index="{{ loop.index0 }}">{{ col }} <i class="bi bi-arrow-down-up text-muted small"></i></th>
+                        <th data-col-index="{{ loop.index0 }}">
+                            <span style="cursor: pointer; user-select: none;">{{ col }} <i class="bi bi-arrow-down-up text-muted small"></i></span>
+                            <div class="col-resize"></div>
+                        </th>
                         {% endfor %}
                     </tr>
                 </thead>
@@ -63,7 +77,7 @@
                     {% for row in results %}
                     <tr>
                         {% for col in columns %}
-                        <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ row.get(col, '') }}">{{ row.get(col, '') }}</td>
+                        <td title="{{ row.get(col, '') }}">{{ row.get(col, '') }}</td>
                         {% endfor %}
                     </tr>
                     {% endfor %}
@@ -73,25 +87,50 @@
         <script>
         $(function() {
             var $table = $('#apiResultsTable');
+
+            // --- Column sorting ---
             var sortCol = -1, sortAsc = true;
-            $table.find('thead th').on('click', function() {
-                var idx = $(this).data('col-index');
+            $table.find('thead th > span').on('click', function() {
+                var $th = $(this).closest('th');
+                var idx = $th.data('col-index');
                 if (sortCol === idx) { sortAsc = !sortAsc; } else { sortCol = idx; sortAsc = true; }
-                // Update icons
                 $table.find('thead th i').attr('class', 'bi bi-arrow-down-up text-muted small');
-                $(this).find('i').attr('class', 'bi ' + (sortAsc ? 'bi-arrow-up' : 'bi-arrow-down') + ' small');
-                // Sort rows
+                $th.find('i').attr('class', 'bi ' + (sortAsc ? 'bi-arrow-up' : 'bi-arrow-down') + ' small');
                 var $tbody = $table.find('tbody');
                 var rows = $tbody.find('tr').get();
                 rows.sort(function(a, b) {
                     var va = $(a).children('td').eq(idx).text().trim();
                     var vb = $(b).children('td').eq(idx).text().trim();
-                    // Try numeric comparison
                     var na = Number(va), nb = Number(vb);
                     if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
                     return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
                 });
                 $.each(rows, function(i, row) { $tbody.append(row); });
+            });
+
+            // --- Column resizing ---
+            var resizing = null;
+            $table.find('.col-resize').on('mousedown', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var $th = $(this).closest('th');
+                resizing = { $th: $th, startX: e.pageX, startW: $th.outerWidth() };
+                $(this).addClass('active');
+                // Lock to fixed layout on first resize so widths are respected
+                $table.css('table-layout', 'fixed');
+                // Set explicit widths on all columns if not yet set
+                $table.find('thead th').each(function() {
+                    if (!this.style.width) $(this).css('width', $(this).outerWidth());
+                });
+            });
+            $(document).on('mousemove', function(e) {
+                if (!resizing) return;
+                var w = Math.max(40, resizing.startW + (e.pageX - resizing.startX));
+                resizing.$th.css('width', w);
+            }).on('mouseup', function() {
+                if (!resizing) return;
+                resizing.$th.find('.col-resize').removeClass('active');
+                resizing = null;
             });
         });
         </script>
