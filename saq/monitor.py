@@ -5,6 +5,8 @@ import sys
 from threading import RLock
 from typing import Any, Optional
 
+from fluent import sender
+
 from saq.configuration.config import get_config
 
 @dataclass
@@ -33,6 +35,8 @@ class MonitorEmitter:
         self.use_stdout = False
         self.use_stderr = False
         self.use_cache = False
+        self.use_fluent_bit = False
+        self.fluent_bit_sender = None
 
         # in-memory cache
         self.cache = {}
@@ -58,6 +62,26 @@ class MonitorEmitter:
         sys.stderr.write("\n")
         return True
 
+    def emit_fluent_bit(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
+        try:
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "category": monitor.category,
+                "name": monitor.name,
+                "value": value,
+            }
+            if identifier is not None:
+                data["identifier"] = identifier
+            self.fluent_bit_sender.emit(None, data)
+            return True
+        except Exception as e:
+            logging.error("failed to emit monitor data to fluent-bit: %s", e)
+            return False
+
+    def close(self):
+        if self.fluent_bit_sender is not None:
+            self.fluent_bit_sender.close()
+
     def emit(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         assert isinstance(value, monitor.data_type)
         
@@ -72,6 +96,9 @@ class MonitorEmitter:
 
         if self.use_stderr:
             self.emit_stderr(monitor, value, identifier)
+
+        if self.use_fluent_bit:
+            self.emit_fluent_bit(monitor, value, identifier)
 
         return True
 
@@ -93,6 +120,7 @@ def get_emitter() -> MonitorEmitter:
 
 def reset_emitter():
     global global_emitter
+    global_emitter.close()
     global_emitter = MonitorEmitter()
 
 def emit_monitor(monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
@@ -111,6 +139,11 @@ def enable_monitor_stderr():
 def enable_monitor_cache():
     get_emitter().use_cache = True
 
+def enable_monitor_fluent_bit(hostname, port, tag):
+    emitter = get_emitter()
+    emitter.fluent_bit_sender = sender.FluentSender(tag, host=hostname, port=port)
+    emitter.use_fluent_bit = True
+
 def initialize_monitoring():
     reset_emitter()
 
@@ -125,3 +158,10 @@ def initialize_monitoring():
 
     if get_config().monitor.use_cache:
         enable_monitor_cache()
+
+    if get_config().monitor.fluent_bit is not None:
+        enable_monitor_fluent_bit(
+            hostname=get_config().monitor.fluent_bit.hostname,
+            port=get_config().monitor.fluent_bit.port,
+            tag=get_config().monitor.fluent_bit.tag,
+        )

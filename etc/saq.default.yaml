@@ -135,6 +135,10 @@ monitor:
   use_stderr: false
   use_logging: false
   use_cache: false
+  fluent_bit:
+    hostname: fluent-bit
+    port: 24224
+    tag: monitoring
 
 rabbitmq:
   username: ace3
