@@ -9,6 +9,8 @@ from saq.configuration.config import get_config, get_engine_config
 if TYPE_CHECKING:
     from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_data_dir
+from saq.monitor import emit_monitor
+from saq.monitor_definitions import MONITOR_ERROR_REPORT
 
 
 def report_exception(execution_context: Optional["EngineExecutionContext"]=None):
@@ -36,6 +38,14 @@ def report_exception(execution_context: Optional["EngineExecutionContext"]=None)
             fp.write("\n\nEXCEPTION SOURCE\n")
             fp.write(final_source)
             fp.write("\n")
+
+        emit_monitor(MONITOR_ERROR_REPORT, {
+            "current_analysis_target": str(execution_context.root) if execution_context else None,
+            "current_analysis_mode": str(execution_context.root.analysis_mode) if execution_context and execution_context.root else None,
+            "exception": str(reported_exception),
+            "stack_trace": stack_trace,
+            "exception_source": final_source,
+        })
 
         if get_engine_config().copy_analysis_on_error:
             if execution_context:

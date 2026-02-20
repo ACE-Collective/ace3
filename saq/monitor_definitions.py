@@ -26,8 +26,17 @@ MONITOR_DB_POOL_IN_USE_COUNT = Monitor(
 )
 
 MONITOR_SQLALCHEMY_DB_POOL_STATUS = Monitor(
-    category=CATEGORY_SQLALCHEMY_DB_POOL, 
-    name="status", 
-    data_type=str, 
+    category=CATEGORY_SQLALCHEMY_DB_POOL,
+    name="status",
+    data_type=str,
     description="The current status of the SQLAlchemy database pool."
+)
+
+CATEGORY_ERROR = "error"
+
+MONITOR_ERROR_REPORT = Monitor(
+    category=CATEGORY_ERROR,
+    name="error_report",
+    data_type=dict,
+    description="Emitted when an unhandled exception is reported."
 )
