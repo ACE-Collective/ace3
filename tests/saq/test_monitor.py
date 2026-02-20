@@ -1,9 +1,11 @@
+from datetime import datetime, timedelta
 from io import StringIO
 from unittest.mock import MagicMock, patch
 import pytest
 import re
 
-from saq.monitor import MonitorEmitter, emit_monitor, enable_monitor_cache, enable_monitor_fluent_bit, enable_monitor_logging, enable_monitor_stderr, enable_monitor_stdout, get_emitter, reset_emitter
+from saq.configuration.schema import MonitorDefinitionConfig
+from saq.monitor import MonitorEmitter, emit_monitor, enable_monitor_cache, enable_monitor_fluent_bit, enable_monitor_logging, enable_monitor_stderr, enable_monitor_stdout, get_emitter, reset_emitter, set_monitor_definitions
 from saq.monitor_definitions import MONITOR_TEST
 from tests.saq.helpers import log_count
 
@@ -173,3 +175,140 @@ def test_reset_emitter_closes_sender():
         mock_sender_instance.close.assert_called_once()
         assert get_emitter().fluent_bit_sender is None
         assert not get_emitter().use_fluent_bit
+
+
+@pytest.mark.unit
+def test_emit_disabled_monitor(capsys):
+    """disabled monitor produces no output on any backend and returns False"""
+    enable_monitor_stdout()
+    enable_monitor_cache()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=False),
+    })
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    captured = capsys.readouterr()
+    assert LOG_TEST not in captured.out
+    assert not get_emitter().cache
+
+
+@pytest.mark.unit
+def test_emit_enabled_monitor(capsys):
+    """explicitly enabled monitor works normally"""
+    enable_monitor_stdout()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=True),
+    })
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST in captured.out
+
+
+@pytest.mark.unit
+def test_emit_monitor_not_in_definitions(capsys):
+    """monitor absent from definitions works normally (backward compat)"""
+    enable_monitor_stdout()
+    set_monitor_definitions({
+        "some_other_monitor": MonitorDefinitionConfig(name="some_other_monitor", enabled=False),
+    })
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST in captured.out
+
+
+@pytest.mark.unit
+def test_suppression_first_emission_goes_through(capsys):
+    """first emit with suppression configured succeeds"""
+    enable_monitor_stdout()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
+    })
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST in captured.out
+
+
+@pytest.mark.unit
+def test_suppression_blocks_within_window(capsys):
+    """second emit within suppression window returns False and produces no output"""
+    enable_monitor_stdout()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
+    })
+
+    # first emission goes through
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    capsys.readouterr()
+
+    # second emission within window is suppressed
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    captured = capsys.readouterr()
+    assert LOG_TEST not in captured.out
+
+
+@pytest.mark.unit
+def test_suppression_allows_after_window_elapses(capsys):
+    """emit after suppression window elapses succeeds"""
+    enable_monitor_stdout()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
+    })
+
+    # first emission goes through
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    capsys.readouterr()
+
+    # simulate time passing beyond the suppression window
+    get_emitter()._last_emission_times[MONITOR_TEST.name] = datetime.now() - timedelta(seconds=61)
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST in captured.out
+
+
+@pytest.mark.unit
+def test_suppression_blocks_all_backends():
+    """suppressed emit does not update cache or any other backend"""
+    enable_monitor_cache()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
+    })
+
+    # first emission populates cache
+    emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert get_emitter().cache
+
+    # clear the cache to verify second emission does not touch it
+    get_emitter().cache.clear()
+
+    # second emission within window is suppressed
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    assert not get_emitter().cache
+
+
+@pytest.mark.unit
+def test_disabled_with_suppression_stays_disabled(capsys):
+    """enabled=False takes precedence over suppression_duration"""
+    enable_monitor_stdout()
+    enable_monitor_cache()
+    set_monitor_definitions({
+        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=False, suppression_duration=60),
+    })
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    captured = capsys.readouterr()
+    assert LOG_TEST not in captured.out
+    assert not get_emitter().cache

@@ -1,11 +1,14 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import sys
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from fluent import sender
+
+if TYPE_CHECKING:
+    from saq.configuration.schema import MonitorDefinitionConfig
 
 from saq.configuration.config import get_config
 
@@ -38,9 +41,17 @@ class MonitorEmitter:
         self.use_fluent_bit = False
         self.fluent_bit_sender = None
 
+        # monitor definitions
+        self.definitions: dict[str, "MonitorDefinitionConfig"] = {}
+        self._suppression_lock = RLock()
+        self._last_emission_times: dict[str, datetime] = {}
+
         # in-memory cache
         self.cache = {}
         self.cache_lock = RLock()
+
+    def set_definitions(self, definitions: dict[str, "MonitorDefinitionConfig"]):
+        self.definitions = definitions
 
     def emit_cache(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         with self.cache_lock:
@@ -84,7 +95,20 @@ class MonitorEmitter:
 
     def emit(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         assert isinstance(value, monitor.data_type)
-        
+
+        # check monitor definitions for enabled/suppression gating
+        definition = self.definitions.get(monitor.name)
+        if definition is not None:
+            if not definition.enabled:
+                return False
+
+            if definition.suppression_duration is not None:
+                with self._suppression_lock:
+                    last_time = self._last_emission_times.get(monitor.name)
+                    if last_time is not None and (datetime.now() - last_time) < timedelta(seconds=definition.suppression_duration):
+                        return False
+                    self._last_emission_times[monitor.name] = datetime.now()
+
         if self.use_cache:
             self.emit_cache(monitor, value, identifier)
 
@@ -139,6 +163,9 @@ def enable_monitor_stderr():
 def enable_monitor_cache():
     get_emitter().use_cache = True
 
+def set_monitor_definitions(definitions: dict[str, "MonitorDefinitionConfig"]):
+    get_emitter().set_definitions(definitions)
+
 def enable_monitor_fluent_bit(hostname, port, tag):
     emitter = get_emitter()
     emitter.fluent_bit_sender = sender.FluentSender(tag, host=hostname, port=port)
@@ -165,3 +192,6 @@ def initialize_monitoring():
             port=get_config().monitor.fluent_bit.port,
             tag=get_config().monitor.fluent_bit.tag,
         )
+
+    if get_config().monitor.definitions:
+        set_monitor_definitions(get_config().monitor.definitions)
