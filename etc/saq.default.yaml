@@ -422,6 +422,22 @@ gui:
 # place favicon mappings under this section if needed
 gui_favicons: {}
 
+service_monitoring:
+  name: monitoring
+  python_module: saq.monitoring.service
+  python_class: ACEMonitoringService
+  description: Monitoring - system health and operational monitoring service
+  enabled: true
+  monitors:
+    - name: distributed_workload
+      python_module: saq.monitoring.monitors.distributed_workload_monitor
+      python_class: DistributedWorkloadMonitor
+      frequency: 5
+    - name: local_workload
+      python_module: saq.monitoring.monitors.local_workload_monitor
+      python_class: LocalWorkloadMonitor
+      frequency: 5
+
 service_network_semaphore:
   name: network_semaphore
   python_module: saq.network_semaphore.service

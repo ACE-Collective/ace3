@@ -539,6 +539,25 @@ services:
     networks:
       - ace
 
+  monitoring:
+    platform: linux/amd64
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-monitoring
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      ace:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start monitoring"
+    restart: always
+    volumes: *common-volumes
+    hostname: ace
+    cap_add:
+      - SYS_PTRACE
+    networks:
+      - ace
+
   # this is the service you will attach to for development purposes
   dev:
     platform: linux/amd64
