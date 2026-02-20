@@ -142,6 +142,7 @@ monitor:
   definitions:
     - pattern: "database.pool.*"
       suppression_duration: 10
+      dedup: true
 
 rabbitmq:
   username: ace3

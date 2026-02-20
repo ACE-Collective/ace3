@@ -95,6 +95,7 @@ class MonitorDefinitionConfig(BaseModel):
     pattern: str = Field(..., description="glob pattern to match monitor paths")
     enabled: bool = Field(description="whether the monitor is enabled", default=True)
     suppression_duration: Optional[int] = Field(description="suppress additional monitor messages for this duration (in seconds)", default=None)
+    dedup: bool = Field(description="deduplicate monitor messages", default=False)
 
 class MonitorConfig(BaseModel):
     use_stdout: bool = Field(..., description="enable stdout monitoring")

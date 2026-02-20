@@ -46,6 +46,8 @@ class MonitorEmitter:
         self._definition_cache: dict[str, Optional["MonitorDefinitionConfig"]] = {}
         self._suppression_lock = RLock()
         self._last_emission_times: dict[str, datetime] = {}
+        self._dedup_lock = RLock()
+        self._last_emitted_values: dict[str, Any] = {}
 
         # in-memory cache
         self.cache = {}
@@ -125,6 +127,13 @@ class MonitorEmitter:
                     if last_time is not None and (datetime.now() - last_time) < timedelta(seconds=definition.suppression_duration):
                         return False
                     self._last_emission_times[monitor.path] = datetime.now()
+
+            if definition.dedup:
+                with self._dedup_lock:
+                    last_value = self._last_emitted_values.get(monitor.path)
+                    if last_value is not None and last_value == value:
+                        return False
+                    self._last_emitted_values[monitor.path] = value
 
         if self.use_cache:
             self.emit_cache(monitor, value, identifier)

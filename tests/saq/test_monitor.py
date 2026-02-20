@@ -376,3 +376,115 @@ def test_definition_cache_is_cleared_on_set_definitions():
         MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=True),
     ])
     assert not emitter._definition_cache
+
+
+@pytest.mark.unit
+def test_dedup_first_emission_goes_through(capsys):
+    """first emit with dedup=True succeeds"""
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
+    ])
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST in captured.out
+
+
+@pytest.mark.unit
+def test_dedup_blocks_duplicate_value(capsys):
+    """second emit with same value returns False and produces no output"""
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
+    ])
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    capsys.readouterr()
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    captured = capsys.readouterr()
+    assert LOG_TEST not in captured.out
+
+
+@pytest.mark.unit
+def test_dedup_allows_different_value(capsys):
+    """emit with different value succeeds after dedup block"""
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
+    ])
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    capsys.readouterr()
+
+    # same value is blocked
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    capsys.readouterr()
+
+    # different value goes through
+    result = emit_monitor(MONITOR_TEST, LOG_TEST_2)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST_2 in captured.out
+
+
+@pytest.mark.unit
+def test_dedup_blocks_all_backends():
+    """deduplicated emit does not update cache or other backends"""
+    enable_monitor_cache()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
+    ])
+
+    # first emission populates cache
+    emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert get_emitter().cache
+
+    # clear cache to verify second emission does not touch it
+    get_emitter().cache.clear()
+
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    assert not get_emitter().cache
+
+
+@pytest.mark.unit
+def test_dedup_with_suppression(capsys):
+    """dedup and suppression interact correctly"""
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True, suppression_duration=60),
+    ])
+
+    # first emission goes through
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is True
+    capsys.readouterr()
+
+    # second emission within suppression window is blocked by suppression
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+
+    # simulate suppression window elapsing
+    get_emitter()._last_emission_times[MONITOR_TEST.path] = datetime.now() - timedelta(seconds=61)
+
+    # same value is now blocked by dedup (suppression passes but dedup catches it)
+    result = emit_monitor(MONITOR_TEST, LOG_TEST)
+    assert result is False
+    captured = capsys.readouterr()
+    assert LOG_TEST not in captured.out
+
+    # simulate suppression window elapsing again
+    get_emitter()._last_emission_times[MONITOR_TEST.path] = datetime.now() - timedelta(seconds=61)
+
+    # different value goes through (both suppression and dedup pass)
+    result = emit_monitor(MONITOR_TEST, LOG_TEST_2)
+    assert result is True
+    captured = capsys.readouterr()
+    assert LOG_TEST_2 in captured.out
