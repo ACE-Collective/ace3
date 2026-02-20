@@ -139,6 +139,9 @@ monitor:
     hostname: fluent-bit
     port: 24224
     tag: monitoring
+  definitions:
+    - pattern: "database.pool.*"
+      suppression_duration: 10
 
 rabbitmq:
   username: ace3

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from fnmatch import fnmatch
 import logging
 import sys
 from threading import RLock
@@ -14,8 +15,7 @@ from saq.configuration.config import get_config
 
 @dataclass
 class Monitor:
-    category: str
-    name: str
+    path: str
     data_type: type
     description: str
 
@@ -30,7 +30,7 @@ def _format_message(monitor: Monitor, value: Any, identifier: Optional[str]=None
     if identifier is not None:
         identifier_message = f" <{identifier}> "
 
-    return "MONITOR [{}] ({}){}: {}".format(monitor.category, monitor.name, identifier_message, value)
+    return "MONITOR ({}){}: {}".format(monitor.path, identifier_message, value)
 
 class MonitorEmitter:
     def __init__(self):
@@ -42,7 +42,8 @@ class MonitorEmitter:
         self.fluent_bit_sender = None
 
         # monitor definitions
-        self.definitions: dict[str, "MonitorDefinitionConfig"] = {}
+        self.definitions: list["MonitorDefinitionConfig"] = []
+        self._definition_cache: dict[str, Optional["MonitorDefinitionConfig"]] = {}
         self._suppression_lock = RLock()
         self._last_emission_times: dict[str, datetime] = {}
 
@@ -50,15 +51,32 @@ class MonitorEmitter:
         self.cache = {}
         self.cache_lock = RLock()
 
-    def set_definitions(self, definitions: dict[str, "MonitorDefinitionConfig"]):
+    def set_definitions(self, definitions: list["MonitorDefinitionConfig"]):
         self.definitions = definitions
+        self._definition_cache = {}
+
+    def _resolve_definition(self, monitor_path: str) -> Optional["MonitorDefinitionConfig"]:
+        if monitor_path in self._definition_cache:
+            return self._definition_cache[monitor_path]
+
+        matches = [d for d in self.definitions if fnmatch(monitor_path, d.pattern)]
+
+        if len(matches) > 1:
+            patterns = [m.pattern for m in matches]
+            logging.warning("monitor path %s matched multiple definition patterns: %s", monitor_path, patterns)
+            self._definition_cache[monitor_path] = None
+            return None
+
+        if len(matches) == 1:
+            self._definition_cache[monitor_path] = matches[0]
+            return matches[0]
+
+        self._definition_cache[monitor_path] = None
+        return None
 
     def emit_cache(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         with self.cache_lock:
-            if monitor.category not in self.cache:
-                self.cache[monitor.category] = {}
-
-            self.cache[monitor.category][monitor.name] = CacheEntry(identifier, value, datetime.now())
+            self.cache[monitor.path] = CacheEntry(identifier, value, datetime.now())
 
     def emit_logging(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         logging.debug(_format_message(monitor, value, identifier))
@@ -77,8 +95,7 @@ class MonitorEmitter:
         try:
             data = {
                 "timestamp": datetime.now().isoformat(),
-                "category": monitor.category,
-                "name": monitor.name,
+                "path": monitor.path,
                 "value": value,
             }
             if identifier is not None:
@@ -97,17 +114,17 @@ class MonitorEmitter:
         assert isinstance(value, monitor.data_type)
 
         # check monitor definitions for enabled/suppression gating
-        definition = self.definitions.get(monitor.name)
+        definition = self._resolve_definition(monitor.path)
         if definition is not None:
             if not definition.enabled:
                 return False
 
             if definition.suppression_duration is not None:
                 with self._suppression_lock:
-                    last_time = self._last_emission_times.get(monitor.name)
+                    last_time = self._last_emission_times.get(monitor.path)
                     if last_time is not None and (datetime.now() - last_time) < timedelta(seconds=definition.suppression_duration):
                         return False
-                    self._last_emission_times[monitor.name] = datetime.now()
+                    self._last_emission_times[monitor.path] = datetime.now()
 
         if self.use_cache:
             self.emit_cache(monitor, value, identifier)
@@ -128,14 +145,13 @@ class MonitorEmitter:
 
     def dump_cache(self, fp):
         with self.cache_lock:
-            for category in sorted(self.cache.keys()):
-                for name in sorted(self.cache[category].keys()):
-                    cache_entry = self.cache[category][name]
-                    identifier_str = ""
-                    if cache_entry.identifier:
-                        identifier_str = f":{cache_entry.identifier}"
+            for path in sorted(self.cache.keys()):
+                cache_entry = self.cache[path]
+                identifier_str = ""
+                if cache_entry.identifier:
+                    identifier_str = f":{cache_entry.identifier}"
 
-                    fp.write(f"[{category}] ({name}{identifier_str}): {cache_entry.value} @ {cache_entry.time}\n")
+                fp.write(f"({path}{identifier_str}): {cache_entry.value} @ {cache_entry.time}\n")
 
 global_emitter = MonitorEmitter()
 
@@ -163,7 +179,7 @@ def enable_monitor_stderr():
 def enable_monitor_cache():
     get_emitter().use_cache = True
 
-def set_monitor_definitions(definitions: dict[str, "MonitorDefinitionConfig"]):
+def set_monitor_definitions(definitions: list["MonitorDefinitionConfig"]):
     get_emitter().set_definitions(definitions)
 
 def enable_monitor_fluent_bit(hostname, port, tag):

@@ -59,13 +59,13 @@ def test_emit_monitor_cache():
     enable_monitor_cache()
     emit_monitor(MONITOR_TEST, LOG_TEST)
     assert get_emitter().cache
-    cache_entry = get_emitter().cache[MONITOR_TEST.category][MONITOR_TEST.name]
+    cache_entry = get_emitter().cache[MONITOR_TEST.path]
     assert cache_entry.value == LOG_TEST
     assert not cache_entry.identifier
 
     # emit the same message and get a different cache entry
     emit_monitor(MONITOR_TEST, LOG_TEST)
-    new_cache_entry= get_emitter().cache[MONITOR_TEST.category][MONITOR_TEST.name]
+    new_cache_entry= get_emitter().cache[MONITOR_TEST.path]
     assert cache_entry is not new_cache_entry
     assert cache_entry.value == LOG_TEST
     assert not cache_entry.identifier
@@ -73,7 +73,7 @@ def test_emit_monitor_cache():
 
     # emit a new message and get a new cache entry with a different value
     emit_monitor(MONITOR_TEST, LOG_TEST_2)
-    new_cache_entry= get_emitter().cache[MONITOR_TEST.category][MONITOR_TEST.name]
+    new_cache_entry= get_emitter().cache[MONITOR_TEST.path]
     assert cache_entry is not new_cache_entry
     assert new_cache_entry.value == LOG_TEST_2
     assert not new_cache_entry.identifier
@@ -81,12 +81,12 @@ def test_emit_monitor_cache():
     # dump the cache
     _buffer = StringIO()
     get_emitter().dump_cache(_buffer)
-    # [test] (test): log test 2 @ 2025-04-09 12:43:11.524041
-    assert re.match(r"^\[test\] \(test\): log test 2 @ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$", _buffer.getvalue().strip())
+    # (test): log test 2 @ 2025-04-09 12:43:11.524041
+    assert re.match(r"^\(test\): log test 2 @ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$", _buffer.getvalue().strip())
 
     # emit a new message with an identifier
     emit_monitor(MONITOR_TEST, LOG_TEST, "id")
-    new_cache_entry= get_emitter().cache[MONITOR_TEST.category][MONITOR_TEST.name]
+    new_cache_entry= get_emitter().cache[MONITOR_TEST.path]
     assert cache_entry is not new_cache_entry
     assert new_cache_entry.value == LOG_TEST
     assert new_cache_entry.identifier == "id"
@@ -94,8 +94,8 @@ def test_emit_monitor_cache():
     # dump the cache
     _buffer = StringIO()
     get_emitter().dump_cache(_buffer)
-    # [test] (test): log test 2 @ 2025-04-09 12:43:11.524041
-    assert re.match(r"^\[test\] \(test:id\): log test @ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$", _buffer.getvalue().strip())
+    # (test:id): log test @ 2025-04-09 12:43:11.524041
+    assert re.match(r"^\(test:id\): log test @ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}$", _buffer.getvalue().strip())
 
 @pytest.mark.unit
 def test_fluent_bit_not_called_when_disabled():
@@ -121,8 +121,7 @@ def test_fluent_bit_emits_structured_data():
         call_args = mock_sender_instance.emit.call_args
         assert call_args[0][0] is None
         data = call_args[0][1]
-        assert data["category"] == MONITOR_TEST.category
-        assert data["name"] == MONITOR_TEST.name
+        assert data["path"] == MONITOR_TEST.path
         assert data["value"] == LOG_TEST
         assert "timestamp" in data
         assert "identifier" not in data
@@ -182,9 +181,9 @@ def test_emit_disabled_monitor(capsys):
     """disabled monitor produces no output on any backend and returns False"""
     enable_monitor_stdout()
     enable_monitor_cache()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=False),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=False),
+    ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is False
@@ -197,9 +196,9 @@ def test_emit_disabled_monitor(capsys):
 def test_emit_enabled_monitor(capsys):
     """explicitly enabled monitor works normally"""
     enable_monitor_stdout()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=True),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=True),
+    ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is True
@@ -211,9 +210,9 @@ def test_emit_enabled_monitor(capsys):
 def test_emit_monitor_not_in_definitions(capsys):
     """monitor absent from definitions works normally (backward compat)"""
     enable_monitor_stdout()
-    set_monitor_definitions({
-        "some_other_monitor": MonitorDefinitionConfig(name="some_other_monitor", enabled=False),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern="some_other_monitor", enabled=False),
+    ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is True
@@ -225,9 +224,9 @@ def test_emit_monitor_not_in_definitions(capsys):
 def test_suppression_first_emission_goes_through(capsys):
     """first emit with suppression configured succeeds"""
     enable_monitor_stdout()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, suppression_duration=60),
+    ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is True
@@ -239,9 +238,9 @@ def test_suppression_first_emission_goes_through(capsys):
 def test_suppression_blocks_within_window(capsys):
     """second emit within suppression window returns False and produces no output"""
     enable_monitor_stdout()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, suppression_duration=60),
+    ])
 
     # first emission goes through
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
@@ -259,9 +258,9 @@ def test_suppression_blocks_within_window(capsys):
 def test_suppression_allows_after_window_elapses(capsys):
     """emit after suppression window elapses succeeds"""
     enable_monitor_stdout()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, suppression_duration=60),
+    ])
 
     # first emission goes through
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
@@ -269,7 +268,7 @@ def test_suppression_allows_after_window_elapses(capsys):
     capsys.readouterr()
 
     # simulate time passing beyond the suppression window
-    get_emitter()._last_emission_times[MONITOR_TEST.name] = datetime.now() - timedelta(seconds=61)
+    get_emitter()._last_emission_times[MONITOR_TEST.path] = datetime.now() - timedelta(seconds=61)
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is True
@@ -281,9 +280,9 @@ def test_suppression_allows_after_window_elapses(capsys):
 def test_suppression_blocks_all_backends():
     """suppressed emit does not update cache or any other backend"""
     enable_monitor_cache()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, suppression_duration=60),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, suppression_duration=60),
+    ])
 
     # first emission populates cache
     emit_monitor(MONITOR_TEST, LOG_TEST)
@@ -303,12 +302,77 @@ def test_disabled_with_suppression_stays_disabled(capsys):
     """enabled=False takes precedence over suppression_duration"""
     enable_monitor_stdout()
     enable_monitor_cache()
-    set_monitor_definitions({
-        MONITOR_TEST.name: MonitorDefinitionConfig(name=MONITOR_TEST.name, enabled=False, suppression_duration=60),
-    })
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=False, suppression_duration=60),
+    ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
     assert result is False
     captured = capsys.readouterr()
     assert LOG_TEST not in captured.out
     assert not get_emitter().cache
+
+
+@pytest.mark.unit
+def test_glob_pattern_matching(capsys):
+    """glob pattern matches multiple monitor paths"""
+    from saq.monitor import Monitor
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern="database.pool.*", suppression_duration=10),
+    ])
+
+    monitor_a = Monitor(path="database.pool.available_count", data_type=int, description="test")
+    monitor_b = Monitor(path="database.pool.in_use_count", data_type=int, description="test")
+    monitor_c = Monitor(path="other.monitor", data_type=str, description="test")
+
+    result_a = emit_monitor(monitor_a, 5)
+    assert result_a is True
+
+    result_b = emit_monitor(monitor_b, 3)
+    assert result_b is True
+
+    result_c = emit_monitor(monitor_c, "value")
+    assert result_c is True
+
+
+@pytest.mark.unit
+def test_multiple_pattern_conflict_logs_warning(capsys):
+    """when multiple patterns match a monitor path, a warning is logged and no definition is applied"""
+    from saq.monitor import Monitor
+    import logging
+
+    enable_monitor_stdout()
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern="database.*", enabled=False),
+        MonitorDefinitionConfig(pattern="database.pool.*", enabled=False),
+    ])
+
+    monitor = Monitor(path="database.pool.available_count", data_type=int, description="test")
+
+    with patch("saq.monitor.logging") as mock_logging:
+        result = emit_monitor(monitor, 5)
+        # no definition applied, so emission goes through
+        assert result is True
+        mock_logging.warning.assert_called_once()
+        warning_args = mock_logging.warning.call_args[0]
+        assert "database.pool.available_count" in warning_args[1]
+
+
+@pytest.mark.unit
+def test_definition_cache_is_cleared_on_set_definitions():
+    """setting new definitions clears the resolved definition cache"""
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=False),
+    ])
+
+    emitter = get_emitter()
+    # resolve once to populate cache
+    emitter._resolve_definition(MONITOR_TEST.path)
+    assert MONITOR_TEST.path in emitter._definition_cache
+
+    # set new definitions should clear cache
+    set_monitor_definitions([
+        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=True),
+    ])
+    assert not emitter._definition_cache

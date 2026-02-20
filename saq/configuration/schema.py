@@ -92,7 +92,7 @@ class FluentBitMonitoringConfig(BaseModel):
     tag: str = Field(description="the tag to use for fluent-bit logging")
 
 class MonitorDefinitionConfig(BaseModel):
-    name: str = Field(..., description="the name of the monitor")
+    pattern: str = Field(..., description="glob pattern to match monitor paths")
     enabled: bool = Field(description="whether the monitor is enabled", default=True)
     suppression_duration: Optional[int] = Field(description="suppress additional monitor messages for this duration (in seconds)", default=None)
 
@@ -102,7 +102,7 @@ class MonitorConfig(BaseModel):
     use_logging: bool = Field(..., description="enable logging monitoring")
     use_cache: bool = Field(..., description="enable cache monitoring")
     fluent_bit: Optional[FluentBitMonitoringConfig] = Field(default=None, description="fluent-bit monitoring configuration")
-    definitions: dict[str, MonitorDefinitionConfig] = Field(default={}, description="monitor definitions")
+    definitions: list[MonitorDefinitionConfig] = Field(default=[], description="monitor definitions")
 
 class RabbitMQConfig(BaseModel):
     username: str = Field(..., description="rabbitmq username")
