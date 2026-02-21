@@ -10,7 +10,6 @@ from urllib.parse import quote_plus
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from saq.configuration.loader import load_configuration
 from saq.database.model import (
     AnalysisModePriority,
     AuthPermissionCatalog,
@@ -28,12 +27,14 @@ from saq.database.model import (
 )
 
 
-def get_engine(db_name: str | None = None):
-    raw = load_configuration(config_paths=[])
-    db = raw._data["database_ace"]
-    password = quote_plus(db["password"])
-    name = db_name or db["database"]
-    url = f"mysql+pymysql://{db['username']}:{password}@{db['hostname']}:{db['port']}/{name}"
+def get_engine(db_name: str = "ace"):
+    password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
+    if not password:
+        with open("/auth/passwords/ace-superuser") as fp:
+            password = fp.read().strip()
+    password = quote_plus(password)
+    host = os.environ.get("ACE_DB_HOST", "ace-db")
+    url = f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
     return create_engine(url)
 
 

@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from saq.configuration.loader import load_configuration
 from saq.database.meta import Base
 import saq.database.model  # noqa: F401 — populates Base.metadata
 
@@ -16,11 +15,14 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    raw = load_configuration(config_paths=[])
-    db = raw._data["database_ace"]
-    password = quote_plus(db["password"])
-    db_name = os.environ.get("DATABASE_NAME", db["database"])
-    return f"mysql+pymysql://{db['username']}:{password}@{db['hostname']}:{db['port']}/{db_name}"
+    password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
+    if not password:
+        with open("/auth/passwords/ace-superuser") as fp:
+            password = fp.read().strip()
+    password = quote_plus(password)
+    host = os.environ.get("ACE_DB_HOST", "ace-db")
+    db_name = os.environ.get("DATABASE_NAME", "ace")
+    return f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
 
 
 def run_migrations_offline() -> None:
