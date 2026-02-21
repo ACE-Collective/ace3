@@ -1,16 +1,21 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from fnmatch import fnmatch
 import logging
 import sys
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+from fluent import sender
+
+if TYPE_CHECKING:
+    from saq.configuration.schema import MonitorDefinitionConfig
 
 from saq.configuration.config import get_config
 
 @dataclass
 class Monitor:
-    category: str
-    name: str
+    path: str
     data_type: type
     description: str
 
@@ -25,7 +30,7 @@ def _format_message(monitor: Monitor, value: Any, identifier: Optional[str]=None
     if identifier is not None:
         identifier_message = f" <{identifier}> "
 
-    return "MONITOR [{}] ({}){}: {}".format(monitor.category, monitor.name, identifier_message, value)
+    return "MONITOR ({}){}: {}".format(monitor.path, identifier_message, value)
 
 class MonitorEmitter:
     def __init__(self):
@@ -33,17 +38,47 @@ class MonitorEmitter:
         self.use_stdout = False
         self.use_stderr = False
         self.use_cache = False
+        self.use_fluent_bit = False
+        self.fluent_bit_sender = None
+
+        # monitor definitions
+        self.definitions: list["MonitorDefinitionConfig"] = []
+        self._definition_cache: dict[str, Optional["MonitorDefinitionConfig"]] = {}
+        self._suppression_lock = RLock()
+        self._last_emission_times: dict[str, datetime] = {}
+        self._dedup_lock = RLock()
+        self._last_emitted_values: dict[str, Any] = {}
 
         # in-memory cache
         self.cache = {}
         self.cache_lock = RLock()
 
+    def set_definitions(self, definitions: list["MonitorDefinitionConfig"]):
+        self.definitions = definitions
+        self._definition_cache = {}
+
+    def _resolve_definition(self, monitor_path: str) -> Optional["MonitorDefinitionConfig"]:
+        if monitor_path in self._definition_cache:
+            return self._definition_cache[monitor_path]
+
+        matches = [d for d in self.definitions if fnmatch(monitor_path, d.pattern)]
+
+        if len(matches) > 1:
+            patterns = [m.pattern for m in matches]
+            logging.warning("monitor path %s matched multiple definition patterns: %s", monitor_path, patterns)
+            self._definition_cache[monitor_path] = None
+            return None
+
+        if len(matches) == 1:
+            self._definition_cache[monitor_path] = matches[0]
+            return matches[0]
+
+        self._definition_cache[monitor_path] = None
+        return None
+
     def emit_cache(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         with self.cache_lock:
-            if monitor.category not in self.cache:
-                self.cache[monitor.category] = {}
-
-            self.cache[monitor.category][monitor.name] = CacheEntry(identifier, value, datetime.now())
+            self.cache[monitor.path] = CacheEntry(identifier, value, datetime.now())
 
     def emit_logging(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         logging.debug(_format_message(monitor, value, identifier))
@@ -58,9 +93,48 @@ class MonitorEmitter:
         sys.stderr.write("\n")
         return True
 
+    def emit_fluent_bit(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
+        try:
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "path": monitor.path,
+                "value": value,
+            }
+            if identifier is not None:
+                data["identifier"] = identifier
+            self.fluent_bit_sender.emit(None, data)
+            return True
+        except Exception as e:
+            logging.error("failed to emit monitor data to fluent-bit: %s", e)
+            return False
+
+    def close(self):
+        if self.fluent_bit_sender is not None:
+            self.fluent_bit_sender.close()
+
     def emit(self, monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
         assert isinstance(value, monitor.data_type)
-        
+
+        # check monitor definitions for enabled/suppression gating
+        definition = self._resolve_definition(monitor.path)
+        if definition is not None:
+            if not definition.enabled:
+                return False
+
+            if definition.suppression_duration is not None:
+                with self._suppression_lock:
+                    last_time = self._last_emission_times.get(monitor.path)
+                    if last_time is not None and (datetime.now() - last_time) < timedelta(seconds=definition.suppression_duration):
+                        return False
+                    self._last_emission_times[monitor.path] = datetime.now()
+
+            if definition.dedup:
+                with self._dedup_lock:
+                    last_value = self._last_emitted_values.get(monitor.path)
+                    if last_value is not None and last_value == value:
+                        return False
+                    self._last_emitted_values[monitor.path] = value
+
         if self.use_cache:
             self.emit_cache(monitor, value, identifier)
 
@@ -73,18 +147,20 @@ class MonitorEmitter:
         if self.use_stderr:
             self.emit_stderr(monitor, value, identifier)
 
+        if self.use_fluent_bit:
+            self.emit_fluent_bit(monitor, value, identifier)
+
         return True
 
     def dump_cache(self, fp):
         with self.cache_lock:
-            for category in sorted(self.cache.keys()):
-                for name in sorted(self.cache[category].keys()):
-                    cache_entry = self.cache[category][name]
-                    identifier_str = ""
-                    if cache_entry.identifier:
-                        identifier_str = f":{cache_entry.identifier}"
+            for path in sorted(self.cache.keys()):
+                cache_entry = self.cache[path]
+                identifier_str = ""
+                if cache_entry.identifier:
+                    identifier_str = f":{cache_entry.identifier}"
 
-                    fp.write(f"[{category}] ({name}{identifier_str}): {cache_entry.value} @ {cache_entry.time}\n")
+                fp.write(f"({path}{identifier_str}): {cache_entry.value} @ {cache_entry.time}\n")
 
 global_emitter = MonitorEmitter()
 
@@ -93,6 +169,7 @@ def get_emitter() -> MonitorEmitter:
 
 def reset_emitter():
     global global_emitter
+    global_emitter.close()
     global_emitter = MonitorEmitter()
 
 def emit_monitor(monitor: Monitor, value: Any, identifier: Optional[str]=None) -> bool:
@@ -111,6 +188,14 @@ def enable_monitor_stderr():
 def enable_monitor_cache():
     get_emitter().use_cache = True
 
+def set_monitor_definitions(definitions: list["MonitorDefinitionConfig"]):
+    get_emitter().set_definitions(definitions)
+
+def enable_monitor_fluent_bit(hostname, port, tag):
+    emitter = get_emitter()
+    emitter.fluent_bit_sender = sender.FluentSender(tag, host=hostname, port=port)
+    emitter.use_fluent_bit = True
+
 def initialize_monitoring():
     reset_emitter()
 
@@ -125,3 +210,13 @@ def initialize_monitoring():
 
     if get_config().monitor.use_cache:
         enable_monitor_cache()
+
+    if get_config().monitor.fluent_bit is not None:
+        enable_monitor_fluent_bit(
+            hostname=get_config().monitor.fluent_bit.hostname,
+            port=get_config().monitor.fluent_bit.port,
+            tag=get_config().monitor.fluent_bit.tag,
+        )
+
+    if get_config().monitor.definitions:
+        set_monitor_definitions(get_config().monitor.definitions)
