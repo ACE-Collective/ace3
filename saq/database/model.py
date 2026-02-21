@@ -11,6 +11,7 @@ from flask_login import UserMixin
 from sqlalchemy import (
     BLOB,
     BOOLEAN,
+    CHAR,
     DATE,
     DATETIME,
     TIMESTAMP,
@@ -20,10 +21,12 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    desc,
     text,
 )
 from sqlalchemy.orm import (
@@ -157,6 +160,9 @@ class Alert(Base):
         #return result
 
     __tablename__ = 'alerts'
+    __table_args__ = (
+        Index('idx_location', 'location', mysql_length=767),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -164,8 +170,9 @@ class Alert(Base):
 
     company_id: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('company.id'),
-        nullable=True)
+        ForeignKey('company.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=True,
+        index=True)
 
     company: Mapped[Optional["Company"]] = relationship('Company', foreign_keys=[company_id])
 
@@ -175,18 +182,18 @@ class Alert(Base):
         nullable=False)
 
     location: Mapped[str] = mapped_column(
-        String(253),
+        String(1024),
         unique=False,
         nullable=False)
 
     storage_dir: Mapped[str] = mapped_column(
         String(512),
-        unique=True,
         nullable=False)
 
     insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
+        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
     event_time: Mapped[Optional[datetime]] = mapped_column(
@@ -203,31 +210,37 @@ class Alert(Base):
 
     alert_type: Mapped[str] = mapped_column(
         String(64),
-        nullable=False)
+        nullable=False,
+        index=True)
 
-    description: Mapped[str] = mapped_column(
+    description: Mapped[Optional[str]] = mapped_column(
         String(1024),
-        nullable=False)
+        nullable=True)
 
     priority: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-        default=0)
+        default=0,
+        server_default=text('0'))
 
     disposition: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
-        default=DISPOSITION_OPEN)
+        index=True,
+        default=DISPOSITION_OPEN,
+        server_default=text("'OPEN'"))
 
     queue: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
-        default=QUEUE_DEFAULT)
+        index=True,
+        default=QUEUE_DEFAULT,
+        server_default=text("'default'"))
 
     disposition_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
-        nullable=True)
+        nullable=True,
+        index=True)
 
     disposition_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
@@ -235,8 +248,8 @@ class Alert(Base):
 
     owner_id: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
-        nullable=True)
+        nullable=True,
+        index=True)
 
     owner_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
@@ -245,21 +258,25 @@ class Alert(Base):
     archived: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
-        default=False)
+        default=False,
+        server_default=text('0'))
 
     removal_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
-        nullable=True)
+        nullable=True,
+        index=True)
 
     removal_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True)
 
     # relationships
-    disposition_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[disposition_user_id])
-    owner: Mapped[Optional["User"]] = relationship('User', foreign_keys=[owner_id])
-    remover: Mapped[Optional["User"]] = relationship('User', foreign_keys=[removal_user_id])
+    disposition_user: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.disposition_user_id == User.id', foreign_keys=[disposition_user_id])
+    owner: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.owner_id == User.id', foreign_keys=[owner_id])
+    remover: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.removal_user_id == User.id', foreign_keys=[removal_user_id])
     #observable_mapping = relationship('ObservableMapping')
     tag_mappings: Mapped[list["TagMapping"]] = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
     #delayed_analysis = relationship('DelayedAnalysis')
@@ -437,7 +454,8 @@ class Alert(Base):
 
     detection_count: Mapped[Optional[int]] = mapped_column(
         Integer,
-        default=0)
+        default=0,
+        server_default=text('0'))
 
     @property
     def status(self):
@@ -927,14 +945,14 @@ def load_alert_by_storage_dir(storage_dir: str) -> Optional[Alert]:
 class Campaign(Base):
     __tablename__ = 'campaign'
     id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
 
 class Company(Base):
 
     __tablename__ = 'company'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
 
     @property
     def json(self):
@@ -952,6 +970,9 @@ class Config(Base):
 class DelayedAnalysis(Base):
 
     __tablename__ = 'delayed_analysis'
+    __table_args__ = (
+        Index('idx_node_delayed_until', 'node_id', 'delayed_until'),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -963,7 +984,7 @@ class DelayedAnalysis(Base):
         index=True)
 
     observable_uuid: Mapped[str] = mapped_column(
-        String(36),
+        CHAR(36),
         nullable=False)
 
     analysis_module: Mapped[str] = mapped_column(
@@ -971,17 +992,16 @@ class DelayedAnalysis(Base):
         nullable=False)
 
     insert_date: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
-        nullable=False,
-        index=True)
+        DATETIME,
+        nullable=False)
 
-    delayed_until: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
-        nullable=False,
-        index=True)
+    delayed_until: Mapped[Optional[datetime]] = mapped_column(
+        DATETIME,
+        nullable=True)
 
     node_id: Mapped[int] = mapped_column(
         Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False,
         index=True)
 
@@ -1029,6 +1049,9 @@ class EventType(Base):
 
 class Event(Base):
     __tablename__ = 'events'
+    __table_args__ = (
+        UniqueConstraint('creation_date', 'name', name='creation_date'),
+    )
 
     id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)
     uuid: Mapped[str] = mapped_column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
@@ -1329,19 +1352,21 @@ class Event(Base):
 class Lock(Base):
 
     __tablename__ = 'locks'
+    __table_args__ = (
+        Index('idx_uuid_locko_uuid', 'uuid', 'lock_uuid'),
+    )
 
     uuid: Mapped[str] = mapped_column(
         String(36),
         primary_key=True)
 
-    lock_uuid: Mapped[str] = mapped_column(
+    lock_uuid: Mapped[Optional[str]] = mapped_column(
         String(36),
-        nullable=False,
-        unique=False,
-        index=True)
+        nullable=True,
+        unique=False)
 
     lock_time: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
+        DATETIME,
         nullable=False,
         index=True)
 
@@ -1361,7 +1386,7 @@ class Malware(Base):
     __tablename__ = 'malware'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     threats: Mapped[list["Threat"]] = relationship("Threat", passive_deletes=True, passive_updates=True)
 
 class ThreatType(Base):
@@ -1375,7 +1400,7 @@ class Threat(Base):
 
     __tablename__ = 'malware_threat_mapping'
 
-    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id'), primary_key=True)
+    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
     threat_type_id: Mapped[int] = mapped_column(Integer, ForeignKey('threat_type.id'), primary_key=True)
     threat_type: Mapped["ThreatType"] = relationship("ThreatType")
 
@@ -1388,12 +1413,12 @@ class ObservableMapping(Base):
 
     observable_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('observables.id'),
+        ForeignKey('observables.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     alert_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('alerts.id'),
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     alert: Mapped["Alert"] = relationship('Alert', backref='observable_mappings')
@@ -1405,12 +1430,12 @@ class ObservableRemediationMapping(Base):
 
     observable_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('observables.id'),
+        ForeignKey('observables.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     remediation_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('remediation.id'),
+        ForeignKey('remediation.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     observable: Mapped["Observable"] = relationship('Observable', backref='observable_remediation_mappings')
@@ -1422,14 +1447,14 @@ class ObservableTagMapping(Base):
 
     __tablename__ = 'observable_tag_mapping'
 
-    observable_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey('observables.id'),
-        primary_key=True)
-
     tag_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('tags.id'),
+        ForeignKey('tags.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    observable_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('observables.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     observable: Mapped["Observable"] = relationship('Observable', backref='observable_tag_mapping')
@@ -1448,17 +1473,17 @@ class ObservableTagIndex(Base):
 
     observable_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('observables.id'),
+        ForeignKey('observables.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     tag_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('tags.id'),
+        ForeignKey('tags.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     alert_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('alerts.id'),
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     observable: Mapped["Observable"] = relationship('Observable', backref='observable_tag_index')
@@ -1471,12 +1496,12 @@ class TagMapping(Base):
 
     tag_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('tags.id'),
+        ForeignKey('tags.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     alert_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('alerts.id'),
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     alert: Mapped["Alert"] = relationship('Alert', backref='tag_mapping', overlaps="tag_mappings")
@@ -1486,8 +1511,8 @@ class CompanyMapping(Base):
 
     __tablename__ = 'company_mapping'
 
-    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
-    company_id: Mapped[int] = mapped_column(Integer, ForeignKey('company.id'), primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey('company.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
     company: Mapped["Company"] = relationship("Company")
 
     @property
@@ -1498,8 +1523,8 @@ class EventMapping(Base):
 
     __tablename__ = 'event_mapping'
 
-    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
-    alert_id: Mapped[int] = mapped_column(Integer, ForeignKey('alerts.id'), primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
+    alert_id: Mapped[int] = mapped_column(Integer, ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
 
     alert: Mapped["Alert"] = relationship('Alert', backref='event_mapping')
     event: Mapped["Event"] = relationship('Event', back_populates='alert_mappings')
@@ -1507,14 +1532,14 @@ class EventMapping(Base):
 class EventTagMapping(Base):
     __tablename__ = 'event_tag_mapping'
 
-    event_id: Mapped[int] = mapped_column(
-            Integer,
-            ForeignKey('events.id'),
-            primary_key=True)
-
     tag_id: Mapped[int] = mapped_column(
             Integer,
-            ForeignKey('tags.id'),
+            ForeignKey('tags.id', ondelete='CASCADE', onupdate='CASCADE'),
+            primary_key=True)
+
+    event_id: Mapped[int] = mapped_column(
+            Integer,
+            ForeignKey('events.id', ondelete='CASCADE', onupdate='CASCADE'),
             primary_key=True)
 
     event: Mapped["Event"] = relationship('Event', backref='event_tag_mapping')
@@ -1526,8 +1551,8 @@ class MalwareMapping(Base):
 
     __tablename__ = 'malware_mapping'
 
-    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id'), primary_key=True)
-    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id'), primary_key=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey('events.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
+    malware_id: Mapped[int] = mapped_column(Integer, ForeignKey('malware.id', ondelete='CASCADE', onupdate='CASCADE'), primary_key=True)
     malware: Mapped["Malware"] = relationship("Malware")
 
     @property
@@ -1547,12 +1572,15 @@ class Message(Base):
         primary_key=True)
 
     content: Mapped[str] = mapped_column(
-        String,
+        Text,
         nullable=False)
 
 class MessageRouting(Base):
 
     __tablename__ = 'message_routing'
+    __table_args__ = (
+        Index('idx_message_routing_mrd', 'message_id', 'route', 'destination'),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -1560,21 +1588,21 @@ class MessageRouting(Base):
 
     message_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey('messages.id'),
+        ForeignKey('messages.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
 
     message: Mapped["Message"] = relationship('Message', foreign_keys=[message_id], backref='routing')
 
     route: Mapped[str] = mapped_column(
-        String,
+        String(64),
         nullable=False)
 
     destination: Mapped[str] = mapped_column(
-        String,
+        String(256),
         nullable=False)
 
     lock: Mapped[Optional[str]] = mapped_column(
-        String,
+        String(36),
         nullable=True)
 
     lock_time: Mapped[Optional[datetime]] = mapped_column(
@@ -1584,14 +1612,30 @@ class MessageRouting(Base):
 class Nodes(Base):
 
     __tablename__ = 'nodes'
+    __table_args__ = (
+        Index('node_UNIQUE', 'name', unique=True, mysql_length=767),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(1024), nullable=False)
     location: Mapped[str] = mapped_column(String(1024), nullable=False)
+    company_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('company.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    last_update: Mapped[datetime] = mapped_column(DATETIME, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    any_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
 
 class Observable(Base):
 
     __tablename__ = 'observables'
+    __table_args__ = (
+        UniqueConstraint('type', 'sha256', name='i_type_sha256'),
+        Index('i_obs_type', 'type'),
+        Index('i_obs_sha256', 'sha256'),
+        Index('i_obs_value', 'value', mysql_length=767),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -1612,7 +1656,8 @@ class Observable(Base):
     for_detection: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
-        default=False)
+        default=False,
+        server_default=text('0'))
 
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
@@ -1624,7 +1669,7 @@ class Observable(Base):
 
     enabled_by: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
     detection_context: Mapped[Optional[str]] = mapped_column(
@@ -1633,7 +1678,8 @@ class Observable(Base):
 
     batch_id: Mapped[Optional[str]] = mapped_column(
         String(36),
-        nullable=True)
+        nullable=True,
+        index=True)
 
     @property
     def display_value(self):
@@ -1668,20 +1714,28 @@ class PersistenceSource(Base):
 
     name: Mapped[str] = mapped_column(
         String(256),
-        nullable=False)
+        nullable=False,
+        index=True)
 
 class Persistence(Base):
 
     __tablename__ = 'persistence'
+    __table_args__ = (
+        UniqueConstraint('source_id', 'uuid', name='idx_p_lookup'),
+        Index('idx_p_cleanup', 'permanent', 'last_update'),
+        Index('idx_p_clear_expired_1', 'source_id', 'permanent', 'created_at'),
+        Index('idx_p_clear_expired_2', 'source_id', 'permanent', 'last_update'),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True,
         autoincrement=True)
 
-    source_id: Mapped[Optional[int]] = mapped_column(
+    source_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('persistence_source.id'),
+        ForeignKey('persistence_source.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False,
     )
 
     permanent: Mapped[int] = mapped_column(
@@ -1700,13 +1754,11 @@ class Persistence(Base):
     last_update: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
 class Remediation(Base):
@@ -1719,48 +1771,48 @@ class Remediation(Base):
 
     # corresponds to the observable type this remediation is for
     type: Mapped[str] = mapped_column(
-        String,
+        String(24),
         nullable=False)
 
     # corresponds to the `name` of the Remediator that initiated this remediation
     name: Mapped[str] = mapped_column(
-        String,
+        String(512),
         nullable=False
     )
 
     action: Mapped[str] = mapped_column(
         Enum('remove', 'restore'),
         nullable=False,
-        default='remove')
+        default='remove',
+        server_default=text("'remove'"))
 
     insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
     update_time: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP,
         nullable=True,
-        index=True,
         server_default=None)
 
     user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('users.id'),
-        nullable=False)
+        nullable=False,
+        index=True)
 
     user: Mapped["User"] = relationship('User', backref='remediations')
 
     key: Mapped[str] = mapped_column(
-        String,
+        Text,
         nullable=False)
 
     # the meaning of this column diffs based on the action
     # REMOVE: the *resulting* restore key to use if you need to restore this remediation (restore_key is OUTPUT)
     # RESTORE: the restore key *value* to use if you need to restore this remediation (restore_key is INPUT)
     restore_key: Mapped[Optional[str]] = mapped_column(
-        String,
+        Text,
         nullable=True,
         default=None)
 
@@ -1769,7 +1821,7 @@ class Remediation(Base):
         nullable=True)
 
     comment: Mapped[Optional[str]] = mapped_column(
-        String,
+        Text,
         nullable=True)
 
     @property
@@ -1800,7 +1852,8 @@ class Remediation(Base):
     status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
-        default='NEW')
+        default='NEW',
+        server_default=text("'NEW'"))
 
     @property
     def json(self):
@@ -1841,17 +1894,17 @@ class RemediationHistory(Base):
 
     id: Mapped[int] = mapped_column(
         Integer,
-        primary_key=True)
+        primary_key=True,
+        autoincrement=True)
 
     remediation_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('remediation.id'),
-        nullable=False)
+        ForeignKey('remediation.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
 
     insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        index=True,
         server_default=text('CURRENT_TIMESTAMP'))
 
     result: Mapped[str] = mapped_column(
@@ -1872,6 +1925,13 @@ class FileCollection(Base):
     """Tracks file collection requests that can be retried when hosts are offline."""
 
     __tablename__ = 'file_collection'
+    __table_args__ = (
+        Index('idx_file_collection_name', 'name', mysql_length=255),
+        Index('idx_file_collection_type', 'type'),
+        Index('idx_file_collection_result', 'result'),
+        Index('idx_file_collection_collector_loop', 'status', 'name', desc('insert_date'), mysql_length={'name': 255}),
+        Index('idx_file_collection_observable_lookup', 'name', 'type', 'alert_uuid', mysql_length={'name': 255}),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -1879,17 +1939,17 @@ class FileCollection(Base):
 
     # corresponds to the observable type this collection is for (e.g., file_location)
     type: Mapped[str] = mapped_column(
-        String,
+        String(64),
         nullable=False)
 
     # corresponds to the `name` of the FileCollector that will handle this collection
     name: Mapped[str] = mapped_column(
-        String,
+        String(512),
         nullable=False)
 
     # the observable value (e.g., hostname@/path/to/file)
     key: Mapped[str] = mapped_column(
-        String,
+        Text,
         nullable=False)
 
     insert_date: Mapped[datetime] = mapped_column(
@@ -1907,15 +1967,15 @@ class FileCollection(Base):
     # user who requested collection (nullable for automated collections)
     user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
     user: Mapped[Optional["User"]] = relationship('User', backref='file_collections')
 
-    # link to the originating alert (required - files are stored in alert's directory)
-    alert_uuid: Mapped[str] = mapped_column(
+    # link to the originating alert
+    alert_uuid: Mapped[Optional[str]] = mapped_column(
         String(36),
-        nullable=False,
+        nullable=True,
         index=True)
 
     result: Mapped[Optional[str]] = mapped_column(
@@ -1937,21 +1997,25 @@ class FileCollection(Base):
     status: Mapped[str] = mapped_column(
         Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
         nullable=False,
-        default='NEW')
+        index=True,
+        default='NEW',
+        server_default=text("'NEW'"))
 
     retry_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-        default=0)
+        default=0,
+        server_default=text('0'))
 
     max_retries: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-        default=10)
+        default=10,
+        server_default=text('10'))
 
     # path to the collected file after successful collection
     collected_file_path: Mapped[Optional[str]] = mapped_column(
-        String,
+        String(1024),
         nullable=True)
 
     # SHA256 hash of the collected file
@@ -1994,7 +2058,7 @@ class FileCollectionHistory(Base):
 
     file_collection_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('file_collection.id'),
+        ForeignKey('file_collection.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
 
     file_collection: Mapped["FileCollection"] = relationship('FileCollection', backref='history')
@@ -2029,7 +2093,8 @@ class Tag(Base):
 
     name: Mapped[str] = mapped_column(
         String(256),
-        nullable=False)
+        nullable=False,
+        unique=True)
 
     @property
     def display(self):
@@ -2058,18 +2123,19 @@ class User(UserMixin, Base):
     __tablename__ = 'users'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    username: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True)
-    email: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(256))
-    omniscience: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    omniscience: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text('0'))
     timezone: Mapped[Optional[str]] = mapped_column(String(512))
     display_name: Mapped[Optional[str]] = mapped_column(String(1024))
     queue: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
-        default=QUEUE_DEFAULT)
-    enabled: Mapped[Optional[bool]] = mapped_column(Boolean, unique=False, default=True)
-    apikey_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
+        default=QUEUE_DEFAULT,
+        server_default=text("'default'"))
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, unique=False, default=True, server_default=text('1'))
+    apikey_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, default=None)
     apikey_encrypted: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True, default=None)
 
     def __str__(self):
@@ -2160,12 +2226,12 @@ class AuthGroupUser(Base):
 
     group_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('auth_group.id'),
+        ForeignKey('auth_group.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
         primary_key=True)
 
     group: Mapped["AuthGroup"] = relationship('AuthGroup')
@@ -2174,17 +2240,20 @@ class AuthGroupUser(Base):
 class AuthPermissionCatalog(Base):
 
     __tablename__ = 'auth_permission_catalog'
+    __table_args__ = (
+        UniqueConstraint('major', 'minor', name='u_perm'),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True)
 
     major: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     minor: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     description: Mapped[Optional[str]] = mapped_column(
@@ -2196,6 +2265,8 @@ class AuthUserPermission(Base):
     __tablename__ = 'auth_user_permission'
     __table_args__ = (
         UniqueConstraint('user_id', 'major', 'minor', 'effect', name='u_user_perm'),
+        Index('i_user_major_minor', 'user_id', 'major', 'minor'),
+        Index('i_user_effect', 'user_id', 'effect'),
     )
 
     id: Mapped[int] = mapped_column(
@@ -2204,21 +2275,22 @@ class AuthUserPermission(Base):
 
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
 
     major: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     minor: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
         nullable=False,
-        default='ALLOW')
+        default='ALLOW',
+        server_default=text("'ALLOW'"))
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
@@ -2227,7 +2299,7 @@ class AuthUserPermission(Base):
 
     created_by: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
         nullable=True)
 
     user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
@@ -2238,6 +2310,8 @@ class AuthGroupPermission(Base):
     __tablename__ = 'auth_group_permission'
     __table_args__ = (
         UniqueConstraint('group_id', 'major', 'minor', 'effect', name='u_group_perm'),
+        Index('i_group_major_minor', 'group_id', 'major', 'minor'),
+        Index('i_group_effect', 'group_id', 'effect'),
     )
 
     id: Mapped[int] = mapped_column(
@@ -2246,21 +2320,22 @@ class AuthGroupPermission(Base):
 
     group_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('auth_group.id'),
+        ForeignKey('auth_group.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
 
     major: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     minor: Mapped[str] = mapped_column(
-        String(512),
+        String(512, collation='ascii_general_ci'),
         nullable=False)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
         nullable=False,
-        default='ALLOW')
+        default='ALLOW',
+        server_default=text("'ALLOW'"))
 
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
@@ -2269,7 +2344,7 @@ class AuthGroupPermission(Base):
 
     created_by: Mapped[Optional[int]] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
         nullable=True)
 
     group: Mapped["AuthGroup"] = relationship('AuthGroup', back_populates='permissions')
@@ -2291,23 +2366,28 @@ class Comment(Base):
 
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey('users.id'),
-        nullable=False)
+        nullable=False,
+        index=True)
 
     uuid: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey('alerts.uuid'),
-        nullable=False)
+        nullable=False,
+        index=True)
 
-    comment: Mapped[Optional[str]] = mapped_column(Text)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
 
     # many to one
-    user: Mapped["User"] = relationship('User', backref='comments')
+    user: Mapped["User"] = relationship(
+        'User', primaryjoin='Comment.user_id == User.id',
+        foreign_keys=[user_id], backref='comments')
 
 
 class Workload(Base):
 
     __tablename__ = 'workload'
+    __table_args__ = (
+        UniqueConstraint('uuid', 'analysis_mode', name='uuid_UNIQUE'),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -2316,10 +2396,11 @@ class Workload(Base):
     uuid: Mapped[str] = mapped_column(
         String(36),
         nullable=False,
-        unique=True)
+        index=True)
 
     node_id: Mapped[int] = mapped_column(
         Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False,
         index=True)
 
@@ -2328,22 +2409,161 @@ class Workload(Base):
         nullable=False,
         index=True)
 
-    insert_date: Mapped[datetime] = mapped_column(
-        TIMESTAMP,
-        nullable=False,
-        index=True)
-
-    company_id: Mapped[Optional[int]] = mapped_column(
-        Integer,
-        ForeignKey('company.id'),
+    insert_date: Mapped[Optional[datetime]] = mapped_column(
+        DATETIME,
         nullable=True)
 
-    company: Mapped[Optional["Company"]] = relationship('Company', foreign_keys=[company_id])
+    company_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('company.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    company: Mapped["Company"] = relationship('Company', foreign_keys=[company_id])
 
     storage_dir: Mapped[str] = mapped_column(
         String(1024),
-        unique=True,
         nullable=False)
+
+class EncryptedPassword(Base):
+
+    __tablename__ = 'encrypted_passwords'
+
+    key: Mapped[str] = mapped_column(
+        String(256),
+        primary_key=True)
+
+    encrypted_value: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+
+class IncomingWorkloadType(Base):
+
+    __tablename__ = 'incoming_workload_type'
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    name: Mapped[str] = mapped_column(
+        String(512),
+        nullable=False,
+        unique=True)
+
+
+class IncomingWorkload(Base):
+
+    __tablename__ = 'incoming_workload'
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    type_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('incoming_workload_type.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    mode: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False)
+
+    work: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False)
+
+    type: Mapped["IncomingWorkloadType"] = relationship('IncomingWorkloadType')
+
+
+class NodeMode(Base):
+
+    __tablename__ = 'node_modes'
+
+    node_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    analysis_mode: Mapped[str] = mapped_column(
+        String(256),
+        primary_key=True)
+
+
+class NodeModeExcluded(Base):
+
+    __tablename__ = 'node_modes_excluded'
+
+    node_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    analysis_mode: Mapped[str] = mapped_column(
+        String(256),
+        primary_key=True)
+
+
+class AnalysisModePriority(Base):
+
+    __tablename__ = 'analysis_mode_priority'
+
+    analysis_mode: Mapped[str] = mapped_column(
+        String(256),
+        primary_key=True)
+
+    priority: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text('0'))
+
+
+class WorkDistributionGroup(Base):
+
+    __tablename__ = 'work_distribution_groups'
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    name: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        unique=True)
+
+
+class WorkDistribution(Base):
+
+    __tablename__ = 'work_distribution'
+    __table_args__ = (
+        Index('fk_work_status', 'work_id', 'status'),
+    )
+
+    group_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('work_distribution_groups.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    work_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey('incoming_workload.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True,
+        index=True)
+
+    status: Mapped[str] = mapped_column(
+        Enum('READY', 'COMPLETED', 'ERROR', 'LOCKED'),
+        nullable=False,
+        default='READY',
+        server_default=text("'READY'"))
+
+    lock_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
+    lock_uuid: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True)
+
 
 # NOTE there is no database relationship between these tables
 Alert.workload = relationship('Workload', foreign_keys=[Alert.uuid], primaryjoin='Workload.uuid == Alert.uuid')
