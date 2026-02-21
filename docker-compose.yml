@@ -50,6 +50,9 @@ x-common-env: &common-env
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS: ${SAQ_CONFIG_PATHS:-}
   ACE_INSTANCE_TYPE: DEV # possible values: DEV, QA, PRODUCTION
+  # if this node is the primary node, set this value to 1, otherwise set it to 0
+  # in a standalone deployment, this should be set to 1
+  ACE_IS_PRIMARY_NODE: ${ACE_IS_PRIMARY_NODE:-1}
   # if your primary database has a different hostname, you will need to pass it in as ACE_DB_HOST
   ACE_DB_HOST: ${ACE_DB_HOST:-ace-db}
   ACE_DB_READONLY_HOST: ${ACE_DB_READONLY_HOST:-ace-db-readonly}

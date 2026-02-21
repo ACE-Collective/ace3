@@ -3,6 +3,13 @@
 
 source bin/initialize-environment.sh
 
+# if this is not the primary node, we don't need to do anything
+if [ "${ACE_IS_PRIMARY_NODE}" -ne 1 ]
+then
+    echo "not primary node -- skipping setup"
+    exit 0
+fi
+
 if [ -z "${SAQ_ENC}" ]
 then
     echo "WARNING: SAQ_ENC environment variable not set, using default value 'test'"
