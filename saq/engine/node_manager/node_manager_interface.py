@@ -43,7 +43,7 @@ class NodeManagerInterface(Protocol):
         ...
     
     def execute_primary_node_routines(self) -> None:
-        """Executes primary node routines and may become the primary node if no other node has done so."""
+        """Executes primary node routines if this node is configured as primary via the ACE_IS_PRIMARY_NODE environment variable."""
         ...
     
     def update_node_status_and_execute_primary_routines(self) -> None:

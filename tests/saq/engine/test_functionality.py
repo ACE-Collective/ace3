@@ -2068,68 +2068,37 @@ def test_node_modes_update_any():
     assert node_supports_any_analysis_mode()
 
 @pytest.mark.integration
-def test_primary_node():
-
-    # test having a node become the primary node
-    get_engine_config().node_status_update_frequency = 0
+def test_primary_node(monkeypatch):
+    # test that a node configured as primary sets is_primary = 1 in the DB
+    # and executes primary node routines
+    monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "1")
     engine = Engine()
-    engine.node_manager.execute_primary_node_routines()
-    
-    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
-        assert cursor.fetchone()
+        cursor.execute("SELECT is_primary FROM nodes WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == 1
+
+    assert log_count("node %s is configured as the primary node" % get_global_runtime_settings().saq_node) == 1
 
 @pytest.mark.integration
-def test_primary_node_contest():
-    # test having a node become the primary node
-    # and then another node NOT becoming a primary node because there already is one
-    get_engine_config().node_status_update_frequency = 0
+def test_non_primary_node(monkeypatch):
+    # test that a node configured as non-primary sets is_primary = 0 in the DB
+    # and skips primary node routines
+    monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "0")
     engine = Engine()
-    engine.node_manager.execute_primary_node_routines()
-    
-    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
 
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
-        assert cursor.fetchone()
+        cursor.execute("SELECT is_primary FROM nodes WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == 0
 
-    reset_node('another_node')
-    engine = Engine()
     engine.node_manager.execute_primary_node_routines()
-
-    assert log_count('node {} is not primary'.format(get_global_runtime_settings().saq_node)) == 1
-
-@pytest.mark.integration
-def test_primary_node_contest_winning():
-    # test having a node become the primary node
-    # after another node times out
-    get_engine_config().node_status_update_frequency = 0
-    engine = Engine()
-    engine.node_manager.execute_primary_node_routines()
-    
-    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
-
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT name FROM nodes WHERE id = %s AND is_primary = 1", (get_global_runtime_settings().saq_node_id,))
-        assert cursor.fetchone()
-
-    # update the node to make it look like it last updated a while ago
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("UPDATE nodes SET last_update = ADDTIME(last_update, '-1:00:00') WHERE id = %s", (get_global_runtime_settings().saq_node_id,))
-        db.commit()
-
-    reset_node('another_node')
-
-    engine = Engine()
-    engine.node_manager.execute_primary_node_routines()
-
-    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
+    assert log_count("node %s is not primary - skipping primary node routines" % get_global_runtime_settings().saq_node) == 1
 
 @pytest.mark.integration
 def test_primary_node_clear_locks(monkeypatch):
@@ -2137,13 +2106,12 @@ def test_primary_node_clear_locks(monkeypatch):
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(target, lock_uuid)
     monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
-    # test having a node become the primary node
-    # and then clearing out an expired lock
+    monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "1")
+    # test that a primary node clears expired locks
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
-    
-    assert log_count('this node {} has become the primary node'.format(get_global_runtime_settings().saq_node)) == 1
-    assert log_count('removed 1 expired locks') == 1
+
+    assert log_count("removed 1 expired locks") == 1
 
     # make sure the lock is gone
     with get_db_connection() as db:
