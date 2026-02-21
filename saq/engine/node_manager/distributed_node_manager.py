@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta
 import logging
+import os
 import socket
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.locking import clear_expired_locks
@@ -83,6 +85,9 @@ class DistributedNodeManager(NodeManagerInterface):
         # we just cache the current hostname of this node here
         self.hostname = socket.gethostname()
 
+        # determine if this node is the primary node from the environment variable
+        self.is_primary_node = os.environ.get(ENV_ACE_IS_PRIMARY_NODE, "1") == "1"
+
     @property
     def target_nodes(self) -> list[str]:
         """List of nodes this engine will pull work from."""
@@ -142,60 +147,36 @@ class DistributedNodeManager(NodeManagerInterface):
                     commit=True,
                 )
 
-    def execute_primary_node_routines(self):
-        """Executes primary node routines and may become the primary node if no other node has done so."""
+        # set the is_primary flag in the database based on the environment variable
         with get_db_connection() as db:
-            c = db.cursor()
-            try:
-                # is there a primary node that has updated node status in the past N seconds
-                # where N is 30 + node update status frequency
-                c.execute(
-                    """
-                    SELECT name FROM nodes 
-                    WHERE 
-                        is_primary = 1 
-                        AND TIMESTAMPDIFF(SECOND, last_update, NOW()) < %s
-                    """,
-                    (self.node_status_update_frequency + 30,),
-                )
+            cursor = db.cursor()
+            execute_with_retry(
+                db,
+                cursor,
+                "UPDATE nodes SET is_primary = %s WHERE id = %s",
+                (1 if self.is_primary_node else 0, get_global_runtime_settings().saq_node_id),
+                commit=True,
+            )
 
-                primary_node = c.fetchone()
+        if self.is_primary_node:
+            logging.info("node %s is configured as the primary node", get_global_runtime_settings().saq_node)
+        else:
+            logging.info("node %s is configured as a non-primary node", get_global_runtime_settings().saq_node)
 
-                # is there no primary node at this point?
-                if primary_node is None:
-                    execute_with_retry(
-                        db,
-                        c,
-                        [
-                            "UPDATE nodes SET is_primary = 0",
-                            "UPDATE nodes SET is_primary = 1, last_update = NOW() WHERE id = %s",
-                        ],
-                        [tuple(), (get_global_runtime_settings().saq_node_id,)],
-                        commit=True,
-                    )
-                    primary_node = get_global_runtime_settings().saq_node
-                    logging.info(
-                        "this node {} has become the primary node".format(get_global_runtime_settings().saq_node)
-                    )
-                else:
-                    primary_node = primary_node[0]
+    def execute_primary_node_routines(self):
+        """Executes primary node routines if this node is configured as the primary node via the ACE_IS_PRIMARY_NODE environment variable."""
+        try:
+            if not self.is_primary_node:
+                logging.debug("node %s is not primary - skipping primary node routines", get_global_runtime_settings().saq_node)
+                return
 
-                # are we the primary node?
-                if primary_node != get_global_runtime_settings().saq_node:
-                    logging.debug(
-                        "node {} is not primary - skipping primary node routines".format(
-                            get_global_runtime_settings().saq_node
-                        )
-                    )
-                    return
+            # do primary node stuff
+            # clear any outstanding locks
+            clear_expired_locks()
 
-                # do primary node stuff
-                # clear any outstanding locks
-                clear_expired_locks()
-
-            except Exception as e:
-                logging.error("error executing primary node routines: {}".format(e))
-                report_exception()
+        except Exception as e:
+            logging.error("error executing primary node routines: %s", e)
+            report_exception()
 
     def update_node_status_and_execute_primary_routines(self):
         """Updates node status and executes primary node routines if needed."""
