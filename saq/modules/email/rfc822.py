@@ -520,11 +520,12 @@ class EmailAnalyzer(AnalysisModule):
         #
 
         o365_meta_part = None
-        o365_meta_re = re.compile(r'^Sender: (.+)^Subject: (.+)^Message-Id: (.+)^Recipient: (.+)', re.M | re.DOTALL)
+        o365_meta_re = re.compile(r'^Sender: (.+?)^Subject: (.+?)^Message-Id: (.+?)^Recipient: ', re.M | re.DOTALL)
+        o365_meta_recipient_re = re.compile(r'^Recipient: (.+)$', re.M)
         o365_meta_sender = None
         o365_meta_subject = None
         o365_meta_message_id = None
-        o365_meta_recipient = None
+        o365_meta_recipients = []
 
         try:
             logging.debug("parsing email file {}".format(_file))
@@ -571,12 +572,12 @@ class EmailAnalyzer(AnalysisModule):
                         o365_meta_sender = m.group(1).strip()
                         o365_meta_subject = m.group(2).strip()
                         o365_meta_message_id = m.group(3).strip()
-                        o365_meta_recipient = m.group(4).strip()
+                        o365_meta_recipients = [r.strip() for r in o365_meta_recipient_re.findall(target_payload)]
                         o365_meta_part = part
                         logging.info(f"parsed o365 meta block sender [{o365_meta_sender}] "
                                      f"subject [{o365_meta_subject}] "
                                      f"message id [{o365_meta_message_id}] "
-                                     f"recipient [{o365_meta_recipient}]")
+                                     f"recipients {o365_meta_recipients}")
 
             # look for office365 header indicating a parent message-id
             if 'X-MS-Exchange-Parent-Message-Id' in part:
@@ -621,9 +622,12 @@ class EmailAnalyzer(AnalysisModule):
         # same as above but we pull this information out of what I'm calling the "meta block"
         # for lack of a better term
         if o365_meta_part:
-            if o365_meta_recipient:
-                file_path, address = email.utils.parseaddr(o365_meta_recipient)
-                env_rcpt_to = [ address ]
+            if o365_meta_recipients:
+                env_rcpt_to = []
+                for recipient in o365_meta_recipients:
+                    _, address = email.utils.parseaddr(recipient)
+                    if address:
+                        env_rcpt_to.append(address)
 
             if o365_meta_sender:
                 file_path, address = email.utils.parseaddr(o365_meta_sender)
