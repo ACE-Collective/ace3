@@ -1,5 +1,6 @@
 """Seed the database with initial reference data."""
 
+import argparse
 import os
 import sys
 
@@ -145,6 +146,15 @@ def seed_unittest(db_name: str) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Seed the database with initial reference data.")
+    parser.add_argument(
+        "--seed-unittests",
+        action="store_true",
+        default=False,
+        help="Also seed unittest databases (ace-unittest, ace-unittest-2).",
+    )
+    args = parser.parse_args()
     seed()
-    seed_unittest("ace-unittest")
-    seed_unittest("ace-unittest-2")
+    if args.seed_unittests:
+        seed_unittest("ace-unittest")
+        seed_unittest("ace-unittest-2")
