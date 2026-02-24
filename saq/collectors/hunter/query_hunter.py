@@ -19,7 +19,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.decoder import DecoderType, decode_value
-from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, extract_event_value, interpolate_event_value
+from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, contains_unresolved_placeholders, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, F_SIGNATURE_ID
@@ -671,6 +671,13 @@ class QueryHunt(Hunt):
                     if observable in relationship_tracking:
                         for relationship_mapping in relationship_tracking[observable]:
                             for potential_target_value in interpolate_event_value(relationship_mapping.target.value, event):
+                                if contains_unresolved_placeholders(potential_target_value):
+                                    logging.warning(
+                                        f"skipping relationship in hunt {self.name}: target value "
+                                        f"'{relationship_mapping.target.value}' resolved to '{potential_target_value}' "
+                                        f"which contains unresolved field references (field missing from event)"
+                                    )
+                                    continue
                                 target_observable = submission.root.get_observable_by_spec(relationship_mapping.target.type, potential_target_value)
                                 if target_observable is not None:
                                     observable.add_relationship(relationship_mapping.type, target_observable)

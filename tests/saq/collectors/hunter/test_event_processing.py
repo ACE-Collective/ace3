@@ -2,6 +2,7 @@ import pytest
 
 from saq.collectors.hunter.event_processing import (
     _build_path_components,
+    contains_unresolved_placeholders,
     interpolate_event_value,
 )
 
@@ -669,3 +670,24 @@ def test_interpolate_observable_value_list_single_element():
     }
     result = interpolate_event_value("${url}", event)
     assert result == ["only-one.com"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("${field}", True),
+        ("$dot{device.hostname}", True),
+        ("$key{field}", True),
+        ("prefix-${field}-suffix", True),
+        ("${a}@${b}", True),
+        ("plain string", False),
+        ("no placeholders here", False),
+        ("", False),
+        ("workstation01", False),
+        ("user@host.com", False),
+    ],
+)
+def test_contains_unresolved_placeholders(value, expected):
+    """test that contains_unresolved_placeholders detects ${...} patterns"""
+    assert contains_unresolved_placeholders(value) == expected
