@@ -2310,3 +2310,159 @@ def test_fields_mode_all_explicit(monkeypatch):
     assert len(submissions) == 1
     ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IPV4]
     assert len(ipv4_observables) == 0
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_missing_field(monkeypatch, caplog):
+    """test that relationship is skipped with warning when target field is missing from event"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship_missing_field",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["hostname"],
+                type=F_HOSTNAME,
+            ),
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_IPV4,
+                            value="${src_ip}"  # src_ip is NOT in the event
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results([{
+            "cmdline": "powershell.exe -enc AAAA",
+            "hostname": "workstation01"
+            # note: no src_ip field
+        }])
+
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    # alert should still be created with observables
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+    hostname_observable = next((o for o in submission.root.observables if o.type == F_HOSTNAME), None)
+    assert hostname_observable is not None
+
+    # relationship should NOT be created (field missing)
+    assert len(cmdline_observable.relationships) == 0
+
+    # warning should be logged
+    assert any("skipping relationship" in record.message and "${src_ip}" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, caplog):
+    """test that relationship is skipped with warning when $dot{} target field is missing from event"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship_missing_dot_field",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="$dot{device.hostname}"  # device.hostname is NOT in the event
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results([{
+            "cmdline": "powershell.exe -enc AAAA",
+            # note: no device.hostname field
+        }])
+
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+
+    # relationship should NOT be created
+    assert len(cmdline_observable.relationships) == 0
+
+    # warning should be logged
+    assert any("skipping relationship" in record.message and "$dot{device.hostname}" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_process_query_results_with_relationship_partial_field_resolution(monkeypatch, caplog):
+    """test that relationship is skipped when composite target has one field missing"""
+    import saq.collectors.hunter.query_hunter
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_relationship_partial_resolution",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(
+                fields=["cmdline"],
+                type=F_COMMAND_LINE,
+                relationships=[
+                    RelationshipMapping(
+                        type=R_EXECUTED_ON,
+                        target=RelationshipMappingTarget(
+                            type=F_HOSTNAME,
+                            value="${user}@${hostname}"  # hostname is missing
+                        )
+                    )
+                ]
+            ),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results([{
+            "cmdline": "powershell.exe -enc AAAA",
+            "user": "admin",
+            # note: no hostname field
+        }])
+
+    assert submissions
+    assert len(submissions) == 1
+    submission = submissions[0]
+
+    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
+    assert cmdline_observable is not None
+
+    # relationship should NOT be created (partial resolution)
+    assert len(cmdline_observable.relationships) == 0
+
+    # warning should be logged mentioning the partial resolution
+    assert any("skipping relationship" in record.message and "admin@${hostname}" in record.message for record in caplog.records)
