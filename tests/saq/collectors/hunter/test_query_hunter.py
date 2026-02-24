@@ -2466,3 +2466,197 @@ def test_process_query_results_with_relationship_partial_field_resolution(monkey
 
     # warning should be logged mentioning the partial resolution
     assert any("skipping relationship" in record.message and "admin@${hostname}" in record.message for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_dedup_key_config_field():
+    """test that dedup_key field is parsed correctly in QueryHuntConfig"""
+    config = QueryHuntConfig(
+        uuid="test-uuid",
+        name="test",
+        type="test",
+        enabled=True,
+        description="test",
+        alert_type="test",
+        frequency="01:00:00",
+        tags=[],
+        instance_types=[],
+        time_range="01:00:00",
+        full_coverage=True,
+        use_index_time=True,
+        query="test",
+        dedup_key="${correlationId}",
+    )
+    assert config.dedup_key == "${correlationId}"
+
+
+@pytest.mark.unit
+def test_dedup_key_config_default_none():
+    """test that dedup_key defaults to None when not set"""
+    config = QueryHuntConfig(
+        uuid="test-uuid",
+        name="test",
+        type="test",
+        enabled=True,
+        description="test",
+        alert_type="test",
+        frequency="01:00:00",
+        tags=[],
+        instance_types=[],
+        time_range="01:00:00",
+        full_coverage=True,
+        use_index_time=True,
+        query="test",
+    )
+    assert config.dedup_key is None
+
+
+@pytest.mark.unit
+def test_dedup_key_ungrouped(monkeypatch):
+    """test that submission.key is set when dedup_key is configured (ungrouped)"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_dedup",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+        dedup_key="${correlationId}",
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "correlationId": "abc-123"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].key == f"{hunt.uuid}:abc-123"
+
+
+@pytest.mark.unit
+def test_dedup_key_ungrouped_composite(monkeypatch):
+    """test that dedup_key works with composite interpolation templates"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_dedup_composite",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+        dedup_key="${user}-${src_ip}",
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "user": "jdoe", "src_ip": "10.0.0.1"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].key == f"{hunt.uuid}:jdoe-10.0.0.1"
+
+
+@pytest.mark.unit
+def test_dedup_key_grouped(monkeypatch):
+    """test that submission.key is set when dedup_key is configured (grouped)"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_dedup_grouped",
+        group_by="id",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+        dedup_key="${id}",
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "id": "event-001"},
+        {"src": "1.2.3.5", "id": "event-001"},
+        {"src": "5.6.7.8", "id": "event-002"},
+    ])
+    assert len(submissions) == 2
+
+    # find submissions by their dedup key
+    keys = {s.key for s in submissions}
+    assert f"{hunt.uuid}:event-001" in keys
+    assert f"{hunt.uuid}:event-002" in keys
+
+
+@pytest.mark.unit
+def test_dedup_key_none_when_not_set(monkeypatch):
+    """test that submission.key is None when dedup_key is not configured"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_no_dedup",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].key is None
+
+
+@pytest.mark.unit
+def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
+    """test that dedup key always includes the hunt UUID as prefix"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_dedup_prefix",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+        dedup_key="${id}",
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "id": "some-value"},
+    ])
+    assert len(submissions) == 1
+    key = submissions[0].key
+    assert key.startswith(f"{hunt.uuid}:")
+    assert key == f"{hunt.uuid}:some-value"
+
+
+@pytest.mark.unit
+def test_dedup_key_missing_field_returns_none(monkeypatch):
+    """test that submission.key is None when dedup_key references a missing field"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_dedup_missing",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[
+            ObservableMapping(fields=["src"], type="ipv4")
+        ],
+        dedup_key="${nonexistent_field}",
+    )
+
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4"},
+    ])
+    assert len(submissions) == 1
+    assert submissions[0].key is None
