@@ -295,14 +295,14 @@ def download_file():
             result = fp.read()
 
         response = make_response(result)
-        response.headers['Content-Type'] = 'text/plain'
+        response.headers['Content-Type'] = 'text/plain; charset=utf-8'
         return response
     elif mode == 'html':
         with open(full_path, 'rb') as fp:
             result = fp.read()
 
         response = make_response(result)
-        response.headers['Content-Type'] = 'text/html'
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
         return response
     elif mode == 'malicious':
         maliciousdir = os.path.join(get_base_dir(), get_config().malicious_files.malicious_dir)

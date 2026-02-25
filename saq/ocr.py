@@ -8,18 +8,100 @@ import re
 from PIL import Image, ImageOps
 
 
-def get_binary_image(image: np.ndarray) -> np.ndarray:
-    """Uses binary thresholding to return a white/black version of the image. Must be used on a grayscale image."""
+def add_border(image: np.ndarray, border_size: int = 10) -> np.ndarray:
+    """Adds a white border around the image. Text touching image edges is a known Tesseract failure mode."""
 
-    return cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)[1]
+    return cv2.copyMakeBorder(image, border_size, border_size, border_size, border_size,
+                              cv2.BORDER_CONSTANT, value=255)
 
 
-def get_image_text(image: np.ndarray) -> str:
-    """Returns the text within the image by using OCR."""
+def fix_defanged_indicators(text: str) -> str:
+    """Fixes common OCR misreadings of defanged security indicators.
 
-    # In testing (in particular with screenshots of text messages), using PSM 6 seems to produce the best results.
-    # 6 = Assume a single uniform block of text
-    text = str(pytesseract.image_to_string(image, config="--psm 6"))
+    In security contexts, indicators like domains and IPs are often "defanged" by replacing dots with [.]
+    to prevent accidental clicks/linking. Tesseract frequently misreads the bracket characters in these
+    patterns — e.g., [ as l/f/{, ] as J/I/}, and sometimes inserts spaces between them.
+    """
+
+    # Pass 1: Fix unambiguous bracket misreadings
+
+    # [.] without spaces — broad character set since l.J, f.I, etc. don't appear in normal text
+    text = re.sub(r"[\[{lf]\.[\]}JI]", "[.]", text)
+
+    # [.] with space after dot — only [ and { as opening to avoid false positives at sentence
+    # boundaries (e.g., "beautiful. Just" has the pattern l. J but is not a defanged indicator)
+    text = re.sub(r"[\[{]\.\s[\]}JI]", "[.]", text)
+
+    # Adjacent [.] pair where first ] was dropped and second [.] is broken
+    # e.g., "[. nal J" → "[.]na[.]" (the [. is intact but ] became a space)
+    text = re.sub(r"\[\.\s(\w+)[lf]\s?[JI]", r"[.]\1[.]", text)
+
+    # [@] same patterns
+    text = re.sub(r"[\[{lf]@[\]}JI]", "[@]", text)
+    text = re.sub(r"[\[{]@\s?[\]}JI]", "[@]", text)
+
+    # Pass 2: Context-aware fix for ambiguous patterns (l/f as opening bracket with space)
+    # After pass 1, a preceding [.] or @ confirms we're in a defanged FQDN, not a sentence boundary.
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"(\[\.\]\w*)[lf]\.\s?[JI]", r"\1[.]", text)
+        text = re.sub(r"(@\w*)[lf]\.\s?[JI]", r"\1[.]", text)
+
+    return text
+
+
+def denoise_image(image: np.ndarray) -> np.ndarray:
+    """Applies non-local means denoising to reduce noise while preserving text detail."""
+
+    return cv2.fastNlMeansDenoising(image, None, h=10, templateWindowSize=7, searchWindowSize=21)
+
+
+# Tesseract 5's LSTM engine outputs Unicode characters (smart quotes, dashes, etc.) that have no
+# benefit over their ASCII equivalents for our use case. This table normalizes them to ASCII.
+# Note: str.translate handles single-char → single-char mappings; multi-char replacements use _UNICODE_MULTI.
+_UNICODE_CHARMAP = str.maketrans({
+    "\u2014": "-",   # em-dash → hyphen
+    "\u2013": "-",   # en-dash → hyphen
+    "\u2018": "'",   # left single quote → apostrophe
+    "\u2019": "'",   # right single quote → apostrophe
+    "\u201A": ",",   # single low-9 quote → comma
+    "\u201C": '"',   # left double quote → double quote
+    "\u201D": '"',   # right double quote → double quote
+    "\u201E": '"',   # double low-9 quote → double quote
+    "\u2032": "'",   # prime → apostrophe
+    "\u2033": '"',   # double prime → double quote
+    "\u2010": "-",   # hyphen (Unicode)
+    "\u2011": "-",   # non-breaking hyphen
+    "\u2012": "-",   # figure dash
+    "\u2015": "-",   # horizontal bar
+    "\u00AB": '"',   # left guillemet → double quote
+    "\u00BB": '"',   # right guillemet → double quote
+    "\u2039": "'",   # left single guillemet → apostrophe
+    "\u203A": "'",   # right single guillemet → apostrophe
+    "\u00B7": ".",   # middle dot → period
+    "\u2022": "*",   # bullet → asterisk
+    "\u00D7": "x",   # multiplication sign → x
+    "\u00F7": "/",   # division sign → slash
+})
+
+_UNICODE_MULTI = {
+    "\u2026": "...",   # ellipsis → three dots
+    "\u00A9": "(c)",   # copyright
+    "\u00AE": "(R)",   # registered trademark
+    "\u2122": "(TM)",  # trademark
+    "\u2120": "(SM)",  # service mark
+}
+
+
+def get_image_text(image: np.ndarray, psm: int = 3) -> str:
+    """Returns the text within the image by using OCR.
+
+    Uses OEM 1 (LSTM-only) for highest accuracy with Tesseract 5.
+    PSM 3 (fully automatic page segmentation) adapts to mixed layouts.
+    """
+
+    text = str(pytesseract.image_to_string(image, config=f"--oem 1 --psm {psm}"))
 
     # In testing, Tesseract sometimes had issues identifying http:// or https://. In particular, it would mix up the
     # double "t" and sometimes make one of them an "i" instead. Sometimes the "p" or ":" would be mixed up as well.
@@ -27,7 +109,24 @@ def get_image_text(image: np.ndarray) -> str:
         text = re.sub(r"h(t|i)(t|i)(p|o)s(:|.)\/\/", "https://", text)
         text = re.sub(r"h(t|i)(t|i)(p|o)(:|.)\/\/", "http://", text)
 
+        # Normalize Unicode characters to ASCII equivalents
+        text = text.translate(_UNICODE_CHARMAP)
+        for unicode_char, ascii_replacement in _UNICODE_MULTI.items():
+            text = text.replace(unicode_char, ascii_replacement)
+
+        # Fix common misreadings of defanged security indicators like [.] and [@]
+        text = fix_defanged_indicators(text)
+
     return text
+
+
+def get_scale_factor(image: np.ndarray, min_width: int = 1500) -> float:
+    """Returns the scale factor needed to bring the image width up to min_width, capped at 4x."""
+
+    width = image.shape[1]
+    if width >= min_width:
+        return 1.0
+    return min(min_width / width, 4.0)
 
 
 def invert_image_color(image: np.ndarray) -> np.ndarray:
@@ -85,7 +184,7 @@ def remove_line_wrapping(text: str) -> str:
         is_a_word = False
         try:
             is_a_word = dictionary.check(last_word)
-        except:
+        except Exception:
             logging.exception(f"Unable to determine if \"{last_word}\" is a word.")
 
         if is_a_word:
@@ -100,3 +199,13 @@ def scale_image(image: np.ndarray, x_factor: int, y_factor: int) -> np.ndarray:
     """Returns a scaled version of the image."""
 
     return cv2.resize(image, None, fx=x_factor, fy=y_factor, interpolation=cv2.INTER_CUBIC)
+
+
+def sharpen_image(image: np.ndarray, amount: float = 1.0) -> np.ndarray:
+    """Applies an unsharp mask to restore edge crispness after upscaling.
+
+    Subtracts a Gaussian-blurred copy from the original to amplify high-frequency detail.
+    """
+
+    blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=3)
+    return cv2.addWeighted(image, 1.0 + amount, blurred, -amount, 0)

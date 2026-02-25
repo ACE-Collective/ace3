@@ -1,14 +1,33 @@
 import logging
 import os
 from typing import Optional, Type, override
+
 from pydantic import Field
+
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import (
+    DIRECTIVE_EXTRACT_URLS,
+    DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL,
+    F_FILE,
+    R_EXTRACTED_FROM,
+    AnalysisExecutionResult,
+)
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_image
 from saq.observables.file import FileObservable
-from saq.ocr import get_binary_image, get_image_text, invert_image_color, is_dark, is_small, read_image, remove_line_wrapping, scale_image
+from saq.ocr import (
+    add_border,
+    denoise_image,
+    get_image_text,
+    get_scale_factor,
+    invert_image_color,
+    is_dark,
+    read_image,
+    remove_line_wrapping,
+    scale_image,
+    sharpen_image,
+)
 
 KEY_ERROR = "error"
 KEY_OCR = "ocr"
@@ -126,12 +145,17 @@ class OCRAnalyzer(AnalysisModule):
             logging.warning(f"ocr.read_image({local_file_path}) did not return an image")
             return AnalysisExecutionResult.COMPLETED
 
-        # Perform some image pre-processing for better OCR results
-        if is_small(grayscale_image):
-            grayscale_image = scale_image(grayscale_image, x_factor=2, y_factor=2)
+        # Scale up small images for better OCR results
+        factor = get_scale_factor(grayscale_image)
+        if factor > 1.0:
+            grayscale_image = scale_image(grayscale_image, x_factor=factor, y_factor=factor)
+            grayscale_image = sharpen_image(grayscale_image)
 
         if is_dark(grayscale_image):
             grayscale_image = invert_image_color(grayscale_image)
+
+        # Add white border to prevent text-touching-edge failures
+        grayscale_image = add_border(grayscale_image)
 
         # This dictionary holds the text extracted from the various forms of the image as well as manipulated forms
         # of the text, such as with line breaks removed to help catch multi-line URLs.
@@ -139,7 +163,7 @@ class OCRAnalyzer(AnalysisModule):
         # The dictionary key is the header to use in the output text file, and the value is the extracted text.
         extracted_text = dict()
 
-        # Perform OCR on the grayscale image
+        # Pass 1: OCR on the preprocessed grayscale image
         try:
             text = get_image_text(grayscale_image)
 
@@ -149,16 +173,16 @@ class OCRAnalyzer(AnalysisModule):
         except Exception as e:
             logging.warning(f"Unable to extract text from grayscale image: {local_file_path}: {e}")
 
-        # Perform OCR on the binary form of the image
-        binary_image = get_binary_image(grayscale_image)
+        # Pass 2: OCR on the denoised form of the image
+        denoised_image = denoise_image(grayscale_image)
         try:
-            text = get_image_text(binary_image)
+            text = get_image_text(denoised_image)
 
             if text:
-                extracted_text["BINARY"] = text
-                extracted_text["BINARY NO LINE BREAKS"] = remove_line_wrapping(text)
+                extracted_text["DENOISED"] = text
+                extracted_text["DENOISED NO LINE BREAKS"] = remove_line_wrapping(text)
         except Exception as e:
-            logging.warning(f"Unable to extract text from binary image: {local_file_path}: {e}")
+            logging.warning(f"Unable to extract text from denoised image: {local_file_path}: {e}")
 
         # Quit if no text at all was extracted
         if not extracted_text:
