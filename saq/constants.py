@@ -820,6 +820,7 @@ SERVICE_REMEDIATION = "remediation"
 SERVICE_FILE_COLLECTION = "file_collection"
 SERVICE_REMOTE_EMAIL_COLLECTOR = "remote_email_collector"
 SERVICE_YARA_SCANNER = "yara"
+SERVICE_MONITORING = "monitoring"
 
 SERVICE_STATUS_RUNNING = 'running'
 SERVICE_STATUS_STOPPED = 'stopped'

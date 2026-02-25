@@ -135,6 +135,14 @@ monitor:
   use_stderr: false
   use_logging: false
   use_cache: false
+  fluent_bit:
+    hostname: fluent-bit
+    port: 24224
+    tag: monitoring
+  definitions:
+    - pattern: "database.pool.*"
+      suppression_duration: 10
+      dedup: true
 
 rabbitmq:
   username: ace3
@@ -413,6 +421,30 @@ gui:
 # match attempted first on alert description, then alert tool (source)
 # place favicon mappings under this section if needed
 gui_favicons: {}
+
+service_monitoring:
+  name: monitoring
+  python_module: saq.monitoring.service
+  python_class: ACEMonitoringService
+  description: Monitoring - system health and operational monitoring service
+  enabled: true
+  monitors:
+    - name: distributed_workload
+      python_module: saq.monitoring.monitors.distributed_workload_monitor
+      python_class: DistributedWorkloadMonitor
+      frequency: 5
+    - name: distributed_delayed_analysis
+      python_module: saq.monitoring.monitors.distributed_delayed_analysis_monitor
+      python_class: DistributedDelayedAnalysisMonitor
+      frequency: 5
+    - name: distributed_locks
+      python_module: saq.monitoring.monitors.distributed_locks_monitor
+      python_class: DistributedLocksMonitor
+      frequency: 5
+    - name: local_workload
+      python_module: saq.monitoring.monitors.local_workload_monitor
+      python_class: LocalWorkloadMonitor
+      frequency: 5
 
 service_network_semaphore:
   name: network_semaphore

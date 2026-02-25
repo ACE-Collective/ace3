@@ -21,6 +21,12 @@ parsers:
     time_format: "%Y-%m-%d %H:%M:%S,%L"
     time_keep: true
 
+  - name: monitoring
+    format: json
+    time_key: timestamp
+    time_format: "%Y-%m-%d %H:%M:%S,%L"
+    time_keep: true
+
   - name: phishfinder_json
     format: json
     time_key: date
@@ -88,6 +94,12 @@ pipeline:
       reserve_data: on
 
     - name: parser
+      match: monitoring
+      key_name: log
+      parser: metrics
+      reserve_data: on
+
+    - name: parser
       match: phishfinder-*
       key_name: log
       parser: phishfinder_json
@@ -140,6 +152,12 @@ pipeline:
     - name: file
       path: /data/logs
       match: metrics
+      format: out_file
+      workers: 1
+
+    - name: file
+      path: /data/logs
+      match: monitoring
       format: out_file
       workers: 1
 
