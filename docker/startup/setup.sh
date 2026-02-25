@@ -19,14 +19,20 @@ fi
 # Run database migrations first — tables must exist before encryption check
 echo "running database migrations..."
 /venv/bin/alembic upgrade head
-DATABASE_NAME=ace-unittest /venv/bin/alembic upgrade head
-DATABASE_NAME=ace-unittest-2 /venv/bin/alembic upgrade head
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    DATABASE_NAME=ace-unittest /venv/bin/alembic upgrade head
+    DATABASE_NAME=ace-unittest-2 /venv/bin/alembic upgrade head
+fi
 echo "database migrations complete"
 
 # Seed database before encryption check — ace enc test calls initialize_node()
 # which INSERTs into nodes with a company_id FK, so company must exist first.
 echo "seeding database..."
-/venv/bin/python bin/seed_database.py
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    /venv/bin/python bin/seed_database.py --seed-unittests
+else
+    /venv/bin/python bin/seed_database.py
+fi
 echo "database seeding complete"
 
 ace enc test -p "$SAQ_ENC"

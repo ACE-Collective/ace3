@@ -32,6 +32,11 @@ FIELD_LOOKUP_TYPE_KEY = "key"
 FIELD_LOOKUP_TYPE_DOT = "dot"
 
 
+def contains_unresolved_placeholders(value: str) -> bool:
+    """Returns True if the value contains unresolved ${...} placeholder patterns."""
+    return bool(_FIELD_PATTERN.search(value))
+
+
 def _unescape_lookup_value(field_path: str) -> str:
     """Converts escaped brace characters back to their literal form."""
     if "\\" not in field_path:

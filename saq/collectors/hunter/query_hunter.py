@@ -19,7 +19,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.decoder import DecoderType, decode_value
-from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, extract_event_value, interpolate_event_value
+from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, contains_unresolved_placeholders, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, F_SIGNATURE_ID
@@ -90,6 +90,7 @@ class QueryHuntConfig(HuntConfig):
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
     ignored_values: list[str] = Field(default_factory=list, description="A global list of regex patterns to ignore that applies to all observable mappings. Patterns are matched with re.fullmatch().")
+    dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
     _ignored_value_patterns: list[re.Pattern] = []
 
     @model_validator(mode='after')
@@ -199,6 +200,10 @@ class QueryHunt(Hunt):
     @property
     def description_field(self) -> Optional[str]:
         return self.config.description_field
+
+    @property
+    def dedup_key(self) -> Optional[str]:
+        return self.config.dedup_key
 
     @property
     def query_file_path(self) -> Optional[str]:
@@ -544,6 +549,17 @@ class QueryHunt(Hunt):
         def _create_submission(event: dict):
             return Submission(self.create_root_analysis(event))
 
+        def _compute_dedup_key(event: dict) -> Optional[str]:
+            if not self.dedup_key:
+                return None
+            values = interpolate_event_value(self.dedup_key, event)
+            if not values:
+                return None
+            value = values[0]
+            if contains_unresolved_placeholders(value):
+                return None
+            return f"{self.uuid}:{value}"
+
         event_grouping = {} # key = self.group_by field value, value = Submission
 
         # this is used when grouping is specified but some events don't have that field
@@ -588,6 +604,7 @@ class QueryHunt(Hunt):
             # if we are NOT grouping then each row is an alert by itself
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
                 submission = _create_submission(event)
+                submission.key = _compute_dedup_key(event)
                 submission.root.event_time = event_time
 
                 if self.description_field is not None and self.description_field in event:
@@ -628,6 +645,7 @@ class QueryHunt(Hunt):
                 for grouping_target in grouping_targets:
                     if grouping_target not in event_grouping:
                         event_grouping[grouping_target] = _create_submission(event)
+                        event_grouping[grouping_target].key = _compute_dedup_key(event)
                         if grouping_target != "ALL":
                             if self.description_field is not None and self.description_field in event:
                                 description_value = event[self.description_field]
@@ -671,6 +689,13 @@ class QueryHunt(Hunt):
                     if observable in relationship_tracking:
                         for relationship_mapping in relationship_tracking[observable]:
                             for potential_target_value in interpolate_event_value(relationship_mapping.target.value, event):
+                                if contains_unresolved_placeholders(potential_target_value):
+                                    logging.warning(
+                                        f"skipping relationship in hunt {self.name}: target value "
+                                        f"'{relationship_mapping.target.value}' resolved to '{potential_target_value}' "
+                                        f"which contains unresolved field references (field missing from event)"
+                                    )
+                                    continue
                                 target_observable = submission.root.get_observable_by_spec(relationship_mapping.target.type, potential_target_value)
                                 if target_observable is not None:
                                     observable.add_relationship(relationship_mapping.type, target_observable)

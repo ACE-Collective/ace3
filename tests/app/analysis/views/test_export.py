@@ -168,7 +168,7 @@ def test_download_file_text_mode(web_client, root_analysis, tmpdir):
                                 'mode': 'text'
                             })
     assert result.status_code == 200
-    assert result.headers['Content-Type'] == 'text/plain'
+    assert result.headers['Content-Type'] == 'text/plain; charset=utf-8'
     assert b"Test file content" in result.data
 
 

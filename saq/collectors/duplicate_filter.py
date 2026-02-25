@@ -68,6 +68,6 @@ class DuplicateSubmissionFilter():
                 # It's OK if this fails but we should be notified about it
                 self.persistence_manager.delete_expired_persistent_keys(expiration_timedelta, unmodified_expiration_timedelta)
             except Exception as e:
-                logging.warning(f"unable to delete expired persistent keys: {e}")
+                logging.warning("unable to delete expired persistent keys: %s", e)
 
             self.persistent_clear_time = time.time() 
