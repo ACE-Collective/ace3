@@ -19,12 +19,13 @@ def _make_service_config(monitors=None):
     )
 
 
-def _make_monitor_config(python_module, python_class, name="test", frequency=1.0):
+def _make_monitor_config(python_module, python_class, name="test", frequency=1.0, enabled=True):
     return ThreadedMonitorConfig(
         python_module=python_module,
         python_class=python_class,
         name=name,
         frequency=frequency,
+        enabled=enabled,
     )
 
 
@@ -166,3 +167,147 @@ class TestACEMonitoringService:
         service.threaded_monitors = [mock_monitor]
 
         assert service.wait_for_start(timeout=0.1) is False
+
+    @patch("saq.monitoring.service.get_config")
+    def test_disabled_monitor_is_not_loaded(self, mock_get_config):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="disabled_monitor",
+                enabled=False,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        service = ACEMonitoringService()
+        assert service.threaded_monitors == []
+
+    @patch("saq.monitoring.service.get_config")
+    def test_disabled_monitor_logs_info(self, mock_get_config, caplog):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="disabled_monitor",
+                enabled=False,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            service = ACEMonitoringService()
+
+        assert any("disabled_monitor" in msg and "disabled" in msg for msg in caplog.messages)
+
+    def test_enabled_defaults_to_true(self):
+        config = ThreadedMonitorConfig(
+            python_module="some.module",
+            python_class="SomeClass",
+            name="default_enabled",
+        )
+        assert config.enabled is True
+
+    @patch("saq.monitoring.service.get_config")
+    def test_duplicate_name_replaces_existing_monitor(self, mock_get_config):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="dup_monitor",
+                frequency=1.0,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="dup_monitor",
+                frequency=5.0,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        service = ACEMonitoringService()
+        assert len(service.threaded_monitors) == 1
+        assert service.threaded_monitors[0].name == "dup_monitor"
+        assert service.threaded_monitors[0].frequency == 5.0
+
+    @patch("saq.monitoring.service.get_config")
+    def test_duplicate_name_replaces_logs_info(self, mock_get_config, caplog):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="dup_monitor",
+                frequency=1.0,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="dup_monitor",
+                frequency=5.0,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            service = ACEMonitoringService()
+
+        assert any("replacing" in msg and "dup_monitor" in msg for msg in caplog.messages)
+
+    @patch("saq.monitoring.service.get_config")
+    def test_disabled_then_enabled_same_name(self, mock_get_config):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="toggle_monitor",
+                frequency=1.0,
+                enabled=False,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="toggle_monitor",
+                frequency=3.0,
+                enabled=True,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        service = ACEMonitoringService()
+        assert len(service.threaded_monitors) == 1
+        assert service.threaded_monitors[0].name == "toggle_monitor"
+        assert service.threaded_monitors[0].frequency == 3.0
+
+    @patch("saq.monitoring.service.get_config")
+    def test_mixed_enabled_and_disabled(self, mock_get_config):
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="monitor_a",
+                enabled=True,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="monitor_b",
+                enabled=False,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="monitor_c",
+                enabled=True,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        service = ACEMonitoringService()
+        assert len(service.threaded_monitors) == 2
+        names = [m.name for m in service.threaded_monitors]
+        assert "monitor_a" in names
+        assert "monitor_b" not in names
+        assert "monitor_c" in names
