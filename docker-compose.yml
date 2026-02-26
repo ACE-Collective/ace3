@@ -80,6 +80,8 @@ x-common-volumes: &common-volumes
   - ./ssl:/opt/ace/ssl
   - ./data/external:/opt/ace/data/external
   - ace-phishkit:/phishkit
+  - type: tmpfs
+    target: /tmp
 
 services:
 
