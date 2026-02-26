@@ -115,6 +115,27 @@ class RuleConditions:
     has_directives: list[str] = field(default_factory=list)
     tree_conditions: list[TreeCondition] = field(default_factory=list)
 
+    def evaluate_early(self, observable: Observable, root: RootAnalysis) -> bool:
+        """Check only immutable conditions known at analysis start.
+        Returns False if the rule cannot match, True if it might."""
+        if self.observable_types:
+            if observable.type not in self.observable_types:
+                return False
+        if self.alert_type is not None:
+            if root.alert_type != self.alert_type:
+                return False
+        if self.queue is not None:
+            if root.queue != self.queue:
+                return False
+        if self.value_pattern is not None:
+            if not self.value_pattern.search(str(observable.value)):
+                return False
+        if self.file_name_pattern is not None:
+            file_name = getattr(observable, "file_name", None)
+            if file_name is None or not self.file_name_pattern.search(file_name):
+                return False
+        return True
+
     def evaluate(self, observable: Observable, root: RootAnalysis) -> bool:
         # Cheapest checks first for short-circuit efficiency
 
@@ -340,6 +361,13 @@ class ObservableModifierAnalyzer(AnalysisModule):
             details_match=compiled_details_match,
         )
 
+    def _any_rule_could_match(self, observable: Observable, root: RootAnalysis) -> bool:
+        """Check if any enabled rule's immutable conditions could match."""
+        return any(
+            rule.enabled and rule.conditions.evaluate_early(observable, root)
+            for rule in self._rules
+        )
+
     def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
         if not self._initialized:
             yaml_path = os.path.join(
@@ -349,11 +377,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
             self.watch_file(yaml_path, self._load_config)
             self._initialized = True
 
-        # Defer all rule evaluation to final analysis mode so the full
+        # Check immutable conditions early. If no rule can possibly match,
+        # skip waiting for the full analysis tree.
+        root = self.get_root()
+        if not self._any_rule_could_match(observable, root):
+            return AnalysisExecutionResult.COMPLETED
+
+        # Defer rule evaluation to final analysis mode so the full
         # analysis tree is available for global-scope tree conditions.
-        # Returning INCOMPLETE without creating analysis means the engine
-        # won't call add_no_analysis (executor.py:939-949), allowing
-        # execute_final_analysis to run later.
         return AnalysisExecutionResult.INCOMPLETE
 
     def execute_final_analysis(self, observable: Observable) -> AnalysisExecutionResult:
@@ -366,6 +397,12 @@ class ObservableModifierAnalyzer(AnalysisModule):
             self._initialized = True
 
         root = self.get_root()
+
+        # Fast path: re-check immutable conditions since the engine always
+        # calls execute_final_analysis regardless of execute_analysis result.
+        if not self._any_rule_could_match(observable, root):
+            return AnalysisExecutionResult.COMPLETED
+
         matched_rules = []
 
         for rule in self._rules:

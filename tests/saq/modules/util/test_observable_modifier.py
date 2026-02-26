@@ -309,8 +309,8 @@ def test_actions_empty():
 
 
 @pytest.mark.unit
-def test_execute_analysis_returns_incomplete():
-    """execute_analysis should return INCOMPLETE without creating any analysis."""
+def test_execute_analysis_returns_incomplete_when_rules_might_match():
+    """execute_analysis should return INCOMPLETE when immutable conditions pass."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -1346,3 +1346,289 @@ def test_detection_point_action_integration():
     assert analysis is not None
     assert len(analysis.details["matched_rules"]) == 1
     assert "add_detection_points" in analysis.details["matched_rules"][0]["actions_applied"]
+
+
+# ============================================================
+# evaluate_early() unit tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_evaluate_early_empty_conditions():
+    """Empty conditions should always return True (might match)."""
+    cond = RuleConditions()
+    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_observable_type_match():
+    cond = RuleConditions(observable_types=["url", "file"])
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(type="ip"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_alert_type_match():
+    cond = RuleConditions(alert_type="splunk - threat_intel")
+    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="splunk - threat_intel")) is True
+    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="other")) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_queue_match():
+    cond = RuleConditions(queue="external")
+    assert cond.evaluate_early(MockObservable(), MockRoot(queue="external")) is True
+    assert cond.evaluate_early(MockObservable(), MockRoot(queue="internal")) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_value_pattern_match():
+    cond = RuleConditions(value_pattern=re.compile(r".*\.html$"))
+    assert cond.evaluate_early(MockObservable(value="page.html"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(value="doc.pdf"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_file_name_pattern():
+    """evaluate_early checks file_name_pattern against the observable's file_name attribute."""
+    cond = RuleConditions(file_name_pattern=re.compile(r".*\.html$"))
+    obs_with_name = MockObservable()
+    obs_with_name.file_name = "body.html"
+    assert cond.evaluate_early(obs_with_name, MockRoot()) is True
+
+    obs_no_name = MockObservable()
+    assert cond.evaluate_early(obs_no_name, MockRoot()) is False
+
+    obs_wrong_name = MockObservable()
+    obs_wrong_name.file_name = "doc.pdf"
+    assert cond.evaluate_early(obs_wrong_name, MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_ignores_dynamic_conditions():
+    """evaluate_early should return True even when dynamic conditions are set,
+    since it cannot evaluate them."""
+    cond = RuleConditions(
+        alert_tags=["phishing"],
+        has_tags=["suspicious"],
+        has_directives=["sandbox"],
+        tree_conditions=[TreeCondition(analysis_type="test:Test")],
+    )
+    # Dynamic conditions are not checked, so evaluate_early returns True
+    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_mixed_passing_immutable_and_dynamic():
+    """When immutable conditions pass and dynamic conditions are present, should return True."""
+    cond = RuleConditions(
+        observable_types=["url"],
+        alert_tags=["phishing"],  # dynamic
+    )
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_mixed_failing_immutable_and_dynamic():
+    """When any immutable condition fails, should return False even if dynamic conditions present."""
+    cond = RuleConditions(
+        observable_types=["file"],  # will fail for url observable
+        alert_tags=["phishing"],  # dynamic, would be ignored
+    )
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is False
+
+
+# ============================================================
+# Early exit in execute_analysis tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_early_exit_by_observable_type():
+    """execute_analysis should return COMPLETED when observable type doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "file-only rule",
+        "conditions": {"observable_types": ["file"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_alert_type():
+    """execute_analysis should return COMPLETED when alert_type doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single", alert_type="manual")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "threat intel only",
+        "conditions": {"alert_type": "splunk - threat_intel"},
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_queue():
+    """execute_analysis should return COMPLETED when queue doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single", queue="internal")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "external only",
+        "conditions": {"queue": "external"},
+        "actions": {"add_tags": ["external"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_value_pattern():
+    """execute_analysis should return COMPLETED when value doesn't match any rule's pattern."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/doc.pdf")
+    rules = [{
+        "name": "html only",
+        "conditions": {"value_pattern": r".*\.html$"},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_defers_when_only_dynamic_conditions():
+    """execute_analysis should return INCOMPLETE when rules have only dynamic conditions,
+    since evaluate_early cannot rule them out."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "tag-based rule",
+        "conditions": {"alert_tags": ["phishing"]},
+        "actions": {"add_directives": ["sandbox"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+
+@pytest.mark.unit
+def test_defers_when_mixed_with_passing_immutable():
+    """execute_analysis should return INCOMPLETE when immutable conditions pass
+    but dynamic conditions are also present."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "mixed rule",
+        "conditions": {
+            "observable_types": ["url"],  # immutable, passes
+            "has_tags": ["needs_review"],  # dynamic, cannot be checked early
+        },
+        "actions": {"add_directives": ["review"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+
+@pytest.mark.unit
+def test_early_exit_mixed_with_failing_immutable():
+    """execute_analysis should return COMPLETED when an immutable condition fails,
+    even if dynamic conditions are present."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "mixed rule",
+        "conditions": {
+            "observable_types": ["file"],  # immutable, fails for url
+            "has_tags": ["needs_review"],  # dynamic
+        },
+        "actions": {"add_directives": ["review"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_disabled_rules_ignored():
+    """Disabled rules should not prevent early exit."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [
+        {
+            "name": "disabled matching rule",
+            "enabled": False,
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["extract_iocs"]},
+        },
+        {
+            "name": "non-matching rule",
+            "conditions": {"observable_types": ["file"]},
+            "actions": {"add_tags": ["processed"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+# ============================================================
+# execute_final_analysis fast path tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_final_analysis_fast_path_no_match():
+    """execute_final_analysis should return COMPLETED quickly when no rules can match."""
+    root = create_root_analysis(analysis_mode="test_single", alert_type="manual")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "threat intel only",
+        "conditions": {"alert_type": "splunk - threat_intel"},
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # Initialize module via execute_analysis (which also returns COMPLETED)
+    adapter.execute_analysis(observable)
+
+    # Final analysis should also bail out early
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("crawl")
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is None
