@@ -2,7 +2,8 @@ import glob
 import logging
 import os
 import re
-from subprocess import PIPE, Popen
+import tempfile
+from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Optional, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -23,7 +24,7 @@ class QRCodeAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = { 
+        self.details = {
             QRCodeAnalysis.KEY_EXTRACTED_TEXT: None,
             QRCodeAnalysis.KEY_INVERTED: False,
         }
@@ -63,7 +64,7 @@ class QRCodeAnalysis(Analysis):
         result = f"{self.display_name}: "
         if self.inverted:
             result += "INVERTED: "
-        
+
         result += self.extracted_text
         return result
 
@@ -93,7 +94,6 @@ class QRCodeFilter:
 
         for url_filter in self.url_filters:
             m = url_filter.search(url)
-            #logging.debug(f"{url_filter} {url} = {m}")
             if m:
                 return True
 
@@ -103,6 +103,7 @@ class QRCodeAnalyzerConfig(AnalysisModuleConfig):
     filter_path: Optional[str] = Field(default=None, description="Path to a list of strings to exclude from the results relative to ANALYST_DATA_DIR.")
     pdf_first_pages: int = Field(default=3, description="Number of pages to scan from the beginning of a PDF.")
     pdf_last_pages: int = Field(default=3, description="Number of pages to scan from the end of a PDF.")
+    timeout: int = Field(default=30, description="Timeout in seconds for subprocess execution.")
 
 class QRCodeAnalyzer(AnalysisModule):
     @classmethod
@@ -129,6 +130,163 @@ class QRCodeAnalyzer(AnalysisModule):
     def pdf_last_pages(self):
         return self.config.pdf_last_pages
 
+    @property
+    def timeout(self):
+        return self.config.timeout
+
+    def _get_pdf_page_count(self, pdf_path: str) -> Optional[int]:
+        """Use pdfinfo to get the page count of a PDF."""
+        try:
+            process = Popen(["pdfinfo", pdf_path], stdout=PIPE, stderr=PIPE, text=True)
+            stdout, _ = process.communicate(timeout=self.timeout)
+            for line in stdout.split("\n"):
+                if line.startswith("Pages:"):
+                    return int(line.split(":")[1].strip())
+        except TimeoutExpired:
+            logging.warning(f"pdfinfo timed out on {pdf_path}")
+            process.kill()
+            process.communicate()
+        except Exception as e:
+            logging.warning(f"pdfinfo failed on {pdf_path}: {e}")
+        return None
+
+    def _render_pdf_pages(self, pdf_path: str, first_page: int, last_page: int, output_pattern: str) -> bool:
+        """Render specific PDF pages to PNG using Ghostscript."""
+        try:
+            process = Popen(
+                ["gs", "-sDEVICE=pngalpha", "-o", output_pattern, "-r144",
+                 f"-dFirstPage={first_page}", f"-dLastPage={last_page}", pdf_path],
+                stdout=PIPE, stderr=PIPE
+            )
+            process.communicate(timeout=self.timeout)
+            return process.returncode == 0
+        except TimeoutExpired:
+            logging.warning(f"gs timed out rendering pages {first_page}-{last_page} of {pdf_path}")
+            process.kill()
+            process.communicate()
+            return False
+
+    def _scan_image(self, image_path: str) -> Optional[str]:
+        """Run zbarimg on an image and return stdout, or None on failure/timeout."""
+        try:
+            process = Popen(["zbarimg", "-q", "--raw", "--nodbus", image_path], stdout=PIPE, stderr=PIPE, text=True)
+            stdout, stderr = process.communicate(timeout=self.timeout)
+            if stderr:
+                logging.debug(f"zbarimg stderr for {image_path}: {stderr}")
+            return stdout if stdout else None
+        except TimeoutExpired:
+            logging.warning(f"zbarimg timed out on {image_path}")
+            process.kill()
+            process.communicate()
+            return None
+
+    def _scan_inverted_image(self, image_path: str) -> Optional[str]:
+        """Invert the image and scan it for QR codes. Uses a temp file for the inverted image."""
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image_inverted = ImageOps.invert(image)
+        except Exception as e:
+            logging.warning(f"unable to invert image {image_path}: {e}")
+            return None
+
+        tmp = None
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.close()
+            image_inverted.save(tmp.name)
+            return self._scan_image(tmp.name)
+        except Exception as e:
+            logging.warning(f"unable to save/scan inverted image {image_path}: {e}")
+            return None
+        finally:
+            if tmp and os.path.exists(tmp.name):
+                try:
+                    os.unlink(tmp.name)
+                except Exception as e:
+                    logging.error(f"unable to remove inverted temp file {tmp.name}: {e}")
+
+    def _extract_valid_urls(self, stdout: str, qrcode_filter: Optional[QRCodeFilter]) -> list[str]:
+        """Extract valid URLs from zbarimg output, applying filters."""
+        urls = []
+        for line in stdout.split("\n"):
+            if not line:
+                continue
+            if qrcode_filter and qrcode_filter.is_filtered(line):
+                continue
+            if '.' not in line and '/' not in line:
+                logging.info(f"qrcode extraction: {line} is probably not a url -- skipping")
+                continue
+            urls.append(line)
+        return urls
+
+    def _render_pdf_to_pngs(self, local_file_path: str) -> list[str]:
+        """Convert PDF to PNG images, rendering only the needed pages."""
+        total_pages = self._get_pdf_page_count(local_file_path)
+
+        if total_pages is not None:
+            first_n = self.pdf_first_pages
+            last_n = self.pdf_last_pages
+            target_file_paths = []
+
+            if total_pages <= first_n + last_n:
+                # Render all pages in one call
+                target_file_pattern = f"{local_file_path}-%d.png"
+                logging.info(f"PDF has {total_pages} pages, rendering all pages")
+                if self._render_pdf_pages(local_file_path, 1, total_pages, target_file_pattern):
+                    target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+            else:
+                logging.info(f"PDF has {total_pages} pages, rendering first {first_n} and last {last_n} pages")
+                # Render first N pages
+                first_pattern = f"{local_file_path}-first-%d.png"
+                if self._render_pdf_pages(local_file_path, 1, first_n, first_pattern):
+                    target_file_paths.extend(sorted(glob.glob(f"{local_file_path}-first-*.png")))
+                # Render last N pages
+                last_start = total_pages - last_n + 1
+                last_pattern = f"{local_file_path}-last-%d.png"
+                if self._render_pdf_pages(local_file_path, last_start, total_pages, last_pattern):
+                    target_file_paths.extend(sorted(glob.glob(f"{local_file_path}-last-*.png")))
+
+            if target_file_paths:
+                return target_file_paths
+            logging.warning(f"selective rendering failed for {local_file_path}, falling back to full render")
+
+        # Fallback: render all pages then filter
+        target_file_pattern = f"{local_file_path}-%d.png"
+        logging.info(f"converting {local_file_path} to png @ {target_file_pattern}")
+        try:
+            process = Popen(["gs", "-sDEVICE=pngalpha", "-o", target_file_pattern, "-r144", local_file_path], stdout=PIPE, stderr=PIPE)
+            process.communicate(timeout=self.timeout)
+        except TimeoutExpired:
+            logging.warning(f"gs timed out on {local_file_path}")
+            process.kill()
+            process.communicate()
+            return []
+
+        target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+        if not target_file_paths:
+            logging.warning(f"conversion of {local_file_path} to png failed")
+            return []
+
+        # Filter to first N and last N pages
+        total_pages = len(target_file_paths)
+        first_n = self.pdf_first_pages
+        last_n = self.pdf_last_pages
+
+        if total_pages > first_n + last_n:
+            pages_to_scan = set(target_file_paths[:first_n] + target_file_paths[-last_n:])
+            for p in target_file_paths:
+                if p not in pages_to_scan:
+                    try:
+                        os.unlink(p)
+                    except Exception as e:
+                        logging.error(f"unable to remove skipped page {p}: {e}")
+            target_file_paths = sorted(pages_to_scan)
+            logging.info(f"PDF has {total_pages} pages, scanning first {first_n} and last {last_n} pages")
+        else:
+            logging.info(f"PDF has {total_pages} pages, scanning all pages")
+
+        return target_file_paths
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.hash import FileHashAnalyzer
 
@@ -148,78 +306,40 @@ class QRCodeAnalyzer(AnalysisModule):
 
         # Determine which files to scan for QR codes
         if is_pdf_result:
-            # Convert PDF to PNG images (one per page) using %d pattern
-            target_file_pattern = f"{local_file_path}-%d.png"
-            logging.info(f"converting {local_file_path} to png @ {target_file_pattern}")
-            process = Popen(["gs", "-sDEVICE=pngalpha", "-o", target_file_pattern, "-r144", local_file_path], stdout=PIPE, stderr=PIPE)
-            _stdout, _stderr = process.communicate()
-
-            # Find all generated page PNGs
-            target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+            target_file_paths = self._render_pdf_to_pngs(local_file_path)
             if not target_file_paths:
-                logging.warning(f"conversion of {local_file_path} to png failed")
                 return AnalysisExecutionResult.COMPLETED
-
-            # Limit to first M and last N pages for QR code scanning
-            total_pages = len(target_file_paths)
-            first_n = self.pdf_first_pages
-            last_n = self.pdf_last_pages
-
-            if total_pages > first_n + last_n:
-                pages_to_scan = set(target_file_paths[:first_n] + target_file_paths[-last_n:])
-                pages_to_skip = [p for p in target_file_paths if p not in pages_to_scan]
-                target_file_paths = sorted(pages_to_scan)
-                # Clean up skipped page PNGs immediately
-                for skip_path in pages_to_skip:
-                    try:
-                        os.unlink(skip_path)
-                    except Exception as e:
-                        logging.error(f"unable to remove skipped page {skip_path}: {e}")
-                logging.info(f"PDF has {total_pages} pages, scanning first {first_n} and last {last_n} pages")
-            else:
-                logging.info(f"PDF has {total_pages} pages, scanning all pages")
-
             is_temp_files = True
         else:
             target_file_paths = [local_file_path]
             is_temp_files = False
 
-        # Scan each page/image for QR codes
-        _stdout = ""
-        _stderr = ""
-        _stdout_inverted = ""
-        _stderr_inverted = ""
+        # Load QR code filter once before the loop
+        qrcode_filter = None
+        if self.qrcode_filter_path:
+            logging.info(f"loading qrcode filter from {self.qrcode_filter_path}")
+            qrcode_filter = QRCodeFilter(self.qrcode_filter_path)
+            qrcode_filter.load()
+
+        # Scan each page/image for QR codes, processing results per-page
+        normal_urls = []
+        inverted_urls = []
 
         for target_file_path in target_file_paths:
             logging.info(f"looking for a QR code in {target_file_path}")
-            process = Popen(["zbarimg", "-q", "--raw", "--nodbus", target_file_path], stdout=PIPE, stderr=PIPE, text=True)
-            page_stdout, page_stderr = process.communicate()
-            if page_stdout:
-                _stdout += page_stdout
-            if page_stderr:
-                _stderr += page_stderr
 
-            # invert the image and scan that too
-            inverted_target_file_path = f"{target_file_path}.inverted.png"
-            try:
-                image = Image.open(target_file_path).convert("RGB")
-                image_inverted = ImageOps.invert(image)
-                image_inverted.save(inverted_target_file_path)
-            except Exception as e:
-                logging.warning(f"unable to invert image {target_file_path}: {e}")
+            # Normal scan
+            stdout = self._scan_image(target_file_path)
+            page_urls = self._extract_valid_urls(stdout, qrcode_filter) if stdout else []
 
-            if os.path.exists(inverted_target_file_path):
-                logging.info(f"looking for a QR code in {inverted_target_file_path}")
-                process = Popen(["zbarimg", "-q", "--raw", "--nodbus", inverted_target_file_path], stdout=PIPE, stderr=PIPE, text=True)
-                page_stdout_inverted, page_stderr_inverted = process.communicate()
-                if page_stdout_inverted:
-                    _stdout_inverted += page_stdout_inverted
-                if page_stderr_inverted:
-                    _stderr_inverted += page_stderr_inverted
-                try:
-                    os.unlink(inverted_target_file_path)
-                except Exception as e:
-                    logging.error(f"unable to remove {inverted_target_file_path}: {e}")
+            if page_urls:
+                normal_urls.extend(page_urls)
+            else:
+                # Only run inverted scan if normal scan found nothing on this page
+                inverted_stdout = self._scan_inverted_image(target_file_path)
+                inverted_page_urls = self._extract_valid_urls(inverted_stdout, qrcode_filter) if inverted_stdout else []
+                if inverted_page_urls:
+                    inverted_urls.extend(inverted_page_urls)
 
             # Clean up temporary PNG file if created from PDF
             if is_temp_files:
@@ -228,35 +348,9 @@ class QRCodeAnalyzer(AnalysisModule):
                 except Exception as e:
                     logging.error(f"unable to remove {target_file_path}: {e}")
 
-        extracted_urls = []
-        for _stdout, is_inverted in [ (_stdout, False), (_stdout_inverted, True) ]:
-            if not _stdout:
-                continue
-
-            qrcode_filter = None
-            if self.qrcode_filter_path:
-                logging.info(f"loading qrcode filter from {self.qrcode_filter_path}")
-                qrcode_filter = QRCodeFilter(self.qrcode_filter_path)
-                qrcode_filter.load()
-
-            for line in _stdout.split("\n"):
-                if not line:
-                    continue
-
-                if qrcode_filter and qrcode_filter.is_filtered(line):
-                    continue
-
-                # some of the things the qr code utility extracts is shipping barcodes
-                # urls are going to have either a . or a / somewhere in it
-                # if you don't see one or the other then don't add it
-                if '.' not in line and '/' not in line:
-                    logging.info(f"qrcode extraction: {line} is probably not a url -- skipping")
-                    continue
-
-                extracted_urls.append(line)
-
+        # Create analysis from results, preferring normal over inverted
+        for extracted_urls, is_inverted in [(normal_urls, False), (inverted_urls, True)]:
             if not extracted_urls:
-                logging.info(f"all urls filtered out for {local_file_path}")
                 continue
 
             analysis = self.create_analysis(_file)
@@ -281,8 +375,5 @@ class QRCodeAnalyzer(AnalysisModule):
                 logging.info(f"found QR code in {_file} inverted {is_inverted}")
 
             break
-
-        if _stderr:
-            logging.info(f"unable to extract qrcode from {local_file_path}: {_stderr}")
 
         return AnalysisExecutionResult.COMPLETED

@@ -1475,6 +1475,8 @@ analysis_module_qrcode:
   # number of pages to scan from the beginning and end of a PDF
   pdf_first_pages: 3
   pdf_last_pages: 3
+  # timeout in seconds for subprocess execution (gs, zbarimg, pdfinfo)
+  timeout: 30
 
 analysis_module_hidden_mime:
   name: hidden_mime
