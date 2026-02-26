@@ -349,11 +349,22 @@ class Observable(BaseNode):
         """Returns True if this Observable has been excluded from analysis by this AnalysisModule."""
         from saq.modules import AnalysisModule
         assert isinstance(analysis_module, AnalysisModule)
+
+        # Format produced by exclude_analysis() and other callers using str(type()):
+        # e.g. "saq.modules.foo:<class 'saq.modules.foo.FooAnalyzer'>"
         name = '{}:{}'.format(analysis_module.__module__, str(type(analysis_module)))
         if analysis_module.instance is not None:
             name += f'{analysis_module.instance}'
 
-        return name in self.excluded_analysis
+        if name in self.excluded_analysis:
+            return True
+
+        # Clean format: "saq.modules.foo:FooAnalyzer" (used by observable modifier YAML rules)
+        clean_name = f'{analysis_module.__module__}:{type(analysis_module).__name__}'
+        if analysis_module.instance is not None:
+            clean_name += f'{analysis_module.instance}'
+
+        return clean_name in self.excluded_analysis
 
     def remove_analysis_exclusion(self, analysis_module, instance=None):
         """Removes AnalysisModule exclusion added to this observable, allowing it to be run again.
