@@ -27,6 +27,7 @@ from saq.configuration.config import get_proxy_config, get_splunk_config
 from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
+from saq.error.remote import RemoteApiError
 
 
 def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
@@ -433,25 +434,22 @@ class SplunkQueryObject:
             if e.response.status_code in [204]:
                 return None, None
 
-            # report erorr and return empty results
             logging.warning(f'Search failed: {type(e)} {e}')
-            #self.cancel(sid)
             if job:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
-            return None, []
+            raise RemoteApiError(e.response.status_code, f"Splunk search failed: {e}")
 
-        # report erorrs and return empty results
-        except ( ConnectionError, Timeout, ProxyError ) as e:
+        except (ConnectionError, Timeout, ProxyError) as e:
             logging.warning(f'Search failed: {type(e)} {e}')
             if job:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
-            return None, []
+            raise RemoteApiError(502, f"Splunk search failed: {e}")
 
         except AuthenticationError as e:
             logging.warning(f"invalid credentials OR splunk session token expired: {e}")
-            return job, None
+            raise RemoteApiError(401, f"Splunk authentication failed: {e}")
 
         except Exception as e:
             logging.error(f'Search failed: {e}')
@@ -459,7 +457,7 @@ class SplunkQueryObject:
             if job:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
-            return None, []
+            raise RemoteApiError(500, f"Splunk search failed: {e}")
 
     def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False) -> Optional[Job]:
         """Queue the query and return the job object
