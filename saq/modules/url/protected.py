@@ -66,19 +66,19 @@ class ProtectedURLAnalyzer(AnalysisModule):
 
     def execute_analysis(self, url: Observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(url)
-        protection_type, extracted_url = extract_protected_url(url.value)
+        protection_type, extracted_url_value = extract_protected_url(url.value)
 
         analysis.protection_type = protection_type.value
-        analysis.extracted_url = extracted_url
+        analysis.extracted_url = extracted_url_value
 
         if protection_type == ProtectionType.UNPROTECTED:
             return AnalysisExecutionResult.COMPLETED
 
-        extracted_url_observable = analysis.add_observable_by_spec(F_URL, extracted_url)
+        extracted_url_observable = analysis.add_observable_by_spec(F_URL, extracted_url_value)
         if extracted_url_observable:
             url.add_tag('protected_url')
             extracted_url_observable.add_relationship(R_EXTRACTED_FROM, url)
+            # copy any directives so they apply to the extracted one
+            url.copy_directives_to(extracted_url_observable)
 
-        # copy any directives so they apply to the extracted one
-        url.copy_directives_to(extracted_url)
         return AnalysisExecutionResult.COMPLETED
