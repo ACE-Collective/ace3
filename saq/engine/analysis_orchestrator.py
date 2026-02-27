@@ -92,6 +92,9 @@ class AnalysisOrchestrator:
 
             return True
 
+        except AnalysisTimeoutError as e:
+            logging.warning(f"analysis timeout for {execution_context.work_item}: {e}")
+            return False
         except Exception as e:
             logging.error(f"error orchestrating analysis for {execution_context.work_item}: {e}")
             report_exception()

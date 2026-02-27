@@ -1322,9 +1322,6 @@ def test_analysis_mode_no_priority():
 
 @pytest.mark.integration
 def test_error_reporting():
-    # trigger the failure this way
-    get_config().global_settings.maximum_cumulative_analysis_fail_time = 0
-
     # remember what was already in the error reporting directory
     def _enum_error_reporting():
         return set(os.listdir(os.path.join(get_data_dir(), 'error_reports')))
@@ -1333,7 +1330,10 @@ def test_error_reporting():
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_3')
+    target_path = root.create_file_path('test.txt')
+    with open(target_path, 'w') as fp:
+        fp.write('test')
+    observable = root.add_file_observable(target_path)
     root.save()
     root.schedule()
 
