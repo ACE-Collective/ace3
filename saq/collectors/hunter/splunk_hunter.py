@@ -17,6 +17,7 @@ from splunklib.results import Message
 
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
+from saq.error.remote import RemoteApiError
 from saq.splunk import extract_event_timestamp, SplunkClient
 from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
 
@@ -149,9 +150,9 @@ class SplunkHunt(QueryHunt):
 
             # stop if the search failed
             if searcher.search_failed():
-                logging.warning("splunk search {self} failed")
-                searcher.cancel(self.search_id)
-                return None
+                logging.warning(f"splunk search {self} failed")
+                searcher.cancel(self.job)
+                raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
 
             # wait a few seconds before checking again
             if self.cancel_event.wait(3):

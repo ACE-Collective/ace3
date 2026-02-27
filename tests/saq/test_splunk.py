@@ -8,6 +8,7 @@ from splunklib.client import AuthenticationError
 
 from saq.configuration import get_config
 from saq.configuration.schema import ProxyConfig, SplunkConfig
+from saq.error.remote import RemoteApiError
 from saq.splunk import (
     SplunkClient,
     SplunkQueryObject,
@@ -408,16 +409,35 @@ class MockResponse:
         self.status_code = status_code
 
 
-@pytest.mark.parametrize('exception, expected_result', [
-    (HTTPError('error', response=MockResponse(204)), None),
-    (HTTPError('error', response=MockResponse(404)), []),
-    (ConnectionError(), []),
-    (Timeout(), []),
-    (ProxyError(), []),
-    (Exception(), []),
+@pytest.mark.unit
+def test_query_async_error_204_requeue():
+    """204 errors should return (None, None) for requeue."""
+    class MockSplunk(SplunkQueryObject):
+        def complete(self, job):
+            raise HTTPError('error', response=MockResponse(204))
+        def delete_search_job(self, job):
+            return True
+
+    mock_job = Mock()
+    mock_job.name = "123"
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        job, result = splunk.query_async('whatever', job=mock_job)
+        assert job is None
+        assert result is None
+
+
+@pytest.mark.parametrize('exception, expected_status_code', [
+    (HTTPError('error', response=MockResponse(404)), 404),
+    (ConnectionError(), 502),
+    (Timeout(), 502),
+    (ProxyError(), 502),
+    (Exception(), 500),
 ])
 @pytest.mark.unit
-def test_query_async_error(exception, expected_result):
+def test_query_async_error(exception, expected_status_code):
     class MockSplunk(SplunkQueryObject):
         def complete(self, job):
             self.cancelled = False
@@ -439,10 +459,10 @@ def test_query_async_error(exception, expected_result):
     with patch("saq.splunk.client.connect", return_value=mock_client):
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
 
-        job, result = splunk.query_async('whatever', job=mock_job)
-        assert job is None
-        assert result == expected_result
-        assert splunk.cancelled == (expected_result is not None)
+        with pytest.raises(RemoteApiError) as exc_info:
+            splunk.query_async('whatever', job=mock_job)
+        assert exc_info.value.status_code == expected_status_code
+        assert splunk.cancelled is True
 
 
 @pytest.mark.unit
@@ -474,9 +494,9 @@ def test_query_async_authentication_error():
     with patch("saq.splunk.client.connect", return_value=mock_client):
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
 
-        job, result = splunk.query_async("whatever", job=mock_job)
-        assert job is mock_job
-        assert result is None
+        with pytest.raises(RemoteApiError) as exc_info:
+            splunk.query_async("whatever", job=mock_job)
+        assert exc_info.value.status_code == 401
         assert splunk.cancelled is False
 
 

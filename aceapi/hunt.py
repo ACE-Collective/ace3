@@ -18,6 +18,7 @@ from saq.collectors.hunter.loader import load_from_yaml
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
+from saq.error.remote import RemoteApiError
 from saq.database.util.alert import ALERT
 from saq.environment import get_temp_dir
 from saq.util.uuid import storage_dir_from_uuid
@@ -195,6 +196,8 @@ def validate_hunt():
                     # Don't persist execution state; validation runs must not affect scheduled automation
                     hunt.manual_hunt = True
                     submissions = hunt.execute(**exec_kwargs)
+                except RemoteApiError as e:
+                    return jsonify({"valid": False, "error": e.message}), e.status_code
                 except Exception as e:
                     return jsonify({"valid": False, "error": f"error executing hunt: {e}"}), 400
 

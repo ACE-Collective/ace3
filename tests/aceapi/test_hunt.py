@@ -1348,6 +1348,40 @@ def test_validate_hunt_execution_raises_exception(test_client, auth_headers):
 
 
 @pytest.mark.integration
+def test_validate_hunt_execution_remote_api_error(test_client, auth_headers):
+    """Verify RemoteApiError propagates status code and message from remote API."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.error.remote import RemoteApiError
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.execute.side_effect = RemoteApiError(403, "Forbidden")
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json={
+                "hunts": [{"file_path": "test.yaml", "content": VALID_HUNT_YAML}],
+                "target": "test.yaml",
+                "execution_arguments": {
+                    "start_time": "01/15/2025:10:00:00",
+                    "end_time": "01/15/2025:12:00:00"
+                }
+            },
+            headers=auth_headers
+        )
+
+        assert result.status_code == 403
+        data = result.get_json()
+        assert data["valid"] is False
+        assert data["error"] == "Forbidden"
+
+
+@pytest.mark.integration
 def test_validate_hunt_execution_non_query_hunt_no_time_required(test_client, auth_headers):
     """Verify non-QueryHunt types don't require start_time/end_time."""
     with patch("aceapi.hunt.HunterService") as mock_hunter_service:
