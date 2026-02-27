@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 from unittest.mock import MagicMock
 
@@ -548,6 +549,34 @@ def test_phishkit_analyzer_continue_analysis_not_ready(monkeypatch, test_context
     # Should call delay_analysis and return its result
     analyzer.delay_analysis.assert_called_once_with(url_observable, analysis, seconds=3, timeout_seconds=60)
     assert result == AnalysisExecutionResult.INCOMPLETE
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_continue_analysis_timeout(monkeypatch, test_context):
+    """Test continue_analysis handles subprocess.TimeoutExpired gracefully."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-timeout"
+    analysis.output_dir = "/tmp/test-output"
+    url_observable.add_analysis(analysis)
+
+    # Mock get_async_scan_result to raise subprocess.TimeoutExpired
+    def mock_get_async_scan_result(job_id, output_dir, timeout=1):
+        raise subprocess.TimeoutExpired(cmd="phishkit", timeout=60)
+
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result", mock_get_async_scan_result)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    result = analyzer.continue_analysis(url_observable, analysis)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert "timed out" in analysis.error
+    assert "test-job-timeout" in analysis.error
 
 
 @pytest.mark.integration

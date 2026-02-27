@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from typing import Optional, List, Type, override
 
 from pydantic import Field
@@ -169,7 +170,13 @@ class PhishkitAnalyzer(AnalysisModule):
         
         # wait for the job to complete
         logging.info(f"checking for phishkit scan results for {observable} job ID {analysis.job_id}")
-        scan_results = get_async_scan_result(analysis.job_id, analysis.output_dir, timeout=1)
+        try:
+            scan_results = get_async_scan_result(analysis.job_id, analysis.output_dir, timeout=1)
+        except subprocess.TimeoutExpired:
+            logging.warning("phishkit scan timed out for %s job ID %s", observable, analysis.job_id)
+            analysis.error = f"phishkit scan timed out for {observable} job ID {analysis.job_id}"
+            return AnalysisExecutionResult.COMPLETED
+
         if scan_results is None:
             logging.info(f"scan results not ready yet for {observable} job ID {analysis.job_id}")
             return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=60)
