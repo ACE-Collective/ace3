@@ -18,6 +18,14 @@ def disable_proxy(monkeypatch):
     monkeypatch.setattr(get_config().global_settings, "default_proxy", None)
     get_config().clear_proxy_configs()
 
+
+@pytest.fixture
+def analyst_data_tmpdir(tmpdir, monkeypatch):
+    """Patches analyst_data_dir to a temp directory that is auto-cleaned after the test."""
+    monkeypatch.setattr(get_global_runtime_settings(), "analyst_data_dir", str(tmpdir))
+    return tmpdir
+
+
 @pytest.mark.integration
 def test_url_download_conditions_no_directive(root_analysis):
 
@@ -202,14 +210,14 @@ def test_basic_download(root_analysis, monkeypatch, datadir):
     assert file_observable.has_relationship(R_DOWNLOADED_FROM)
 
 @pytest.mark.integration
-def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, datadir):
+def test_download_multiple_uas_duplicate_content(root_analysis, monkeypatch, datadir, analyst_data_tmpdir):
 
     # tests the case where we are multiple multiple user agent strings
     # and each request returns the same data
 
     get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH).user_agent_list_path = "test_uas.txt"
 
-    target_path = os.path.join(get_global_runtime_settings().analyst_data_dir, "test_uas.txt")
+    target_path = str(analyst_data_tmpdir / "test_uas.txt")
     with open(target_path, 'w') as fp:
         fp.write("user-agent-1\nuser-agent-2\n")
 
@@ -318,36 +326,30 @@ def test_download_404(root_analysis, monkeypatch):
     assert file_observable.has_relationship(R_DOWNLOADED_FROM)
 
 @pytest.mark.unit
-def test_load_user_agent_list_file(monkeypatch, test_context):
-    ua_file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, 'test_uas.txt')
+def test_load_user_agent_list_file(monkeypatch, test_context, analyst_data_tmpdir):
+    ua_file_path = str(analyst_data_tmpdir / "test_uas.txt")
     with open(ua_file_path, 'w') as fp:
         fp.write("test-ua-1\ntest-ua-2\n")
 
-    try:
-        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH), 'user_agent_list_path', 'test_uas.txt')
-        analyzer = CrawlphishAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH))
-        analyzer.load_user_agent_list()
-        assert analyzer.user_agent_list == [ "test-ua-1", "test-ua-2" ]
-    finally:
-        os.remove(ua_file_path)
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH), 'user_agent_list_path', 'test_uas.txt')
+    analyzer = CrawlphishAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH))
+    analyzer.load_user_agent_list()
+    assert analyzer.user_agent_list == [ "test-ua-1", "test-ua-2" ]
 
 @pytest.mark.unit
-def test_load_user_agent_list_file_with_comments(monkeypatch, test_context):
-    ua_file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, 'test_uas.txt')
+def test_load_user_agent_list_file_with_comments(monkeypatch, test_context, analyst_data_tmpdir):
+    ua_file_path = str(analyst_data_tmpdir / "test_uas.txt")
     with open(ua_file_path, 'w') as fp:
         fp.write("test-ua-1\n# this is a comment\ntest-ua-2\n")
 
-    try:
-        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH), 'user_agent_list_path', 'test_uas.txt')
-        analyzer = CrawlphishAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH))
-        analyzer.load_user_agent_list()
-        assert analyzer.user_agent_list == [ "test-ua-1", "test-ua-2" ]
-    finally:
-        os.remove(ua_file_path)
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH), 'user_agent_list_path', 'test_uas.txt')
+    analyzer = CrawlphishAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_CRAWLPHISH))
+    analyzer.load_user_agent_list()
+    assert analyzer.user_agent_list == [ "test-ua-1", "test-ua-2" ]
 
 @pytest.mark.unit
 def test_missing_user_agent_list_file(monkeypatch, test_context):
