@@ -89,7 +89,7 @@ def test_load_hunt_ini(manager_kwargs):
     assert hunt.offset == create_timedelta('00:05:00')
     assert hunt.full_coverage
     assert hunt.group_by == 'field1'
-    assert hunt.query == 'index=proxy {time_spec} src_ip=1.1.1.1\n'
+    assert hunt.query == 'index=proxy src_ip=1.1.1.1\n'
     assert hunt.use_index_time
     assert len(hunt.observable_mapping) == 2
     assert hunt.observable_mapping[0].fields == ['src_ip']
@@ -117,7 +117,7 @@ def test_no_timespec(manager_kwargs):
     assert len(manager.hunts) == 1
     hunt = manager.get_hunt_by_name('query_test_no_timespec')
     assert hunt is not None
-    assert hunt.query == '{time_spec} index=proxy src_ip=1.1.1.1\n'
+    assert hunt.query == 'index=proxy src_ip=1.1.1.1\n'
 
 @pytest.mark.integration
 def test_load_hunt_with_includes(manager_kwargs):
@@ -130,13 +130,13 @@ def test_load_hunt_with_includes(manager_kwargs):
     hunt = manager.get_hunt_by_name('query_test_includes')
     assert hunt
     # same as above except that ip address comes from a different file
-    assert hunt.query == 'index=proxy {time_spec} src_ip=1.1.1.1\n'
+    assert hunt.query == 'index=proxy src_ip=1.1.1.1\n'
 
-    # and then change it and it should have a different value 
+    # and then change it and it should have a different value
     with open(ips_txt, 'a') as fp:
         fp.write('1.1.1.2\n')
 
-    assert hunt.query, 'index=proxy {time_spec} src_ip=1.1.1.1\n1.1.1.2\n'
+    assert hunt.query, 'index=proxy src_ip=1.1.1.1\n1.1.1.2\n'
 
     os.remove(ips_txt)
 
@@ -405,10 +405,8 @@ def test_splunk_hunt_formatted_query_with_default_auto_append(manager_kwargs):
 
     manager = HuntManager(**manager_kwargs)
     hunt = SplunkHunt(config=config, manager=manager)
-    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
-
     formatted = hunt.formatted_query()
-    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields *"
+    assert formatted == "index=test | fields *"
 
 
 @pytest.mark.unit
@@ -435,10 +433,9 @@ def test_splunk_hunt_formatted_query_with_custom_auto_append(manager_kwargs):
 
     manager = HuntManager(**manager_kwargs)
     hunt = SplunkHunt(config=config, manager=manager)
-    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
 
     formatted = hunt.formatted_query()
-    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields src_ip dst_ip"
+    assert formatted == "index=test | fields src_ip dst_ip"
 
 
 @pytest.mark.unit
@@ -465,10 +462,9 @@ def test_splunk_hunt_formatted_query_with_empty_auto_append(manager_kwargs):
 
     manager = HuntManager(**manager_kwargs)
     hunt = SplunkHunt(config=config, manager=manager)
-    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
 
     formatted = hunt.formatted_query()
-    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test"
+    assert formatted == "index=test"
 
 
 @pytest.mark.unit
@@ -494,11 +490,10 @@ def test_splunk_hunt_formatted_query_already_has_auto_append(manager_kwargs):
 
     manager = HuntManager(**manager_kwargs)
     hunt = SplunkHunt(config=config, manager=manager)
-    hunt.time_spec = "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00"
 
     formatted = hunt.formatted_query()
     # should not duplicate "| fields *"
-    assert formatted == "earliest=01/01/2020:00:00:00 latest=01/01/2020:01:00:00 index=test | fields *"
+    assert formatted == "index=test | fields *"
     assert formatted.count("| fields *") == 1
 
 
@@ -528,6 +523,69 @@ def test_splunk_hunt_formatted_query_timeless_with_auto_append(manager_kwargs):
     hunt = SplunkHunt(config=config, manager=manager)
 
     formatted = hunt.formatted_query_timeless()
-    # note: query becomes "{time_spec} index=test" then time_spec is replaced with empty string
-    # resulting in " index=test" then auto_append is added
-    assert formatted == " index=test | fields src_ip"
+    assert formatted == "index=test | fields src_ip"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_pipe_query_no_time_spec_prepend(manager_kwargs):
+    """Verify the query property does not prepend {time_spec} for pipe queries."""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_pipe_hunt",
+        type="splunk",
+        enabled=True,
+        description="test pipe query",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="| tstats count where index=main",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    # query should NOT have {time_spec} prepended for pipe queries
+    assert '{time_spec}' not in hunt.query
+    assert hunt.query.lstrip().startswith('|')
+
+
+@pytest.mark.unit
+def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
+    """Verify execute_query() passes a clean pipe query to query_async()."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_pipe_hunt",
+        type="splunk",
+        enabled=True,
+        description="test pipe query",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="| tstats count where index=main",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 1, 0, 0, tzinfo=UTC)
+
+    # use unit_test_query_results to bypass actual Splunk connection
+    result = hunt.execute_query(start, end, unit_test_query_results=[{"count": "42"}])
+
+    # the formatted query should be the raw pipe query
+    assert result == [{"count": "42"}]

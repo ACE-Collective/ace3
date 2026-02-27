@@ -250,9 +250,6 @@ if args.search_file:
             # put it all on one line for splunk
             # we don't *need* to do this except for keeping the logs clean
             search_text = re.sub(r"\n", " ", search_text, count=0)
-        # removeing time_spec allows us to pass hunt files from the cli
-        if "{time_spec}" in search_text:
-            search_text = search_text.format(time_spec="")
         args.search = search_text
     else:
         logging.fatal("search file does not exist")

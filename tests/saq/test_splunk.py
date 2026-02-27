@@ -39,6 +39,43 @@ def test_queue():
 
 
 @pytest.mark.unit
+def test_queue_prepends_search():
+    """Verify queue() prepends 'search' for regular queries."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue("index=main sourcetype=syslog", 1000)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert query_arg == "search index=main sourcetype=syslog"
+
+
+@pytest.mark.parametrize("query", [
+    "| tstats count where index=main",
+    "  | tstats count where index=main",
+])
+@pytest.mark.unit
+def test_queue_skips_search_for_pipe_query(query):
+    """Verify queue() does NOT prepend 'search' when query starts with |."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue(query, 1000)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert not query_arg.lstrip().lower().startswith("search")
+    assert query_arg == query
+
+
+@pytest.mark.unit
 def test_complete():
     # create mock job
     mock_job = Mock()
@@ -746,3 +783,145 @@ def test_splunk_query_object_no_handler_without_proxy():
     mock_connect.assert_called_once()
     call_kwargs = mock_connect.call_args[1]
     assert "handler" not in call_kwargs
+
+
+@pytest.mark.unit
+def test_link_pipe_query():
+    """Verify encoded_query_link() does NOT prepend 'search' for pipe queries and still includes time params."""
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test")
+
+        # pipe query should NOT get "search " prepended
+        link = splunk.encoded_query_link("| tstats count where index=main", start_time=MOCK_NOW, end_time=MOCK_NOW)
+        assert "q=%7C+tstats" in link
+        assert "search+%7C" not in link
+        # time params should still be present
+        assert "earliest=" in link
+        assert "latest=" in link
+
+
+@pytest.mark.unit
+def test_link_pipe_query_with_index_time():
+    """Verify encoded_query_link() skips index-time string injection for pipe queries."""
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test")
+
+        link = splunk.encoded_query_link(
+            "| tstats count where index=main",
+            start_time=MOCK_NOW,
+            end_time=MOCK_NOW,
+            use_index_time=True,
+        )
+        # should NOT have _index_earliest/_index_latest injected into the query string
+        assert "_index_earliest" not in link
+        assert "_index_latest" not in link
+        # URL time params should still be present
+        assert "earliest=" in link
+        assert "latest=" in link
+
+
+@pytest.mark.unit
+def test_queue_embeds_time_ranges():
+    """Verify queue() embeds time-range strings in the query for regular queries."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue("index=main sourcetype=syslog", 1000, start=MOCK_NOW, end=MOCK_NOW)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert query_arg.startswith("search ")
+    assert 'earliest=11/11/2017:07:36:01' in query_arg
+    assert 'latest=11/11/2017:07:36:01' in query_arg
+    assert "index=main sourcetype=syslog" in query_arg
+
+
+@pytest.mark.unit
+def test_queue_embeds_index_time_ranges():
+    """Verify queue() embeds _index_ time-range strings when use_index_time=True."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue("index=main", 1000, start=MOCK_NOW, end=MOCK_NOW, use_index_time=True)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert query_arg.startswith("search ")
+    assert '_index_earliest=11/11/2017:07:36:01' in query_arg
+    assert '_index_latest=11/11/2017:07:36:01' in query_arg
+
+
+@pytest.mark.unit
+def test_queue_pipe_query_skips_time_ranges():
+    """Verify queue() does not embed time-range strings for pipe queries."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue("| tstats count where index=main", 1000, start=MOCK_NOW, end=MOCK_NOW)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert query_arg == "| tstats count where index=main"
+    assert "earliest" not in query_arg
+    assert "latest" not in query_arg
+
+
+@pytest.mark.unit
+def test_queue_strips_search_prefix_before_adding_time_ranges():
+    """Verify queue() strips existing 'search' prefix before adding time ranges and re-adds it."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue("search index=main", 1000, start=MOCK_NOW, end=MOCK_NOW)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert query_arg.startswith("search ")
+    # should not have double "search"
+    assert not query_arg.startswith("search search")
+    assert 'earliest=11/11/2017:07:36:01' in query_arg
+    assert 'latest=11/11/2017:07:36:01' in query_arg
+
+
+@pytest.mark.unit
+def test_query_pipe_query_skips_time_prefix():
+    """Verify query() passes pipe queries through to queue() unchanged (no time prefix)."""
+    search_results = None
+
+    class MockSplunk(SplunkQueryObject):
+        def query_async(self, query, job=None, limit=1000, start=None, end=None, use_index_time=False, timeout=None):
+            self.last_query = query
+            return job, search_results
+
+    def mock_sleep(t):
+        nonlocal search_results
+        search_results = []
+
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client), \
+         patch("saq.splunk.time.sleep", mock_sleep):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        splunk.query(
+            "| tstats count where index=main",
+            start=MOCK_NOW,
+            end=MOCK_NOW,
+        )
+        # the query passed to query_async should be unchanged — no time prefix prepended
+        assert splunk.last_query == "| tstats count where index=main"
