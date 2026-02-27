@@ -1,6 +1,5 @@
 import logging
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.constants import F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
@@ -66,7 +65,11 @@ class ProtectedURLAnalyzer(AnalysisModule):
 
     def execute_analysis(self, url: Observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(url)
-        protection_type, extracted_url_value = extract_protected_url(url.value)
+        try:
+            protection_type, extracted_url_value = extract_protected_url(url.value)
+        except ValueError as e:
+            logging.debug("error extracting protected url from %s: %s", url.value, e)
+            return AnalysisExecutionResult.COMPLETED
 
         analysis.protection_type = protection_type.value
         analysis.extracted_url = extracted_url_value
