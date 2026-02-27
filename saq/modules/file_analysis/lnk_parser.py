@@ -36,7 +36,7 @@ def get_target_path(info: dict) -> Optional[str]:
             continue
 
         if item_class == "Volume Item":
-            volume_name = item.get("data")
+            volume_name = item.get("data") or item.get("volume_name")
             if not volume_name:
                 logging.debug(f"no volume name for {item} in target path {items}")
                 continue
