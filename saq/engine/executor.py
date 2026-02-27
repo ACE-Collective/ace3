@@ -9,7 +9,7 @@ from enum import Enum
 
 import iptools
 from saq.analysis.analysis import Analysis
-from saq.analysis.errors import ExcessiveFileDataSizeError
+from saq.analysis.errors import ExcessiveFileDataSizeError, ExcessiveObservablesError
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -1163,6 +1163,12 @@ class AnalysisExecutor:
 
         except ExcessiveFileDataSizeError:
             raise
+
+        except ExcessiveObservablesError:
+            logging.warning(
+                "excessive observables detected for root %s while running module %s on %s",
+                root.uuid, analysis_module, work_item,
+            )
 
         except Exception as e:
             # this is techinically an error but it is going to happen so we log it as a warning
