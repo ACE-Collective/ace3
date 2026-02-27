@@ -197,7 +197,7 @@ def validate_hunt():
                     hunt.manual_hunt = True
                     submissions = hunt.execute(**exec_kwargs)
                 except RemoteApiError as e:
-                    return jsonify({"valid": False, "error": e.message}), e.status_code
+                    return jsonify({"valid": False, "error": e.message, "remote_status_code": e.status_code}), 400
                 except Exception as e:
                     return jsonify({"valid": False, "error": f"error executing hunt: {e}"}), 400
 

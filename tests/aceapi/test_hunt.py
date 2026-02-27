@@ -1375,10 +1375,11 @@ def test_validate_hunt_execution_remote_api_error(test_client, auth_headers):
             headers=auth_headers
         )
 
-        assert result.status_code == 403
+        assert result.status_code == 400
         data = result.get_json()
         assert data["valid"] is False
         assert data["error"] == "Forbidden"
+        assert data["remote_status_code"] == 403
 
 
 @pytest.mark.integration
