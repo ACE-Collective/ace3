@@ -490,6 +490,7 @@ DIRECTIVE_IGNORE_AUTOMATION_LIMITS = 'ignore_automation_limits'
 DIRECTIVE_NO_CACHE = 'no_cache'
 DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
+DIRECTIVE_OCR = 'ocr'
 DIRECTIVE_ORIGINAL_EMAIL = 'original_email'
 DIRECTIVE_ORIGINAL_SMTP = 'original_smtp'
 DIRECTIVE_PHISHKIT = 'phishkit'
@@ -526,6 +527,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_NO_CACHE: 'do not use local cache',
     DIRECTIVE_NO_SANDBOX: 'do not run the observable through any sandboxes',
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
+    DIRECTIVE_OCR: 'run OCR text extraction on this image file',
     DIRECTIVE_ORIGINAL_EMAIL: 'treat this file as the original email file',
     DIRECTIVE_ORIGINAL_SMTP: 'treat this file as the original smtp stream',
     DIRECTIVE_PHISHKIT: 'analyze target for phishkit detection',

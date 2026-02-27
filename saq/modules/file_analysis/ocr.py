@@ -8,6 +8,7 @@ from saq.analysis.analysis import Analysis
 from saq.constants import (
     DIRECTIVE_EXTRACT_URLS,
     DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL,
+    DIRECTIVE_OCR,
     F_FILE,
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
@@ -88,6 +89,10 @@ class OCRAnalyzer(AnalysisModule):
     @property
     def generated_analysis_type(self):
         return OCRAnalysis
+
+    @property
+    def required_directives(self):
+        return [DIRECTIVE_OCR]
 
     @property
     def valid_observable_types(self):

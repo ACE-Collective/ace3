@@ -5,25 +5,25 @@ import re
 import pytest
 import yaml
 
+from saq.analysis.analysis import Analysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
-    F_FILE,
+    DIRECTIVE_OCR,
     F_FQDN,
     F_URL,
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis.ocr import OCRAnalyzer, OCRAnalyzerConfig
 from saq.modules.util.observable_modifier import (
     ObservableModifierAnalysis,
     ObservableModifierAnalyzer,
     ObservableModifierConfig,
-    Rule,
     RuleActions,
     RuleConditions,
     TreeCondition,
     get_nested_value,
-    _get_ancestor_analyses,
 )
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
@@ -309,8 +309,8 @@ def test_actions_empty():
 
 
 @pytest.mark.unit
-def test_execute_analysis_returns_incomplete():
-    """execute_analysis should return INCOMPLETE without creating any analysis."""
+def test_execute_analysis_returns_incomplete_when_rules_might_match():
+    """execute_analysis should return INCOMPLETE when immutable conditions pass."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
 
@@ -851,7 +851,6 @@ def test_missing_config_handles_gracefully():
 @pytest.mark.unit
 def test_tree_condition_ancestor_match():
     """Tree condition should find matching analysis in the observable's ancestor chain."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -899,7 +898,6 @@ def test_tree_condition_ancestor_match():
 @pytest.mark.unit
 def test_tree_condition_no_match():
     """Tree condition should not match when details don't match."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -942,7 +940,6 @@ def test_tree_condition_no_match():
 @pytest.mark.unit
 def test_tree_condition_deep_ancestor_chain():
     """Tree condition should find matching analysis multiple levels up the ancestor chain."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -996,7 +993,6 @@ def test_tree_condition_deep_ancestor_chain():
 @pytest.mark.unit
 def test_tree_condition_no_match_sibling_branch():
     """Tree condition with ancestors scope should NOT match analyses in sibling branches."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -1042,7 +1038,6 @@ def test_tree_condition_no_match_sibling_branch():
 @pytest.mark.unit
 def test_tree_condition_global_scope_finds_sibling():
     """Tree condition with global scope SHOULD match analyses in sibling branches."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -1088,7 +1083,6 @@ def test_tree_condition_global_scope_finds_sibling():
 @pytest.mark.unit
 def test_tree_condition_global_scope():
     """Tree condition with global scope should search the entire analysis tree."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -1143,7 +1137,6 @@ def test_tree_condition_global_scope():
 @pytest.mark.unit
 def test_tree_condition_ancestors_scope_in_final_mode():
     """Tree condition with ancestors scope should still work correctly in final analysis mode."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -1187,7 +1180,6 @@ def test_tree_condition_ancestors_scope_in_final_mode():
 @pytest.mark.unit
 def test_tree_condition_without_details_match():
     """Tree condition that only checks analysis_type (no details_match) should match."""
-    from saq.analysis.analysis import Analysis
 
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -1346,3 +1338,997 @@ def test_detection_point_action_integration():
     assert analysis is not None
     assert len(analysis.details["matched_rules"]) == 1
     assert "add_detection_points" in analysis.details["matched_rules"][0]["actions_applied"]
+
+
+# ============================================================
+# TreeCondition negate tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_negate():
+    """When negate=True, TreeCondition.evaluate() should invert its result."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent = root.add_observable_by_spec(F_FQDN, "email.vendor.com")
+
+    class NegateTestAnalysis(Analysis):
+        pass
+
+    parent_analysis = NegateTestAnalysis()
+    parent_analysis.details = {"scan_type": "file"}
+    parent_analysis.details_modified = True
+    parent.add_analysis(parent_analysis)
+
+    target = parent_analysis.add_observable_by_spec(F_URL, "https://example.com/page.html")
+    module_path = f"{NegateTestAnalysis.__module__}:{NegateTestAnalysis.__name__}"
+
+    # Without negate: condition matches (analysis exists with matching details)
+    tc_normal = TreeCondition(
+        analysis_type=module_path,
+        details_match={
+            "scan_type": re.compile("file"),
+        },
+    )
+    assert tc_normal.evaluate(target, root) is True
+
+    # With negate: same condition inverted
+    tc_negated = TreeCondition(
+        analysis_type=module_path,
+        details_match={
+            "scan_type": re.compile("file"),
+        },
+        negate=True,
+    )
+    assert tc_negated.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_negate_no_match_becomes_true():
+    """When negate=True and the inner condition doesn't match, evaluate() returns True."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = root.add_observable_by_spec(F_URL, "https://example.com/page.html")
+
+    # No ancestor analysis exists, so inner evaluate returns False -> negate makes it True
+    tc_negated = TreeCondition(
+        analysis_type="nonexistent.module:NonexistentAnalysis",
+        negate=True,
+    )
+    assert tc_negated.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_negate_parsed_from_yaml():
+    """negate field should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "negate yaml test",
+        "conditions": {
+            "tree_conditions": [{
+                "analysis_type": "some.module:SomeAnalysis",
+                "negate": True,
+            }],
+        },
+        "actions": {
+            "add_tags": ["negated"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # Since the analysis doesn't exist in the tree, the inner condition is False.
+    # With negate=True, this becomes True -> rule matches.
+    target = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target.has_tag("negated")
+
+
+# ============================================================
+# TreeCondition observable_match tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_observable_match():
+    """observable_match should match when ancestor analysis's observable has matching properties."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    # Create a file observable that the ancestor analysis was performed against
+    parent_file = _add_file_observable(root, "body.unknown_text_html_000", content="<html>test</html>")
+
+    class PhishkitLikeAnalysis(Analysis):
+        pass
+
+    parent_analysis = PhishkitLikeAnalysis()
+    parent_analysis.details = {}
+    parent_analysis.details_modified = True
+    parent_file.add_analysis(parent_analysis)
+
+    # Target: a screenshot produced by the phishkit analysis
+    target = _add_file_observable(root, "screenshot.png", content="fake image")
+    parent_analysis.add_observable(target)
+
+    module_path = f"{PhishkitLikeAnalysis.__module__}:{PhishkitLikeAnalysis.__name__}"
+
+    tc = TreeCondition(
+        analysis_type=module_path,
+        observable_match={
+            "file_name": re.compile(r".*\.unknown_text_html_.*"),
+        },
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_observable_match_no_match():
+    """observable_match should fail when observable properties don't match the pattern."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_file = _add_file_observable(root, "regular_document.pdf", content="pdf content")
+
+    class PhishkitLikeAnalysis2(Analysis):
+        pass
+
+    parent_analysis = PhishkitLikeAnalysis2()
+    parent_analysis.details = {}
+    parent_analysis.details_modified = True
+    parent_file.add_analysis(parent_analysis)
+
+    target = _add_file_observable(root, "screenshot.png", content="fake image")
+    parent_analysis.add_observable(target)
+
+    module_path = f"{PhishkitLikeAnalysis2.__module__}:{PhishkitLikeAnalysis2.__name__}"
+
+    tc = TreeCondition(
+        analysis_type=module_path,
+        observable_match={
+            "file_name": re.compile(r".*\.unknown_text_html_.*"),
+        },
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_observable_match_file_name():
+    """observable_match should work with file_name attribute on FileObservable."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_file = _add_file_observable(root, "email.unknown_text_html_001", content="<html>body</html>")
+
+    class TestAnalysis(Analysis):
+        pass
+
+    parent_analysis = TestAnalysis()
+    parent_analysis.details = {}
+    parent_analysis.details_modified = True
+    parent_file.add_analysis(parent_analysis)
+
+    target = _add_file_observable(root, "output.png", content="img")
+    parent_analysis.add_observable(target)
+
+    module_path = f"{TestAnalysis.__module__}:{TestAnalysis.__name__}"
+
+    # Match file_name
+    tc = TreeCondition(
+        analysis_type=module_path,
+        observable_match={
+            "file_name": re.compile(r".*\.unknown_text_html_\d+$"),
+        },
+    )
+    assert tc.evaluate(target, root) is True
+
+    # Non-matching file_name pattern
+    tc_no = TreeCondition(
+        analysis_type=module_path,
+        observable_match={
+            "file_name": re.compile(r".*\.docx$"),
+        },
+    )
+    assert tc_no.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_observable_match_with_negate():
+    """Combined observable_match + negate should invert correctly."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    parent_file = _add_file_observable(root, "body.unknown_text_html_000", content="<html></html>")
+
+    class PhishkitAnalysisNeg(Analysis):
+        pass
+
+    parent_analysis = PhishkitAnalysisNeg()
+    parent_analysis.details = {}
+    parent_analysis.details_modified = True
+    parent_file.add_analysis(parent_analysis)
+
+    target = _add_file_observable(root, "screenshot.png", content="img")
+    parent_analysis.add_observable(target)
+
+    module_path = f"{PhishkitAnalysisNeg.__module__}:{PhishkitAnalysisNeg.__name__}"
+
+    # Without negate: inner matches (file_name matches pattern) -> True
+    tc = TreeCondition(
+        analysis_type=module_path,
+        observable_match={"file_name": re.compile(r".*\.unknown_text_html_.*")},
+    )
+    assert tc.evaluate(target, root) is True
+
+    # With negate: inner matches -> negated to False (OCR should NOT run)
+    tc_neg = TreeCondition(
+        analysis_type=module_path,
+        observable_match={"file_name": re.compile(r".*\.unknown_text_html_.*")},
+        negate=True,
+    )
+    assert tc_neg.evaluate(target, root) is False
+
+    # Now test when file_name does NOT match the pattern
+    root2 = create_root_analysis(analysis_mode="test_single")
+    root2.initialize_storage()
+
+    parent_url = root2.add_observable_by_spec(F_URL, "https://evil.com")
+
+    class PhishkitAnalysisNeg2(Analysis):
+        pass
+
+    url_analysis = PhishkitAnalysisNeg2()
+    url_analysis.details = {}
+    url_analysis.details_modified = True
+    parent_url.add_analysis(url_analysis)
+
+    target2 = _add_file_observable(root2, "screenshot2.png", content="img")
+    url_analysis.add_observable(target2)
+
+    module_path2 = f"{PhishkitAnalysisNeg2.__module__}:{PhishkitAnalysisNeg2.__name__}"
+
+    # With negate: inner doesn't match (URL has no file_name) -> negated to True (OCR should run)
+    tc_neg2 = TreeCondition(
+        analysis_type=module_path2,
+        observable_match={"file_name": re.compile(r".*\.unknown_text_html_.*")},
+        negate=True,
+    )
+    assert tc_neg2.evaluate(target2, root2) is True
+
+
+@pytest.mark.unit
+def test_observable_match_parsed_from_yaml():
+    """observable_match field should be read correctly from YAML rule config."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+
+    parent_file = _add_file_observable(root, "body.unknown_text_html_000", content="<html></html>")
+
+    class YamlTestAnalysis(Analysis):
+        pass
+
+    parent_analysis = YamlTestAnalysis()
+    parent_analysis.details = {}
+    parent_analysis.details_modified = True
+    parent_file.add_analysis(parent_analysis)
+
+    target = _add_file_observable(root, "screenshot.png", content="img")
+    parent_analysis.add_observable(target)
+
+    module_path = f"{YamlTestAnalysis.__module__}:{YamlTestAnalysis.__name__}"
+
+    rules = [{
+        "name": "observable_match yaml test",
+        "conditions": {
+            "observable_types": ["file"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "negate": True,
+                "observable_match": {
+                    "file_name": r".*\.unknown_text_html_.*",
+                },
+            }],
+        },
+        "actions": {
+            "add_directives": ["ocr"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # The ancestor analysis's observable has file_name matching the pattern,
+    # so inner condition is True. With negate, the rule should NOT match.
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not target.has_directive("ocr")
+
+
+@pytest.mark.unit
+def test_observable_match_parsed_from_yaml_no_ancestor():
+    """observable_match rule should match (with negate) when no matching ancestor exists."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    # Target file with no phishkit ancestor at all
+    target = _add_file_observable(root, "standalone_image.png", content="img")
+
+    rules = [{
+        "name": "observable_match yaml test",
+        "conditions": {
+            "observable_types": ["file"],
+            "tree_conditions": [{
+                "analysis_type": "some.module:NonexistentAnalysis",
+                "negate": True,
+                "observable_match": {
+                    "file_name": r".*\.unknown_text_html_.*",
+                },
+            }],
+        },
+        "actions": {
+            "add_directives": ["ocr"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target.has_directive("ocr")
+
+
+@pytest.mark.unit
+def test_ocr_directive_required():
+    """OCRAnalyzer.required_directives should return ['ocr']."""
+
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    context = create_test_context(root=root)
+
+    config = OCRAnalyzerConfig(
+        name="test_ocr",
+        python_module="saq.modules.file_analysis.ocr",
+        python_class="OCRAnalyzer",
+        enabled=True,
+    )
+    analyzer = OCRAnalyzer(context=context, config=config)
+    assert analyzer.required_directives == [DIRECTIVE_OCR]
+    assert DIRECTIVE_OCR == 'ocr'
+
+
+# ============================================================
+# Pre-phase / post-phase tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_pre_phase_rule_evaluated_in_execute_analysis():
+    """Pre-phase rules should apply their actions during execute_analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "pre-phase rule",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["pre_applied"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    # The directive should already be applied after execute_analysis
+    assert observable.has_directive("pre_applied")
+
+
+@pytest.mark.unit
+def test_post_phase_rule_not_evaluated_in_execute_analysis():
+    """Post-phase rules should NOT apply their actions during execute_analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "post-phase rule",
+        "phase": "post",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["post_applied"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+    # The directive should NOT be applied yet
+    assert not observable.has_directive("post_applied")
+
+    # Only after final analysis
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.has_directive("post_applied")
+
+
+@pytest.mark.unit
+def test_post_phase_rule_evaluated_in_execute_final_analysis():
+    """Post-phase rules (default) should work as before in execute_final_analysis."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "default post rule",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_tags": ["post_tag"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.has_tag("post_tag")
+
+
+@pytest.mark.unit
+def test_pre_and_post_phase_rules_merged_in_analysis():
+    """Both pre and post phase matches should appear in the final analysis details."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [
+        {
+            "name": "pre rule",
+            "phase": "pre",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["pre_dir"]},
+        },
+        {
+            "name": "post rule",
+            "phase": "post",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_tags": ["post_tag"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    rule_names = [r["name"] for r in analysis.details["matched_rules"]]
+    assert "pre rule" in rule_names
+    assert "post rule" in rule_names
+    assert len(analysis.details["matched_rules"]) == 2
+
+
+@pytest.mark.unit
+def test_pre_phase_exclude_analysis_applied_before_final():
+    """Pre-phase exclude_analysis should be on the observable before final analysis runs."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "pre exclude",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"exclude_analysis": ["saq.modules.file_analysis.ocr:OCRAnalyzer"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # After execute_analysis, the exclusion should already be in place
+    adapter.execute_analysis(observable)
+    assert "saq.modules.file_analysis.ocr:OCRAnalyzer" in observable.excluded_analysis
+
+
+# ============================================================
+# is_excluded clean format test
+# ============================================================
+
+
+@pytest.mark.unit
+def test_is_excluded_clean_format():
+    """Observable.is_excluded() should match clean format strings like 'module:ClassName'."""
+
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+
+    # Simulate what the observable modifier does: append a clean format string
+    observable._excluded_analysis.append("saq.modules.util.observable_modifier:ObservableModifierAnalyzer")
+
+    # Create a real module instance to test is_excluded against
+    context = create_test_context(root=root)
+    config = get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+    analyzer = ObservableModifierAnalyzer(context=context, config=config)
+
+    # The clean format should match
+    assert observable.is_excluded(analyzer) is True
+
+
+@pytest.mark.unit
+def test_is_excluded_legacy_format_still_works():
+    """Observable.is_excluded() should still match the legacy str(type(...)) format."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+
+    # Use the legacy exclude_analysis method which writes the str(type(...)) format
+    context = create_test_context(root=root)
+    config = get_analysis_module_config(ANALYSIS_MODULE_OBSERVABLE_MODIFIER)
+    analyzer = ObservableModifierAnalyzer(context=context, config=config)
+
+    observable.exclude_analysis(type(analyzer))
+    assert observable.is_excluded(analyzer) is True
+
+
+@pytest.mark.unit
+def test_phase_field_defaults_to_post():
+    """Rules without explicit phase should default to 'post'."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "no phase specified",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_tags": ["default_phase"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # The rule should NOT apply during execute_analysis (it's post-phase)
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter.execute_analysis(observable)
+    assert not observable.has_tag("default_phase")
+
+    # Should apply during final analysis
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.has_tag("default_phase")
+
+
+@pytest.mark.unit
+def test_invalid_phase_defaults_to_post(caplog):
+    """Invalid phase value should default to 'post' with a warning."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    rules = [{
+        "name": "bad phase rule",
+        "phase": "invalid",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_tags": ["bad_phase"]},
+    }]
+
+    with caplog.at_level(logging.WARNING):
+        adapter = _create_analyzer_with_rules(root, rules)
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    adapter.execute_analysis(observable)
+    # Should not be applied in pre-phase
+    assert not observable.has_tag("bad_phase")
+
+    # Should work in final analysis (defaulted to post)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.has_tag("bad_phase")
+    assert any("invalid phase" in msg.lower() for msg in [r.message for r in caplog.records])
+
+
+# ============================================================
+# evaluate_early() unit tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_evaluate_early_empty_conditions():
+    """Empty conditions should always return True (might match)."""
+    cond = RuleConditions()
+    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_observable_type_match():
+    cond = RuleConditions(observable_types=["url", "file"])
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(type="ip"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_alert_type_match():
+    cond = RuleConditions(alert_type="splunk - threat_intel")
+    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="splunk - threat_intel")) is True
+    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="other")) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_queue_match():
+    cond = RuleConditions(queue="external")
+    assert cond.evaluate_early(MockObservable(), MockRoot(queue="external")) is True
+    assert cond.evaluate_early(MockObservable(), MockRoot(queue="internal")) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_value_pattern_match():
+    cond = RuleConditions(value_pattern=re.compile(r".*\.html$"))
+    assert cond.evaluate_early(MockObservable(value="page.html"), MockRoot()) is True
+    assert cond.evaluate_early(MockObservable(value="doc.pdf"), MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_file_name_pattern():
+    """evaluate_early checks file_name_pattern against the observable's file_name attribute."""
+    cond = RuleConditions(file_name_pattern=re.compile(r".*\.html$"))
+    obs_with_name = MockObservable()
+    obs_with_name.file_name = "body.html"
+    assert cond.evaluate_early(obs_with_name, MockRoot()) is True
+
+    obs_no_name = MockObservable()
+    assert cond.evaluate_early(obs_no_name, MockRoot()) is False
+
+    obs_wrong_name = MockObservable()
+    obs_wrong_name.file_name = "doc.pdf"
+    assert cond.evaluate_early(obs_wrong_name, MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_evaluate_early_ignores_dynamic_conditions():
+    """evaluate_early should return True even when dynamic conditions are set,
+    since it cannot evaluate them."""
+    cond = RuleConditions(
+        alert_tags=["phishing"],
+        has_tags=["suspicious"],
+        has_directives=["sandbox"],
+        tree_conditions=[TreeCondition(analysis_type="test:Test")],
+    )
+    # Dynamic conditions are not checked, so evaluate_early returns True
+    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_mixed_passing_immutable_and_dynamic():
+    """When immutable conditions pass and dynamic conditions are present, should return True."""
+    cond = RuleConditions(
+        observable_types=["url"],
+        alert_tags=["phishing"],  # dynamic
+    )
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_evaluate_early_mixed_failing_immutable_and_dynamic():
+    """When any immutable condition fails, should return False even if dynamic conditions present."""
+    cond = RuleConditions(
+        observable_types=["file"],  # will fail for url observable
+        alert_tags=["phishing"],  # dynamic, would be ignored
+    )
+    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is False
+
+
+# ============================================================
+# Early exit in execute_analysis tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_early_exit_by_observable_type():
+    """execute_analysis should return COMPLETED when observable type doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "file-only rule",
+        "conditions": {"observable_types": ["file"]},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_alert_type():
+    """execute_analysis should return COMPLETED when alert_type doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single", alert_type="manual")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "threat intel only",
+        "conditions": {"alert_type": "splunk - threat_intel"},
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_queue():
+    """execute_analysis should return COMPLETED when queue doesn't match any rule."""
+    root = create_root_analysis(analysis_mode="test_single", queue="internal")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "external only",
+        "conditions": {"queue": "external"},
+        "actions": {"add_tags": ["external"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_by_value_pattern():
+    """execute_analysis should return COMPLETED when value doesn't match any rule's pattern."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com/doc.pdf")
+    rules = [{
+        "name": "html only",
+        "conditions": {"value_pattern": r".*\.html$"},
+        "actions": {"add_directives": ["extract_iocs"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_defers_when_only_dynamic_conditions():
+    """execute_analysis should return INCOMPLETE when rules have only dynamic conditions,
+    since evaluate_early cannot rule them out."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "tag-based rule",
+        "conditions": {"alert_tags": ["phishing"]},
+        "actions": {"add_directives": ["sandbox"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+
+@pytest.mark.unit
+def test_defers_when_mixed_with_passing_immutable():
+    """execute_analysis should return INCOMPLETE when immutable conditions pass
+    but dynamic conditions are also present."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "mixed rule",
+        "conditions": {
+            "observable_types": ["url"],  # immutable, passes
+            "has_tags": ["needs_review"],  # dynamic, cannot be checked early
+        },
+        "actions": {"add_directives": ["review"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.INCOMPLETE
+
+
+@pytest.mark.unit
+def test_early_exit_mixed_with_failing_immutable():
+    """execute_analysis should return COMPLETED when an immutable condition fails,
+    even if dynamic conditions are present."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "mixed rule",
+        "conditions": {
+            "observable_types": ["file"],  # immutable, fails for url
+            "has_tags": ["needs_review"],  # dynamic
+        },
+        "actions": {"add_directives": ["review"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_early_exit_disabled_rules_ignored():
+    """Disabled rules should not prevent early exit."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [
+        {
+            "name": "disabled matching rule",
+            "enabled": False,
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["extract_iocs"]},
+        },
+        {
+            "name": "non-matching rule",
+            "conditions": {"observable_types": ["file"]},
+            "actions": {"add_tags": ["processed"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    result = adapter.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+
+# ============================================================
+# execute_final_analysis fast path tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_final_analysis_fast_path_no_match():
+    """execute_final_analysis should return COMPLETED quickly when no rules can match."""
+    root = create_root_analysis(analysis_mode="test_single", alert_type="manual")
+    root.initialize_storage()
+
+    observable = root.add_observable_by_spec(F_URL, "https://example.com")
+    rules = [{
+        "name": "threat intel only",
+        "conditions": {"alert_type": "splunk - threat_intel"},
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    # Initialize module via execute_analysis (which also returns COMPLETED)
+    adapter.execute_analysis(observable)
+
+    # Final analysis should also bail out early
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("crawl")
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is None
+
+
+# ============================================================
+# TreeCondition self scope tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_tree_condition_self_scope_match():
+    """Self scope should find matching analysis performed directly on the target observable."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = _add_file_observable(root, "image.png", content="img")
+
+    class FileTypeAnalysisStub(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStub()
+    file_type_analysis.details = {"mime": "image/png"}
+    file_type_analysis.details_modified = True
+    target.add_analysis(file_type_analysis)
+
+    module_path = f"{FileTypeAnalysisStub.__module__}:{FileTypeAnalysisStub.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="self",
+        details_match={"mime": re.compile(r"^image/")},
+    )
+    assert tc.evaluate(target, root) is True
+
+
+@pytest.mark.unit
+def test_tree_condition_self_scope_no_match():
+    """Self scope should fail when analysis exists but details don't match."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = _add_file_observable(root, "document.pdf", content="pdf")
+
+    class FileTypeAnalysisStub2(Analysis):
+        pass
+
+    file_type_analysis = FileTypeAnalysisStub2()
+    file_type_analysis.details = {"mime": "application/pdf"}
+    file_type_analysis.details_modified = True
+    target.add_analysis(file_type_analysis)
+
+    module_path = f"{FileTypeAnalysisStub2.__module__}:{FileTypeAnalysisStub2.__name__}"
+    tc = TreeCondition(
+        analysis_type=module_path,
+        scope="self",
+        details_match={"mime": re.compile(r"^image/")},
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_self_scope_no_analysis():
+    """Self scope should fail when the analysis type doesn't exist on the observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = _add_file_observable(root, "image.png", content="img")
+
+    tc = TreeCondition(
+        analysis_type="some.module:NonexistentAnalysis",
+        scope="self",
+        details_match={"mime": re.compile(r"^image/")},
+    )
+    assert tc.evaluate(target, root) is False
+
+
+@pytest.mark.unit
+def test_tree_condition_self_scope_parsed_from_yaml():
+    """scope: 'self' should be read correctly from YAML rule config."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    target = _add_file_observable(root, "image.jpg", content="img")
+
+    class SelfScopeYamlAnalysis(Analysis):
+        pass
+
+    analysis = SelfScopeYamlAnalysis()
+    analysis.details = {"mime": "image/jpeg"}
+    analysis.details_modified = True
+    target.add_analysis(analysis)
+
+    module_path = f"{SelfScopeYamlAnalysis.__module__}:{SelfScopeYamlAnalysis.__name__}"
+    rules = [{
+        "name": "self scope yaml test",
+        "conditions": {
+            "observable_types": ["file"],
+            "tree_conditions": [{
+                "analysis_type": module_path,
+                "scope": "self",
+                "details_match": {
+                    "mime": "^image/",
+                },
+            }],
+        },
+        "actions": {
+            "add_directives": ["ocr"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(target)
+    result = adapter.analyze(target, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert target.has_directive("ocr")

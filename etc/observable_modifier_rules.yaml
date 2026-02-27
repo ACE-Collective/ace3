@@ -10,6 +10,8 @@
 #   - name: "Human-readable rule name"
 #     description: "Optional description"
 #     enabled: true  # default true; set false to disable without removing
+#     phase: post    # "pre" runs before other modules; "post" (default) runs after all
+#                    # other analysis completes, so tree conditions can inspect results
 #
 #     conditions:
 #       # Alert-level conditions (checked via root analysis)
@@ -27,9 +29,13 @@
 #       # Analysis tree conditions
 #       tree_conditions:
 #         - analysis_type: "saq.modules.email.rfc822:EmailAnalysis"
-#           scope: ancestors  # "ancestors" (default) or "global" (searches entire tree)
+#           scope: ancestors  # "ancestors" (default), "global" (searches entire tree), or "self" (analyses on this observable)
+#           negate: false     # invert the result of this condition (default false)
 #           details_match:
 #             email.from_address: "soc@third-party.com"  # dot-notation, regex values
+#           observable_match:
+#             file_name: ".*\\.html$"  # regex match on properties of the matching analysis's observable
+#             # supported properties: type, value, file_name (via getattr)
 #
 #     actions:
 #       add_directives: [extract_iocs]
