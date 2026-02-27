@@ -39,9 +39,6 @@ class SplunkHunt(QueryHunt):
 
         self.cancel_event = threading.Event()
 
-        # the time spec we're using for the query
-        self.time_spec: Optional[str] = None
-
         self.splunk_config = get_config().get_splunk_config(self.config.splunk_config)
         self.tool_instance = self.splunk_config.host
         self.timezone = self.splunk_config.timezone
@@ -58,12 +55,7 @@ class SplunkHunt(QueryHunt):
 
     @property
     def query(self) -> str:
-        # load the query normally first
         result = super().query
-
-        # if the query doesn't have a time_spec, add it
-        if '{time_spec}' not in result:
-            result = '{time_spec} ' + result
 
         # run the includes you might have
         while True:
@@ -83,14 +75,14 @@ class SplunkHunt(QueryHunt):
         return result
 
     def formatted_query(self):
-        result = self.query.replace('{time_spec}', self.time_spec)
+        result = self.query
         if not result.endswith(self.config.auto_append):
             result += ' ' + self.config.auto_append
 
         return result
 
     def formatted_query_timeless(self):
-        result = self.query.replace('{time_spec}', '')
+        result = self.query
         if not result.endswith(self.config.auto_append):
             result += self.config.auto_append
 
@@ -105,17 +97,9 @@ class SplunkHunt(QueryHunt):
     def execute_query(self, start_time: datetime.datetime, end_time: datetime.datetime, unit_test_query_results=None, **kwargs) -> Optional[list[dict]]:
         tz = pytz.timezone(self.timezone)
 
-        earliest = start_time.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
-        latest = end_time.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
-
-        if self.use_index_time:
-            self.time_spec = f'_index_earliest = {earliest} _index_latest = {latest}'
-        else:
-            self.time_spec = f'earliest = {earliest} latest = {latest}'
-
         query = self.formatted_query()
 
-        logging.info(f"executing hunt {self.name} with start time {start_time} end time {end_time} time spec {self.time_spec}")
+        logging.info(f"executing hunt {self.name} with start time {start_time} end time {end_time}")
         logging.debug(f"executing hunt {self.name} with query {query}")
 
         # nooooo

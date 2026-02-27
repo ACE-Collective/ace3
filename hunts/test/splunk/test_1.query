@@ -1,1 +1,1 @@
-index=proxy {time_spec} src_ip=1.1.1.1
+index=proxy src_ip=1.1.1.1

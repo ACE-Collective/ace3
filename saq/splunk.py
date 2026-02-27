@@ -274,12 +274,14 @@ class SplunkQueryObject:
         Returns:
             str: the gui link to the query over the given time range
         """
-        # add search to start of query if missing
-        if not query.lstrip().lower().startswith('search'):
-            query = 'search ' + query
+        is_generating_command = query.lstrip().startswith("|")
 
-        # add index time filter if index time is being used
-        if use_index_time:
+        # add search to start of query if missing (skip for generating commands starting with |)
+        if not is_generating_command and not query.lstrip().lower().startswith("search"):
+            query = "search " + query
+
+        # add index time filter if index time is being used (only for search commands)
+        if use_index_time and not is_generating_command:
             index_end_time_str = ""
             if end_time is not None:
                 index_end_time_str = end_time.strftime("%m/%d/%Y:%H:%M:%S")
@@ -341,23 +343,8 @@ class SplunkQueryObject:
         Returns:
             list: list of results where each item is a dictionary that maps the field to the value
         """
-        # remove search from start of query if it is present, it will get added back on later
         if timeout is None:
             timeout = create_timedelta("30:00")
-
-        if query.lstrip().lower().startswith('search'):
-            query = query[len('search'):]
-
-        # set time prefix
-        prefix = '_index_' if use_index_time else ''
-
-        # add end time
-        if end is not None:
-            query = f'{prefix}latest={end.strftime("%m/%d/%Y:%H:%M:%S")} {query}'
-
-        # add start time
-        if start is not None:
-            query = f'{prefix}earliest={start.strftime("%m/%d/%Y:%H:%M:%S")} {query}'
 
         # run the query
         job = None
@@ -474,10 +461,22 @@ class SplunkQueryObject:
         """
         self.reset_search_status()
 
-        # add search to start of query if missing
-        if not query.lstrip().lower().startswith('search'):
-            query = 'search ' + query
+        is_generating_command = query.lstrip().startswith("|")
 
+        if not is_generating_command:
+            # strip "search" prefix if present (will be added back after time ranges)
+            if query.lstrip().lower().startswith("search"):
+                query = query.lstrip()[len("search"):]
+
+            # embed time ranges in the query string
+            prefix = "_index_" if use_index_time else ""
+            if end is not None:
+                query = f'{prefix}latest={end.strftime("%m/%d/%Y:%H:%M:%S")} {query}'
+            if start is not None:
+                query = f'{prefix}earliest={start.strftime("%m/%d/%Y:%H:%M:%S")} {query}'
+
+            # add search prefix
+            query = "search " + query
 
         search_kwargs = {'max_count': limit, "exec_mode": "normal"}
 
