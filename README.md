@@ -15,6 +15,9 @@ docker compose up
 
 # once you've built it you can do this instead
 docker compose up --build
+
+# to build with all latest python package requirements
+docker compose build --build-arg USE_UNPINNED_REQUIREMENTS=true
 ```
 
 And then connect on [https://localhost:5000/ace](https://localhost:5000/ace) username **analyst** password **analyst**.

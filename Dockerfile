@@ -1,4 +1,5 @@
 ARG PYTHON_DOCKER_IMAGE=python:3.12-bookworm
+ARG USE_UNPINNED_REQUIREMENTS=false
 FROM ${PYTHON_DOCKER_IMAGE}
 
 # add metadata labels
@@ -171,7 +172,14 @@ RUN curl -fsSLk https://deb.nodesource.com/setup_20.x | bash - && \
 
 # set up Python virtual environment
 USER ace
-COPY --chown=ace:ace installer/requirements.txt /venv/python-requirements.txt
+COPY --chown=ace:ace installer/requirements-pinned.txt /venv/python-requirements-pinned.txt
+COPY --chown=ace:ace installer/requirements.txt /venv/python-requirements-unpinned.txt
+ARG USE_UNPINNED_REQUIREMENTS
+RUN if [ "$USE_UNPINNED_REQUIREMENTS" = "true" ]; then \
+    cp /venv/python-requirements-unpinned.txt /venv/python-requirements.txt; \
+else \
+    cp /venv/python-requirements-pinned.txt /venv/python-requirements.txt; \
+fi
 COPY --chown=ace:ace installer/requirements-2.7.txt /venv/python-requirements-2.7.txt
 
 # NOTE for now we're installing sentence-transformers w/o nvidia gpu support
