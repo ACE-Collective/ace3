@@ -572,7 +572,8 @@ start_service_parser.set_defaults(func=start_service)
 def correlate(args):
     # initialize command line engine
     from saq.analysis import RootAnalysis
-    from saq.constants import F_FILE, ANALYSIS_MODE_CLI, ANALYSIS_MODE_CORRELATION
+    from saq.constants import F_FILE, ANALYSIS_MODE_CLI, ANALYSIS_MODE_CORRELATION, \
+        SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE
     from saq.engine.core import Engine
     from saq.util import parse_event_time
 
@@ -656,9 +657,32 @@ def correlate(args):
             with open(args.load_details, 'r') as fp:
                 root.details = json.load(fp)
         else:
-            root.details = { 
+            root.details = {
                 'comment': args.comment
             }
+
+    # add any summary details specified on the command line
+    if args.summary_details:
+        valid_formats = [SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE]
+        for sd_args in args.summary_details:
+            if len(sd_args) < 1 or len(sd_args) > 3:
+                logging.error("--add-summary-detail requires 1 to 3 values (CONTENT or HEADER CONTENT [FORMAT]), got %s", len(sd_args))
+                sys.exit(1)
+
+            if len(sd_args) == 1:
+                header = None
+                content = sd_args[0]
+                sd_format = SUMMARY_DETAIL_FORMAT_TXT
+            else:
+                header = sd_args[0]
+                content = sd_args[1]
+                sd_format = sd_args[2] if len(sd_args) == 3 else SUMMARY_DETAIL_FORMAT_TXT
+
+            if sd_format not in valid_formats:
+                logging.error("invalid summary detail format '%s', must be one of: %s", sd_format, ", ".join(valid_formats))
+                sys.exit(1)
+
+            root.add_summary_detail(header=header, content=content, format=sd_format)
 
     # create the list of observables to add to the alert for analysis
     index = 0
@@ -704,6 +728,7 @@ def correlate(args):
             current_root.description = "{} - {}:{}".format(root.description, o_type, o_value)
             current_root.event_time = root.event_time
             current_root.details = root.details
+            current_root.summary_details = list(root.summary_details)
 
         if o_type == F_FILE:
             observable = current_root.add_file_observable(o_value, volatile=args.volatile)
@@ -864,6 +889,11 @@ correlate_parser.add_argument('--load', required=False, dest='load', action='sto
     help="Instead of creating a new analysis, load the existing analysis stored at --storage-dir.")
 correlate_parser.add_argument('--load-details', required=False, dest='load_details', default=None,
     help="Load the given JSON file as the details of the alert.")
+correlate_parser.add_argument('--add-summary-detail', required=False, dest='summary_details',
+    action='append', nargs='+', metavar='VALUE',
+    help="Add a summary detail to the root analysis. Specify as: CONTENT, HEADER CONTENT, or HEADER CONTENT FORMAT. "
+         "HEADER is optional. FORMAT is optional and defaults to 'txt'. Valid formats are 'txt' and 'pre'. "
+         "This option can be specified multiple times.")
 correlate_parser.add_argument('--uuid', required=False, dest='uuid', default=None,
     help="Use this uuid as the uuid of the temporary root analysis. Defaults to random if not specified.")
 correlate_parser.add_argument('targets', nargs="*",
