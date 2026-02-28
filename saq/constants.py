@@ -787,6 +787,7 @@ REDIS_DB_CELERY = 7
 # valid summary detail formats
 SUMMARY_DETAIL_FORMAT_PRE = 'pre' # preformatted
 SUMMARY_DETAIL_FORMAT_TXT = 'txt' # plain text display
+SUMMARY_DETAIL_FORMAT_MD = 'md' # markdown
 
 # messaging (TODO FIX ME)
 MESSAGE_TYPE_SLACK = "slack"

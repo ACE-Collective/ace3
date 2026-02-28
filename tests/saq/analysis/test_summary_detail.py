@@ -3,7 +3,7 @@ import pytest
 
 from saq.analysis.root import RootAnalysis
 from saq.analysis.summary_detail import CONTENT, FORMAT, HEADER, SummaryDetail
-from saq.constants import SUMMARY_DETAIL_FORMAT_PRE
+from saq.constants import SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE
 
 
 @pytest.mark.unit
@@ -13,6 +13,14 @@ def test_summary_detail_conversion():
     assert HEADER in d
     assert CONTENT in d
     assert FORMAT in d
+    new_detail = SummaryDetail.from_dict(d)
+    assert new_detail == detail
+
+@pytest.mark.unit
+def test_summary_detail_md_conversion():
+    detail = SummaryDetail("test_header", "**bold** and *italic*", SUMMARY_DETAIL_FORMAT_MD)
+    d = detail.to_dict()
+    assert d[FORMAT] == SUMMARY_DETAIL_FORMAT_MD
     new_detail = SummaryDetail.from_dict(d)
     assert new_detail == detail
 

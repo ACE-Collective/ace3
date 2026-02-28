@@ -28,6 +28,7 @@ Jinja2
 ldap3
 LnkParse3
 lxml
+markdown
 msoffcrypto-tool
 numpy
 olefile
