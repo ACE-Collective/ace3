@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
-from saq.collectors.hunter.base_hunter import HuntConfig
+from saq.collectors.hunter.base_hunter import HuntConfig, SummaryDetailConfig
 from saq.collectors.hunter.decoder import DecoderType, decode_value
 from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, contains_unresolved_placeholders, extract_event_value, interpolate_event_value
 from saq.collectors.hunter.loader import load_from_yaml
@@ -540,6 +540,127 @@ class QueryHunt(Hunt):
             if observable not in observables:
                 observables.append(observable)
 
+    def _process_summary_details(self, query_results: list[dict], event_submission_map: dict[int, list[Submission]]):
+        """Process all summary_details definitions against the query results."""
+        for sd_config in self.config.summary_details:
+            if sd_config.grouped:
+                self._process_grouped_summary_detail(sd_config, query_results, event_submission_map)
+            else:
+                self._process_ungrouped_summary_detail(sd_config, query_results, event_submission_map)
+
+    def _process_ungrouped_summary_detail(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Add one SummaryDetail per event per submission for this definition."""
+        count: dict[int, int] = {}  # submission id -> count
+
+        for event_index, event in enumerate(query_results):
+            if event_index not in event_submission_map:
+                continue
+
+            # interpolate content
+            content_values = interpolate_event_value(sd_config.content, event)
+            if not content_values:
+                continue
+            content = content_values[0]
+            if contains_unresolved_placeholders(content):
+                continue
+
+            # interpolate header
+            header = None
+            if sd_config.header is not None:
+                header_values = interpolate_event_value(sd_config.header, event)
+                if not header_values:
+                    continue
+                header = header_values[0]
+                if contains_unresolved_placeholders(header):
+                    continue
+
+            for submission in event_submission_map[event_index]:
+                sub_id = id(submission)
+                current_count = count.get(sub_id, 0)
+                if current_count >= sd_config.limit:
+                    if current_count == sd_config.limit:
+                        logging.warning(
+                            "summary detail limit (%s) reached for definition content=%s in hunt %s",
+                            sd_config.limit, sd_config.content, self.name,
+                        )
+                        count[sub_id] = current_count + 1
+                    continue
+                submission.root.add_summary_detail(header=header, content=content, format=sd_config.format)
+                count[sub_id] = current_count + 1
+
+    def _process_grouped_summary_detail(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Collect content from all events and add one combined SummaryDetail per submission."""
+        # submission id -> list of content strings
+        collected: dict[int, list[str]] = {}
+        # submission id -> header (from first contributing event)
+        headers: dict[int, Optional[str]] = {}
+        # submission id -> submission object
+        sub_lookup: dict[int, Submission] = {}
+        # submission id -> whether we've already logged the limit warning
+        limit_warned: dict[int, bool] = {}
+
+        for event_index, event in enumerate(query_results):
+            if event_index not in event_submission_map:
+                continue
+
+            content_values = interpolate_event_value(sd_config.content, event)
+            if not content_values:
+                continue
+            content = content_values[0]
+            if contains_unresolved_placeholders(content):
+                continue
+
+            for submission in event_submission_map[event_index]:
+                sub_id = id(submission)
+                sub_lookup[sub_id] = submission
+
+                if sub_id not in collected:
+                    collected[sub_id] = []
+                    limit_warned[sub_id] = False
+
+                if len(collected[sub_id]) >= sd_config.limit:
+                    if not limit_warned[sub_id]:
+                        logging.warning(
+                            "summary detail limit (%s) reached for grouped definition content=%s in hunt %s",
+                            sd_config.limit, sd_config.content, self.name,
+                        )
+                        limit_warned[sub_id] = True
+                    continue
+
+                collected[sub_id].append(content)
+
+                # resolve header from first contributing event
+                if sub_id not in headers:
+                    if sd_config.header is not None:
+                        header_values = interpolate_event_value(sd_config.header, event)
+                        if header_values and not contains_unresolved_placeholders(header_values[0]):
+                            headers[sub_id] = header_values[0]
+                        else:
+                            headers[sub_id] = None
+                    else:
+                        headers[sub_id] = None
+
+        # add the combined summary details
+        for sub_id, lines in collected.items():
+            if not lines:
+                continue
+            submission = sub_lookup[sub_id]
+            submission.root.add_summary_detail(
+                header=headers.get(sub_id),
+                content="\n".join(lines),
+                format=sd_config.format,
+            )
+
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:
             return None
@@ -568,8 +689,11 @@ class QueryHunt(Hunt):
         # this is used to keep track of which observables need to have relationship mapped
         relationship_tracking: dict[Observable, list[RelationshipMapping]] = {}
 
+        # maps event index to the submission(s) it belongs to (for summary detail processing)
+        event_submission_map: dict[int, list[Submission]] = {}
+
         # map results to observables
-        for event in query_results:
+        for event_index, event in enumerate(query_results):
             event_time = self.extract_event_timestamp(event) or local_time()
             event = self.wrap_event(event)
 
@@ -633,6 +757,7 @@ class QueryHunt(Hunt):
 
                 submission.root.details[QUERY_DETAILS_EVENTS].append(event)
                 submissions.append(submission)
+                event_submission_map[event_index] = [submission]
 
             # if we are grouping then we start pulling all the data into groups
             else:
@@ -675,6 +800,7 @@ class QueryHunt(Hunt):
                         # note: display_value is not set for FileObservable as it's read-only
 
                     event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)
+                    event_submission_map.setdefault(event_index, []).append(event_grouping[grouping_target])
 
                     # for grouped events, the overall event time is the earliest event time in the group
                     # this won't really matter if the observables are temporal
@@ -705,5 +831,6 @@ class QueryHunt(Hunt):
             for submission in submissions:
                 submission.root.description += f' ({len(submission.root.details.get(QUERY_DETAILS_EVENTS, []))} event{"" if len(submission.root.details.get(QUERY_DETAILS_EVENTS, [])) == 1 else "s"})'
 
+        self._process_summary_details(query_results, event_submission_map)
 
         return submissions
