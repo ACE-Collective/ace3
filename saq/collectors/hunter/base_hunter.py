@@ -37,7 +37,7 @@ import pytz
 
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode
+from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode, SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT
 from saq.environment import get_data_dir
 from saq.error import report_exception
 from saq.gui.icon import IconConfiguration
@@ -46,6 +46,30 @@ from saq.util.time import is_timedelta_string
 
 if TYPE_CHECKING:
     from saq.collectors.hunter.manager import HuntManager
+
+SUMMARY_DETAIL_LIMIT_DEFAULT = 100
+
+VALID_SUMMARY_DETAIL_FORMATS = {SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT}
+
+
+class SummaryDetailConfig(BaseModel):
+    content: str
+    header: Optional[str] = None
+    format: str = SUMMARY_DETAIL_FORMAT_MD
+    limit: int = SUMMARY_DETAIL_LIMIT_DEFAULT
+    grouped: bool = False
+
+    @field_validator("format")
+    @classmethod
+    def validate_format(cls, value: str) -> str:
+        if value not in VALID_SUMMARY_DETAIL_FORMATS:
+            logging.error(
+                "invalid summary_detail format %s - must be one of %s - defaulting to %s",
+                value, VALID_SUMMARY_DETAIL_FORMATS, SUMMARY_DETAIL_FORMAT_MD,
+            )
+            return SUMMARY_DETAIL_FORMAT_MD
+        return value
+
 
 class HuntConfig(BaseModel):
     uuid: str = Field(..., description="The UUID of the hunt. This must be unique across all signatures in all repositories.")
@@ -64,6 +88,7 @@ class HuntConfig(BaseModel):
     pivot_links: list[dict] = Field(default_factory=list, description="These are links that will be displayed in ACE when the alert is displayed.")
     icon_configuration: Optional[IconConfiguration] = Field(default=None, description="The icon to use for the hunt.")
     alert_template: Optional[str] = Field(default=None, description="The template to use to display the alert in ACE.")
+    summary_details: list[SummaryDetailConfig] = Field(default_factory=list, description="Summary details to add to submissions. Each definition generates one or more SummaryDetail objects per submission.")
 
     @field_validator("frequency")
     @classmethod

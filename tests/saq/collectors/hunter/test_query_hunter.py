@@ -21,6 +21,7 @@ from saq.collectors.hunter.query_hunter import (
 )
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
+from saq.collectors.hunter.base_hunter import SummaryDetailConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     F_COMMAND_LINE,
@@ -29,6 +30,9 @@ from saq.constants import (
     F_SIGNATURE_ID,
     R_EXECUTED_ON,
     R_RELATED_TO,
+    SUMMARY_DETAIL_FORMAT_MD,
+    SUMMARY_DETAIL_FORMAT_PRE,
+    SUMMARY_DETAIL_FORMAT_TXT,
 )
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.observables.mapping import FieldsMode
@@ -2660,3 +2664,392 @@ def test_dedup_key_missing_field_returns_none(monkeypatch):
     ])
     assert len(submissions) == 1
     assert submissions[0].key is None
+
+
+# ============================================================================
+# Summary Detail Tests
+# ============================================================================
+
+@pytest.mark.unit
+def test_summary_detail_config_defaults():
+    """test that SummaryDetailConfig has correct defaults when only content is set"""
+    config = SummaryDetailConfig(content="test content")
+    assert config.content == "test content"
+    assert config.header is None
+    assert config.format == SUMMARY_DETAIL_FORMAT_MD
+    assert config.limit == 100
+    assert config.grouped is False
+
+
+@pytest.mark.unit
+def test_summary_detail_config_invalid_format(caplog):
+    """test that invalid format falls back to MD and logs error"""
+    with caplog.at_level(logging.ERROR):
+        config = SummaryDetailConfig(content="test", format="invalid")
+    assert config.format == SUMMARY_DETAIL_FORMAT_MD
+    assert "invalid summary_detail format" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fmt", [SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT])
+def test_summary_detail_config_valid_formats(fmt):
+    """test that all valid formats are accepted"""
+    config = SummaryDetailConfig(content="test", format=fmt)
+    assert config.format == fmt
+
+
+@pytest.mark.unit
+def test_hunt_config_with_summary_details():
+    """test that summary_details field is accepted on QueryHuntConfig"""
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_config",
+        summary_details=[
+            SummaryDetailConfig(content="test ${field}"),
+        ],
+    )
+    assert len(hunt.config.summary_details) == 1
+    assert hunt.config.summary_details[0].content == "test ${field}"
+
+
+@pytest.mark.unit
+def test_summary_details_empty_list(monkeypatch):
+    """test backward compatibility - empty summary_details does nothing"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_empty",
+        group_by=None,
+        summary_details=[],
+    )
+    submissions = hunt.process_query_results([{"field1": "value1"}])
+    assert len(submissions) == 1
+    assert len(submissions[0].root.summary_details) == 0
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_basic(monkeypatch):
+    """test ungrouped summary detail with single event"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_basic",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="IP: ${src_ip}", header="Source IPs", format=SUMMARY_DETAIL_FORMAT_PRE),
+        ],
+    )
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].header == "Source IPs"
+    assert sd_list[0].content == "IP: 1.2.3.4"
+    assert sd_list[0].format == SUMMARY_DETAIL_FORMAT_PRE
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_multiple_events(monkeypatch):
+    """test ungrouped - multiple events without group_by, each gets own detail"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_multi",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="${host}"),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"host": "server2"},
+    ])
+    assert len(submissions) == 2
+    assert submissions[0].root.summary_details[0].content == "server1"
+    assert submissions[1].root.summary_details[0].content == "server2"
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
+    """test that events with missing fields are silently skipped"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_missing",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="${missing_field}"),
+        ],
+    )
+    submissions = hunt.process_query_results([{"other": "value"}])
+    assert len(submissions) == 1
+    assert len(submissions[0].root.summary_details) == 0
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_limit(monkeypatch, caplog):
+    """test that limit is enforced and warning is logged"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_limit",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${val}", limit=2),
+        ],
+    )
+    events = [{"val": f"v{i}"} for i in range(5)]
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results(events)
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 2
+    assert sd_list[0].content == "v0"
+    assert sd_list[1].content == "v1"
+    assert "summary detail limit (2) reached" in caplog.text
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_no_header(monkeypatch):
+    """test that header=None passes through correctly"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_no_header",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="${val}"),
+        ],
+    )
+    submissions = hunt.process_query_results([{"val": "test"}])
+    assert len(submissions) == 1
+    assert submissions[0].root.summary_details[0].header is None
+    assert submissions[0].root.summary_details[0].content == "test"
+
+
+@pytest.mark.unit
+def test_summary_details_ungrouped_multiple_definitions(monkeypatch):
+    """test that two definitions produce independent details"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_multi_def",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="${src}", header="Source"),
+            SummaryDetailConfig(content="${dst}", header="Dest"),
+        ],
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4", "dst": "5.6.7.8"}])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 2
+    assert sd_list[0].header == "Source"
+    assert sd_list[0].content == "1.2.3.4"
+    assert sd_list[1].header == "Dest"
+    assert sd_list[1].content == "5.6.7.8"
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_with_group_by(monkeypatch):
+    """test grouped summary detail - multiple events combined with newline"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped",
+        group_by="group_field",
+        summary_details=[
+            SummaryDetailConfig(content="${host}", header="Hosts", grouped=True),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1", "group_field": "group_a"},
+        {"host": "server2", "group_field": "group_a"},
+        {"host": "server3", "group_field": "group_b"},
+    ])
+    assert len(submissions) == 2
+    group_a = next(s for s in submissions if "group_a" in s.root.description)
+    group_b = next(s for s in submissions if "group_b" in s.root.description)
+
+    assert len(group_a.root.summary_details) == 1
+    assert group_a.root.summary_details[0].content == "server1\nserver2"
+    assert group_a.root.summary_details[0].header == "Hosts"
+
+    assert len(group_b.root.summary_details) == 1
+    assert group_b.root.summary_details[0].content == "server3"
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_missing_field_skipped(monkeypatch):
+    """test grouped - events with missing fields are skipped, others still contribute"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_missing",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${host}", grouped=True),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"other": "value"},
+        {"host": "server3"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].content == "server1\nserver3"
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_limit(monkeypatch, caplog):
+    """test grouped limit caps collected lines and logs warning"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_limit",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${val}", grouped=True, limit=2),
+        ],
+    )
+    events = [{"val": f"line{i}"} for i in range(5)]
+    with caplog.at_level(logging.WARNING):
+        submissions = hunt.process_query_results(events)
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].content == "line0\nline1"
+    assert "summary detail limit (2) reached" in caplog.text
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_no_matching_events(monkeypatch):
+    """test grouped - no summary detail added when all events are skipped"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_none",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${missing}", grouped=True),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"other": "value1"},
+        {"other": "value2"},
+    ])
+    assert len(submissions) == 1
+    assert len(submissions[0].root.summary_details) == 0
+
+
+@pytest.mark.unit
+def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch):
+    """test two definitions, one grouped and one ungrouped"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_mixed",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${host}", header="Individual Hosts"),
+            SummaryDetailConfig(content="${host}", header="All Hosts", grouped=True),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"host": "server2"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    # ungrouped: 2 details (one per event), grouped: 1 detail (combined)
+    assert len(sd_list) == 3
+    ungrouped = [sd for sd in sd_list if sd.header == "Individual Hosts"]
+    grouped = [sd for sd in sd_list if sd.header == "All Hosts"]
+    assert len(ungrouped) == 2
+    assert {sd.content for sd in ungrouped} == {"server1", "server2"}
+    assert len(grouped) == 1
+    assert grouped[0].content == "server1\nserver2"
+
+
+@pytest.mark.integration
+def test_load_hunt_yaml_with_summary_details(rules_dir, manager_kwargs):
+    """test that a YAML file with summary_details loads correctly"""
+    test_yaml_path = os.path.join(rules_dir, "test_sd.yaml")
+    with open(test_yaml_path, "w") as fp:
+        yaml.dump({
+            "rule": {
+                "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "enabled": "yes",
+                "name": "summary_detail_test",
+                "description": "Test Hunt with Summary Details",
+                "type": "test_query",
+                "alert_type": "test - query",
+                "frequency": "00:01:00",
+                "tags": ["tag1"],
+                "time_range": "00:01:00",
+                "full_coverage": "yes",
+                "group_by": "field1",
+                "query": "index=test",
+                "use_index_time": "yes",
+                "instance_types": ["unittest"],
+                "summary_details": [
+                    {
+                        "content": "Host: ${hostname}",
+                        "header": "Hosts",
+                        "format": "pre",
+                        "limit": 50,
+                        "grouped": True,
+                    },
+                    {
+                        "content": "${message}",
+                    },
+                ],
+            },
+        }, fp, default_flow_style=False)
+
+    manager = HuntManager(**manager_kwargs)
+    manager.load_hunts_from_config()
+
+    hunt = next((h for h in manager.hunts if h.name == "summary_detail_test"), None)
+    assert hunt is not None
+    assert len(hunt.config.summary_details) == 2
+
+    sd0 = hunt.config.summary_details[0]
+    assert sd0.content == "Host: ${hostname}"
+    assert sd0.header == "Hosts"
+    assert sd0.format == SUMMARY_DETAIL_FORMAT_PRE
+    assert sd0.limit == 50
+    assert sd0.grouped is True
+
+    sd1 = hunt.config.summary_details[1]
+    assert sd1.content == "${message}"
+    assert sd1.header is None
+    assert sd1.format == SUMMARY_DETAIL_FORMAT_MD
+    assert sd1.limit == 100
+    assert sd1.grouped is False
