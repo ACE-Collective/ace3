@@ -28,6 +28,7 @@ Jinja2==3.1.6
 ldap3==2.9.1
 LnkParse3==1.6.0
 lxml==6.0.2
+markdown==3.7
 msoffcrypto-tool==6.0.0
 numpy==2.4.2
 olefile==0.47

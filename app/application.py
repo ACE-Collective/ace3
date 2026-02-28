@@ -5,6 +5,8 @@ import os
 from subprocess import PIPE, Popen
 from typing import Optional
 from flask import Flask
+from markupsafe import Markup
+import markdown
 import urllib
 
 from app.blueprints import register_blueprints
@@ -71,6 +73,9 @@ def dict_from_json_string(s):
 
 def pprint_json_dict(d):
     return json.dumps(d, indent=4, sort_keys=True)
+
+def render_markdown(text):
+    return Markup(markdown.markdown(text, extensions=["extra"]))
 
 class CustomSQLAlchemy(SQLAlchemy):
     def apply_driver_hacks(self, app, info, options):
@@ -144,6 +149,7 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.filters['get_tag_level'] = get_tag_level
     flask_app.jinja_env.filters['dict_from_json_string'] = dict_from_json_string
     flask_app.jinja_env.filters['pprint_json_dict'] = pprint_json_dict
+    flask_app.jinja_env.filters['markdown'] = render_markdown
 
     # add the "do" template command
     flask_app.jinja_env.add_extension('jinja2.ext.do')

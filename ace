@@ -573,7 +573,7 @@ def correlate(args):
     # initialize command line engine
     from saq.analysis import RootAnalysis
     from saq.constants import F_FILE, ANALYSIS_MODE_CLI, ANALYSIS_MODE_CORRELATION, \
-        SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE
+        SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_MD
     from saq.engine.core import Engine
     from saq.util import parse_event_time
 
@@ -663,7 +663,7 @@ def correlate(args):
 
     # add any summary details specified on the command line
     if args.summary_details:
-        valid_formats = [SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE]
+        valid_formats = [SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_MD]
         for sd_args in args.summary_details:
             if len(sd_args) < 1 or len(sd_args) > 3:
                 logging.error("--add-summary-detail requires 1 to 3 values (CONTENT or HEADER CONTENT [FORMAT]), got %s", len(sd_args))

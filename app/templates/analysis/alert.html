@@ -215,6 +215,8 @@
                 <div class="card-text">
                     {% if summary_detail.format == CONSTANTS.SUMMARY_DETAIL_FORMAT_PRE %}
                         <pre style="white-space: pre-wrap">{{summary_detail.content}}</pre>
+                    {% elif summary_detail.format == CONSTANTS.SUMMARY_DETAIL_FORMAT_MD %}
+                        {{summary_detail.content|markdown}}
                     {% else %}
                         {{summary_detail.content}}
                     {% endif %}
