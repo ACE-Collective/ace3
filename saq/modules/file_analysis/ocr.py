@@ -215,6 +215,7 @@ class OCRAnalyzer(AnalysisModule):
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
             file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
             file_observable.add_directive(DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL)
+            file_observable.add_yara_meta("type", "document.text.ocr")
             file_observable.redirection = _file
 
         return AnalysisExecutionResult.COMPLETED

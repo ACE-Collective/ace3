@@ -188,8 +188,10 @@ class LnkParseAnalyzer(AnalysisModule):
                     sort_keys=True,
                 )
 
-            analysis.add_file_observable(target_file)
-            
+            lnk_file_observable = analysis.add_file_observable(target_file)
+            if lnk_file_observable:
+                lnk_file_observable.add_yara_meta("type", "metadata.lnk")
+
         except Exception as e:
             report_exception()
             analysis.error = str(e)

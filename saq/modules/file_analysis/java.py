@@ -167,6 +167,7 @@ class JavaClassDecompilerAnalysisModule(AnalysisModule):
             decompiled_file_observable = analysis.add_file_observable(decompiled_file)
             if decompiled_file_observable:
                 decompiled_file_observable.add_tag("decompiled")
+                decompiled_file_observable.add_yara_meta("type", "script.java.decompiled")
                 analysis.decompiled_files.append(decompiled_file)
 
             return AnalysisExecutionResult.COMPLETED

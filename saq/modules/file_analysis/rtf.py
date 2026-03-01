@@ -155,6 +155,7 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
                         f.add_tag('extracted_rtf')
                         f.redirection = _file
                         f.add_relationship(R_EXTRACTED_FROM, _file)
+                        f.add_yara_meta("type", "document.rtf.object")
 
         except Exception as e:
             logging.warning("failed to process output directory {}: {}".format(output_dir, e))
@@ -304,5 +305,6 @@ class NoWhiteSpaceAnalyzer(AnalysisModule):
         output_file = analysis.add_file_observable(output_file, volatile=True)
         if output_file:
             output_file.redirection = _file
+            output_file.add_yara_meta("type", "document.rtf.stripped")
 
         return AnalysisExecutionResult.COMPLETED

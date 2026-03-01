@@ -205,6 +205,7 @@ class PhishkitAnalyzer(AnalysisModule):
                 if file_observable:
                     from saq.modules.file_analysis.pdf import PDFAnalyzer
                     # do not send phishkit output to phishkit
+                    file_observable.add_yara_meta("type", "document.html.phishkit")
                     file_observable.exclude_analysis(self)
                     file_observable.exclude_analysis(PDFAnalyzer)
                     #file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)

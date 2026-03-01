@@ -507,6 +507,7 @@ DIRECTIVE_TRIAGE = 'triage'
 DIRECTIVE_VIEW_IN_BROWSER = 'view_in_browser'
 DIRECTIVE_VMRAY = 'vmray'
 DIRECTIVE_WHITELISTED = 'whitelisted'
+DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 
 DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_ANALYZE_ACTIVITY: 'analyze the activity of this for some time period around a certain event',

@@ -70,6 +70,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
             file_observable = analysis.add_file_observable(tshark_output_path)
             if file_observable:
                 file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+                file_observable.add_yara_meta("type", "network.pcap.text")
 
             RE_TRUE_CLIENT_IP = re.compile(r"True-Client-IP: ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})")
             RE_FORWARDED = re.compile(r"forwarded: for=")

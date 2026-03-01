@@ -446,7 +446,9 @@ class BrotexHTTPPackageAnalyzer(AnalysisModule):
 
                 file_path = os.path.relpath(os.path.join(message_dir, file_name), start=self.get_root().storage_dir)
                 http_request[KEY_FILES].append(file_path)
-                analysis.add_file_observable(F_FILE, file_path, move=True)
+                http_file_observable = analysis.add_file_observable(F_FILE, file_path, move=True)
+                if http_file_observable:
+                    http_file_observable.add_yara_meta("type", "network.http")
 
             if http_request[KEY_SRC_IP]:
                 src_ip = analysis.add_observable_by_spec(F_IPV4, http_request[KEY_SRC_IP])

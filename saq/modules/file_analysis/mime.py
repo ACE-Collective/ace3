@@ -150,5 +150,6 @@ class ActiveMimeAnalyzer(AnalysisModule):
             if file_observable:
                 file_observable.add_relationship(R_EXTRACTED_FROM, _file)
                 file_observable.add_tag("activemime")
+                file_observable.add_yara_meta("type", "document.activemime")
 
         return AnalysisExecutionResult.COMPLETED

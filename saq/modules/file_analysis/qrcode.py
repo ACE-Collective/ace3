@@ -369,6 +369,7 @@ class QRCodeAnalyzer(AnalysisModule):
                 file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
                 file_observable.exclude_analysis(FileHashAnalyzer)
                 file_observable.add_tag("qr-code")
+                file_observable.add_yara_meta("type", "document.text.qrcode")
                 if is_inverted:
                     file_observable.add_tag("qr-code-inverted")
 

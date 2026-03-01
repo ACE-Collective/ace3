@@ -141,6 +141,7 @@ class EmailCollector(Collector):
                     email_observable.add_directive(DIRECTIVE_NO_SCAN)
                     email_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
                     email_observable.add_directive(DIRECTIVE_ARCHIVE)
+                    email_observable.add_yara_meta("type", "email")
 
                 yield Submission(root, group_assignments=group_assignments)
                 submitted_emails += 1

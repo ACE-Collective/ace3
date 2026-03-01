@@ -112,6 +112,7 @@ class DMGAnalyzer(AnalysisModule):
         if file_observable:
             file_observable.add_tag("macos")
             file_observable.add_tag("dmg")
+            file_observable.add_yara_meta("type", "archive.dmg")
             file_observable.redirection = _file
 
         # get the list of files

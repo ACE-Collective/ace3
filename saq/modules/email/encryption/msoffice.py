@@ -264,6 +264,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             if decrypted_file:
                 decrypted_file.add_tag('decrypted_msoffice')
                 decrypted_file.add_detection_point("Was able to decrypt based on contents of email.")
+                decrypted_file.add_yara_meta("type", "document.office")
 
             return AnalysisExecutionResult.COMPLETED
 

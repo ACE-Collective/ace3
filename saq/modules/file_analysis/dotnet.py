@@ -145,6 +145,7 @@ class De4dotAnalyzer(AnalysisModule):
         file_observable = analysis.add_file_observable(output_path, volatile=True)
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            file_observable.add_yara_meta("type", "executable.dotnet")
             file_observable.redirection = _file
             file_observable.exclude_analysis(self)
             file_observable.exclude_analysis(FileHashAnalyzer)
@@ -254,6 +255,7 @@ class IlspyAnalyzer(AnalysisModule):
         file_observable = analysis.add_file_observable(target_path, volatile=True)
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            file_observable.add_yara_meta("type", "script.dotnet.decompiled")
             file_observable.redirection = _file
             file_observable.exclude_analysis(self)
             file_observable.exclude_analysis(FileHashAnalyzer)

@@ -319,6 +319,7 @@ class IOCExtractionAnalyzer(AnalysisModule):
             if text_file_obs:
                 text_file_obs.display_type = "Re-fanged Text"
                 text_file_obs.add_relationship(R_EXTRACTED_FROM, _file)
+                text_file_obs.add_yara_meta("type", "document.text.refanged")
 
         for (ioc_type, ioc_value), compiled_config in self._observables_to_add.items():
             # Track in details

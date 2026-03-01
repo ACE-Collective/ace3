@@ -221,6 +221,7 @@ class MHTMLAnalysisModule(AnalysisModule):
                 file_observable = analysis.add_file_observable(target_path, volatile=True)
                 if file_observable:
                     _file.copy_directives_to(file_observable)
+                    file_observable.add_yara_meta("type", "document.mhtml.part")
                     analysis.extracted_files.append(file_observable.value)
 
             except Exception as e:
@@ -321,6 +322,7 @@ class HTMLDataURLAnalyzer(AnalysisModule):
                     file_observable.add_relationship(R_EXTRACTED_FROM, _file)
                     # don't recurse on extracted document
                     file_observable.exclude_analysis(self)
+                    file_observable.add_yara_meta("type", "document.html.embedded")
                     analysis.count += 1
 
                 count += 1
