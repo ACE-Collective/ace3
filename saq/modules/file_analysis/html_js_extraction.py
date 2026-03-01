@@ -473,6 +473,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
             file_observable.exclude_analysis(self)  # Don't re-analyze our own output
+            file_observable.add_yara_meta("type", "script.javascript")
             _file.copy_directives_to(file_observable)
             tracking_list.append(file_observable.file_path)
             logging.debug(f"extracted {script_type} JavaScript to {filename}")

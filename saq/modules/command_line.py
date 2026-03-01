@@ -130,7 +130,9 @@ class CommandLineAnalyzer(AnalysisModule):
                         fp.write(decoded_data)
 
                     file_observable = analysis.add_file_observable(target_file)
-                    file_observable.add_tag("base64")
+                    if file_observable:
+                        file_observable.add_tag("base64")
+                        file_observable.add_yara_meta("type", "payload.base64")
                     analysis.base64_payloads.append({
                         KEY_BASE64: token,
                         KEY_FILE_PATH: target_file,

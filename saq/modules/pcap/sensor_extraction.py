@@ -160,7 +160,9 @@ class PcapConversationExtraction(ExternalProcessAnalysisModule):
             self.get_root().increment_action_counter('pcap_conversation')
             # a pcap file with only 92 bytes is an empty pcap files -- don't add it
             if os.path.getsize(pcap_file_path) > 92:
-                analysis.add_file_observable(pcap_file_path)
+                pcap_observable = analysis.add_file_observable(pcap_file_path)
+                if pcap_observable:
+                    pcap_observable.add_yara_meta("type", "network.pcap")
             else:
                 analysis.details['error'] = "empty pcap file"
             return AnalysisExecutionResult.COMPLETED

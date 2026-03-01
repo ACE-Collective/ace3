@@ -133,6 +133,7 @@ class AutoItAnalyzer(AnalysisModule):
                 if file_observable:
                     file_observable.add_relationship(R_EXTRACTED_FROM, _file)
                     file_observable.add_tag('autoit')
+                    file_observable.add_yara_meta("type", "script.autoit")
                     # avoid recursion -- no idea if this is possible but would rather avoid it
                     file_observable.exclude_analysis(self)
 

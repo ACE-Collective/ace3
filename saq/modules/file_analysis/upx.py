@@ -115,6 +115,7 @@ class UPXAnalyzer(AnalysisModule):
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
             file_observable.add_tag('upx')
+            file_observable.add_yara_meta("type", "executable.unpacked")
             _file.copy_directives_to(file_observable)
 
         return AnalysisExecutionResult.COMPLETED

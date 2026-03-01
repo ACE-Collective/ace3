@@ -231,5 +231,6 @@ class OfficeParserAnalyzer3(AnalysisModule):
                     file_observable.add_tag('macro')
                     # always sandbox office documents tagged with macros
                     file_observable.add_directive(DIRECTIVE_SANDBOX)
+                    file_observable.add_yara_meta("type", "script.macro")
 
             return AnalysisExecutionResult.COMPLETED

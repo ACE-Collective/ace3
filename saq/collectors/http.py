@@ -74,7 +74,9 @@ class BroHTTPStreamCollector(Collector):
                 # Add files to the root analysis
                 for source_file in source_files:
                     if os.path.exists(source_file):
-                        root.add_file_observable(source_file)
+                        http_observable = root.add_file_observable(source_file)
+                        if http_observable:
+                            http_observable.add_yara_meta("type", "network.http")
                 
                 submission = Submission(root)
                 yield submission

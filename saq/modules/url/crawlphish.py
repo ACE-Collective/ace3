@@ -887,8 +887,9 @@ class CrawlphishAnalyzer(AnalysisModule):
 
                 # and add the file for processing
                 download = analysis.add_file_observable(file_path, move=True, volatile=True)
-                if download: 
+                if download:
                     download.add_relationship(R_DOWNLOADED_FROM, final_url if final_url else url)
+                    download.add_yara_meta("type", "network.download")
 
                     # 10/4/2021 - bad guys return legit HTML on 404 so we can't be doing this
                     # only extract if non-error http response

@@ -266,7 +266,9 @@ class X509Analyzer(AnalysisModule):
 
         # add file observable for x509 metadata
         target_path = self.write_metadata_to_file(_file, analysis.details)
-        analysis.add_file_observable(target_path)
+        x509_file_observable = analysis.add_file_observable(target_path)
+        if x509_file_observable:
+            x509_file_observable.add_yara_meta("type", "metadata.x509")
 
         return AnalysisExecutionResult.COMPLETED
 

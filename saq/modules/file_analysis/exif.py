@@ -165,6 +165,7 @@ class ExifAnalyzer(AnalysisModule):
         file_observable = analysis.add_file_observable(target_file)
         if file_observable:
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            file_observable.add_yara_meta("type", "metadata.exif")
             file_observable.exclude_analysis(FileHashAnalyzer)
             file_observable.exclude_analysis(FileTypeAnalyzer)
             # file_observable.add_tag('exif')

@@ -2,13 +2,14 @@ import hashlib
 import io
 import logging
 import os
+import re
 from subprocess import PIPE, Popen
 from typing import Optional, Union
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.analysis.serialize.observable_serializer import KEY_VALUE
 from saq.configuration.config import get_config
-from saq.constants import DIRECTIVE_VIEW_IN_BROWSER, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
+from saq.constants import DIRECTIVE_VIEW_IN_BROWSER, DIRECTIVE_YARA_META_PREFIX, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
 from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
@@ -20,6 +21,27 @@ KEY_SHA256_HASH = "sha256_hash"
 KEY_MIME_TYPE = "mime_type"
 KEY_SIZE = "size"
 KEY_FILE_PATH = "file_path"
+
+YARA_META_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def parse_yara_meta_directive(directive):
+    """Parses a YARA_META directive string and returns a (name, value) tuple, or None if invalid."""
+    if not directive.startswith(DIRECTIVE_YARA_META_PREFIX):
+        return None
+
+    remainder = directive[len(DIRECTIVE_YARA_META_PREFIX):]
+    if "=" not in remainder:
+        logging.error("invalid yara meta directive (missing '='): %s", directive)
+        return None
+
+    name, value = remainder.split("=", 1)
+    if not YARA_META_NAME_PATTERN.match(name):
+        logging.error("invalid yara meta name in directive: %s", directive)
+        return None
+
+    return (name, value)
+
 
 class FileObservable(Observable):
     def __init__(self, value=None, file_path=None, *args, **kwargs):
@@ -361,6 +383,31 @@ class FileObservable(Observable):
 
     def handle_relationship_added(self, source, event, target, relationship=None):
         pass
+
+    def add_yara_meta(self, name, value):
+        """Adds a YARA_META directive to this observable.
+
+        Args:
+            name: the meta tag name (must match [a-zA-Z0-9_-]+)
+            value: the meta tag value
+
+        Raises:
+            ValueError: if the name contains invalid characters
+        """
+        if not YARA_META_NAME_PATTERN.match(name):
+            raise ValueError(f"invalid yara meta name: {name}")
+
+        self.add_directive(f"{DIRECTIVE_YARA_META_PREFIX}{name}={value}")
+
+    @property
+    def yara_meta_tags(self):
+        """Returns a list of 'name=value' strings for all YARA_META directives on this observable."""
+        result = []
+        for directive in self.directives:
+            parsed = parse_yara_meta_directive(directive)
+            if parsed is not None:
+                result.append(f"{parsed[0]}={parsed[1]}")
+        return result
 
 
 class FileObservablePresenter(ObservablePresenter):

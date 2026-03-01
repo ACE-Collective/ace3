@@ -156,6 +156,7 @@ class BroSMTPStreamAnalyzer(AnalysisModule):
                         email_file.add_directive(DIRECTIVE_NO_SCAN)
                         # make sure we archive it
                         email_file.add_directive(DIRECTIVE_ARCHIVE)
+                        email_file.add_yara_meta("type", "email")
 
                     analysis.details = {
                         # the name of the file will equal the bro connection id

@@ -100,6 +100,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
                 file_observable = analysis.add_file_observable(target_path)
                 if file_observable:
                     file_observable.add_tag('decrypted_email')
+                    file_observable.add_yara_meta("type", "email")
 
                 return AnalysisExecutionResult.COMPLETED
 

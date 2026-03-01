@@ -287,7 +287,9 @@ class BrotexSMTPPackageAnalyzer(AnalysisModule):
                 logging.warning("tar reported errors on {}: {}".format(_file, stderr))
 
             # add the extracted smtp stream file as an observable and let the SMTPStreamAnalysis module do it's work
-            analysis.add_file_observable(smtp_stream_file)
+            smtp_observable = analysis.add_file_observable(smtp_stream_file)
+            if smtp_observable:
+                smtp_observable.add_yara_meta("type", "network.smtp")
 
             analysis.smtp_stream = smtp_stream_file
             return AnalysisExecutionResult.COMPLETED
@@ -360,7 +362,9 @@ class BrotexSMTPPackageAnalyzer(AnalysisModule):
 
             # this by itself gets added as a file observable that will later get parsed by EmailAnalyzer
             observable = analysis.add_file_observable(missing_stream_file)
-            if observable: observable.limited_analysis = [ EmailAnalyzer.__name__ ]
+            if observable:
+                observable.limited_analysis = [ EmailAnalyzer.__name__ ]
+                observable.add_yara_meta("type", "email")
             analysis.message_count += 1 
 
         return AnalysisExecutionResult.COMPLETED
@@ -470,7 +474,9 @@ class SMTPStreamAnalyzer(AnalysisModule):
 
             rel_path = os.path.relpath(current_rfc822_path, start=self.get_root().storage_dir)
             analysis.smtp_files.append(rel_path)
-            analysis.add_file_observable(rel_path)
+            email_observable = analysis.add_file_observable(rel_path)
+            if email_observable:
+                email_observable.add_yara_meta("type", "email")
             analysis.envelopes[rel_path] = {}
             analysis.envelopes[rel_path][KEY_ENVELOPES_MAIL_FROM] = env_mail_from
             analysis.envelopes[rel_path][KEY_ENVELOPES_RCPT_TO] = env_rcpt_to

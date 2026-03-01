@@ -165,6 +165,7 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             if file_observable:
                 file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                 file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+                file_observable.add_yara_meta("type", "script.macro.xlm")
 
             # this analysis only runs if this document says it has xlm4
             # so if it didn't pull anything out then it's probably noteworthy
@@ -235,6 +236,7 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             if file_observable:
                 file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                 file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+                file_observable.add_yara_meta("type", "script.macro.xlm")
 
             # this analysis only runs if this document says it has xlm4
             # so if it didn't pull anything out then it's probably noteworthy

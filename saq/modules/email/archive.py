@@ -87,6 +87,7 @@ class EncryptedArchiveAnalyzer(AnalysisModule):
         if file_observable:
             #file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
             file_observable.add_tag(TAG_DECRYPTED_EMAIL)
+            file_observable.add_yara_meta("type", "email")
         analysis.decrypted_file = os.path.relpath(dest_path, start=self.get_root().storage_dir)
         return AnalysisExecutionResult.COMPLETED
 

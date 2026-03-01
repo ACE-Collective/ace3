@@ -209,6 +209,8 @@ class YaraScanner_v3_4(AnalysisModule):
             logging.debug("skipping yara scan of file {} (directive {})".format(_file, DIRECTIVE_NO_SCAN))
             return AnalysisExecutionResult.COMPLETED
 
+        meta_tags = _file.yara_meta_tags or None
+
         analysis = None
 
         # scan it with yara
@@ -221,7 +223,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 _full_path = local_file_path
                 if not os.path.isabs(local_file_path):
                     _full_path = os.path.join(os.getcwd(), local_file_path)
-                result = yara_scanner.scan_file(_full_path, base_dir=self.base_dir, socket_dir=self.socket_dir)
+                result = yara_scanner.scan_file(_full_path, base_dir=self.base_dir, socket_dir=self.socket_dir, meta_tags=meta_tags)
                 matches_found = bool(result)
 
                 logging.debug("scanned file {} with yss (matches found: {})".format(_full_path, matches_found))
@@ -242,7 +244,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 if not self.scanner:
                     self.initialize_local_scanner()
 
-                matches_found = self.scanner.scan(local_file_path)
+                matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
                 result = self.scanner.scan_results
                 # we want to keep using it for now...
                 self.scanner_start_time = datetime.now()

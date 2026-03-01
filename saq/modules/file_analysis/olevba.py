@@ -189,6 +189,7 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                         file_observable.redirection = _file
                         file_observable.add_tag('macro')
                         file_observable.add_directive(DIRECTIVE_SANDBOX)
+                        file_observable.add_yara_meta("type", "script.macro.vba")
                         analysis.macros.append({'file_name': file_name,
                                                 'stream_path': stream_path,
                                                 'vba_filename': vba_filename,

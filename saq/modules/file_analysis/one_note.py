@@ -97,7 +97,7 @@ class OneNoteFileAnalyzer(AnalysisModule):
             file_observable = analysis.add_file_observable(target_path)
             if file_observable:
                 file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-                #file_observable.add_tag('extracted_from_onenote')
+                file_observable.add_yara_meta("type", "document.onenote.embedded")
                 analysis.extracted_files.append(file_observable.value)
 
         return AnalysisExecutionResult.COMPLETED

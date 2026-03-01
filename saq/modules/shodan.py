@@ -119,6 +119,7 @@ class ShodanAnalyzer(AnalysisModule):
 
         if file_observable := analysis.add_file_observable(file_path):
             file_observable.add_tag(TAG_SHODAN)
+            file_observable.add_yara_meta("type", "metadata.shodan")
             file_observable.exclude_analysis(FileHashAnalyzer)
 
         try:
@@ -180,6 +181,7 @@ class ShodanAnalyzer(AnalysisModule):
 
             if file_observable := analysis.add_file_observable(file_path):
                 file_observable.add_tag(TAG_X509)
+                file_observable.add_yara_meta("type", "certificate.x509")
 
     def _get_shodan_client(self):
         if not get_config().shodan.api_key:

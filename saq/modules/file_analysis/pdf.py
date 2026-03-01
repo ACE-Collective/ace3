@@ -101,6 +101,7 @@ class PDFAnalyzer(AnalysisModule):
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
             # extract URLs from this file
             file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+            file_observable.add_yara_meta("type", "document.pdf.object")
 
         # gs -sDEVICE=pdfwrite -dNOPAUSE -dBATCH -sOutputFile=output.pdf -c ".setpdfwrite <</NeverEmbed [ ]>> setdistillerparams" -f input.pdf
         # evaluate with ghostscript as well to try to get the URLs out of AES encrypted PDFs
@@ -129,6 +130,7 @@ class PDFAnalyzer(AnalysisModule):
                 # extract URLs from this file
                 file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                 file_observable.exclude_analysis(self)
+                file_observable.add_yara_meta("type", "document.pdf.rendered")
 
         return AnalysisExecutionResult.COMPLETED
 
@@ -255,5 +257,6 @@ class PDFTextAnalyzer(AnalysisModule):
                 # avoid analyzing these files with archive analyzer
                 # 7z tends to choke
                 file_observable.exclude_analysis(ArchiveAnalyzer)
+                file_observable.add_yara_meta("type", "document.pdf.text")
 
         return AnalysisExecutionResult.COMPLETED

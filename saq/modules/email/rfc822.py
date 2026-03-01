@@ -1033,8 +1033,9 @@ class EmailAnalyzer(AnalysisModule):
 
                 extracted_file = analysis.add_file_observable(file_path)
 
-                if extracted_file: 
+                if extracted_file:
                     extracted_file.add_directive(DIRECTIVE_EXTRACT_URLS)
+                    extracted_file.add_yara_meta("type", "email.attachment")
 
                     if target.get_content_type() == 'text/plain':
                         extracted_file.add_directive(DIRECTIVE_PREVIEW)
@@ -1123,8 +1124,9 @@ class EmailAnalyzer(AnalysisModule):
                 headers_file = analysis.add_file_observable(headers_path)
 
                 # we don't want to analyze this with the email analyzer
-                if headers_file: 
+                if headers_file:
                     headers_file.exclude_analysis(self)
+                    headers_file.add_yara_meta("type", "email.headers")
 
         # combine the header and the decoded parts of the email into a single buffer for scanning with yara
         # we only combine the un-named html and text parts, not additional attachements
@@ -1155,8 +1157,9 @@ class EmailAnalyzer(AnalysisModule):
                     combined_file = analysis.add_file_observable(combined_path)
 
                     # we don't want to analyze this with the email analyzer
-                    if combined_file: 
+                    if combined_file:
                         combined_file.exclude_analysis(self)
+                        combined_file.add_yara_meta("type", "email.combined")
 
         # are we renaming the root analysis?
         if _file.has_directive(DIRECTIVE_RENAME_ANALYSIS):

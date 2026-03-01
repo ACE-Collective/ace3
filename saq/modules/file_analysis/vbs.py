@@ -263,7 +263,9 @@ class PCodeAnalyzer(AnalysisModule):
                     line_count += 1
             analysis.line_count = line_count
             output_file = analysis.add_file_observable(stdout_path, volatile=True)
-            output_file.redirection = _file
+            if output_file:
+                output_file.redirection = _file
+                output_file.add_yara_meta("type", "script.vbscript")
             return AnalysisExecutionResult.COMPLETED
 
         os.remove(stdout_path)
