@@ -30,3 +30,4 @@ class AnalysisModuleConfig(BaseModel):
     requires_detection_path: bool = Field(default=False, description="Whether the analysis module requires observables to be on a detection path.")
     cache: bool = Field(default=False, description="Whether caching is enabled for the analysis module.")
     version: int = Field(default=1, description="The version of the analysis module.")
+    default_collapsed: bool = Field(default=False, description="Whether this module's analysis is collapsed by default in the GUI tree view.")

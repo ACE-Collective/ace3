@@ -490,6 +490,7 @@ class ACEConfig(BaseModel):
         self.__git_repos: Optional[dict[str, GitRepoConfig]] = None
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
+        self.__module_config_by_python_module: dict[tuple, "AnalysisModuleConfig"] = {}
 
     def resolve_all_values(self):
         self.__raw.resolve_all_values()
@@ -652,6 +653,7 @@ class ACEConfig(BaseModel):
     def load_analysis_module_configs(self):
         from saq.modules.config import AnalysisModuleConfig
         self.__analysis_modules = {}
+        self.__module_config_by_python_module = {}
 
         for key, value in self.raw._data.items():
             if not key.startswith("analysis_module_"):
@@ -668,11 +670,15 @@ class ACEConfig(BaseModel):
             class_definition = getattr(module, analysis_module_config.python_class)
 
             try:
-                self.add_analysis_module_config(analysis_module_config.name, class_definition.get_config_class().model_validate(value))
+                final_config = class_definition.get_config_class().model_validate(value)
+                self.add_analysis_module_config(analysis_module_config.name, final_config)
+                # build lookup for module_path -> config resolution
+                lookup_key = (final_config.python_module, final_config.instance)
+                self.__module_config_by_python_module[lookup_key] = final_config
             except Exception as e:
                 sys.stderr.write(f"CONFIG ERROR: failed to validate analysis module config for {key}\n")
                 raise e
-    
+
     def get_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
         if self.__analysis_modules is None:
             self._raise_raw_data_error()
@@ -681,6 +687,15 @@ class ACEConfig(BaseModel):
             raise ValueError(f"analysis module config for {name} not found")
 
         return self.__analysis_modules[name]
+
+    def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
+        """Look up an analysis module config by a module_path string (e.g. 'saq.modules.x:AnalysisClass:instance')."""
+        from saq.analysis.module_path import SPLIT_MODULE_PATH
+        try:
+            module_name, _class_name, instance = SPLIT_MODULE_PATH(module_path)
+        except ValueError:
+            return None
+        return self.__module_config_by_python_module.get((module_name, instance))
 
     # 
     # analysis modes

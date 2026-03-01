@@ -117,6 +117,18 @@ class TreeNode:
             return False
 
     @property
+    def default_collapsed(self):
+        if not self.is_analysis or self.is_root_analysis:
+            return False
+        try:
+            config = get_config().get_analysis_module_config_by_module_path(self.obj.module_path)
+            if config is not None:
+                return config.default_collapsed
+        except Exception:
+            pass
+        return False
+
+    @property
     def should_render(self):
         if self.is_root_analysis:
             return True
