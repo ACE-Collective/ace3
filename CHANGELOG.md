@@ -12,6 +12,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 - summary detail processing for `QueryHunt` with `SummaryDetailConfig` for grouped/ungrouped details, format validation, and limit enforcement
 - adds support for analysis module config propert default_collapsed 
 - adds support for the new meta tagging for yara rules as defined in `YARA_META_TAGS.md`.
+- added logo source files and adjusted title to include version and svg for favicon
 
 ## [3.0.0] - 2026-02-27
 
