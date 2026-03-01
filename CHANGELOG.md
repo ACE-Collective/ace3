@@ -10,6 +10,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 ### Added
 
 - summary detail processing for `QueryHunt` with `SummaryDetailConfig` for grouped/ungrouped details, format validation, and limit enforcement
+- adds support for analysis module config propert default_collapsed 
 
 ## [3.0.0] - 2026-02-27
 
