@@ -5,9 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.1] - YYYY-MM-DD
+## [3.0.2] - 2026-03-02
 
-### Added
+- minor bugfixes
+
+## [3.0.1] - 2026-02-28
 
 - summary detail processing for `QueryHunt` with `SummaryDetailConfig` for grouped/ungrouped details, format validation, and limit enforcement
 - adds support for analysis module config propert default_collapsed 
@@ -16,19 +18,14 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 
 ## [3.0.0] - 2026-02-27
 
-### Added
-
 - integration support
 - phishkit scanning support, which doubles as a web crawler / renderer
 - support for S3-like storage with MinIO
 - direct support for git repos with service to manage
 - FastAPI based v2 of API
-
-### Changed
-
 - massive refactoring
 - updated to the latest version of yara
-- using new yara_scanner_v2 project (fixed support for include directive)
+- using new `yara_scanner_v2` project (fixed support for include directive)
 - manage email archives database by partition
 - build jtr as part of the image
 - removed need for custom yara build
