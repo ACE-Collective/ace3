@@ -14,10 +14,6 @@ from struct import unpack
 # cONtENT-Type:                 multipart/related; boundary="----=_NextPart_01D9BFB6.09C21E10"
 RE_BOUNDARY = re.compile(rb'content-type\s*:.*?boundary\s*?=(\S+)', re.I)
 
-# https://www.geeksforgeeks.org/python-add-logging-to-python-libraries/
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
-
 def parse_mime(file_path: str, output_dir: str) -> list[str]:
     """Parses a file for (a single) embedded MIME file.
     Any embedded files are stored in the directory specified by output_dir.
@@ -26,7 +22,7 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
 
     The list of paths to all extracted files is returned."""
 
-    logger.debug(f"analyzing {file_path} for hidden mime data")
+    logging.debug(f"analyzing {file_path} for hidden mime data")
     with open(file_path, "r+b") as fp:
         mm = mmap(fp.fileno(), 0)
 
@@ -42,14 +38,16 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
 
         # look for the ending boundary marker
         # trying to figure out if the MIME data extends to the end of the file or not
-        RE_END_BOUNDARY = re.compile(b'--' + boundary + b'--')
+        # re.escape the boundary since it may contain regex metacharacters (e.g. when
+        # matched from HTML/JS that resembles Content-Type, like SocialCalc code)
+        RE_END_BOUNDARY = re.compile(b'--' + re.escape(boundary) + b'--')
         m_last = RE_END_BOUNDARY.search(mm)
         if m_last:
-            logger.info(f"parsing {file_path} MIME from position {m.span()[0]} to {m_last.span()[1]}")
+            logging.debug(f"parsing {file_path} MIME from position {m.span()[0]} to {m_last.span()[1]}")
             target_memory = mm[m.span()[0]:m_last.span()[1]]
         else:
             # default to the rest of the file if you can't find it
-            logger.info(f"parsing {file_path} MIME from position {m.span()[0]} to end of file (no end boundary detected)")
+            logging.debug(f"parsing {file_path} MIME from position {m.span()[0]} to end of file (no end boundary detected)")
             target_memory = mm[m.span()[0]:]
 
         # need somewhere to put the extracted files
@@ -61,7 +59,7 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
         index = 0
         extracted_files = []
         for part in parsed_mime.walk():
-            logger.info(f"mime part {index} content type {part.get_content_type()}")
+            logging.debug(f"mime part {index} content type {part.get_content_type()}")
             target_path = os.path.join(output_dir, f"extracted-{index}")
             payload = part.get_payload(decode=True)
             if payload:
@@ -79,7 +77,7 @@ def parse_active_mime(file_path: str, target_path: str) -> bool:
 
     header = rawdoc[0:12]
     if not header.startswith(b'ActiveMime'):
-        logger.debug(f"{file_path} does not start with ActiveMime")
+        logging.debug(f"{file_path} does not start with ActiveMime")
         return False
 
     # Should be 01f0
@@ -124,7 +122,7 @@ def parse_active_mime(file_path: str, target_path: str) -> bool:
     #if data[0:4].hex() == b'd0cf11e0':
         #is_ole_doc = True
 
-    logger.info(f"writing extracted ActiveMime from {file_path} to {target_path}")
+    logging.debug(f"writing extracted ActiveMime from {file_path} to {target_path}")
     with open(target_path, "wb") as fp:
         fp.write(data)
 

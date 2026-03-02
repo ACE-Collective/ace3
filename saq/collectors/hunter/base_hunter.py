@@ -40,6 +40,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode, SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT
 from saq.environment import get_data_dir
 from saq.error import report_exception
+from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
 from saq.util import local_time, create_timedelta
 from saq.util.time import is_timedelta_string
@@ -382,6 +383,9 @@ class Hunt:
             # remember the last time we started execution
             self.last_executed_time = local_time()
             return result
+        except RemoteApiError as e:
+            logging.error(f"{self} failed (remote API error): {e}")
+            self.record_hunt_exception(e)
         except Exception as e:
             logging.error(f"{self} failed: {e}")
             report_exception()
