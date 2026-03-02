@@ -42,7 +42,9 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
 
         # look for the ending boundary marker
         # trying to figure out if the MIME data extends to the end of the file or not
-        RE_END_BOUNDARY = re.compile(b'--' + boundary + b'--')
+        # re.escape the boundary since it may contain regex metacharacters (e.g. when
+        # matched from HTML/JS that resembles Content-Type, like SocialCalc code)
+        RE_END_BOUNDARY = re.compile(b'--' + re.escape(boundary) + b'--')
         m_last = RE_END_BOUNDARY.search(mm)
         if m_last:
             logger.info(f"parsing {file_path} MIME from position {m.span()[0]} to {m_last.span()[1]}")
