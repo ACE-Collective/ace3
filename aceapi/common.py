@@ -5,7 +5,9 @@ from aceapi.blueprints import common
 import logging
 
 from aceapi.json import json_result
-from saq.constants import DEPRECATED_OBSERVABLES, DIRECTIVE_DESCRIPTIONS, OBSERVABLE_DESCRIPTIONS, VALID_DIRECTIVES, VALID_OBSERVABLE_TYPES
+from aceapi_v2.sync import run_async_with_session
+from aceapi_v2.observable_types.service import get_observable_types
+from saq.constants import DEPRECATED_OBSERVABLES, DIRECTIVE_DESCRIPTIONS, OBSERVABLE_DESCRIPTIONS, VALID_DIRECTIVES
 
 from saq.database import Company
 from saq.database.pool import get_db
@@ -36,7 +38,8 @@ def get_valid_observables():
     result = []
     # XXX 03/29/2025 -- something somewhere along the way in the tests is prepending the string 'Any' to this list
     # and I can't find it
-    active_observable_types = [o_type for o_type in VALID_OBSERVABLE_TYPES if o_type not in DEPRECATED_OBSERVABLES]
+    all_observable_types = run_async_with_session(get_observable_types)
+    active_observable_types = [o_type for o_type in all_observable_types if o_type not in DEPRECATED_OBSERVABLES]
     for o_type in active_observable_types:
         result.append({'name': o_type, 'description': OBSERVABLE_DESCRIPTIONS.get(o_type, "unknown")})
 

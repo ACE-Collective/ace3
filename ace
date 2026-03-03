@@ -32,7 +32,7 @@ from sqlalchemy import and_, or_
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B, VALID_OBSERVABLE_TYPES
-from saq.database.model import Persistence, PersistenceSource, Remediation
+from saq.database.model import Observable, Persistence, PersistenceSource, Remediation
 from saq.database.pool import get_db
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
@@ -1727,7 +1727,9 @@ archive_alert_parser.set_defaults(func=archive_alerts)
 
 def add_observable(args):
 
-    if args.observable_type not in VALID_OBSERVABLE_TYPES:
+    db_types = {row[0] for row in get_db().query(Observable.type).distinct().all()}
+    all_valid = db_types | set(VALID_OBSERVABLE_TYPES)
+    if args.observable_type not in all_valid:
         logging.error("invalid observable type {}".format(args.observable_type))
         sys.exit(1)
 

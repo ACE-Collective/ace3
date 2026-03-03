@@ -15,7 +15,7 @@ from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, VALID_OBSERVABLE_TYPES, AnalysisExecutionResult
+from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -262,7 +262,7 @@ class GenericTestAnalyzer(AnalysisModule):
 
     @property
     def valid_observable_types(self):
-        return VALID_OBSERVABLE_TYPES
+        return None
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(observable)
@@ -283,7 +283,7 @@ class ValidQueueAnalyzer(AnalysisModule):
 
     @property
     def valid_observable_types(self):
-        return VALID_OBSERVABLE_TYPES
+        return None
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(observable)
@@ -304,7 +304,7 @@ class InvalidQueueAnalyzer(AnalysisModule):
 
     @property
     def valid_observable_types(self):
-        return VALID_OBSERVABLE_TYPES
+        return None
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(observable)
