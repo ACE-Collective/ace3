@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-03-03
+
+
+- Updates remaining places that used static VALID_OBSERVABLE_TYPES list
+- dependency upgrades
+    - markdown==3.10.2
+    - pytz==2026.1.post1
+    - SQLAlchemy==2.0.48
+    - urlfinderlib==0.20.1
+    - fastapi==0.135.1
+
 ## [3.0.2] - 2026-03-02
 
 - minor bugfixes

@@ -28,7 +28,7 @@ Jinja2==3.1.6
 ldap3==2.9.1
 LnkParse3==1.6.0
 lxml==6.0.2
-markdown==3.7
+markdown==3.10.2
 msoffcrypto-tool==6.0.0
 numpy==2.4.2
 olefile==0.47
@@ -59,7 +59,7 @@ pytest-randomly==4.0.1
 python-dateutil==2.9.0.post0
 python-magic==0.4.27
 python-whois==0.9.6
-pytz==2025.2
+pytz==2026.1.post1
 PyYAML==6.0.3
 rarfile==4.2
 redis==6.4.0
@@ -69,11 +69,11 @@ requests-ntlm
 requests-oauthlib==2.0.0
 shodan==1.31.0
 splunk-sdk==2.1.1
-SQLAlchemy==2.0.47
+SQLAlchemy==2.0.48
 tabulate==0.9.0
 tld==0.13.1
 tzlocal==5.3.1
-urlfinderlib==0.19.0
+urlfinderlib==0.20.1
 uWSGI==2.0.31
 validators==0.35.0
 Werkzeug==3.1.6
@@ -89,7 +89,7 @@ tqdm==4.67.3
 qdrant-client==1.17.0
 
 # FastAPI
-fastapi==0.134.0
+fastapi==0.135.1
 uvicorn[standard]==0.41.0
 python-multipart==0.0.22
 pyjwt==2.11.0
