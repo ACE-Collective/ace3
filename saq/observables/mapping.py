@@ -2,11 +2,12 @@
 
 import logging
 import re
-
 from enum import Enum
 from typing import Callable, Optional
 
 from pydantic import BaseModel, Field, model_validator
+
+from saq.query.decoder import DecoderType
 
 
 class FieldsMode(str, Enum):
@@ -96,3 +97,96 @@ class BaseObservableMapping(BaseModel):
             if all(is_field_present(f) for f in fields):
                 return [fields]
             return []
+
+
+# Constant defined here to avoid cross-package import from saq.query.event_processing
+FIELD_LOOKUP_TYPE_KEY = "key"
+
+
+class RelationshipMappingTarget(BaseModel):
+    type: str = Field(..., description="The type of target to create")
+    value: str = Field(..., description="The value of the target")
+
+
+class RelationshipMapping(BaseModel):
+    type: str = Field(..., description="The type of relationship to create")
+    target: RelationshipMappingTarget = Field(..., description="The target of the relationship")
+
+
+class ObservableMapping(BaseObservableMapping):
+    """Full observable mapping used by both query hunts and API analysis modules.
+
+    Extends BaseObservableMapping with interpolation, file observables, volatile flags,
+    and relationship support. All extended fields have safe defaults so existing API
+    analysis YAML configs (which only use base fields) work unchanged.
+    """
+    field_lookup_type: Optional[str] = Field(
+        default=FIELD_LOOKUP_TYPE_KEY,
+        description="The type of lookup to perform for the fields."
+    )
+    value: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL value to use for the observable (supports ${field} interpolation)"
+    )
+    file_name: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL if the type is F_FILE, the name of the file to use for the observable"
+    )
+    file_decoder: Optional[DecoderType] = Field(
+        default=None,
+        description="OPTIONAL if the type is F_FILE, the decoder to use for the observable"
+    )
+    volatile: bool = Field(
+        default=False,
+        description="Whether to add the observable as volatile. Volatile observables are added for the purposes of detection."
+    )
+    relationships: list[RelationshipMapping] = Field(
+        default_factory=list,
+        description="The relationships to add to the observable"
+    )
+
+    @model_validator(mode='after')
+    def validate_fields_mode_any_with_value(self):
+        """Validate that fields_mode=ANY cannot be used with a custom value template."""
+        if self.fields_mode == FieldsMode.ANY and self.value is not None:
+            raise ValueError("fields_mode='any' cannot be used with a custom 'value' template")
+        return self
+
+    @model_validator(mode='after')
+    def validate_display_value_for_file_type(self):
+        """validate that display_value is not set for file type observables"""
+        from saq.constants import F_FILE
+        if self.type == F_FILE and self.display_value is not None:
+            raise ValueError(f"display_value is not supported for file type observables (type={self.type})")
+        return self
+
+
+def apply_mapping_properties(observable, mapping, interpolate_fn=None, event=None):
+    """Apply tags, directives, and display settings from a mapping to an observable.
+
+    If interpolate_fn and event are provided, tags/directives are interpolated
+    against the event data (supporting ${field} syntax). Otherwise they're applied
+    as literal strings.
+    """
+    if observable is None:
+        return
+
+    if interpolate_fn is not None and event is not None:
+        for directive in mapping.directives:
+            for directive_value in interpolate_fn(directive, event):
+                observable.add_directive(directive_value)
+
+        for tag in mapping.tags:
+            for tag_value in interpolate_fn(tag, event):
+                observable.add_tag(tag_value)
+    else:
+        for tag in mapping.tags:
+            observable.add_tag(tag)
+
+        for directive in mapping.directives:
+            observable.add_directive(directive)
+
+    if mapping.display_type is not None:
+        observable.display_type = mapping.display_type
+    if mapping.display_value is not None:
+        observable.display_value = mapping.display_value

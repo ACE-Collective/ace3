@@ -30,46 +30,24 @@ import pickle
 import shutil
 import threading
 from typing import TYPE_CHECKING, Optional
+
+import pytz
 from croniter import croniter
 from pydantic import BaseModel, Field, field_validator
 
-import pytz
-
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode, SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT
+from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode
 from saq.environment import get_data_dir
 from saq.error import report_exception
 from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
-from saq.util import local_time, create_timedelta
+from saq.query.config import SummaryDetailConfig
+from saq.util import create_timedelta, local_time
 from saq.util.time import is_timedelta_string
 
 if TYPE_CHECKING:
     from saq.collectors.hunter.manager import HuntManager
-
-SUMMARY_DETAIL_LIMIT_DEFAULT = 100
-
-VALID_SUMMARY_DETAIL_FORMATS = {SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT}
-
-
-class SummaryDetailConfig(BaseModel):
-    content: str
-    header: Optional[str] = None
-    format: str = SUMMARY_DETAIL_FORMAT_MD
-    limit: int = SUMMARY_DETAIL_LIMIT_DEFAULT
-    grouped: bool = False
-
-    @field_validator("format")
-    @classmethod
-    def validate_format(cls, value: str) -> str:
-        if value not in VALID_SUMMARY_DETAIL_FORMATS:
-            logging.error(
-                "invalid summary_detail format %s - must be one of %s - defaulting to %s",
-                value, VALID_SUMMARY_DETAIL_FORMATS, SUMMARY_DETAIL_FORMAT_MD,
-            )
-            return SUMMARY_DETAIL_FORMAT_MD
-        return value
 
 
 class HuntConfig(BaseModel):
