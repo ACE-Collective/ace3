@@ -384,7 +384,7 @@ class Hunt:
             self.last_executed_time = local_time()
             return result
         except RemoteApiError as e:
-            logging.error(f"{self} failed (remote API error): {e}")
+            logging.warning(f"{self} failed (remote API error): {e}")
             self.record_hunt_exception(e)
         except Exception as e:
             logging.error(f"{self} failed: {e}")
