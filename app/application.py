@@ -74,8 +74,19 @@ def dict_from_json_string(s):
 def pprint_json_dict(d):
     return json.dumps(d, indent=4, sort_keys=True)
 
+class _ExternalLinksTreeprocessor(markdown.treeprocessors.Treeprocessor):
+    """Add target="_blank" and rel="noopener noreferrer" to all links."""
+    def run(self, root):
+        for element in root.iter('a'):
+            element.set('target', '_blank')
+            element.set('rel', 'noopener noreferrer')
+
+class _ExternalLinksExtension(markdown.Extension):
+    def extendMarkdown(self, md):
+        md.treeprocessors.register(_ExternalLinksTreeprocessor(md), 'external_links', 15)
+
 def render_markdown(text):
-    return Markup(markdown.markdown(text, extensions=["extra"]))
+    return Markup(markdown.markdown(text, extensions=["extra", _ExternalLinksExtension()]))
 
 class CustomSQLAlchemy(SQLAlchemy):
     def apply_driver_hacks(self, app, info, options):

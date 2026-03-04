@@ -13,15 +13,11 @@ import saq.collectors.hunter.query_hunter as query_hunter_module
 import saq.util.time as saq_time
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
 from saq.collectors.hunter.query_hunter import (
-    ObservableMapping,
     QueryHunt,
     QueryHuntConfig,
-    RelationshipMapping,
-    RelationshipMappingTarget,
 )
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
-from saq.collectors.hunter.base_hunter import SummaryDetailConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     F_COMMAND_LINE,
@@ -35,7 +31,13 @@ from saq.constants import (
     SUMMARY_DETAIL_FORMAT_TXT,
 )
 from saq.environment import get_data_dir, get_global_runtime_settings
-from saq.observables.mapping import FieldsMode
+from saq.observables.mapping import (
+    FieldsMode,
+    ObservableMapping,
+    RelationshipMapping,
+    RelationshipMappingTarget,
+)
+from saq.query.config import SummaryDetailConfig
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import log_count, wait_for_log_count
 
@@ -701,8 +703,8 @@ def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, 
     import base64
 
     import saq.collectors.hunter.query_hunter
-    from saq.collectors.hunter.decoder import DecoderType
     from saq.constants import F_FILE
+    from saq.query.decoder import DecoderType
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
@@ -742,8 +744,8 @@ def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, 
 def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatch, tmpdir):
     """test F_FILE observable with ascii hex decoder"""
     import saq.collectors.hunter.query_hunter
-    from saq.collectors.hunter.decoder import DecoderType
     from saq.constants import F_FILE
+    from saq.query.decoder import DecoderType
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))

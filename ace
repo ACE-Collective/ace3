@@ -798,31 +798,44 @@ def correlate(args):
         root.load()
         display_analysis(root, include_context=True)
 
-        if args.alert:
+        if args.alert or args.submit_alerts_local:
             if root.whitelisted:
                 logging.info("{} was whitelisted".format(root))
                 continue
 
-            if get_config().global_settings.forced_alerts or root.has_detections():
-                from ace_api import upload
-                try:
-                    logging.info("uploading {}".format(root))
+            if args.force or get_global_runtime_settings().forced_alerts or root.has_detections():
+                # need to switch the mode to correlation
+                root.analysis_mode = ANALYSIS_MODE_CORRELATION
+                root.save()
 
-                    # need to switch the mode to correlation
-                    root.analysis_mode = ANALYSIS_MODE_CORRELATION
-                    root.save()
+                if args.submit_alerts_local:
+                    from saq.database.util.alert import ALERT
 
-                    remote_host = None # if left as None then the api call defaults it to ace_api.default_node
-                    if args.remote_host is not None:
-                        remote_host = args.remote_host
+                    try:
+                        logging.info("submitting {} as local alert".format(root))
+                        new_root = root.duplicate()
+                        new_root.move(storage_dir_from_uuid(new_root.uuid))
+                        new_root.save()
+                        ALERT(new_root)
+                        new_root.schedule()
+                    except Exception as e:
+                        logging.error("unable to submit local alert {}: {}".format(root, e))
+                else:
+                    from ace_api import upload
+                    try:
+                        logging.info("uploading {}".format(root))
 
-                    if args.remote_port is not None:
-                        remote_host = '{}:{}'.format(remote_host, args.remote_port)
+                        remote_host = None # if left as None then the api call defaults it to ace_api.default_node
+                        if args.remote_host is not None:
+                            remote_host = args.remote_host
 
-                    result = upload(root.uuid, root.storage_dir, remote_host=remote_host, ssl_verification=args.ssl_ca_path)
+                        if args.remote_port is not None:
+                            remote_host = '{}:{}'.format(remote_host, args.remote_port)
 
-                except Exception as e:
-                    logging.error("unable to upload {}: {}".format(root, e))
+                        result = upload(root.uuid, root.storage_dir, remote_host=remote_host, ssl_verification=args.ssl_ca_path)
+
+                    except Exception as e:
+                        logging.error("unable to upload {}: {}".format(root, e))
 
     sys.exit(0)
 
@@ -864,7 +877,11 @@ correlate_parser.add_argument('--instructions', required=False, dest='instructio
 correlate_parser.add_argument('--company-name', required=False, dest='company_name', default=None,
     help="Optionally assign ownership of this analysis to a company.")
 correlate_parser.add_argument('--alert', required=False, dest='alert', action='store_true', default=False,
-    help="Insert the correlation as an alert if it contains a detection point.")
+    help="Insert the correlation as an alert if it contains a detection point. Uploads to a remote ACE instance.")
+correlate_parser.add_argument('--submit-alerts-local', required=False, dest='submit_alerts_local', action='store_true', default=False,
+    help="Submit as alerts to the local ACE instance if the correlation contains a detection point.")
+correlate_parser.add_argument('--force', required=False, dest='force', action='store_true', default=False,
+    help="Force alert creation even if no detection points are found. Use with --alert or --submit-alerts-local.")
 correlate_parser.add_argument('--remote-host', required=False, dest='remote_host', default=None,
     help="Specify the remote host of the ACE system (defaults to the engine_ace configuration values).")
 correlate_parser.add_argument('--remote-port', required=False, dest='remote_port', default=None, type=int,

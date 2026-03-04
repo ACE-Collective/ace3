@@ -1,6 +1,6 @@
 import pytest
 
-from saq.collectors.hunter.event_processing import (
+from saq.query.event_processing import (
     _build_path_components,
     contains_unresolved_placeholders,
     interpolate_event_value,

@@ -2,6 +2,7 @@ from enum import Enum
 
 from saq.util.strings import decode_ascii_hex, decode_base64
 
+
 class DecoderType(Enum):
     BASE64 = "base64"
     ASCII_HEX = "ascii_hex"

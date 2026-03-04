@@ -30,7 +30,9 @@ from saq.configuration import get_config
 from saq.constants import AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.observables.mapping import BaseObservableMapping
+from saq.observables.mapping import ObservableMapping, apply_mapping_properties
+from saq.query.config import BaseQueryConfig, resolve_query
+from saq.query.extraction import extract_observables_from_event, process_summary_details
 from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
@@ -42,47 +44,15 @@ KEY_QUESTION = 'question'
 KEY_GUI_LINK = 'gui_link'
 
 
-class APIObservableMapping(BaseObservableMapping):
-    """Observable mapping configuration for API analyzers.
-
-    Supports mapping query result fields to observables with optional tags, directives,
-    and display settings.
-
-    Example configuration:
-        observable_mapping:
-          - field: src_ip
-            type: ipv4
-            tags:
-              - external
-              - suspicious
-            directives:
-              - analyze_ip
-            time: true
-
-          - fields: [user, username]
-            type: user
-            tags:
-              - from_splunk
-    """
-    pass
-
-
-class BaseAPIAnalyzerConfig(AnalysisModuleConfig):
+class BaseAPIAnalyzerConfig(AnalysisModuleConfig, BaseQueryConfig):
     question: str = Field(..., description="The question to use for the analysis.")
     summary: str = Field(..., description="The summary to use for the analysis.")
     api_name: str = Field(..., description="The name of the API config to use for the analysis.")
-    query: Optional[str] = Field(default=None, description="The query to use for the analysis.")
-    query_path: Optional[str] = Field(default=None, description="The path to the query file to use for the analysis.")
     wide_duration_before: Optional[str] = Field(default=None, description="The wide duration before the analysis.")
     wide_duration_after: Optional[str] = Field(default=None, description="The wide duration after the analysis.")
     narrow_duration_before: Optional[str] = Field(default=None, description="The narrow duration before the analysis.")
     narrow_duration_after: Optional[str] = Field(default=None, description="The narrow duration after the analysis.")
-    observable_mapping: list[APIObservableMapping] = Field(
-        default_factory=list,
-        description="Observable mapping configuration with support for tags, directives, and display settings."
-    )
     correlation_delay: Optional[str] = Field(default=None, description="The correlation delay for the analysis.")
-    max_result_count: Optional[int] = Field(default=None, description="The max result count for the analysis.")
     query_timeout: Optional[int] = Field(default=None, description="The query timeout for the analysis.")
     async_delay: Optional[int] = Field(default=None, description="The async delay for the analysis.")
 
@@ -255,14 +225,8 @@ class BaseAPIAnalyzer(AnalysisModule):
         self.api_defaults = get_config().get_api_query_defaults_config(self.config.api_name)
         self.api = self.config.api_name  # Used in logging statements
 
-        # load the query query for this instance
-        if self.config.query is not None:
-            self.target_query_base = self.config.query
-        elif self.config.query_path is not None:
-            with open(abs_path(self.config.query_path), 'r') as fp:
-                self.target_query_base = fp.read()
-        else:
-            raise RuntimeError(f"module {self} missing query or query_path settings in configuration")
+        # load the query for this instance
+        self.target_query_base = resolve_query(self.config.query, self.config.query_path, str(self))
 
         self.target_query = self.target_query_base
 
@@ -300,7 +264,7 @@ class BaseAPIAnalyzer(AnalysisModule):
         else:
             self.narrow_duration_after = create_timedelta(self.api_defaults.narrow_duration_after)
 
-        # observable mappings are now stored directly from config as list[APIObservableMapping]
+        # observable mappings are now stored directly from config as list[ObservableMapping]
         # the config type handles validation via Pydantic
 
         # are we delaying correlational queries?
@@ -387,31 +351,16 @@ class BaseAPIAnalyzer(AnalysisModule):
             except:
                 raise ValueError(f"{self.name} query is not valid JSON: {self.target_query}")
 
-    def _apply_mapping_properties(self, new_observable, mapping: APIObservableMapping) -> None:
+    def _apply_mapping_properties(self, new_observable, mapping: ObservableMapping) -> None:
         """Apply tags, directives, and display settings from a mapping to an observable."""
-        if new_observable is None:
-            return
-
-        for tag in mapping.tags:
-            new_observable.add_tag(tag)
-
-        for directive in mapping.directives:
-            new_observable.add_directive(directive)
-
-        if mapping.display_type is not None:
-            new_observable.display_type = mapping.display_type
-        if mapping.display_value is not None:
-            new_observable.display_value = mapping.display_value
+        apply_mapping_properties(new_observable, mapping)
 
     def extract_result_observables(self, analysis, result: dict, observable: Observable = None, result_time: Union[str, datetime.datetime] =
                                         None) -> None:
         """ Cycle through observable mappings and extract observables from query results.
 
-            Processes each configured observable mapping, checking the specified field(s) in the result.
-            For mappings with multiple fields:
-              - fields_mode='all' (default): all fields must be present; first field's value is used.
-              - fields_mode='any': each present field creates a separate observable.
-            Applies configured tags, directives, and display settings to created observables.
+            Uses the shared extraction pipeline from saq.query.extraction, then adds
+            extracted observables to the analysis and calls process_field_mapping hooks.
 
             Args:
                 analysis: the respective Analysis object to which we are adding observables.
@@ -420,21 +369,16 @@ class BaseAPIAnalyzer(AnalysisModule):
                 result_time: (optional) str or datetime.datetime that contains the datetime of query result
 
         """
-        for mapping in self.config.observable_mapping:
-            obs_time = result_time if mapping.time else None
 
-            for field_group in mapping.resolve_fields(lambda f: f in result and result[f] is not None):
-                # Use the first field in the group for the observable value
-                matched_field = field_group[0]
-                field_value = result[matched_field]
+        extracted, file_contents, relationships = extract_observables_from_event(
+            result, self.config.observable_mapping, result_time,
+            global_ignored_patterns=self.config._ignored_value_patterns if self.config.ignored_values else None,
+            value_filter=self.filter_observable_value,
+        )
 
-                if mapping.ignored_values and mapping.is_ignored_value(str(field_value)):
-                    continue
-
-                value = self.filter_observable_value(matched_field, mapping.type, field_value)
-                new_observable = analysis.add_observable_by_spec(mapping.type, value, o_time=obs_time)
-                self._apply_mapping_properties(new_observable, mapping)
-                self.process_field_mapping(analysis, new_observable, result, matched_field, result_time)
+        for ext in extracted:
+            analysis.add_observable(ext.observable)
+            self.process_field_mapping(analysis, ext.observable, result, ext.matched_field, result_time)
 
     def filter_observable_value(self, result_field, observable_type, observable_value):
         """Called for each observable value added to analysis.
@@ -584,6 +528,17 @@ class BaseAPIAnalyzer(AnalysisModule):
         logging.debug('Processing query results')
         self.process_query_results(analysis.query_results, analysis, observable)
         self.process_finalize(analysis, observable)
+
+        if self.config.summary_details:
+            root = self.get_root()
+            results = analysis.query_results if isinstance(analysis.query_results, list) else [analysis.query_results]
+            process_summary_details(
+                self.config.summary_details,
+                results,
+                add_detail_fn=lambda content, header, fmt: root.add_summary_detail(
+                    header=header, content=content, format=fmt),
+            )
+
         logging.info(f'{self.name} took {analysis.query_elapsed:.2f} seconds')
 
         if kwargs.get('return_analysis'):

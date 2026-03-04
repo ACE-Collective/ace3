@@ -8,35 +8,33 @@ import logging
 import os
 import os.path
 import re
-
 from tempfile import mkstemp
 from typing import Optional
 
-from glom import PathAccessError
-from pydantic import BaseModel, Field, model_validator
+import pytz
+from pydantic import Field
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
-from saq.collectors.hunter.base_hunter import HuntConfig, SummaryDetailConfig
-from saq.collectors.hunter.decoder import DecoderType, decode_value
-from saq.collectors.hunter.event_processing import FIELD_LOOKUP_TYPE_KEY, contains_unresolved_placeholders, extract_event_value, interpolate_event_value
+from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
+from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_SIGNATURE_ID
+from saq.constants import F_SIGNATURE_ID
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
 from saq.observables.mapping import (
-    BaseObservableMapping,
-    FieldsMode,
-    compile_ignored_value_patterns as _compile_ignored_value_patterns,
-    is_ignored_value as _is_ignored_value,
+    ObservableMapping,
+    RelationshipMapping,
 )
-
-import pytz
-
-from saq.collectors.hunter import Hunt, write_persistence_data, read_persistence_data
-from saq.util import local_time, create_timedelta, abs_path
+from saq.query.config import BaseQueryConfig, SummaryDetailConfig, load_query_from_file
+from saq.query.event_processing import (
+    contains_unresolved_placeholders,
+    interpolate_event_value,
+)
+from saq.query.extraction import extract_observables_from_event
+from saq.util import abs_path, create_timedelta, local_time
 
 QUERY_DETAILS_SEARCH_ID = "search_id"
 QUERY_DETAILS_SEARCH_LINK = "search_link"
@@ -45,37 +43,7 @@ QUERY_DETAILS_EVENTS = "events"
 
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
-class RelationshipMappingTarget(BaseModel):
-    type: str = Field(..., description="The type of target to create")
-    value: str = Field(..., description="The value of the target")
-
-class RelationshipMapping(BaseModel):
-    type: str = Field(..., description="The type of relationship to create")
-    target: RelationshipMappingTarget = Field(..., description="The target of the relationship")
-
-class ObservableMapping(BaseObservableMapping):
-    field_lookup_type: Optional[str] = Field(default=FIELD_LOOKUP_TYPE_KEY, description="The type of lookup to perform for the fields.")
-    value: Optional[str] = Field(default=None, description="OPTIONAL value to use for the observable")
-    file_name: Optional[str] = Field(default=None, description="OPTIONAL if the type is F_FILE, the name of the file to use for the observable")
-    file_decoder: Optional[DecoderType] = Field(default=None, description="OPTIONAL if the type is F_FILE, the decoder to use for the observable")
-    volatile: bool = Field(default=False, description="Whether to add the observable as volatile. Volatile observables are added for the purposes of detection.")
-    relationships: list[RelationshipMapping] = Field(default_factory=list, description="The relationships to add to the observable")
-
-    @model_validator(mode='after')
-    def validate_fields_mode_any_with_value(self):
-        """Validate that fields_mode=ANY cannot be used with a custom value template."""
-        if self.fields_mode == FieldsMode.ANY and self.value is not None:
-            raise ValueError("fields_mode='any' cannot be used with a custom 'value' template")
-        return self
-
-    @model_validator(mode='after')
-    def validate_display_value_for_file_type(self):
-        """validate that display_value is not set for file type observables"""
-        if self.type == F_FILE and self.display_value is not None:
-            raise ValueError(f"display_value is not supported for file type observables (type={self.type})")
-        return self
-
-class QueryHuntConfig(HuntConfig):
+class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
     max_time_range: Optional[str] = Field(default=None, description="The maximum time range to query over.")
     full_coverage: bool = Field(..., description="Whether to run the query over the full coverage of the time range.")
@@ -84,69 +52,10 @@ class QueryHuntConfig(HuntConfig):
     group_by: Optional[str] = Field(default=None, description="The field to group the results by.")
     description_field: Optional[str] = Field(default=None, description="The event field to use for the alert description suffix. If not set, the group_by field value is used.")
     query_file_path: Optional[str] = Field(alias="search", default=None, description="The path to the search query file.")
-    query: Optional[str] = Field(default=None, description="The search query to execute.")
-    observable_mapping: list[ObservableMapping] = Field(default_factory=list, description="The mapping of fields to observables.")
     max_result_count: Optional[int] = Field(default_factory=lambda: get_config().query_hunter.max_result_count, description="The maximum number of results to return.")
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
-    ignored_values: list[str] = Field(default_factory=list, description="A global list of regex patterns to ignore that applies to all observable mappings. Patterns are matched with re.fullmatch().")
     dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
-    _ignored_value_patterns: list[re.Pattern] = []
-
-    @model_validator(mode='after')
-    def compile_ignored_value_patterns(self):
-        """Pre-compile ignored_values into regex patterns."""
-        self._ignored_value_patterns = _compile_ignored_value_patterns(self.ignored_values)
-        return self
-
-    def is_ignored_value(self, value: str) -> bool:
-        """Check if a value matches any ignored_values regex pattern."""
-        return _is_ignored_value(self._ignored_value_patterns, value)
-
-class FileContent(BaseModel):
-    file_name: str = Field(..., description="The name of the file as defined by the observable mapping.")
-    content: bytes = Field(..., description="The content of the file.")
-    directives: list[str] = Field(default_factory=list, description="The directives to add to the file observable.")
-    tags: list[str] = Field(default_factory=list, description="The tags to add to the file observable.")
-    volatile: bool = Field(default=False, description="Whether to add the observable as volatile.")
-    display_type: Optional[str] = Field(default=None, description="The display type to use for the file observable.")
-    display_value: Optional[str] = Field(default=None, description="The display value to use for the file observable.")
-
-def interpret_event_value(observable_mapping: ObservableMapping, event: dict, field_override: str = None) -> list[str]:
-    """Interprets the event value(s) for the given event and observable mapping.
-
-    Returns a list of observed, interpolated values.
-
-    Args:
-        observable_mapping: The observable mapping configuration.
-        event: The event dict to extract values from.
-        field_override: If provided, use this field name instead of fields[0] for non-interpolated values.
-    """
-    assert isinstance(observable_mapping, ObservableMapping)
-    assert isinstance(event, dict)
-
-    result: list[str] = []
-
-    if not observable_mapping.fields:
-        raise ValueError(f"no fields specified for observable mapping {observable_mapping}")
-
-    # is the value for this mapping not computed?
-    if observable_mapping.value is None:
-        # then we just take the value
-        field_name = field_override if field_override is not None else observable_mapping.fields[0]
-        observed_value = event[field_name]
-    else:
-        # otherwise we interpolate the value from the event
-        observed_value = interpolate_event_value(observable_mapping.value, event)
-
-    # we always return a list of values, even if there is only one
-    if not isinstance(observed_value, list):
-        result = [observed_value]
-    else:
-        result = observed_value
-
-    # if any of the results are bytes, convert them into strings using utf-8
-    return [_.decode("utf-8", errors="ignore") if isinstance(_, bytes) else str(_) for _ in result]
 
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -327,13 +236,7 @@ class QueryHunt(Hunt):
         return local_time() >= self.next_execution_time
 
     def load_query_from_file(self, path: str) -> str:
-        with open(abs_path(path), 'r') as fp:
-            result = fp.read()
-
-            #if self.strip_comments:
-                #result = COMMENT_REGEX.sub('', result)
-
-        return result
+        return load_query_from_file(path)
     
     def load_hunt_config(self, path: str) -> tuple[QueryHuntConfig, set[str]]:
         return load_from_yaml(path, QueryHuntConfig)
@@ -457,88 +360,6 @@ class QueryHunt(Hunt):
                     root.add_pivot_link(pivot_link_url_value, pivot_link.get("icon", None), pivot_link_text_value)
 
         return root
-
-    def _process_observable_values(self, observable_mapping, event, event_time, observables, file_contents,
-                                     relationship_tracking, field_override=None):
-        """Process a single observable mapping for an event, creating observables or file contents.
-
-        Args:
-            observable_mapping: The ObservableMapping configuration.
-            event: The event dict.
-            event_time: The event timestamp.
-            observables: List to append created observables to.
-            file_contents: List to append file contents to.
-            relationship_tracking: Dict tracking observable relationships.
-            field_override: If provided, use this field name for non-interpolated value extraction.
-        """
-        decoded_observed_value: Optional[bytes] = None
-
-        for observed_value in interpret_event_value(observable_mapping, event, field_override=field_override):
-            if not observed_value:
-                continue
-
-            if self.config.ignored_values and self.config.is_ignored_value(observed_value):
-                continue
-
-            if observable_mapping.ignored_values and observable_mapping.is_ignored_value(observed_value):
-                continue
-
-            if observable_mapping.type == F_FILE:
-                if observable_mapping.file_decoder is not None:
-                    decoded_observed_value = decode_value(observed_value, observable_mapping.file_decoder)
-
-                if decoded_observed_value is None:
-                    decoded_observed_value = observed_value.encode('utf-8')
-
-                for target_file_name in interpolate_event_value(observable_mapping.file_name, event):
-                    interpolated_directives = []
-                    for directive in observable_mapping.directives:
-                        interpolated_directives.extend(interpolate_event_value(directive, event))
-
-                    interpolated_tags = []
-                    for tag in observable_mapping.tags:
-                        interpolated_tags.extend(interpolate_event_value(tag, event))
-
-                    file_contents.append(FileContent(
-                        file_name=target_file_name,
-                        content=decoded_observed_value,
-                        directives=interpolated_directives,
-                        tags=interpolated_tags,
-                        volatile=observable_mapping.volatile,
-                        display_type=observable_mapping.display_type,
-                        display_value=observable_mapping.display_value
-                    ))
-
-                continue
-
-            observable = create_observable(observable_mapping.type, observed_value, volatile=observable_mapping.volatile)
-
-            if observable is None:
-                logging.warning(f"unable to create observable {observable_mapping.type} with value {observed_value} for event {event} in hunt {self}")
-                continue
-
-            if observable_mapping.time:
-                observable.time = event_time
-
-            for directive in observable_mapping.directives:
-                for directive_value in interpolate_event_value(directive, event):
-                    observable.add_directive(directive_value)
-
-            for tag in observable_mapping.tags:
-                for tag_value in interpolate_event_value(tag, event):
-                    observable.add_tag(tag_value)
-
-            if observable_mapping.display_type is not None:
-                observable.display_type = observable_mapping.display_type
-
-            if observable_mapping.display_value is not None:
-                observable.display_value = observable_mapping.display_value
-
-            if observable_mapping.relationships:
-                relationship_tracking[observable] = observable_mapping.relationships
-
-            if observable not in observables:
-                observables.append(observable)
 
     def _process_summary_details(self, query_results: list[dict], event_submission_map: dict[int, list[Submission]]):
         """Process all summary_details definitions against the query results."""
@@ -697,27 +518,20 @@ class QueryHunt(Hunt):
             event_time = self.extract_event_timestamp(event) or local_time()
             event = self.wrap_event(event)
 
-            # pull the observables out of this event
+            # use shared extraction pipeline
+            extracted, file_contents, event_relationships = extract_observables_from_event(
+                event, self.observable_mapping, event_time,
+                global_ignored_patterns=self.config._ignored_value_patterns if self.config.ignored_values else None,
+            )
+
+            # deduplicate observables (shared extraction may return duplicates across mappings)
             observables: list[Observable] = []
+            for ext in extracted:
+                if ext.observable not in observables:
+                    observables.append(ext.observable)
 
-            # pull file contents out separately from observables
-            file_contents: list[FileContent] = []
-
-            for observable_mapping in self.observable_mapping:
-                def _is_field_present(field_name, _event=event, _mapping=observable_mapping):
-                    try:
-                        success, _ = extract_event_value(_event, _mapping.field_lookup_type, field_name)
-                        return success
-                    except PathAccessError:
-                        return False
-
-                for field_group in observable_mapping.resolve_fields(_is_field_present):
-                    # ANY mode: field_group is a single field, use as field_override
-                    # ALL mode: field_group is all fields, no override needed (value template uses all)
-                    field_override = field_group[0] if len(field_group) == 1 else None
-                    self._process_observable_values(
-                        observable_mapping, event, event_time, observables, file_contents,
-                        relationship_tracking, field_override=field_override)
+            # merge relationship tracking
+            relationship_tracking.update(event_relationships)
 
             signature_id_observable = create_observable(F_SIGNATURE_ID, self.uuid)
 

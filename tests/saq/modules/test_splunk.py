@@ -6,13 +6,13 @@ import pytest
 from saq.analysis import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_SPLUNK_API, F_EMAIL_SUBJECT, F_IPV4
-from saq.modules.api_analysis import AnalysisDelay, APIObservableMapping
+from saq.modules.api_analysis import AnalysisDelay
 from saq.modules.splunk import (
     SplunkAPIAnalysis,
     SplunkAPIAnalyzer,
     SplunkAPIAnalyzerConfig,
 )
-from saq.observables.mapping import FieldsMode
+from saq.observables.mapping import FieldsMode, ObservableMapping
 from tests.saq.mock_datetime import MOCK_NOW
 
 
@@ -163,19 +163,19 @@ def test_splunk_api_analyzer_escape_value(test_context):
 
 @pytest.mark.unit
 def test_api_observable_mapping_model():
-    """Test APIObservableMapping Pydantic model validation."""
+    """Test ObservableMapping Pydantic model validation."""
     # Test with single field
-    mapping = APIObservableMapping(field="src_ip", type="ipv4")
+    mapping = ObservableMapping(field="src_ip", type="ipv4")
     assert mapping.get_fields() == ["src_ip"]
     assert mapping.tags == []
     assert mapping.directives == []
 
     # Test with multiple fields
-    mapping = APIObservableMapping(fields=["user", "username"], type="user")
+    mapping = ObservableMapping(fields=["user", "username"], type="user")
     assert mapping.get_fields() == ["user", "username"]
 
     # Test with tags and directives
-    mapping = APIObservableMapping(
+    mapping = ObservableMapping(
         field="src_ip",
         type="ipv4",
         tags=["external", "suspicious"],
@@ -194,7 +194,7 @@ def test_api_observable_mapping_model():
 
     # Test validation error when neither field nor fields is specified
     with pytest.raises(ValueError, match="Either 'field' or 'fields' must be specified"):
-        APIObservableMapping(type="ipv4")
+        ObservableMapping(type="ipv4")
 
 
 @pytest.mark.unit
@@ -215,7 +215,7 @@ def test_extract_result_observables_with_tags(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     field="src_ip",
                     type="ipv4",
                     tags=["external", "from_splunk"],
@@ -234,7 +234,7 @@ def test_extract_result_observables_with_tags(test_context):
 
         # Mock result from Splunk
         result = {"src_ip": "10.0.0.1", "other_field": "ignored"}
-        result_time = datetime.datetime.now()
+        result_time = datetime.datetime.now(datetime.timezone.utc)
 
         # Extract observables
         analyzer.extract_result_observables(analysis, result, observable, result_time)
@@ -266,7 +266,7 @@ def test_extract_result_observables_multiple_fields(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["user", "username", "account"],
                     type="user"
                 )
@@ -305,7 +305,7 @@ def test_extract_result_observables_ignored_values(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     field="src_ip",
                     type="ipv4",
                     ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
@@ -351,7 +351,7 @@ def test_extract_result_observables_ignored_values_regex(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     field="src_ip",
                     type="ipv4",
                     ignored_values=[r"10\.0\..*"]
@@ -399,7 +399,7 @@ def test_extract_result_observables_fields_mode_any(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["src_ip", "dst_ip"],
                     type="ipv4",
                     fields_mode=FieldsMode.ANY,
@@ -442,7 +442,7 @@ def test_extract_result_observables_fields_mode_any_partial(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["src_ip", "dst_ip"],
                     type="ipv4",
                     fields_mode=FieldsMode.ANY,
@@ -481,7 +481,7 @@ def test_extract_result_observables_fields_mode_all(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["src_ip", "dst_ip"],
                     type="ipv4",
                     fields_mode=FieldsMode.ALL,
@@ -520,7 +520,7 @@ def test_extract_result_observables_fields_mode_all_missing(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["src_ip", "dst_ip"],
                     type="ipv4",
                     fields_mode=FieldsMode.ALL,
@@ -558,7 +558,7 @@ def test_extract_result_observables_fields_mode_all_no_match(test_context):
             api_name="test_api",
             query="index=test",
             observable_mapping=[
-                APIObservableMapping(
+                ObservableMapping(
                     fields=["src_ip", "dst_ip"],
                     type="ipv4",
                     fields_mode=FieldsMode.ALL,
@@ -581,22 +581,22 @@ def test_extract_result_observables_fields_mode_all_no_match(test_context):
 
 @pytest.mark.unit
 def test_api_observable_mapping_fields_mode_validation():
-    """Test that APIObservableMapping accepts valid fields_mode values."""
+    """Test that ObservableMapping accepts valid fields_mode values."""
     # Default is ALL
-    mapping = APIObservableMapping(field="src_ip", type="ipv4")
+    mapping = ObservableMapping(field="src_ip", type="ipv4")
     assert mapping.fields_mode == FieldsMode.ALL
 
     # Explicit ANY
-    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ANY)
+    mapping = ObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ANY)
     assert mapping.fields_mode == FieldsMode.ANY
 
     # Explicit ALL
-    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ALL)
+    mapping = ObservableMapping(field="src_ip", type="ipv4", fields_mode=FieldsMode.ALL)
     assert mapping.fields_mode == FieldsMode.ALL
 
     # String values should also work (Pydantic coercion)
-    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode="any")
+    mapping = ObservableMapping(field="src_ip", type="ipv4", fields_mode="any")
     assert mapping.fields_mode == FieldsMode.ANY
 
-    mapping = APIObservableMapping(field="src_ip", type="ipv4", fields_mode="all")
+    mapping = ObservableMapping(field="src_ip", type="ipv4", fields_mode="all")
     assert mapping.fields_mode == FieldsMode.ALL
