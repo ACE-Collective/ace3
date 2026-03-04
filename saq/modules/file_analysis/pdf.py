@@ -2,6 +2,7 @@ import logging
 import os
 from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Type, override
+import pikepdf
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
@@ -131,6 +132,38 @@ class PDFAnalyzer(AnalysisModule):
                 file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                 file_observable.exclude_analysis(self)
                 file_observable.add_yara_meta("type", "document.pdf.rendered")
+
+        # extract URIs from PDF annotations using pikepdf
+        # this handles AES-encrypted PDFs that ghostscript may not fully decrypt
+        uris_output_file = f"{local_file_path}.annotation_uris.txt"
+        try:
+            pdf = pikepdf.open(local_file_path)
+            uris = []
+            for page in pdf.pages:
+                annots = page.get('/Annots')
+                if not annots:
+                    continue
+                for annot in annots:
+                    action = annot.get('/A')
+                    if action:
+                        uri = action.get('/URI')
+                        if uri:
+                            uris.append(str(uri))
+            pdf.close()
+
+            if uris:
+                with open(uris_output_file, 'w') as fp:
+                    fp.write('\n'.join(uris))
+
+                file_observable = analysis.add_file_observable(uris_output_file, volatile=True)
+                if file_observable:
+                    file_observable.redirection = _file
+                    file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+                    file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+                    file_observable.exclude_analysis(self)
+                    file_observable.add_yara_meta("type", "document.pdf.annotation_uris")
+        except Exception as e:
+            logging.warning(f"pikepdf annotation extraction failed for {local_file_path}: {e}")
 
         return AnalysisExecutionResult.COMPLETED
 

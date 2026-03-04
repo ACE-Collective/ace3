@@ -1,4 +1,4 @@
-ARG PYTHON_DOCKER_IMAGE=python:3.12-bookworm
+ARG PYTHON_DOCKER_IMAGE=python:3.12-trixie
 FROM ${PYTHON_DOCKER_IMAGE}
 
 ARG USE_UNPINNED_REQUIREMENTS=false
@@ -36,11 +36,13 @@ RUN groupadd ace -g $SAQ_GROUP_ID && \
 # update sources to include contrib, non-free, and backports
 # Note: de4dot uses mono-runtime from Debian - dotnet runtime not needed.
 RUN sed -i -e '/^Components: main$/ s/$/ contrib non-free/' /etc/apt/sources.list.d/debian.sources && \
-    sed -i -e '/^Suites: bookworm bookworm-updates$/ s/$/ bookworm-backports/' /etc/apt/sources.list.d/debian.sources
+    sed -i -e '/^Suites: trixie trixie-updates$/ s/$/ trixie-backports/' /etc/apt/sources.list.d/debian.sources
 
 # install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        7zip \
+        7zip-rar \
         apt-transport-https \
         apt-utils \
         automake \
@@ -93,16 +95,12 @@ RUN apt-get update && \
         net-tools \
         nginx \
         nmap \
-        openjdk-17-jre \
-        p7zip-full \
-        p7zip-rar \
         pkg-config \
         poppler-utils \
-        rng-tools \
+        rng-tools-debian \
         rsync \
         screen \
         smbclient \
-        software-properties-common \
         ssdeep \
         strace \
         tcpdump \
@@ -132,7 +130,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # install microsoft's official package signing key
-RUN curl -fsSLk https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb && \
+RUN curl -fsSLk https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb && \
     dpkg -i /tmp/packages-microsoft-prod.deb && \
     rm -f /tmp/packages-microsoft-prod.deb
 
