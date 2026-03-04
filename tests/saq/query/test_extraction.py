@@ -295,3 +295,97 @@ def test_process_summary_details_unresolved_placeholders_skipped():
     process_summary_details(configs, results, add_detail)
 
     assert len(details) == 0
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_basic():
+    """Test grouped summary details combine multiple events into one detail."""
+    configs = [
+        SummaryDetailConfig(content="[Link](${url})", header="Links", grouped=True),
+    ]
+    results = [
+        {"url": "https://example.com/1"},
+        {"url": "https://example.com/2"},
+        {"url": "https://example.com/3"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header, "format": fmt})
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0]["header"] == "Links"
+    lines = details[0]["content"].split("\n")
+    assert len(lines) == 3
+    assert lines[0] == "[Link](https://example.com/1)"
+    assert lines[2] == "[Link](https://example.com/3)"
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_limit(caplog):
+    """Test grouped summary details respect limit and log a warning."""
+    configs = [
+        SummaryDetailConfig(content="${value}", grouped=True, limit=2),
+    ]
+    results = [{"value": f"item-{i}"} for i in range(5)]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    lines = details[0].split("\n")
+    assert len(lines) == 2
+    assert lines == ["item-0", "item-1"]
+    assert "summary detail limit (2) reached" in caplog.text
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_no_matching_events():
+    """Test grouped summary details produce no detail when all events fail interpolation."""
+    configs = [
+        SummaryDetailConfig(content="${missing}", grouped=True),
+    ]
+    results = [{"other": "value"}, {"other": "value2"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
+def test_process_summary_details_mixed_grouped_and_ungrouped():
+    """Test both grouped and ungrouped configs in a single call."""
+    configs = [
+        SummaryDetailConfig(content="[Link](${url})", header="Links", grouped=True),
+        SummaryDetailConfig(content="IP: ${ip}"),
+    ]
+    results = [
+        {"url": "https://example.com/1", "ip": "10.0.0.1"},
+        {"url": "https://example.com/2", "ip": "10.0.0.2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header})
+
+    process_summary_details(configs, results, add_detail)
+
+    # 1 grouped detail + 2 ungrouped details = 3 total
+    assert len(details) == 3
+    # first detail is the grouped one
+    assert details[0]["header"] == "Links"
+    assert "\n" in details[0]["content"]
+    # next two are ungrouped
+    assert details[1]["content"] == "IP: 10.0.0.1"
+    assert details[2]["content"] == "IP: 10.0.0.2"
