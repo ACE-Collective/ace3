@@ -71,7 +71,7 @@ requests-oauthlib==2.0.0
 shodan==1.31.0
 splunk-sdk==2.1.1
 SQLAlchemy==2.0.48
-tabulate==0.9.0
+tabulate==0.10.0
 tld==0.13.1
 tzlocal==5.3.1
 urlfinderlib==0.20.1
