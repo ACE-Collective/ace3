@@ -3,11 +3,14 @@
 import logging
 import re
 from enum import Enum
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 from saq.query.decoder import DecoderType
+
+if TYPE_CHECKING:
+    from saq.analysis.observable import Observable
 
 
 class FieldsMode(str, Enum):
@@ -161,7 +164,12 @@ class ObservableMapping(BaseObservableMapping):
         return self
 
 
-def apply_mapping_properties(observable, mapping, interpolate_fn=None, event=None):
+def apply_mapping_properties(
+    observable: "Observable",
+    mapping: BaseObservableMapping,
+    interpolate_fn: Optional[Callable[[str, dict], list[str]]] = None,
+    event: Optional[dict] = None,
+) -> None:
     """Apply tags, directives, and display settings from a mapping to an observable.
 
     If interpolate_fn and event are provided, tags/directives are interpolated
