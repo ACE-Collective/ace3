@@ -232,32 +232,83 @@ def process_summary_details(
         add_detail_fn: Callback(content, header, format) to add a summary detail.
     """
     for sd_config in summary_details:
-        count = 0
-        for event in query_results:
-            content_values = interpolate_event_value(sd_config.content, event)
-            if not content_values:
+        if sd_config.grouped:
+            _process_grouped_summary_detail(sd_config, query_results, add_detail_fn)
+        else:
+            _process_ungrouped_summary_detail(sd_config, query_results, add_detail_fn)
+
+
+def _process_ungrouped_summary_detail(
+    sd_config: SummaryDetailConfig,
+    query_results: list[dict],
+    add_detail_fn: Callable[[str, Optional[str], str], None],
+):
+    """Process a single ungrouped summary detail config — one detail per event."""
+    count = 0
+    for event in query_results:
+        content_values = interpolate_event_value(sd_config.content, event)
+        if not content_values:
+            continue
+        content = content_values[0]
+        if contains_unresolved_placeholders(content):
+            continue
+
+        header = None
+        if sd_config.header is not None:
+            header_values = interpolate_event_value(sd_config.header, event)
+            if not header_values:
                 continue
-            content = content_values[0]
-            if contains_unresolved_placeholders(content):
+            header = header_values[0]
+            if contains_unresolved_placeholders(header):
                 continue
 
-            header = None
-            if sd_config.header is not None:
-                header_values = interpolate_event_value(sd_config.header, event)
-                if not header_values:
-                    continue
-                header = header_values[0]
-                if contains_unresolved_placeholders(header):
-                    continue
-
-            if count >= sd_config.limit:
-                if count == sd_config.limit:
-                    logging.warning(
-                        "summary detail limit (%s) reached for definition content=%s",
-                        sd_config.limit, sd_config.content,
-                    )
-                count += 1
-                continue
-
-            add_detail_fn(content, header, sd_config.format)
+        if count >= sd_config.limit:
+            if count == sd_config.limit:
+                logging.warning(
+                    "summary detail limit (%s) reached for definition content=%s",
+                    sd_config.limit, sd_config.content,
+                )
             count += 1
+            continue
+
+        add_detail_fn(content, header, sd_config.format)
+        count += 1
+
+
+def _process_grouped_summary_detail(
+    sd_config: SummaryDetailConfig,
+    query_results: list[dict],
+    add_detail_fn: Callable[[str, Optional[str], str], None],
+):
+    """Process a grouped summary detail config — collect lines into one detail."""
+    lines: list[str] = []
+    header: Optional[str] = None
+    limit_warned = False
+
+    for event in query_results:
+        content_values = interpolate_event_value(sd_config.content, event)
+        if not content_values:
+            continue
+        content = content_values[0]
+        if contains_unresolved_placeholders(content):
+            continue
+
+        # resolve header from first contributing event only
+        if header is None and sd_config.header is not None:
+            header_values = interpolate_event_value(sd_config.header, event)
+            if header_values and not contains_unresolved_placeholders(header_values[0]):
+                header = header_values[0]
+
+        if len(lines) >= sd_config.limit:
+            if not limit_warned:
+                logging.warning(
+                    "summary detail limit (%s) reached for definition content=%s",
+                    sd_config.limit, sd_config.content,
+                )
+                limit_warned = True
+            continue
+
+        lines.append(content)
+
+    if lines:
+        add_detail_fn("\n".join(lines), header, sd_config.format)

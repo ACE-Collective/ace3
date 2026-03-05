@@ -36,6 +36,7 @@ oletools==0.60.2
 opencv-python==4.13.0.92
 pcodedmp==1.2.6
 pefile==2024.8.26
+pikepdf==10.3.0
 Pillow==12.1.1
 plyara==2.2.8
 progress==1.6.1
@@ -70,7 +71,7 @@ requests-oauthlib==2.0.0
 shodan==1.31.0
 splunk-sdk==2.1.1
 SQLAlchemy==2.0.48
-tabulate==0.9.0
+tabulate==0.10.0
 tld==0.13.1
 tzlocal==5.3.1
 urlfinderlib==0.20.1

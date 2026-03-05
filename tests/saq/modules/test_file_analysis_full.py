@@ -67,9 +67,9 @@ def test_file_analysis_000_url_extraction_001_pdfparser(root_analysis, datadir):
     assert file_observable
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
-    # this now has 2 file observables since we also run ghostscript now
+    # this now has 3 file observables since we also run ghostscript and pikepdf now
     pdfparser_files = pdf_analysis.get_observables_by_type(F_FILE)
-    assert len(pdfparser_files) == 2
+    assert len(pdfparser_files) == 3
     pdfparser_file = [_ for _ in pdfparser_files if not _.file_name.endswith(".gs.pdf")][0]
     url_analysis = pdfparser_file.get_and_load_analysis(URLExtractionAnalysis)
     assert url_analysis
@@ -98,11 +98,10 @@ def test_file_analysis_000_url_extraction_002_gs(root_analysis, datadir):
     assert file_observable
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
-    # should have a single file observable
     pdfparser_files = pdf_analysis.get_observables_by_type(F_FILE)
-    assert len(pdfparser_files) == 2
-    pdfparser_file = [_ for _ in pdfparser_files if _.file_name.endswith(".gs.pdf")][0]
-    url_analysis = pdfparser_file.get_and_load_analysis(URLExtractionAnalysis)
+    assert len(pdfparser_files) == 3
+    annotation_uris_file = [_ for _ in pdfparser_files if _.file_name.endswith(".annotation_uris.txt")][0]
+    url_analysis = annotation_uris_file.get_and_load_analysis(URLExtractionAnalysis)
     assert url_analysis
     # should have a bad url in it
     bad_url = 'http://12tkj5.my.id/blog/642ec2b466aed.zip'

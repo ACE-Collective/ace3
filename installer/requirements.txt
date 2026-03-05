@@ -36,6 +36,7 @@ oletools
 opencv-python
 pcodedmp
 pefile
+pikepdf
 Pillow
 plyara
 progress
