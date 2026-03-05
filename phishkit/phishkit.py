@@ -8,7 +8,7 @@ import argparse
 import logging
 import mimetypes
 import os
-from subprocess import PIPE, Popen
+from subprocess import PIPE, Popen, TimeoutExpired
 import uuid
 from celery import Celery
 import shutil
@@ -75,7 +75,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(file_path: str) -> str:
+def scan_file(file_path: str, timeout: int = 15) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -112,7 +112,12 @@ def scan_file(file_path: str) -> str:
         stderr=PIPE,
         text=True,
     )
-    _stdout, _stderr = process.communicate(timeout=15)
+    try:
+        _stdout, _stderr = process.communicate(timeout=timeout)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
 
     for line in _stdout.splitlines():
         logging.info(f"stdout> {line}")
@@ -133,7 +138,7 @@ def scan_file(file_path: str) -> str:
     return _process_output(job_id, output_dir)
 
 @app.task
-def scan_url(url: str) -> str:
+def scan_url(url: str, timeout: int = 15) -> str:
     # create an output directory for the scan
     job_id = str(uuid.uuid4())
     output_dir = f"/phishkit/output/{job_id}"
@@ -160,9 +165,12 @@ def scan_url(url: str) -> str:
         stderr=PIPE,
         text=True,
     )
-    _stdout, _stderr = process.communicate(timeout=15)
-    if process.returncode != 0:
-        raise Exception(f"scan failed: {_stderr}")
+    try:
+        _stdout, _stderr = process.communicate(timeout=timeout)
+    except TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
 
     for line in _stdout.splitlines():
         logging.info(f"stdout> {line}")
@@ -179,6 +187,9 @@ def scan_url(url: str) -> str:
 
     with open(os.path.join(output_dir, "exit.code"), "w") as fp:
         fp.write(str(process.returncode))
+
+    if process.returncode != 0:
+        raise Exception(f"scan failed: {_stderr}")
 
     return _process_output(job_id, output_dir)
 

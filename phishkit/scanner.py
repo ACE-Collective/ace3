@@ -9,9 +9,10 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pathlib import Path
+from urllib.parse import urlparse
 
 from seleniumbase import SB  # type: ignore
 import mycdp  # type: ignore
@@ -38,6 +39,7 @@ class Scanner:
     def __init__(self):
         self.requests = []
         self.bytes_downloaded = 0
+        self.domain_stats = {}  # domain -> {bytes_downloaded, request_count, response_count, first_request_time, last_finished_time}
 
         self.BLOCKED_EXT = ['.png', '.jpg', 'jpeg', '.gif', '.svg', '.mp4', '.mkv', '.avi', '.apk', '.woff2', '.img', '.css', '.ico']
         self.BLOCKED_URLS = [
@@ -72,6 +74,40 @@ class Scanner:
             'cdn.flashtalking.com'  # High usage 2024-09-30
         ]
 
+    def _get_domain_stats(self, domain: str) -> dict:
+        if domain not in self.domain_stats:
+            self.domain_stats[domain] = {
+                "bytes_downloaded": 0,
+                "request_count": 0,
+                "response_count": 0,
+                "first_request_time": None,
+                "last_finished_time": None,
+            }
+        return self.domain_stats[domain]
+
+    def _compute_metrics(self, url: str, scan_duration: float) -> dict:
+        """Compute per-domain metrics from collected requests."""
+        domain_metrics = {}
+        for domain, stats in self.domain_stats.items():
+            entry = {
+                "bytes_downloaded": stats["bytes_downloaded"],
+                "request_count": stats["request_count"],
+                "response_count": stats["response_count"],
+            }
+            if stats["first_request_time"] and stats["last_finished_time"]:
+                entry["duration_seconds"] = round(stats["last_finished_time"] - stats["first_request_time"], 2)
+            else:
+                entry["duration_seconds"] = 0
+            domain_metrics[domain] = entry
+
+        return {
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "url_scanned": url,
+            "total_bytes_downloaded": self.bytes_downloaded,
+            "scan_duration_seconds": round(scan_duration, 2),
+            "domain_stats": domain_metrics,
+        }
+
     def check_dom_filter(self, url: str) -> bool:
         """Returns True if the URL should NOT be collected, False otherwise."""
         for blocked_url in self.BLOCKED_URLS:
@@ -85,7 +121,7 @@ class Scanner:
 
         if '.' + ext in self.BLOCKED_EXT:
             return True
-            
+
         return False
 
     async def receive_handler(self, event: mycdp.network.ResponseReceived):
@@ -98,12 +134,33 @@ class Scanner:
                 "requestId": event.request_id,
                 "headers": event.response.headers,
                 "status_code": event.response.status,
+                "encoded_data_length": event.response.encoded_data_length,
                 "raw": event.response.to_json(),
             }
             self.requests.append(request)
-            self.bytes_downloaded += event.response.encoded_data_length
+            domain = urlparse(event.response.url).netloc
+            if domain:
+                self._get_domain_stats(domain)["response_count"] += 1
         except Exception as e:
             print(f"exception parsing network.ResponseReceived event: {event}: {e}")
+
+    async def loading_finished_handler(self, event: mycdp.network.LoadingFinished):
+        try:
+            encoded_bytes = int(event.encoded_data_length)
+            self.bytes_downloaded += encoded_bytes
+            now = time.time()
+            # update the matching response entry and accumulate domain stats
+            for entry in reversed(self.requests):
+                if entry.get("requestId") == event.request_id and entry.get("type") == "response":
+                    entry["encoded_data_length"] = encoded_bytes
+                    domain = urlparse(entry["url"]).netloc
+                    if domain:
+                        stats = self._get_domain_stats(domain)
+                        stats["bytes_downloaded"] += encoded_bytes
+                        stats["last_finished_time"] = now
+                    break
+        except Exception as e:
+            print(f"exception parsing network.LoadingFinished event: {event}: {e}")
 
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
@@ -117,6 +174,12 @@ class Scanner:
                 "raw": event.request.to_json(),
             }
             self.requests.append(request)
+            domain = urlparse(event.request.url).netloc
+            if domain:
+                stats = self._get_domain_stats(domain)
+                stats["request_count"] += 1
+                if stats["first_request_time"] is None:
+                    stats["first_request_time"] = time.time()
         except Exception as e:
             print(f"exception parsing network.ResponseReceived event: {event}: {e}")
 
@@ -242,12 +305,12 @@ class Scanner:
         rect = None
         for checkbox in cf_checkboxes:
             try:
-                rect = pyautogui.locate(checkbox, screenshot, grayscale=True, confidence=.88) 
+                rect = pyautogui.locate(checkbox, screenshot, grayscale=True, confidence=.88)
             except pyautogui.ImageNotFoundException:
                 print(f"no match found for {checkbox}")
             if rect:
                 break
-        
+
         if rect:
             print(f'Visual match at {rect}')
             #Visual match at Box(left=218, top=487, width=30, height=29)
@@ -269,7 +332,7 @@ class Scanner:
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
         print('CloudFlare AntiBot bypass Handler')
         try:
-            self.cloudflare_visual_bypass(sb) 
+            self.cloudflare_visual_bypass(sb)
         except Exception as e:
             import traceback
             print(f'Exception during visual/pyautogui CF bypass: {e}\n{traceback.format_exc()}')
@@ -282,6 +345,7 @@ class Scanner:
         if not os.path.isdir(output_dir):
             raise Exception(f"output_dir {output_dir} does not exist")
 
+        scan_start_time = time.time()
         screenshot_path = None
         downloads = []
         dom_path = None
@@ -302,6 +366,7 @@ class Scanner:
             sb.activate_cdp_mode("about:blank")
             sb.cdp.add_handler(mycdp.network.RequestWillBeSent, self.send_handler)
             sb.cdp.add_handler(mycdp.network.ResponseReceived, self.receive_handler)
+            sb.cdp.add_handler(mycdp.network.LoadingFinished, self.loading_finished_handler)
 
             # phishkits detecting on User Agent + Sec-Ch-Ua-Platform on 2025-02-26
             sb.execute_cdp_cmd(
@@ -350,6 +415,17 @@ class Scanner:
             requests_path = os.path.join(output_dir, "requests.json")
             with open(requests_path, "w") as fp:
                 json.dump(self.requests, fp, indent=2)
+
+            # write scan metrics
+            try:
+                scan_duration = time.time() - scan_start_time
+                metrics = self._compute_metrics(url, scan_duration)
+                metrics_path = os.path.join(output_dir, "metrics.json")
+                with open(metrics_path, "w") as fp:
+                    json.dump(metrics, fp, indent=2)
+                print(f"metrics written to {metrics_path}")
+            except Exception as e:
+                print(f"failed to write metrics: {e}")
 
             # append reponse content data to dom.html unless filtered out
             for request in self.requests:

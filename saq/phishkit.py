@@ -39,7 +39,7 @@ def _copy_files(source_dir: str, output_dir: str) -> list[str]:
 
     return files
 
-def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15) -> Union[str, list[str]]:
+def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_file as pk_scan_file
 
     # copy the file to the shared volume so the celery worker can access it
@@ -49,7 +49,7 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
     shutil.copy2(file_path, shared_file_path)
 
     # scan the file
-    result = pk_scan_file.delay(shared_file_path)
+    result = pk_scan_file.delay(shared_file_path, timeout=scanner_timeout)
 
     if is_async:
         return result.id
@@ -58,9 +58,9 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
 
-def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15) -> Union[str, list[str]]:
+def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_url as pk_scan_url
-    result = pk_scan_url.delay(url)
+    result = pk_scan_url.delay(url, timeout=scanner_timeout)
 
     if is_async:
         return result.id
