@@ -145,7 +145,7 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
     url_observable.add_directive(DIRECTIVE_CRAWL)
     
     # Mock saq.phishkit functions
-    def mock_scan_url(url, output_dir, is_async=True):
+    def mock_scan_url(url, output_dir, is_async=True, **kwargs):
         return "test-job-123"
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
@@ -208,7 +208,7 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
     url_observable.add_directive(DIRECTIVE_CRAWL)
     
     # Mock saq.phishkit functions
-    def mock_scan_url(url, output_dir, is_async=True):
+    def mock_scan_url(url, output_dir, is_async=True, **kwargs):
         return "test-job-456"
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
@@ -249,7 +249,7 @@ def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context)
     url_observable.add_directive(DIRECTIVE_CRAWL)
     
     # Mock saq.phishkit functions to raise exception
-    def mock_scan_url(url, output_dir, is_async=True):
+    def mock_scan_url(url, output_dir, is_async=True, **kwargs):
         raise Exception("Network error")
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
@@ -303,7 +303,7 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
         
         # Mock saq.phishkit functions
-        def mock_scan_file(file_path, output_dir, is_async=True):
+        def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):
             return "file-job-123"
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
@@ -465,7 +465,7 @@ def test_phishkit_analyzer_execute_analysis_file_error(monkeypatch, test_context
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
         
         # Mock saq.phishkit functions to raise exception
-        def mock_scan_file(file_path, output_dir, is_async=True):
+        def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):
             raise Exception("File processing error")
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
@@ -722,7 +722,7 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         assert analyzer.accepts(file_observable)
         
         # Mock saq.phishkit functions
-        def mock_scan_file(file_path, output_dir, is_async=True):
+        def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):
             return "file-job-after-switch"
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)

@@ -74,6 +74,12 @@ parsers:
     time_format: "%Y-%m-%d %H:%M:%S,%L"
     time_keep: true
 
+  - name: iso8601_json
+    format: json
+    time_key: timestamp
+    time_format: "%Y-%m-%dT%H:%M:%S.%L%z"
+    time_keep: true
+
 pipeline:
   inputs:
     - name: forward
@@ -141,6 +147,12 @@ pipeline:
       parser: phishkit
       reserve_data: on
 
+    - name: parser
+      match: phishkit-metrics
+      key_name: log
+      parser: iso8601_json
+      reserve_data: on
+
   outputs:
     - name: file
       path: /data/logs
@@ -194,6 +206,12 @@ pipeline:
     - name: file
       path: /data/logs
       match: "phishkit"
+      format: out_file
+      workers: 1
+
+    - name: file
+      path: /data/logs
+      match: "phishkit-metrics"
       format: out_file
       workers: 1
 

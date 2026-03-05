@@ -1817,6 +1817,7 @@ analysis_module_phishkit_analyzer:
   python_module: saq.modules.phishkit
   python_class: PhishkitAnalyzer
   enabled: true
+  scanner_timeout: 15
   # list of file extensions to enable for scanning
   valid_file_extensions:
     - .html
@@ -1826,6 +1827,10 @@ analysis_module_phishkit_analyzer:
   valid_mime_types:
     - text/html
     - application/pdf
+  fluent_bit_metrics_enabled: true
+  fluent_bit_hostname: fluent-bit
+  fluent_bit_port: 24224
+  fluent_bit_metrics_tag: phishkit-metrics
 
 # TAG PRIORITIES AND SETTINGS
 # valid values are

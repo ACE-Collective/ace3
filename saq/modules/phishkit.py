@@ -1,8 +1,10 @@
+import json
 import logging
 import os
 import subprocess
 from typing import Optional, List, Type, override
 
+from fluent import sender
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -24,6 +26,7 @@ FIELD_ERROR = "error"
 FIELD_EXIT_CODE = "exit_code"
 FIELD_STDOUT = "stdout"
 FIELD_STDERR = "stderr"
+FIELD_METRICS = "metrics"
 
 SCAN_TYPE_URL = "url"
 SCAN_TYPE_FILE = "file"
@@ -44,6 +47,7 @@ class PhishkitAnalysis(Analysis):
             FIELD_SCAN_RESULT: None,  # result from phishkit scan
             FIELD_OUTPUT_FILES: [],  # list of output file paths
             FIELD_ERROR: None,  # error message if scan failed
+            FIELD_METRICS: None,  # scan metrics (bytes downloaded, domain breakdown, etc.)
         }
 
     @override
@@ -123,12 +127,24 @@ class PhishkitAnalysis(Analysis):
     def error(self, value: str):
         self.details[FIELD_ERROR] = value
 
+    @property
+    def metrics(self) -> Optional[dict]:
+        return self.details.get(FIELD_METRICS)
+
+    @metrics.setter
+    def metrics(self, value: dict):
+        self.details[FIELD_METRICS] = value
+
     def generate_summary(self):
         if self.error:
             return f"{self.display_name}: failed: {self.error}"
-        
+
         if self.scan_type == SCAN_TYPE_URL or self.scan_type == SCAN_TYPE_FILE:
-            return f"{self.display_name}: output files created (" + format_item_list_for_summary(self.output_files) + ")"
+            summary = f"{self.display_name}: output files created (" + format_item_list_for_summary(self.output_files) + ")"
+            if self.metrics and self.metrics.get("total_bytes_downloaded"):
+                mb = self.metrics["total_bytes_downloaded"] / (1024 * 1024)
+                summary += f" - {mb:.2f} MB downloaded"
+            return summary
         else:
             return f"{self.display_name}: completed"
 
@@ -136,6 +152,11 @@ class PhishkitAnalysis(Analysis):
 class PhishkitAnalyzerConfig(AnalysisModuleConfig):
     valid_file_extensions: list[str] = Field(..., description="List of file extensions to enable for scanning.")
     valid_mime_types: list[str] = Field(..., description="List of mime types to enable for scanning.")
+    fluent_bit_metrics_enabled: bool = Field(default=False, description="Whether to forward scan metrics to fluent-bit.")
+    fluent_bit_hostname: str = Field(default="fluent-bit", description="Hostname of the fluent-bit server.")
+    fluent_bit_port: int = Field(default=24224, description="Port of the fluent-bit forward input.")
+    fluent_bit_metrics_tag: str = Field(default="phishkit-metrics", description="Tag for phishkit metrics events.")
+    scanner_timeout: int = Field(default=15, description="Timeout in seconds for the phishkit scanner process.")
 
 class PhishkitAnalyzer(AnalysisModule):
     @classmethod
@@ -143,6 +164,16 @@ class PhishkitAnalyzer(AnalysisModule):
         return PhishkitAnalyzerConfig
 
     """Analyzes URLs and files using Phishkit for phishing detection."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fluent_bit_metrics_sender: Optional[sender.FluentSender] = None
+        if self.config.fluent_bit_metrics_enabled:
+            self.fluent_bit_metrics_sender = sender.FluentSender(
+                self.config.fluent_bit_metrics_tag,
+                host=self.config.fluent_bit_hostname,
+                port=self.config.fluent_bit_port,
+            )
 
     @property
     def generated_analysis_type(self):
@@ -179,7 +210,7 @@ class PhishkitAnalyzer(AnalysisModule):
 
         if scan_results is None:
             logging.info(f"scan results not ready yet for {observable} job ID {analysis.job_id}")
-            return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=60)
+            return self.delay_analysis(observable, analysis, seconds=3, timeout_seconds=max(self.config.scanner_timeout, 60))
 
         # if we get this far then the scan results are ready
         analysis.scan_result = f"successfully scanned {observable}"
@@ -199,6 +230,29 @@ class PhishkitAnalyzer(AnalysisModule):
             elif os.path.basename(file_path) == "std.err":
                 with open(file_path, "r") as fp:
                     analysis.stderr = fp.read()
+            elif os.path.basename(file_path) == "metrics.json":
+                try:
+                    with open(file_path, "r") as fp:
+                        analysis.metrics = json.load(fp)
+                    logging.info(f"loaded scan metrics for {observable} job ID {analysis.job_id}: "
+                                 f"{analysis.metrics.get('total_bytes_downloaded', 0)} bytes downloaded")
+                    if self.fluent_bit_metrics_sender:
+                        try:
+                            # send one message per domain with all stats
+                            for domain, stats in analysis.metrics.get("domain_stats", {}).items():
+                                self.fluent_bit_metrics_sender.emit(None, {
+                                    "timestamp": analysis.metrics.get("timestamp"),
+                                    "job_id": analysis.job_id,
+                                    "url_scanned": analysis.metrics.get("url_scanned"),
+                                    "total_bytes_downloaded": analysis.metrics.get("total_bytes_downloaded"),
+                                    "scan_duration_seconds": analysis.metrics.get("scan_duration_seconds"),
+                                    "domain": domain,
+                                    **stats,
+                                })
+                        except Exception as e:
+                            logging.error(f"failed to send metrics to fluent-bit for {observable}: {e}")
+                except Exception as e:
+                    logging.error(f"failed to read metrics.json for {observable}: {e}")
             else:
                 relative_path = os.path.join("phishkit", analysis.job_id, os.path.relpath(file_path, analysis.output_dir))
                 file_observable = analysis.add_file_observable(file_path, relative_path)
@@ -262,8 +316,8 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_URL
             
             try:
-                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True)
-                self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=60)
+                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout)
+                self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:
                 error_msg = f"failed to scan URL {observable.value}: {str(e)}"
@@ -276,8 +330,8 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_FILE
             
             try:
-                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True)
-                return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=60)
+                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout)
+                return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:
                 error_msg = f"Failed to scan file {observable.value}: {str(e)}"
