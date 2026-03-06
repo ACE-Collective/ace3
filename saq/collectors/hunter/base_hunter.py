@@ -352,23 +352,32 @@ class Hunt:
             self.startup_barrier.wait()
 
         submission_list = None
+        start_time = local_time()
+        result_status = "success"
 
         try:
             logging.info(f"executing {self}")
-            start_time = local_time()
             result = self.execute()
             self.record_execution_time(local_time() - start_time)
             # remember the last time we started execution
             self.last_executed_time = local_time()
             return result
         except RemoteApiError as e:
+            result_status = "remote_api_error"
             logging.warning(f"{self} failed (remote API error): {e}")
             self.record_hunt_exception(e)
         except Exception as e:
+            result_status = "error"
             logging.error(f"{self} failed: {e}")
             report_exception()
             self.record_hunt_exception(e)
         finally:
+            end_time = local_time()
+            logging.info(
+                "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
+                self.name, self.uuid, self.type, result_status, start_time, end_time,
+                (end_time - start_time).total_seconds(),
+            )
             self.startup_barrier.reset()
             self.execution_lock.release()
 
