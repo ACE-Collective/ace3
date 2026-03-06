@@ -2,7 +2,7 @@ ARG PYTHON_DOCKER_IMAGE=python:3.12-trixie
 FROM ${PYTHON_DOCKER_IMAGE}
 
 ARG USE_UNPINNED_REQUIREMENTS=false
-ARG ACE_VERSION=3.0.6
+ARG ACE_VERSION=3.0.7
 
 # add metadata labels
 LABEL maintainer="John Davison <unixfreak0037@gmail.com>"
