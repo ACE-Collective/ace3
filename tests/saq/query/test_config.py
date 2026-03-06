@@ -4,6 +4,7 @@ from saq.observables.mapping import ObservableMapping
 from saq.query.config import (
     BaseQueryConfig,
     SummaryDetailConfig,
+    TimeRangeConfig,
     load_query_from_file,
     resolve_query,
 )
@@ -104,3 +105,43 @@ def test_resolve_query_inline_takes_precedence(tmp_path):
 
     result = resolve_query("INLINE QUERY", str(query_file), "test")
     assert result == "INLINE QUERY"
+
+
+@pytest.mark.unit
+def test_base_query_config_time_ranges_none():
+    """Test BaseQueryConfig with no time_ranges."""
+    config = BaseQueryConfig()
+    assert config.time_ranges is None
+
+
+@pytest.mark.unit
+def test_base_query_config_time_ranges_string_shorthand():
+    """Test time_ranges with plain string values (lookback-only shorthand)."""
+    config = BaseQueryConfig(time_ranges={"TIMESPEC2": "00:30:00"})
+    assert config.time_ranges is not None
+    assert "TIMESPEC2" in config.time_ranges
+    assert config.time_ranges["TIMESPEC2"].duration_before == "00:30:00"
+    assert config.time_ranges["TIMESPEC2"].duration_after is None
+
+
+@pytest.mark.unit
+def test_base_query_config_time_ranges_dict_form():
+    """Test time_ranges with full dict form (before and after)."""
+    config = BaseQueryConfig(time_ranges={
+        "TIMESPEC2": {"duration_before": "01:00:00", "duration_after": "24:00:00"}
+    })
+    assert config.time_ranges["TIMESPEC2"].duration_before == "01:00:00"
+    assert config.time_ranges["TIMESPEC2"].duration_after == "24:00:00"
+
+
+@pytest.mark.unit
+def test_base_query_config_time_ranges_mixed():
+    """Test time_ranges with mixed string and dict forms."""
+    config = BaseQueryConfig(time_ranges={
+        "TIMESPEC": "00:10:00",
+        "TIMESPEC2": {"duration_before": "01:00:00", "duration_after": "00:30:00"},
+    })
+    assert config.time_ranges["TIMESPEC"].duration_before == "00:10:00"
+    assert config.time_ranges["TIMESPEC"].duration_after is None
+    assert config.time_ranges["TIMESPEC2"].duration_before == "01:00:00"
+    assert config.time_ranges["TIMESPEC2"].duration_after == "00:30:00"

@@ -286,6 +286,15 @@ class BaseAPIAnalyzer(AnalysisModule):
         else:
             self.async_delay_seconds = self.api_defaults.async_delay
 
+        # Build additional time ranges from config for TIMESPEC token replacement
+        self.additional_time_ranges = {}
+        if self.config.time_ranges:
+            for token_name, tr_config in self.config.time_ranges.items():
+                self.additional_time_ranges[token_name] = {
+                    'duration_before': create_timedelta(tr_config.duration_before) if tr_config.duration_before else datetime.timedelta(0),
+                    'duration_after': create_timedelta(tr_config.duration_after) if tr_config.duration_after else datetime.timedelta(0),
+                }
+
     def verify_environment(self):
         if self.config.query is None and self.config.query_path is None:
             raise RuntimeError(f"module {self} missing query or query_path settings in configuration")
@@ -327,22 +336,30 @@ class BaseAPIAnalyzer(AnalysisModule):
         for i in range(len(self.multi_values_base)):
             self.target_query = self.target_query.replace(self.multi_values_base[i], self._escape_value(self.multi_values[i]))
 
-        source_time = kwargs.get('source_event_time') or observable.time or self.get_root().event_time
-        if source_time is None:
-            source_time = datetime.datetime.now()
-            logging.error("Analysis event_time is None! Using current time for analysis instead")
+        # <O_TIMESPEC> is strictly observable-time-anchored (narrow durations only)
+        if '<O_TIMESPEC>' in self.target_query:
+            if observable.time is None:
+                raise ValueError(
+                    f"{self.name}: query uses <O_TIMESPEC> but observable has no time. "
+                    "Use <TIMESPEC> with time_ranges for event-time-anchored queries."
+                )
+            start_time = observable.time - self.narrow_duration_before
+            stop_time = observable.time + self.narrow_duration_after
+            self.fill_target_query_timespec(start_time, stop_time)
 
-        # if we are going off of the event time, then we use the wide duration
-        start_time = source_time - self.wide_duration_before
-        stop_time = source_time + self.wide_duration_after
-
-        # if observable time is available, we can narrow our time spec duration
-        if observable.time is not None:
-            start_time = source_time - self.narrow_duration_before
-            stop_time = source_time + self.narrow_duration_after
-
-        # Fill out the start/end times in the query
-        self.fill_target_query_timespec(start_time, stop_time)
+        # Fill additional TIMESPEC tokens anchored to event time with explicit durations
+        if self.additional_time_ranges:
+            event_time = kwargs.get('source_event_time') or observable.time or self.get_root().event_time
+            if event_time is None:
+                event_time = datetime.datetime.now()
+                logging.error("Analysis event_time is None! Using current time for TIMESPEC tokens instead")
+            additional_times = {}
+            for token_name, durations in self.additional_time_ranges.items():
+                additional_times[token_name] = (
+                    event_time - durations['duration_before'],
+                    event_time + durations['duration_after'],
+                )
+            self.fill_additional_timespecs(additional_times)
 
         # Convert the query to JSON if we're supposed to (such as for Elasticsearch)
         if self.json_query:
