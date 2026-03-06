@@ -359,28 +359,31 @@ class SplunkQueryObject:
             time.sleep(3)
 
     def query_async(
-        self, 
-        query:str, 
-        job:Optional[Job]=None, 
-        limit:int=1000, 
-        start:Optional[datetime]=None, 
-        end:Optional[datetime]=None, 
-        use_index_time:bool=False, 
-        timeout: Optional[timedelta]=None) -> Tuple[Optional[Job], Optional[List[dict]]]:
+        self,
+        query:str,
+        job:Optional[Job]=None,
+        limit:int=1000,
+        start:Optional[datetime]=None,
+        end:Optional[datetime]=None,
+        use_index_time:bool=False,
+        timeout: Optional[timedelta]=None,
+        embed_time_in_query:bool=True) -> Tuple[Optional[Job], Optional[List[dict]]]:
         """Executes a query asynchronously.
 
-        To properly use the method you must call it in a loop and pass the returned sid into the next call until results are returned
+        To properly use this method you must call it in a loop and pass the returned job into the next call until results are returned.
 
         Args:
-            query (str): the query to execute
-            start (datetime, optional): the start time for the search (default None)
-            end (datetime, optional): the end time for the search (default None)
-            use_index_time (bool, optional): set to true to search over index time (default False)
-            sid (str, optional): the search id returned from a previous call to query_async (default None -> new query)
-            limit (int, optional): max results to return (default 1000)
+            query (str): the query to execute.
+            job (Job, optional): the job object returned from a previous call to query_async (default None -> new query).
+            limit (int, optional): max results to return (default 1000).
+            start (datetime, optional): the start time for the search (default None).
+            end (datetime, optional): the end time for the search (default None).
+            use_index_time (bool, optional): set to true to search over index time (default False).
+            timeout (timedelta, optional): max time to wait for the query to complete (default 30 minutes).
+            embed_time_in_query (bool, optional): set to False to skip embedding time ranges in the query string (default True).
 
         Returns:
-            tuple: First value is the sid of the query, second value is the json results of the query
+            tuple: (Job, list[dict] | None) — the job object and the results, or None if the query is still running.
         """
         if timeout is None:
             timeout = create_timedelta("30:00")
@@ -395,7 +398,7 @@ class SplunkQueryObject:
 
             # queue the query if we have not already
             if job is None:
-                job = self.queue(query, limit, start=start, end=end, use_index_time=use_index_time)
+                job = self.queue(query, limit, start=start, end=end, use_index_time=use_index_time, embed_time_in_query=embed_time_in_query)
                 return job, None
 
             # wait for the job to complete
@@ -446,24 +449,25 @@ class SplunkQueryObject:
             self.record_splunk_query_performance(job, error=e)
             raise RemoteApiError(500, f"Splunk search failed: {e}")
 
-    def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False) -> Optional[Job]:
-        """Queue the query and return the job object
+    def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False, embed_time_in_query:bool=True) -> Optional[Job]:
+        """Queue the query and return the job object.
 
         Args:
-            query (str): the query to queue
-            limit (int): max results to return
-            start (datetime, optional): the start time for the search (default None)
-            end (datetime, optional): the end time for the search (default None)
-            use_index_time (bool, optional): set to true to search over index time (default False)
+            query (str): the query to queue.
+            limit (int): max results to return.
+            start (datetime, optional): the start time for the search (default None).
+            end (datetime, optional): the end time for the search (default None).
+            use_index_time (bool, optional): set to true to search over index time (default False).
+            embed_time_in_query (bool, optional): set to False to skip embedding time ranges in the query string (default True).
 
         Returns:
-            Optional[Job]: the job object for the query
+            Optional[Job]: the job object for the query.
         """
         self.reset_search_status()
 
         is_generating_command = query.lstrip().startswith("|")
 
-        if not is_generating_command:
+        if not is_generating_command and embed_time_in_query:
             # strip "search" prefix if present (will be added back after time ranges)
             if query.lstrip().lower().startswith("search"):
                 query = query.lstrip()[len("search"):]

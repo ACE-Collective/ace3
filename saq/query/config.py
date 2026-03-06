@@ -42,6 +42,12 @@ class SummaryDetailConfig(BaseModel):
         return value
 
 
+class TimeRangeConfig(BaseModel):
+    """Configuration for a named TIMESPEC token's time range."""
+    duration_before: Optional[str] = Field(default=None, description="Lookback duration from anchor time")
+    duration_after: Optional[str] = Field(default=None, description="Lookahead duration from anchor time")
+
+
 class BaseQueryConfig(BaseModel):
     """Shared query configuration mixin for hunts and API analysis modules."""
     query: Optional[str] = Field(default=None, description="The query to execute.")
@@ -61,7 +67,26 @@ class BaseQueryConfig(BaseModel):
         description="Summary details to add to submissions/analysis. Each definition generates one or more "
                     "SummaryDetail objects."
     )
+    time_ranges: Optional[dict[str, TimeRangeConfig]] = Field(
+        default=None,
+        description="Named time ranges for TIMESPEC tokens. Values can be a duration string (lookback only) "
+                    "or a dict with duration_before/duration_after."
+    )
     _ignored_value_patterns: list[re.Pattern] = []
+
+    @field_validator('time_ranges', mode='before')
+    @classmethod
+    def normalize_time_ranges(cls, v):
+        """Normalize plain string values to TimeRangeConfig dicts."""
+        if v is None:
+            return v
+        result = {}
+        for key, val in v.items():
+            if isinstance(val, str):
+                result[key] = {'duration_before': val, 'duration_after': None}
+            else:
+                result[key] = val
+        return result
 
     @model_validator(mode='after')
     def compile_ignored_value_patterns(self):

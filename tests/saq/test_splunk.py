@@ -402,7 +402,7 @@ def test_query_async(monkeypatch):
     complete_status = False
 
     class MockSplunk(SplunkQueryObject):
-        def queue(self, query, limit, start=None, end=None, use_index_time=False):
+        def queue(self, query, limit, start=None, end=None, use_index_time=False, embed_time_in_query=True):
             return queue_result
 
         def complete(self, job):
@@ -925,3 +925,31 @@ def test_query_pipe_query_skips_time_prefix():
         )
         # the query passed to query_async should be unchanged — no time prefix prepended
         assert splunk.last_query == "| tstats count where index=main"
+
+
+@pytest.mark.unit
+def test_queue_embed_time_false():
+    """Verify queue() with embed_time_in_query=False does not modify the query string but still sets search_kwargs."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue(
+            "search earliest=01/01/2024:00:00:00 latest=01/01/2024:01:00:00 index=main",
+            1000,
+            start=MOCK_NOW,
+            end=MOCK_NOW,
+            embed_time_in_query=False,
+        )
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    # query should be passed through untouched
+    assert query_arg == "search earliest=01/01/2024:00:00:00 latest=01/01/2024:01:00:00 index=main"
+
+    # search_kwargs should still have time ranges set
+    call_kwargs = mock_client.jobs.create.call_args[1]
+    assert 'earliest_time' in call_kwargs
+    assert 'latest_time' in call_kwargs

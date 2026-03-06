@@ -20,6 +20,9 @@ from saq.configuration.config import get_config
 from saq.error.remote import RemoteApiError
 from saq.splunk import extract_event_timestamp, SplunkClient
 from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
+from saq.util import create_timedelta
+
+TIMESPEC_PATTERN = re.compile(r'<(TIMESPEC\w*)>')
 
 class SplunkHuntConfig(QueryHuntConfig):
     splunk_config: str = Field(default="default", description="The name of the splunk config to use for the hunt")
@@ -48,7 +51,7 @@ class SplunkHunt(QueryHunt):
     @property
     def namespace_user(self) -> Optional[str]:
         return self.config.namespace_user
-    
+
     @property
     def namespace_app(self) -> Optional[str]:
         return self.config.namespace_app
@@ -62,7 +65,7 @@ class SplunkHunt(QueryHunt):
             m = re.search(r'<include:([^>]+)>', result)
             if not m:
                 break
-            
+
             include_path = m.group(1)
             if not os.path.exists(include_path):
                 logging.error(f"rule {self.name} included file {include_path} does not exist")
@@ -105,43 +108,102 @@ class SplunkHunt(QueryHunt):
         # nooooo
         if unit_test_query_results is not None:
             return unit_test_query_results
-        
+
         # init splunk
         searcher = SplunkClient(self.splunk_config.name, user_context=self.namespace_user, app=self.namespace_app)
 
-        # set search link
-        self.search_link = searcher.encoded_query_link(self.formatted_query_timeless(), start_time.astimezone(tz), end_time.astimezone(tz), use_index_time=self.use_index_time)
+        # detect TIMESPEC tokens in the query
+        timespec_tokens = set(TIMESPEC_PATTERN.findall(query))
 
-        # reset search_id before searching so we don't get previous run results
-        self.job = None
+        if timespec_tokens:
+            # Build time range map from explicit time_ranges config
+            time_range_map = {}
+            if self.config.time_ranges:
+                for token_name, tr_config in self.config.time_ranges.items():
+                    duration = create_timedelta(tr_config.duration_before)
+                    time_range_map[token_name] = (end_time - duration, end_time)
 
-        while True:
-            # continue the query (this call times out on its own if the query takes too long)
-            self.job, search_result = searcher.query_async(query, job=self.job, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
+            # Backward compat: if TIMESPEC is in query but not in time_ranges, derive from hunt's start/end
+            if 'TIMESPEC' in timespec_tokens and 'TIMESPEC' not in time_range_map:
+                time_range_map['TIMESPEC'] = (start_time, end_time)
 
-            # stop if we are done
-            if search_result is not None:
-                # Splunk can return messages in the results, so we need to filter them out
-                final_result = []
-                for result in search_result:
-                    if isinstance(result, Message):
-                        logging.info(f"Splunk returned a message for this search: {result}")
-                        continue
+            # Error if any token in query has no config
+            for token in timespec_tokens:
+                if token not in time_range_map:
+                    raise ValueError(f"hunt {self.name}: query contains <{token}> but no time range configured for it")
 
-                    final_result.append(result)
+            # Replace tokens
+            prefix = "_index_" if self.use_index_time else ""
+            for token_name, (ts_start, ts_end) in time_range_map.items():
+                earliest = ts_start.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
+                latest = ts_end.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
+                time_spec = f'{prefix}earliest={earliest} {prefix}latest={latest}'
+                query = query.replace(f'<{token_name}>', time_spec)
 
-                return final_result
+            # Widest range for search_kwargs
+            widest_start = min(tr[0] for tr in time_range_map.values())
+            widest_end = max(tr[1] for tr in time_range_map.values())
 
-            # stop if the search failed
-            if searcher.search_failed():
-                logging.warning(f"splunk search {self} failed")
-                searcher.cancel(self.job)
-                raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
+            # search_link uses widest range
+            self.search_link = searcher.encoded_query_link(
+                self.formatted_query_timeless(),
+                widest_start.astimezone(tz), widest_end.astimezone(tz),
+                use_index_time=self.use_index_time)
 
-            # wait a few seconds before checking again
-            if self.cancel_event.wait(3):
-                searcher.cancel(self.job)
-                return None
+            # reset search_id before searching so we don't get previous run results
+            self.job = None
+
+            while True:
+                self.job, search_result = searcher.query_async(
+                    query, job=self.job, limit=self.max_result_count,
+                    start=widest_start.astimezone(tz), end=widest_end.astimezone(tz),
+                    use_index_time=self.use_index_time, timeout=self.query_timeout,
+                    embed_time_in_query=False)
+
+                if search_result is not None:
+                    return self._filter_messages(search_result)
+
+                if searcher.search_failed():
+                    logging.warning(f"splunk search {self} failed")
+                    searcher.cancel(self.job)
+                    raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
+
+                if self.cancel_event.wait(3):
+                    searcher.cancel(self.job)
+                    return None
+        else:
+            # Existing code path — queue() handles time injection
+            # set search link
+            self.search_link = searcher.encoded_query_link(self.formatted_query_timeless(), start_time.astimezone(tz), end_time.astimezone(tz), use_index_time=self.use_index_time)
+
+            # reset search_id before searching so we don't get previous run results
+            self.job = None
+
+            while True:
+                self.job, search_result = searcher.query_async(query, job=self.job, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
+
+                if search_result is not None:
+                    return self._filter_messages(search_result)
+
+                if searcher.search_failed():
+                    logging.warning(f"splunk search {self} failed")
+                    searcher.cancel(self.job)
+                    raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
+
+                if self.cancel_event.wait(3):
+                    searcher.cancel(self.job)
+                    return None
+
+    @staticmethod
+    def _filter_messages(search_result):
+        """Filter out Splunk Message objects from search results."""
+        final_result = []
+        for result in search_result:
+            if isinstance(result, Message):
+                logging.info(f"Splunk returned a message for this search: {result}")
+                continue
+            final_result.append(result)
+        return final_result
 
     def cancel(self):
         self.cancel_event.set()
