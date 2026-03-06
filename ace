@@ -476,9 +476,9 @@ def list_integrations(args):
         name = get_integration_name_from_path(dir_path)
         enabled = is_integration_enabled(name)
         installed = is_integration_installed(name)
-        integration_info.append((name, "ENABLED" if enabled else "DISABLED", "YES" if installed else "NO"))
+        integration_info.append((name, "ENABLED" if enabled else "DISABLED", "YES" if installed else "NO", dir_path))
 
-    headers = ["Integration", "Status", "Installed"]
+    headers = ["Integration", "Status", "Installed", "Directory"]
     print(tabulate(integration_info, headers=headers, tablefmt="simple"))
 
     sys.exit(0)
