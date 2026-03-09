@@ -10,7 +10,7 @@ from saq.collectors.hunter import HuntManager, HunterCollector
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config, get_splunk_config
 from saq.configuration.schema import HuntTypeConfig, SplunkConfig
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME, TIMESPEC_TOKEN
 from saq.environment import get_data_dir
 from saq.util.time import create_timedelta
 
@@ -38,7 +38,7 @@ class TestSplunkHunter(HunterCollector):
 
 @pytest.fixture
 def manager_kwargs(rules_dir):
-    return { 
+    return {
         'submission_queue': Queue(),
         'hunt_type': 'splunk',
         'rule_dirs': [ rules_dir, ],
@@ -51,7 +51,7 @@ def manager_kwargs(rules_dir):
 
 @pytest.fixture
 def manager_kwargs_alt(rules_dir):
-    return { 
+    return {
         'submission_queue': Queue(),
         'hunt_type': 'splunk_alt',
         'rule_dirs': [ rules_dir, ],
@@ -67,7 +67,7 @@ def setup(rules_dir):
     #ips_txt = 'hunts/test/splunk/ips.txt'
     #with open(ips_txt, 'w') as fp:
         #fp.write('1.1.1.1\n')
-    
+
     get_splunk_config().host = SPLUNK_HOST
     get_splunk_config().port = SPLUNK_PORT
 
@@ -76,7 +76,7 @@ def test_load_hunt_ini(manager_kwargs):
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'query_test_1')
     assert len(manager.hunts) == 1
-    
+
     hunt = manager.get_hunt_by_name('query_test_1')
     assert hunt
     assert hunt.enabled
@@ -256,7 +256,7 @@ def test_splunk_hunt_types(manager_kwargs):
 def alt_setup(rules_dir):
         shutil.rmtree(rules_dir)
         shutil.copytree('hunts/test/splunk', rules_dir)
-        
+
         get_config().clear_splunk_configs()
 
         get_config().add_splunk_config("default",
@@ -558,7 +558,6 @@ def test_splunk_hunt_pipe_query_no_time_spec_prepend(manager_kwargs):
 @pytest.mark.unit
 def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
     """Verify execute_query() passes a clean pipe query to query_async()."""
-    from unittest.mock import Mock, patch
     from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
 
     config = SplunkHuntConfig(
@@ -589,3 +588,310 @@ def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
 
     # the formatted query should be the raw pipe query
     assert result == [{"count": "42"}]
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_single_token(manager_kwargs):
+    """Test that <TIMESPEC> token is replaced with the hunt's time range."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec",
+        type="splunk",
+        enabled=True,
+        description="test timespec",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    # Mock SplunkClient to capture the query
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    # Verify query_async was called with embed_time_in_query=False
+    call_kwargs = mock_searcher.query_async.call_args[1]
+    assert call_kwargs['embed_time_in_query'] is False
+
+    # Verify the query has the TIMESPEC token replaced with the correct window
+    query_arg = call_kwargs.get('query') or mock_searcher.query_async.call_args[0][0]
+    assert '<TIMESPEC>' not in query_arg
+    assert 'earliest=01/01/2024:00:00:00' in query_arg
+    assert 'latest=01/01/2024:00:10:00' in query_arg
+
+    # And the results are still returned correctly
+    assert result == [{"count": "1"}]
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_multiple_tokens(manager_kwargs):
+    """Test that <TIMESPEC> and <TIMESPEC2> are replaced with different time ranges."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_multi",
+        type="splunk",
+        enabled=True,
+        description="test multiple timespecs",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test [search <TIMESPEC2> index=test2]",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+        time_ranges={TIMESPEC_TOKEN: "00:10:00", "TIMESPEC2": "00:30:00"},
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    # Mock SplunkClient to capture the query
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    # Verify query_async was called with embed_time_in_query=False
+    call_kwargs = mock_searcher.query_async.call_args[1]
+    assert call_kwargs['embed_time_in_query'] is False
+
+    # Verify the query has both timespecs replaced
+    query_arg = mock_searcher.query_async.call_args[1].get('query') or mock_searcher.query_async.call_args[0][0]
+    assert '<TIMESPEC>' not in query_arg
+    assert '<TIMESPEC2>' not in query_arg
+
+    # TIMESPEC should use start-end (10 min window)
+    assert 'earliest=01/01/2024:00:00:00' in query_arg
+    assert 'latest=01/01/2024:00:10:00' in query_arg
+
+    # TIMESPEC2 should use 30 min lookback from end_time
+    # end_time - 30min = 2023-12-31 23:40:00
+    assert 'earliest=12/31/2023:23:40:00' in query_arg
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_unconfigured_token_raises(manager_kwargs):
+    """Test that an unconfigured TIMESPEC token raises ValueError."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_error",
+        type="splunk",
+        enabled=True,
+        description="test unconfigured timespec",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test [search <TIMESPEC3> index=test2]",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        with pytest.raises(ValueError, match="TIMESPEC3"):
+            hunt.execute_query(start, end)
+
+
+@pytest.mark.unit
+def test_splunk_hunt_no_timespec_unchanged(manager_kwargs):
+    """Test queries without TIMESPEC tokens use the existing code path."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_no_timespec",
+        type="splunk",
+        enabled=True,
+        description="test no timespec",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    # Verify query_async was called with embed_time_in_query=True
+    call_kwargs = mock_searcher.query_async.call_args[1]
+    assert call_kwargs['embed_time_in_query'] is True
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_index_time(manager_kwargs):
+    """Test that TIMESPEC with use_index_time uses _index_ prefix."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_index",
+        type="splunk",
+        enabled=True,
+        description="test timespec with index time",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=True,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    query_arg = mock_searcher.query_async.call_args[0][0]
+    assert '_index_earliest=' in query_arg
+    assert '_index_latest=' in query_arg
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_time_ranges_timespec_only(manager_kwargs):
+    """Test that config with only time_ranges.TIMESPEC (no time_range) validates and hunt.time_range works."""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_only",
+        type="splunk",
+        enabled=True,
+        description="test time_ranges only",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+        time_ranges={TIMESPEC_TOKEN: "00:15:00"},
+    )
+
+    assert config.time_range is None
+    assert config.time_ranges is not None
+    assert TIMESPEC_TOKEN in config.time_ranges
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    # time_range property should fall back to time_ranges.TIMESPEC
+    assert hunt.time_range == create_timedelta("00:15:00")
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_neither_time_range_nor_timespec_raises():
+    """Test that config with neither time_range nor time_ranges.TIMESPEC raises ValueError."""
+    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
+
+    with pytest.raises(ValueError, match="Either 'time_range' or 'time_ranges' with a TIMESPEC entry must be specified"):
+        SplunkHuntConfig(
+            uuid="test-uuid",
+            name="test_no_time",
+            type="splunk",
+            enabled=True,
+            description="test missing time range",
+            alert_type="test_alert",
+            frequency="00:10:00",
+            tags=[],
+            instance_types=["unittest"],
+            query="<TIMESPEC> index=test",
+            full_coverage=True,
+            use_index_time=False,
+        )
+
+
+@pytest.mark.unit
+def test_splunk_hunt_config_time_ranges_without_timespec_raises():
+    """Test that config with time_ranges but no TIMESPEC entry and no time_range raises ValueError."""
+    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
+
+    with pytest.raises(ValueError, match="Either 'time_range' or 'time_ranges' with a TIMESPEC entry must be specified"):
+        SplunkHuntConfig(
+            uuid="test-uuid",
+            name="test_no_timespec",
+            type="splunk",
+            enabled=True,
+            description="test missing TIMESPEC in time_ranges",
+            alert_type="test_alert",
+            frequency="00:10:00",
+            tags=[],
+            instance_types=["unittest"],
+            query="<TIMESPEC> index=test",
+            full_coverage=True,
+            use_index_time=False,
+            time_ranges={"TIMESPEC2": "00:30:00"},
+        )
