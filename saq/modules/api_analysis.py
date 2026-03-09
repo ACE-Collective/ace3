@@ -352,7 +352,7 @@ class BaseAPIAnalyzer(AnalysisModule):
             event_time = kwargs.get('source_event_time') or observable.time or self.get_root().event_time
             if event_time is None:
                 event_time = datetime.datetime.now()
-                logging.error("Analysis event_time is None! Using current time for TIMESPEC tokens instead")
+                logging.error(f"root analysis {self.get_root()} observable {observable} event_time is None! Using current time for TIMESPEC tokens instead")
             additional_times = {}
             for token_name, durations in self.additional_time_ranges.items():
                 additional_times[token_name] = (
