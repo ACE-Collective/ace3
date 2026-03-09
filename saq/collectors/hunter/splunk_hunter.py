@@ -142,58 +142,40 @@ class SplunkHunt(QueryHunt):
                 query = query.replace(f'<{token_name}>', time_spec)
 
             # Widest range for search_kwargs
-            widest_start = min(tr[0] for tr in time_range_map.values())
-            widest_end = max(tr[1] for tr in time_range_map.values())
-
-            # search_link uses widest range
-            self.search_link = searcher.encoded_query_link(
-                self.formatted_query_timeless(),
-                widest_start.astimezone(tz), widest_end.astimezone(tz),
-                use_index_time=self.use_index_time)
-
-            # reset search_id before searching so we don't get previous run results
-            self.job = None
-
-            while True:
-                self.job, search_result = searcher.query_async(
-                    query, job=self.job, limit=self.max_result_count,
-                    start=widest_start.astimezone(tz), end=widest_end.astimezone(tz),
-                    use_index_time=self.use_index_time, timeout=self.query_timeout,
-                    embed_time_in_query=False)
-
-                if search_result is not None:
-                    return self._filter_messages(search_result)
-
-                if searcher.search_failed():
-                    logging.warning(f"splunk search {self} failed")
-                    searcher.cancel(self.job)
-                    raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
-
-                if self.cancel_event.wait(3):
-                    searcher.cancel(self.job)
-                    return None
+            search_start = min(tr[0] for tr in time_range_map.values())
+            search_end = max(tr[1] for tr in time_range_map.values())
+            embed_time_in_query = False
         else:
-            # Existing code path — queue() handles time injection
-            # set search link
-            self.search_link = searcher.encoded_query_link(self.formatted_query_timeless(), start_time.astimezone(tz), end_time.astimezone(tz), use_index_time=self.use_index_time)
+            search_start = start_time
+            search_end = end_time
+            embed_time_in_query = True
 
-            # reset search_id before searching so we don't get previous run results
-            self.job = None
+        self.search_link = searcher.encoded_query_link(
+            self.formatted_query_timeless(),
+            search_start.astimezone(tz), search_end.astimezone(tz),
+            use_index_time=self.use_index_time)
 
-            while True:
-                self.job, search_result = searcher.query_async(query, job=self.job, limit=self.max_result_count, start=start_time.astimezone(tz), end=end_time.astimezone(tz), use_index_time=self.use_index_time, timeout=self.query_timeout)
+        # reset search_id before searching so we don't get previous run results
+        self.job = None
 
-                if search_result is not None:
-                    return self._filter_messages(search_result)
+        while True:
+            self.job, search_result = searcher.query_async(
+                query, job=self.job, limit=self.max_result_count,
+                start=search_start.astimezone(tz), end=search_end.astimezone(tz),
+                use_index_time=self.use_index_time, timeout=self.query_timeout,
+                embed_time_in_query=embed_time_in_query)
 
-                if searcher.search_failed():
-                    logging.warning(f"splunk search {self} failed")
-                    searcher.cancel(self.job)
-                    raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
+            if search_result is not None:
+                return self._filter_messages(search_result)
 
-                if self.cancel_event.wait(3):
-                    searcher.cancel(self.job)
-                    return None
+            if searcher.search_failed():
+                logging.warning(f"splunk search {self} failed")
+                searcher.cancel(self.job)
+                raise RemoteApiError(500, f"Splunk search for {self.name} reported as failed")
+
+            if self.cancel_event.wait(3):
+                searcher.cancel(self.job)
+                return None
 
     @staticmethod
     def _filter_messages(search_result):
