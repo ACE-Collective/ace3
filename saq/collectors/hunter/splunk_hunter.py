@@ -20,6 +20,7 @@ from saq.configuration.config import get_config
 from saq.error.remote import RemoteApiError
 from saq.splunk import extract_event_timestamp, SplunkClient
 from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
+from saq.constants import TIMESPEC_TOKEN
 from saq.util import create_timedelta
 
 TIMESPEC_PATTERN = re.compile(r'<(TIMESPEC\w*)>')
@@ -124,8 +125,8 @@ class SplunkHunt(QueryHunt):
                     time_range_map[token_name] = (end_time - duration, end_time)
 
             # Backward compat: if TIMESPEC is in query but not in time_ranges, derive from hunt's start/end
-            if 'TIMESPEC' in timespec_tokens and 'TIMESPEC' not in time_range_map:
-                time_range_map['TIMESPEC'] = (start_time, end_time)
+            if TIMESPEC_TOKEN in timespec_tokens and TIMESPEC_TOKEN not in time_range_map:
+                time_range_map[TIMESPEC_TOKEN] = (start_time, end_time)
 
             # Error if any token in query has no config
             for token in timespec_tokens:

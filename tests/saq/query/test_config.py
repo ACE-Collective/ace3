@@ -1,10 +1,10 @@
 import pytest
 
+from saq.constants import TIMESPEC_TOKEN
 from saq.observables.mapping import ObservableMapping
 from saq.query.config import (
     BaseQueryConfig,
     SummaryDetailConfig,
-    TimeRangeConfig,
     load_query_from_file,
     resolve_query,
 )
@@ -138,10 +138,10 @@ def test_base_query_config_time_ranges_dict_form():
 def test_base_query_config_time_ranges_mixed():
     """Test time_ranges with mixed string and dict forms."""
     config = BaseQueryConfig(time_ranges={
-        "TIMESPEC": "00:10:00",
+        TIMESPEC_TOKEN: "00:10:00",
         "TIMESPEC2": {"duration_before": "01:00:00", "duration_after": "00:30:00"},
     })
-    assert config.time_ranges["TIMESPEC"].duration_before == "00:10:00"
-    assert config.time_ranges["TIMESPEC"].duration_after is None
+    assert config.time_ranges[TIMESPEC_TOKEN].duration_before == "00:10:00"
+    assert config.time_ranges[TIMESPEC_TOKEN].duration_after is None
     assert config.time_ranges["TIMESPEC2"].duration_before == "01:00:00"
     assert config.time_ranges["TIMESPEC2"].duration_after == "00:30:00"

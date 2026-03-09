@@ -20,7 +20,7 @@ from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_SIGNATURE_ID
+from saq.constants import F_SIGNATURE_ID, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
@@ -66,8 +66,8 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
         has_time_range = self.time_range is not None
         has_timespec_in_time_ranges = (
             self.time_ranges is not None
-            and 'TIMESPEC' in self.time_ranges
-            and self.time_ranges['TIMESPEC'].duration_before is not None
+            and TIMESPEC_TOKEN in self.time_ranges
+            and self.time_ranges[TIMESPEC_TOKEN].duration_before is not None
         )
         if not has_time_range and not has_timespec_in_time_ranges:
             raise ValueError(
@@ -98,8 +98,8 @@ class QueryHunt(Hunt):
     def time_range(self) -> Optional[datetime.timedelta]:
         # Prefer time_ranges.TIMESPEC when time_ranges is configured, since time_range
         # may come from an included config file's default rather than the hunt itself.
-        if self.config.time_ranges and 'TIMESPEC' in self.config.time_ranges:
-            return create_timedelta(self.config.time_ranges['TIMESPEC'].duration_before)
+        if self.config.time_ranges and TIMESPEC_TOKEN in self.config.time_ranges:
+            return create_timedelta(self.config.time_ranges[TIMESPEC_TOKEN].duration_before)
         if self.config.time_range is not None:
             return create_timedelta(self.config.time_range)
         return None

@@ -10,7 +10,7 @@ from saq.collectors.hunter import HuntManager, HunterCollector
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config, get_splunk_config
 from saq.configuration.schema import HuntTypeConfig, SplunkConfig
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_FILE_NAME, TIMESPEC_TOKEN
 from saq.environment import get_data_dir
 from saq.util.time import create_timedelta
 
@@ -644,7 +644,7 @@ def test_splunk_hunt_timespec_multiple_tokens(manager_kwargs):
         full_coverage=True,
         use_index_time=False,
         auto_append="",
-        time_ranges={"TIMESPEC": "00:10:00", "TIMESPEC2": "00:30:00"},
+        time_ranges={TIMESPEC_TOKEN: "00:10:00", "TIMESPEC2": "00:30:00"},
     )
 
     manager = HuntManager(**manager_kwargs)
@@ -820,12 +820,12 @@ def test_splunk_hunt_config_time_ranges_timespec_only(manager_kwargs):
         full_coverage=True,
         use_index_time=False,
         auto_append="",
-        time_ranges={"TIMESPEC": "00:15:00"},
+        time_ranges={TIMESPEC_TOKEN: "00:15:00"},
     )
 
     assert config.time_range is None
     assert config.time_ranges is not None
-    assert 'TIMESPEC' in config.time_ranges
+    assert TIMESPEC_TOKEN in config.time_ranges
 
     manager = HuntManager(**manager_kwargs)
     hunt = SplunkHunt(config=config, manager=manager)
