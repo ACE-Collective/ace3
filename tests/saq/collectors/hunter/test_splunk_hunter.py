@@ -558,7 +558,6 @@ def test_splunk_hunt_pipe_query_no_time_spec_prepend(manager_kwargs):
 @pytest.mark.unit
 def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
     """Verify execute_query() passes a clean pipe query to query_async()."""
-    from unittest.mock import Mock, patch
     from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
 
     config = SplunkHuntConfig(
@@ -594,7 +593,7 @@ def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
 @pytest.mark.unit
 def test_splunk_hunt_timespec_single_token(manager_kwargs):
     """Test that <TIMESPEC> token is replaced with the hunt's time range."""
-    from unittest.mock import Mock, patch, call
+    from unittest.mock import Mock, patch
     from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
 
     config = SplunkHuntConfig(
@@ -620,7 +619,26 @@ def test_splunk_hunt_timespec_single_token(manager_kwargs):
     start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
     end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
 
-    result = hunt.execute_query(start, end, unit_test_query_results=[{"count": "1"}])
+    # Mock SplunkClient to capture the query
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    # Verify query_async was called with embed_time_in_query=False
+    call_kwargs = mock_searcher.query_async.call_args[1]
+    assert call_kwargs['embed_time_in_query'] is False
+
+    # Verify the query has the TIMESPEC token replaced with the correct window
+    query_arg = call_kwargs.get('query') or mock_searcher.query_async.call_args[0][0]
+    assert '<TIMESPEC>' not in query_arg
+    assert 'earliest=01/01/2024:00:00:00' in query_arg
+    assert 'latest=01/01/2024:00:10:00' in query_arg
+
+    # And the results are still returned correctly
     assert result == [{"count": "1"}]
 
 
@@ -754,9 +772,9 @@ def test_splunk_hunt_no_timespec_unchanged(manager_kwargs):
     with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
         result = hunt.execute_query(start, end)
 
-    # Verify query_async was called WITHOUT embed_time_in_query (uses default=True)
+    # Verify query_async was called with embed_time_in_query=True
     call_kwargs = mock_searcher.query_async.call_args[1]
-    assert 'embed_time_in_query' not in call_kwargs
+    assert call_kwargs['embed_time_in_query'] is True
 
 
 @pytest.mark.unit
