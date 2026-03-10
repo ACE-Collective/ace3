@@ -7,6 +7,7 @@ from typing import Optional
 import redis
 
 from saq.constants import REDIS_DB_ANALYSIS_CACHE
+from saq.json_encoding import _JSONEncoder
 from saq.redis_client import get_redis_connection
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class RedisAnalysisCacheStrategy:
         data["cached_at"] = datetime.now(timezone.utc).isoformat()
 
         try:
-            serialized = json.dumps(data)
+            serialized = json.dumps(data, cls=_JSONEncoder)
         except (TypeError, ValueError):
             logger.warning("failed to serialize analysis data for cache key %s", cache_key, exc_info=True)
             return False
