@@ -160,6 +160,18 @@ class SplunkAPIAnalyzer(BaseAPIAnalyzer):
 
         self.target_query = self.target_query.replace('<O_TIMESPEC>', time_spec)
 
+    def fill_additional_timespecs(self, additional_times):
+        tz = pytz.timezone(self.timezone)
+
+        for token_name, (ts_start, ts_end) in additional_times.items():
+            earliest = ts_start.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
+            latest = ts_end.astimezone(tz).strftime('%m/%d/%Y:%H:%M:%S')
+            if self.use_index_time:
+                time_spec = f'_index_earliest = {earliest} _index_latest = {latest}'
+            else:
+                time_spec = f'earliest = {earliest} latest = {latest}'
+            self.target_query = self.target_query.replace(f'<{token_name}>', time_spec)
+
     # Based on QRadarAPIAnalysis, but may not need this in the future
     def process_splunk_event(self, analysis, observable, event, event_time):
         """Called for each event processed by the module. Can be overridden by subclasses."""

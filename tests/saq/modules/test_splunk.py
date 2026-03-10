@@ -600,3 +600,137 @@ def test_api_observable_mapping_fields_mode_validation():
 
     mapping = ObservableMapping(field="src_ip", type="ipv4", fields_mode="all")
     assert mapping.fields_mode == FieldsMode.ALL
+
+
+@pytest.mark.unit
+def test_splunk_api_analyzer_o_timespec_requires_observable_time(test_context):
+    """Test that <O_TIMESPEC> raises ValueError when observable has no time."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test <O_TIMESPEC>",
+            use_index_time=False,
+            observable_mapping=[],
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+        analyzer.analysis = SplunkAPIAnalysis()
+
+        # observable without time
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+
+        with pytest.raises(ValueError, match="O_TIMESPEC.*no time"):
+            analyzer.build_target_query(observable, source_event_time=datetime.datetime.now(datetime.timezone.utc))
+
+
+@pytest.mark.unit
+def test_splunk_api_analyzer_o_timespec_uses_narrow_durations(test_context):
+    """Test that <O_TIMESPEC> always uses narrow durations when observable has time."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="index=test <O_TIMESPEC>",
+            use_index_time=False,
+            # set wide and narrow to different values to verify narrow is used
+            wide_duration_before="48:00:00",
+            wide_duration_after="48:00:00",
+            narrow_duration_before="01:00:00",
+            narrow_duration_after="01:00:00",
+            observable_mapping=[],
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+        analyzer.analysis = SplunkAPIAnalysis()
+
+        root = RootAnalysis()
+        observable = root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+        observable.time = MOCK_NOW
+
+        analyzer.build_target_query(observable)
+
+        # narrow is 1 hour, so earliest should be MOCK_NOW - 1h, latest MOCK_NOW + 1h
+        # MOCK_NOW is 11/11/2017:07:36:01
+        # -1h = 11/11/2017:06:36:01, +1h = 11/11/2017:08:36:01
+        assert 'earliest = 11/11/2017:06:36:01' in analyzer.target_query
+        assert 'latest = 11/11/2017:08:36:01' in analyzer.target_query
+        # verify wide (48h) was NOT used
+        assert '11/09/2017' not in analyzer.target_query
+        assert '11/13/2017' not in analyzer.target_query
+
+
+@pytest.mark.unit
+def test_splunk_api_analyzer_fill_additional_timespecs(test_context):
+    """Test that fill_additional_timespecs replaces TIMESPEC tokens in target_query."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        analyzer = SplunkAPIAnalyzer(
+            context=test_context,
+            config=get_analysis_module_config(ANALYSIS_MODULE_SPLUNK_API))
+        analyzer.target_query = 'hello <TIMESPEC2> world <TIMESPEC3> end'
+
+        additional_times = {
+            'TIMESPEC2': (MOCK_NOW, MOCK_NOW),
+            'TIMESPEC3': (MOCK_NOW, MOCK_NOW),
+        }
+        analyzer.fill_additional_timespecs(additional_times)
+
+        # use_index_time is True for the test config
+        assert '<TIMESPEC2>' not in analyzer.target_query
+        assert '<TIMESPEC3>' not in analyzer.target_query
+        assert '_index_earliest = 11/11/2017:07:36:01' in analyzer.target_query
+        assert '_index_latest = 11/11/2017:07:36:01' in analyzer.target_query
+
+
+@pytest.mark.unit
+def test_splunk_api_analyzer_fill_additional_timespecs_event_time(test_context):
+    """Test that fill_additional_timespecs uses event time format, not index time, when use_index_time=False."""
+    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
+        mock_splunk = MockSplunk()
+        mock_splunk_client.return_value = mock_splunk
+
+        config = SplunkAPIAnalyzerConfig(
+            name="test_splunk",
+            python_module="saq.modules.splunk",
+            python_class="SplunkAPIAnalyzer",
+            enabled=True,
+            question="Test question?",
+            summary="Test summary",
+            api_name="test_api",
+            query="hello <TIMESPEC2> world",
+            use_index_time=False,
+            observable_mapping=[],
+        )
+
+        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
+        analyzer.target_query = 'hello <TIMESPEC2> world'
+
+        additional_times = {
+            'TIMESPEC2': (MOCK_NOW, MOCK_NOW),
+        }
+        analyzer.fill_additional_timespecs(additional_times)
+
+        assert '<TIMESPEC2>' not in analyzer.target_query
+        assert 'earliest = 11/11/2017:07:36:01' in analyzer.target_query
+        assert 'latest = 11/11/2017:07:36:01' in analyzer.target_query
+        assert '_index_' not in analyzer.target_query

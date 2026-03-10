@@ -12,7 +12,7 @@ from tempfile import mkstemp
 from typing import Optional
 
 import pytz
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
@@ -20,7 +20,7 @@ from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_SIGNATURE_ID
+from saq.constants import F_SIGNATURE_ID, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
@@ -44,7 +44,10 @@ QUERY_DETAILS_EVENTS = "events"
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
 class QueryHuntConfig(HuntConfig, BaseQueryConfig):
-    time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
+    time_range: Optional[str] = Field(
+        default=None,
+        description="The time range to query over. Can also be specified via time_ranges.TIMESPEC."
+    )
     max_time_range: Optional[str] = Field(default=None, description="The maximum time range to query over.")
     full_coverage: bool = Field(..., description="Whether to run the query over the full coverage of the time range.")
     use_index_time: bool = Field(..., description="Whether to use the index time as the time of the query.")
@@ -56,6 +59,21 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
     dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
+
+    @model_validator(mode='after')
+    def validate_time_range_source(self):
+        """Ensure time_range is available from either time_range or time_ranges.TIMESPEC."""
+        has_time_range = self.time_range is not None
+        has_timespec_in_time_ranges = (
+            self.time_ranges is not None
+            and TIMESPEC_TOKEN in self.time_ranges
+            and self.time_ranges[TIMESPEC_TOKEN].duration_before is not None
+        )
+        if not has_time_range and not has_timespec_in_time_ranges:
+            raise ValueError(
+                "Either 'time_range' or 'time_ranges' with a TIMESPEC entry must be specified"
+            )
+        return self
 
 class QueryHunt(Hunt):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -78,7 +96,13 @@ class QueryHunt(Hunt):
 
     @property
     def time_range(self) -> Optional[datetime.timedelta]:
-        return create_timedelta(self.config.time_range)
+        # Prefer time_ranges.TIMESPEC when time_ranges is configured, since time_range
+        # may come from an included config file's default rather than the hunt itself.
+        if self.config.time_ranges and TIMESPEC_TOKEN in self.config.time_ranges:
+            return create_timedelta(self.config.time_ranges[TIMESPEC_TOKEN].duration_before)
+        if self.config.time_range is not None:
+            return create_timedelta(self.config.time_range)
+        return None
 
     @property
     def max_time_range(self) -> Optional[datetime.timedelta]:

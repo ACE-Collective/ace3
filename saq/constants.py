@@ -34,6 +34,13 @@ INSTANCE_TYPE_LOCAL = 'LOCAL'
 VALID_INSTANCE_TYPES = [INSTANCE_TYPE_PRODUCTION, INSTANCE_TYPE_QA, INSTANCE_TYPE_DEV, INSTANCE_TYPE_UNITTEST, INSTANCE_TYPE_LOCAL]
 
 #
+# hunting constants
+#
+
+# hunt time range token names
+TIMESPEC_TOKEN = "TIMESPEC"
+
+#
 # required fields for every alert
 #
 
