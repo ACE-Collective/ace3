@@ -364,7 +364,9 @@ def test_full_coverage_respects_last_end_time(full_coverage_hunt):
 
     assert hunt.ready
     assert hunt.start_time == hunt.last_end_time
-    assert hunt.end_time == hunt.last_end_time + hunt.time_range
+    # end_time should catch up fully to current time (no gaps), not just one time_range
+    assert hunt.end_time == current
+    assert hunt.end_time - hunt.start_time == timedelta(hours=2)
 
 @pytest.mark.integration
 def test_full_coverage_catch_up_with_max_range(full_coverage_hunt):
@@ -453,18 +455,21 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
     hunt = default_hunt(manager=MockManager(), name="test")
     assert hunt.end_time
 
-    # full coverage end time
+    # full coverage end time (on time: exactly one time_range behind)
     hunt.config.full_coverage = True
     hunt.last_end_time = mock_local_time() - timedelta(hours=1)
     hunt.config.time_range = '01:00:00'
     assert hunt.end_time == hunt.last_end_time + hunt.time_range
 
-    # full coverage, we're behind by one hour and max_time_range is not set
+    # full coverage, we're behind by one hour and max_time_range is not set:
+    # we should fully catch up to now (no gaps)
     hunt.config.max_time_range = None
     hunt.last_end_time = mock_local_time() - timedelta(hours=2)
-    assert hunt.end_time == hunt.last_end_time + timedelta(hours=1) # can only go in increments of time_range
+    assert hunt.end_time == mock_local_time()
+    assert hunt.end_time - hunt.last_end_time == timedelta(hours=2)
 
-    # full coverage, we're behind by one hour and max_time_range is set
+    # full coverage, we're behind by one hour and max_time_range is set:
+    # we can advance up to max_time_range from last_end_time
     hunt.last_end_time = mock_local_time() - timedelta(hours=3)
     hunt.config.max_time_range = '02:00:00'
     assert hunt.end_time == hunt.last_end_time + create_timedelta('02:00:00') # can go up to max time range
@@ -473,6 +478,14 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
     hunt.config.max_time_range = '08:00:00'
     hunt.last_end_time = mock_local_time() - timedelta(hours=9)
     assert hunt.end_time == hunt.last_end_time + timedelta(hours=8) # can go up to max time range
+
+    # full coverage, slightly behind (less than time_range) with no max_time_range:
+    # window should still end at now to avoid a small gap
+    hunt.config.max_time_range = None
+    hunt.last_end_time = mock_local_time() - timedelta(minutes=11)
+    hunt.config.time_range = '00:10:00'
+    assert hunt.end_time == mock_local_time()
+    assert hunt.end_time - hunt.last_end_time == timedelta(minutes=11)
 
 @pytest.mark.unit
 def test_query_hunter_ready(monkeypatch, tmpdir):

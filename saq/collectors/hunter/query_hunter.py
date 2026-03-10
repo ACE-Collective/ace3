@@ -219,21 +219,26 @@ class QueryHunt(Hunt):
     @property
     def end_time(self) -> datetime.datetime:
         """Returns the ending time of this query based on the start time and the hunt configuration."""
-        # if this hunt is configured for full coverage, then the ending time for the search
-        # will be equal to the ending time of the last executed search plus the total range of the search
         now = local_time()
         if self.full_coverage:
             # have we not executed this search yet?
             if self.last_end_time is None:
                 return now
             else:
-                # if the difference in time between the end of the range and now is larger than 
-                # the time_range, then we switch to using the max_time_range, if it is configured
+                normal_end = self.last_end_time + self.time_range
+
+                # if the normal end would be in the future, cap at now
+                if normal_end >= now:
+                    return now
+
+                # we are behind; advance as far as possible without exceeding max_time_range
                 if self.max_time_range is not None:
-                    extended_end_time = self.last_end_time + self.max_time_range
-                    if now - (self.last_end_time + self.time_range) > self.time_range:
-                        return now if extended_end_time > now else extended_end_time
-                return now if (self.last_end_time + self.time_range) > now else self.last_end_time + self.time_range
+                    max_end = self.last_end_time + self.max_time_range
+                    # do not search past now or past the maximum allowed range
+                    return now if now < max_end else max_end
+
+                # no max_time_range configured; catch up fully to now
+                return now
         else:
             # if we're not doing full coverage then we don't worry about the last end time
             return now
