@@ -1067,6 +1067,7 @@ analysis_module_netbios_analyzer:
   # if this is set then the command is prefixed with ssh ssh_host so that it executes from another system
   # use this if you are in AWS and your target is inside target network
   ssh_host: ""
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_parse_url:
   name: parse_url
@@ -1081,6 +1082,7 @@ analysis_module_fqdn_analyzer:
   python_module: saq.modules.dns
   python_class: FQDNAnalyzer
   enabled: true
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_idna_analyzer:
   name: idna_analyzer
@@ -1096,18 +1098,21 @@ analysis_module_dns_analyzer:
   # if this is set then the command is prefixed with ssh ssh_host so that it executes from another system
   # use this if you are in AWS and your target is inside target network
   ssh_host: ""
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_whois_analyzer:
   name: whois_analyzer
   python_module: saq.modules.whois
   python_class: WhoisAnalyzer
   enabled: true
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer
   python_module: saq.modules.asset.active_directory
   python_class: ActiveDirectoryAnalyzer
   enabled: false
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_snort_signature_analysis_v1:
   name: snort_signature_analysis_v1
@@ -1600,6 +1605,7 @@ analysis_module_google_safe_browsing_service:
   # If we're verifying ssl and the cert is signed by an authority the OS trusts, then True.
   # Else, it should be the path the the CA chain
   verify_ssl: false
+  cache_expiration: 14400  # 4 hours
 
 #
 # this module was been deprecated in favor of this "phishkit" approach
@@ -1649,6 +1655,7 @@ analysis_module_crawlphish:
   cache_directory: crawlphish_cache
   # path (relative to ANALYST_DATA_DIR) to file that contains all the user agents to use (one per line)
   user_agent_list_path: crawlphish_uas.txt
+  cache_expiration: 86400  # 24 hours
 
 analysis_module_protected_url_analyzer:
   name: protected_url_analyzer
@@ -1831,6 +1838,7 @@ analysis_module_phishkit_analyzer:
   fluent_bit_hostname: fluent-bit
   fluent_bit_port: 24224
   fluent_bit_metrics_tag: phishkit-metrics
+  cache_expiration: 86400  # 24 hours
 
 # TAG PRIORITIES AND SETTINGS
 # valid values are
