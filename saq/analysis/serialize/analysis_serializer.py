@@ -16,6 +16,7 @@ KEY_DELAYED = 'delayed'
 KEY_EXTERNAL_DETAILS_PATH = 'file_path'
 KEY_DETAILS_SIZE = 'details_size'
 KEY_LLM_CONTEXT_DOCUMENTS = 'llm_context_documents'
+KEY_CACHED_AT = 'cached_at'
 
 
 class AnalysisSerializer:
@@ -45,6 +46,7 @@ class AnalysisSerializer:
             KEY_EXTERNAL_DETAILS_PATH: analysis.external_details_path,
             KEY_DETAILS_SIZE: analysis.details_size,
             KEY_LLM_CONTEXT_DOCUMENTS: analysis.llm_context_documents,
+            KEY_CACHED_AT: analysis.cached_at,
         })
         
         return result
@@ -107,3 +109,7 @@ class AnalysisSerializer:
         # Set LLM context documents
         if KEY_LLM_CONTEXT_DOCUMENTS in data:
             analysis.llm_context_documents = data[KEY_LLM_CONTEXT_DOCUMENTS]
+
+        # Set cached_at timestamp
+        if KEY_CACHED_AT in data:
+            analysis.cached_at = data[KEY_CACHED_AT]

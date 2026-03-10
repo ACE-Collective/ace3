@@ -1036,10 +1036,10 @@ class AnalysisExecutor:
 
             # restore details
             if "details" in cached_data:
-                details = cached_data["details"]
-                if isinstance(details, dict):
-                    details["_cached_at"] = cached_data.get("cached_at")
-                analysis.details = details
+                analysis.details = cached_data["details"]
+
+            # set cached_at timestamp on the analysis object
+            analysis.cached_at = cached_data.get("cached_at")
 
             # restore summary
             if "summary" in cached_data:

@@ -272,6 +272,11 @@
                 {% endfor %}
 
                 {% if node.is_analysis %}
+                    {% if node.obj.cached_at %}
+                        <span class="bi bi-database-check" style="color: #6c757d; font-size: 85%;"
+                              data-bs-toggle="tooltip" data-bs-placement="top"
+                              title="Cached at {{ node.obj.cached_at }}"></span>
+                    {% endif %}
                     {% if node.obj.summary is none %}
                         {# if no summary is available then we just display the str rep of the analysis #}
                         {{node.obj}}

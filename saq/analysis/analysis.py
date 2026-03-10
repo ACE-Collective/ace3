@@ -84,6 +84,9 @@ class Analysis(BaseNode):
         # each document becomes a vector embedding
         self.llm_context_documents: list[str] = []
 
+        # ISO timestamp if this analysis was served from cache
+        self.cached_at: Optional[str] = None
+
     # analysis properties and methods
     # ------------------------------------------------------------------------
 
