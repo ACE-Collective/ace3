@@ -32,7 +32,7 @@ class TestGetCacheProperties:
         props = module.get_cache_properties()
         assert props == {}
 
-    @patch("saq.git.get_repo_commit_hash")
+    @patch("saq.modules.base_module.get_repo_commit_hash")
     def test_includes_git_repo_commit_hash(self, mock_get_hash):
         mock_get_hash.return_value = "abc123def456"
         config = _make_config(cache_version_git_repos=["analyst-data"])
@@ -41,7 +41,7 @@ class TestGetCacheProperties:
         assert props == {"git_repo:analyst-data": "abc123def456"}
         mock_get_hash.assert_called_once_with("analyst-data")
 
-    @patch("saq.git.get_repo_commit_hash")
+    @patch("saq.modules.base_module.get_repo_commit_hash")
     def test_skips_unknown_git_repo(self, mock_get_hash):
         mock_get_hash.return_value = None
         config = _make_config(cache_version_git_repos=["unknown-repo"])
@@ -49,7 +49,7 @@ class TestGetCacheProperties:
         props = module.get_cache_properties()
         assert props == {}
 
-    @patch("saq.git.get_repo_commit_hash")
+    @patch("saq.modules.base_module.get_repo_commit_hash")
     def test_combines_extended_version_and_git_repos(self, mock_get_hash):
         mock_get_hash.return_value = "abc123"
         config = _make_config(
@@ -63,7 +63,7 @@ class TestGetCacheProperties:
             "git_repo:analyst-data": "abc123",
         }
 
-    @patch("saq.git.get_repo_commit_hash")
+    @patch("saq.modules.base_module.get_repo_commit_hash")
     def test_multiple_git_repos(self, mock_get_hash):
         mock_get_hash.side_effect = lambda name: {
             "repo-a": "hash_a",
