@@ -16,6 +16,7 @@ from saq.constants import AnalysisExecutionResult
 from saq.engine.interface import EngineInterface
 from saq.environment import get_base_dir, get_data_dir
 from saq.filesystem.notification import FileWatcherMixin
+from saq.git import get_repo_commit_hash
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
 
@@ -268,9 +269,16 @@ class AnalysisModule(FileWatcherMixin):
         """Returns custom properties that affect cache key generation.
 
         Merges config.extended_version with any runtime overrides from subclasses.
+        Includes commit hashes from any git repos listed in cache_version_git_repos.
         Subclasses should call super().get_cache_properties() and add their own keys.
         """
-        return dict(self.extended_version)
+
+        props = dict(self.extended_version)
+        for repo_name in self.config.cache_version_git_repos:
+            commit_hash = get_repo_commit_hash(repo_name)
+            if commit_hash:
+                props[f"git_repo:{repo_name}"] = commit_hash
+        return props
 
     @property
     def shutdown(self):

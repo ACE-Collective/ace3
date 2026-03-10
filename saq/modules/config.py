@@ -33,4 +33,9 @@ class AnalysisModuleConfig(BaseModel):
     cache_expiration: Optional[int] = Field(default=None, description="Cache expiration time in seconds.")
     cache_dedup_time_range: Optional[timedelta] = Field(default=None, description="Time range for deduplicating observables into the same cache bucket.")
     extended_version: dict[str, str] = Field(default_factory=dict, description="Static custom properties for cache key generation.")
+    cache_version_git_repos: list[str] = Field(
+        default_factory=list,
+        description="List of git repo names whose commit hash should be included in the cache key. "
+                    "When these repos are updated, cached results for this module are automatically invalidated.",
+    )
     default_collapsed: bool = Field(default=False, description="Whether this module's analysis is collapsed by default in the GUI tree view.")

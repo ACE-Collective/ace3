@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import fakeredis
 import pytest
@@ -158,6 +158,13 @@ class TestExtendedVersion:
         mod2 = _make_module(cache_properties={})
         obs = _make_observable()
         assert cache._build_cache_key(mod1, obs) == cache._build_cache_key(mod2, obs)
+
+    def test_git_repo_commit_hash_changes_key(self, cache):
+        """When git repo commit hash changes, cache key should change."""
+        mod1 = _make_module(cache_properties={"git_repo:analyst-data": "abc123"})
+        mod2 = _make_module(cache_properties={"git_repo:analyst-data": "def456"})
+        obs = _make_observable()
+        assert cache._build_cache_key(mod1, obs) != cache._build_cache_key(mod2, obs)
 
 
 class TestCacheHitMiss:

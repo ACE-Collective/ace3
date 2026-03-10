@@ -2,11 +2,32 @@ import logging
 import os
 import subprocess
 import threading
-from typing import Type
+from typing import Optional, Type
+
+import redis
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig, ServiceConfig
+from saq.constants import REDIS_DB_ANALYSIS_CACHE
+from saq.redis_client import get_redis_connection
 from saq.service import ACEServiceInterface
+
+REDIS_KEY_PREFIX_GIT_COMMIT = "ace:git:commit:"
+
+
+def get_repo_commit_hash(repo_name: str, redis_client: Optional[redis.Redis] = None) -> Optional[str]:
+    """Returns the current HEAD commit hash for the given repo name from Redis."""
+    try:
+        r = redis_client or get_redis_connection(REDIS_DB_ANALYSIS_CACHE)
+        return r.get(f"{REDIS_KEY_PREFIX_GIT_COMMIT}{repo_name}")
+    except Exception:
+        return None
+
+
+def set_repo_commit_hash(repo_name: str, commit_hash: str, redis_client: Optional[redis.Redis] = None):
+    """Stores the current HEAD commit hash for the given repo name in Redis."""
+    r = redis_client or get_redis_connection(REDIS_DB_ANALYSIS_CACHE)
+    r.set(f"{REDIS_KEY_PREFIX_GIT_COMMIT}{repo_name}", commit_hash)
 
 class GitRepo:
     def __init__(self, config: GitRepoConfig):
@@ -124,6 +145,14 @@ class GitRepo:
         )
         return True
 
+    def get_commit_hash(self) -> str:
+        """Returns the current HEAD commit hash of the repo."""
+        stdout, _ = self._run_git_command(
+            ["git", "-C", self.config.local_path, "rev-parse", "HEAD"],
+            f"failed to get commit hash of repo {self.config.local_path}",
+        )
+        return stdout.strip()
+
     def update(self) -> bool:
         """Updates the repo. Returns True if the repo was updated, False otherwise."""
         # ensure the local path exists, create it if not
@@ -183,6 +212,11 @@ class GitManagerService(ACEServiceInterface):
         while not self.shutdown_event.is_set():
             try:
                 repo.update()
+                try:
+                    commit_hash = repo.get_commit_hash()
+                    set_repo_commit_hash(repo.config.name, commit_hash)
+                except Exception:
+                    logging.warning("failed to get or set commit hash for repo %s", repo.config.name, exc_info=True)
             except subprocess.TimeoutExpired:
                 logging.warning("git command timed out for repo %s", repo.config.name)
             except Exception:

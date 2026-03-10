@@ -4,14 +4,18 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import fakeredis
 import pytest
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig
 from saq.git import (
+    REDIS_KEY_PREFIX_GIT_COMMIT,
     GitManagerService,
     GitRepo,
     get_configured_repos,
+    get_repo_commit_hash,
+    set_repo_commit_hash,
 )
 
 
@@ -26,7 +30,7 @@ class TestGitRepo:
             update_frequency=3600,
             branch="main"
         ))
-        
+
         assert repo.config.local_path == "/path/to/repo"
         assert repo.config.git_url == "https://github.com/user/repo.git"
         assert repo.config.update_frequency == 3600
@@ -41,7 +45,7 @@ class TestGitRepo:
             update_frequency=3600,
             branch="main"
         ))
-        
+
         repo2 = GitRepo(config=GitRepoConfig(
             name="repo1",
             description="repo1",
@@ -50,7 +54,7 @@ class TestGitRepo:
             update_frequency=3600,
             branch="main"
         ))
-        
+
         assert repo1 == repo2
 
     def test_gitrepo_dataclass_inequality(self):
@@ -196,13 +200,13 @@ class TestGetRepoBranch:
     def setup_test_repo(self, tmpdir):
         repo_path = tmpdir.mkdir("test_repo")
         subprocess.run(["git", "init"], cwd=str(repo_path), check=True)
-        
+
         test_file = repo_path.join("test.txt")
         test_file.write("initial content")
-        
+
         subprocess.run(["git", "add", "test.txt"], cwd=str(repo_path), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(repo_path), check=True)
-        
+
         return str(repo_path)
 
     def test_get_repo_branch_main(self, tmpdir):
@@ -290,26 +294,26 @@ class TestGetRepoBranch:
 class TestCloneRepo:
     def setup_remote_repo(self, tmpdir):
         remote_path = tmpdir.mkdir("remote_repo")
-        
+
         subprocess.run(["git", "init", "--bare"], cwd=str(remote_path), check=True)
-        
+
         temp_clone = tmpdir.mkdir("temp_clone")
         subprocess.run(["git", "clone", str(remote_path), str(temp_clone)], check=True)
-        
+
         test_file = temp_clone.join("test.txt")
         test_file.write("test content")
-        
+
         subprocess.run(["git", "add", "test.txt"], cwd=str(temp_clone), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(temp_clone), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_clone), check=True)
-        
+
         subprocess.run(["git", "checkout", "-b", "test-branch"], cwd=str(temp_clone), check=True)
         branch_file = temp_clone.join("branch.txt")
         branch_file.write("branch content")
         subprocess.run(["git", "add", "branch.txt"], cwd=str(temp_clone), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Branch commit"], cwd=str(temp_clone), check=True)
         subprocess.run(["git", "push", "origin", "test-branch"], cwd=str(temp_clone), check=True)
-        
+
         return str(remote_path)
 
     def test_clone_repo_success_default_branch(self, tmpdir):
@@ -390,20 +394,20 @@ class TestChangeRepoBranch:
     def setup_multi_branch_repo(self, tmpdir):
         repo_path = tmpdir.mkdir("test_repo")
         subprocess.run(["git", "init"], cwd=str(repo_path), check=True)
-        
+
         test_file = repo_path.join("test.txt")
         test_file.write("initial content")
         subprocess.run(["git", "add", "test.txt"], cwd=str(repo_path), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(repo_path), check=True)
-        
+
         subprocess.run(["git", "checkout", "-b", "develop"], cwd=str(repo_path), check=True)
         dev_file = repo_path.join("dev.txt")
         dev_file.write("dev content")
         subprocess.run(["git", "add", "dev.txt"], cwd=str(repo_path), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Dev commit"], cwd=str(repo_path), check=True)
-        
+
         subprocess.run(["git", "checkout", "master"], cwd=str(repo_path), check=True)
-        
+
         return str(repo_path)
 
     def test_change_repo_branch_success(self, tmpdir):
@@ -522,13 +526,13 @@ class TestRepoIsUpToDate:
     def setup_test_repo(self, tmpdir):
         repo_path = tmpdir.mkdir("test_repo")
         subprocess.run(["git", "init"], cwd=str(repo_path), check=True)
-        
+
         test_file = repo_path.join("test.txt")
         test_file.write("initial content")
-        
+
         subprocess.run(["git", "add", "test.txt"], cwd=str(repo_path), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(repo_path), check=True)
-        
+
         return str(repo_path)
 
     def test_repo_is_up_to_date_clean_working_tree(self, tmpdir):
@@ -623,28 +627,28 @@ class TestRepoIsUpToDate:
         # setup remote repo
         remote_path = tmpdir.mkdir("remote_repo")
         subprocess.run(["git", "init", "--bare"], cwd=str(remote_path), check=True)
-        
+
         # setup initial repo and push
         temp_setup = tmpdir.mkdir("temp_setup")
         subprocess.run(["git", "clone", str(remote_path), str(temp_setup)], check=True)
-        
+
         test_file = temp_setup.join("test.txt")
         test_file.write("initial content")
         subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
-        
+
         # clone to local repo
         local_path = str(tmpdir.join("local_repo"))
         subprocess.run(["git", "clone", str(remote_path), local_path], check=True)
-        
+
         # add new commit to remote
         new_file = temp_setup.join("new.txt")
         new_file.write("new content")
         subprocess.run(["git", "add", "new.txt"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "New commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
@@ -664,24 +668,24 @@ class TestPullRepo:
     def setup_remote_and_local_repos(self, tmpdir):
         remote_path = tmpdir.mkdir("remote_repo")
         subprocess.run(["git", "init", "--bare"], cwd=str(remote_path), check=True)
-        
+
         temp_setup = tmpdir.mkdir("temp_setup")
         subprocess.run(["git", "clone", str(remote_path), str(temp_setup)], check=True)
-        
+
         test_file = temp_setup.join("test.txt")
         test_file.write("initial content")
         subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
-        
+
         local_path = tmpdir.mkdir("local_repo")
         subprocess.run(["git", "clone", str(remote_path), str(local_path)], check=True)
-        
+
         test_file.write("updated content")
         subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Update commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
-        
+
         return str(remote_path), str(local_path)
 
     def test_pull_repo_success(self, tmpdir):
@@ -740,22 +744,22 @@ class TestUpdateRepo:
     def setup_remote_repo(self, tmpdir):
         remote_path = tmpdir.mkdir("remote_repo")
         subprocess.run(["git", "init", "--bare"], cwd=str(remote_path), check=True)
-        
+
         temp_setup = tmpdir.mkdir("temp_setup")
         subprocess.run(["git", "clone", str(remote_path), str(temp_setup)], check=True)
-        
+
         test_file = temp_setup.join("test.txt")
         test_file.write("initial content")
         subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(temp_setup), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
-        
+
         return str(remote_path)
 
     def test_update_repo_clone_new_repo(self, tmpdir):
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("new_repo"))
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
@@ -764,9 +768,9 @@ class TestUpdateRepo:
             update_frequency=3600,
             branch="master"
         ))
-        
+
         result = repo.update()
-        
+
         assert result is True
         assert os.path.exists(local_path)
         assert os.path.exists(os.path.join(local_path, ".git"))
@@ -775,7 +779,7 @@ class TestUpdateRepo:
     def test_update_repo_creates_directory(self, tmpdir):
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("nested", "path", "repo"))
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
@@ -784,9 +788,9 @@ class TestUpdateRepo:
             update_frequency=3600,
             branch="master"
         ))
-        
+
         result = repo.update()
-        
+
         assert result is True
         assert os.path.exists(local_path)
         assert os.path.exists(os.path.join(local_path, ".git"))
@@ -794,9 +798,9 @@ class TestUpdateRepo:
     def test_update_repo_up_to_date_repo(self, tmpdir):
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("existing_repo"))
-        
+
         subprocess.run(["git", "clone", remote_path, local_path], check=True)
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
@@ -805,29 +809,29 @@ class TestUpdateRepo:
             update_frequency=3600,
             branch="master"
         ))
-        
+
         result = repo.update()
-        
+
         assert result is False
 
     def test_update_repo_pull_updates(self, tmpdir):
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("existing_repo"))
-        
+
         subprocess.run(["git", "clone", remote_path, local_path], check=True)
-        
+
         temp_update = tmpdir.mkdir("temp_update")
         subprocess.run(["git", "clone", remote_path, str(temp_update)], check=True)
-        
+
         update_file = temp_update.join("update.txt")
         update_file.write("updated content")
         subprocess.run(["git", "add", "update.txt"], cwd=str(temp_update), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Update commit"], cwd=str(temp_update), check=True)
         subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_update), check=True)
-        
+
         local_file = Path(local_path) / "local_change.txt"
         local_file.write_text("local change")
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
@@ -836,30 +840,30 @@ class TestUpdateRepo:
             update_frequency=3600,
             branch="master"
         ))
-        
+
         result = repo.update()
-        
+
         assert result is True
         assert os.path.exists(os.path.join(local_path, "update.txt"))
 
     def test_update_repo_switches_branch(self, tmpdir):
         remote_path = self.setup_remote_repo(tmpdir)
         local_path = str(tmpdir.join("existing_repo"))
-        
+
         subprocess.run(["git", "clone", remote_path, local_path], check=True)
-        
+
         temp_update = tmpdir.mkdir("temp_update")
         subprocess.run(["git", "clone", remote_path, str(temp_update)], check=True)
-        
+
         subprocess.run(["git", "checkout", "-b", "develop"], cwd=str(temp_update), check=True)
         dev_file = temp_update.join("develop.txt")
         dev_file.write("develop content")
         subprocess.run(["git", "add", "develop.txt"], cwd=str(temp_update), check=True)
         subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Develop commit"], cwd=str(temp_update), check=True)
         subprocess.run(["git", "push", "origin", "develop"], cwd=str(temp_update), check=True)
-        
+
         subprocess.run(["git", "fetch", "origin", "develop"], cwd=local_path, check=True)
-        
+
         repo_for_check = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
@@ -869,7 +873,7 @@ class TestUpdateRepo:
             branch="master"
         ))
         assert repo_for_check.get_repo_branch() == "master"
-        
+
         repo = GitRepo(config=GitRepoConfig(
             name="repo",
             description="repo",
@@ -878,9 +882,9 @@ class TestUpdateRepo:
             update_frequency=3600,
             branch="develop"
         ))
-        
+
         result = repo.update()
-        
+
         repo_for_check = GitRepo(config=GitRepoConfig(
             name="test",
             description="test",
@@ -913,11 +917,11 @@ class TestGetConfiguredRepos:
             update_frequency=7200,
             branch="develop"
         ))
-        
+
         repos = get_configured_repos()
-        
+
         assert len(repos) == 2
-        
+
         assert repos[0].config.name == "repo1"
         assert repos[0].config.description == "Test repo 1"
         assert repos[0].config.local_path == "/path/to/repo1"
@@ -1069,3 +1073,125 @@ class TestRunLoop:
 
         assert len(wait_calls) == 1
         assert wait_calls[0] == 0
+
+    @patch("saq.git.set_repo_commit_hash")
+    def test_run_updates_commit_hash_in_redis(self, mock_set_hash):
+        service = GitManagerService()
+        repo = self._make_repo()
+
+        call_count = 0
+
+        def fake_update():
+            nonlocal call_count
+            call_count += 1
+            service.shutdown_event.set()
+
+        repo.update = fake_update
+        repo.get_commit_hash = MagicMock(return_value="abc123def456")
+
+        service.run(repo)
+
+        assert call_count == 1
+        mock_set_hash.assert_called_once_with("test-repo", "abc123def456")
+
+    def test_run_handles_get_commit_hash_failure(self):
+        service = GitManagerService()
+        repo = self._make_repo()
+
+        call_count = 0
+
+        def fake_update():
+            nonlocal call_count
+            call_count += 1
+            service.shutdown_event.set()
+
+        repo.update = fake_update
+        repo.get_commit_hash = MagicMock(side_effect=RuntimeError("git failed"))
+
+        # Should not raise — the exception is silently caught
+        service.run(repo)
+
+        assert call_count == 1
+
+
+@pytest.mark.integration
+class TestGetCommitHash:
+    def setup_test_repo(self, tmpdir):
+        repo_path = tmpdir.mkdir("test_repo")
+        subprocess.run(["git", "init"], cwd=str(repo_path), check=True)
+
+        test_file = repo_path.join("test.txt")
+        test_file.write("initial content")
+
+        subprocess.run(["git", "add", "test.txt"], cwd=str(repo_path), check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(repo_path), check=True)
+
+        return str(repo_path)
+
+    def test_get_commit_hash_returns_valid_hash(self, tmpdir):
+        repo_path = self.setup_test_repo(tmpdir)
+
+        repo = GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path=repo_path,
+            git_url="dummy",
+            update_frequency=3600,
+            branch="master"
+        ))
+
+        commit_hash = repo.get_commit_hash()
+
+        assert len(commit_hash) == 40
+        assert all(c in "0123456789abcdef" for c in commit_hash)
+
+    def test_get_commit_hash_changes_after_new_commit(self, tmpdir):
+        repo_path = self.setup_test_repo(tmpdir)
+
+        repo = GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path=repo_path,
+            git_url="dummy",
+            update_frequency=3600,
+            branch="master"
+        ))
+
+        hash1 = repo.get_commit_hash()
+
+        # Make a new commit
+        test_file = Path(repo_path) / "test2.txt"
+        test_file.write_text("new content")
+        subprocess.run(["git", "add", "test2.txt"], cwd=repo_path, check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Second commit"], cwd=repo_path, check=True)
+
+        hash2 = repo.get_commit_hash()
+
+        assert hash1 != hash2
+        assert len(hash2) == 40
+
+
+@pytest.mark.unit
+class TestRepoCommitHashRegistry:
+    def _make_fake_redis(self):
+        return fakeredis.FakeStrictRedis(decode_responses=True)
+
+    def test_get_repo_commit_hash_returns_none_for_unknown_repo(self):
+        r = self._make_fake_redis()
+        assert get_repo_commit_hash("nonexistent-repo-xyz", redis_client=r) is None
+
+    def test_get_repo_commit_hash_returns_stored_value(self):
+        r = self._make_fake_redis()
+        set_repo_commit_hash("test-registry-repo", "abc123", redis_client=r)
+        assert get_repo_commit_hash("test-registry-repo", redis_client=r) == "abc123"
+
+    def test_set_repo_commit_hash_overwrites_previous_value(self):
+        r = self._make_fake_redis()
+        set_repo_commit_hash("my-repo", "hash1", redis_client=r)
+        set_repo_commit_hash("my-repo", "hash2", redis_client=r)
+        assert get_repo_commit_hash("my-repo", redis_client=r) == "hash2"
+
+    def test_redis_key_uses_correct_prefix(self):
+        r = self._make_fake_redis()
+        set_repo_commit_hash("my-repo", "abc123", redis_client=r)
+        assert r.get(f"{REDIS_KEY_PREFIX_GIT_COMMIT}my-repo") == "abc123"
