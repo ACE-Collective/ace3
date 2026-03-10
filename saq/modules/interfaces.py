@@ -16,49 +16,41 @@ from saq.modules.context import AnalysisModuleContext
 class AnalysisCacheStrategyInterface(Protocol):
     """Protocol defining the interface for analysis caching strategies."""
 
-    def get_cached_analysis(self, observable, analysis_type: Type[Analysis], module_instance: Optional[str], version: int) -> Optional[dict]:
-        """Retrieve cached analysis data for the given parameters.
-        
+    def get_cached_analysis(self, module: "AnalysisModuleInterface", observable: Observable) -> Optional[dict]:
+        """Retrieve cached analysis data for the given module and observable.
+
         Args:
+            module: The analysis module requesting cached data
             observable: The observable being analyzed
-            analysis_type: The type of analysis being cached
-            module_instance: Optional instance name for the module
-            version: Version number for cache invalidation
-            
+
         Returns:
             Dictionary containing cached analysis data or None if not found/expired
         """
         ...
 
-    def store_analysis(self, observable, analysis_type: Type[Analysis], module_instance: Optional[str], version: int, analysis_data: dict) -> bool:
+    def store_analysis(self, module: "AnalysisModuleInterface", observable: Observable, analysis_data: dict) -> bool:
         """Store analysis data in the cache.
-        
+
         Args:
-            observable: The observable being analyzed
-            analysis_type: The type of analysis being cached
-            module_instance: Optional instance name for the module
-            version: Version number for cache invalidation
+            module: The analysis module that produced the analysis
+            observable: The observable that was analyzed
             analysis_data: Dictionary containing analysis details and observables
-            
+
         Returns:
             True if successfully stored, False otherwise
         """
         ...
 
-    def invalidate_cache(self, observable=None, analysis_type: Optional[Type[Analysis]] = None) -> bool:
+    def invalidate_cache(self, module: Optional["AnalysisModuleInterface"] = None, observable: Optional[Observable] = None) -> bool:
         """Invalidate cache entries.
-        
+
         Args:
+            module: If provided, invalidate only entries for this module
             observable: If provided, invalidate only entries for this observable
-            analysis_type: If provided, invalidate only entries for this analysis type
-            
+
         Returns:
             True if invalidation was successful, False otherwise
         """
-        ...
-
-    def configure(self, **kwargs) -> None:
-        """Configure the cache strategy with additional parameters."""
         ...
 
 

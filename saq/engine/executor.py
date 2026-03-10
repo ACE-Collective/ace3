@@ -31,6 +31,7 @@ from saq.constants import (
     F_FILE,
     F_IP,
     F_IPV4,
+    FILE_SUBDIR,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
     AnalysisExecutionResult,
@@ -51,6 +52,8 @@ from saq.error import report_exception
 from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
 from saq.modules.interfaces import AnalysisModuleInterface
+from saq.modules.redis_cache import RedisAnalysisCacheStrategy
+from saq.observables.file import FileObservable
 from saq.network_semaphore.client import NetworkSemaphore
 from saq.util import local_time
 
@@ -243,6 +246,9 @@ class AnalysisExecutor:
         self.tracking_message_manager = tracking_message_manager
         self.single_threaded_mode = single_threaded_mode
 
+        # shared analysis cache strategy (Redis-backed)
+        self.cache_strategy = RedisAnalysisCacheStrategy()
+
         # we keep track of total analysis time per module
         self.total_analysis_time = {}  # key = module.name, value = total_seconds
 
@@ -279,6 +285,7 @@ class AnalysisExecutor:
                     configuration_manager=self.configuration_manager,
                     filesystem=FileSystemAdapter(),
                     state_repository=state_repository,
+                    cache_strategy=self.cache_strategy,
                 )
             )
 
@@ -1009,6 +1016,137 @@ class AnalysisExecutor:
             elif work_item.dependency.completed:
                 work_item.dependency.increment_status()
 
+    def _apply_cached_analysis(
+        self,
+        cached_data: dict,
+        root: RootAnalysis,
+        work_item: WorkTarget,
+        work_stack: WorkStack,
+        work_stack_buffer: list,
+        analysis_module: AnalysisModuleInterface,
+    ):
+        """Reconstruct analysis from cached data and apply it to the observable."""
+        try:
+            analysis_type = analysis_module.generated_analysis_type
+            if analysis_type is None:
+                return
+
+            analysis = analysis_type()
+            analysis.instance = analysis_module.instance
+
+            # restore details
+            if "details" in cached_data:
+                details = cached_data["details"]
+                if isinstance(details, dict):
+                    details["_cached_at"] = cached_data.get("cached_at")
+                analysis.details = details
+
+            # restore summary
+            if "summary" in cached_data:
+                analysis.summary = cached_data["summary"]
+
+            # restore summary details
+            if "summary_details" in cached_data:
+                analysis.summary_details = cached_data["summary_details"]
+
+            # restore tags
+            for tag in cached_data.get("tags", []):
+                analysis.add_tag(tag)
+
+            # add analysis to observable
+            work_item.observable.add_analysis(analysis)
+
+            # restore child observables
+            for obs_data in cached_data.get("observables", []):
+                o_time = datetime.fromisoformat(obs_data["time"]) if obs_data.get("time") else None
+
+                if obs_data["type"] == F_FILE:
+                    # File observables: resolve the source file and add via add_file_observable
+                    file_path = obs_data.get("file_path")
+                    source_storage_dir = obs_data.get("source_storage_dir")
+                    if not file_path or not source_storage_dir:
+                        logging.debug("skipping cached file observable — missing file_path or source_storage_dir")
+                        continue
+                    source_full_path = os.path.join(source_storage_dir, FILE_SUBDIR, file_path)
+                    if not os.path.exists(source_full_path):
+                        logging.debug(f"skipping cached file observable — source file not found: {source_full_path}")
+                        continue
+                    obs = analysis.add_file_observable(source_full_path, file_path)
+                else:
+                    # Non-file observables: use add_observable_by_spec (NOT add_observable)
+                    obs = analysis.add_observable_by_spec(
+                        obs_data["type"],
+                        obs_data["value"],
+                        o_time=o_time,
+                    )
+
+                if obs is not None:
+                    for directive in obs_data.get("directives", []):
+                        obs.add_directive(directive)
+                    for tag in obs_data.get("tags", []):
+                        obs.add_tag(tag)
+
+            analysis.completed = True
+            root.save()
+
+            # process as if it were a completed analysis
+            self._process_generated_analysis(
+                AnalysisExecutionResult.COMPLETED,
+                root,
+                work_item,
+                work_stack,
+                work_stack_buffer,
+                analysis_module,
+            )
+        except Exception:
+            logging.warning(
+                f"failed to apply cached analysis for {work_item.observable} from {analysis_module}, "
+                f"falling back to live analysis",
+                exc_info=True,
+            )
+
+    def _store_analysis_in_cache(self, analysis_module: AnalysisModuleInterface, observable: Observable):
+        """Serialize and store analysis results in the cache."""
+        try:
+            analysis_type = analysis_module.generated_analysis_type
+            if analysis_type is None:
+                return
+
+            analysis = observable.get_analysis(analysis_type, instance=analysis_module.instance)
+            if analysis is None or not isinstance(analysis, Analysis):
+                return
+
+            # build the cache payload
+            analysis_data = {
+                "details": analysis.details if hasattr(analysis, "details") else None,
+                "summary": getattr(analysis, "summary", None),
+                "summary_details": getattr(analysis, "summary_details", None),
+                "tags": [str(t) for t in getattr(analysis, "tags", [])],
+                "observables": [],
+            }
+
+            for obs in getattr(analysis, "observables", []):
+                obs_entry = {
+                    "type": obs.type,
+                    "value": obs.value,
+                    "time": obs.time.isoformat() if obs.time else None,
+                    "directives": list(getattr(obs, "directives", [])),
+                    "tags": [str(t) for t in getattr(obs, "tags", [])],
+                }
+                if isinstance(obs, FileObservable):
+                    obs_entry["file_path"] = obs.file_path
+                    obs_entry["source_storage_dir"] = analysis_module._context.root.file_manager.storage_dir
+                analysis_data["observables"].append(obs_entry)
+
+            analysis_module._context.cache_strategy.store_analysis(
+                analysis_module, observable, analysis_data
+            )
+        except Exception:
+            logging.warning(
+                f"failed to store analysis cache for {observable} from {analysis_module}",
+                exc_info=True,
+            )
+
     def _execute_module_analysis(
         self,
         context: AnalysisExecutionContext,
@@ -1066,6 +1204,23 @@ class AnalysisExecutor:
                     "analysis module failed in previous execution"
                 )
 
+            # check analysis cache before running the module
+            if (
+                analysis_module.cache
+                and analysis_module._context.cache_strategy is not None
+                and not context.final_analysis_mode
+                and not context.is_delayed_analysis
+            ):
+                cached_data = analysis_module._context.cache_strategy.get_cached_analysis(
+                    analysis_module, work_item.observable
+                )
+                if cached_data is not None:
+                    logging.debug(f"using cached analysis for {work_item.observable} from {analysis_module}")
+                    self._apply_cached_analysis(
+                        cached_data, root, work_item, work_stack, work_stack_buffer, analysis_module
+                    )
+                    return
+
             logging.debug(
                 "analyzing {} with {} (final analysis={}) (delayed analysis={})".format(
                     work_item.observable, analysis_module, context.final_analysis_mode, context.is_delayed_analysis
@@ -1103,6 +1258,14 @@ class AnalysisExecutor:
                     f"analysis module {analysis_module} returned {analysis_result} for {work_item}"
                 )
                 root.save()
+
+                # store result in analysis cache if applicable
+                if (
+                    analysis_result == AnalysisExecutionResult.COMPLETED
+                    and analysis_module.cache
+                    and analysis_module._context.cache_strategy is not None
+                ):
+                    self._store_analysis_in_cache(analysis_module, work_item.observable)
 
             finally:
                 # make sure we stop the monitor thread

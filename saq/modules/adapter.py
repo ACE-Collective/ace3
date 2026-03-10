@@ -90,7 +90,41 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def semaphore_name(self) -> Optional[str]:
         """Get the semaphore name for this module."""
         return self._module.semaphore_name
-    
+
+    @property
+    def cache(self) -> bool:
+        """Returns whether caching is enabled for this module."""
+        return self._module.cache
+
+    @property
+    def version(self) -> int:
+        """Returns the module version for cache validation."""
+        return self._module.version
+
+    @property
+    def cache_expiration(self):
+        """Returns the cache expiration time in seconds."""
+        return self._module.cache_expiration
+
+    @property
+    def cache_dedup_time_range(self):
+        """Returns the time range for cache deduplication bucketing."""
+        return self._module.cache_dedup_time_range
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Returns static custom properties for cache key generation."""
+        return self._module.extended_version
+
+    def get_cache_properties(self) -> dict[str, str]:
+        """Returns custom properties that affect cache key generation."""
+        return self._module.get_cache_properties()
+
+    @property
+    def _context(self):
+        """Access the underlying module's context (used by executor for cache_strategy)."""
+        return self._module._context
+
     # Analysis execution methods
     def analyze(self, obj, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
         """Analyze the given object.

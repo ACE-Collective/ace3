@@ -251,8 +251,26 @@ class AnalysisModule(FileWatcherMixin):
 
     @property
     def cache_expiration(self):
-        """Returns the cache expiration time."""
+        """Returns the cache expiration time in seconds."""
         return self.config.cache_expiration
+
+    @property
+    def cache_dedup_time_range(self) -> Optional[timedelta]:
+        """Returns the time range for deduplicating observables into the same cache bucket."""
+        return self.config.cache_dedup_time_range
+
+    @property
+    def extended_version(self) -> dict[str, str]:
+        """Returns static custom properties for cache key generation from config."""
+        return self.config.extended_version
+
+    def get_cache_properties(self) -> dict[str, str]:
+        """Returns custom properties that affect cache key generation.
+
+        Merges config.extended_version with any runtime overrides from subclasses.
+        Subclasses should call super().get_cache_properties() and add their own keys.
+        """
+        return dict(self.extended_version)
 
     @property
     def shutdown(self):
