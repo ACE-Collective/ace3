@@ -30,7 +30,7 @@ class AnalysisModuleConfig(BaseModel):
     requires_detection_path: bool = Field(default=False, description="Whether the analysis module requires observables to be on a detection path.")
     cache: bool = Field(default=True, description="Whether caching is enabled for the analysis module.")
     version: int = Field(default=1, description="The version of the analysis module.")
-    cache_expiration: Optional[int] = Field(default=None, description="Cache expiration time in seconds.")
+    cache_expiration: Optional[int] = Field(default=2592000, description="Cache expiration time in seconds. Defaults to 30 days.")
     cache_dedup_time_range: Optional[timedelta] = Field(default=None, description="Time range for deduplicating observables into the same cache bucket.")
     extended_version: dict[str, str] = Field(default_factory=dict, description="Static custom properties for cache key generation.")
     cache_version_git_repos: list[str] = Field(
