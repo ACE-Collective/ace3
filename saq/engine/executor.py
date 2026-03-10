@@ -1221,6 +1221,16 @@ class AnalysisExecutor:
                     )
                     return
 
+                # Check for concurrent duplicate analysis (cache stampede detection)
+                if not analysis_module._context.cache_strategy.mark_in_progress(
+                    analysis_module, work_item.observable
+                ):
+                    logging.warning(
+                        "concurrent analysis detected: %s is already being analyzed by another worker for %s",
+                        work_item.observable,
+                        analysis_module,
+                    )
+
             logging.debug(
                 "analyzing {} with {} (final analysis={}) (delayed analysis={})".format(
                     work_item.observable, analysis_module, context.final_analysis_mode, context.is_delayed_analysis
@@ -1273,6 +1283,15 @@ class AnalysisExecutor:
 
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()
+
+                # clear in-progress sentinel if we set one
+                if (
+                    analysis_module.cache
+                    and analysis_module._context.cache_strategy is not None
+                ):
+                    analysis_module._context.cache_strategy.clear_in_progress(
+                        analysis_module, work_item.observable
+                    )
 
             # did the module cancel the analysis?
             if analysis_module.is_canceled_analysis():

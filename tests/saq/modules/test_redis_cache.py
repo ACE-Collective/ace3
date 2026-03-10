@@ -8,6 +8,7 @@ from saq.modules.redis_cache import (
     CACHE_HITS_KEY,
     CACHE_KEY_PREFIX,
     CACHE_MISSES_KEY,
+    IN_PROGRESS_KEY_PREFIX,
     RedisAnalysisCacheStrategy,
     _module_hits_key,
     _module_misses_key,
@@ -257,3 +258,55 @@ class TestCacheInvalidation:
         mod_v2 = _make_module(version=2)
         result = cache.get_cached_analysis(mod_v2, obs)
         assert result is None  # v2 key doesn't match v1 entry
+
+
+class TestInProgressSentinel:
+    """Tests for cache stampede detection via in-progress sentinel."""
+
+    def test_first_mark_returns_true(self, cache):
+        """First worker marking in-progress should return True (key was set)."""
+        module = _make_module()
+        obs = _make_observable()
+        assert cache.mark_in_progress(module, obs) is True
+
+    def test_second_mark_returns_false(self, cache):
+        """Second worker marking in-progress should return False (stampede detected)."""
+        module = _make_module()
+        obs = _make_observable()
+        cache.mark_in_progress(module, obs)
+        assert cache.mark_in_progress(module, obs) is False
+
+    def test_clear_allows_new_mark(self, cache):
+        """After clearing, a new mark_in_progress should return True."""
+        module = _make_module()
+        obs = _make_observable()
+        cache.mark_in_progress(module, obs)
+        cache.clear_in_progress(module, obs)
+        assert cache.mark_in_progress(module, obs) is True
+
+    def test_different_observables_independent(self, cache):
+        """Sentinels for different observables should not interfere."""
+        module = _make_module()
+        obs1 = _make_observable(value="1.2.3.4")
+        obs2 = _make_observable(value="5.6.7.8")
+        cache.mark_in_progress(module, obs1)
+        assert cache.mark_in_progress(module, obs2) is True
+
+    def test_different_modules_independent(self, cache):
+        """Sentinels for different modules should not interfere."""
+        mod1 = _make_module(name="module_a")
+        mod2 = _make_module(name="module_b")
+        obs = _make_observable()
+        cache.mark_in_progress(mod1, obs)
+        assert cache.mark_in_progress(mod2, obs) is True
+
+    def test_sentinel_key_has_ttl(self, cache, redis_client):
+        """Sentinel key should have a TTL for crash safety."""
+        module = _make_module()
+        obs = _make_observable()
+        cache.mark_in_progress(module, obs)
+
+        cache_key = cache._build_cache_key(module, obs)
+        sentinel_key = f"{IN_PROGRESS_KEY_PREFIX}{cache_key[len(CACHE_KEY_PREFIX):]}"
+        ttl = redis_client.ttl(sentinel_key)
+        assert 0 < ttl <= 300

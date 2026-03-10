@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 CACHE_KEY_PREFIX = "ace:cache:"
 CACHE_HITS_KEY = "ace:cache:hits"
 CACHE_MISSES_KEY = "ace:cache:misses"
+IN_PROGRESS_KEY_PREFIX = "ace:cache:inprog:"
 
 
 def _module_hits_key(module_name: str) -> str:
@@ -129,6 +130,31 @@ class RedisAnalysisCacheStrategy:
         except redis.RedisError:
             logger.warning("redis error storing cache for %s on %s", module.name, observable, exc_info=True)
             return False
+
+    def mark_in_progress(self, module, observable) -> bool:
+        """Set an in-progress sentinel for this module/observable combination.
+
+        Returns True if the sentinel was set (first worker), False if another
+        worker already set it (stampede detected).
+        """
+        cache_key = self._build_cache_key(module, observable)
+        sentinel_key = f"{IN_PROGRESS_KEY_PREFIX}{cache_key[len(CACHE_KEY_PREFIX):]}"
+
+        try:
+            return bool(self.redis.set(sentinel_key, "1", nx=True, ex=300))
+        except redis.RedisError:
+            logger.warning("redis error setting in-progress sentinel for %s on %s", module.name, observable, exc_info=True)
+            return True
+
+    def clear_in_progress(self, module, observable):
+        """Remove the in-progress sentinel for this module/observable combination."""
+        cache_key = self._build_cache_key(module, observable)
+        sentinel_key = f"{IN_PROGRESS_KEY_PREFIX}{cache_key[len(CACHE_KEY_PREFIX):]}"
+
+        try:
+            self.redis.delete(sentinel_key)
+        except redis.RedisError:
+            logger.warning("redis error clearing in-progress sentinel for %s on %s", module.name, observable, exc_info=True)
 
     def invalidate_cache(self, module=None, observable=None) -> bool:
         """Invalidate cache entries. If both module and observable are given, invalidate the specific key.
