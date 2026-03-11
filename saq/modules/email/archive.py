@@ -2,6 +2,7 @@ import gzip
 import logging
 import os
 import shutil
+import uuid
 from typing import Optional, Type
 
 from pydantic import Field
@@ -194,7 +195,8 @@ class EmailArchiveAction(AnalysisModule):
         if missing_reason:
             review_dir = os.path.join(get_data_dir(), "review", "rfc822")
             os.makedirs(review_dir, exist_ok=True)
-            review_path = shutil.copy2(_file.full_path, review_dir)
+            review_path = os.path.join(review_dir, f"{uuid.uuid4()}.rfc822")
+            shutil.copy2(_file.full_path, review_path)
             logging.error(f"unable to archive {_file} - {missing_reason} - saved to {review_path} for review")
             return AnalysisExecutionResult.COMPLETED
 
