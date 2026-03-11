@@ -180,6 +180,11 @@ def test_email_archive_action_skips_on_missing_fields(root_analysis, tmpdir, mon
 
     monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
 
+    # clean up review directory from previous parametrized runs
+    review_dir = os.path.join(get_data_dir(), "review", "rfc822")
+    if os.path.isdir(review_dir):
+        shutil.rmtree(review_dir)
+
     file_path = root_analysis.create_file_path("email.rfc822")
     with open(file_path, "w") as fp:
         fp.write("test")
@@ -192,9 +197,11 @@ def test_email_archive_action_skips_on_missing_fields(root_analysis, tmpdir, mon
     assert result == AnalysisExecutionResult.COMPLETED
 
     # verify the email was saved to the review directory
-    review_dir = os.path.join(get_data_dir(), "review", "rfc822")
     assert os.path.isdir(review_dir)
-    assert len(os.listdir(review_dir)) == 1
+    review_files = os.listdir(review_dir)
+    assert len(review_files) == 1
+    assert review_files[0].endswith(".rfc822")
+    assert open(os.path.join(review_dir, review_files[0])).read() == "test"
 
     # verify the error was logged
     assert expected_log_fragment in caplog.text
