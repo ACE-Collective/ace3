@@ -77,7 +77,7 @@ class TreeCondition:
             analyses = (a for a in root.all_analysis if a)
 
         for analysis in analyses:
-            if analysis.module_path != self.analysis_type:
+            if self.analysis_type and analysis.module_path != self.analysis_type:
                 continue
             if self.details_match:
                 analysis.load_details()
