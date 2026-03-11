@@ -10,7 +10,7 @@ import yaml
 from pydantic import Field
 
 from saq.analysis.analysis import Analysis
-from saq.constants import AnalysisExecutionResult
+from saq.constants import DIRECTIVE_YARA_META_PREFIX, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -136,6 +136,7 @@ class RuleConditions:
     file_name_pattern: Optional[re.Pattern] = None
     has_tags: list[str] = field(default_factory=list)
     has_directives: list[str] = field(default_factory=list)
+    has_yara_meta_tags: list[str] = field(default_factory=list)
     tree_conditions: list[TreeCondition] = field(default_factory=list)
 
     def evaluate_early(self, observable: Observable, root: RootAnalysis) -> bool:
@@ -190,6 +191,11 @@ class RuleConditions:
         if self.has_directives:
             for directive in self.has_directives:
                 if not observable.has_directive(directive):
+                    return False
+
+        if self.has_yara_meta_tags:
+            for tag in self.has_yara_meta_tags:
+                if not observable.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}{tag}"):
                     return False
 
         # Value pattern (regex)
@@ -347,6 +353,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             file_name_pattern=file_name_pattern,
             has_tags=conditions_data.get("has_tags", []) or [],
             has_directives=conditions_data.get("has_directives", []) or [],
+            has_yara_meta_tags=conditions_data.get("has_yara_meta_tags", []) or [],
             tree_conditions=tree_conditions,
         )
 

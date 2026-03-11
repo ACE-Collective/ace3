@@ -25,6 +25,7 @@
 #       file_name_pattern: ".*\\.html$"   # Regex match on file name (file observables only)
 #       has_tags: [some_tag]               # Observable must have ALL of these tags
 #       has_directives: [some_directive]   # Observable must have ALL of these directives
+#       has_yara_meta_tags: [type=document.text.qrcode]  # Observable must have ALL of these yara meta tags (auto-prefixed with "yara_meta:")
 #
 #       # Analysis tree conditions
 #       tree_conditions:

@@ -10,6 +10,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
     DIRECTIVE_OCR,
+    DIRECTIVE_YARA_META_PREFIX,
     F_FQDN,
     F_URL,
     AnalysisExecutionResult,
@@ -2375,3 +2376,96 @@ def test_tree_condition_self_scope_parsed_from_yaml():
     result = adapter.analyze(target, final_analysis=True)
     assert result == AnalysisExecutionResult.COMPLETED
     assert target.has_directive("ocr")
+
+
+# ============================================================
+# has_yara_meta_tags condition tests
+# ============================================================
+
+
+@pytest.mark.unit
+def test_conditions_has_yara_meta_tags_match():
+    """has_yara_meta_tags should match when observable has the corresponding yara_meta: directive."""
+    cond = RuleConditions(has_yara_meta_tags=["type=doc"])
+    obs = MockObservable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
+    assert cond.evaluate(obs, MockRoot()) is True
+
+
+@pytest.mark.unit
+def test_conditions_has_yara_meta_tags_no_match():
+    """has_yara_meta_tags should fail when the observable lacks the directive."""
+    cond = RuleConditions(has_yara_meta_tags=["type=doc"])
+    obs = MockObservable(directives=[])
+    assert cond.evaluate(obs, MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_conditions_has_yara_meta_tags_multiple():
+    """has_yara_meta_tags with multiple tags should require ALL of them (AND logic)."""
+    cond = RuleConditions(has_yara_meta_tags=["type=doc", "source=email"])
+    obs_both = MockObservable(directives=[
+        f"{DIRECTIVE_YARA_META_PREFIX}type=doc",
+        f"{DIRECTIVE_YARA_META_PREFIX}source=email",
+    ])
+    assert cond.evaluate(obs_both, MockRoot()) is True
+
+    obs_one = MockObservable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
+    assert cond.evaluate(obs_one, MockRoot()) is False
+
+
+@pytest.mark.unit
+def test_has_yara_meta_tags_integration():
+    """Integration test: a rule with has_yara_meta_tags should match a file with add_yara_meta()."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = _add_file_observable(root, "qrcode_image.png", content="img data")
+    observable.add_yara_meta("type", "document.text.qrcode")
+
+    rules = [{
+        "name": "qrcode meta tag rule",
+        "conditions": {
+            "observable_types": ["file"],
+            "has_yara_meta_tags": ["type=document.text.qrcode"],
+        },
+        "actions": {
+            "add_directives": ["ocr"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.has_directive("ocr")
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert analysis is not None
+    assert len(analysis.details["matched_rules"]) == 1
+    assert analysis.details["matched_rules"][0]["name"] == "qrcode meta tag rule"
+
+
+@pytest.mark.unit
+def test_has_yara_meta_tags_no_match_integration():
+    """Integration test: rule with has_yara_meta_tags should not match when tag is absent."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = _add_file_observable(root, "regular.png", content="img data")
+
+    rules = [{
+        "name": "qrcode meta tag rule",
+        "conditions": {
+            "observable_types": ["file"],
+            "has_yara_meta_tags": ["type=document.text.qrcode"],
+        },
+        "actions": {
+            "add_directives": ["ocr"],
+        },
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    adapter.execute_analysis(observable)
+    result = adapter.analyze(observable, final_analysis=True)
+    assert result == AnalysisExecutionResult.COMPLETED
+    assert not observable.has_directive("ocr")
