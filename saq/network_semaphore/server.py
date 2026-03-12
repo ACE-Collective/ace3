@@ -127,13 +127,13 @@ class NetworkSemaphoreServer:
 
     def server_loop(self):
         self.load_configured_semaphores()
-        self.server_started_event.set()
         while not self.is_shutdown:
             try:
                 self.server_socket = socket.socket() # defaults to AF_INET, SOCK_STREAM
                 self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 self.server_socket.bind((self.config.bind_address, self.config.bind_port))
                 self.server_socket.listen(5)
+                self.server_started_event.set()
 
                 while not self.is_shutdown:
                     logging.debug(f"waiting for next connection on {self.config.bind_address}:{self.config.bind_port}")

@@ -11,7 +11,7 @@ import re
 from typing import Optional
 
 import pytz
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from saq.analysis.root import Submission
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
@@ -25,6 +25,7 @@ from saq.collectors.hunter.result_processing import (
     ResultProcessingMixin,
 )
 from saq.configuration.config import get_config
+from saq.constants import TIMESPEC_TOKEN
 from saq.observables.mapping import ObservableMapping
 from saq.query.config import BaseQueryConfig, load_query_from_file
 from saq.util import abs_path, create_timedelta, local_time
@@ -32,7 +33,10 @@ from saq.util import abs_path, create_timedelta, local_time
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
 class QueryHuntConfig(HuntConfig, BaseQueryConfig):
-    time_range: str = Field(..., description="The time range to query over. This can be a timedelta string or a cron schedule string.")
+    time_range: Optional[str] = Field(
+        default=None,
+        description="The time range to query over. Can also be specified via time_ranges.TIMESPEC."
+    )
     max_time_range: Optional[str] = Field(default=None, description="The maximum time range to query over.")
     full_coverage: bool = Field(..., description="Whether to run the query over the full coverage of the time range.")
     use_index_time: bool = Field(..., description="Whether to use the index time as the time of the query.")
@@ -44,6 +48,21 @@ class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     query_timeout: Optional[str] = Field(default_factory=lambda: get_config().query_hunter.query_timeout, description="The timeout for the query (in HH:MM:SS format).")
     auto_append: str = Field(default="", description="The string to append to the query after the time spec. By default this is an empty string.")
     dedup_key: Optional[str] = Field(default=None, description="Optional interpolation template for deduplication. Uses ${field} syntax. When set, submissions get a key enabling the DuplicateSubmissionFilter to suppress duplicates.")
+
+    @model_validator(mode='after')
+    def validate_time_range_source(self):
+        """Ensure time_range is available from either time_range or time_ranges.TIMESPEC."""
+        has_time_range = self.time_range is not None
+        has_timespec_in_time_ranges = (
+            self.time_ranges is not None
+            and TIMESPEC_TOKEN in self.time_ranges
+            and self.time_ranges[TIMESPEC_TOKEN].duration_before is not None
+        )
+        if not has_time_range and not has_timespec_in_time_ranges:
+            raise ValueError(
+                "Either 'time_range' or 'time_ranges' with a TIMESPEC entry must be specified"
+            )
+        return self
 
 class QueryHunt(Hunt, ResultProcessingMixin):
     """Abstract class that represents a hunt against a search system that queries data over a time range."""
@@ -66,7 +85,13 @@ class QueryHunt(Hunt, ResultProcessingMixin):
 
     @property
     def time_range(self) -> Optional[datetime.timedelta]:
-        return create_timedelta(self.config.time_range)
+        # Prefer time_ranges.TIMESPEC when time_ranges is configured, since time_range
+        # may come from an included config file's default rather than the hunt itself.
+        if self.config.time_ranges and TIMESPEC_TOKEN in self.config.time_ranges:
+            return create_timedelta(self.config.time_ranges[TIMESPEC_TOKEN].duration_before)
+        if self.config.time_range is not None:
+            return create_timedelta(self.config.time_range)
+        return None
 
     @property
     def max_time_range(self) -> Optional[datetime.timedelta]:
@@ -183,21 +208,26 @@ class QueryHunt(Hunt, ResultProcessingMixin):
     @property
     def end_time(self) -> datetime.datetime:
         """Returns the ending time of this query based on the start time and the hunt configuration."""
-        # if this hunt is configured for full coverage, then the ending time for the search
-        # will be equal to the ending time of the last executed search plus the total range of the search
         now = local_time()
         if self.full_coverage:
             # have we not executed this search yet?
             if self.last_end_time is None:
                 return now
             else:
-                # if the difference in time between the end of the range and now is larger than 
-                # the time_range, then we switch to using the max_time_range, if it is configured
+                normal_end = self.last_end_time + self.time_range
+
+                # if the normal end would be in the future, cap at now
+                if normal_end >= now:
+                    return now
+
+                # we are behind; advance as far as possible without exceeding max_time_range
                 if self.max_time_range is not None:
-                    extended_end_time = self.last_end_time + self.max_time_range
-                    if now - (self.last_end_time + self.time_range) > self.time_range:
-                        return now if extended_end_time > now else extended_end_time
-                return now if (self.last_end_time + self.time_range) > now else self.last_end_time + self.time_range
+                    max_end = self.last_end_time + self.max_time_range
+                    # do not search past now or past the maximum allowed range
+                    return now if now < max_end else max_end
+
+                # no max_time_range configured; catch up fully to now
+                return now
         else:
             # if we're not doing full coverage then we don't worry about the last end time
             return now

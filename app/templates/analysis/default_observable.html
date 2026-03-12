@@ -110,7 +110,7 @@
     {% if directive.startswith('yara_meta:') %}
         {% set meta_pair = directive[10:].split('=', 1) %}
         {% if meta_pair | length == 2 %}
-            <span class="badge" style="background-color: white; color: rgb(134, 74, 0); border: 1px solid rgb(134, 74, 0);">{{ meta_pair[0] }}:{{ meta_pair[1] }}</span>
+            <span class="badge" style="background-color: white; color: rgb(134, 74, 0); border: 1px solid rgb(134, 74, 0);">{{ meta_pair[0] }}={{ meta_pair[1] }}</span>
         {% endif %}
     {% endif %}
 {% endfor %}

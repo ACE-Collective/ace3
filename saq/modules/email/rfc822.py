@@ -521,7 +521,7 @@ class EmailAnalyzer(AnalysisModule):
 
         o365_meta_part = None
         o365_meta_re = re.compile(r'^Sender: (.+?)^Subject: (.+?)^Message-Id: (.+?)^Recipient: ', re.M | re.DOTALL)
-        o365_meta_recipient_re = re.compile(r'^Recipient: (.+)$', re.M)
+        o365_meta_recipient_re = re.compile(r'^Recipient: (.+?)(?:, Expanded: .+)?$', re.M)
         o365_meta_sender = None
         o365_meta_subject = None
         o365_meta_message_id = None

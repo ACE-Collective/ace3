@@ -2,6 +2,7 @@ import gzip
 import logging
 import os
 import shutil
+import uuid
 from typing import Optional, Type
 
 from pydantic import Field
@@ -12,7 +13,7 @@ from saq.constants import DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, EMAIL_ARCHIVE_FIE
 from saq.crypto import decrypt
 from saq.database.pool import get_db_connection
 from saq.email_archive import archive_email, index_email_archive
-from saq.environment import get_global_runtime_settings
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -183,6 +184,20 @@ class EmailArchiveAction(AnalysisModule):
         email_analysis = self.wait_for_analysis(_file, EmailAnalysis)
         if not email_analysis:
             logging.warning(f"unable to obtain EmailAnalysis for {_file}")
+            return AnalysisExecutionResult.COMPLETED
+
+        missing_reason = None
+        if not email_analysis.message_id:
+            missing_reason = "missing message-id header"
+        elif not email_analysis.env_rcpt_to:
+            missing_reason = "missing envelope recipients"
+
+        if missing_reason:
+            review_dir = os.path.join(get_data_dir(), "review", "rfc822")
+            os.makedirs(review_dir, exist_ok=True)
+            review_path = os.path.join(review_dir, f"{uuid.uuid4()}.rfc822")
+            shutil.copy2(_file.full_path, review_path)
+            logging.error(f"unable to archive {_file} - {missing_reason} - saved to {review_path} for review")
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)

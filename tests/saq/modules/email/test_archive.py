@@ -10,6 +10,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DIRECTIVE_ARCHIVE, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
 from saq.email_archive import archive_email, get_email_archive_dir, query_by_message_id
 from saq.environment import get_global_runtime_settings
+from saq.environment import get_data_dir
 from saq.modules.email.archive import EmailArchiveAction, EmailArchiveResults, EncryptedArchiveAnalysis, EncryptedArchiveAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_str
@@ -162,3 +163,45 @@ def test_email_archive_action(root_analysis, tmpdir, monkeypatch):
 
     # make sure it got indexed
     assert query_by_message_id(TEST_MESSAGE_ID)
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message_id,env_rcpt_to,expected_log_fragment", [
+    (None, [TEST_RECIPIENT], "missing message-id header"),
+    (TEST_MESSAGE_ID, None, "missing envelope recipients"),
+], ids=["missing_message_id", "missing_env_rcpt_to"])
+def test_email_archive_action_skips_on_missing_fields(root_analysis, tmpdir, monkeypatch, caplog, message_id, env_rcpt_to, expected_log_fragment):
+    analyzer = EmailArchiveAction(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
+
+    MockEmailAnalysis = namedtuple("MockEmailAnalysis", ["message_id", "env_rcpt_to"])
+    def mock_wait_for_analysis(*args, **kwargs):
+        return MockEmailAnalysis(message_id=message_id, env_rcpt_to=env_rcpt_to)
+
+    monkeypatch.setattr(analyzer, "wait_for_analysis", mock_wait_for_analysis)
+
+    # clean up review directory from previous parametrized runs
+    review_dir = os.path.join(get_data_dir(), "review", "rfc822")
+    if os.path.isdir(review_dir):
+        shutil.rmtree(review_dir)
+
+    file_path = root_analysis.create_file_path("email.rfc822")
+    with open(file_path, "w") as fp:
+        fp.write("test")
+
+    file_observable = root_analysis.add_file_observable(file_path)
+    assert isinstance(file_observable, Observable)
+    file_observable.add_directive(DIRECTIVE_ARCHIVE)
+
+    result = analyzer.execute_analysis(file_observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # verify the email was saved to the review directory
+    assert os.path.isdir(review_dir)
+    review_files = os.listdir(review_dir)
+    assert len(review_files) == 1
+    assert review_files[0].endswith(".rfc822")
+    assert open(os.path.join(review_dir, review_files[0])).read() == "test"
+
+    # verify the error was logged
+    assert expected_log_fragment in caplog.text

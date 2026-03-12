@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.12] - 2026-03-11
+
+- [Adds has_yara_meta_tags to observable modifier](https://github.com/ACE-Collective/ace3/pull/66)
+
+## [3.0.8] - 2026-03-09
+
+- [Adds support for multiple time ranges in Splunk hunts and API analysis modules](https://github.com/ACE-Collective/ace3/pull/61)
+
 ## [3.0.6] - 2026-03-05
+
+- [Phishkit metrics + Fluent Bit](https://github.com/ACE-Collective/ace3/pull/58)
+
+## [3.0.6] - 2026-03-05
+
 - [Phishkit metrics + Fluent Bit](https://github.com/ACE-Collective/ace3/pull/58)
 
 ## [3.0.5] - 2026-03-04
