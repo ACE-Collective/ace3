@@ -321,13 +321,6 @@ class Scanner:
         else:
             print('Failed to find CF checkbox visually')
 
-        # return our settings to emulate a windows box to bypass checks done by some phishkits like XXX
-        #sb.execute_cdp_cmd("Network.setExtraHTTPHeaders", {"headers": {"Sec-Ch-Ua-Platform": "Windows"}})
-        #try:
-            #sb.execute_cdp_cmd("Network.setUserAgentOverride", BYPASS_UA)
-        #except Exception as e:
-            #print(f'Failed to set UA to {BYPASS_UA}: {e}')
-
     def cloudflare_bypass(self, sb, max_attempts=3):
         # This one is always changing and requires special handling: https://github.com/seleniumbase/SeleniumBase/issues/2842
         print('CloudFlare AntiBot bypass Handler')
@@ -338,7 +331,7 @@ class Scanner:
             print(f'Exception during visual/pyautogui CF bypass: {e}\n{traceback.format_exc()}')
 
     def scan(
-        self, url: str, output_dir: str, additional_wait: Optional[float] = None
+        self, url: str, output_dir: str, additional_wait: Optional[float] = None, proxy: Optional[str] = None
     ) -> ScanResult:
 
         # output directory must already exist
@@ -352,15 +345,28 @@ class Scanner:
         requests_path = None
 
         # see https://github.com/seleniumbase/SeleniumBase/blob/master/seleniumbase/plugins/sb_manager.py
-        with SB(
+        sb_kwargs = dict(
             undetectable=True,  # use undetected-chromedriver to evade bot detection
             uc_cdp_events=True,
             log_cdp_events=True,
-            # proxy = {},
-            # mobile = bool,
             xvfb=True,
-            headless2=True,  # # Use Chromium's new headless mode. (Has more features)
-        ) as sb:
+            headless2=True,  # Use Chromium's new headless mode. (Has more features)
+        )
+        if proxy:
+            sb_kwargs["proxy"] = proxy
+            # redact credentials for logging
+            if '@' in proxy:
+                prefix, suffix = proxy.rsplit('@', 1)
+                if '://' in prefix:
+                    scheme = prefix.split('://', 1)[0]
+                    redacted = f"{scheme}://****:****@{suffix}"
+                else:
+                    redacted = f"****:****@{suffix}"
+            else:
+                redacted = proxy
+            print(f"using proxy: {redacted}")
+
+        with SB(**sb_kwargs) as sb:
 
             # ask Jeremy about this
             sb.activate_cdp_mode("about:blank")
@@ -372,6 +378,35 @@ class Scanner:
             sb.execute_cdp_cmd(
                 "Network.setExtraHTTPHeaders",
                 {"headers": {"Sec-Ch-Ua-Platform": "Windows"}},
+            )
+
+            # override User-Agent, navigator.userAgent, navigator.platform,
+            # and all Sec-Ch-Ua-* Client Hints to present as Windows Chrome
+            sb.execute_cdp_cmd(
+                "Network.setUserAgentOverride",
+                {
+                    "userAgent": BYPASS_UA,
+                    "platform": "Win32",
+                    "userAgentMetadata": {
+                        "brands": [
+                            {"brand": "Chromium", "version": "133"},
+                            {"brand": "Not(A:Brand", "version": "99"},
+                            {"brand": "Google Chrome", "version": "133"},
+                        ],
+                        "fullVersionList": [
+                            {"brand": "Chromium", "version": "133.0.0.0"},
+                            {"brand": "Not(A:Brand", "version": "99.0.0.0"},
+                            {"brand": "Google Chrome", "version": "133.0.0.0"},
+                        ],
+                        "platform": "Windows",
+                        "platformVersion": "10.0.0",
+                        "architecture": "x86",
+                        "model": "",
+                        "mobile": False,
+                        "bitness": "64",
+                        "wow64": False,
+                    },
+                },
             )
 
             # open the url
@@ -448,6 +483,10 @@ class Scanner:
             downloads_dir = os.path.join(output_dir, "downloads")
             os.makedirs(downloads_dir, exist_ok=True)
             for dir_path, dir_names, file_names in os.walk(sb.get_downloads_folder()):
+                # skip SeleniumBase proxy extension directory (contains credentials)
+                dir_names[:] = [d for d in dir_names if d != "proxy_ext_dir"]
+                if "proxy_ext_dir" in Path(dir_path).parts:
+                    continue
                 for file_name in file_names:
                     if file_name.endswith(".lock"):
                         continue
@@ -483,6 +522,11 @@ if __name__ == "__main__":
         default=3,
         help="The additional time to wait for the page to load.",
     )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="Proxy string for SeleniumBase (e.g. host:port or user:pass@host:port).",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.output_dir):
@@ -494,6 +538,6 @@ if __name__ == "__main__":
         target = args.target
 
     scanner = Scanner()
-    result = scanner.scan(target, args.output_dir, args.additional_wait)
+    result = scanner.scan(target, args.output_dir, args.additional_wait, proxy=args.proxy)
     print(result)
     sys.exit(0)

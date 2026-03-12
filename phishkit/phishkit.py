@@ -75,7 +75,7 @@ def _correct_file_extension(file_path: str) -> str:
     return new_file_path
 
 @app.task
-def scan_file(file_path: str, timeout: int = 15) -> str:
+def scan_file(file_path: str, timeout: int = 15, proxy: str = None) -> str:
     # create a place to put the file we're going to render in the browser
     job_id = str(uuid.uuid4())
     input_dir = f"/phishkit/input/{job_id}"
@@ -93,21 +93,25 @@ def scan_file(file_path: str, timeout: int = 15) -> str:
     target_file_path = _correct_file_extension(target_file_path)
 
     # launch the scan job and wait for it to complete
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "ace-phishkit:/phishkit",
+        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+        "/opt/venv/bin/python",
+        "/opt/app/scanner.py",
+        "--file",
+        target_file_path,
+        "--output-dir",
+        output_dir,
+    ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+
     process = Popen(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            "ace-phishkit:/phishkit",
-            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-            "/opt/venv/bin/python",
-            "/opt/app/scanner.py",
-            "--file",
-            target_file_path,
-            "--output-dir",
-            output_dir,
-        ],
+        cmd,
         stdout=PIPE,
         stderr=PIPE,
         text=True,
@@ -138,7 +142,7 @@ def scan_file(file_path: str, timeout: int = 15) -> str:
     return _process_output(job_id, output_dir)
 
 @app.task
-def scan_url(url: str, timeout: int = 15) -> str:
+def scan_url(url: str, timeout: int = 15, proxy: str = None) -> str:
     # create an output directory for the scan
     job_id = str(uuid.uuid4())
     output_dir = f"/phishkit/output/{job_id}"
@@ -147,20 +151,24 @@ def scan_url(url: str, timeout: int = 15) -> str:
     logger.info(f"started url job {job_id} for {url}")
 
     # launch the scan job and wait for it to complete
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        "ace-phishkit:/phishkit",
+        os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
+        "/opt/venv/bin/python",
+        "/opt/app/scanner.py",
+        url,
+        "--output-dir",
+        output_dir,
+    ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+
     process = Popen(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            "ace-phishkit:/phishkit",
-            os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
-            "/opt/venv/bin/python",
-            "/opt/app/scanner.py",
-            url,
-            "--output-dir",
-            output_dir,
-        ],
+        cmd,
         stdout=PIPE,
         stderr=PIPE,
         text=True,

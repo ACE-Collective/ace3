@@ -1831,6 +1831,8 @@ analysis_module_phishkit_analyzer:
   fluent_bit_hostname: fluent-bit
   fluent_bit_port: 24224
   fluent_bit_metrics_tag: phishkit-metrics
+  # optional named proxy config to route scanner traffic through
+  # proxy: myproxy
 
 # TAG PRIORITIES AND SETTINGS
 # valid values are
