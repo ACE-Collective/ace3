@@ -2,18 +2,15 @@ ARG PYTHON_DOCKER_IMAGE=python:3.12-trixie
 FROM ${PYTHON_DOCKER_IMAGE}
 
 ARG USE_UNPINNED_REQUIREMENTS=false
-ARG ACE_VERSION=3.0.12
 
 # add metadata labels
 LABEL maintainer="John Davison <unixfreak0037@gmail.com>"
 LABEL description="Analysis Correlation Engine"
-LABEL version="${ACE_VERSION}"
 
 # env vars
 ENV SAQ_HOME=/opt/ace \
     SAQ_USER=ace \
     SAQ_GROUP=ace \
-    ACE_VERSION=${ACE_VERSION} \
     TZ=UTC \
     DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_PREFIX=/usr/local/share/npm-global \
@@ -259,6 +256,12 @@ USER ace
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 USER root
+
+# ACE_VERSION is set late in the Dockerfile so that version bumps don't
+# invalidate the expensive apt-get, pip, and John the Ripper build layers
+ARG ACE_VERSION=3.0.12
+LABEL version="${ACE_VERSION}"
+ENV ACE_VERSION=${ACE_VERSION}
 
 # install_integrations.sh only depends on load_environment, bin/, and integrations/
 # so we copy those first to maximize Docker layer cache hits
