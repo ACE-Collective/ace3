@@ -294,6 +294,14 @@ query_hunter:
   # maximum amount of time (in HH:MM:SS format) we should wait for a query to complete
   query_timeout: "00:30:00"
 
+hunt_type_executable:
+  name: executable
+  python_module: saq.collectors.hunter.executable_hunter
+  python_class: ExecutableHunt
+  rule_dirs:
+    - hunts/executable
+  update_frequency: 60
+
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database
   # this value is populated by the node itself, typically using the name of the system (or via configuration file)

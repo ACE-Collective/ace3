@@ -1,0 +1,18 @@
+rule:
+  uuid: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  enabled: yes
+  name: executable_test_1
+  description: Executable Test Description 1
+  type: executable
+  alert_type: hunter - executable - test
+  frequency: '00:01:00'
+  tags:
+    - tag1
+    - tag2
+  program: hunts/test/executable/test_script.sh
+
+  observable_mapping:
+    - fields: ['src_ip']
+      type: ipv4
+    - fields: ['dst_ip']
+      type: ipv4

@@ -10,6 +10,7 @@ import yaml
 
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
+import saq.collectors.hunter.result_processing as result_processing_module
 import saq.util.time as saq_time
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
 from saq.collectors.hunter.query_hunter import (
@@ -442,6 +443,7 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
 
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     data_dir = tmpdir / "data"
     data_dir.mkdir()
@@ -515,6 +517,7 @@ def test_query_hunter_ready(monkeypatch, tmpdir):
 def test_process_query_results(monkeypatch):
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(manager=MockManager(),
         name="test",
@@ -625,9 +628,10 @@ def test_process_query_results_file_observable(monkeypatch, tmpdir):
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     # set up temp directory for file observables
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -667,7 +671,8 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -707,7 +712,8 @@ def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, 
     from saq.query.decoder import DecoderType
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -748,7 +754,8 @@ def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatc
     from saq.query.decoder import DecoderType
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -788,7 +795,8 @@ def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -835,7 +843,8 @@ def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -869,7 +878,8 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -903,7 +913,8 @@ def test_process_query_results_file_observable_with_directives(monkeypatch, tmpd
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -940,7 +951,8 @@ def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -977,7 +989,8 @@ def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     # test with volatile=False (the default)
     hunt = default_hunt(
@@ -1015,7 +1028,8 @@ def test_process_query_results_file_observable_with_volatile_true(monkeypatch, t
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1051,7 +1065,8 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1091,7 +1106,8 @@ def test_process_query_results_file_observable_with_all_properties(monkeypatch, 
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1133,7 +1149,8 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1175,6 +1192,7 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1226,6 +1244,7 @@ def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, 
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1269,6 +1288,7 @@ def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1306,6 +1326,7 @@ def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1342,6 +1363,7 @@ def test_process_query_results_with_display_value_only(monkeypatch, tmpdir):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1385,7 +1407,8 @@ def test_process_query_results_file_observable_with_display_properties(monkeypat
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     # attempting to create an ObservableMapping with display_value for file type should fail validation
     with pytest.raises(ValidationError, match="display_value is not supported for file type observables"):
@@ -1405,7 +1428,8 @@ def test_process_query_results_file_observable_with_display_type_only(monkeypatc
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1447,7 +1471,8 @@ def test_process_query_results_file_observable_with_grouped_display_properties(m
     from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "get_temp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1486,6 +1511,7 @@ def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdi
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1518,6 +1544,7 @@ def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1634,6 +1661,7 @@ def test_process_query_results_with_relationship_mapping(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1694,6 +1722,7 @@ def test_process_query_results_with_relationship_missing_target(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1745,6 +1774,7 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1820,6 +1850,7 @@ def test_process_query_results_with_relationship_and_grouping(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1915,6 +1946,7 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -1975,6 +2007,7 @@ def test_description_field_with_grouping(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2007,6 +2040,7 @@ def test_description_field_ungrouped(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2032,6 +2066,7 @@ def test_description_field_fallback_when_missing(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2059,6 +2094,7 @@ def test_description_field_ignored_for_group_all(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2086,6 +2122,7 @@ def test_description_field_backward_compat(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2113,6 +2150,7 @@ def test_fields_mode_any_creates_separate_observables(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2145,6 +2183,7 @@ def test_fields_mode_any_partial_fields(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2177,6 +2216,7 @@ def test_fields_mode_any_no_fields_present(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2221,6 +2261,7 @@ def test_fields_mode_any_with_ignored_values(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2253,6 +2294,7 @@ def test_fields_mode_any_deduplicates(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2286,6 +2328,7 @@ def test_fields_mode_all_explicit(monkeypatch):
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2324,6 +2367,7 @@ def test_process_query_results_with_relationship_missing_field(monkeypatch, capl
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2381,6 +2425,7 @@ def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, 
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2430,6 +2475,7 @@ def test_process_query_results_with_relationship_partial_field_resolution(monkey
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2522,6 +2568,7 @@ def test_dedup_key_ungrouped(monkeypatch):
     """test that submission.key is set when dedup_key is configured (ungrouped)"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2546,6 +2593,7 @@ def test_dedup_key_ungrouped_composite(monkeypatch):
     """test that dedup_key works with composite interpolation templates"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2570,6 +2618,7 @@ def test_dedup_key_grouped(monkeypatch):
     """test that submission.key is set when dedup_key is configured (grouped)"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2600,6 +2649,7 @@ def test_dedup_key_none_when_not_set(monkeypatch):
     """test that submission.key is None when dedup_key is not configured"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2623,6 +2673,7 @@ def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
     """test that dedup key always includes the hunt UUID as prefix"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2649,6 +2700,7 @@ def test_dedup_key_missing_field_returns_none(monkeypatch):
     """test that submission.key is None when dedup_key references a missing field"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2719,6 +2771,7 @@ def test_summary_details_empty_list(monkeypatch):
     """test backward compatibility - empty summary_details does nothing"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2736,6 +2789,7 @@ def test_summary_details_ungrouped_basic(monkeypatch):
     """test ungrouped summary detail with single event"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2759,6 +2813,7 @@ def test_summary_details_ungrouped_multiple_events(monkeypatch):
     """test ungrouped - multiple events without group_by, each gets own detail"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2782,6 +2837,7 @@ def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
     """test that events with missing fields are silently skipped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2801,6 +2857,7 @@ def test_summary_details_ungrouped_limit(monkeypatch, caplog):
     """test that limit is enforced and warning is logged"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2826,6 +2883,7 @@ def test_summary_details_ungrouped_no_header(monkeypatch):
     """test that header=None passes through correctly"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2846,6 +2904,7 @@ def test_summary_details_ungrouped_multiple_definitions(monkeypatch):
     """test that two definitions produce independent details"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2871,6 +2930,7 @@ def test_summary_details_grouped_with_group_by(monkeypatch):
     """test grouped summary detail - multiple events combined with newline"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2902,6 +2962,7 @@ def test_summary_details_grouped_missing_field_skipped(monkeypatch):
     """test grouped - events with missing fields are skipped, others still contribute"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2927,6 +2988,7 @@ def test_summary_details_grouped_limit(monkeypatch, caplog):
     """test grouped limit caps collected lines and logs warning"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2951,6 +3013,7 @@ def test_summary_details_grouped_no_matching_events(monkeypatch):
     """test grouped - no summary detail added when all events are skipped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
@@ -2973,6 +3036,7 @@ def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch):
     """test two definitions, one grouped and one ungrouped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(result_processing_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
         manager=MockManager(),
