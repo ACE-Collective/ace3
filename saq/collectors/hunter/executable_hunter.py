@@ -52,7 +52,10 @@ class ExecutableHunt(Hunt, ResultProcessingMixin):
 
     @property
     def program(self) -> str:
-        return self.config.program
+        program = self.config.program
+        if not os.path.isabs(program) and self.file_path is not None:
+            return os.path.join(os.path.dirname(self.file_path), program)
+        return program
 
     @property
     def arguments(self) -> list[str]:

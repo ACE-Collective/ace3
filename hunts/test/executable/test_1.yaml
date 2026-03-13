@@ -9,7 +9,7 @@ rule:
   tags:
     - tag1
     - tag2
-  program: hunts/test/executable/test_script.sh
+  program: test_script.sh
 
   observable_mapping:
     - fields: ['src_ip']

@@ -352,6 +352,17 @@ class TestExecutableHuntLoadConfig:
     def test_load_from_yaml(self):
         hunt = ExecutableHunt(hunt_config_file_path="hunts/test/executable/test_1.yaml")
         assert hunt.name == "executable_test_1"
-        assert hunt.config.program == "hunts/test/executable/test_script.sh"
+        assert hunt.config.program == "test_script.sh"
+        assert hunt.program == os.path.join("hunts/test/executable", "test_script.sh")
         assert hunt.type == "executable"
         assert hunt.alert_type == "hunter - executable - test"
+
+    def test_absolute_program_path_unchanged(self):
+        hunt = ExecutableHunt(hunt_config_file_path="hunts/test/executable/test_1.yaml")
+        hunt.config.program = "/usr/bin/my_script"
+        assert hunt.program == "/usr/bin/my_script"
+
+    def test_relative_program_without_file_path(self):
+        hunt = make_hunt(program="relative/script.sh")
+        assert hunt.file_path is None
+        assert hunt.program == "relative/script.sh"
