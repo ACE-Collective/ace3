@@ -9,7 +9,7 @@ import os
 import os.path
 import re
 from tempfile import mkstemp
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 import pytz
 from pydantic import Field, model_validator
@@ -47,6 +47,8 @@ QUERY_DETAILS_SEARCH_ID = "search_id"
 QUERY_DETAILS_SEARCH_LINK = "search_link"
 QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
+
+T = TypeVar("T")
 
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
 
@@ -466,111 +468,57 @@ class QueryHunt(Hunt):
                 submission.root.add_summary_detail(header=header, content=content, format=sd_config.format)
                 count[sub_id] = current_count + 1
 
-    def _process_grouped_summary_detail(
+    def _collect_grouped_events(
         self,
         sd_config: SummaryDetailConfig,
         query_results: list[dict],
         event_submission_map: dict[int, list[Submission]],
-    ):
-        """Collect content from all events and add one combined SummaryDetail per submission."""
-        # Jinja grouped mode: collect qualifying events per submission, render once per submission
-        if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
-            # submission id -> list of qualifying events
-            collected_events: dict[int, list[dict]] = {}
-            sub_lookup: dict[int, Submission] = {}
-            seen_keys: dict[int, set[tuple]] = {}
-            limit_warned: dict[int, bool] = {}
+        transform_event: Callable[[dict], Optional[T]],
+    ) -> tuple[dict[int, list[T]], dict[int, Submission], dict[int, dict]]:
+        """Shared collection loop for grouped summary details.
 
-            for event_index, event in enumerate(query_results):
-                if event_index not in event_submission_map:
-                    continue
-                if sd_config.required_fields is not None:
-                    if not event_has_required_fields(event, sd_config.required_fields):
-                        continue
-                for submission in event_submission_map[event_index]:
-                    sub_id = id(submission)
-                    sub_lookup[sub_id] = submission
-                    if sub_id not in collected_events:
-                        collected_events[sub_id] = []
-                        seen_keys[sub_id] = set()
-                        limit_warned[sub_id] = False
-                    if sd_config.dedup_fields is not None:
-                        dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
-                        if dedup_key in seen_keys[sub_id]:
-                            continue
-                        seen_keys[sub_id].add(dedup_key)
-                    if len(collected_events[sub_id]) >= sd_config.limit:
-                        if not limit_warned[sub_id]:
-                            logging.warning(
-                                "summary detail limit (%s) reached for grouped definition content=%s in hunt %s",
-                                sd_config.limit, sd_config.content, self.name,
-                            )
-                            limit_warned[sub_id] = True
-                        continue
-                    collected_events[sub_id].append(event)
+        Iterates query results, applies required_fields filtering, per-submission
+        dedup, and limit enforcement.  The ``transform_event`` callback converts
+        each qualifying event into the item to collect (or returns ``None`` to skip).
 
-            for sub_id, events in collected_events.items():
-                if not events:
-                    continue
-                content = render_jinja_template(
-                    sd_config.content,
-                    {"events": events},
-                    strict=(sd_config.required_fields is None),
-                )
-                if content is None or not content.strip():
-                    continue
-                header = None
-                if sd_config.header is not None:
-                    header_ok, header = render_sd_header(sd_config, events[0])
-                    header = header if header_ok else None
-                sub_lookup[sub_id].root.add_summary_detail(
-                    header=header, content=content, format=sd_config.format,
-                )
-            return
-
-        # Non-Jinja grouped mode: per-event render + join
-        # submission id -> list of content strings
-        collected: dict[int, list[str]] = {}
-        # submission id -> header (from first contributing event)
-        headers: dict[int, Optional[str]] = {}
-        # submission id -> submission object
+        Returns ``(collected, sub_lookup, first_events)`` where *collected* maps
+        submission id to the list of transformed items, *sub_lookup* maps
+        submission id to the :class:`Submission` object, and *first_events* maps
+        submission id to the first contributing event dict (for header resolution).
+        """
+        collected: dict[int, list[T]] = {}
         sub_lookup: dict[int, Submission] = {}
-        # submission id -> whether we've already logged the limit warning
-        limit_warned: dict[int, bool] = {}
-        # submission id -> set of dedup keys
+        first_events: dict[int, dict] = {}
         seen_keys: dict[int, set[tuple]] = {}
+        limit_warned: dict[int, bool] = {}
 
         for event_index, event in enumerate(query_results):
             if event_index not in event_submission_map:
                 continue
-
-            # required fields check
             if sd_config.required_fields is not None:
                 if not event_has_required_fields(event, sd_config.required_fields):
                     continue
 
-            # render content
-            content = render_sd_content(sd_config, event)
-            if content is None:
+            item = transform_event(event)
+            if item is None:
                 continue
 
             for submission in event_submission_map[event_index]:
                 sub_id = id(submission)
                 sub_lookup[sub_id] = submission
-
                 if sub_id not in collected:
                     collected[sub_id] = []
+                    seen_keys[sub_id] = set()
                     limit_warned[sub_id] = False
 
-                # per-submission dedup check
+                # dedup check
                 if sd_config.dedup_fields is not None:
-                    if sub_id not in seen_keys:
-                        seen_keys[sub_id] = set()
                     dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
                     if dedup_key in seen_keys[sub_id]:
                         continue
                     seen_keys[sub_id].add(dedup_key)
 
+                # per-submission limit enforcement
                 if len(collected[sub_id]) >= sd_config.limit:
                     if not limit_warned[sub_id]:
                         logging.warning(
@@ -580,25 +528,79 @@ class QueryHunt(Hunt):
                         limit_warned[sub_id] = True
                     continue
 
-                collected[sub_id].append(content)
+                collected[sub_id].append(item)
+                if sub_id not in first_events:
+                    first_events[sub_id] = event
 
-                # resolve header from first contributing event
-                if sub_id not in headers:
-                    if sd_config.header is not None:
-                        header_ok, resolved_header = render_sd_header(sd_config, event)
-                        headers[sub_id] = resolved_header if header_ok else None
-                    else:
-                        headers[sub_id] = None
+        return collected, sub_lookup, first_events
 
-        # add the combined summary details
+    def _resolve_header(self, sd_config: SummaryDetailConfig, first_event: dict) -> Optional[str]:
+        """Resolve a summary detail header from the first contributing event."""
+        if sd_config.header is None:
+            return None
+        header_ok, header = render_sd_header(sd_config, first_event)
+        return header if header_ok else None
+
+    def _process_grouped_summary_detail(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Collect content from all events and add one combined SummaryDetail per submission."""
+        if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
+            self._process_grouped_summary_detail_jinja(sd_config, query_results, event_submission_map)
+        else:
+            self._process_grouped_summary_detail_default(sd_config, query_results, event_submission_map)
+
+    def _process_grouped_summary_detail_jinja(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Jinja grouped mode: collect qualifying events per submission, render once per submission."""
+        collected, sub_lookup, first_events = self._collect_grouped_events(
+            sd_config, query_results, event_submission_map,
+            transform_event=lambda e: e,
+        )
+
+        for sub_id, events in collected.items():
+            if not events:
+                continue
+
+            content = render_jinja_template(
+                sd_config.content,
+                {"events": events},
+                strict=(sd_config.required_fields is None),
+            )
+
+            if content is None or not content.strip():
+                continue
+
+            header = self._resolve_header(sd_config, first_events[sub_id])
+            sub_lookup[sub_id].root.add_summary_detail(
+                header=header, content=content, format=sd_config.format,
+            )
+
+    def _process_grouped_summary_detail_default(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Non-Jinja grouped mode: per-event render + join."""
+        collected, sub_lookup, first_events = self._collect_grouped_events(
+            sd_config, query_results, event_submission_map,
+            transform_event=lambda e: render_sd_content(sd_config, e),
+        )
+
         for sub_id, lines in collected.items():
             if not lines:
                 continue
-            submission = sub_lookup[sub_id]
-            submission.root.add_summary_detail(
-                header=headers.get(sub_id),
-                content="\n".join(lines),
-                format=sd_config.format,
+            header = self._resolve_header(sd_config, first_events[sub_id])
+            sub_lookup[sub_id].root.add_summary_detail(
+                header=header, content="\n".join(lines), format=sd_config.format,
             )
 
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
