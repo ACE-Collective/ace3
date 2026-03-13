@@ -253,6 +253,7 @@ class HuntManager:
                     trigger_reload = True
 
             # if any hunts failed to load last time, check to see if they were modified
+            failed_yaml_paths_to_remove = []
             for ini_path, (mtime, file_size, sha256_hash) in self.failed_yaml_files.items():
                 try:
                     # go from easiest computation to most expensive
@@ -265,8 +266,16 @@ class HuntManager:
                     elif sha256(ini_path) != sha256_hash:
                         logging.info(f"detected modification (by hash) to failed ini file {ini_path}")
                         trigger_reload = True
+                except FileNotFoundError:
+                    logging.info(f"failed ini file {ini_path} no longer exists; clearing failure record")
+                    failed_yaml_paths_to_remove.append(ini_path)
+                    trigger_reload = True
                 except Exception as e:
                     logging.error(f"unable to check failed ini file {ini_path}: {e}")
+
+            # remove any failed yaml paths that have been deleted
+            for ini_path in failed_yaml_paths_to_remove:
+                self.failed_yaml_files.pop(ini_path, None)
 
             # are there any new hunts?
             existing_yaml_paths = set([hunt.file_path for hunt in self._hunts])
@@ -533,20 +542,24 @@ class HuntManager:
 
             # load each .yaml file found in this rules directory
             logging.debug(f"searching {rule_dir} for hunt configurations")
-            for root, dirnames, filenames in os.walk(rule_dir):
-                for hunt_config in filenames:
-                    if not hunt_config.endswith('.yaml'):
-                        continue
+            for entry in os.scandir(rule_dir):
+                if not entry.is_file():
+                    continue
 
-                    # skip the template.yaml file
-                    if hunt_config == "template.yaml":
-                        continue
+                hunt_config = entry.name
 
-                    # skip include files
-                    if hunt_config.endswith('.include.yaml'):
-                        continue
+                if not hunt_config.endswith('.yaml'):
+                    continue
 
-                    result.append(os.path.join(root, hunt_config))
+                # skip the template.yaml file
+                if hunt_config == "template.yaml":
+                    continue
+
+                # skip include files
+                if hunt_config.endswith('.include.yaml'):
+                    continue
+
+                result.append(entry.path)
 
         return result
 

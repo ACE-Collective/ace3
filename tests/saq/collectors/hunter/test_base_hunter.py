@@ -704,6 +704,45 @@ def test_invalid_cron_schedule(rules_dir, manager_kwargs):
     assert len(hunter.hunts) == 0
     assert len(hunter.failed_yaml_files) == 1
 
+
+@pytest.mark.integration
+def test_deleted_failed_hunt_clears_failure_and_triggers_reload(rules_dir, manager_kwargs):
+    shutil.rmtree(rules_dir)
+    os.mkdir(rules_dir)
+    failed_yaml_path = os.path.join(rules_dir, 'test_invalid.yaml')
+    with open(failed_yaml_path, 'w') as fp:
+        fp.write("""rule:
+  uuid: 59098a62-67f3-488f-802f-891a34d74b89
+  enabled: yes
+  name: unit_test_1
+  description: Unit Test Description 1
+  type: test
+  alert_type: test - alert
+  frequency: '*/1 * * *'
+  instance_types:
+    - unittest
+  tags:
+    - tag1
+    - tag2
+""")
+
+    hunter = HuntManager(**manager_kwargs)
+    hunter.load_hunts_from_config()
+
+    # the invalid cron schedule should cause this yaml to be tracked as a failed file
+    assert len(hunter.hunts) == 0
+    assert failed_yaml_path in hunter.failed_yaml_files
+    assert not hunter.reload_hunts_flag
+
+    # deleting the failed yaml should be treated as resolution:
+    # - the failure record is cleared
+    # - a reload is triggered
+    os.remove(failed_yaml_path)
+    hunter.check_hunts()
+
+    assert hunter.reload_hunts_flag
+    assert failed_yaml_path not in hunter.failed_yaml_files
+
 @pytest.mark.integration
 def test_hunt_suppression(rules_dir, manager_kwargs):
     shutil.rmtree(rules_dir)

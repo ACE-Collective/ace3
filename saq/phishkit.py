@@ -39,7 +39,7 @@ def _copy_files(source_dir: str, output_dir: str) -> list[str]:
 
     return files
 
-def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15) -> Union[str, list[str]]:
+def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_file as pk_scan_file
 
     # copy the file to the shared volume so the celery worker can access it
@@ -49,7 +49,7 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
     shutil.copy2(file_path, shared_file_path)
 
     # scan the file
-    result = pk_scan_file.delay(shared_file_path, timeout=scanner_timeout)
+    result = pk_scan_file.delay(shared_file_path, timeout=scanner_timeout, proxy=proxy)
 
     if is_async:
         return result.id
@@ -58,9 +58,9 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
 
-def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15) -> Union[str, list[str]]:
+def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None) -> Union[str, list[str]]:
     from phishkit.phishkit import scan_url as pk_scan_url
-    result = pk_scan_url.delay(url, timeout=scanner_timeout)
+    result = pk_scan_url.delay(url, timeout=scanner_timeout, proxy=proxy)
 
     if is_async:
         return result.id
@@ -105,6 +105,8 @@ def cli_scan(args) -> int:
         # if we can't parse the URL, assume it's a file
         target_function = scan_file
 
+    proxy = getattr(args, 'proxy', None)
+
     if args.use_async:
         # are we asking for the results of a previous request?
         if args.id:
@@ -114,12 +116,12 @@ def cli_scan(args) -> int:
                 return os.EX_OK
         else:
             # otherwse we start a new request and return the ID to the user
-            result_id = target_function(args.target, args.output_dir, is_async=True)
+            result_id = target_function(args.target, args.output_dir, is_async=True, proxy=proxy)
             print(f"Scan started. ID: {result_id}")
             return os.EX_OK
     else:
         # if we're not using async, then we just run the scan and return the results
-        scan_results = target_function(args.target, args.output_dir)
+        scan_results = target_function(args.target, args.output_dir, proxy=proxy)
 
     # if we get this far then we have the results
     for file_path in scan_results:
@@ -133,5 +135,6 @@ phishkit_scan_parser.add_argument("output_dir", help="The directory to save the 
 phishkit_scan_parser.add_argument("--timeout", type=float, default=15, help="The timeout for the scan.")
 phishkit_scan_parser.add_argument("--async", dest="use_async", action="store_true", help="Scan asynchronously. Returns the request ID instead of the list of files.")
 phishkit_scan_parser.add_argument("--id", help="The ID of the scan to get the result of.")
+phishkit_scan_parser.add_argument("--proxy", default=None, help="Proxy string to pass to phishkit scanner (e.g. host:port or user:pass@host:port).")
 phishkit_scan_parser.set_defaults(func=cli_scan)
 
