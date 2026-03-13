@@ -750,7 +750,183 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         assert analysis is not None
         assert analysis.job_id == "file-job-after-switch"
         assert analysis.scan_type == SCAN_TYPE_FILE
-        
+
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_url_scan_passes_proxy(monkeypatch, test_context):
+    """Test that proxy string is passed through to scan_url when configured."""
+    from saq.configuration.config import get_config
+    from saq.configuration.schema import ProxyConfig
+
+    # set up a named proxy config
+    proxy_config = ProxyConfig(name="testproxy", transport="http", host="proxy.test", port=9090, user="u", password="p")
+    get_config().clear_proxy_configs()
+    get_config().add_proxy_config("testproxy", proxy_config)
+
+    # set the phishkit analyzer config to use this proxy
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'proxy', 'testproxy')
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    url_observable.add_directive(DIRECTIVE_CRAWL)
+
+    captured_kwargs = {}
+
+    def mock_scan_url(url, output_dir, is_async=True, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "proxy-job-123"
+
+    monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
+    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: None)
+    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/proxy-test")
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.execute_analysis(url_observable)
+
+    assert captured_kwargs.get("proxy") == "u:p@proxy.test:9090"
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_url_scan_no_proxy(monkeypatch, test_context):
+    """Test that proxy is None when no proxy is configured."""
+    # ensure no proxy is set
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'proxy', None)
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    url_observable.add_directive(DIRECTIVE_CRAWL)
+
+    captured_kwargs = {}
+
+    def mock_scan_url(url, output_dir, is_async=True, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "no-proxy-job"
+
+    monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
+    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: None)
+    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/no-proxy-test")
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    analyzer.execute_analysis(url_observable)
+
+    assert captured_kwargs.get("proxy") is None
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_continue_analysis_redacts_proxy_from_stdout(monkeypatch, test_context):
+    """Test that proxy credentials are redacted from stdout/stderr in analysis details."""
+    from saq.configuration.config import get_config
+    from saq.configuration.schema import ProxyConfig
+
+    proxy_config = ProxyConfig(name="testproxy", transport="http", host="gate.proxy.com", port=10001, user="proxyuser", password="s3cr3t+pass")
+    get_config().clear_proxy_configs()
+    get_config().add_proxy_config("testproxy", proxy_config)
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'proxy', 'testproxy')
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "redact-test-job"
+    analysis.output_dir = "/tmp/test-redact"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        stdout_file = os.path.join(temp_dir, "std.out")
+        stderr_file = os.path.join(temp_dir, "std.err")
+
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+        with open(stdout_file, "w") as f:
+            f.write("using proxy: proxyuser:s3cr3t+pass@gate.proxy.com:10001\nopening https://example.com\n")
+        with open(stderr_file, "w") as f:
+            f.write("some error mentioning proxyuser:s3cr3t+pass@gate.proxy.com\n")
+
+        output_files = [exit_code_file, stdout_file, stderr_file]
+
+        def mock_get_async_scan_result(job_id, output_dir, timeout=1):
+            return output_files
+
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result", mock_get_async_scan_result)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        # Credentials must not appear in stdout or stderr
+        assert "s3cr3t+pass" not in analysis.stdout
+        assert "proxyuser" not in analysis.stdout
+        assert "****:****" in analysis.stdout
+        assert "s3cr3t+pass" not in analysis.stderr
+        assert "proxyuser" not in analysis.stderr
+        assert "****:****" in analysis.stderr
+        # Host:port should still be visible
+        assert "gate.proxy.com" in analysis.stdout
+
+
+@pytest.mark.integration
+def test_phishkit_analyzer_file_scan_passes_proxy(monkeypatch, test_context):
+    """Test that proxy string is passed through to scan_file when configured."""
+    from saq.configuration.config import get_config
+    from saq.configuration.schema import ProxyConfig
+
+    proxy_config = ProxyConfig(name="testproxy", transport="http", host="proxy.test", port=9090, user="u", password="p")
+    get_config().clear_proxy_configs()
+    get_config().add_proxy_config("testproxy", proxy_config)
+
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'proxy', 'testproxy')
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
+
+    root = create_root_analysis(analysis_mode='correlation')
+    root.initialize_storage()
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<html><body>Test</body></html>')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        file_observable.add_directive(DIRECTIVE_RENDER)
+
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'HTML document', 'mime': 'text/html'}
+        file_observable.add_analysis(file_type_analysis)
+
+        captured_kwargs = {}
+
+        def mock_scan_file(file_path, output_dir, is_async=True, **kwargs):
+            captured_kwargs.update(kwargs)
+            return "proxy-file-job"
+
+        monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
+        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: AnalysisExecutionResult.INCOMPLETE)
+        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/proxy-file-test")
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        monkeypatch.setattr(analyzer, "wait_for_analysis", lambda obs, at: file_type_analysis)
+
+        analyzer.execute_analysis(file_observable)
+
+        assert captured_kwargs.get("proxy") == "u:p@proxy.test:9090"
     finally:
         if os.path.exists(test_file_path):
             os.unlink(test_file_path)

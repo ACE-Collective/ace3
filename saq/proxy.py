@@ -37,8 +37,34 @@ def proxies(proxy_name: Optional[str] = None) -> dict[str, str]:
                         config.host, 
                         config.port)
                 else:
-                    result[proxy_key] = '{}://{}:{}'.format(config.transport, 
-                                                            config.host, 
+                    result[proxy_key] = '{}://{}:{}'.format(config.transport,
+                                                            config.host,
                                                             config.port)
 
     return result
+
+
+def proxy_string_for_seleniumbase(proxy_name: Optional[str] = None) -> Optional[str]:
+    """Returns a SeleniumBase-compatible proxy string for the named proxy config.
+
+    HTTP proxies: host:port or user:pass@host:port
+    SOCKS proxies: socks5://host:port or socks5://user:pass@host:port
+
+    Returns None if proxy_name is None or no proxy is configured.
+    """
+    if proxy_name is None:
+        return None
+
+    config = get_proxy_config(proxy_name)
+    if config is None:
+        return None
+
+    if config.user and config.password:
+        auth = f"{config.user}:{config.password}@"
+    else:
+        auth = ""
+
+    if config.transport and config.transport.startswith("socks"):
+        return f"{config.transport}://{auth}{config.host}:{config.port}"
+    else:
+        return f"{auth}{config.host}:{config.port}"
