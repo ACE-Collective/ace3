@@ -9,7 +9,7 @@ import os
 import os.path
 import re
 from tempfile import mkstemp
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 import pytz
 from pydantic import Field, model_validator
@@ -20,7 +20,7 @@ from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import F_SIGNATURE_ID, TIMESPEC_TOKEN
+from saq.constants import F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.observables.generator import create_observable
@@ -33,7 +33,14 @@ from saq.query.event_processing import (
     contains_unresolved_placeholders,
     interpolate_event_value,
 )
-from saq.query.extraction import extract_observables_from_event
+from saq.query.extraction import (
+    compute_dedup_key,
+    event_has_required_fields,
+    extract_observables_from_event,
+    render_sd_content,
+    render_sd_header,
+)
+from saq.query.summary_detail_rendering import render_jinja_template
 from saq.util import abs_path, create_timedelta, local_time
 
 QUERY_DETAILS_SEARCH_ID = "search_id"
@@ -41,7 +48,10 @@ QUERY_DETAILS_SEARCH_LINK = "search_link"
 QUERY_DETAILS_QUERY = "query"
 QUERY_DETAILS_EVENTS = "events"
 
+T = TypeVar("T")
+
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
+
 
 class QueryHuntConfig(HuntConfig, BaseQueryConfig):
     time_range: Optional[str] = Field(
@@ -93,6 +103,9 @@ class QueryHunt(Hunt):
 
         # the query loaded from file (if specified)
         self.loaded_query: Optional[str] = None
+
+        # the query with all runtime tokens (e.g. TIMESPEC) resolved to actual values
+        self.resolved_query: Optional[str] = None
 
     @property
     def time_range(self) -> Optional[datetime.timedelta]:
@@ -146,17 +159,21 @@ class QueryHunt(Hunt):
     def query(self) -> str:
         # query set inline in the config?
         if self.config.query is not None:
-            return self.config.query
-
-        # have we already loaded the query from file?
-        if self.loaded_query is not None:
-            return self.loaded_query
-
-        if self.query_file_path is not None:
+            result = self.config.query
+        elif self.loaded_query is not None:
+            result = self.loaded_query
+        elif self.query_file_path is not None:
             self.loaded_query = self.load_query_from_file(self.query_file_path)
-            return self.loaded_query
+            result = self.loaded_query
         else:
             raise ValueError(f"no query specified for hunt {self}")
+
+        if self.config.query_prefix:
+            result = self.config.query_prefix + "\n" + result
+        if self.config.query_suffix:
+            result = result.rstrip() + "\n" + self.config.query_suffix
+
+        return result
 
     @property
     def observable_mapping(self) -> list[ObservableMapping]:
@@ -370,7 +387,7 @@ class QueryHunt(Hunt):
             details={
                 QUERY_DETAILS_SEARCH_ID: self.search_id if self.search_id else None,
                 QUERY_DETAILS_SEARCH_LINK: self.search_link if self.search_link else None,
-                QUERY_DETAILS_QUERY: self.formatted_query(),
+                QUERY_DETAILS_QUERY: self.resolved_query or self.formatted_query(),
                 QUERY_DETAILS_EVENTS: [],
             },
             event_time=None,
@@ -406,31 +423,39 @@ class QueryHunt(Hunt):
     ):
         """Add one SummaryDetail per event per submission for this definition."""
         count: dict[int, int] = {}  # submission id -> count
+        seen_keys: dict[int, set[tuple]] = {}  # submission id -> set of dedup keys
 
         for event_index, event in enumerate(query_results):
             if event_index not in event_submission_map:
                 continue
 
-            # interpolate content
-            content_values = interpolate_event_value(sd_config.content, event)
-            if not content_values:
-                continue
-            content = content_values[0]
-            if contains_unresolved_placeholders(content):
+            # required fields check
+            if sd_config.required_fields is not None:
+                if not event_has_required_fields(event, sd_config.required_fields):
+                    continue
+
+            # render content
+            content = render_sd_content(sd_config, event)
+            if content is None:
                 continue
 
-            # interpolate header
-            header = None
-            if sd_config.header is not None:
-                header_values = interpolate_event_value(sd_config.header, event)
-                if not header_values:
-                    continue
-                header = header_values[0]
-                if contains_unresolved_placeholders(header):
-                    continue
+            # render header
+            header_ok, header = render_sd_header(sd_config, event)
+            if not header_ok:
+                continue
 
             for submission in event_submission_map[event_index]:
                 sub_id = id(submission)
+
+                # per-submission dedup check
+                if sd_config.dedup_fields is not None:
+                    if sub_id not in seen_keys:
+                        seen_keys[sub_id] = set()
+                    dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
+                    if dedup_key in seen_keys[sub_id]:
+                        continue
+                    seen_keys[sub_id].add(dedup_key)
+
                 current_count = count.get(sub_id, 0)
                 if current_count >= sd_config.limit:
                     if current_count == sd_config.limit:
@@ -443,41 +468,57 @@ class QueryHunt(Hunt):
                 submission.root.add_summary_detail(header=header, content=content, format=sd_config.format)
                 count[sub_id] = current_count + 1
 
-    def _process_grouped_summary_detail(
+    def _collect_grouped_events(
         self,
         sd_config: SummaryDetailConfig,
         query_results: list[dict],
         event_submission_map: dict[int, list[Submission]],
-    ):
-        """Collect content from all events and add one combined SummaryDetail per submission."""
-        # submission id -> list of content strings
-        collected: dict[int, list[str]] = {}
-        # submission id -> header (from first contributing event)
-        headers: dict[int, Optional[str]] = {}
-        # submission id -> submission object
+        transform_event: Callable[[dict], Optional[T]],
+    ) -> tuple[dict[int, list[T]], dict[int, Submission], dict[int, dict]]:
+        """Shared collection loop for grouped summary details.
+
+        Iterates query results, applies required_fields filtering, per-submission
+        dedup, and limit enforcement.  The ``transform_event`` callback converts
+        each qualifying event into the item to collect (or returns ``None`` to skip).
+
+        Returns ``(collected, sub_lookup, first_events)`` where *collected* maps
+        submission id to the list of transformed items, *sub_lookup* maps
+        submission id to the :class:`Submission` object, and *first_events* maps
+        submission id to the first contributing event dict (for header resolution).
+        """
+        collected: dict[int, list[T]] = {}
         sub_lookup: dict[int, Submission] = {}
-        # submission id -> whether we've already logged the limit warning
+        first_events: dict[int, dict] = {}
+        seen_keys: dict[int, set[tuple]] = {}
         limit_warned: dict[int, bool] = {}
 
         for event_index, event in enumerate(query_results):
             if event_index not in event_submission_map:
                 continue
+            if sd_config.required_fields is not None:
+                if not event_has_required_fields(event, sd_config.required_fields):
+                    continue
 
-            content_values = interpolate_event_value(sd_config.content, event)
-            if not content_values:
-                continue
-            content = content_values[0]
-            if contains_unresolved_placeholders(content):
+            item = transform_event(event)
+            if item is None:
                 continue
 
             for submission in event_submission_map[event_index]:
                 sub_id = id(submission)
                 sub_lookup[sub_id] = submission
-
                 if sub_id not in collected:
                     collected[sub_id] = []
+                    seen_keys[sub_id] = set()
                     limit_warned[sub_id] = False
 
+                # dedup check
+                if sd_config.dedup_fields is not None:
+                    dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
+                    if dedup_key in seen_keys[sub_id]:
+                        continue
+                    seen_keys[sub_id].add(dedup_key)
+
+                # per-submission limit enforcement
                 if len(collected[sub_id]) >= sd_config.limit:
                     if not limit_warned[sub_id]:
                         logging.warning(
@@ -487,28 +528,79 @@ class QueryHunt(Hunt):
                         limit_warned[sub_id] = True
                     continue
 
-                collected[sub_id].append(content)
+                collected[sub_id].append(item)
+                if sub_id not in first_events:
+                    first_events[sub_id] = event
 
-                # resolve header from first contributing event
-                if sub_id not in headers:
-                    if sd_config.header is not None:
-                        header_values = interpolate_event_value(sd_config.header, event)
-                        if header_values and not contains_unresolved_placeholders(header_values[0]):
-                            headers[sub_id] = header_values[0]
-                        else:
-                            headers[sub_id] = None
-                    else:
-                        headers[sub_id] = None
+        return collected, sub_lookup, first_events
 
-        # add the combined summary details
+    def _resolve_header(self, sd_config: SummaryDetailConfig, first_event: dict) -> Optional[str]:
+        """Resolve a summary detail header from the first contributing event."""
+        if sd_config.header is None:
+            return None
+        header_ok, header = render_sd_header(sd_config, first_event)
+        return header if header_ok else None
+
+    def _process_grouped_summary_detail(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Collect content from all events and add one combined SummaryDetail per submission."""
+        if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
+            self._process_grouped_summary_detail_jinja(sd_config, query_results, event_submission_map)
+        else:
+            self._process_grouped_summary_detail_default(sd_config, query_results, event_submission_map)
+
+    def _process_grouped_summary_detail_jinja(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Jinja grouped mode: collect qualifying events per submission, render once per submission."""
+        collected, sub_lookup, first_events = self._collect_grouped_events(
+            sd_config, query_results, event_submission_map,
+            transform_event=lambda e: e,
+        )
+
+        for sub_id, events in collected.items():
+            if not events:
+                continue
+
+            content = render_jinja_template(
+                sd_config.content,
+                {"events": events},
+                strict=(sd_config.required_fields is None),
+            )
+
+            if content is None or not content.strip():
+                continue
+
+            header = self._resolve_header(sd_config, first_events[sub_id])
+            sub_lookup[sub_id].root.add_summary_detail(
+                header=header, content=content, format=sd_config.format,
+            )
+
+    def _process_grouped_summary_detail_default(
+        self,
+        sd_config: SummaryDetailConfig,
+        query_results: list[dict],
+        event_submission_map: dict[int, list[Submission]],
+    ):
+        """Non-Jinja grouped mode: per-event render + join."""
+        collected, sub_lookup, first_events = self._collect_grouped_events(
+            sd_config, query_results, event_submission_map,
+            transform_event=lambda e: render_sd_content(sd_config, e),
+        )
+
         for sub_id, lines in collected.items():
             if not lines:
                 continue
-            submission = sub_lookup[sub_id]
-            submission.root.add_summary_detail(
-                header=headers.get(sub_id),
-                content="\n".join(lines),
-                format=sd_config.format,
+            header = self._resolve_header(sd_config, first_events[sub_id])
+            sub_lookup[sub_id].root.add_summary_detail(
+                header=header, content="\n".join(lines), format=sd_config.format,
             )
 
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
