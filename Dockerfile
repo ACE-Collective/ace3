@@ -2,18 +2,15 @@ ARG PYTHON_DOCKER_IMAGE=python:3.12-trixie
 FROM ${PYTHON_DOCKER_IMAGE}
 
 ARG USE_UNPINNED_REQUIREMENTS=false
-ARG ACE_VERSION=3.0.12
 
 # add metadata labels
 LABEL maintainer="John Davison <unixfreak0037@gmail.com>"
 LABEL description="Analysis Correlation Engine"
-LABEL version="${ACE_VERSION}"
 
 # env vars
 ENV SAQ_HOME=/opt/ace \
     SAQ_USER=ace \
     SAQ_GROUP=ace \
-    ACE_VERSION=${ACE_VERSION} \
     TZ=UTC \
     DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_PREFIX=/usr/local/share/npm-global \
@@ -260,29 +257,36 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 USER root
 
+# ACE_VERSION is set late in the Dockerfile so that version bumps don't
+# invalidate the expensive apt-get, pip, and John the Ripper build layers
+ARG ACE_VERSION=3.0.12
+LABEL version="${ACE_VERSION}"
+ENV ACE_VERSION=${ACE_VERSION}
+
+# install_integrations.sh only depends on load_environment, bin/, and integrations/
+# so we copy those first to maximize Docker layer cache hits
+COPY --chown=ace:ace load_environment /opt/ace/
+COPY --chown=ace:ace bin /opt/ace/bin
+COPY --chown=ace:ace integrations /opt/ace/integrations
+RUN /opt/ace/bin/install_integrations.sh
+
 # NOTE that COPY app /opt/ace does not create /opt/ace/app, it actually copies everything inside of app into /opt/ace
 # so we copy each individual thing we need
-COPY --chown=ace:ace ace ace_api.py ace_uwsgi.py analyst_on_ace.png ansistrm.py api_uwsgi.py api_uvicorn.py flask_config.py load_environment pytest.ini /opt/ace/
+COPY --chown=ace:ace ace ace_api.py ace_uwsgi.py analyst_on_ace.png ansistrm.py api_uwsgi.py api_uvicorn.py flask_config.py pytest.ini /opt/ace/
 COPY --chown=ace:ace aceapi /opt/ace/aceapi
 COPY --chown=ace:ace aceapi_v2 /opt/ace/aceapi_v2
 COPY --chown=ace:ace alembic.ini /opt/ace/alembic.ini
 COPY --chown=ace:ace alembic /opt/ace/alembic
 COPY --chown=ace:ace app /opt/ace/app
-COPY --chown=ace:ace bin /opt/ace/bin
 COPY --chown=ace:ace bro /opt/ace/bro
 COPY --chown=ace:ace cron /opt/ace/cron
 COPY --chown=ace:ace docker /opt/ace/docker
+COPY --chown=ace:ace phishkit /opt/ace/phishkit
 COPY --chown=ace:ace saq /opt/ace/saq
 COPY --chown=ace:ace sql /opt/ace/sql
 COPY --chown=ace:ace tests /opt/ace/tests
 COPY --chown=ace:ace etc /opt/ace/etc
 COPY --chown=ace:ace hunts /opt/ace/hunts
-COPY --chown=ace:ace phishkit /opt/ace/phishkit
-
-# install all available integrations
-# note that all integrations are installed even if they are disabled in the config
-COPY --chown=ace:ace integrations /opt/ace/integrations
-RUN /opt/ace/bin/install_integrations.sh
 
 USER ace
 WORKDIR /opt/ace

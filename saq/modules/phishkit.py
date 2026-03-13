@@ -14,6 +14,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, scan_file, scan_url
+from saq.proxy import proxy_string_for_seleniumbase
 from saq.util.filesystem import create_temporary_directory
 from saq.util.strings import format_item_list_for_summary
 
@@ -157,6 +158,7 @@ class PhishkitAnalyzerConfig(AnalysisModuleConfig):
     fluent_bit_port: int = Field(default=24224, description="Port of the fluent-bit forward input.")
     fluent_bit_metrics_tag: str = Field(default="phishkit-metrics", description="Tag for phishkit metrics events.")
     scanner_timeout: int = Field(default=15, description="Timeout in seconds for the phishkit scanner process.")
+    proxy: Optional[str] = Field(default=None, description="Named proxy config to route scanner traffic through.")
 
 class PhishkitAnalyzer(AnalysisModule):
     @classmethod
@@ -175,6 +177,13 @@ class PhishkitAnalyzer(AnalysisModule):
                 port=self.config.fluent_bit_port,
             )
 
+        # resolve named proxy config to a SeleniumBase-compatible proxy string
+        self._proxy_string: Optional[str] = None
+        if self.config.proxy:
+            self._proxy_string = proxy_string_for_seleniumbase(self.config.proxy)
+            if self._proxy_string:
+                logging.info(f"phishkit analyzer using proxy: {self.config.proxy}")
+
     @property
     def generated_analysis_type(self):
         return PhishkitAnalysis
@@ -192,6 +201,20 @@ class PhishkitAnalyzer(AnalysisModule):
             return self.get_root().analysis_mode == ANALYSIS_MODE_CORRELATION
         else:
             return False
+
+    def _redact_proxy_credentials(self, text: str) -> str:
+        """Remove proxy credentials from text to prevent storage in analysis details."""
+        if not text or not self._proxy_string or '@' not in self._proxy_string:
+            return text
+        before_at = self._proxy_string.rsplit('@', 1)[0]
+        # strip scheme prefix (e.g. socks5://) to get raw user:pass
+        if '://' in before_at:
+            creds = before_at.split('://', 1)[1]
+        else:
+            creds = before_at
+        if creds:
+            return text.replace(creds, "****:****")
+        return text
 
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
@@ -226,10 +249,10 @@ class PhishkitAnalyzer(AnalysisModule):
                     analysis.exit_code = int(fp.read())
             elif os.path.basename(file_path) == "std.out":
                 with open(file_path, "r") as fp:
-                    analysis.stdout = fp.read()
+                    analysis.stdout = self._redact_proxy_credentials(fp.read())
             elif os.path.basename(file_path) == "std.err":
                 with open(file_path, "r") as fp:
-                    analysis.stderr = fp.read()
+                    analysis.stderr = self._redact_proxy_credentials(fp.read())
             elif os.path.basename(file_path) == "metrics.json":
                 try:
                     with open(file_path, "r") as fp:
@@ -316,7 +339,7 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_URL
             
             try:
-                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout)
+                analysis.job_id = scan_url(observable.value, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string)
                 self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:
@@ -330,7 +353,7 @@ class PhishkitAnalyzer(AnalysisModule):
             analysis.scan_type = SCAN_TYPE_FILE
             
             try:
-                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout)
+                analysis.job_id = scan_file(observable.full_path, analysis.output_dir, is_async=True, scanner_timeout=self.config.scanner_timeout, proxy=self._proxy_string)
                 return self.delay_analysis(observable, analysis, seconds=5, timeout_seconds=max(self.config.scanner_timeout, 60))
                 
             except Exception as e:
