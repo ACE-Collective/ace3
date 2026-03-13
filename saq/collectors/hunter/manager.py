@@ -542,20 +542,24 @@ class HuntManager:
 
             # load each .yaml file found in this rules directory
             logging.debug(f"searching {rule_dir} for hunt configurations")
-            for root, dirnames, filenames in os.walk(rule_dir):
-                for hunt_config in filenames:
-                    if not hunt_config.endswith('.yaml'):
-                        continue
+            for entry in os.scandir(rule_dir):
+                if not entry.is_file():
+                    continue
 
-                    # skip the template.yaml file
-                    if hunt_config == "template.yaml":
-                        continue
+                hunt_config = entry.name
 
-                    # skip include files
-                    if hunt_config.endswith('.include.yaml'):
-                        continue
+                if not hunt_config.endswith('.yaml'):
+                    continue
 
-                    result.append(os.path.join(root, hunt_config))
+                # skip the template.yaml file
+                if hunt_config == "template.yaml":
+                    continue
+
+                # skip include files
+                if hunt_config.endswith('.include.yaml'):
+                    continue
+
+                result.append(entry.path)
 
         return result
 
