@@ -37,6 +37,25 @@ def contains_unresolved_placeholders(value: str) -> bool:
     return bool(_FIELD_PATTERN.search(value))
 
 
+def parse_field_reference(field_spec: str) -> tuple[str, str]:
+    """Parse a field reference that may use $dot{path} or $key{name} syntax, or a plain key name.
+
+    Returns (lookup_type, field_path).
+    """
+    m = _FIELD_PATTERN.fullmatch(field_spec)
+    if m:
+        lookup_type = m.group(1) or FIELD_LOOKUP_TYPE_KEY
+        field_path = _unescape_lookup_value(m.group(2).strip())
+        return (lookup_type, field_path)
+    # plain key name
+    return (FIELD_LOOKUP_TYPE_KEY, field_spec)
+
+
+def strip_unresolved_placeholders(value: str) -> str:
+    """Replace any remaining ${...} patterns with empty string."""
+    return _FIELD_PATTERN.sub("", value)
+
+
 def _unescape_lookup_value(field_path: str) -> str:
     """Converts escaped brace characters back to their literal form."""
     if "\\" not in field_path:

@@ -26,6 +26,7 @@ from saq.constants import (
     F_SIGNATURE_ID,
     R_EXECUTED_ON,
     R_RELATED_TO,
+    SUMMARY_DETAIL_FORMAT_JINJA,
     SUMMARY_DETAIL_FORMAT_MD,
     SUMMARY_DETAIL_FORMAT_PRE,
     SUMMARY_DETAIL_FORMAT_TXT,
@@ -3068,3 +3069,292 @@ def test_load_hunt_yaml_with_summary_details(rules_dir, manager_kwargs):
     assert sd1.format == SUMMARY_DETAIL_FORMAT_MD
     assert sd1.limit == 100
     assert sd1.grouped is False
+
+
+# --- Jinja format tests ---
+
+
+@pytest.mark.unit
+def test_summary_details_jinja_basic(monkeypatch):
+    """Test Jinja format rendering through process_query_results."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_jinja",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="IP: {{ src_ip }}", format=SUMMARY_DETAIL_FORMAT_JINJA),
+        ],
+    )
+    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].content == "IP: 1.2.3.4"
+    assert sd_list[0].format == SUMMARY_DETAIL_FORMAT_JINJA
+
+
+@pytest.mark.unit
+def test_summary_details_jinja_missing_field_strict_skipped(monkeypatch):
+    """Test Jinja format with missing field in strict mode — event is skipped."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_jinja_strict",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="{{ missing }}", format=SUMMARY_DETAIL_FORMAT_JINJA),
+        ],
+    )
+    submissions = hunt.process_query_results([{"other": "value"}])
+    assert len(submissions) == 1
+    assert len(submissions[0].root.summary_details) == 0
+
+
+# --- Dedup fields tests ---
+
+
+@pytest.mark.unit
+def test_summary_details_dedup_with_group_by(monkeypatch):
+    """Test dedup with group_by — per-submission dedup."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_dedup",
+        group_by="group_field",
+        summary_details=[
+            SummaryDetailConfig(content="${host}", dedup_fields=["host"]),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1", "group_field": "group_a"},
+        {"host": "server1", "group_field": "group_a"},
+        {"host": "server2", "group_field": "group_a"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    # server1 appears only once (deduped), server2 also appears
+    assert len(sd_list) == 2
+    contents = {sd.content for sd in sd_list}
+    assert contents == {"server1", "server2"}
+
+
+@pytest.mark.unit
+def test_summary_details_dedup_grouped(monkeypatch):
+    """Test dedup with grouped summary details."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_dedup_grouped",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(content="${host}", grouped=True, dedup_fields=["host"]),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"host": "server1"},
+        {"host": "server2"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].content == "server1\nserver2"
+
+
+# --- Required fields tests ---
+
+
+@pytest.mark.unit
+def test_summary_details_required_fields(monkeypatch):
+    """Test required_fields through process_query_results."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_required",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(
+                content="${src_ip}",
+                required_fields=["src_ip"],
+            ),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"src_ip": "10.0.0.1"},
+        {"other": "value"},
+    ])
+    assert len(submissions) == 2
+    assert len(submissions[0].root.summary_details) == 1
+    assert submissions[0].root.summary_details[0].content == "10.0.0.1"
+    assert len(submissions[1].root.summary_details) == 0
+
+
+# --- YAML loading tests ---
+
+
+@pytest.mark.integration
+def test_load_hunt_yaml_with_jinja_and_new_fields(rules_dir, manager_kwargs):
+    """Test that a YAML file with jinja format and new fields loads correctly."""
+    test_yaml_path = os.path.join(rules_dir, "test_sd_jinja.yaml")
+    with open(test_yaml_path, "w") as fp:
+        yaml.dump({
+            "rule": {
+                "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                "enabled": "yes",
+                "name": "jinja_test",
+                "description": "Jinja Test Hunt",
+                "type": "test_query",
+                "alert_type": "test - query",
+                "frequency": "00:01:00",
+                "tags": ["tag1"],
+                "time_range": "00:01:00",
+                "full_coverage": "yes",
+                "group_by": "field1",
+                "query": "index=test",
+                "use_index_time": "yes",
+                "instance_types": ["unittest"],
+                "summary_details": [
+                    {
+                        "content": "IP: {{ src_ip }}",
+                        "header": "IPs",
+                        "format": "jinja",
+                        "dedup_fields": ["src_ip"],
+                        "required_fields": ["src_ip"],
+                    },
+                ],
+            },
+        }, fp, default_flow_style=False)
+
+    manager = HuntManager(**manager_kwargs)
+    manager.load_hunts_from_config()
+
+    hunt = next((h for h in manager.hunts if h.name == "jinja_test"), None)
+    assert hunt is not None
+    assert len(hunt.config.summary_details) == 1
+
+    sd0 = hunt.config.summary_details[0]
+    assert sd0.content == "IP: {{ src_ip }}"
+    assert sd0.format == SUMMARY_DETAIL_FORMAT_JINJA
+    assert sd0.dedup_fields == ["src_ip"]
+    assert sd0.required_fields == ["src_ip"]
+
+
+# --- Grouped + Jinja tests ---
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_jinja_renders_per_submission(monkeypatch):
+    """Test grouped + Jinja renders per-submission with events list."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_jinja",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(
+                content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+                header="All Hosts",
+                format=SUMMARY_DETAIL_FORMAT_JINJA,
+                grouped=True,
+                required_fields=["host"],
+            ),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"host": "server2"},
+        {"host": "server3"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].format == SUMMARY_DETAIL_FORMAT_JINJA
+    assert sd_list[0].header == "All Hosts"
+    assert "server1" in sd_list[0].content
+    assert "server2" in sd_list[0].content
+    assert "server3" in sd_list[0].content
+
+
+@pytest.mark.unit
+def test_summary_details_grouped_jinja_dedup_per_submission(monkeypatch):
+    """Test grouped + Jinja with dedup per-submission."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_grouped_jinja_dedup",
+        group_by="ALL",
+        summary_details=[
+            SummaryDetailConfig(
+                content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+                format=SUMMARY_DETAIL_FORMAT_JINJA,
+                grouped=True,
+                dedup_fields=["host"],
+                required_fields=["host"],
+            ),
+        ],
+    )
+    submissions = hunt.process_query_results([
+        {"host": "server1"},
+        {"host": "server1"},
+        {"host": "server2"},
+    ])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    # server1 should appear only once due to dedup
+    assert sd_list[0].content.count("server1") == 1
+    assert "server2" in sd_list[0].content
+
+
+@pytest.mark.unit
+def test_query_with_suffix():
+    """test that query_suffix is appended to the query with a newline separator"""
+    hunt = default_hunt(query="index=test sourcetype=test", query_suffix="| stats count")
+    assert hunt.query == "index=test sourcetype=test\n| stats count"
+
+
+@pytest.mark.unit
+def test_query_with_prefix():
+    """test that query_prefix is prepended to the query with a newline separator"""
+    hunt = default_hunt(query="index=test sourcetype=test", query_prefix="| inputlookup test.csv")
+    assert hunt.query == "| inputlookup test.csv\nindex=test sourcetype=test"
+
+
+@pytest.mark.unit
+def test_query_with_prefix_and_suffix():
+    """test that both query_prefix and query_suffix are applied"""
+    hunt = default_hunt(
+        query="index=test sourcetype=test",
+        query_prefix="| inputlookup test.csv",
+        query_suffix="| stats count",
+    )
+    assert hunt.query == "| inputlookup test.csv\nindex=test sourcetype=test\n| stats count"
+
+
+@pytest.mark.unit
+def test_query_with_no_prefix_or_suffix():
+    """test that query is unchanged when no prefix or suffix is set"""
+    hunt = default_hunt(query="index=test sourcetype=test")
+    assert hunt.query == "index=test sourcetype=test"
+
+
+@pytest.mark.unit
+def test_query_with_empty_string_prefix_and_suffix():
+    """test that empty strings are treated the same as None (no stray newlines)"""
+    hunt = default_hunt(query="index=test sourcetype=test", query_prefix="", query_suffix="")
+    assert hunt.query == "index=test sourcetype=test"

@@ -895,3 +895,210 @@ def test_splunk_hunt_config_time_ranges_without_timespec_raises():
             use_index_time=False,
             time_ranges={"TIMESPEC2": "00:30:00"},
         )
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_with_suffix(manager_kwargs):
+    """test that query_suffix is applied before auto_append in SplunkHunt"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        query_suffix="| stats count by src_ip",
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    formatted = hunt.formatted_query()
+    assert formatted == "index=test\n| stats count by src_ip"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_formatted_query_with_suffix_and_auto_append(manager_kwargs):
+    """test that assembly order is: query + suffix + auto_append"""
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_hunt",
+        type="splunk",
+        enabled=True,
+        description="test description",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        query_suffix="| stats count by src_ip",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    formatted = hunt.formatted_query()
+    # query + suffix + auto_append (default "| fields *")
+    assert formatted == "index=test\n| stats count by src_ip | fields *"
+
+
+@pytest.mark.unit
+def test_splunk_hunt_resolved_query_set_after_timespec_replacement(manager_kwargs):
+    """Test that resolved_query is set with resolved timestamps after execute_query() with TIMESPEC tokens."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_resolved_query",
+        type="splunk",
+        enabled=True,
+        description="test resolved query",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    assert hunt.resolved_query is None
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        hunt.execute_query(start, end)
+
+    assert hunt.resolved_query is not None
+    assert '<TIMESPEC>' not in hunt.resolved_query
+    assert 'earliest=01/01/2024:00:00:00' in hunt.resolved_query
+    assert 'latest=01/01/2024:00:10:00' in hunt.resolved_query
+
+    # Verify encoded_query_link was called with the resolved query (not formatted_query_timeless)
+    # and use_index_time=False (since index-time prefixes are already in the resolved query)
+    link_call_args, link_call_kwargs = mock_searcher.encoded_query_link.call_args
+    assert '<TIMESPEC>' not in link_call_args[0]
+    assert 'earliest=01/01/2024:00:00:00' in link_call_args[0]
+    assert link_call_kwargs.get('use_index_time') is False
+
+
+@pytest.mark.unit
+def test_splunk_hunt_resolved_query_none_without_timespec(manager_kwargs):
+    """Test that resolved_query stays None for queries without TIMESPEC tokens."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_no_resolved_query",
+        type="splunk",
+        enabled=True,
+        description="test no resolved query",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=False,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    assert hunt.resolved_query is None
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        hunt.execute_query(start, end)
+
+    assert hunt.resolved_query is None
+
+    # Verify encoded_query_link was called with formatted_query_timeless (no TIMESPEC in query)
+    # and use_index_time matches the hunt's setting
+    link_call_args, link_call_kwargs = mock_searcher.encoded_query_link.call_args
+    assert link_call_args[0] == hunt.formatted_query_timeless()
+    assert link_call_kwargs.get('use_index_time') is False
+
+
+@pytest.mark.unit
+def test_splunk_hunt_timespec_search_link_no_duplicate_index_time(manager_kwargs):
+    """Test that TIMESPEC + use_index_time=True doesn't produce duplicate _index_earliest/_index_latest in search link."""
+    from unittest.mock import Mock, patch
+    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
+
+    config = SplunkHuntConfig(
+        uuid="test-uuid",
+        name="test_timespec_link",
+        type="splunk",
+        enabled=True,
+        description="test timespec search link",
+        alert_type="test_alert",
+        frequency="00:10:00",
+        tags=[],
+        instance_types=["unittest"],
+        query="<TIMESPEC> index=test",
+        time_range="00:10:00",
+        full_coverage=True,
+        use_index_time=True,
+        auto_append="",
+    )
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = SplunkHunt(config=config, manager=manager)
+
+    start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+    end = datetime(2024, 1, 1, 0, 10, 0, tzinfo=UTC)
+
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "1"}])
+    mock_searcher.search_failed.return_value = False
+
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        hunt.execute_query(start, end)
+
+    # The resolved query already has _index_earliest/_index_latest embedded from TIMESPEC replacement
+    link_call_args, link_call_kwargs = mock_searcher.encoded_query_link.call_args
+    resolved_query_in_link = link_call_args[0]
+    assert '_index_earliest=' in resolved_query_in_link
+    assert '_index_latest=' in resolved_query_in_link
+
+    # use_index_time must be False to avoid encoded_query_link injecting duplicate _index_ params
+    assert link_call_kwargs.get('use_index_time') is False

@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from saq.constants import (
+    SUMMARY_DETAIL_FORMAT_JINJA,
     SUMMARY_DETAIL_FORMAT_MD,
     SUMMARY_DETAIL_FORMAT_PRE,
     SUMMARY_DETAIL_FORMAT_TXT,
@@ -20,7 +21,10 @@ from saq.util import abs_path
 
 SUMMARY_DETAIL_LIMIT_DEFAULT = 100
 
-VALID_SUMMARY_DETAIL_FORMATS = {SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE, SUMMARY_DETAIL_FORMAT_TXT}
+VALID_SUMMARY_DETAIL_FORMATS = {
+    SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE,
+    SUMMARY_DETAIL_FORMAT_TXT, SUMMARY_DETAIL_FORMAT_JINJA,
+}
 
 
 class SummaryDetailConfig(BaseModel):
@@ -29,6 +33,8 @@ class SummaryDetailConfig(BaseModel):
     format: str = SUMMARY_DETAIL_FORMAT_MD
     limit: int = SUMMARY_DETAIL_LIMIT_DEFAULT
     grouped: bool = False
+    dedup_fields: Optional[list[str]] = None
+    required_fields: Optional[list[str]] = None
 
     @field_validator("format")
     @classmethod
@@ -66,6 +72,14 @@ class BaseQueryConfig(BaseModel):
         default_factory=list,
         description="Summary details to add to submissions/analysis. Each definition generates one or more "
                     "SummaryDetail objects."
+    )
+    query_prefix: Optional[str] = Field(
+        default=None,
+        description="Text to prepend to the resolved query.",
+    )
+    query_suffix: Optional[str] = Field(
+        default=None,
+        description="Text to append to the resolved query (before auto_append).",
     )
     time_ranges: Optional[dict[str, TimeRangeConfig]] = Field(
         default=None,

@@ -141,6 +141,8 @@ class SplunkHunt(QueryHunt):
                 time_spec = f'{prefix}earliest={earliest} {prefix}latest={latest}'
                 query = query.replace(f'<{token_name}>', time_spec)
 
+            self.resolved_query = query
+
             # Widest range for search_kwargs
             search_start = min(tr[0] for tr in time_range_map.values())
             search_end = max(tr[1] for tr in time_range_map.values())
@@ -150,10 +152,19 @@ class SplunkHunt(QueryHunt):
             search_end = end_time
             embed_time_in_query = True
 
-        self.search_link = searcher.encoded_query_link(
-            self.formatted_query_timeless(),
-            search_start.astimezone(tz), search_end.astimezone(tz),
-            use_index_time=self.use_index_time)
+        if timespec_tokens:
+            # Use the resolved query (TIMESPEC tokens already replaced with time ranges).
+            # Pass use_index_time=False because index-time prefixes are already embedded
+            # in the resolved query — passing True would inject duplicates.
+            self.search_link = searcher.encoded_query_link(
+                query,
+                search_start.astimezone(tz), search_end.astimezone(tz),
+                use_index_time=False)
+        else:
+            self.search_link = searcher.encoded_query_link(
+                self.formatted_query_timeless(),
+                search_start.astimezone(tz), search_end.astimezone(tz),
+                use_index_time=self.use_index_time)
 
         # reset search_id before searching so we don't get previous run results
         self.job = None

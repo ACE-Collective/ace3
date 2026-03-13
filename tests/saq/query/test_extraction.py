@@ -1,6 +1,6 @@
 import pytest
 
-from saq.constants import F_FILE, F_HOSTNAME, F_IPV4
+from saq.constants import F_FILE, F_HOSTNAME, F_IPV4, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -389,3 +389,491 @@ def test_process_summary_details_mixed_grouped_and_ungrouped():
     # next two are ungrouped
     assert details[1]["content"] == "IP: 10.0.0.1"
     assert details[2]["content"] == "IP: 10.0.0.2"
+
+
+# --- Jinja format tests ---
+
+
+@pytest.mark.unit
+def test_process_summary_details_jinja_basic():
+    """Test basic Jinja template rendering."""
+    configs = [
+        SummaryDetailConfig(content="IP: {{ src_ip }}", format=SUMMARY_DETAIL_FORMAT_JINJA),
+    ]
+    results = [
+        {"src_ip": "10.0.0.1"},
+        {"src_ip": "10.0.0.2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header, "format": fmt})
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 2
+    assert details[0]["content"] == "IP: 10.0.0.1"
+    assert details[0]["format"] == SUMMARY_DETAIL_FORMAT_JINJA
+    assert details[1]["content"] == "IP: 10.0.0.2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_jinja_loop_conditional():
+    """Test Jinja format with loop and conditional."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for ip in ips %}{% if ip != '0.0.0.0' %}{{ ip }} {% endif %}{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+        ),
+    ]
+    results = [{"ips": ["10.0.0.1", "0.0.0.0", "10.0.0.2"]}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "10.0.0.1 10.0.0.2 "
+
+
+@pytest.mark.unit
+def test_process_summary_details_jinja_missing_field_strict_skipped():
+    """Test Jinja format with missing field in strict mode — event is skipped."""
+    configs = [
+        SummaryDetailConfig(content="{{ missing_field }}", format=SUMMARY_DETAIL_FORMAT_JINJA),
+    ]
+    results = [{"other": "value"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
+def test_process_summary_details_jinja_with_required_fields_permissive():
+    """Test Jinja format with required_fields set — permissive mode renders missing as empty."""
+    configs = [
+        SummaryDetailConfig(
+            content="IP: {{ src_ip }}, Host: {{ hostname }}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            required_fields=["src_ip"],
+        ),
+    ]
+    results = [{"src_ip": "10.0.0.1"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "IP: 10.0.0.1, Host: "
+
+
+@pytest.mark.unit
+def test_process_summary_details_jinja_required_fields_missing():
+    """Test Jinja format with required_fields — event skipped when required field missing."""
+    configs = [
+        SummaryDetailConfig(
+            content="IP: {{ src_ip }}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            required_fields=["src_ip"],
+        ),
+    ]
+    results = [{"other": "value"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+# --- Dedup fields tests ---
+
+
+@pytest.mark.unit
+def test_process_summary_details_dedup_basic():
+    """Test basic deduplication of events."""
+    configs = [
+        SummaryDetailConfig(content="${src_ip}", dedup_fields=["src_ip"]),
+    ]
+    results = [
+        {"src_ip": "10.0.0.1"},
+        {"src_ip": "10.0.0.1"},
+        {"src_ip": "10.0.0.2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 2
+    assert details[0] == "10.0.0.1"
+    assert details[1] == "10.0.0.2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_dedup_dot_syntax():
+    """Test dedup with $dot{} syntax."""
+    configs = [
+        SummaryDetailConfig(content="$dot{host.name}", dedup_fields=["$dot{host.name}"]),
+    ]
+    results = [
+        {"host": {"name": "server1"}},
+        {"host": {"name": "server1"}},
+        {"host": {"name": "server2"}},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 2
+    assert details[0] == "server1"
+    assert details[1] == "server2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_dedup_grouped():
+    """Test dedup with grouped mode."""
+    configs = [
+        SummaryDetailConfig(
+            content="${host}", grouped=True, dedup_fields=["host"],
+        ),
+    ]
+    results = [
+        {"host": "server1"},
+        {"host": "server1"},
+        {"host": "server2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    lines = details[0].split("\n")
+    assert lines == ["server1", "server2"]
+
+
+# --- Required fields tests (non-jinja) ---
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_partial_resolution():
+    """Test required_fields with ${field} format allows partial resolution."""
+    configs = [
+        SummaryDetailConfig(
+            content="IP: ${src_ip}, Host: ${hostname}",
+            required_fields=["src_ip"],
+        ),
+    ]
+    results = [{"src_ip": "10.0.0.1"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "IP: 10.0.0.1, Host: "
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_dot_syntax():
+    """Test required_fields with $dot{} syntax."""
+    configs = [
+        SummaryDetailConfig(
+            content="$dot{device.ip}",
+            required_fields=["$dot{device.ip}"],
+        ),
+    ]
+    results = [
+        {"device": {"ip": "10.0.0.1"}},
+        {"other": "value"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "10.0.0.1"
+
+
+@pytest.mark.unit
+def test_process_summary_details_required_fields_missing_skips():
+    """Test that events missing required fields are skipped."""
+    configs = [
+        SummaryDetailConfig(
+            content="${src_ip}",
+            required_fields=["src_ip", "hostname"],
+        ),
+    ]
+    results = [
+        {"src_ip": "10.0.0.1"},  # missing hostname
+        {"src_ip": "10.0.0.2", "hostname": "web-01"},  # has both
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "10.0.0.2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_default_behavior_unchanged():
+    """Test that default behavior (no required_fields) is unchanged — unresolved skips."""
+    configs = [
+        SummaryDetailConfig(content="${src_ip}, ${hostname}"),
+    ]
+    results = [
+        {"src_ip": "10.0.0.1"},  # missing hostname
+        {"src_ip": "10.0.0.2", "hostname": "web-01"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "10.0.0.2, web-01"
+
+
+# --- Grouped + Jinja tests ---
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_renders_once_with_events():
+    """Test grouped + Jinja renders template once with events list context."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["host"],
+        ),
+    ]
+    results = [
+        {"host": "server1"},
+        {"host": "server2"},
+        {"host": "server3"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header, "format": fmt})
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0]["format"] == SUMMARY_DETAIL_FORMAT_JINJA
+    assert "server1" in details[0]["content"]
+    assert "server2" in details[0]["content"]
+    assert "server3" in details[0]["content"]
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_dedup():
+    """Test grouped + Jinja with dedup_fields filters events before rendering."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            dedup_fields=["host"],
+            required_fields=["host"],
+        ),
+    ]
+    results = [
+        {"host": "server1"},
+        {"host": "server1"},
+        {"host": "server2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    # server1 should appear only once due to dedup
+    assert details[0].count("server1") == 1
+    assert "server2" in details[0]
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_required_fields():
+    """Test grouped + Jinja with required_fields filters events before rendering."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["host"],
+        ),
+    ]
+    results = [
+        {"host": "server1"},
+        {"other": "value"},
+        {"host": "server3"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert "server1" in details[0]
+    assert "server3" in details[0]
+    # event without "host" should not appear
+    assert "value" not in details[0]
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_limit(caplog):
+    """Test grouped + Jinja with limit caps the events list."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.val }}\n{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            limit=2,
+            required_fields=["val"],
+        ),
+    ]
+    results = [{"val": f"item-{i}"} for i in range(5)]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert "item-0" in details[0]
+    assert "item-1" in details[0]
+    assert "item-2" not in details[0]
+    assert "summary detail limit (2) reached" in caplog.text
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_empty_result():
+    """Test grouped + Jinja with empty/whitespace result produces no detail."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{% if event.missing %}{{ event.missing }}{% endif %}{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["host"],
+        ),
+    ]
+    results = [{"host": "server1"}, {"host": "server2"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_non_jinja_unchanged():
+    """Test grouped + non-Jinja behavior is unchanged (per-event render + join)."""
+    configs = [
+        SummaryDetailConfig(content="${host}", grouped=True),
+    ]
+    results = [
+        {"host": "server1"},
+        {"host": "server2"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0] == "server1\nserver2"
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_no_qualifying_events():
+    """Test grouped + Jinja with no qualifying events produces no detail."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}{% endfor %}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["host"],
+        ),
+    ]
+    results = [{"other": "value1"}, {"other": "value2"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append(content)
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 0
+
+
+@pytest.mark.unit
+def test_process_summary_details_grouped_jinja_with_header():
+    """Test grouped + Jinja renders header from first qualifying event."""
+    configs = [
+        SummaryDetailConfig(
+            content="{% for event in events %}{{ event.host }}\n{% endfor %}",
+            header="Hosts for {{ group }}",
+            format=SUMMARY_DETAIL_FORMAT_JINJA,
+            grouped=True,
+            required_fields=["host"],
+        ),
+    ]
+    results = [
+        {"host": "server1", "group": "web"},
+        {"host": "server2", "group": "web"},
+    ]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header})
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0]["header"] == "Hosts for web"

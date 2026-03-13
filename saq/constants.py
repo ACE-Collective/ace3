@@ -796,6 +796,7 @@ REDIS_DB_CELERY = 7
 SUMMARY_DETAIL_FORMAT_PRE = 'pre' # preformatted
 SUMMARY_DETAIL_FORMAT_TXT = 'txt' # plain text display
 SUMMARY_DETAIL_FORMAT_MD = 'md' # markdown
+SUMMARY_DETAIL_FORMAT_JINJA = 'jinja' # jinja2 templating
 
 # messaging (TODO FIX ME)
 MESSAGE_TYPE_SLACK = "slack"

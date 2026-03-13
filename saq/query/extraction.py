@@ -6,10 +6,11 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from jinja2 import UndefinedError
 from pydantic import BaseModel, Field
 
 from saq.analysis.observable import Observable
-from saq.constants import F_FILE
+from saq.constants import F_FILE, SUMMARY_DETAIL_FORMAT_JINJA
 from saq.observables.generator import create_observable
 from saq.observables.mapping import (
     ObservableMapping,
@@ -22,7 +23,10 @@ from saq.query.event_processing import (
     contains_unresolved_placeholders,
     extract_event_value,
     interpolate_event_value,
+    parse_field_reference,
+    strip_unresolved_placeholders,
 )
+from saq.query.summary_detail_rendering import render_jinja_template
 
 
 class FileContent(BaseModel):
@@ -216,6 +220,86 @@ def _process_mapping_values(
         ))
 
 
+def event_has_required_fields(event: dict, required_fields: list[str]) -> bool:
+    """Check if the event has all required fields present."""
+    for field_spec in required_fields:
+        lookup_type, field_path = parse_field_reference(field_spec)
+        success, _ = extract_event_value(event, lookup_type, field_path)
+        if not success:
+            return False
+    return True
+
+
+def compute_dedup_key(event: dict, dedup_fields: list[str]) -> tuple:
+    """Build a dedup key tuple from the event values for each dedup field."""
+    parts = []
+    for field_spec in dedup_fields:
+        lookup_type, field_path = parse_field_reference(field_spec)
+        success, value = extract_event_value(event, lookup_type, field_path)
+        if success:
+            # convert lists/dicts to a hashable representation
+            if isinstance(value, list):
+                value = tuple(value)
+            elif isinstance(value, dict):
+                value = tuple(sorted(value.items()))
+            parts.append(value)
+        else:
+            parts.append(None)
+    return tuple(parts)
+
+
+def render_sd_content(sd_config: SummaryDetailConfig, event: dict) -> Optional[str]:
+    """Render summary detail content for a single event. Returns None to skip."""
+    strict = sd_config.required_fields is None
+    if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
+        try:
+            return render_jinja_template(sd_config.content, event, strict=strict)
+        except UndefinedError:
+            return None
+    else:
+        content_values = interpolate_event_value(sd_config.content, event)
+        if not content_values:
+            return None
+        content = content_values[0]
+        if sd_config.required_fields is not None:
+            # partial resolution: strip unresolved placeholders instead of skipping
+            content = strip_unresolved_placeholders(content)
+        else:
+            if contains_unresolved_placeholders(content):
+                return None
+        return content
+
+
+def render_sd_header(sd_config: SummaryDetailConfig, event: dict) -> tuple[bool, Optional[str]]:
+    """Render summary detail header for a single event.
+
+    Returns (success, header). success=False means skip the event.
+    """
+    if sd_config.header is None:
+        return (True, None)
+
+    strict = sd_config.required_fields is None
+    if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
+        try:
+            rendered = render_jinja_template(sd_config.header, event, strict=strict)
+        except UndefinedError:
+            return (False, None)
+        if rendered is None:
+            return (False, None)
+        return (True, rendered)
+    else:
+        header_values = interpolate_event_value(sd_config.header, event)
+        if not header_values:
+            return (False, None)
+        header = header_values[0]
+        if sd_config.required_fields is not None:
+            header = strip_unresolved_placeholders(header)
+        else:
+            if contains_unresolved_placeholders(header):
+                return (False, None)
+        return (True, header)
+
+
 def process_summary_details(
     summary_details: list[SummaryDetailConfig],
     query_results: list[dict],
@@ -233,34 +317,40 @@ def process_summary_details(
     """
     for sd_config in summary_details:
         if sd_config.grouped:
-            _process_grouped_summary_detail(sd_config, query_results, add_detail_fn)
+            process_grouped_summary_detail(sd_config, query_results, add_detail_fn)
         else:
-            _process_ungrouped_summary_detail(sd_config, query_results, add_detail_fn)
+            process_ungrouped_summary_detail(sd_config, query_results, add_detail_fn)
 
 
-def _process_ungrouped_summary_detail(
+def process_ungrouped_summary_detail(
     sd_config: SummaryDetailConfig,
     query_results: list[dict],
     add_detail_fn: Callable[[str, Optional[str], str], None],
 ):
     """Process a single ungrouped summary detail config — one detail per event."""
     count = 0
+    seen_keys: set[tuple] = set()
+
     for event in query_results:
-        content_values = interpolate_event_value(sd_config.content, event)
-        if not content_values:
-            continue
-        content = content_values[0]
-        if contains_unresolved_placeholders(content):
+        # required fields check
+        if sd_config.required_fields is not None:
+            if not event_has_required_fields(event, sd_config.required_fields):
+                continue
+
+        # dedup check
+        if sd_config.dedup_fields is not None:
+            dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+        content = render_sd_content(sd_config, event)
+        if content is None:
             continue
 
-        header = None
-        if sd_config.header is not None:
-            header_values = interpolate_event_value(sd_config.header, event)
-            if not header_values:
-                continue
-            header = header_values[0]
-            if contains_unresolved_placeholders(header):
-                continue
+        header_ok, header = render_sd_header(sd_config, event)
+        if not header_ok:
+            continue
 
         if count >= sd_config.limit:
             if count == sd_config.limit:
@@ -275,29 +365,92 @@ def _process_ungrouped_summary_detail(
         count += 1
 
 
-def _process_grouped_summary_detail(
+def collect_qualifying_events(
+    sd_config: SummaryDetailConfig,
+    query_results: list[dict],
+) -> list[dict]:
+    """Filter events through required_fields, dedup, and limit for grouped Jinja rendering."""
+    events = []
+    seen_keys: set[tuple] = set()
+    limit_warned = False
+    for event in query_results:
+        if sd_config.required_fields is not None:
+            if not event_has_required_fields(event, sd_config.required_fields):
+                continue
+        if sd_config.dedup_fields is not None:
+            dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+        if len(events) >= sd_config.limit:
+            if not limit_warned:
+                logging.warning(
+                    "summary detail limit (%s) reached for definition content=%s",
+                    sd_config.limit, sd_config.content,
+                )
+                limit_warned = True
+            continue
+        events.append(event)
+    return events
+
+
+def process_grouped_summary_detail(
     sd_config: SummaryDetailConfig,
     query_results: list[dict],
     add_detail_fn: Callable[[str, Optional[str], str], None],
 ):
     """Process a grouped summary detail config — collect lines into one detail."""
+    # Jinja grouped mode: render the template once with all qualifying events
+    if sd_config.format == SUMMARY_DETAIL_FORMAT_JINJA:
+        events = collect_qualifying_events(sd_config, query_results)
+        if not events:
+            return
+
+        content = render_jinja_template(
+            sd_config.content,
+            {"events": events},
+            strict=(sd_config.required_fields is None),
+        )
+        if content is None or not content.strip():
+            return
+
+        header = None
+        if sd_config.header is not None:
+            header_ok, header = render_sd_header(sd_config, events[0])
+            if not header_ok:
+                header = None
+
+        add_detail_fn(content, header, sd_config.format)
+        return
+
+    # Non-Jinja grouped mode: per-event render + join
     lines: list[str] = []
     header: Optional[str] = None
     limit_warned = False
+    seen_keys: set[tuple] = set()
 
     for event in query_results:
-        content_values = interpolate_event_value(sd_config.content, event)
-        if not content_values:
-            continue
-        content = content_values[0]
-        if contains_unresolved_placeholders(content):
+        # required fields check
+        if sd_config.required_fields is not None:
+            if not event_has_required_fields(event, sd_config.required_fields):
+                continue
+
+        # dedup check
+        if sd_config.dedup_fields is not None:
+            dedup_key = compute_dedup_key(event, sd_config.dedup_fields)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+        content = render_sd_content(sd_config, event)
+        if content is None:
             continue
 
         # resolve header from first contributing event only
         if header is None and sd_config.header is not None:
-            header_values = interpolate_event_value(sd_config.header, event)
-            if header_values and not contains_unresolved_placeholders(header_values[0]):
-                header = header_values[0]
+            header_ok, resolved_header = render_sd_header(sd_config, event)
+            if header_ok:
+                header = resolved_header
 
         if len(lines) >= sd_config.limit:
             if not limit_warned:

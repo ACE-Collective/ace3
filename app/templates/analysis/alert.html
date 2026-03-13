@@ -212,10 +212,12 @@
             </div>
             {% endif %}
             <div class="card-body">
-                <div class="card-text">
+                <div class="card-text summary-detail-content">
                     {% if summary_detail.format == CONSTANTS.SUMMARY_DETAIL_FORMAT_PRE %}
                         <pre style="white-space: pre-wrap">{{summary_detail.content}}</pre>
                     {% elif summary_detail.format == CONSTANTS.SUMMARY_DETAIL_FORMAT_MD %}
+                        {{summary_detail.content|markdown}}
+                    {% elif summary_detail.format == CONSTANTS.SUMMARY_DETAIL_FORMAT_JINJA %}
                         {{summary_detail.content|markdown}}
                     {% else %}
                         {{summary_detail.content}}
@@ -226,6 +228,22 @@
     </div>
 </div>
 {% endmacro %}
+
+<style>
+.summary-detail-content table {
+    border-collapse: collapse;
+    width: 100%;
+}
+.summary-detail-content table th,
+.summary-detail-content table td {
+    border: 1px solid #dee2e6;
+    padding: 0.5rem;
+}
+.summary-detail-content table thead th {
+    border-bottom-width: 2px;
+    background-color: #f8f9fa;
+}
+</style>
 
 {% if alert.root_analysis.summary_details %}
 <div class="row">
