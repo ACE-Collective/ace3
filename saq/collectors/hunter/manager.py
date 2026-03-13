@@ -253,6 +253,7 @@ class HuntManager:
                     trigger_reload = True
 
             # if any hunts failed to load last time, check to see if they were modified
+            failed_yaml_paths_to_remove = []
             for ini_path, (mtime, file_size, sha256_hash) in self.failed_yaml_files.items():
                 try:
                     # go from easiest computation to most expensive
@@ -265,8 +266,16 @@ class HuntManager:
                     elif sha256(ini_path) != sha256_hash:
                         logging.info(f"detected modification (by hash) to failed ini file {ini_path}")
                         trigger_reload = True
+                except FileNotFoundError:
+                    logging.info(f"failed ini file {ini_path} no longer exists; clearing failure record")
+                    failed_yaml_paths_to_remove.append(ini_path)
+                    trigger_reload = True
                 except Exception as e:
                     logging.error(f"unable to check failed ini file {ini_path}: {e}")
+
+            # remove any failed yaml paths that have been deleted
+            for ini_path in failed_yaml_paths_to_remove:
+                self.failed_yaml_files.pop(ini_path, None)
 
             # are there any new hunts?
             existing_yaml_paths = set([hunt.file_path for hunt in self._hunts])
