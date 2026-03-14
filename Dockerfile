@@ -19,6 +19,7 @@ ENV SAQ_HOME=/opt/ace \
 # build arguments
 ARG SAQ_USER_ID=1000
 ARG SAQ_GROUP_ID=1000
+ARG BUILD_TYPE=development
 ARG http_proxy
 ARG https_proxy
 
@@ -241,19 +242,23 @@ RUN sed -i -e 's/MinProtocol = TLSv1.2/MinProtocol = TLSv1.0/' /etc/ssl/openssl.
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/external /opt/ace/data/var
 
 # ------------------------------------------------------------------------------------------------
-# claude code setup
+# ai tools setup
 # ------------------------------------------------------------------------------------------------
 
 # eventually we'll move this to a dev container Dockerfile
 
 ARG CLAUDE_CODE_VERSION=latest
+ARG BUILD_TYPE
 
-# setup needed for claude dev container work
-RUN mkdir -p /usr/local/share/npm-global /home/ace/.claude && \
-    chown -R ace:ace /usr/local/share /home/ace/.claude
+RUN if [ "$BUILD_TYPE" = "development" ]; then \
+        mkdir -p /usr/local/share/npm-global /home/ace/.claude && \
+        chown -R ace:ace /usr/local/share /home/ace/.claude; \
+    fi
 
 USER ace
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN if [ "$BUILD_TYPE" = "development" ]; then \
+        npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}; \
+    fi
 
 USER root
 
