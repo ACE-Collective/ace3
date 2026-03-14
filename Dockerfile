@@ -245,8 +245,6 @@ RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/extern
 # ai tools setup
 # ------------------------------------------------------------------------------------------------
 
-# eventually we'll move this to a dev container Dockerfile
-
 ARG CLAUDE_CODE_VERSION=latest
 ARG BUILD_TYPE
 
@@ -257,7 +255,9 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
 
 USER ace
 RUN if [ "$BUILD_TYPE" = "development" ]; then \
-        npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}; \
+        npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
+        npm install -g @openai/codex && \
+        npm install -g cline; \
     fi
 
 USER root
