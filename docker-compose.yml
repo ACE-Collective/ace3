@@ -45,6 +45,8 @@
 # SAQ_USER_ID
 # SAQ_GROUP_ID
 #
+# BUILD_TYPE: development | production (default: development)
+#
 
 x-common-env: &common-env
   SAQ_ENC: ${SAQ_ENC:-test}
@@ -96,6 +98,7 @@ services:
         PYTHON_DOCKER_IMAGE: ${PYTHON_DOCKER_IMAGE:-python:3.12-trixie}
         SAQ_USER_ID: ${SAQ_USER_ID:-1000}
         SAQ_GROUP_ID: ${SAQ_GROUP_ID:-1000}
+        BUILD_TYPE: ${BUILD_TYPE:-development}
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
     volumes:
