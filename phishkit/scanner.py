@@ -141,6 +141,9 @@ if (typeof Navigator !== 'undefined') {
     ].join('\\n');
 
     // Patch Worker/SharedWorker constructors for URL-based Workers.
+    // DIAGNOSTIC: Log Worker creation, capture blob source, monitor lifecycle.
+    window.__workerDiag = { created: 0, blobSources: [], errors: [] };
+
     function patchWorkerCtor(Orig, name) {
         const Patched = function(scriptURL, options) {
             if (options && options.type === 'module') {
@@ -149,7 +152,20 @@ if (typeof Navigator !== 'undefined') {
             try {
                 const url = String(scriptURL);
                 if (url.startsWith('blob:')) {
-                    return new Orig(scriptURL, options);
+                    window.__workerDiag.created++;
+                    console.log('__DIAG_WORKER_CREATE__:blob:' + window.__workerDiag.created);
+                    const w = new Orig(scriptURL, options);
+                    // Monitor Worker lifecycle (use addEventListener to avoid
+                    // overriding the page's own onmessage/onerror handlers).
+                    w.addEventListener('error', function(e) {
+                        var msg = e && e.message ? e.message : String(e);
+                        console.log('__DIAG_WORKER_ERROR__:' + msg);
+                        window.__workerDiag.errors.push(msg);
+                    });
+                    w.addEventListener('message', function(e) {
+                        console.log('__DIAG_WORKER_MESSAGE__:' + JSON.stringify(e.data).substring(0, 500));
+                    });
+                    return w;
                 }
                 const resolved = new URL(url, location.href).href;
                 const blob = new Blob(
@@ -172,6 +188,25 @@ if (typeof Navigator !== 'undefined') {
     if (typeof SharedWorker !== 'undefined') {
         window.SharedWorker = patchWorkerCtor(SharedWorker, 'SharedWorker');
     }
+
+    // DIAGNOSTIC: Intercept Blob constructor to capture Worker script sources.
+    const _origBlob = window.Blob;
+    window.Blob = function(parts, options) {
+        if (parts && parts.length > 0 && options && /javascript/i.test(options.type || '')) {
+            try {
+                var src = '';
+                for (var i = 0; i < parts.length; i++) {
+                    if (typeof parts[i] === 'string') src += parts[i];
+                }
+                // Log first 2000 chars of any JS blob (likely Worker scripts)
+                console.log('__DIAG_BLOB_JS__:' + src.substring(0, 2000));
+                window.__workerDiag.blobSources.push(src.substring(0, 2000));
+            } catch(e) {}
+        }
+        return new _origBlob(parts, options);
+    };
+    window.Blob.prototype = _origBlob.prototype;
+    Object.defineProperty(window.Blob, 'name', { value: 'Blob' });
 })();
 
 // 8. Spoof WebGL renderer to hide SwiftShader
@@ -457,12 +492,34 @@ class Scanner:
         """
         info = event.target_info
         session = event.session_id
+        print(f"DIAG target_attached: type={info.type_} url={info.url[:120] if info.url else '(none)'} session={session}")
         if info.type_ in ('worker', 'service_worker', 'shared_worker'):
+            # DIAGNOSTIC: Run a quick check inside the Worker before stealth injection
+            try:
+                result = await self._cdp_tab.send(
+                    mycdp.runtime.evaluate(
+                        '(function() {'
+                        '  var diag = {};'
+                        '  diag.hasSubtle = typeof crypto !== "undefined" && typeof crypto.subtle !== "undefined";'
+                        '  diag.isSecure = typeof isSecureContext !== "undefined" ? isSecureContext : "unknown";'
+                        '  diag.webdriver = navigator.webdriver;'
+                        '  diag.platform = navigator.platform;'
+                        '  diag.hwConcurrency = navigator.hardwareConcurrency;'
+                        '  diag.type = typeof self !== "undefined" ? self.constructor.name : "unknown";'
+                        '  return JSON.stringify(diag);'
+                        '})()'
+                    ),
+                    session_id=str(session),
+                )
+                print(f"DIAG worker_env ({info.type_}): {result}")
+            except Exception as e:
+                print(f"DIAG worker_env check failed for {info.type_}: {e}")
             try:
                 await self._cdp_tab.send(
                     mycdp.runtime.evaluate(SW_STEALTH_JS),
                     session_id=str(session),
                 )
+                print(f"DIAG stealth_inject OK for {info.type_}")
             except Exception as e:
                 print(f"SW stealth inject failed for {info.type_}: {e}")
             try:
@@ -470,9 +527,11 @@ class Scanner:
                     mycdp.runtime.run_if_waiting_for_debugger(),
                     session_id=str(session),
                 )
+                print(f"DIAG worker_resumed for {info.type_}")
             except Exception as e:
                 print(f"SW resume failed for {info.type_}: {e}")
         else:
+            print(f"DIAG non-worker target: type={info.type_}, resuming")
             # Non-worker target (e.g. iframe) — just resume
             try:
                 await self._cdp_tab.send(
@@ -481,6 +540,19 @@ class Scanner:
                 )
             except Exception:
                 pass
+
+    async def diag_console_handler(self, event: mycdp.runtime.ConsoleAPICalled):
+        """DIAGNOSTIC: Print all console messages from the page, especially __DIAG_* ones."""
+        try:
+            if not event.args:
+                return
+            text = str(event.args[0].value) if event.args[0].value else ""
+            if text.startswith("__DIAG_"):
+                print(f"DIAG console: {text[:500]}")
+            elif text.startswith("__POW") or "worker" in text.lower() or "challenge" in text.lower():
+                print(f"DIAG console (other): {text[:300]}")
+        except Exception as e:
+            print(f"DIAG console handler error: {e}")
 
     async def send_handler(self, event: mycdp.network.RequestWillBeSent):
         # print(f"send handler callback received event {event}")
@@ -662,13 +734,23 @@ class Scanner:
             # Wait for the page to navigate after the click (some phishing
             # pages show a "verifying" animation for 10+ seconds before
             # redirecting to the credential-harvesting page).
-            max_wait = 30
+            max_wait = 60
             poll_interval = 1
             waited = 0
             print(f"waiting up to {max_wait}s for navigation after click")
             while waited < max_wait:
                 time.sleep(poll_interval)
                 waited += poll_interval
+                # DIAGNOSTIC: Every 5 seconds, query Worker diagnostic state from page
+                if waited % 5 == 0:
+                    try:
+                        diag = sb.execute_cdp_cmd("Runtime.evaluate", {
+                            "expression": "JSON.stringify(window.__workerDiag || 'not set')",
+                            "returnByValue": True,
+                        })
+                        print(f"DIAG [{waited}s] workerDiag: {diag.get('result', {}).get('value', '?')}")
+                    except Exception as e:
+                        print(f"DIAG [{waited}s] workerDiag query failed: {e}")
                 try:
                     url_now = sb.cdp.get_current_url()
                 except Exception:
@@ -678,6 +760,15 @@ class Scanner:
                     sb.wait_for_ready_state_complete(timeout=5)
                     break
             else:
+                # DIAGNOSTIC: Final dump of Worker state
+                try:
+                    diag = sb.execute_cdp_cmd("Runtime.evaluate", {
+                        "expression": "JSON.stringify(window.__workerDiag || 'not set')",
+                        "returnByValue": True,
+                    })
+                    print(f"DIAG [final] workerDiag: {diag.get('result', {}).get('value', '?')}")
+                except Exception:
+                    pass
                 print(f"no navigation after {max_wait}s")
         else:
             print("Failed to find checkbox visually")
@@ -746,6 +837,11 @@ class Scanner:
                 'waitForDebuggerOnStart': True,
                 'flatten': True,
             })
+
+            # DIAGNOSTIC: Enable Runtime domain and listen for console messages
+            # to capture __DIAG_* output from our instrumented stealth JS.
+            sb.execute_cdp_cmd('Runtime.enable', {})
+            sb.cdp.add_handler(mycdp.runtime.ConsoleAPICalled, self.diag_console_handler)
 
             # phishkits detecting on User Agent + Sec-Ch-Ua-Platform on 2025-02-26
             sb.execute_cdp_cmd(
