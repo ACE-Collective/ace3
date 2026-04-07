@@ -830,11 +830,14 @@ class Scanner:
             sb.cdp.add_handler(mycdp.network.LoadingFailed, self.loading_failed_handler)
 
             # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
-            # waitForDebuggerOnStart pauses new targets so we can inject before execution.
+            # DIAGNOSTIC: Disable waitForDebuggerOnStart to test hypothesis that
+            # paused Workers are never resumed because AttachedToTarget events
+            # don't reach our handler. Without the pause, Workers should run
+            # immediately and complete their PoW computation.
             sb.cdp.add_handler(mycdp.target.AttachedToTarget, self.target_attached_handler)
             sb.execute_cdp_cmd('Target.setAutoAttach', {
                 'autoAttach': True,
-                'waitForDebuggerOnStart': True,
+                'waitForDebuggerOnStart': False,
                 'flatten': True,
             })
 
