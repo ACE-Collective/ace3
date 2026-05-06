@@ -1,0 +1,6 @@
+boto3
+aioboto3
+asyncinotify
+yara-python
+pytest
+pytest-asyncio
