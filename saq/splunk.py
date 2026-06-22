@@ -6,6 +6,7 @@ import os.path
 import re
 import ssl
 import time
+import unicodedata
 import urllib.parse
 
 from datetime import UTC, datetime, timedelta
@@ -89,6 +90,34 @@ def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
             connection.close()
 
     return request
+
+
+def normalize_query_whitespace(query: str) -> Tuple[str, int]:
+    """Replace non-ASCII Unicode whitespace with ASCII space and strip zero-width
+    format characters, returning (normalized_query, num_chars_changed).
+
+    Splunk's SearchParser only accepts ASCII whitespace as token separators. Query text
+    copy-pasted from rendered web/wiki pages often carries non-breaking spaces (U+00A0)
+    and other Unicode space/format chars, which the parser rejects with HTTP 400
+    "Missing a search command before '<char>'". ASCII space, tab, newline and carriage
+    return are preserved verbatim.
+    """
+    out = []
+    changed = 0
+    for ch in query:
+        if ch in (" ", "\t", "\n", "\r"):
+            out.append(ch)
+            continue
+        cat = unicodedata.category(ch)
+        if cat == "Zs":          # space separators (NBSP, narrow NBSP, ideographic space, ...)
+            out.append(" ")
+            changed += 1
+        elif cat == "Cf":        # zero-width format chars (ZWSP, ZWNJ, ZWJ, word joiner, BOM)
+            changed += 1         # drop entirely
+        else:
+            out.append(ch)
+    return "".join(out), changed
+
 
 def extract_event_timestamp(event:dict) -> datetime:
     """Extracts the event time from the event as a datetime
@@ -486,6 +515,13 @@ class SplunkQueryObject:
             Optional[Job]: the job object for the query.
         """
         self.reset_search_status()
+
+        query, normalized_count = normalize_query_whitespace(query)
+        if normalized_count:
+            logging.warning(
+                f"normalized {normalized_count} non-standard whitespace character(s) in Splunk "
+                f"query — the source query likely contains text copy-pasted from a web/wiki page"
+            )
 
         is_generating_command = query.lstrip().startswith("|")
 

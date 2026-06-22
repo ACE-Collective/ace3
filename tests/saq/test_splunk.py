@@ -14,6 +14,7 @@ from saq.splunk import (
     SplunkQueryObject,
     _proxy_handler,
     extract_event_timestamp,
+    normalize_query_whitespace,
 )
 from tests.saq.mock_datetime import MOCK_NOW
 
@@ -73,6 +74,62 @@ def test_queue_skips_search_for_pipe_query(query):
     query_arg = mock_client.jobs.create.call_args[0][0]
     assert not query_arg.lstrip().lower().startswith("search")
     assert query_arg == query
+
+
+@pytest.mark.unit
+def test_normalize_query_whitespace_converts_unicode_spaces():
+    """Unicode space separators (NBSP, narrow NBSP) become ASCII space and are counted."""
+    # U+00A0 NO-BREAK SPACE and U+202F NARROW NO-BREAK SPACE around tokens
+    result, changed = normalize_query_whitespace("a b c")
+    assert result == "a b c"
+    assert changed == 2
+
+
+@pytest.mark.unit
+def test_normalize_query_whitespace_drops_zero_width():
+    """Zero-width format chars (ZWSP, BOM) are removed entirely."""
+    # U+200B ZERO WIDTH SPACE, U+FEFF ZERO WIDTH NO-BREAK SPACE
+    result, changed = normalize_query_whitespace("a​b﻿c")
+    assert result == "abc"
+    assert changed == 2
+
+
+@pytest.mark.unit
+def test_normalize_query_whitespace_preserves_ascii_whitespace():
+    """ASCII space, tab, newline, carriage return are untouched (count 0)."""
+    query = "search index=main\n| stats count\tby host\r\n"
+    result, changed = normalize_query_whitespace(query)
+    assert result == query
+    assert changed == 0
+
+
+@pytest.mark.unit
+def test_normalize_query_whitespace_bug_regression():
+    """Regression for the HTTP 400 'Missing a search command' bug: NBSPs around
+    '| search' and inside a quoted value normalize to ASCII spaces."""
+    # mirrors signatures azure_unique_user_agent.yaml line 87
+    bad = '| eval x="unknown")\n| search myDetail="*succeeded: true*"'
+    result, changed = normalize_query_whitespace(bad)
+    assert " " not in result
+    assert result == '| eval x="unknown")\n| search myDetail="*succeeded: true*"'
+    assert changed == 3
+
+
+@pytest.mark.unit
+def test_queue_normalizes_nbsp_before_send():
+    """queue() sends an NBSP-free query to the Splunk SDK."""
+    mock_job = Mock()
+    mock_job.name = "sid"
+    mock_client = Mock()
+    mock_client.jobs.create.return_value = mock_job
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+        splunk.queue('index=main\n| search foo="bar"', 1000)
+
+    query_arg = mock_client.jobs.create.call_args[0][0]
+    assert " " not in query_arg
+    assert query_arg == 'search index=main\n| search foo="bar"'
 
 
 @pytest.mark.unit
