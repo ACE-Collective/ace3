@@ -73,7 +73,7 @@ class ExtractedOLEAnalyzer(AnalysisModule):
 
         # gather all the requirements for all the things we want to check
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is None:
+        if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         local_file_path = _file.full_path

@@ -97,7 +97,7 @@ class FileHashAnalyzer(AnalysisModule):
 
         # we need file type analysis first
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is None:
+        if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         # some files we skip hashing, specifically the files that we generate

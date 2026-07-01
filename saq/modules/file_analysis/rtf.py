@@ -207,7 +207,7 @@ class ExtractedRTFAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is None:
+        if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)

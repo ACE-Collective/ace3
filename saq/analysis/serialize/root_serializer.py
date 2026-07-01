@@ -1,6 +1,7 @@
 import json
 import logging
-import shutil
+import os
+import tempfile
 from typing import TYPE_CHECKING
 
 import dateutil.parser
@@ -167,18 +168,30 @@ class RootAnalysisSerializer:
         for analysis in root_analysis.all_analysis:
             root_analysis.analysis_tree_manager.save_analysis_details(analysis)
         
-        # Now encode and save the main JSON with retry logic
-        # Use a temporary file to deal with very large JSON files taking a long time to encode
-        temp_path = '{}.tmp'.format(root_analysis.json_path)
+        # Now encode and save the main JSON.
+        # Use a per-write unique temporary file (not a fixed <json_path>.tmp) so that
+        # concurrent saves of the same root never share a temp path and race on the
+        # final rename — which previously surfaced as FileNotFoundError on data.json.tmp.
+        dest = root_analysis.json_path
         encoded_json = json.dumps(RootAnalysisSerializer.serialize(root_analysis), sort_keys=True, cls=_JSONEncoder)
-        
-        # Skip writing if already written (no changes)
-        with open(temp_path, 'w') as fp:
-            #root_analysis.json_size = sys.getsizeof(encoded_json)
-            fp.write(encoded_json)
-            _track_writes()
-            
-        shutil.move(temp_path, root_analysis.json_path)
+
+        fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(dest), prefix='.data.json.', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w') as fp:
+                #root_analysis.json_size = sys.getsizeof(encoded_json)
+                fp.write(encoded_json)
+                _track_writes()
+
+            # atomic on the same filesystem; concurrent writers resolve last-writer-wins
+            os.replace(temp_path, dest)
+        except BaseException:
+            # don't leak the temp file if we failed before/at the replace
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            raise
+
         return True
     
     @staticmethod

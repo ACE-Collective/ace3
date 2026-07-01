@@ -162,6 +162,43 @@ def test_save():
     root.save()
 
 @pytest.mark.unit
+def test_concurrent_save_no_temp_race():
+    # Concurrent saves of the same root previously raced on a fixed <json_path>.tmp
+    # temp file: one thread's rename removed the temp file before another thread's
+    # rename ran, raising FileNotFoundError. The serializer now uses a unique temp
+    # file per write, so concurrent saves must all succeed with no stray temp files.
+    import json
+    import threading
+
+    root = create_root_analysis()
+    root.initialize_storage()
+
+    errors = []
+
+    def _save():
+        try:
+            for _ in range(25):
+                root.save()
+        except BaseException as e:  # noqa: BLE001 - surface any raised error to the test
+            errors.append(e)
+
+    threads = [threading.Thread(target=_save) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+
+    # the final data.json is present and valid
+    with open(root.json_path) as fp:
+        json.load(fp)
+
+    # no leftover temp files in the storage directory
+    leftovers = [f for f in os.listdir(os.path.dirname(root.json_path)) if f.endswith('.tmp')]
+    assert leftovers == []
+
+@pytest.mark.unit
 def test_load():
     root = create_root_analysis()
     root.initialize_storage()

@@ -1,6 +1,10 @@
 import pytest
+from unittest.mock import Mock
 
-from saq.modules.file_analysis.archive import order_archive_file_list
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, AnalysisExecutionResult
+from saq.configuration.config import get_analysis_module_config
+from saq.modules.file_analysis.archive import ArchiveAnalyzer, order_archive_file_list
+from tests.saq.test_util import create_test_context
 
 
 class TestOrderArchiveFileList:
@@ -128,7 +132,25 @@ class TestOrderArchiveFileList:
         result = order_archive_file_list(file_list)
         assert result == ["file2.msi", "file1.exe", "file3.txt"]  # msi should come before exe
     
-    @pytest.mark.unit 
+    @pytest.mark.unit
+    @pytest.mark.parametrize("file_type_result", [False, None])
+    def test_execute_analysis_no_file_type_analysis(self, file_type_result, root_analysis, tmpdir):
+        # wait_for_analysis() can return the ``False`` sentinel (analysis ran but produced
+        # nothing / was skipped) in addition to None. The guard must treat both as "no
+        # analysis" and return COMPLETED rather than dereferencing a bool.
+        analyzer = ArchiveAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
+        analyzer.wait_for_analysis = Mock(return_value=file_type_result)
+
+        test_file = tmpdir / "sample.bin"
+        test_file.write("not really an archive")
+        file_observable = root_analysis.add_file_observable(str(test_file))
+
+        result = analyzer.execute_analysis(file_observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+    @pytest.mark.unit
     def test_order_archive_file_list_ps1_in_both_categories(self):
         # .ps1 appears in both executable_exts and script_exts
         # it should be treated as executable_exts (priority 1) since that's checked first

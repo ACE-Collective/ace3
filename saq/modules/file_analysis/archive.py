@@ -176,7 +176,7 @@ class ArchiveAnalyzer(AnalysisModule):
 
         # we need file type analysis first
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is None or file_type_analysis.details is None:
+        if not file_type_analysis or file_type_analysis.details is None:
             return AnalysisExecutionResult.COMPLETED
 
         # there are some we exclude

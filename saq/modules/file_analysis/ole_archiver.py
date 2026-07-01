@@ -68,12 +68,12 @@ class OLEArchiver_v1_0(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         file_type_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
-        if file_type_analysis is None:
+        if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         # and the file hash analysis
         hash_analysis = self.wait_for_analysis(_file, FileHashAnalysis)
-        if hash_analysis is None:
+        if not hash_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         if hash_analysis.md5 is None:

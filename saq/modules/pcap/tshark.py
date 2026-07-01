@@ -32,7 +32,7 @@ class TsharkPcapAnalyzer(AnalysisModule):
 
         # we need file type analysis first
         file_type_analysis = self.wait_for_analysis(pcap, FileTypeAnalysis)
-        if file_type_analysis is None:
+        if not file_type_analysis:
             return AnalysisExecutionResult.COMPLETED
 
         # make sure the file exists
