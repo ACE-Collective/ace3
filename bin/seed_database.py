@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from saq.database.model import (
     AnalysisModePriority,
-    AuthPermissionCatalog,
     AuthUserPermission,
     Company,
     EventPreventionTool,
@@ -26,6 +25,7 @@ from saq.database.model import (
     ThreatType,
     User,
 )
+from saq.permissions.catalog import sync_permission_catalog
 
 
 def get_engine(db_name: str = "ace"):
@@ -93,32 +93,9 @@ def seed() -> None:
                  "customer threat", "wiper", "traffic direction system",
                  "advanced persistent threat"])
 
-        # Permission catalog (auto-increment PK — check by unique key)
-        existing_perms = {
-            (major, minor)
-            for major, minor in session.execute(
-                select(AuthPermissionCatalog.major, AuthPermissionCatalog.minor)
-            )
-        }
-        permissions = [
-            ("system", "read", "Read system metadata and supported types via API."),
-            ("email", "read", "Read archived email content via API/GUI."),
-            ("alert", "create", "Create new alerts or upload alert data via API/GUI."),
-            ("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
-            ("alert", "write", "Modify alerts."),
-            ("lock", "delete", "Clear processing locks on alerts or resources."),
-            ("event", "read", "View events, details, and export event data."),
-            ("event", "write", "Modify events."),
-            ("observable", "read", "Query observables via the API."),
-            ("observable", "write", "Modify observables."),
-            ("user", "read", "Read user data via API/GUI."),
-            ("user", "write", "Modify user data via API/GUI."),
-            ("node", "read", "Read node status and outstanding work counts via API."),
-            ("node", "manage", "Drain and resume nodes via API."),
-        ]
-        for major, minor, desc in permissions:
-            if (major, minor) not in existing_perms:
-                session.add(AuthPermissionCatalog(major=major, minor=minor, description=desc))
+        # Permission catalog — seed from the authoritative code-defined catalog.
+        # prune=False so a fresh seed never removes rows another process may rely on.
+        sync_permission_catalog(session, prune=False)
 
         # Built-in user permissions (auto-increment PK — check by unique key)
         existing_user_perms = {

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+<h2 class="mb-4">Administration</h2>
+
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+    {% for module in admin_modules if has_permission(module.major, module.minor) %}
+    <div class="col">
+        <a href="{{ url_for(module.endpoint) }}" class="text-decoration-none">
+            <div class="card h-100 shadow-sm">
+                <div class="card-body">
+                    <h5 class="card-title">{{ module.title }}</h5>
+                    <p class="card-text text-muted">{{ module.description }}</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    {% else %}
+    <div class="col">
+        <p class="text-muted">You do not have access to any administration areas.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

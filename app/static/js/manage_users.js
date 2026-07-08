@@ -110,7 +110,7 @@ function submit_edit_user() {
         json_submission[selected_user_ids[i]].groups = groups;
     }
 
-    fetch("/ace/auth/edit", {
+    fetch("/ace/admin/users/edit", {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -162,7 +162,7 @@ function submit_add_user() {
 
     json_submission.groups = groups;
 
-    fetch("/ace/auth/add", {
+    fetch("/ace/admin/users/add", {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -251,7 +251,7 @@ $(document).ready(function() {
             $("#edit_user_modal_label").text("Edit User");
             // get the details of the selected user
             var user_id = selected_user_ids[0];
-            fetch(`/ace/auth/user?user_ids=${user_id}`)
+            fetch(`/ace/admin/users/details?user_ids=${user_id}`)
                 .then(response => {
                     if (!response.ok) {
                         response.text().then(text => {
@@ -330,7 +330,7 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/auth/edit", {
+        fetch("/ace/admin/users/edit", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -360,7 +360,7 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/auth/edit", {
+        fetch("/ace/admin/users/edit", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -392,7 +392,7 @@ $(document).ready(function() {
 
         var json_submission = { groups: selected_group_ids };
 
-        fetch("/ace/auth/group/delete", {
+        fetch("/ace/admin/groups/delete", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -415,6 +415,15 @@ $(document).ready(function() {
         $("#add_permission_modal").modal("show");
     });
 
+    // choosing a catalog entry fills the major/minor fields (which remain editable for wildcards)
+    $("#add_permission_catalog").on('change', function() {
+        var value = $(this).val();
+        if (!value) { return; }
+        var parts = value.split(":");
+        $("#add_permission_major").val(parts[0]);
+        $("#add_permission_minor").val(parts[1]);
+    });
+
     $("#btn_execute_add_permission").on('click', function() {
         var effect = $("#add_permission_effect").val();
         var major = $("#add_permission_major").val();
@@ -430,7 +439,7 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/auth/permission/add", {
+        fetch("/ace/admin/permissions/add", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -458,7 +467,7 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/auth/permission/delete", {
+        fetch("/ace/admin/permissions/delete", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

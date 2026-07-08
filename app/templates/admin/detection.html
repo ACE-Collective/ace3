@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block control_panel %}
+<div class="container-fluid">
+    <form class="row row-cols-lg-auto g-2 align-items-end" method="GET" action="{{ url_for('admin.detection_settings') }}">
+        <div class="col">
+            <label class="form-label mb-0" for="q">Search value</label>
+            <input type="text" class="form-control form-control-sm" id="q" name="q" value="{{ search }}" placeholder="substring…">
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="show">Show</label>
+            <select class="form-select form-select-sm" id="show" name="show">
+                <option value="enabled" {% if show == 'enabled' %}selected{% endif %}>Enabled for detection</option>
+                <option value="all" {% if show == 'all' %}selected{% endif %}>All observables</option>
+            </select>
+        </div>
+        <div class="col">
+            <button type="submit" class="btn btn-sm btn-outline-dark">Apply</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid">
+    <h3>Observable Detection Settings</h3>
+    <table class="table table-hover table-sm">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Value</th>
+                <th>For Detection</th>
+                <th>Enabled By</th>
+                <th>Context</th>
+                <th>Expires</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for obs in observables %}
+            <tr data-observable-id="{{ obs.id }}">
+                <td>{{ obs.type }}</td>
+                <td><code>{{ obs.value }}</code></td>
+                <td class="obs-for-detection">{{ 'yes' if obs.for_detection else 'no' }}</td>
+                <td>{{ obs.enabled_by or '' }}</td>
+                <td>{{ obs.detection_context or '' }}</td>
+                <td>
+                    <span class="obs-expires">{{ obs.expires_on.strftime('%Y-%m-%d %H:%M:%S') if obs.expires_on else 'never' }}</span>
+                    <input type="text" class="form-control form-control-sm d-inline-block obs-expires-input" style="width: 12rem;" placeholder="YYYY-MM-DD HH:MM:SS">
+                    <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
+                    <button type="button" class="btn btn-xs btn-outline-secondary btn-clear-expiration">never</button>
+                </td>
+                <td>
+                    <button type="button" class="btn btn-xs {{ 'btn-outline-danger' if obs.for_detection else 'btn-outline-success' }} btn-toggle-detection"
+                            data-enabled="{{ 'true' if obs.for_detection else 'false' }}">
+                        {{ 'Disable' if obs.for_detection else 'Enable' }}
+                    </button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-muted">No observables found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/admin_detection.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

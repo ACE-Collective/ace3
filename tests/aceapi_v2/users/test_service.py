@@ -1,0 +1,238 @@
+"""Tests for the aceapi_v2 users/roles management service."""
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from saq.database.model import AuthGroupUser, AuthUserPermission, User
+from aceapi_v2.users import service
+from aceapi_v2.users.schemas import PermissionInput, UserUpdate
+
+pytestmark = pytest.mark.integration
+
+
+async def _make_user(session: AsyncSession, username: str, enabled: bool = True) -> User:
+    user = User(
+        username=username,
+        email=f"{username}@example.com",
+        display_name=username,
+        queue="default",
+        timezone="UTC",
+        password="pw",
+        enabled=enabled,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+class TestListUsers:
+    @pytest.mark.asyncio
+    async def test_include_and_exclude_disabled(self, session: AsyncSession):
+        await _make_user(session, "svc_enabled_u")
+        await _make_user(session, "svc_disabled_u", enabled=False)
+        await session.flush()
+
+        all_users = await service.list_users(session, include_disabled=True)
+        names = {u.username for u in all_users}
+        assert {"svc_enabled_u", "svc_disabled_u"} <= names
+
+        enabled_only = await service.list_users(session, include_disabled=False)
+        enabled_names = {u.username for u in enabled_only}
+        assert "svc_enabled_u" in enabled_names
+        assert "svc_disabled_u" not in enabled_names
+
+
+class TestCreateUser:
+    @pytest.mark.asyncio
+    async def test_creates_with_permissions_and_groups(self, session: AsyncSession):
+        group = await service.create_auth_group(session, "svc_group_a")
+        user = await service.create_user(
+            session,
+            username="svc_new_user",
+            email="svc_new_user@example.com",
+            display_name="New",
+            password="Secret123!",
+            queue="default",
+            timezone="UTC",
+            permissions=[PermissionInput(major="alert", minor="read", effect="ALLOW")],
+            groups=[group.id],
+        )
+        assert user.id is not None
+        assert user.verify_password("Secret123!")
+
+        perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        assert any(p.major == "alert" and p.minor == "read" for p in perms)
+
+        groups = await service.get_user_groups_async(session, user.id)
+        assert group.id in {g.id for g in groups}
+
+    @pytest.mark.asyncio
+    async def test_random_password_when_omitted(self, session: AsyncSession):
+        user = await service.create_user(
+            session,
+            username="svc_nopass_user",
+            email="svc_nopass_user@example.com",
+            display_name="NoPass",
+            password=None,
+            queue="default",
+            timezone="UTC",
+            permissions=[],
+            groups=[],
+        )
+        assert user.password_hash
+        assert len(user.password_hash) > 0
+
+
+class TestUpdateUsers:
+    @pytest.mark.asyncio
+    async def test_single_user_all_fields(self, session: AsyncSession):
+        user = await _make_user(session, "svc_edit_one")
+        await service.update_users(
+            session,
+            {user.id: UserUpdate(
+                username="svc_edited_one",
+                display_name="Edited",
+                email="svc_edited_one@example.com",
+                queue="high",
+                timezone="America/Los_Angeles",
+                enabled=False,
+                permissions=[PermissionInput(major="event", minor="write", effect="ALLOW")],
+            )},
+            actor_id=None,
+        )
+        await session.refresh(user)
+        assert user.username == "svc_edited_one"
+        assert user.queue == "high"
+        assert user.enabled is False
+        perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        assert {(p.major, p.minor) for p in perms} == {("event", "write")}
+
+    @pytest.mark.asyncio
+    async def test_multi_user_locks_identity_fields(self, session: AsyncSession):
+        u1 = await _make_user(session, "svc_multi_1")
+        u2 = await _make_user(session, "svc_multi_2")
+        await service.update_users(
+            session,
+            {
+                u1.id: UserUpdate(username="should_be_ignored", queue="bulk", enabled=False),
+                u2.id: UserUpdate(queue="bulk", enabled=False),
+            },
+            actor_id=None,
+        )
+        await session.refresh(u1)
+        await session.refresh(u2)
+        # username change ignored during multi-edit
+        assert u1.username == "svc_multi_1"
+        assert u1.queue == "bulk" and u1.enabled is False
+        assert u2.queue == "bulk" and u2.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_permission_replace(self, session: AsyncSession):
+        user = await _make_user(session, "svc_replace_perms")
+        session.add(AuthUserPermission(user_id=user.id, major="old", minor="perm", effect="ALLOW"))
+        await session.flush()
+
+        await service.update_users(
+            session,
+            {user.id: UserUpdate(permissions=[PermissionInput(major="new", minor="perm", effect="ALLOW")])},
+            actor_id=None,
+        )
+        perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        assert {(p.major, p.minor) for p in perms} == {("new", "perm")}
+
+    @pytest.mark.asyncio
+    async def test_group_replace(self, session: AsyncSession):
+        user = await _make_user(session, "svc_replace_groups")
+        g1 = await service.create_auth_group(session, "svc_grp_1")
+        g2 = await service.create_auth_group(session, "svc_grp_2")
+        session.add(AuthGroupUser(user_id=user.id, group_id=g1.id))
+        await session.flush()
+
+        await service.update_users(
+            session, {user.id: UserUpdate(groups=[g2.id])}, actor_id=None
+        )
+        groups = await service.get_user_groups_async(session, user.id)
+        assert {g.id for g in groups} == {g2.id}
+
+    @pytest.mark.asyncio
+    async def test_not_found_raises(self, session: AsyncSession):
+        with pytest.raises(service.UserNotFoundError):
+            await service.update_users(session, {999999: UserUpdate(queue="x")}, actor_id=None)
+
+
+class TestGroupsAndPermissions:
+    @pytest.mark.asyncio
+    async def test_create_group_idempotent_and_delete(self, session: AsyncSession):
+        g1 = await service.create_auth_group(session, "svc_idem_grp")
+        g2 = await service.create_auth_group(session, "svc_idem_grp")
+        assert g1.id == g2.id
+
+        await service.delete_auth_groups(session, [g1.id])
+        groups = await service.list_auth_groups(session)
+        assert g1.id not in {g.id for g in groups}
+
+    @pytest.mark.asyncio
+    async def test_grant_and_revoke(self, session: AsyncSession):
+        user = await _make_user(session, "svc_grant_user")
+        group = await service.create_auth_group(session, "svc_grant_grp")
+
+        await service.grant_permission(
+            session,
+            perm=PermissionInput(major="test", minor="perm", effect="ALLOW"),
+            user_ids=[user.id],
+            group_ids=[group.id],
+        )
+        user_perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        up = next(p for p in user_perms if p.major == "test")
+        group_perms = await service.get_group_permissions_async(session, group.id)
+        gp = next(p for p in group_perms if p.major == "test")
+
+        await service.revoke_permissions(
+            session, user_permission_ids=[up.id], group_permission_ids=[gp.id]
+        )
+        assert not [p for p in await service.get_user_permissions_async(session, user.id, include_groups=False) if p.major == "test"]
+        assert not [p for p in await service.get_group_permissions_async(session, group.id) if p.major == "test"]
+
+    @pytest.mark.asyncio
+    async def test_effect_uppercased(self, session: AsyncSession):
+        user = await _make_user(session, "svc_effect_user")
+        await service.grant_permission(
+            session,
+            perm=PermissionInput(major="test", minor="lc", effect="deny"),
+            user_ids=[user.id],
+            group_ids=[],
+        )
+        perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        assert next(p for p in perms if p.minor == "lc").effect == "DENY"
+
+
+class TestManagementViewAndCatalog:
+    @pytest.mark.asyncio
+    async def test_management_view_shape(self, session: AsyncSession):
+        user = await _make_user(session, "svc_mv_user")
+        group = await service.create_auth_group(session, "svc_mv_grp")
+        session.add(AuthUserPermission(user_id=user.id, major="alert", minor="read", effect="ALLOW"))
+        await session.flush()
+
+        view = await service.get_management_view(session, include_disabled=True)
+        assert any(u.id == user.id for u in view.users)
+        assert user.id in view.permissions
+        assert group.id in view.group_permissions
+        # catalog is populated from auth_permission_catalog; may be empty in a clean txn
+        assert isinstance(view.catalog, list)
+
+    @pytest.mark.asyncio
+    async def test_get_users_details(self, session: AsyncSession):
+        user = await _make_user(session, "svc_detail_user")
+        group = await service.create_auth_group(session, "svc_detail_grp")
+        session.add(AuthGroupUser(user_id=user.id, group_id=group.id))
+        session.add(AuthUserPermission(user_id=user.id, major="alert", minor="read", effect="ALLOW"))
+        await session.flush()
+
+        details = await service.get_users_details(session, [user.id])
+        assert user.id in details
+        d = details[user.id]
+        assert d.username == "svc_detail_user"
+        assert {(p.major, p.minor) for p in d.permissions} == {("alert", "read")}
+        assert group.id in {g.id for g in d.groups}

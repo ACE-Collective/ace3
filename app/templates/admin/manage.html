@@ -101,7 +101,7 @@
                                     <li style="list-style-type: none;"><input class="form-check-input" type="checkbox" id="group_permission_{{permission.id}}" name="group_permission_{{permission.id}}"></input> {{permission.effect}} {{ permission.major }}:{{ permission.minor }}</li>
                                 {% endfor %}
                             </ul>
-                        </td>   
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -112,7 +112,7 @@
 
 <!-- add/edit user modal -->
 <div class="modal fade modal-lg" id="edit_user_modal" tabindex="-1" role="dialog" aria-labelledby="edit_user_modal_label" aria-hidden="true">
-    <form id="edit_user_form" class="form-horizontal" role="form" method="POST" action={{url_for('auth.edit_users')}}>
+    <form id="edit_user_form" class="form-horizontal" role="form" method="POST" action={{url_for('admin.edit_users')}}>
         <input type="hidden" id="edit_or_add" name="edit_or_add" value="add">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -192,7 +192,7 @@
 
 <!-- add auth group modal -->
 <div class="modal fade modal-sm" id="add_auth_group_modal" tabindex="-1" role="dialog" aria-labelledby="add_auth_group_modal_label" aria-hidden="true">
-    <form id="add_auth_group_form" class="form-horizontal" role="form" method="POST" action={{url_for('auth.add_auth_group')}}>
+    <form id="add_auth_group_form" class="form-horizontal" role="form" method="POST" action={{url_for('admin.add_auth_group')}}>
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -234,6 +234,18 @@
                         </select>
                     </div>
                     <div class="col">
+                        <label for="add_permission_catalog">Permission</label>
+                        <select class="form-select" id="add_permission_catalog" name="add_permission_catalog">
+                            <option value="">— choose from catalog —</option>
+                            {% for entry in permission_catalog %}
+                                <option value="{{entry.major}}:{{entry.minor}}" title="{{entry.description}}">{{entry.major}}:{{entry.minor}}</option>
+                            {% endfor %}
+                            <option value="*:*">*:* (all permissions)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row mt-2">
+                    <div class="col">
                         <label for="add_permission_major">Major</label>
                         <input type="text" class="form-control" id="add_permission_major" name="add_permission_major" value="*">
                     </div>
@@ -242,6 +254,7 @@
                         <input type="text" class="form-control" id="add_permission_minor" name="add_permission_minor" value="*">
                     </div>
                 </div>
+                <small class="text-muted">Pick a catalog entry to fill Major/Minor, or type your own (wildcards like <code>*</code> allowed).</small>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
                 <button type="submit" class="btn btn-outline-primary" id="btn_execute_add_permission">Add</button>
