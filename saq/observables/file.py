@@ -399,6 +399,15 @@ class FileObservable(Observable):
 
         self.add_directive(f"{DIRECTIVE_YARA_META_PREFIX}{name}={value}")
 
+    def has_yara_meta(self, name, value) -> bool:
+        """Returns True if this observable has the given YARA_META directive.
+
+        Args:
+            name: the meta tag name
+            value: the meta tag value
+        """
+        return self.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}{name}={value}")
+
     @property
     def yara_meta_tags(self):
         """Returns a list of 'name=value' strings for all YARA_META directives on this observable."""

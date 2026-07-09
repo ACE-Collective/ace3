@@ -2400,7 +2400,12 @@ def test_tree_condition_observable_match_with_negate():
 
     module_path2 = f"{PhishkitAnalysisNeg2.__module__}:{PhishkitAnalysisNeg2.__name__}"
 
-    # With negate: inner doesn't match (URL has no file_name) -> negated to True (OCR should run)
+    # With negate: inner doesn't match, because a url observable has no file_name
+    # attribute at all -- so the property check fails and negate flips it to True.
+    # This is the trap documented in docs/OBSERVABLE_MODIFIER_RULES.md: a negated
+    # observable_match written for one observable type silently passes for every
+    # other type the analyzer runs on. Rules that need to exclude all outputs of an
+    # analyzer must scope on the analysis alone, not on its observable's file_name.
     tc_neg2 = TreeCondition(
         analysis_type=module_path2,
         observable_match={"file_name": re.compile(r".*\.unknown_text_html_.*")},
@@ -3585,6 +3590,104 @@ def test_tree_condition_parent_scope_parsed_from_yaml():
     result = adapter.analyze(target, final_analysis=True)
     assert result == AnalysisExecutionResult.INCOMPLETE
     assert target.has_tag("matched_parent")
+
+
+# ============================================================
+# Regression tests for the "Enable OCR for images" rule shape
+#
+# The rule enables OCR on image files but must exclude phishkit screenshots,
+# whose page text phishkit already captures verbatim in dom.html. An earlier
+# version narrowed the exclusion with observable_match on file_name, which only
+# suppressed OCR when phishkit was pointed at a file -- screenshots from URL
+# scans were OCR'd anyway. These tests pin the parent-scoped form.
+# ============================================================
+
+
+class _PhishkitAnalysisStub(Analysis):
+    """Stands in for saq.modules.phishkit:PhishkitAnalysis."""
+    pass
+
+
+_PHISHKIT_STUB_PATH = f"{_PhishkitAnalysisStub.__module__}:{_PhishkitAnalysisStub.__name__}"
+
+_OCR_RULE = {
+    "name": "Enable OCR for images",
+    "conditions": {
+        "observable_types": ["file"],
+        "has_yara_meta_tags": ["type=image"],
+        "tree_conditions": [{
+            "analysis_type": _PHISHKIT_STUB_PATH,
+            "scope": "parent",
+            "negate": True,
+        }],
+    },
+    "actions": {"add_directives": [DIRECTIVE_OCR]},
+}
+
+
+def _add_phishkit_screenshot(root, scanned_observable, filename="screenshot.png"):
+    """Attaches a phishkit analysis to scanned_observable and returns its screenshot."""
+    phishkit = _PhishkitAnalysisStub()
+    phishkit.details = {}
+    phishkit.details_modified = True
+    scanned_observable.add_analysis(phishkit)
+
+    screenshot = _add_file_observable(root, filename, content="fake png")
+    phishkit.add_observable(screenshot)
+    screenshot.add_yara_meta("type", "image")
+    return screenshot
+
+
+@pytest.mark.unit
+def test_ocr_rule_skips_phishkit_screenshot_of_url_scan():
+    """A screenshot from a phishkit scan of a URL must not get the ocr directive.
+
+    This is the regression: the scanned observable is a url, which has no
+    file_name, so an observable_match-narrowed exclusion never fired.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    scanned_url = root.add_observable_by_spec(F_URL, "https://example.com/login/")
+    screenshot = _add_phishkit_screenshot(root, scanned_url)
+
+    adapter = _create_analyzer_with_rules(root, [_OCR_RULE])
+    adapter.execute_analysis(screenshot)
+    adapter.analyze(screenshot, final_analysis=True)
+
+    assert not screenshot.has_directive(DIRECTIVE_OCR)
+
+
+@pytest.mark.unit
+def test_ocr_rule_skips_phishkit_screenshot_of_html_body_render():
+    """A screenshot from a phishkit render of an email HTML body must not get the ocr directive."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    html_body = _add_file_observable(root, "email.rfc822.unknown_text_html_000.html", content="<html></html>")
+    screenshot = _add_phishkit_screenshot(root, html_body)
+
+    adapter = _create_analyzer_with_rules(root, [_OCR_RULE])
+    adapter.execute_analysis(screenshot)
+    adapter.analyze(screenshot, final_analysis=True)
+
+    assert not screenshot.has_directive(DIRECTIVE_OCR)
+
+
+@pytest.mark.unit
+def test_ocr_rule_still_enables_ocr_for_non_phishkit_images():
+    """An image that phishkit did not produce still gets the ocr directive."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    attachment = _add_file_observable(root, "invoice.png", content="fake png")
+    attachment.add_yara_meta("type", "image")
+
+    adapter = _create_analyzer_with_rules(root, [_OCR_RULE])
+    adapter.execute_analysis(attachment)
+    adapter.analyze(attachment, final_analysis=True)
+
+    assert attachment.has_directive(DIRECTIVE_OCR)
 
 
 # ============================================================

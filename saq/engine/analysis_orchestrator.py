@@ -113,6 +113,10 @@ class AnalysisOrchestrator:
                     logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
                     report_exception()
 
+    def cancel_current_analysis(self):
+        """Cancel the analysis currently being orchestrated, if any."""
+        self.analysis_executor.cancel_current_analysis()
+
     def _process_work_item(self, execution_context: EngineExecutionContext) -> bool:
         """Process the work item and set up the root analysis."""
         work_item = execution_context.work_item

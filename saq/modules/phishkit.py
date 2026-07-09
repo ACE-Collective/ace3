@@ -16,7 +16,7 @@ from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.file_analysis import FileTypeAnalysis
+from saq.modules.file_analysis import FileTypeAnalysis, OCRAnalyzer
 from saq.modules.tool_version import file_content_version
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, get_phishkit_scanner_version, scan_file, scan_url
@@ -38,6 +38,26 @@ FIELD_PROXY_STATUS = "proxy_status"
 
 SCAN_TYPE_URL = "url"
 SCAN_TYPE_FILE = "file"
+
+# Content types whose bodies we already capture verbatim (dom.html / requests.json). A screenshot
+# of Chrome's plain-text rendering of these carries no information the raw body doesn't already
+# have, so OCR of it can only add transcription error. Worse, running domain extraction over source
+# code manufactures observables like "b.call" and "n.map" out of JavaScript method calls -- no OCR
+# error required, since ".call" and ".map" are real gTLDs. This is a denylist rather than an
+# allowlist: an unknown or missing content type falls back to running OCR.
+OCR_SKIP_CONTENT_TYPES = frozenset([
+    "application/javascript",
+    "application/json",
+    "application/x-javascript",
+    "application/xml",
+    "text/css",
+    "text/javascript",
+    "text/plain",
+    "text/xml",
+])
+
+# scanner.py writes screenshot.png, pre_bypass_screenshot.png and pre_bypass_screenshot_iter{n}.png
+SCREENSHOT_PREFIXES = ("screenshot.png", "pre_bypass_screenshot")
 
 
 class PhishkitAnalysis(Analysis):
@@ -428,6 +448,49 @@ class PhishkitAnalyzer(AnalysisModule):
         except Exception as e:
             logging.error(f"failed to send scan_dispatched to fluent-bit for {observable}: {e}")
 
+    def _top_level_content_type(self, output_dir: str) -> Optional[str]:
+        """Returns the lowercased content type of the top-level response, or None if unknown.
+
+        The screenshot is a rendering of the top-level document, which is the first non-redirect
+        response logged in requests.json. Subresource responses follow it.
+        """
+        requests_path = os.path.join(output_dir, "requests.json")
+        if not os.path.exists(requests_path):
+            return None
+
+        try:
+            with open(requests_path, "r", errors="ignore") as fp:
+                entries = json.load(fp)
+        except Exception as e:
+            logging.warning(f"failed to read requests.json at {requests_path}: {e}")
+            return None
+
+        if not isinstance(entries, list):
+            return None
+
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") != "response":
+                continue
+
+            # skip redirect hops -- the document is the response they land on
+            status_code = entry.get("status_code")
+            if isinstance(status_code, int) and 300 <= status_code < 400:
+                continue
+
+            headers = entry.get("headers")
+            if not isinstance(headers, dict):
+                return None
+
+            # header casing varies between scanner versions and origins
+            for name, value in headers.items():
+                if name.lower() == "content-type" and isinstance(value, str):
+                    # "application/javascript; charset=utf-8" -> "application/javascript"
+                    return value.split(";", 1)[0].strip().lower()
+
+            return None
+
+        return None
+
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
         if not analysis.job_id:
@@ -461,6 +524,10 @@ class PhishkitAnalyzer(AnalysisModule):
         # we can still harvest captured-traffic observables). The success vs.
         # partial scan_result label is decided after we've read metrics/exit code.
         analysis.error = None
+
+        # a screenshot of Chrome rendering source text (JS, CSS, JSON) as plain text tells us
+        # nothing the captured body doesn't already, so don't hand it to OCR
+        skip_screenshot_ocr = self._top_level_content_type(analysis.output_dir) in OCR_SKIP_CONTENT_TYPES
 
         for file_path in scan_results:
             if not os.path.exists(file_path):
@@ -527,6 +594,9 @@ class PhishkitAnalyzer(AnalysisModule):
                     file_observable.exclude_analysis(self)
                     file_observable.exclude_analysis(PDFAnalyzer)
                     #file_observable.add_directive(DIRECTIVE_EXCLUDE_ALL)
+                    if skip_screenshot_ocr and os.path.basename(file_path).startswith(SCREENSHOT_PREFIXES):
+                        logging.debug(f"skipping ocr for {file_path}: top level response is not a rendered page")
+                        file_observable.exclude_analysis(OCRAnalyzer)
                     analysis.output_files.append(file_observable.file_path)
 
 

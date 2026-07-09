@@ -15,7 +15,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
 from saq.database.model import load_alert
 from saq.database.util.alert import ALERT
-from saq.environment import get_base_dir, get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
@@ -376,7 +376,7 @@ def search_log_condition(func):
 
 def start_api_server(remote_host=None, ssl_verification=None, listen_address=None, listen_port=None, ssl_cert=None, ssl_key=None) -> Process:
     """Starts the API server as a separate process."""
-    api_server_process = Process(target=execute_api_server, args=(listen_address, listen_port, ssl_cert, ssl_key))
+    api_server_process = ACE_MP_CONTEXT.Process(target=execute_api_server, args=(listen_address, listen_port, ssl_cert, ssl_key))
     api_server_process.start()
 
     if remote_host is None:
@@ -471,24 +471,6 @@ memory_log_handler = None
 # so eventually this class goes away
 
 class MemoryLogHandler(logging.Handler):
-    def acquire(self):
-        pass
-        #if test_log_sync: # TODO fix me
-            #if not test_log_sync.acquire(block=True, timeout=0.1):
-                #sys.stderr.write("failed to acquire log sync\n")
-
-    def release(self):
-        pass
-
-        #if test_log_sync: # TODO fix me
-            #try:
-                #test_log_sync.release()
-            #except Exception as e:
-                #sys.stderr.write(f"failed to release log sync: {e}\n")
-
-    def createLock(self):
-        pass
-
     def emit(self, record):
         try:
             test_log_messages.append(record)

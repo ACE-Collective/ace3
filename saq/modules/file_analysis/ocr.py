@@ -34,6 +34,10 @@ from saq.ocr import (
 KEY_ERROR = "error"
 KEY_OCR = "ocr"
 
+# yara meta tag applied to the extracted text file. Consumers use this to tell that the
+# text is an OCR reconstruction rather than a byte-for-byte transcription of a source file.
+YARA_META_TYPE_OCR = "document.text.ocr"
+
 
 class OCRAnalysis(Analysis):
 
@@ -247,7 +251,7 @@ class OCRAnalyzer(AnalysisModule):
             file_observable.add_relationship(R_EXTRACTED_FROM, _file)
             file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
             file_observable.add_directive(DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL)
-            file_observable.add_yara_meta("type", "document.text.ocr")
+            file_observable.add_yara_meta("type", YARA_META_TYPE_OCR)
             file_observable.redirection = _file
 
         return AnalysisExecutionResult.COMPLETED

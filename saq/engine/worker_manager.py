@@ -261,7 +261,7 @@ class WorkerManager:
 
         for worker in self.workers:
             worker.controlled_shutdown()
-        
+
         # make sure all the processes exit
         for worker in self.workers:
             worker.wait()

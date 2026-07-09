@@ -93,7 +93,7 @@ services:
     build:
       context: .
       args:
-        PYTHON_DOCKER_IMAGE: ${PYTHON_DOCKER_IMAGE:-python:3.12-trixie}
+        PYTHON_DOCKER_IMAGE: ${PYTHON_DOCKER_IMAGE:-python:3.14-trixie}
         SAQ_USER_ID: ${SAQ_USER_ID:-1000}
         SAQ_GROUP_ID: ${SAQ_GROUP_ID:-1000}
         BUILD_TYPE: ${BUILD_TYPE:-development}
@@ -726,7 +726,7 @@ services:
       context: .
       dockerfile: js_deobfuscator/Dockerfile.js_deobfuscator
       args:
-        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:20-alpine}
+        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:26-alpine}
     image: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
     # this is here just to build the scanner image
     entrypoint: /bin/true

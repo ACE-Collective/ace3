@@ -7,7 +7,7 @@ from saq.configuration.config import get_config, get_engine_config
 from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_STARTING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
-from saq.database.util.locking import clear_expired_locks
+from saq.engine.recovery import recover_expired_locks
 from saq.database.util.node import (
     assign_node_analysis_modes,
     check_and_advance_collectors_drained,
@@ -196,8 +196,9 @@ class DistributedNodeManager(NodeManagerInterface):
                 return
 
             # do primary node stuff
-            # clear any outstanding locks
-            clear_expired_locks()
+
+            # recover any lost work whose lock has expired
+            recover_expired_locks()
 
             # set the status of any node with a stale heartbeat to stopped
             # the threshold must be strictly larger than the collector's 2x freshness window
@@ -248,11 +249,26 @@ class DistributedNodeManager(NodeManagerInterface):
             logging.error("error executing drain routines: %s", e)
             report_exception()
 
+    def execute_node_recovery_routines(self):
+        """Recover this node's own lost work whose lock has expired.
+
+        Runs on every node (not just the primary) so a hung/killed worker whose death the local
+        fast path missed is still recovered, keyed on lock expiry rather than node health.
+        """
+        try:
+            node_id = get_global_runtime_settings().saq_node_id
+            if node_id is not None:
+                recover_expired_locks(node_id=node_id)
+        except Exception as e:
+            logging.error("error executing node recovery routines: %s", e)
+            report_exception()
+
     def update_node_status_and_execute_primary_routines(self):
         """Updates node status and executes primary node routines if needed."""
         if self.should_update_node_status():
             self.update_node_status()
             self.execute_drain_routines()
+            self.execute_node_recovery_routines()
             self.execute_primary_node_routines()
 
             # when will we do this again?

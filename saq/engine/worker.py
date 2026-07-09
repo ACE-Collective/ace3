@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 import logging
-from multiprocessing import Event, Process
+from multiprocessing import Process
 import os
 import shutil
 import signal
@@ -14,6 +14,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_FILE, LockManagerType, WorkloadManagerType
 from saq.database.pool import remove_all_sessions
+from saq.database.util.locking import get_lock_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
@@ -31,7 +32,7 @@ from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_data_dir, get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 
@@ -60,11 +61,11 @@ class Worker:
         self.analysis_mode_priority: Optional[str] = analysis_mode_priority if analysis_mode_priority is not None else self.config.analysis_mode_priority
 
         # controls when the worker exits
-        self._controlled_shutdown_event = Event()
-        self._immediate_shutdown_event = Event()
+        self._controlled_shutdown_event = ACE_MP_CONTEXT.Event()
+        self._immediate_shutdown_event = ACE_MP_CONTEXT.Event()
 
         # set this Event once you're started up and are running
-        self._worker_startup_event = Event()
+        self._worker_startup_event = ACE_MP_CONTEXT.Event()
 
         # the time at which we will automatically refresh the worker
         self._next_auto_refresh_time = None  # datetime
@@ -208,6 +209,13 @@ class Worker:
             lock_manager=self.lock_manager
         )
 
+    def _handle_lock_lost(self):
+        logging.warning("lost lock on current work item - cancelling in-flight analysis")
+        try:
+            self.analysis_orchestrator.cancel_current_analysis()
+        except Exception as e:
+            logging.error("error cancelling analysis after lock loss: %s", e)
+
     #
     # MANGER INTERFACE
     # ------------------------------------------------------------------------
@@ -218,7 +226,7 @@ class Worker:
 
     def start(self, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Process:
         """Non-blocking call to start the worker. Returns the Process object created for the worker."""
-        self.process = Process(
+        self.process = ACE_MP_CONTEXT.Process(
             target=self.worker_loop,
             name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
             kwargs={"execution_mode": execution_mode}
@@ -400,7 +408,7 @@ class Worker:
             # at this point the thing to work on is locked (using the locks database table)
             # start a secondary thread that just keeps the lock open
             if not self.config.single_threaded_mode:
-                if not self.lock_manager.start_keepalive(work_item.uuid):
+                if not self.lock_manager.start_keepalive(work_item.uuid, on_lock_lost=self._handle_lock_lost):
                     logging.error("detected lock failure for work item {}".format(work_item))
                     self.current_execution_context = None
                     return
@@ -545,8 +553,11 @@ analysis_module = {last_analysis_module}
 
             root.save()
 
-            # and then clear the lock on this so it can get picked up right away
-            self.lock_manager.force_release_lock(root.uuid)
+            # and then clear the lock on this so it can get picked up right away. release it in an
+            # ownership-aware way (scoped to the lock we actually observe) so we can never delete a
+            # lock a *different* live worker has since taken over
+            observed_lock_uuid = get_lock_uuid(root.uuid)
+            self.lock_manager.force_release_lock(root.uuid, lock_uuid=observed_lock_uuid)
 
         except Exception as e:
             logging.error(f"unable to mark analysis as failed: {e}")

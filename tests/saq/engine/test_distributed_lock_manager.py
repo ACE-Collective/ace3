@@ -1,10 +1,12 @@
+import threading
 import time
 import uuid
 
 import pytest
 
+from saq.configuration.config import get_config
 from saq.engine.lock_manager.distributed import DistributedLockManager
-from saq.database.util.locking import force_release_lock
+from saq.database.util.locking import acquire_lock, force_release_lock, release_lock
 
 
 @pytest.mark.unit
@@ -118,7 +120,32 @@ class TestDistributedLockManager:
     def test_stop_keepalive_when_none_running(self):
         """Test that stopping keepalive when none is running doesn't error."""
         manager = DistributedLockManager(lock_owner="test-no-keepalive")
-        
+
         # Should not raise an exception
         manager.stop_keepalive()
-        assert not manager.is_keepalive_active 
+        assert not manager.is_keepalive_active
+
+    def test_keepalive_invokes_on_lock_lost(self, monkeypatch):
+        """When the lock can no longer be maintained (another owner took it over), the keepalive
+        invokes the on_lock_lost callback and flags is_lock_lost -- this is what aborts the
+        in-flight analysis so a worker stops saving a root it no longer owns."""
+        monkeypatch.setattr(get_config().global_settings, "lock_keepalive_frequency", 0.1)
+
+        target_uuid = str(uuid.uuid4())
+        other_lock_uuid = str(uuid.uuid4())
+        lost = threading.Event()
+        manager = DistributedLockManager(lock_owner="test-lock-lost")
+
+        assert manager.start_keepalive(target_uuid, on_lock_lost=lost.set)
+        try:
+            # steal the lock: drop our row and give it to a different fresh owner so our
+            # keepalive re-acquire fails
+            force_release_lock(target_uuid)
+            assert acquire_lock(target_uuid, other_lock_uuid)
+
+            # the keepalive should notice within a couple of cycles
+            assert lost.wait(5.0)
+            assert manager.is_lock_lost
+        finally:
+            manager.stop_keepalive()
+            release_lock(target_uuid, other_lock_uuid) 

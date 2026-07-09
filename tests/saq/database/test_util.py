@@ -1,4 +1,4 @@
-from multiprocessing import Event, Process
+from multiprocessing import Event
 import uuid
 import pytest
 
@@ -7,7 +7,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.node import assign_node_analysis_modes, get_node_included_analysis_modes, get_node_excluded_analysis_modes
-from saq.environment import get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from tests.saq.helpers import insert_alert
 
 @pytest.mark.integration
@@ -75,7 +75,7 @@ def test_multiprocess_lock():
         release_lock(alert.uuid, lock_uuid)
         sync2.set()
 
-    p = Process(target=p1, args=(alert.id,))
+    p = ACE_MP_CONTEXT.Process(target=p1, args=(alert.id,))
     p.start()
 
     try:

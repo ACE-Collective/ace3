@@ -2498,11 +2498,12 @@ def test_primary_node_clear_locks(monkeypatch):
     assert acquire_lock(target, lock_uuid)
     monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
     monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "1")
-    # test that a primary node clears expired locks
+    # test that a primary node recovers lost work whose lock has expired (clearing the stale lock
+    # so the still-queued item becomes claimable again)
     engine = Engine()
     engine.node_manager.execute_primary_node_routines()
 
-    assert log_count("removed 1 expired locks") == 1
+    assert log_count("recovered lost work item") == 1
 
     # make sure the lock is gone
     with get_db_connection() as db:

@@ -1,6 +1,7 @@
-from multiprocessing import Process
 import threading
 import pytest
+
+from saq.environment import ACE_MP_CONTEXT
 
 from saq.configuration.config import get_database_config
 from saq.constants import DB_ACE
@@ -226,7 +227,7 @@ def test_pooling_multi_process(test_comms):
             send_test_message(get_pool().in_use_count == 0)
             send_test_message(get_pool().available_count == 1)
 
-        process = Process(target=f)
+        process = ACE_MP_CONTEXT.Process(target=f)
         process.start()
 
         assert recv_test_message()

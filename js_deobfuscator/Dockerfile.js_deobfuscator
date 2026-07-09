@@ -1,4 +1,4 @@
-ARG NODE_DOCKER_IMAGE=node:24-alpine
+ARG NODE_DOCKER_IMAGE=node:26-alpine
 FROM ${NODE_DOCKER_IMAGE}
 
 # The container runs one harness invocation per scan and then exits (--rm).

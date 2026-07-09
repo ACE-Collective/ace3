@@ -751,3 +751,83 @@ def test_unknown_extension_no_mime_skipped(monkeypatch, tmpdir, test_context):
     # No analysis should be created for non-HTML files
     analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
     assert analysis is None
+
+
+# The javascript deobfuscator rebuilds captured calls with JSON.stringify(), so markup that the
+# page passed to document.write() lands on disk with literal \" sequences. libmagic sniffs the
+# resulting .js file as text/html because of the <!DOCTYPE html> inside the string literal.
+JS_DEOBFUSCATED_SOURCE = (
+    r'document.write("<!DOCTYPE html>\n<html lang=\"en\">\n'
+    r'<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js\"></script>\n'
+    r'</html>");'
+)
+
+
+@pytest.mark.unit
+def test_javascript_source_sniffed_as_html_is_skipped(tmpdir, test_context):
+    """JavaScript source that libmagic sniffs as text/html must not be parsed as HTML.
+
+    Regression: lxml read the escaped src=\\"https://...\\" inside the JS string literal as an
+    unquoted attribute value, producing a uri_path observable literally named
+    \\"https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js\\" .
+    """
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    target_path = root.create_file_path("deobfuscated-sample.js")
+    with open(target_path, "w") as fp:
+        fp.write(JS_DEOBFUSCATED_SOURCE)
+
+    observable = root.add_file_observable(target_path)
+    observable.add_yara_meta("type", "script.javascript")
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    # this is what libmagic really reports for this content
+    observable.add_analysis(_make_mock_file_type_analysis('text/html'))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    # the module bails before creating any analysis, so no phantom observables are added
+    assert observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis) is None
+    assert not root.get_observables_by_type(F_URI_PATH)
+    assert not root.get_observables_by_type(F_URL)
+
+
+@pytest.mark.unit
+def test_html_extension_wins_over_javascript_yara_meta(tmpdir, test_context):
+    """The extension gate stays authoritative: a real .html file is processed regardless of meta."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    html_content = """<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"></script>
+</head>
+<body><h1>Test</h1></body>
+</html>"""
+
+    target_path = root.create_file_path("page.html")
+    with open(target_path, "w") as fp:
+        fp.write(html_content)
+
+    observable = root.add_file_observable(target_path)
+    observable.add_yara_meta("type", "script.javascript")
+
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
+    assert analysis.extracted_urls == ["https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"]
+    assert analysis.extracted_uri_paths == []

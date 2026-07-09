@@ -9,7 +9,7 @@ from saq.environment import get_global_runtime_settings
 from saq.error import report_exception
 
 
-def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) -> bool:
+def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None, allow_expired_takeover: bool = False) -> bool:
     """Locks a UUID for a given lock_uuid and lock_owner.
     If lock_owner is not provided, it will be set to the current process id.
 
@@ -17,6 +17,8 @@ def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) ->
         uuid: The UUID of the object to lock.
         lock_uuid: The UUID of the lock. This is used to identify the lock in the database.
         lock_owner: The owner of the lock. This is used to identify the owner of the lock in the database.
+        allow_expired_takeover: when True, an existing lock held by someone else may be taken
+            over once it has exceeded lock_timeout_seconds.
 
     Returns:
         True if the lock was acquired, False otherwise.
@@ -24,12 +26,14 @@ def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) ->
     if lock_owner is None:
         lock_owner = "{}-{}".format(os.getpid(), lock_uuid)
 
+    node_id = get_global_runtime_settings().saq_node_id
+
     try:
         with get_db_connection() as db:
             cursor = db.cursor()
             logging.info("requesting lock on {} with lock uuid {} owned by {}".format(uuid, lock_uuid, lock_owner))
-            execute_with_retry(db, cursor, "INSERT INTO locks ( uuid, lock_uuid, lock_owner, lock_time ) VALUES ( %s, %s, %s, NOW() )", 
-                              ( uuid, lock_uuid, lock_owner ), commit=True)
+            execute_with_retry(db, cursor, "INSERT INTO locks ( uuid, lock_uuid, lock_owner, lock_time, node_id ) VALUES ( %s, %s, %s, NOW(), %s )",
+                              ( uuid, lock_uuid, lock_owner, node_id ), commit=True)
 
             logging.info("locked {} with {}".format(uuid, lock_uuid))
             return True
@@ -50,18 +54,23 @@ def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None) ->
                         current_lock_timeout,
                         get_global_runtime_settings().lock_timeout_seconds))
 
-                # assume we already own the lock -- this will be true in subsequent calls
-                # to acquire the lock
+                if allow_expired_takeover:
+                    where_clause = "uuid = %s AND ( lock_uuid = %s OR TIMESTAMPDIFF(SECOND, lock_time, NOW()) >= %s )"
+                    params = (lock_uuid, lock_owner, node_id, uuid, lock_uuid, get_global_runtime_settings().lock_timeout_seconds)
+                else:
+                    where_clause = "uuid = %s AND lock_uuid = %s"
+                    params = (lock_uuid, lock_owner, node_id, uuid, lock_uuid)
+
                 execute_with_retry(db, cursor, """
-UPDATE locks 
-SET 
+UPDATE locks
+SET
     lock_time = NOW(),
     lock_uuid = %s,
-    lock_owner = %s
-WHERE 
-    uuid = %s 
-    AND ( lock_uuid = %s OR TIMESTAMPDIFF(SECOND, lock_time, NOW()) >= %s )
-""", (lock_uuid, lock_owner, uuid, lock_uuid, get_global_runtime_settings().lock_timeout_seconds))
+    lock_owner = %s,
+    node_id = %s
+WHERE
+    {where_clause}
+""".format(where_clause=where_clause), params)
                 db.commit()
 
                 cursor.execute("SELECT lock_uuid, lock_owner FROM locks WHERE uuid = %s", (uuid,))
@@ -127,12 +136,20 @@ def release_lock(uuid: str, lock_uuid: str, ignore_lock_failure: bool = False) -
 
     return False
 
-def force_release_lock(uuid: str) -> bool:
-    """Releases a lock acquired by acquire_lock without providing the lock_uuid."""
+def force_release_lock(uuid: str, lock_uuid: Optional[str] = None) -> bool:
+    """Releases a lock acquired by acquire_lock without needing to hold the lock_uuid.
+
+    When lock_uuid is provided the release is ownership-aware: it only deletes
+    the row if it still matches that specific lock. When lock_uuid is None the
+    lock is deleted unconditionally.
+    """
     try:
         with get_db_connection() as db:
             cursor = db.cursor()
-            execute_with_retry(db, cursor, "DELETE FROM locks WHERE uuid = %s", (uuid,))
+            if lock_uuid is None:
+                execute_with_retry(db, cursor, "DELETE FROM locks WHERE uuid = %s", (uuid,))
+            else:
+                execute_with_retry(db, cursor, "DELETE FROM locks WHERE uuid = %s AND lock_uuid = %s", (uuid, lock_uuid))
             db.commit()
             if cursor.rowcount == 1:
                 logging.info("forced released lock on {}".format(uuid))
@@ -145,6 +162,39 @@ def force_release_lock(uuid: str) -> bool:
         report_exception()
 
     return False
+
+def get_lock_uuid(uuid: str) -> Optional[str]:
+    """Returns the current lock_uuid for the given uuid, or None if not locked."""
+    with get_db_connection() as db:
+        c = db.cursor()
+        execute_with_retry(db, c, "SELECT lock_uuid FROM locks WHERE uuid = %s", (uuid,))
+        row = c.fetchone()
+        return row[0] if row else None
+
+def get_expired_locks(node_id: Optional[int] = None, node_ids: Optional[list] = None) -> list:
+    """Returns (uuid, lock_uuid, node_id) for locks that have exceeded lock_timeout_seconds.
+
+    Optionally restricts to a single node_id (a node reclaiming its own lost work) or to a set
+    of node_ids (the primary node reclaiming orphaned work from stale nodes).
+    """
+    timeout = get_global_runtime_settings().lock_timeout_seconds
+    sql = "SELECT uuid, lock_uuid, node_id FROM locks WHERE TIMESTAMPDIFF(SECOND, lock_time, NOW()) >= %s"
+    params = [timeout]
+
+    if node_id is not None:
+        sql += " AND node_id = %s"
+        params.append(node_id)
+    elif node_ids is not None:
+        if not node_ids:
+            return []
+
+        sql += " AND node_id IN ({})".format(",".join(["%s"] * len(node_ids)))
+        params.extend(node_ids)
+
+    with get_db_connection() as db:
+        c = db.cursor()
+        execute_with_retry(db, c, sql, tuple(params))
+        return list(c.fetchall())
 
 def clear_expired_locks() -> int:
     """Clear any locks that have exceeded g_int(G_LOCK_TIMEOUT_SECONDS)."""

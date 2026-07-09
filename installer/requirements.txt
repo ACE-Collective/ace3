@@ -11,6 +11,7 @@ dateparser
 deepmerge
 dhash
 distorm3
+dnspython
 fakeredis
 Flask
 flask-executor

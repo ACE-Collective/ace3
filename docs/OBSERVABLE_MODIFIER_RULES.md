@@ -201,6 +201,13 @@ the remaining path is applied to each element and the condition matches if *any*
 `observable_match` regex-matches properties of the *matching analysis's* observable (e.g. `type`,
 `value`, `file_name`).
 
+> Careful when combining `observable_match` with `negate: true`. If the named property does not exist
+> on the observable at all — `file_name` on a `url`, say — the property check fails, the analysis is
+> not counted as a match, and `negate` turns that into "condition passed." An analyzer that runs on
+> more than one observable type will therefore slip through a negated `observable_match` written for
+> only one of them. Match on a property the observable type actually carries, or drop
+> `observable_match` and tighten the `scope`/`analysis_type` instead.
+
 `produces_observable_type` requires the matching analysis to have **produced** an observable whose
 type is a subtype of the given type. Unlike `observable_match` (which inspects the analysis's *own*
 observable), this inspects the observables the analysis *generated*. `produces_observable_value` is
@@ -326,8 +333,7 @@ code, not from email body text.
 
 #### 3. negate scope — conditional enabling
 
-Enable OCR on images, but *not* on phishkit screenshots of email HTML renders or embedded data-URL
-files.
+Enable OCR on images, but *not* on phishkit screenshots or embedded data-URL files.
 
 ```yaml
 - name: "Enable OCR for images"
@@ -338,10 +344,8 @@ files.
     has_yara_meta_tags: ["type=image"]
     tree_conditions:
       - analysis_type: "saq.modules.phishkit:PhishkitAnalysis"
-        scope: "ancestors"
+        scope: "parent"
         negate: true
-        observable_match:
-          file_name: ".*\\.unknown_text_html_.*"
       - analysis_type: "saq.modules.file_analysis.html:HTMLDataURLAnalysis"
         scope: "ancestors"
         negate: true
@@ -350,7 +354,15 @@ files.
 ```
 
 Three conditions, AND-ed: *is* an image (per the `type=image` yara-meta tag), is *not* a phishkit
-screenshot of an HTML body, and is *not* an embedded data-URL file.
+screenshot, and is *not* an embedded data-URL file.
+
+The phishkit condition uses `parent` scope rather than `ancestors` because it should match the files
+phishkit itself produced, not everything downstream of a phishkit scan. Phishkit's only image output
+is the screenshot, so `type=image` + "produced directly by `PhishkitAnalysis`" identifies screenshots
+exactly — whether phishkit scanned a URL or rendered an HTML body. Note what *doesn't* work here:
+adding `observable_match: {file_name: ...}` to narrow the condition to a particular scanned file
+would silently stop excluding screenshots from URL scans, since a `url` observable has no
+`file_name` and `negate` turns that failed property check into "condition passed."
 
 #### 4. ignore with parent scope — surgically drop an observable
 

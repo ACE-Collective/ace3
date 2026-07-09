@@ -48,9 +48,8 @@ def download(uuid):
     logging.info("received request to download {} to {}".format(uuid, request.remote_addr))
 
     path = os.path.join(get_temp_dir(), f"download_{uuid}_{str(uuidlib.uuid4())}.tar")  # noqa: F821
-    tar = tarfile.open(path, mode='w')
-    tar.add(target_dir, '.')
-    tar.close()
+    with tarfile.open(path, mode='w') as tar:
+        tar.add(target_dir, '.')
 
     def _iter_send(_path):
         with open(_path, 'rb') as fp:

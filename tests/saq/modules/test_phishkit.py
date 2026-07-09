@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
 from saq.modules.phishkit import (
     PhishkitAnalysis,
     PhishkitAnalyzer,
@@ -21,10 +21,11 @@ from saq.modules.phishkit import (
     FIELD_STDOUT,
     FIELD_STDERR,
     FIELD_PROXY_STATUS,
+    OCR_SKIP_CONTENT_TYPES,
     SCAN_TYPE_URL,
     SCAN_TYPE_FILE
 )
-from saq.modules.file_analysis import FileTypeAnalysis
+from saq.modules.file_analysis import FileTypeAnalysis, OCRAnalyzer
 import saq.phishkit
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import apply_delta, generate_cache_key, get_cached_delta, put_cached_delta
@@ -1916,3 +1917,145 @@ def test_phishkit_on_cache_hit_no_sender_is_noop(test_context):
     analyzer.fluent_bit_metrics_sender = None
 
     analyzer.on_cache_hit(root, url_observable)  # should be a no-op, no exception
+
+
+#
+# OCR content-type gate: a screenshot of Chrome rendering source text (JS/CSS/JSON) as plain text
+# carries no information the captured body doesn't already have, and running domain extraction over
+# source code manufactures observables like "b.call" out of JavaScript method calls.
+#
+
+def _write_requests_json(output_dir, entries):
+    with open(os.path.join(output_dir, "requests.json"), "w") as fp:
+        json.dump(entries, fp)
+
+
+def _response(content_type=None, status_code=200, header_name="Content-Type", url="https://example.com/x"):
+    entry = {"type": "response", "status_code": status_code, "url": url, "headers": {}}
+    if content_type is not None:
+        entry["headers"][header_name] = content_type
+    return entry
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("entries,expected", [
+    # the top-level document is the first non-redirect response
+    ([_response("text/javascript")], "text/javascript"),
+    ([_response("text/html")], "text/html"),
+    # parameters are stripped and the value lowercased
+    ([_response("application/javascript; charset=utf-8")], "application/javascript"),
+    ([_response("TEXT/JavaScript; charset=UTF-8")], "text/javascript"),
+    # header casing varies between scanner versions and origins
+    ([_response("application/javascript", header_name="content-type")], "application/javascript"),
+    # redirect hops are skipped -- the document is the response they land on
+    ([_response("text/html", status_code=301), _response("text/javascript")], "text/javascript"),
+    # subresources follow the document and must not win
+    ([_response("text/html"), _response("application/javascript")], "text/html"),
+    # requests precede responses in the log
+    ([{"type": "request", "url": "https://example.com/x"}, _response("text/html")], "text/html"),
+    # unknown => None => falls back to running OCR
+    ([_response(content_type=None)], None),
+    ([], None),
+    ([{"type": "request", "url": "https://example.com/x"}], None),
+])
+def test_phishkit_top_level_content_type(tmp_path, entries, expected):
+    """_top_level_content_type reads the document response out of requests.json."""
+    _write_requests_json(str(tmp_path), entries)
+    analyzer = PhishkitAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER))
+    assert analyzer._top_level_content_type(str(tmp_path)) == expected
+
+
+@pytest.mark.unit
+def test_phishkit_top_level_content_type_missing_file(tmp_path):
+    """A missing requests.json is unknown content, not a failure."""
+    analyzer = PhishkitAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER))
+    assert analyzer._top_level_content_type(str(tmp_path)) is None
+
+
+@pytest.mark.unit
+def test_phishkit_top_level_content_type_malformed_json(tmp_path):
+    """A malformed requests.json is unknown content, not a failure."""
+    with open(os.path.join(str(tmp_path), "requests.json"), "w") as fp:
+        fp.write("{not json")
+    analyzer = PhishkitAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER))
+    assert analyzer._top_level_content_type(str(tmp_path)) is None
+
+
+@pytest.mark.unit
+def test_phishkit_unknown_content_types_are_not_skipped():
+    """The gate is a denylist: anything not listed still gets OCR'd."""
+    assert "text/html" not in OCR_SKIP_CONTENT_TYPES
+    assert "image/png" not in OCR_SKIP_CONTENT_TYPES
+    assert None not in OCR_SKIP_CONTENT_TYPES
+    assert "text/javascript" in OCR_SKIP_CONTENT_TYPES
+    assert "application/javascript" in OCR_SKIP_CONTENT_TYPES
+
+
+def _ocr_excluded(observable):
+    """is_excluded() takes a module instance, not a type."""
+    return observable.is_excluded(OCRAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_OCR)))
+
+
+def _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, content_type):
+    """Runs continue_analysis over a fake job dir and returns {basename: file_observable}."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    output_dir = str(tmp_path / "job")
+    os.makedirs(output_dir)
+    _write_requests_json(output_dir, [_response(content_type)])
+
+    artifacts = ["screenshot.png", "pre_bypass_screenshot.png", "pre_bypass_screenshot_iter2.png", "dom.html"]
+    scan_results = []
+    for name in artifacts:
+        path = os.path.join(output_dir, name)
+        with open(path, "w") as fp:
+            fp.write("content")
+        scan_results.append(path)
+    scan_results.append(os.path.join(output_dir, "requests.json"))
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/x")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "job-1"
+    analysis.output_dir = output_dir
+    url_observable.add_analysis(analysis)
+
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                        lambda job_id, out, timeout=1: scan_results)
+
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    result = analyzer.continue_analysis(url_observable, analysis)
+    assert result == AnalysisExecutionResult.COMPLETED
+
+    return {os.path.basename(o.full_path): o for o in analysis.observables if o.type == F_FILE}
+
+
+@pytest.mark.integration
+def test_phishkit_screenshot_ocr_skipped_for_javascript(monkeypatch, tmp_path):
+    """A screenshot of Chrome rendering JS as plain text must not be sent to OCR."""
+    observables = _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, "application/javascript")
+
+    for name in ("screenshot.png", "pre_bypass_screenshot.png", "pre_bypass_screenshot_iter2.png"):
+        assert _ocr_excluded(observables[name]), f"{name} should be excluded from OCR"
+
+    # non-screenshot artifacts are never touched by the gate
+    assert not _ocr_excluded(observables["dom.html"])
+
+
+@pytest.mark.integration
+def test_phishkit_screenshot_ocr_kept_for_html(monkeypatch, tmp_path):
+    """A rendered page is exactly what OCR is for -- don't skip it."""
+    observables = _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, "text/html")
+
+    for name in ("screenshot.png", "pre_bypass_screenshot.png", "pre_bypass_screenshot_iter2.png"):
+        assert not _ocr_excluded(observables[name]), f"{name} should still be OCR'd"
+
+
+@pytest.mark.integration
+def test_phishkit_screenshot_ocr_kept_when_content_type_unknown(monkeypatch, tmp_path):
+    """Unknown content type falls back to the pre-existing behavior of running OCR."""
+    observables = _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, None)
+
+    assert not _ocr_excluded(observables["screenshot.png"])

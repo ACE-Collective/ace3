@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.75] - 2026-07-08
+
+- [Python 3.14 upgrade](https://github.com/ACE-Collective/ace3/pull/376)
+- [Fixed long-standing issue with concurrency of root analysis recovery](https://github.com/ACE-Collective/ace3/pull/379)
+- [Fixes various URL parsing issues](https://github.com/ACE-Collective/ace3/pull/381)
+
 ## [3.0.74] - 2026-07-06
 
 - [Observable modifier rule evaluation reduction](https://github.com/ACE-Collective/ace3/pull/373)

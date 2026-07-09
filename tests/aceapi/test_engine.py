@@ -81,9 +81,11 @@ def test_upload(test_client):
 
     # create a tar file of the entire thing
     fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=get_temp_dir())
-    tar = tarfile.open(fileobj=os.fdopen(fp, 'wb'), mode='w|')
-    tar.add(root.storage_dir, '.')
-    tar.close()
+    # Python 3.14: closing a streaming (w|) tarfile no longer flushes/closes an
+    # external fileobj. The nested context managers close in reverse order (tar
+    # first, then the fileobj), flushing the archive to disk before we read it.
+    with os.fdopen(fp, 'wb') as tar_fileobj, tarfile.open(fileobj=tar_fileobj, mode='w|') as tar:
+        tar.add(root.storage_dir, '.')
 
     # upload it
     with open(tar_path, 'rb') as fp:
@@ -125,9 +127,11 @@ def test_upload_move(test_client):
 
     # create a tar file of the entire thing
     fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=get_temp_dir())
-    tar = tarfile.open(fileobj=os.fdopen(fp, 'wb'), mode='w|')
-    tar.add(root.storage_dir, '.')
-    tar.close()
+    # Python 3.14: closing a streaming (w|) tarfile no longer flushes/closes an
+    # external fileobj. The nested context managers close in reverse order (tar
+    # first, then the fileobj), flushing the archive to disk before we read it.
+    with os.fdopen(fp, 'wb') as tar_fileobj, tarfile.open(fileobj=tar_fileobj, mode='w|') as tar:
+        tar.add(root.storage_dir, '.')
 
     # upload it
     with open(tar_path, 'rb') as fp:

@@ -1483,6 +1483,15 @@ class Lock(Base):
         String(512),
         nullable=True)
 
+    # the engine node that currently holds this lock (saq_node_id), used to
+    # route expired-lock recovery to the owning node's manager. nullable because
+    # non-engine components (web app, collectors) also acquire locks and may not
+    # have a node id set
+    node_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True)
+
 class LockedException(Exception):
     def __init__(self, target, *args, **kwargs):
         self.target = target

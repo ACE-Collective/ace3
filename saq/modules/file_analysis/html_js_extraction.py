@@ -184,6 +184,18 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         # Check if file should be analyzed based on extension or MIME type
         mime_type = None
         if not self._is_html_file(_file):
+            # ACE already knows this file is JavaScript source (js.py tags deobfuscator output
+            # this way). libmagic sniffs JS whose string literals contain markup -- e.g.
+            # document.write("<!DOCTYPE html>...") -- as text/html, and lxml then parses phantom
+            # tags back out of those literals. An escaped src=\"https://...\" reads as an
+            # unquoted attribute value, yielding junk uri_path observables like
+            # \"https://example.com/jquery.min.js\". url_extraction.py guards the same way for
+            # the same reason. The extension gate above stays authoritative: a real .html/.svg
+            # file is still processed even if something tagged it as JavaScript.
+            if _file.has_yara_meta("type", "script.javascript"):
+                logging.debug(f"skipping javascript source {_file.file_name} sniffed as HTML")
+                return AnalysisExecutionResult.COMPLETED
+
             # Extension didn't match -- fall back to MIME type from FileTypeAnalysis
             try:
                 file_type_analysis = _file.get_and_load_analysis(FileTypeAnalysis)

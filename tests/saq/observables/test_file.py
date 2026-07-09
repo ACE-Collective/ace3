@@ -70,6 +70,34 @@ class TestFileObservableYaraMeta:
             observable.add_yara_meta("bad name", "value")
 
     @pytest.mark.unit
+    def test_has_yara_meta(self, root_analysis):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"test content")
+
+        observable = root_analysis.add_file_observable(file_path)
+        observable.add_yara_meta("type", "script.javascript")
+
+        assert observable.has_yara_meta("type", "script.javascript")
+
+    @pytest.mark.unit
+    def test_has_yara_meta_missing(self, root_analysis):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"test content")
+
+        observable = root_analysis.add_file_observable(file_path)
+        observable.add_yara_meta("type", "script.javascript")
+        observable.add_directive("sandbox")
+
+        # wrong value for an existing name
+        assert not observable.has_yara_meta("type", "script.vbscript")
+        # name that was never added
+        assert not observable.has_yara_meta("source", "imap")
+        # a plain directive is not a yara meta tag
+        assert not observable.has_yara_meta("sandbox", "")
+
+    @pytest.mark.unit
     def test_yara_meta_tags_property(self, root_analysis):
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:

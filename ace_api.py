@@ -722,9 +722,12 @@ def upload(uuid, source_dir, overwrite=False, sync=True, move=False, is_alert=Tr
 
     fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(uuid))
     try:
-        tar = tarfile.open(fileobj=os.fdopen(fp, 'wb'), mode='w|')
-        tar.add(source_dir, '.')
-        tar.close()
+        # NOTE: as of Python 3.14 closing a streaming-mode (w|) tarfile no longer
+        # flushes/closes an externally-supplied fileobj. The nested context managers
+        # exit in reverse order (tar first, then the fileobj), which flushes the
+        # archive to disk before we read it back below.
+        with os.fdopen(fp, 'wb') as tar_fileobj, tarfile.open(fileobj=tar_fileobj, mode='w|') as tar:
+            tar.add(source_dir, '.')
 
         with open(tar_path, 'rb') as fp:
             return _execute_api_call('engine/upload/{}'.format(uuid), data={

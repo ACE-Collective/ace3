@@ -2,6 +2,7 @@
 from datetime import tzinfo
 import locale
 import logging
+import multiprocessing
 import os
 import socket
 import tempfile
@@ -23,6 +24,13 @@ from saq.constants import (
     INSTANCE_TYPE_QA,
     INSTANCE_TYPE_UNITTEST,
 )
+
+#
+# ACE was built when the default method for multiprocessing was fork
+# we're keeping that default for now through this global context
+#
+
+ACE_MP_CONTEXT = multiprocessing.get_context("fork")
 
 class GlobalRuntimeSettings(BaseModel):
     analyst_data_dir: str = Field(default="/opt/ace/signatures/analyst_data", description="a directory controlled by the analysts that contains various data and configuration files")

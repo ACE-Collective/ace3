@@ -4,19 +4,22 @@ from typing import Type, override
 from urllib.parse import urlparse
 from pydantic import Field
 from tld import get_tld
+import validators
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.ocr import YARA_META_TYPE_OCR
 from saq.observables.file import FileObservable
 from saq.util.networking import is_subdomain
 
-from urlfinderlib import find_urls
+from urlfinderlib import find_urls, find_urls_in_text
 
 from saq.util.strings import format_item_list_for_summary
 
 
 KEY_URLS = "urls"
+
 
 class URLExtractionConfig(AnalysisModuleConfig):
     max_file_size: int = Field(..., description="The maximum file size in bytes.")
@@ -202,7 +205,7 @@ class URLExtractionAnalyzer(AnalysisModule):
         # in one form (e.g. "message/rfc822") and urlfinderlib's internal
         # routing expects another (e.g. "rfc 822 mail").
         url_mimetype = ""
-        if _file.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"):
+        if _file.has_yara_meta("type", "script.javascript"):
             url_mimetype = "text/plain"
 
         # extract all the URLs out of this file
@@ -214,11 +217,30 @@ class URLExtractionAnalyzer(AnalysisModule):
                     domain_as_url = True
 
                 # XXX this can hang hard
-                extracted_urls = find_urls(fp.read(), base_url=base_url, domain_as_url=domain_as_url, mimetype=url_mimetype)
+                if _file.has_yara_meta("type", YARA_META_TYPE_OCR):
+                    # OCR output is plain text. find_urls() would body-sniff it with might_be_html(),
+                    # which is satisfied by any blob containing < > = : / anywhere in it, and route
+                    # it through the HTML finder as well as the text finder.
+                    extracted_urls = find_urls_in_text(fp.read(), domain_as_url=domain_as_url)
+                else:
+                    extracted_urls = find_urls(fp.read(), base_url=base_url, domain_as_url=domain_as_url, mimetype=url_mimetype)
                 logging.debug("extracted {} urls from {}".format(len(extracted_urls), local_file_path))
             except Exception as e:
                 logging.warning(f"failed to extract urls from {local_file_path}: {e}")
                 return AnalysisExecutionResult.COMPLETED
+
+        # OCR output is a lossy reconstruction, not a byte-for-byte transcription. urlfinderlib
+        # accepts a URL when its *percent-encoded* form validates, but ACE stores the *raw* value --
+        # so garbled text like  https://example.net/sh", *5{margin  gets laundered into a "valid"
+        # URL observable. Where the source text is itself a guess, require the value we are about to
+        # store to be valid as written. We don't apply this to other sources: in HTML or email the
+        # bytes are ground truth, so a URL containing a raw space really is present in the source.
+        if _file.has_yara_meta("type", YARA_META_TYPE_OCR):
+            valid_urls = [url for url in extracted_urls if validators.url(url, simple_host=True)]
+            if len(valid_urls) != len(extracted_urls):
+                logging.debug(f"dropped {len(extracted_urls) - len(valid_urls)} malformed urls "
+                              f"extracted from ocr text {local_file_path}")
+            extracted_urls = valid_urls
 
         extracted_urls = list(filter(self.filter_excluded_domains, extracted_urls))
         analysis = self.create_analysis(_file)

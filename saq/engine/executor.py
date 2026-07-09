@@ -356,6 +356,16 @@ class AnalysisExecutor:
         # this is set to True to cancel the analysis going on in the process() function
         self._cancel_analysis_flag = False
 
+        # the AnalysisExecutionContext for the analysis currently running in execute(), or None.
+        self._current_context: Optional[AnalysisExecutionContext] = None
+
+    def cancel_current_analysis(self):
+        """Cancel the analysis currently running in execute(), if any."""
+        context = self._current_context
+        if context is not None:
+            logging.warning("cancelling in-flight analysis for %s", context.root)
+            context.cancel_analysis()
+
     def execute(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]) -> AnalysisExecutionContext:
         """
         Execute analysis on the given target.
@@ -368,6 +378,9 @@ class AnalysisExecutor:
         """
         # Create a new execution context for this analysis
         context = AnalysisExecutionContext(analysis_target)
+
+        # expose it so cancel_current_analysis() can reach it while this analysis runs
+        self._current_context = context
 
         # each module gets a brand new context for this analysis
         from saq.modules.state_repository import StateRepositoryFactory
@@ -450,6 +463,8 @@ class AnalysisExecutor:
         finally:
             # make sure we remove the logging handler that we added
             logging.getLogger().removeHandler(logging_handler)
+            # this analysis is no longer running -- nothing left to cancel
+            self._current_context = None
 
         return context
 

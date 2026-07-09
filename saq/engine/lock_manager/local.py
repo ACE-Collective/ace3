@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Optional
+from typing import Callable, Optional
 
 from saq.configuration.config import get_config
 from saq.engine.lock_manager.interface import LockManagerInterface
@@ -49,12 +49,14 @@ class LocalLockManager(LockManagerInterface):
                 self._lock_registry[target_uuid] = threading.RLock()
             return self._lock_registry[target_uuid]
 
-    def start_keepalive(self, target_uuid: str) -> bool:
+    def start_keepalive(self, target_uuid: str, on_lock_lost: Optional[Callable[[], None]] = None) -> bool:
         """Start the keepalive thread for the given target UUID.
-        
+
         Args:
             target_uuid: The UUID of the resource to maintain a lock on.
-            
+            on_lock_lost: accepted for interface parity; an in-process threading lock is never lost
+                to another owner, so it is not invoked.
+
         Returns:
             True if the keepalive was started successfully, False otherwise.
         """
@@ -105,12 +107,14 @@ class LocalLockManager(LockManagerInterface):
         self._current_lock_target = None
         self._current_target_lock = None
 
-    def acquire_lock(self, target_uuid: str) -> bool:
+    def acquire_lock(self, target_uuid: str, allow_expired_takeover: bool = False) -> bool:
         """Acquire a lock on the given target UUID.
-        
+
         Args:
             target_uuid: The UUID of the resource to lock.
-            
+            allow_expired_takeover: accepted for interface parity; not meaningful for an in-process
+                threading lock.
+
         Returns:
             True if the lock was acquired, False otherwise.
         """
@@ -141,8 +145,8 @@ class LocalLockManager(LockManagerInterface):
                 logging.error(f"Failed to release lock on {target_uuid}: {e}")
             return False
 
-    def force_release_lock(self, target_uuid: str) -> bool:
-        """Force release a lock on the given target UUID."""
+    def force_release_lock(self, target_uuid: str, lock_uuid: Optional[str] = None) -> bool:
+        """Force release a lock on the given target UUID. lock_uuid is accepted for interface parity."""
         with self._registry_lock:
             if target_uuid not in self._lock_registry:
                 return True

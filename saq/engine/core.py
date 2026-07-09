@@ -1,7 +1,7 @@
 import logging
 import os
 import signal
-from multiprocessing import Event, Process
+from multiprocessing import Process
 from typing import Optional, Type, Union
 
 from pydantic import BaseModel, Field
@@ -12,7 +12,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
-from saq.environment import get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from saq.error import report_exception
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
@@ -91,10 +91,10 @@ class Engine():
         self.config = config or EngineConfiguration(**kwargs)
 
         # this is used to control the main loop
-        self.loop_control_event = Event()
+        self.loop_control_event = ACE_MP_CONTEXT.Event()
 
         # set once the engine has started
-        self.started_event = Event()
+        self.started_event = ACE_MP_CONTEXT.Event()
         
         # signal handling flags
         self.sigterm_received = False
@@ -146,7 +146,7 @@ class Engine():
 
     def start_nonblocking(self) -> Process:
         """Starts the engine on another process. Returns the created Process object."""
-        process = Process(target=self.start)
+        process = ACE_MP_CONTEXT.Process(target=self.start)
         process.start()
         return process
 

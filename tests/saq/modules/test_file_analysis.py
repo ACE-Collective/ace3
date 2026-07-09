@@ -110,6 +110,99 @@ class TestUrlExtraction:
         assert url_extraction_completed == AnalysisExecutionResult.COMPLETED
         assert set([_.value for _ in analysis.observables if _.type == F_URL]) == set(expected_urls)
 
+    def _run_url_extraction(self, root_analysis, target_path, yara_meta=None):
+        """Runs URLExtractionAnalyzer over target_path and returns the extracted F_URL values."""
+        url_extraction_analyzer = AnalysisModuleAdapter(URLExtractionAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)))
+
+        file_observable = root_analysis.add_file_observable(target_path)
+        file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+        file_observable.add_directive(DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL)
+        if yara_meta:
+            file_observable.add_yara_meta(*yara_meta)
+
+        # file type analysis is a declared dependency; provide it directly since we
+        # invoke execute_analysis outside the engine (which would normally seed it)
+        file_type_analysis = FileTypeAnalysis()
+        file_observable.add_analysis(file_type_analysis)
+        file_type_analysis.details = {"type": "", "mime": "text/plain"}
+
+        result = url_extraction_analyzer.execute_analysis(file_observable)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        analysis = file_observable.get_and_load_analysis(URLExtractionAnalysis)
+        if analysis is None:
+            return None
+        return set(_.value for _ in analysis.observables if _.type == F_URL)
+
+    # might_be_html() is satisfied by any blob containing < > = : / anywhere in it, which is true of
+    # almost any OCR transcription. find_urls() would therefore build an HTML tree out of the text.
+    # The observable difference is relative href resolution against <base>: only the HTML finder
+    # does it. An absolute URL inside an attribute is found either way, because the text tokenizer
+    # splits on quotes.
+    OCR_TEXT_THAT_LOOKS_LIKE_HTML = (
+        '<base href="https://example.com"> see <a href=index.php>here</a>\n'
+        'or visit https://example.com/landing for details\n'
+    )
+
+    @pytest.mark.unit
+    def test_ocr_text_is_not_parsed_as_html(self, tmpdir, root_analysis):
+        """OCR text must route to urlfinderlib's text finder, not its HTML finder."""
+        target_path = str(tmpdir / "screenshot.png.ocr")
+        with open(target_path, "w") as fp:
+            fp.write(self.OCR_TEXT_THAT_LOOKS_LIKE_HTML)
+
+        urls = self._run_url_extraction(root_analysis, target_path, yara_meta=("type", "document.text.ocr"))
+
+        assert urls == {"https://example.com", "https://example.com/landing"}
+        # no HTML tree was built, so the relative href was never resolved against <base>
+        assert "https://example.com/index.php" not in urls
+
+    @pytest.mark.unit
+    def test_non_ocr_text_is_still_parsed_as_html(self, tmpdir, root_analysis):
+        """The text-finder routing is scoped to OCR; everything else keeps find_urls()' sniffing."""
+        target_path = str(tmpdir / "page.txt")
+        with open(target_path, "w") as fp:
+            fp.write(self.OCR_TEXT_THAT_LOOKS_LIKE_HTML)
+
+        urls = self._run_url_extraction(root_analysis, target_path)
+
+        assert "https://example.com/index.php" in urls
+
+    @pytest.mark.unit
+    def test_ocr_malformed_urls_are_dropped(self, tmpdir, root_analysis):
+        """urlfinderlib validates the percent-encoded form but ACE stores the raw value.
+
+        Garbled OCR text like  https://example.net/sh", *5{margin  is laundered into a "valid"
+        URL. For OCR the source text is itself a guess, so require raw validity.
+        """
+        ocr_text = 'x https://example.net/sh", *5{margin y https://example.net/sh z\n'
+
+        target_path = str(tmpdir / "screenshot.png.ocr")
+        with open(target_path, "w") as fp:
+            fp.write(ocr_text)
+
+        urls = self._run_url_extraction(root_analysis, target_path, yara_meta=("type", "document.text.ocr"))
+        assert urls == {"https://example.net/sh"}
+        assert not any('"' in url or "{" in url for url in urls)
+
+    @pytest.mark.unit
+    def test_non_ocr_text_keeps_malformed_urls(self, tmpdir, root_analysis):
+        """The raw-validity filter is scoped to OCR. Elsewhere the bytes are ground truth.
+
+        A URL that needs percent-encoding to validate really is present in a non-OCR source, so we
+        keep it. Note the fixture has no space before the '*' -- with one, the tokenizer splits
+        cleanly and never produces a raw-invalid value at all.
+        """
+        text = 'https://example.net/sh",*5{margin\n'
+
+        target_path = str(tmpdir / "notes.txt")
+        with open(target_path, "w") as fp:
+            fp.write(text)
+
+        urls = self._run_url_extraction(root_analysis, target_path)
+        assert 'https://example.net/sh"' in urls
 
 
 
