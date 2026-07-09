@@ -19,7 +19,7 @@ def manage_users():
         permissions=view.permissions,
         auth_groups=view.groups,
         group_permissions=view.group_permissions,
-        permission_catalog=view.catalog,
+        permission_catalog=[entry.model_dump() for entry in view.catalog],
         timezones=service.all_timezones(),
         hide_disabled_users=hide_disabled_users,
     )

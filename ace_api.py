@@ -1519,8 +1519,8 @@ def get_observables(
     for_detection=None,
     expired=None,
     fa_hits=None,
-    enabled_by_names=None,
-    enabled_by_ids=None,
+    detection_modified_by_names=None,
+    detection_modified_by_ids=None,
     batch_ids=None,
     alert_ids=None,
     alert_uuids=None,
@@ -1549,10 +1549,10 @@ def get_observables(
         params["expired"] = "1" if expired else "0"
     if isinstance(fa_hits, str) and fa_hits:
         params["fa_hits"] = fa_hits
-    if isinstance(enabled_by_names, list) and enabled_by_names:
-        params["enabled_by_names"] = ",".join(enabled_by_names)
-    if isinstance(enabled_by_ids, list) and enabled_by_ids:
-        params["enabled_by_ids"] = ",".join(map(str, enabled_by_ids))
+    if isinstance(detection_modified_by_names, list) and detection_modified_by_names:
+        params["detection_modified_by_names"] = ",".join(detection_modified_by_names)
+    if isinstance(detection_modified_by_ids, list) and detection_modified_by_ids:
+        params["detection_modified_by_ids"] = ",".join(map(str, detection_modified_by_ids))
     if isinstance(batch_ids, list) and batch_ids:
         params["batch_ids"] = ",".join(batch_ids)
     if isinstance(alert_ids, list) and alert_ids:
@@ -1630,8 +1630,8 @@ def _iter_get_observables_args(args):
         for_detection=for_detection,
         expired=expired,
         fa_hits=args.fa_hits,
-        enabled_by_names=args.enabled_by.split(",") if args.enabled_by else None,
-        enabled_by_ids=args.enabled_by_ids.split(",") if args.enabled_by_ids else None,
+        detection_modified_by_names=args.detection_modified_by.split(",") if args.detection_modified_by else None,
+        detection_modified_by_ids=args.detection_modified_by_ids.split(",") if args.detection_modified_by_ids else None,
         batch_ids=args.batch_ids.split(",") if args.batch_ids else None,
         alert_ids=args.alert_ids.split(",") if args.alert_ids else None,
         alert_uuids=args.alert_uuids.split(",") if args.alert_uuids else None,
@@ -1653,8 +1653,8 @@ OBSERVABLE_CSV_HEADERS = [
     "fa_hits",
     "for_detection",
     "expires_on",
-    "enabled_by",
-    "enabled_by_display",
+    "detection_modified_by",
+    "detection_modified_by_display",
     "batch_id",
     "context"]
 
@@ -1675,11 +1675,11 @@ def _cli_get_observables(args):
     for observable in _iter_get_observables_args(args):
         observable["value"] = base64.b64decode(observable["value"]).decode()
         if csv_writer:
-            enabled_by = ""
-            enabled_by_display = ""
-            if observable["enabled_by"]:
-                enabled_by = observable["enabled_by"]["username"]
-                enabled_by_display = observable["enabled_by"]["display_name"]
+            detection_modified_by = ""
+            detection_modified_by_display = ""
+            if observable["detection_modified_by"]:
+                detection_modified_by = observable["detection_modified_by"]["username"]
+                detection_modified_by_display = observable["detection_modified_by"]["display_name"]
 
             csv_writer.writerow([
                 observable["id"],
@@ -1689,8 +1689,8 @@ def _cli_get_observables(args):
                 observable["fa_hits"],
                 "Yes" if observable["for_detection"] else "No",
                 datetime.datetime.strptime(observable["expires_on"], "%a, %d %b %Y %H:%M:%S %Z").strftime("%Y-%m-%d %H:%M:%S") if observable["expires_on"] else "",
-                enabled_by,
-                enabled_by_display,
+                detection_modified_by,
+                detection_modified_by_display,
                 observable["batch_id"] if observable["batch_id"] else "",
                 observable["detection_context"] if observable["detection_context"] else ""])
         else:
@@ -1724,8 +1724,8 @@ def _add_observable_query_arguments(parser):
             | <N: Return observables with < N hits.
             | N: Return observables with exactly N hits.
             | NOTE: Remember to escape > and < in your shell!""")
-    parser.add_argument("--enabled-by", help="Comma separated list of user names.")
-    parser.add_argument("--enabled-by-ids", help="Comma separated list of user ids.")
+    parser.add_argument("--detection-modified-by", help="Comma separated list of user names.")
+    parser.add_argument("--detection-modified-by-ids", help="Comma separated list of user ids.")
     parser.add_argument("--batch-ids", help="Comma separated list of batch ids.")
     parser.add_argument("--alert-ids", help="Comma separated list of alert ids.")
     parser.add_argument("--alert-uuids", help="Comma separated list of alert uuids.")
@@ -1787,8 +1787,8 @@ CSV_COLUMN_MD5 = "md5"
 CSV_COLUMN_FA_HITS = "fa_hits"
 CSV_COLUMN_FOR_DETECTION = "for_detection"
 CSV_COLUMN_EXPIRES_ON = "expires_on"
-CSV_COLUMN_ENABLED_BY = "enabled_by"
-CSV_COLUMN_ENABLED_NAME = "enabled_by_display"
+CSV_COLUMN_DETECTION_MODIFIED_BY = "detection_modified_by"
+CSV_COLUMN_DETECTION_MODIFIED_NAME = "detection_modified_by_display"
 CSV_COLUMN_BATCH_ID = "batch_id"
 CSV_COLUMN_CONTEXT = "context"
 CSV_COLUMN_NAMES = set([
@@ -1799,8 +1799,8 @@ CSV_COLUMN_NAMES = set([
     CSV_COLUMN_FA_HITS,
     CSV_COLUMN_FOR_DETECTION,
     CSV_COLUMN_EXPIRES_ON,
-    CSV_COLUMN_ENABLED_BY,
-    CSV_COLUMN_ENABLED_NAME,
+    CSV_COLUMN_DETECTION_MODIFIED_BY,
+    CSV_COLUMN_DETECTION_MODIFIED_NAME,
     CSV_COLUMN_BATCH_ID,
     CSV_COLUMN_CONTEXT,
 ])

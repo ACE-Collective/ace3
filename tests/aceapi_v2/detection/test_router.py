@@ -80,7 +80,9 @@ class TestHappyPath:
 
         listing = await client.get("/detection/", params={"search": "6.6.6.6", "for_detection": "false"})
         assert listing.status_code == 200
-        assert any(o["id"] == oid for o in listing.json())
+        body = listing.json()
+        assert set(body) >= {"items", "total", "page", "page_size", "total_pages"}
+        assert any(o["id"] == oid for o in body["items"])
 
         r = await client.patch(f"/detection/{oid}/detection", json={"enabled": True, "detection_context": "ctx"})
         assert r.status_code == 200
@@ -94,6 +96,27 @@ class TestHappyPath:
         r = await client.patch(f"/detection/{oid}/expiration", json={"expires_on": "2030-06-01T00:00:00"})
         assert r.status_code == 200
         assert r.json()["expires_on"].startswith("2030-06-01")
+
+    @pytest.mark.asyncio
+    async def test_types_endpoint(self, client: AsyncClient, session: AsyncSession):
+        await _make_observable(session, "8.8.8.8")
+        await session.flush()
+        r = await client.get("/detection/types")
+        assert r.status_code == 200
+        assert "ipv4" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_types_requires_read_permission(self, _override_db_session, session: AsyncSession):
+        user = await _make_user(session, "det_types_noperm", perms=[])
+        async with _client_for(user) as c:
+            assert (await c.get("/detection/types")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_page_size_cannot_be_abused(self, client: AsyncClient):
+        """An arbitrary page_size must clamp, not dump the whole table."""
+        r = await client.get("/detection/", params={"page_size": 100000})
+        assert r.status_code == 200
+        assert r.json()["page_size"] == 50  # DEFAULT_PAGE_SIZE
 
     @pytest.mark.asyncio
     async def test_toggle_unknown_404(self, client: AsyncClient):

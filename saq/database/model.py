@@ -19,6 +19,7 @@ from sqlalchemy import (
     VARBINARY,
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -1819,6 +1820,14 @@ class Observable(Base):
         Index('i_obs_type', 'type'),
         Index('i_obs_sha256', 'sha256'),
         Index('i_obs_value', 'value', mysql_length=767),
+        # Serves the every-minute update-for-detection-observable-cache cron, which would otherwise
+        # full-scan the table to find the enabled rows. NOT redundant with the composite indexes
+        # below: (for_detection, id) is not a prefix of (for_detection, type, value_sort, id).
+        Index('i_obs_for_detection_id', 'for_detection', 'id'),
+        # Index-ordered "group by type, alphabetical by value" for the admin detection page. `id` is
+        # the tiebreaker so values sharing a value_sort prefix paginate deterministically.
+        Index('i_obs_type_value_sort_id', 'type', 'value_sort', 'id'),
+        Index('i_obs_fd_type_value_sort_id', 'for_detection', 'type', 'value_sort', 'id'),
     )
 
     id: Mapped[int] = mapped_column(
@@ -1835,6 +1844,21 @@ class Observable(Base):
 
     value: Mapped[bytes] = mapped_column(
         BLOB,
+        nullable=False)
+
+    # Sort key derived from `value`. `value` is a BLOB (binary, no collation) so it cannot be sorted
+    # efficiently: a prefix index cannot satisfy ORDER BY, and MySQL truncates blob sort keys at
+    # max_sort_length, producing unstable ties. This stored generated column is a case-insensitive,
+    # character-typed prefix that CAN be indexed and ordered. Derived, so it can never drift.
+    #
+    # Length 512: InnoDB DYNAMIC caps an index key at 3072 bytes, and the widest index using this
+    # column is (for_detection, type, value_sort, id) = 1 + 256 + 4*N + 4 bytes, so N <= 702. 512
+    # leaves headroom for the index to gain a column later while still covering ~98% of observed
+    # values in full (p95 is ~69 chars; only long URLs truncate). Queries always append `id` as a
+    # tiebreaker, so values sharing a prefix still paginate deterministically.
+    value_sort: Mapped[str] = mapped_column(
+        String(512, collation='utf8mb4_unicode_520_ci'),
+        Computed("LEFT(CONVERT(`value` USING utf8mb4), 512)", persisted=True),
         nullable=False)
 
     for_detection: Mapped[bool] = mapped_column(
@@ -1857,7 +1881,10 @@ class Observable(Base):
         Integer,
         nullable=True)
 
-    enabled_by: Mapped[Optional[int]] = mapped_column(
+    # The user who last changed this observable's detection status (enabled OR disabled), paired
+    # with detection_context describing that change. Formerly `enabled_by`, which went stale on
+    # disable and made the UI claim a disabled observable was still "enabled by" someone.
+    detection_modified_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
@@ -1876,7 +1903,7 @@ class Observable(Base):
         return self.value.decode('utf8', errors='ignore')
 
     tags: Mapped[list["ObservableTagIndex"]] = relationship('ObservableTagIndex', passive_deletes=True, passive_updates=True, overlaps="observable,observable_tag_index")
-    enabled_by_user: Mapped[Optional["User"]] = relationship('User')
+    detection_modified_by_user: Mapped[Optional["User"]] = relationship('User')
 
     @property
     def json(self):
@@ -1889,9 +1916,9 @@ class Observable(Base):
             "is_interesting": self.is_interesting == 1,
             "expires_on": self.expires_on,
             "fa_hits": self.fa_hits,
-            "enabled_by": self.enabled_by_user.json if self.enabled_by else None,
+            "detection_modified_by": self.detection_modified_by_user.json if self.detection_modified_by else None,
             "detection_context": self.detection_context,
-            "batch_id": self.batch_id, 
+            "batch_id": self.batch_id,
         }
 
 class PersistenceSource(Base):

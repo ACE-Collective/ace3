@@ -113,9 +113,23 @@ class TestHappyPath:
         assert user.queue == "high" and user.enabled is False
 
     @pytest.mark.asyncio
+    async def test_create_rejects_blank_username(self, client: AsyncClient):
+        r = await client.post("/users/", json={"username": "  ", "email": "x@e.com"})
+        assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_blank_email(self, client: AsyncClient):
+        r = await client.post("/users/", json={"username": "rtr_blank_email", "email": ""})
+        assert r.status_code == 400
+
+    @pytest.mark.asyncio
     async def test_update_users_not_found(self, client: AsyncClient):
         r = await client.patch("/users/", json={"999999": {"queue": "x"}})
         assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_create_group_rejects_blank_name(self, client: AsyncClient):
+        assert (await client.post("/users/groups", json={"name": "   "})).status_code == 400
 
     @pytest.mark.asyncio
     async def test_group_lifecycle(self, client: AsyncClient, session: AsyncSession):
@@ -127,6 +141,14 @@ class TestHappyPath:
         assert deleted.status_code == 200
         session.expire_all()
         assert (await session.execute(select(AuthGroup).where(AuthGroup.id == gid))).scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_grant_rejects_blank_components(self, client: AsyncClient, session: AsyncSession):
+        user = await _make_user(session, "rtr_blank_perm", perms=[])
+        r = await client.post("/users/permissions", json={
+            "major": "", "minor": "read", "effect": "ALLOW", "users": [user.id], "groups": [],
+        })
+        assert r.status_code == 400
 
     @pytest.mark.asyncio
     async def test_grant_and_revoke_permission(self, client: AsyncClient, session: AsyncSession):

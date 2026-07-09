@@ -24,13 +24,16 @@ def set_observables_detection_status():
     if request.json['enabled']:
         get_db().execute(Observable.__table__.update().where(
             Observable.id.in_(request.json['enabled'])
-        ).values(for_detection=True, enabled_by=current_user.id, detection_context=f"manually enabled in the gui by {current_user} for event {event_name} ({event_id})"))
+        ).values(for_detection=True, detection_modified_by=current_user.id, detection_context=f"manually enabled in the gui by {current_user} for event {event_name} ({event_id})"))
 
     if request.json['disabled']:
         logging.info(f"{current_user} disabled observable detection status for {request.json['disabled']}")
+        # record who disabled it and clear expires_on -- an expiration only governs an enabled
+        # detection, and a stale one would be silently inherited on re-enable
         get_db().execute(Observable.__table__.update().where(
             Observable.id.in_(request.json['disabled'])
-        ).values(for_detection=False))
+        ).values(for_detection=False, detection_modified_by=current_user.id, expires_on=None,
+                 detection_context=f"manually disabled in the gui by {current_user} for event {event_name} ({event_id})"))
 
     # why???
     #for for_detection_status, observable_ids in [ ('enabled', request.json['enabled']), ('disabled', request.json['disabled']) ]:

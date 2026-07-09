@@ -16,18 +16,21 @@ def _permission_inputs(raw: list[dict]) -> list[PermissionInput]:
 @require_permission("user", "write")
 def add_user():
     user = request.get_json()
-    run_async_with_session(
-        service.create_user,
-        username=user["username"],
-        email=user["email"],
-        display_name=user.get("display_name"),
-        password=user.get("password"),
-        queue=user.get("queue", "default"),
-        timezone=user.get("timezone", "UTC"),
-        permissions=_permission_inputs(user.get("permissions", [])),
-        groups=user.get("groups", []),
-        created_by=current_user.id,
-    )
+    try:
+        run_async_with_session(
+            service.create_user,
+            username=user.get("username", ""),
+            email=user.get("email", ""),
+            display_name=user.get("display_name"),
+            password=user.get("password"),
+            queue=user.get("queue") or "default",
+            timezone=user.get("timezone") or "UTC",
+            permissions=_permission_inputs(user.get("permissions", [])),
+            groups=user.get("groups", []),
+            created_by=current_user.id,
+        )
+    except service.InvalidUserError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"success": "User added successfully"}), 200
 
 
@@ -46,10 +49,14 @@ def edit_users():
 @admin.route("/groups/add", methods=["POST"])
 @require_permission("user", "write")
 def add_auth_group():
-    name = (request.form.get("add_auth_group_name") or "").strip()
-    if not name:
-        return jsonify({"error": "no name provided"}), 400
-    run_async_with_session(service.create_auth_group, name)
+    # this form submits natively, so failures flash and redirect rather than returning raw JSON
+    name = request.form.get("add_auth_group_name") or ""
+    try:
+        run_async_with_session(service.create_auth_group, name)
+    except service.InvalidGroupError as e:
+        flash(str(e), "error")
+        return redirect(url_for("admin.manage_users"))
+
     flash("permission group added")
     return redirect(url_for("admin.manage_users"))
 
@@ -68,15 +75,20 @@ def delete_auth_groups():
 @require_permission("user", "write")
 def add_permission():
     permission = request.get_json()
-    run_async_with_session(
-        service.grant_permission,
-        perm=PermissionInput(
-            major=permission["major"], minor=permission["minor"], effect=permission["effect"]
-        ),
-        user_ids=permission.get("users", []),
-        group_ids=permission.get("groups", []),
-        actor_id=current_user.id,
-    )
+    try:
+        run_async_with_session(
+            service.grant_permission,
+            perm=PermissionInput(
+                major=permission.get("major", ""),
+                minor=permission.get("minor", ""),
+                effect=permission.get("effect", "ALLOW"),
+            ),
+            user_ids=permission.get("users", []),
+            group_ids=permission.get("groups", []),
+            actor_id=current_user.id,
+        )
+    except service.InvalidPermissionError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"success": "Permission added successfully"}), 200
 
 

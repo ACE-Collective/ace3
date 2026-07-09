@@ -1,12 +1,72 @@
-function parse_permission_str(permission_str) {
-    // returns an object with the effect, major, and minor fields
-    // the format of the string is "effect major:minor"
-    var parts = permission_str.split(" ");
-    return {
-        effect: parts[0].toUpperCase(),
-        major: parts[1].split(":")[0],
-        minor: parts[1].split(":")[1],
-    };
+// The authoritative permission catalog, rendered into the page by the template.
+var PERMISSION_CATALOG = (function() {
+    var el = document.getElementById("permission_catalog_json");
+    if (!el) { return []; }
+    try { return JSON.parse(el.textContent); } catch (e) { return []; }
+})();
+
+var CUSTOM_PERMISSION = "__custom__";
+
+// Wildcard grants are legitimate but are not catalog rows, so they get their own options.
+var WILDCARD_PERMISSIONS = ["*:*"];
+
+function permission_key(permission) {
+    if (!permission.major && !permission.minor) { return ""; }
+    return permission.major + ":" + permission.minor;
+}
+
+function build_permission_select(selected_key) {
+    var select = $("<select class='form-select form-select-sm d-inline-block perm-select' style='width:auto; margin-left:8px;'></select>");
+    var known = [];
+
+    // a new row starts unselected rather than defaulting to a superuser grant
+    $("<option></option>").val("").text("— choose permission —").appendTo(select);
+
+    PERMISSION_CATALOG.forEach(function(entry) {
+        var key = entry.major + ":" + entry.minor;
+        known.push(key);
+        $("<option></option>").val(key).text(key).attr("title", entry.description || "").appendTo(select);
+    });
+    WILDCARD_PERMISSIONS.forEach(function(key) {
+        known.push(key);
+        $("<option></option>").val(key).text(key).appendTo(select);
+    });
+
+    // an existing grant that is neither catalogued nor a listed wildcard (e.g. "observable:*")
+    // still needs to round-trip, so surface it as its own option.
+    if (selected_key && known.indexOf(selected_key) === -1) {
+        $("<option></option>").val(selected_key).text(selected_key).appendTo(select);
+        known.push(selected_key);
+    }
+
+    $("<option></option>").val(CUSTOM_PERMISSION).text("custom…").appendTo(select);
+
+    if (selected_key && known.indexOf(selected_key) !== -1) {
+        select.val(selected_key);
+    }
+    return select;
+}
+
+function collect_user_permissions() {
+    // reads the permission rows in the add/edit user modal
+    var permissions = [];
+    $("#edit_user_permissions_list").children().each(function() {
+        var row = $(this);
+        var effect = row.find(".perm-effect").val();
+        var selected = row.find(".perm-select").val();
+        var value = (selected === CUSTOM_PERMISSION) ? row.find(".perm-custom").val().trim() : selected;
+
+        if (!value || value.indexOf(":") === -1) {
+            return; // skip incomplete rows
+        }
+        var parts = value.split(":");
+        permissions.push({
+            effect: effect,
+            major: parts[0],
+            minor: parts.slice(1).join(":"),
+        });
+    });
+    return permissions;
 }
 
 function get_selected_user_ids() {
@@ -45,29 +105,39 @@ function clear_edit_user_permissions() {
 }
 
 function add_user_permission_elements(permission) {
-    var li = $("<li></li>").css("list-style-type", "none");
+    var li = $("<li class='mb-1 d-flex align-items-center'></li>").css("list-style-type", "none");
     var deleteButton = $("<button type='button' class='btn btn-xs btn-outline-danger ms-1'>delete</button>");
-    // Optionally, you can add a data attribute to the button for the permission id
     deleteButton.attr("data-permission-id", permission.id);
 
-    // Create a textbox containing the permission text
-    var permissionText = permission.effect + " " + permission.major + ":" + permission.minor;
-    var inputBox = $("<input type='text' class='form-control form-control-sm d-inline-block' style='width:auto; margin-left: 8px; margin-right: 8px;'>")
-        .val(permissionText);
+    var effectSelect = $("<select class='form-select form-select-sm d-inline-block perm-effect' style='width:auto; margin-left:8px;'>" +
+        "<option value='ALLOW'>ALLOW</option><option value='DENY'>DENY</option></select>");
+    effectSelect.val((permission.effect || "ALLOW").toUpperCase());
 
-    li.append(deleteButton);
-    li.append(inputBox);
-    $("#edit_user_permissions_list").append(li);
+    var key = permission_key(permission);
+    var permSelect = build_permission_select(key);
 
-    // when the delete button is clicked, remove the permission from the list
-    deleteButton.on('click', function() {
-        var li = $(this).parent();
-        li.remove();
+    // Free-text fallback, shown only when "custom…" is selected. Note: no `d-inline-block` here --
+    // that Bootstrap class is `display: inline-block !important` and would override the inline
+    // `display: none` that .hide() sets, leaving the box permanently visible.
+    var customInput = $("<input type='text' class='form-control form-control-sm perm-custom' " +
+        "style='width:auto; margin-left:8px;' placeholder='major:minor'>").hide();
+
+    permSelect.on("change", function() {
+        if ($(this).val() === CUSTOM_PERMISSION) {
+            customInput.show().trigger("focus");
+        } else {
+            // clear as well as hide, so a stale custom value can never reappear (or be
+            // mistaken for what will be submitted) after switching to a catalog entry
+            customInput.val("").hide();
+        }
     });
 
-    // grab focus and select all the text in the input box
-    inputBox.trigger("focus");
-    inputBox.trigger("select");
+    li.append(deleteButton).append(effectSelect).append(permSelect).append(customInput);
+    $("#edit_user_permissions_list").append(li);
+
+    deleteButton.on('click', function() {
+        $(this).closest("li").remove();
+    });
 }
 
 function submit_edit_user() {
@@ -90,13 +160,7 @@ function submit_edit_user() {
             groups: [],
         };
 
-        // get the permissions from the form
-        var permissions = [];
-        $("#edit_user_permissions_list").children().each(function() {
-            permissions.push(parse_permission_str($(this).find("input").val()));
-        });
-
-        json_submission[selected_user_ids[i]].permissions = permissions;
+        json_submission[selected_user_ids[i]].permissions = collect_user_permissions();
 
         // get the groups from the form
         var groups = [];
@@ -132,6 +196,16 @@ function submit_edit_user() {
 function submit_add_user() {
     // submits the request to add a new user based on the form values
 
+    // username and email are required; the server enforces this too, but fail fast here
+    if (!$("#edit_user_username").val().trim()) {
+        alert("Username is required");
+        return;
+    }
+    if (!$("#edit_user_email").val().trim()) {
+        alert("Email is required");
+        return;
+    }
+
     json_submission = {
         username: $("#edit_user_username").val(),
         password: $("#edit_user_password").val(),
@@ -143,13 +217,7 @@ function submit_add_user() {
         groups: [],
     };
 
-    // get the permissions from the form
-    var permissions = [];
-    $("#edit_user_permissions_list").children().each(function() {
-        permissions.push(parse_permission_str($(this).find("input").val()));
-    });
-
-    json_submission.permissions = permissions;
+    json_submission.permissions = collect_user_permissions();
 
     // get the groups from the form
     var groups = [];
@@ -216,12 +284,7 @@ $(document).ready(function() {
     });
 
     $("#btn_edit_user_add_permission").on('click', function() {
-        add_user_permission_elements({
-            id: null,
-            effect: "ALLOW",
-            major: "*",
-            minor: "*"
-        });
+        add_user_permission_elements({ id: null, effect: "ALLOW", major: "", minor: "" });
     });
 
     $("#btn_edit_user").on('click', function() {
@@ -380,7 +443,19 @@ $(document).ready(function() {
     });
 
     $("#btn_add_group").on('click', function() {
+        $("#add_auth_group_name").val("");
         $("#add_auth_group_modal").modal("show");
+    });
+
+    // this form posts natively; block the submit when no name was entered so the user gets a
+    // message instead of the server's error response
+    $("#add_auth_group_form").on('submit', function(e) {
+        if (!$("#add_auth_group_name").val().trim()) {
+            e.preventDefault();
+            alert("Enter a name for the permission group.");
+            $("#add_auth_group_name").trigger("focus");
+            return false;
+        }
     });
 
     $("#btn_remove_group").on('click', function() {
@@ -412,6 +487,11 @@ $(document).ready(function() {
     });
 
     $("#btn_add_permissions").on('click', function() {
+        // reset to an empty selection so the modal never carries a stale (or superuser) default
+        $("#add_permission_effect").val("ALLOW");
+        $("#add_permission_catalog").val("");
+        $("#add_permission_major").val("");
+        $("#add_permission_minor").val("");
         $("#add_permission_modal").modal("show");
     });
 
@@ -426,10 +506,24 @@ $(document).ready(function() {
 
     $("#btn_execute_add_permission").on('click', function() {
         var effect = $("#add_permission_effect").val();
-        var major = $("#add_permission_major").val();
-        var minor = $("#add_permission_minor").val();
+        var major = $("#add_permission_major").val().trim();
+        var minor = $("#add_permission_minor").val().trim();
         var users = get_selected_user_ids();
         var groups = get_selected_group_ids();
+
+        // the server enforces these too, but fail fast rather than silently granting nothing
+        if (!major || !minor) {
+            alert("Choose a permission from the catalog, or enter both a major and a minor.");
+            return false;
+        }
+        if (users.length === 0 && groups.length === 0) {
+            alert("Select at least one user or group to grant this permission to.");
+            return false;
+        }
+        if (major === "*" && minor === "*" &&
+            !confirm("Grant *:* (full administrative access) to the selected users/groups?")) {
+            return false;
+        }
 
         var json_submission = {
             effect: effect,

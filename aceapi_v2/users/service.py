@@ -198,6 +198,10 @@ async def _add_user_to_group(session: AsyncSession, user_id: int, group_id: int)
         session.add(AuthGroupUser(user_id=user_id, group_id=group_id))
 
 
+class InvalidUserError(ValueError):
+    """Raised when required user fields are missing or blank."""
+
+
 async def create_user(
     session: AsyncSession,
     *,
@@ -211,6 +215,21 @@ async def create_user(
     groups: list[int],
     created_by: int | None = None,
 ) -> User:
+    # the users table columns are NOT NULL but an empty string satisfies that, so guard here --
+    # this is the single choke point for both the admin GUI and the v2 API.
+    username = (username or "").strip()
+    email = (email or "").strip()
+    if not username:
+        raise InvalidUserError("username is required")
+    if not email:
+        raise InvalidUserError("email is required")
+
+    existing = (await session.execute(
+        select(User).where(User.username == username)
+    )).scalar_one_or_none()
+    if existing is not None:
+        raise InvalidUserError(f"a user named {username!r} already exists")
+
     if not password:
         password = str(uuid.uuid4())
 
@@ -251,14 +270,14 @@ async def update_users(session: AsyncSession, changes: dict[int, UserUpdate], ac
 
         # Username/password/display_name/email are only editable for a single-user edit.
         if not edit_multiple:
-            if upd.username:
-                user.username = upd.username
+            if upd.username and upd.username.strip():
+                user.username = upd.username.strip()
             if upd.password:
                 user.password = upd.password  # setter hashes
             if upd.display_name:
                 user.display_name = upd.display_name
-            if upd.email:
-                user.email = upd.email
+            if upd.email and upd.email.strip():
+                user.email = upd.email.strip()
 
         if upd.queue:
             user.queue = upd.queue
@@ -284,7 +303,15 @@ async def update_users(session: AsyncSession, changes: dict[int, UserUpdate], ac
     await session.flush()
 
 
+class InvalidGroupError(ValueError):
+    """Raised when an auth group is created without a name."""
+
+
 async def create_auth_group(session: AsyncSession, name: str) -> AuthGroup:
+    name = (name or "").strip()
+    if not name:
+        raise InvalidGroupError("group name is required")
+
     existing = (await session.execute(
         select(AuthGroup).where(AuthGroup.name == name)
     )).scalar_one_or_none()
@@ -303,6 +330,10 @@ async def delete_auth_groups(session: AsyncSession, group_ids: list[int]) -> Non
     await session.flush()
 
 
+class InvalidPermissionError(ValueError):
+    """Raised when a permission grant is missing its major or minor component."""
+
+
 async def grant_permission(
     session: AsyncSession,
     *,
@@ -311,6 +342,15 @@ async def grant_permission(
     group_ids: list[int],
     actor_id: int | None = None,
 ) -> None:
+    # blank components would insert a meaningless (and un-revocable-looking) grant row
+    perm = PermissionInput(
+        major=(perm.major or "").strip(),
+        minor=(perm.minor or "").strip(),
+        effect=perm.effect,
+    )
+    if not perm.major or not perm.minor:
+        raise InvalidPermissionError("both a major and a minor are required")
+
     for user_id in user_ids:
         await _add_user_permission(session, user_id, perm, actor_id)
     for group_id in group_ids:

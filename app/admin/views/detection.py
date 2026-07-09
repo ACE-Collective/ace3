@@ -12,6 +12,13 @@ from aceapi_v2.sync import run_async_with_session
 EXPIRATION_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+def _int_arg(name: str, default: int) -> int:
+    try:
+        return int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 @admin.route("/detection", methods=["GET"])
 @require_permission("detection", "read")
 def detection_settings():
@@ -19,17 +26,29 @@ def detection_settings():
     show = request.args.get("show", "enabled")
     for_detection = None if show == "all" else True
     search = request.args.get("q") or None
+    observable_type = request.args.get("type") or None
+    page = _int_arg("page", 1)
+    page_size = service.clamp_page_size(_int_arg("page_size", service.DEFAULT_PAGE_SIZE))
 
-    observables = run_async_with_session(
-        service.list_detection_observables,
+    result = run_async_with_session(
+        service.get_detection_page,
         for_detection=for_detection,
         search=search,
+        observable_type=observable_type,
+        page=page,
+        page_size=page_size,
     )
+    observable_types = run_async_with_session(service.list_observable_types)
+
     return render_template(
         "admin/detection.html",
-        observables=observables,
+        page=result,
+        observables=result.items,
+        observable_types=observable_types,
+        selected_type=observable_type or "",
         show=show,
         search=search or "",
+        page_size_choices=service.PAGE_SIZE_CHOICES,
     )
 
 
@@ -39,8 +58,9 @@ def detection_toggle():
     observable_id = int(request.form["observable_id"])
     enabled = request.form.get("enabled") == "true"
     detection_context = request.form.get("detection_context")
-    if enabled and not detection_context:
-        detection_context = f"manually enabled in the admin gui by {current_user}"
+    if not detection_context:
+        action = "enabled" if enabled else "disabled"
+        detection_context = f"manually {action} in the admin gui by {current_user}"
 
     result = run_async_with_session(
         service.set_observable_for_detection,

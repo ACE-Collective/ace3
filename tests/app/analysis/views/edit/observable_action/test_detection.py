@@ -127,7 +127,7 @@ class TestObservableActionSetForDetection:
         db = get_db()
         updated_observable = db.query(Observable).filter(Observable.id == db_observable.id).first()
         assert updated_observable.for_detection is True
-        assert updated_observable.enabled_by is not None
+        assert updated_observable.detection_modified_by is not None
         assert "manually enabled in the gui" in updated_observable.detection_context
 
     @patch('app.analysis.views.edit.observable_action.detection.get_current_alert')

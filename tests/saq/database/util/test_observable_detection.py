@@ -100,7 +100,7 @@ def test_enable_observable_detection_new_observable(test_user, test_observable):
     
     assert db_observable is not None
     assert db_observable.for_detection is True
-    assert db_observable.enabled_by == test_user.id
+    assert db_observable.detection_modified_by == test_user.id
     assert db_observable.detection_context == detection_context
     assert db_observable.type == test_observable.type
     assert db_observable.value == test_observable.value.encode()
@@ -122,7 +122,7 @@ def test_enable_observable_detection_existing_observable(test_user, test_observa
         sha256=test_observable.sha256_bytes,
         value=test_observable.value.encode(),
         for_detection=False,
-        enabled_by=None,
+        detection_modified_by=None,
         detection_context=None
     )
     db.add(existing)
@@ -134,7 +134,7 @@ def test_enable_observable_detection_existing_observable(test_user, test_observa
     # Verify observable was updated
     db.refresh(existing)
     assert existing.for_detection is True
-    assert existing.enabled_by == test_user.id
+    assert existing.detection_modified_by == test_user.id
     assert existing.detection_context == detection_context
     
     # Cleanup
@@ -168,20 +168,29 @@ def test_disable_observable_detection_existing(test_user, test_observable):
     ).first()
     assert db_observable.for_detection is True
     
+    # give it an expiration, as an enabled detection may have
+    db_observable.expires_on = datetime(2030, 1, 1)
+    db.commit()
+
     # Disable detection
-    disable_observable_detection(test_observable)
-    
-    # Verify it's disabled
+    disable_observable_detection(test_observable, test_user.id, "disabled by test")
+
+    # Verify it's disabled, and that the fields describing the detection status now describe the
+    # *disable* action rather than remaining stale from the enable
     db.refresh(db_observable)
     assert db_observable.for_detection is False
-    
+    assert db_observable.detection_modified_by == test_user.id
+    assert db_observable.detection_context == "disabled by test"
+    # a stale expiration would be silently inherited on re-enable
+    assert db_observable.expires_on is None
+
     # Cleanup
     db.delete(db_observable)
     db.commit()
 
 
 @pytest.mark.integration
-def test_disable_observable_detection_nonexistent(test_observable):
+def test_disable_observable_detection_nonexistent(test_user, test_observable):
     """Test disabling detection for a non-existent observable."""
     # Ensure observable doesn't exist
     db = get_db()
@@ -194,7 +203,7 @@ def test_disable_observable_detection_nonexistent(test_observable):
         db.commit()
     
     # Should not raise an error
-    disable_observable_detection(test_observable)
+    disable_observable_detection(test_observable, test_user.id, "disabled by test")
 
 
 @pytest.mark.integration
@@ -260,13 +269,13 @@ def test_get_observable_detections_with_detections(test_user, test_observables):
     assert isinstance(detection1, ObservableDetection)
     assert detection1.observable_uuid == test_observables[0].uuid
     assert detection1.for_detection is True
-    assert detection1.enabled_by == test_user.display_name
+    assert detection1.detection_modified_by == test_user.display_name
     assert detection1.detection_context == "Context 1"
     
     detection2 = detections[test_observables[1].uuid]
     assert detection2.observable_uuid == test_observables[1].uuid
     assert detection2.for_detection is True
-    assert detection2.enabled_by == test_user.display_name
+    assert detection2.detection_modified_by == test_user.display_name
     assert detection2.detection_context == "Context 2"
     
     # Cleanup
@@ -294,7 +303,7 @@ def test_get_observable_detections_mixed(test_user, test_observables):
     enable_observable_detection(test_observables[2], test_user.id, "Another context")
     
     # Disable detection for one that was enabled
-    disable_observable_detection(test_observables[2])
+    disable_observable_detection(test_observables[2], test_user.id, "disabled by test")
     
     detections = get_observable_detections(test_observables)
     
@@ -334,7 +343,7 @@ def test_get_all_observable_detections(test_user, test_root_analysis):
     
     detection1 = detections[observables[0].uuid]
     assert detection1.for_detection is True
-    assert detection1.enabled_by == test_user.display_name
+    assert detection1.detection_modified_by == test_user.display_name
     assert detection1.detection_context == "Root context 1"
     
     # Cleanup
@@ -347,13 +356,13 @@ def test_observable_detection_dataclass():
     detection = ObservableDetection(
         observable_uuid="test-uuid-123",
         for_detection=True,
-        enabled_by="Test User",
+        detection_modified_by="Test User",
         detection_context="Test context"
     )
     
     assert detection.observable_uuid == "test-uuid-123"
     assert detection.for_detection is True
-    assert detection.enabled_by == "Test User"
+    assert detection.detection_modified_by == "Test User"
     assert detection.detection_context == "Test context"
 
 
@@ -393,7 +402,7 @@ def test_enable_detection_overwrites_existing(test_user, test_observable):
         detections = get_observable_detections([test_observable])
         detection = detections[test_observable.uuid]
         
-        assert detection.enabled_by == user2.display_name
+        assert detection.detection_modified_by == user2.display_name
         assert detection.detection_context == "Updated context"
         
     finally:

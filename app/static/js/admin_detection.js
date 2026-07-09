@@ -15,6 +15,15 @@ function post_form(url, params) {
 }
 
 $(document).ready(function() {
+    // Same jQuery UI datetimepicker configuration the alert page uses for observable expiration
+    // (see saq_analysis.js). Emits "YYYY-MM-DD HH:MM:SS", which is what the server parses.
+    $(".obs-expires-input").datetimepicker({
+        timezone: 0,
+        showSecond: false,
+        dateFormat: 'yy-mm-dd',
+        timeFormat: 'HH:mm:ss'
+    });
+
     $(".btn-toggle-detection").on("click", function() {
         var row = $(this).closest("tr");
         var observable_id = row.data("observable-id");

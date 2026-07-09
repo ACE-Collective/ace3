@@ -9,13 +9,13 @@ from saq.database.pool import get_db
 # TODO: there should be a single way to add observables to the database
 # see sync.py
 
-def enable_observable_detection(observable: Observable, enabled_by_user_id: int, detection_context: str):
+def enable_observable_detection(observable: Observable, detection_modified_by_user_id: int, detection_context: str):
     """Enables detection for a given observable."""
     # find the existing user
     db = get_db()
-    db_user = db.query(User).filter(User.id == enabled_by_user_id).one_or_none()
+    db_user = db.query(User).filter(User.id == detection_modified_by_user_id).one_or_none()
     if db_user is None:
-        raise ValueError(f"User with id {enabled_by_user_id} not found")
+        raise ValueError(f"User with id {detection_modified_by_user_id} not found")
 
     # find the existing observable
     db_observable = db.query(DBObservable).filter(DBObservable.sha256 == observable.sha256_bytes, DBObservable.type == observable.type).one_or_none()
@@ -25,31 +25,39 @@ def enable_observable_detection(observable: Observable, enabled_by_user_id: int,
             sha256=observable.sha256_bytes,
             value=observable.value.encode("utf8", errors="ignore"),
             for_detection=True,
-            enabled_by=enabled_by_user_id,
+            detection_modified_by=detection_modified_by_user_id,
             detection_context=detection_context)
     else:
         db_observable.for_detection = True
-        db_observable.enabled_by = enabled_by_user_id
+        db_observable.detection_modified_by = detection_modified_by_user_id
         db_observable.detection_context = detection_context
-    
+
     db.add(db_observable)
     db.commit()
 
-def disable_observable_detection(observable: Observable):
-    """Disables detection for a given observable."""
-    # find the existing observable
-    db_observable = get_db().query(DBObservable).filter(DBObservable.sha256 == observable.sha256_bytes, DBObservable.type == observable.type).one_or_none()
+def disable_observable_detection(observable: Observable, detection_modified_by_user_id: int, detection_context: str):
+    """Disables detection for a given observable.
+
+    Records who disabled it and why, and clears expires_on: an expiration only governs an *enabled*
+    detection, and a stale one would be silently inherited if the observable were re-enabled later,
+    excluding it from the detection cache (see _get_for_detect_observables_by_type).
+    """
+    db = get_db()
+    db_observable = db.query(DBObservable).filter(DBObservable.sha256 == observable.sha256_bytes, DBObservable.type == observable.type).one_or_none()
     if db_observable is None:
         return
 
     db_observable.for_detection = False
-    get_db().commit()
+    db_observable.detection_modified_by = detection_modified_by_user_id
+    db_observable.detection_context = detection_context
+    db_observable.expires_on = None
+    db.commit()
 
 @dataclass
 class ObservableDetection:
     observable_uuid: str
     for_detection: bool
-    enabled_by: str
+    detection_modified_by: str
     detection_context: str
 
 def get_all_observable_detections(alert: RootAnalysis):
@@ -81,7 +89,7 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
         detections[observable.uuid] = ObservableDetection(
             observable_uuid=observable.uuid,
             for_detection=db_observable.for_detection,
-            enabled_by=db_observable.enabled_by_user.display_name if db_observable.enabled_by_user else "unknown",
+            detection_modified_by=db_observable.detection_modified_by_user.display_name if db_observable.detection_modified_by_user else "unknown",
             detection_context=db_observable.detection_context
         )
 

@@ -7,7 +7,7 @@ from flask import url_for
 
 from saq.constants import QUEUE_DEFAULT
 from saq.database import get_db
-from saq.database.model import AuthUserPermission, User
+from saq.database.model import AuthGroup, AuthUserPermission, User
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
 
@@ -81,6 +81,38 @@ class TestAdminEndToEnd:
                 assert perm is not None
             finally:
                 delete_user("e2e_created")
+
+    def test_blank_username_is_rejected(self, app, admin_user):
+        """Regression: submitting the Add User modal with blank fields created an empty user row."""
+        with app.test_client() as client:
+            client.post(url_for("auth.login"), data={
+                "username": "adminuser", "password": "TestPass123!",
+            })
+            resp = client.post(
+                url_for("admin.add_user"),
+                data=json.dumps({
+                    "username": "", "email": "", "display_name": "",
+                    "queue": "default", "timezone": "UTC",
+                    "permissions": [{"major": "user", "minor": "read", "effect": "ALLOW"}],
+                    "groups": [],
+                }),
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+            # and nothing was written
+            assert get_db().query(User).filter(User.username == "").first() is None
+
+    def test_blank_group_name_redirects_instead_of_erroring(self, app, admin_user):
+        """The add-group form posts natively, so a blank name should flash+redirect, not 400 JSON."""
+        with app.test_client() as client:
+            client.post(url_for("auth.login"), data={
+                "username": "adminuser", "password": "TestPass123!",
+            })
+            before = get_db().query(AuthGroup).count()
+            resp = client.post(url_for("admin.add_auth_group"), data={"add_auth_group_name": "   "})
+            assert resp.status_code == 302
+            assert resp.location.endswith(url_for("admin.manage_users"))
+            assert get_db().query(AuthGroup).count() == before
 
     def test_write_requires_user_write_permission(self, app):
         """A logged-in user without user:write is forbidden from admin mutations."""

@@ -68,6 +68,40 @@ class TestCreateUser:
         assert group.id in {g.id for g in groups}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("username,email", [
+        ("", "a@e.com"),         # blank username (the empty-row bug)
+        ("   ", "a@e.com"),      # whitespace-only username
+        ("someone", ""),         # blank email
+        ("someone", "   "),      # whitespace-only email
+    ])
+    async def test_blank_required_fields_rejected(self, session: AsyncSession, username, email):
+        with pytest.raises(service.InvalidUserError):
+            await service.create_user(
+                session, username=username, email=email, display_name=None, password=None,
+                queue="default", timezone="UTC", permissions=[], groups=[],
+            )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_username_rejected(self, session: AsyncSession):
+        await _make_user(session, "svc_dupe")
+        await session.flush()
+        with pytest.raises(service.InvalidUserError):
+            await service.create_user(
+                session, username="svc_dupe", email="other@e.com", display_name=None,
+                password=None, queue="default", timezone="UTC", permissions=[], groups=[],
+            )
+
+    @pytest.mark.asyncio
+    async def test_username_and_email_are_stripped(self, session: AsyncSession):
+        user = await service.create_user(
+            session, username="  svc_stripped  ", email="  svc_stripped@e.com  ",
+            display_name=None, password=None, queue="default", timezone="UTC",
+            permissions=[], groups=[],
+        )
+        assert user.username == "svc_stripped"
+        assert user.email == "svc_stripped@e.com"
+
+    @pytest.mark.asyncio
     async def test_random_password_when_omitted(self, session: AsyncSession):
         user = await service.create_user(
             session,
@@ -173,6 +207,17 @@ class TestGroupsAndPermissions:
         assert g1.id not in {g.id for g in groups}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["", "   "])
+    async def test_blank_group_name_rejected(self, session: AsyncSession, name):
+        with pytest.raises(service.InvalidGroupError):
+            await service.create_auth_group(session, name)
+
+    @pytest.mark.asyncio
+    async def test_group_name_is_stripped(self, session: AsyncSession):
+        group = await service.create_auth_group(session, "  svc_stripped_grp  ")
+        assert group.name == "svc_stripped_grp"
+
+    @pytest.mark.asyncio
     async def test_grant_and_revoke(self, session: AsyncSession):
         user = await _make_user(session, "svc_grant_user")
         group = await service.create_auth_group(session, "svc_grant_grp")
@@ -193,6 +238,30 @@ class TestGroupsAndPermissions:
         )
         assert not [p for p in await service.get_user_permissions_async(session, user.id, include_groups=False) if p.major == "test"]
         assert not [p for p in await service.get_group_permissions_async(session, group.id) if p.major == "test"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("major,minor", [("", "read"), ("alert", ""), ("  ", "read"), ("alert", "  ")])
+    async def test_blank_permission_components_rejected(self, session: AsyncSession, major, minor):
+        user = await _make_user(session, f"svc_blank_{major.strip()}_{minor.strip()}_perm")
+        with pytest.raises(service.InvalidPermissionError):
+            await service.grant_permission(
+                session,
+                perm=PermissionInput(major=major, minor=minor, effect="ALLOW"),
+                user_ids=[user.id],
+                group_ids=[],
+            )
+
+    @pytest.mark.asyncio
+    async def test_permission_components_are_stripped(self, session: AsyncSession):
+        user = await _make_user(session, "svc_strip_perm")
+        await service.grant_permission(
+            session,
+            perm=PermissionInput(major="  alert  ", minor="  read  ", effect="ALLOW"),
+            user_ids=[user.id],
+            group_ids=[],
+        )
+        perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
+        assert ("alert", "read") in {(p.major, p.minor) for p in perms}
 
     @pytest.mark.asyncio
     async def test_effect_uppercased(self, session: AsyncSession):

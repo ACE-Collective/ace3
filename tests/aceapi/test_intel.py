@@ -14,8 +14,8 @@ from aceapi.intel import (
     KEY_FOR_DETECTION,
     KEY_EXPIRED,
     KEY_FA_HITS,
-    KEY_ENABLED_BY_NAMES,
-    KEY_ENABLED_BY_IDS,
+    KEY_DETECTION_MODIFIED_BY_NAMES,
+    KEY_DETECTION_MODIFIED_BY_IDS,
     KEY_BATCH_IDS,
     KEY_ALERT_IDS,
     KEY_ALERT_UUIDS,
@@ -219,7 +219,7 @@ def test_set_observable_as_user(test_client):
 
     observable = get_db().query(Observable).filter(Observable.type == F_FQDN, Observable.value == "test.com".encode()).one()
     assert observable.for_detection == 1
-    observable.enabled_by == user_id
+    assert observable.detection_modified_by == user_id
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.add_observable_by_spec(F_FQDN, "evil.com")
@@ -243,7 +243,9 @@ def test_set_observable_as_user(test_client):
 
     observable = get_db().query(Observable).filter(Observable.type == F_FQDN, Observable.value == "evil.com".encode()).one()
     assert observable.for_detection == 0
-    assert observable.enabled_by is None
+    # disabling records who made the change too -- the column tracks the last detection-status
+    # change either way, not just the enable
+    assert observable.detection_modified_by == user_id
 
 @pytest.mark.integration
 def test_get_observable(test_client):
@@ -467,23 +469,23 @@ def test_get_observable(test_client):
     user = get_db().query(User).first()
 
     # query by enabled by name
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_ENABLED_BY_NAMES: user.username }, **client_kwargs)
+    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_NAMES: user.username }, **client_kwargs)
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 0
 
     # set the enabled by to this user
     observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
-    observable.enabled_by = user.id
+    observable.detection_modified_by = user.id
     get_db().commit()
 
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_ENABLED_BY_NAMES: user.username }, **client_kwargs)
+    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_NAMES: user.username }, **client_kwargs)
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 1
 
     # query by user id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_ENABLED_BY_IDS: user.id }, **client_kwargs)
+    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_IDS: user.id }, **client_kwargs)
     assert result.status_code == 200
     json_result = json.loads(result.data)
     assert len(json_result[KEY_RESULTS]) == 1

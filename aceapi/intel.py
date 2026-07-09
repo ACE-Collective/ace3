@@ -23,8 +23,8 @@ KEY_B64VALUES = "b64values"
 KEY_FOR_DETECTION = "for_detection"
 KEY_EXPIRED = "expired"
 KEY_FA_HITS = "fa_hits"
-KEY_ENABLED_BY_IDS = "enabled_by_ids"
-KEY_ENABLED_BY_NAMES = "enabled_by_names"
+KEY_DETECTION_MODIFIED_BY_IDS = "detection_modified_by_ids"
+KEY_DETECTION_MODIFIED_BY_NAMES = "detection_modified_by_names"
 KEY_BATCH_IDS = "batch_ids"
 KEY_ALERT_IDS = "alert_ids"
 KEY_ALERT_UUIDS = "alert_uuids"
@@ -96,12 +96,12 @@ def get_observables():
         else:
             query = query.filter(Observable.fa_hits == int(request.values[KEY_FA_HITS]))
 
-    if KEY_ENABLED_BY_NAMES in request.values:
-        subquery = get_db().query(User.id).filter(User.username.in_(map(strip, request.values[KEY_ENABLED_BY_NAMES].split(","))))
-        query = query.filter(Observable.enabled_by.in_(subquery))
+    if KEY_DETECTION_MODIFIED_BY_NAMES in request.values:
+        subquery = get_db().query(User.id).filter(User.username.in_(map(strip, request.values[KEY_DETECTION_MODIFIED_BY_NAMES].split(","))))
+        query = query.filter(Observable.detection_modified_by.in_(subquery))
 
-    if KEY_ENABLED_BY_IDS in request.values:
-        query = query.filter(Observable.enabled_by.in_(map(int, request.values[KEY_ENABLED_BY_IDS].split(","))))
+    if KEY_DETECTION_MODIFIED_BY_IDS in request.values:
+        query = query.filter(Observable.detection_modified_by.in_(map(int, request.values[KEY_DETECTION_MODIFIED_BY_IDS].split(","))))
 
     if KEY_BATCH_IDS in request.values:
         query = query.filter(Observable.batch_id.in_(map(strip, request.values[KEY_BATCH_IDS].split(","))))
@@ -204,15 +204,22 @@ def set_observables():
 
         if KEY_UPDATE_FOR_DETECTION in update_spec:
             observable.for_detection = update_spec[KEY_UPDATE_FOR_DETECTION]
-            if observable.for_detection:
-                auth_result = verify_api_key(request.headers[API_HEADER_NAME])
-                if auth_result and auth_result.auth_type == API_AUTH_TYPE_USER:
-                    try:
-                        user = get_db().query(User).filter(User.username == auth_result.auth_name).one()
-                        observable.enabled_by = user.id
-                        logging.info("observable detection type %s value %s enabled by %s", observable.type, observable.value, user.username)
-                    except Exception as e:
-                        logging.warning("unable to set enabled_by for observable detection: %s", e)
+
+            # an expiration only governs an *enabled* detection; a stale one would be silently
+            # inherited if the observable were re-enabled later
+            if not observable.for_detection:
+                observable.expires_on = None
+
+            # record who last changed the detection status, whether enabling or disabling
+            auth_result = verify_api_key(request.headers[API_HEADER_NAME])
+            if auth_result and auth_result.auth_type == API_AUTH_TYPE_USER:
+                try:
+                    user = get_db().query(User).filter(User.username == auth_result.auth_name).one()
+                    observable.detection_modified_by = user.id
+                    action = "enabled" if observable.for_detection else "disabled"
+                    logging.info("observable detection type %s value %s %s by %s", observable.type, observable.value, action, user.username)
+                except Exception as e:
+                    logging.warning("unable to set detection_modified_by for observable detection: %s", e)
 
         if KEY_UPDATE_EXPIRES_ON in update_spec:
             # 2023-12-09 18:30:06

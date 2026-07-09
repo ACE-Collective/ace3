@@ -247,11 +247,11 @@
                 <div class="row mt-2">
                     <div class="col">
                         <label for="add_permission_major">Major</label>
-                        <input type="text" class="form-control" id="add_permission_major" name="add_permission_major" value="*">
+                        <input type="text" class="form-control" id="add_permission_major" name="add_permission_major" value="" placeholder="e.g. alert">
                     </div>
                     <div class="col">
                         <label for="add_permission_minor">Minor</label>
-                        <input type="text" class="form-control" id="add_permission_minor" name="add_permission_minor" value="*">
+                        <input type="text" class="form-control" id="add_permission_minor" name="add_permission_minor" value="" placeholder="e.g. read">
                     </div>
                 </div>
                 <small class="text-muted">Pick a catalog entry to fill Major/Minor, or type your own (wildcards like <code>*</code> allowed).</small>
@@ -268,5 +268,7 @@
 
 {% block scripts %}
 {{ super() }}
+{# the authoritative permission catalog, consumed by manage_users.js to build permission dropdowns #}
+<script id="permission_catalog_json" type="application/json">{{ permission_catalog | tojson }}</script>
 <script src="{{ url_for('static', filename='js/manage_users.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}

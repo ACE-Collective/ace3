@@ -38,7 +38,7 @@ def observable_action_set_for_detection():
             enable_observable_detection(observable, current_user.id, f"manually enabled in the gui by {current_user} for alert {alert.description} ({alert.uuid})")
             for_detection_status = 'enabled'
         else:
-            disable_observable_detection(observable)
+            disable_observable_detection(observable, current_user.id, f"manually disabled in the gui by {current_user} for alert {alert.description} ({alert.uuid})")
 
         logging.info(f"AUDIT: {current_user} {for_detection_status} observable {observable.value} for detection")
 

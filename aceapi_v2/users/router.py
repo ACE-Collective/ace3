@@ -59,18 +59,21 @@ async def create_user(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> UserRead:
-    user = await service.create_user(
-        session,
-        username=body.username,
-        email=body.email,
-        display_name=body.display_name,
-        password=body.password,
-        queue=body.queue,
-        timezone=body.timezone,
-        permissions=body.permissions,
-        groups=body.groups,
-        created_by=auth.auth_user_id,
-    )
+    try:
+        user = await service.create_user(
+            session,
+            username=body.username,
+            email=body.email,
+            display_name=body.display_name,
+            password=body.password,
+            queue=body.queue,
+            timezone=body.timezone,
+            permissions=body.permissions,
+            groups=body.groups,
+            created_by=auth.auth_user_id,
+        )
+    except service.InvalidUserError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return service._user_read(user)
 
 
@@ -93,7 +96,10 @@ async def create_group(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> GroupRead:
-    group = await service.create_auth_group(session, body.name)
+    try:
+        group = await service.create_auth_group(session, body.name)
+    except service.InvalidGroupError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return GroupRead(id=group.id, name=group.name)
 
 
@@ -113,13 +119,16 @@ async def add_permission(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> dict:
-    await service.grant_permission(
-        session,
-        perm=PermissionInput(major=body.major, minor=body.minor, effect=body.effect),
-        user_ids=body.users,
-        group_ids=body.groups,
-        actor_id=auth.auth_user_id,
-    )
+    try:
+        await service.grant_permission(
+            session,
+            perm=PermissionInput(major=body.major, minor=body.minor, effect=body.effect),
+            user_ids=body.users,
+            group_ids=body.groups,
+            actor_id=auth.auth_user_id,
+        )
+    except service.InvalidPermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"success": "Permission added successfully"}
 
 

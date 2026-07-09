@@ -8,6 +8,15 @@
             <input type="text" class="form-control form-control-sm" id="q" name="q" value="{{ search }}" placeholder="substring…">
         </div>
         <div class="col">
+            <label class="form-label mb-0" for="type">Type</label>
+            <select class="form-select form-select-sm" id="type" name="type">
+                <option value="">all types</option>
+                {% for t in observable_types %}
+                    <option value="{{ t }}" {% if t == selected_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
             <label class="form-label mb-0" for="show">Show</label>
             <select class="form-select form-select-sm" id="show" name="show">
                 <option value="enabled" {% if show == 'enabled' %}selected{% endif %}>Enabled for detection</option>
@@ -15,22 +24,95 @@
             </select>
         </div>
         <div class="col">
+            <label class="form-label mb-0" for="page_size">Per page</label>
+            <select class="form-select form-select-sm" id="page_size" name="page_size">
+                {% for size in page_size_choices %}
+                    <option value="{{ size }}" {% if size == page.page_size %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
             <button type="submit" class="btn btn-sm btn-outline-dark">Apply</button>
+            {# a link to the bare URL, so the server's defaults apply rather than a client-side
+               guess at what they are #}
+            <a href="{{ url_for('admin.detection_settings') }}" class="btn btn-sm btn-outline-secondary">Reset</a>
         </div>
     </form>
 </div>
 {% endblock %}
 
 {% block page_content %}
+<style>
+/* Fixed layout keeps the table inside the viewport regardless of how long an observable value is;
+   without it a single long URL (which has no natural break opportunities) widens the whole table. */
+#observable_detection_table { table-layout: fixed; width: 100%; }
+#observable_detection_table td, #observable_detection_table th { vertical-align: top; }
+/* long, unbroken strings (urls, hashes, long type names) need an explicit break opportunity */
+#observable_detection_table .obs-type,
+#observable_detection_table .obs-value,
+#observable_detection_table .obs-context { overflow-wrap: anywhere; word-break: break-word; }
+#observable_detection_table .obs-value code { white-space: normal; }
+#observable_detection_table .obs-expires-input { width: 100%; max-width: 12rem; }
+</style>
+
+{% macro page_url(n) -%}
+{{ url_for('admin.detection_settings', show=show, q=search or None, type=selected_type or None, page_size=page.page_size, page=n) }}
+{%- endmacro %}
+
+{% macro pagination() -%}
+{% if page.total_pages > 1 %}
+<nav aria-label="Observable pages">
+    <ul class="pagination pagination-sm mb-0">
+        <li class="page-item {% if not page.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(1) }}">First</a>
+        </li>
+        <li class="page-item {% if not page.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.page - 1) }}">Previous</a>
+        </li>
+        <li class="page-item disabled">
+            <span class="page-link">Page {{ page.page }} of {{ page.total_pages }}</span>
+        </li>
+        <li class="page-item {% if not page.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.page + 1) }}">Next</a>
+        </li>
+        <li class="page-item {% if not page.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.total_pages) }}">Last</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+{%- endmacro %}
+
 <div class="container-fluid">
-    <h3>Observable Detection Settings</h3>
-    <table class="table table-hover table-sm">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h3 class="mb-0">Observable Detection Settings</h3>
+        <div class="d-flex align-items-center gap-3">
+            <div class="text-muted small">
+                {% if page.total %}
+                    Showing {{ page.first_index }}–{{ page.last_index }} of {{ page.total }}
+                {% else %}
+                    No matching observables
+                {% endif %}
+            </div>
+            {{ pagination() }}
+        </div>
+    </div>
+    <table id="observable_detection_table" class="table table-hover table-sm mt-2">
+        <colgroup>
+            <col style="width: 12%">
+            <col style="width: 28%">
+            <col style="width: 8%">
+            <col style="width: 10%">
+            <col style="width: 14%">
+            <col style="width: 20%">
+            <col style="width: 8%">
+        </colgroup>
         <thead>
             <tr>
                 <th>Type</th>
                 <th>Value</th>
                 <th>For Detection</th>
-                <th>Enabled By</th>
+                <th>Modified By</th>
                 <th>Context</th>
                 <th>Expires</th>
                 <th></th>
@@ -39,16 +121,18 @@
         <tbody>
             {% for obs in observables %}
             <tr data-observable-id="{{ obs.id }}">
-                <td>{{ obs.type }}</td>
-                <td><code>{{ obs.value }}</code></td>
+                <td class="obs-type">{{ obs.type }}</td>
+                <td class="obs-value"><code>{{ obs.value }}</code></td>
                 <td class="obs-for-detection">{{ 'yes' if obs.for_detection else 'no' }}</td>
-                <td>{{ obs.enabled_by or '' }}</td>
-                <td>{{ obs.detection_context or '' }}</td>
+                <td>{{ obs.detection_modified_by or '' }}</td>
+                <td class="obs-context">{{ obs.detection_context or '' }}</td>
                 <td>
-                    <span class="obs-expires">{{ obs.expires_on.strftime('%Y-%m-%d %H:%M:%S') if obs.expires_on else 'never' }}</span>
-                    <input type="text" class="form-control form-control-sm d-inline-block obs-expires-input" style="width: 12rem;" placeholder="YYYY-MM-DD HH:MM:SS">
-                    <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
-                    <button type="button" class="btn btn-xs btn-outline-secondary btn-clear-expiration">never</button>
+                    <div class="obs-expires">{{ obs.expires_on.strftime('%Y-%m-%d %H:%M:%S') if obs.expires_on else 'never' }}</div>
+                    <input type="text" class="form-control form-control-sm obs-expires-input" placeholder="YYYY-MM-DD HH:MM:SS">
+                    <div class="mt-1">
+                        <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
+                        <button type="button" class="btn btn-xs btn-outline-secondary btn-clear-expiration">never</button>
+                    </div>
                 </td>
                 <td>
                     <button type="button" class="btn btn-xs {{ 'btn-outline-danger' if obs.for_detection else 'btn-outline-success' }} btn-toggle-detection"
