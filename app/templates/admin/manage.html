@@ -12,6 +12,8 @@
             <button type="button" id="btn_remove_group" class="btn btn-outline-dark"><span class="bi bi-people-fill"></span> Remove Group</button>
             <button type="button" id="btn_add_permissions" class="btn btn-outline-dark"><span class="bi bi-key"></span> Add Permissions</button>
             <button type="button" id="btn_remove_permissions" class="btn btn-outline-dark"><span class="bi bi-key-fill"></span> Remove Permissions</button>
+            <button type="button" id="btn_generate_api_key" class="btn btn-outline-dark"><span class="bi bi-shield-lock"></span> Generate API Key</button>
+            <button type="button" id="btn_revoke_api_key" class="btn btn-outline-dark"><span class="bi bi-shield-slash"></span> Revoke API Key</button>
         </div>
     </div>
     <div class="row">
@@ -45,6 +47,7 @@
                         <th>Default Queue</th>
                         <th>Enabled</th>
                         <th>Timezone</th>
+                        <th>API Key</th>
                         <th>Perms</th>
                     </tr>
                 </thead>
@@ -61,6 +64,13 @@
                         <td>{{ user.queue }}</td>
                         <td>{{ user.enabled }}</td>
                         <td>{{ user.timezone }}</td>
+                        <td>
+                            {% if user.has_api_key %}
+                                <span class="badge text-bg-secondary">yes</span>
+                            {% else %}
+                                <span class="text-muted">no</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <ul style="padding-left: 0; margin-left: 0;">
                                 {% for permission in permissions[user.id] %}
@@ -112,7 +122,8 @@
 
 <!-- add/edit user modal -->
 <div class="modal fade modal-lg" id="edit_user_modal" tabindex="-1" role="dialog" aria-labelledby="edit_user_modal_label" aria-hidden="true">
-    <form id="edit_user_form" class="form-horizontal" role="form" method="POST" action={{url_for('admin.edit_users')}}>
+    {# submitted via fetch to the v2 API; there is no Flask route behind this form #}
+    <form id="edit_user_form" class="form-horizontal" role="form">
         <input type="hidden" id="edit_or_add" name="edit_or_add" value="add">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -192,7 +203,8 @@
 
 <!-- add auth group modal -->
 <div class="modal fade modal-sm" id="add_auth_group_modal" tabindex="-1" role="dialog" aria-labelledby="add_auth_group_modal_label" aria-hidden="true">
-    <form id="add_auth_group_form" class="form-horizontal" role="form" method="POST" action={{url_for('admin.add_auth_group')}}>
+    {# submitted via fetch to the v2 API; there is no Flask route behind this form #}
+    <form id="add_auth_group_form" class="form-horizontal" role="form">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
@@ -214,6 +226,28 @@
         </div>
     </div>
     </form>
+</div>
+
+<!-- generated api key modal -->
+<div class="modal fade" id="api_key_modal" tabindex="-1" role="dialog" aria-labelledby="api_key_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="api_key_modal_label">New API Key</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">A new API key was issued for <strong id="api_key_username"></strong>. Any previous key for this user no longer works.</p>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="api_key_value" readonly>
+                    <button type="button" class="btn btn-outline-secondary" id="btn_copy_api_key">Copy</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- add permission modal -->

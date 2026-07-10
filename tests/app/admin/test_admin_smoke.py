@@ -1,17 +1,37 @@
-"""Smoke tests for the /admin blueprint and its bridge to the aceapi_v2 users service."""
+"""Smoke tests for the /admin blueprint.
 
-import json
+The admin blueprint renders pages and nothing else: every JSON endpoint the admin pages use lives in
+aceapi_v2 and is called directly from the browser. These tests assert that boundary holds, plus that
+the pages render behind their permission gates. The behaviour behind those endpoints is covered by
+tests/aceapi_v2/users/ and tests/aceapi_v2/detection/.
+"""
 
 import pytest
 from flask import url_for
 
 from saq.constants import QUEUE_DEFAULT
-from saq.database import get_db
-from saq.database.model import AuthGroup, AuthUserPermission, User
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
+
+# every JSON endpoint the admin pages once served from Flask, now served by aceapi_v2
+REMOVED_FLASK_ENDPOINTS = (
+    "admin.get_user_details",
+    "admin.add_user",
+    "admin.edit_users",
+    "admin.add_auth_group",
+    "admin.delete_auth_groups",
+    "admin.add_permission",
+    "admin.delete_permission",
+    "admin.generate_api_key",
+    "admin.revoke_api_key",
+    "admin.detection_toggle",
+    "admin.detection_expiration",
+)
+
+# the page views that legitimately remain
+PAGE_VIEWS = ("admin.admin_hub", "admin.manage_users", "admin.detection_settings")
 
 
 @pytest.fixture
@@ -24,98 +44,62 @@ def admin_user():
         queue=QUEUE_DEFAULT,
         timezone="UTC",
     )
-    add_user_permission(user.id, "user", "write")
+    add_user_permission(user.id, "*", "*")
     yield user
     delete_user("adminuser")
 
 
-class TestAdminRouting:
-    def test_migrated_endpoints_exist_and_old_ones_gone(self, app):
-        with app.test_request_context():
-            assert url_for("admin.manage_users")
-            assert url_for("admin.add_user")
-        # the old auth-blueprint management endpoints must be fully removed
-        for endpoint in ("auth.manage_users", "auth.edit_users", "auth.add_user", "auth.add_permission"):
+class TestAdminIsPagesOnly:
+    def test_page_views_exist(self, app):
+        for endpoint in PAGE_VIEWS:
+            assert endpoint in app.view_functions, endpoint
+
+    def test_json_endpoints_are_not_served_by_flask(self, app):
+        """New endpoints belong in aceapi_v2. Nothing here may serve JSON."""
+        for endpoint in REMOVED_FLASK_ENDPOINTS:
+            assert endpoint not in app.view_functions, endpoint
+
+    def test_admin_blueprint_serves_only_get_pages(self, app):
+        """No POST/PATCH/DELETE route may exist under /admin."""
+        offenders = []
+        for rule in app.url_map.iter_rules():
+            if not str(rule).startswith("/admin"):
+                continue
+            methods = rule.methods - {"HEAD", "OPTIONS"}
+            if methods != {"GET"}:
+                offenders.append((str(rule), sorted(methods)))
+        assert offenders == [], f"non-GET admin routes remain: {offenders}"
+
+    def test_old_auth_blueprint_endpoints_are_gone(self, app):
+        for endpoint in ("auth.manage_users", "auth.edit_users", "auth.add_user", "auth.get_own_api_key"):
             assert endpoint not in app.view_functions
         # self-service auth endpoints remain
         for endpoint in ("auth.login", "auth.logout", "auth.change_password"):
             assert endpoint in app.view_functions
 
-    def test_admin_hub_requires_auth(self, app):
+
+class TestAdminPagesRender:
+    def test_hub_requires_auth(self, app):
         with app.test_client() as client:
             resp = client.get(url_for("admin.admin_hub"))
             assert resp.status_code == 302
             assert "login" in resp.location
 
-
-class TestAdminEndToEnd:
-    def test_create_user_through_bridge(self, app, admin_user):
-        """Full path: Flask admin view -> sync bridge -> async service -> committed write."""
+    def test_pages_render_for_permitted_user(self, app, admin_user):
         with app.test_client() as client:
             client.post(url_for("auth.login"), data={
                 "username": "adminuser", "password": "TestPass123!",
             })
-            resp = client.post(
-                url_for("admin.add_user"),
-                data=json.dumps({
-                    "username": "e2e_created",
-                    "email": "e2e_created@localhost",
-                    "display_name": "E2E",
-                    "password": "NewPass123!",
-                    "queue": "default",
-                    "timezone": "UTC",
-                    "permissions": [{"major": "alert", "minor": "read", "effect": "ALLOW"}],
-                    "groups": [],
-                }),
-                content_type="application/json",
-            )
-            assert resp.status_code == 200
-            try:
-                created = get_db().query(User).filter(User.username == "e2e_created").first()
-                assert created is not None
-                assert created.verify_password("NewPass123!")
-                perm = get_db().query(AuthUserPermission).filter(
-                    AuthUserPermission.user_id == created.id,
-                    AuthUserPermission.major == "alert",
-                ).first()
-                assert perm is not None
-            finally:
-                delete_user("e2e_created")
+            for endpoint, needle in (
+                ("admin.admin_hub", b"Administration"),
+                ("admin.manage_users", b"User Management"),
+                ("admin.detection_settings", b"Observable Detection Settings"),
+            ):
+                resp = client.get(url_for(endpoint))
+                assert resp.status_code == 200, endpoint
+                assert needle in resp.data, endpoint
 
-    def test_blank_username_is_rejected(self, app, admin_user):
-        """Regression: submitting the Add User modal with blank fields created an empty user row."""
-        with app.test_client() as client:
-            client.post(url_for("auth.login"), data={
-                "username": "adminuser", "password": "TestPass123!",
-            })
-            resp = client.post(
-                url_for("admin.add_user"),
-                data=json.dumps({
-                    "username": "", "email": "", "display_name": "",
-                    "queue": "default", "timezone": "UTC",
-                    "permissions": [{"major": "user", "minor": "read", "effect": "ALLOW"}],
-                    "groups": [],
-                }),
-                content_type="application/json",
-            )
-            assert resp.status_code == 400
-            # and nothing was written
-            assert get_db().query(User).filter(User.username == "").first() is None
-
-    def test_blank_group_name_redirects_instead_of_erroring(self, app, admin_user):
-        """The add-group form posts natively, so a blank name should flash+redirect, not 400 JSON."""
-        with app.test_client() as client:
-            client.post(url_for("auth.login"), data={
-                "username": "adminuser", "password": "TestPass123!",
-            })
-            before = get_db().query(AuthGroup).count()
-            resp = client.post(url_for("admin.add_auth_group"), data={"add_auth_group_name": "   "})
-            assert resp.status_code == 302
-            assert resp.location.endswith(url_for("admin.manage_users"))
-            assert get_db().query(AuthGroup).count() == before
-
-    def test_write_requires_user_write_permission(self, app):
-        """A logged-in user without user:write is forbidden from admin mutations."""
+    def test_pages_are_permission_gated(self, app):
         noperms = add_user(
             username="noperms_admin",
             email="noperms_admin@localhost",
@@ -129,11 +113,18 @@ class TestAdminEndToEnd:
                 client.post(url_for("auth.login"), data={
                     "username": "noperms_admin", "password": "TestPass123!",
                 })
-                resp = client.post(
-                    url_for("admin.add_user"),
-                    data=json.dumps({"username": "nope", "email": "nope@localhost"}),
-                    content_type="application/json",
-                )
-                assert resp.status_code in (302, 403)
+                for endpoint in ("admin.manage_users", "admin.detection_settings"):
+                    assert client.get(url_for(endpoint)).status_code in (302, 403), endpoint
         finally:
             delete_user("noperms_admin")
+
+    def test_pages_point_at_the_v2_api(self, app, admin_user):
+        """The rendered pages must call aceapi_v2, not a Flask route."""
+        with app.test_client() as client:
+            client.post(url_for("auth.login"), data={
+                "username": "adminuser", "password": "TestPass123!",
+            })
+            users_page = client.get(url_for("admin.manage_users")).data
+            assert b"/ace/admin/users/add" not in users_page
+            detection_page = client.get(url_for("admin.detection_settings")).data
+            assert b"/ace/admin/detection/toggle" not in detection_page

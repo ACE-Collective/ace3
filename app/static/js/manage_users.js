@@ -1,3 +1,33 @@
+// User/role management calls the v2 API directly (same origin, authenticated by the Flask session
+// cookie). Flask only renders this page.
+var USERS_API = "/api/v2/users";
+
+function api_request(method, url, body) {
+    var options = {
+        method: method,
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+    };
+    if (body !== undefined) {
+        options.body = JSON.stringify(body);
+    }
+    return fetch(url, options).then(function(response) {
+        if (!response.ok) {
+            return response.text().then(function(text) {
+                throw new Error(text || response.statusText);
+            });
+        }
+        return response;
+    });
+}
+
+// the common case: mutate, then re-render the page from the server
+function api_request_then_reload(method, url, body) {
+    return api_request(method, url, body)
+        .then(function() { window.location.reload(); })
+        .catch(function(error) { alert(error.message); });
+}
+
 // The authoritative permission catalog, rendered into the page by the template.
 var PERMISSION_CATALOG = (function() {
     var el = document.getElementById("permission_catalog_json");
@@ -174,23 +204,7 @@ function submit_edit_user() {
         json_submission[selected_user_ids[i]].groups = groups;
     }
 
-    fetch("/ace/admin/users/edit", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(json_submission),
-    }).then(response => {
-        if (!response.ok) {
-            response.text().then(text => {
-                alert(text);
-            });
-        } else {
-            window.location.reload();
-        }
-    }).catch(error => {
-        console.error('There was a problem with the fetch operation:', error);
-    });
+    api_request_then_reload("PATCH", USERS_API + "/", json_submission);
 }
 
 function submit_add_user() {
@@ -206,13 +220,14 @@ function submit_add_user() {
         return;
     }
 
+    // the API applies its own defaults, so send nothing rather than an empty string
     json_submission = {
-        username: $("#edit_user_username").val(),
-        password: $("#edit_user_password").val(),
-        display_name: $("#edit_user_display_name").val(),
-        email: $("#edit_user_email").val(),
-        queue: $("#edit_user_queue").val(),
-        timezone: $("#edit_user_timezone").val(),
+        username: $("#edit_user_username").val().trim(),
+        password: $("#edit_user_password").val() || null,
+        display_name: $("#edit_user_display_name").val() || null,
+        email: $("#edit_user_email").val().trim(),
+        queue: $("#edit_user_queue").val() || "default",
+        timezone: $("#edit_user_timezone").val() || "UTC",
         permissions: [],
         groups: [],
     };
@@ -230,23 +245,7 @@ function submit_add_user() {
 
     json_submission.groups = groups;
 
-    fetch("/ace/admin/users/add", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(json_submission),
-    }).then(response => {
-        if (!response.ok) {
-            response.text().then(text => {
-                alert(text);
-            });
-        } else {
-            window.location.reload();
-        }
-    }).catch(error => {
-        console.error('There was a problem with the fetch operation:', error);
-    });
+    api_request_then_reload("POST", USERS_API + "/", json_submission);
 }
 
 function reset_edit_user_form() {
@@ -314,16 +313,8 @@ $(document).ready(function() {
             $("#edit_user_modal_label").text("Edit User");
             // get the details of the selected user
             var user_id = selected_user_ids[0];
-            fetch(`/ace/admin/users/details?user_ids=${user_id}`)
-                .then(response => {
-                    if (!response.ok) {
-                        response.text().then(text => {
-                            alert(text);
-                        });
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
+            api_request("GET", USERS_API + "/details?user_ids=" + user_id)
+                .then(response => response.json())
                 .then(data => {
                     var user_details = data[user_id];
 
@@ -393,23 +384,7 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/admin/users/edit", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("PATCH", USERS_API + "/", json_submission);
     });
 
     $("#btn_disable_user").on('click', function() {
@@ -423,23 +398,7 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/admin/users/edit", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("PATCH", USERS_API + "/", json_submission);
     });
 
     $("#btn_add_group").on('click', function() {
@@ -450,12 +409,15 @@ $(document).ready(function() {
     // this form posts natively; block the submit when no name was entered so the user gets a
     // message instead of the server's error response
     $("#add_auth_group_form").on('submit', function(e) {
-        if (!$("#add_auth_group_name").val().trim()) {
-            e.preventDefault();
+        e.preventDefault();
+        var name = $("#add_auth_group_name").val().trim();
+        if (!name) {
             alert("Enter a name for the permission group.");
             $("#add_auth_group_name").trigger("focus");
             return false;
         }
+        api_request_then_reload("POST", USERS_API + "/groups", { name: name });
+        return false;
     });
 
     $("#btn_remove_group").on('click', function() {
@@ -467,23 +429,7 @@ $(document).ready(function() {
 
         var json_submission = { groups: selected_group_ids };
 
-        fetch("/ace/admin/groups/delete", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("POST", USERS_API + "/groups/delete", json_submission);
     });
 
     $("#btn_add_permissions").on('click', function() {
@@ -533,23 +479,7 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/admin/permissions/add", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("POST", USERS_API + "/permissions", json_submission);
     });
 
     $("#btn_remove_permissions").on('click', function() {
@@ -561,22 +491,69 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/admin/permissions/delete", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
+        api_request_then_reload("POST", USERS_API + "/permissions/delete", json_submission);
+    });
+
+    function username_for(user_id) {
+        return $("input[name='user_id_" + user_id + "']").closest("tr").find("td:first").text().trim();
+    }
+
+    $("#btn_generate_api_key").on('click', function() {
+        // one user at a time: generating returns a secret that we display once
+        var selected_user_ids = get_selected_user_ids();
+        if (selected_user_ids.length != 1) {
+            alert("Select exactly one user to generate an API key for.");
+            return;
+        }
+        var user_id = selected_user_ids[0];
+        var name = username_for(user_id);
+        if (!confirm("Generate a new API key for " + name + "?\n\nAny existing key for this user will stop working immediately.")) {
+            return;
+        }
+
+        api_request("POST", USERS_API + "/" + user_id + "/apikey")
+            .then(response => response.json())
+            .then(data => {
+                $("#api_key_username").text(name);
+                $("#api_key_value").val(data.api_key);
+                $("#api_key_modal").modal("show");
+            })
+            .catch(error => alert(error.message));
+    });
+
+    // the key is only shown while this modal is open; reload once it closes so the table updates
+    $("#api_key_modal").on("hidden.bs.modal", function() {
+        window.location.reload();
+    });
+
+    $("#btn_copy_api_key").on('click', function() {
+        var button = $(this);
+        Promise.resolve(copy_to_clipboard($("#api_key_value").val())).then(function() {
+            button.text("Copied!");
+            setTimeout(function() { button.text("Copy"); }, 1500);
+        }).catch(function() {
+            // never leave the analyst believing a key was copied when it wasn't
+            alert("Unable to copy to the clipboard. Select the key and copy it manually.");
+        });
+    });
+
+    $("#btn_revoke_api_key").on('click', function() {
+        var selected_user_ids = get_selected_user_ids();
+        if (selected_user_ids.length == 0) {
+            alert("Select one or more users to revoke API keys for.");
+            return;
+        }
+        if (!confirm("Revoke the API key for " + selected_user_ids.length + " user(s)?\n\nThis cannot be undone; a new key must be generated to restore API access.")) {
+            return;
+        }
+
+        // the API revokes one key per call; fan out and reload once they all succeed
+        Promise.all(selected_user_ids.map(function(user_id) {
+            return api_request("DELETE", USERS_API + "/" + user_id + "/apikey");
+        })).then(function() {
+            window.location.reload();
+        }).catch(function(error) {
+            alert(error.message);
         });
     });
 

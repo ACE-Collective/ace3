@@ -51,8 +51,14 @@ async def set_detection(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
 ) -> ObservableDetectionRead:
+    # record who changed the detection status and why; callers may override the wording
+    detection_context = body.detection_context
+    if not detection_context:
+        action = "enabled" if body.enabled else "disabled"
+        detection_context = f"manually {action} by {auth.auth_name}"
+
     result = await service.set_observable_for_detection(
-        session, observable_id, body.enabled, auth.auth_user_id, body.detection_context
+        session, observable_id, body.enabled, auth.auth_user_id, detection_context
     )
     if result is None:
         raise HTTPException(status_code=404, detail="Observable not found")

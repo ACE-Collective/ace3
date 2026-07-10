@@ -119,6 +119,26 @@ class TestHappyPath:
         assert r.json()["page_size"] == 50  # DEFAULT_PAGE_SIZE
 
     @pytest.mark.asyncio
+    async def test_detection_context_defaults_to_who_and_what(self, client: AsyncClient, session: AsyncSession):
+        """The GUI no longer builds this string in Flask, so the API must supply a default."""
+        obs = await _make_observable(session, "9.9.9.9", for_detection=False)
+        oid = obs.id
+
+        enabled = await client.patch(f"/detection/{oid}/detection", json={"enabled": True})
+        assert enabled.status_code == 200
+        assert enabled.json()["detection_context"] == "manually enabled by unittest"
+
+        disabled = await client.patch(f"/detection/{oid}/detection", json={"enabled": False})
+        assert disabled.json()["detection_context"] == "manually disabled by unittest"
+
+    @pytest.mark.asyncio
+    async def test_explicit_detection_context_is_kept(self, client: AsyncClient, session: AsyncSession):
+        obs = await _make_observable(session, "9.9.9.10", for_detection=False)
+        r = await client.patch(f"/detection/{obs.id}/detection",
+                               json={"enabled": True, "detection_context": "because reasons"})
+        assert r.json()["detection_context"] == "because reasons"
+
+    @pytest.mark.asyncio
     async def test_toggle_unknown_404(self, client: AsyncClient):
         r = await client.patch("/detection/999999/detection", json={"enabled": True})
         assert r.status_code == 404

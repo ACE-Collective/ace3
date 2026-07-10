@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth import ApiAuthResult
@@ -10,6 +10,7 @@ from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.users import service
 from aceapi_v2.users.schemas import (
+    ApiKeyCreated,
     CatalogEntryRead,
     GroupCreate,
     GroupDelete,
@@ -130,6 +131,53 @@ async def add_permission(
     except service.InvalidPermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": "Permission added successfully"}
+
+
+@router.get("/me/apikey", response_model=ApiKeyCreated)
+async def get_my_api_key(
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+) -> ApiKeyCreated:
+    """Return the *caller's own* API key. Never another user's -- the id comes from the auth result,
+    not the request, so there is no id to tamper with."""
+    if auth.auth_user_id is None:
+        raise HTTPException(status_code=404, detail="not authenticated as a user")
+
+    api_key = await service.get_own_api_key(session, auth.auth_user_id)
+    if not api_key:
+        raise HTTPException(status_code=404, detail="no api key")
+
+    # a credential must not be cached by the browser or any intermediary
+    response.headers["Cache-Control"] = "no-store"
+    return ApiKeyCreated(user_id=auth.auth_user_id, api_key=api_key)
+
+
+@router.post("/{user_id}/apikey", response_model=ApiKeyCreated, status_code=201)
+async def generate_api_key(
+    user_id: int,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+) -> ApiKeyCreated:
+    """Issue a new API key, replacing any existing one. The plaintext key is returned once."""
+    try:
+        api_key = await service.generate_user_api_key(session, user_id)
+    except service.UserNotFoundForApiKeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ApiKeyCreated(user_id=user_id, api_key=api_key)
+
+
+@router.delete("/{user_id}/apikey", status_code=200)
+async def revoke_api_key(
+    user_id: int,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+) -> dict:
+    try:
+        revoked = await service.revoke_user_api_key(session, user_id)
+    except service.UserNotFoundForApiKeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"revoked": revoked}
 
 
 @router.post("/permissions/delete", status_code=200)

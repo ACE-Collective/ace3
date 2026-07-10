@@ -27,6 +27,13 @@ class UserRead(BaseModel):
     queue: str | None = None
     enabled: bool
     timezone: str | None = None
+    has_api_key: bool = False
+
+
+class ApiKeyCreated(BaseModel):
+    """The plaintext key is returned only at creation time."""
+    user_id: int
+    api_key: str
 
 
 class GroupRead(BaseModel):

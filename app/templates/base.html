@@ -122,8 +122,14 @@
                             {{ current_user.display_name }} ({{ current_user.username }})
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="user-dropdown">
-                            {% if current_user.apikey_decrypted %}
-                            <li><a class="dropdown-item" href="#" onclick="copy_to_clipboard('{{current_user.apikey_decrypted}}'); return false;">Copy API Key</a></li>
+                            {# The key is fetched on demand from the v2 API rather than interpolated
+                               here: inlining it put a plaintext credential into the HTML source of
+                               every page. The condition checks apikey_hash so no decryption happens
+                               on page render. The v2 app is served at the same origin (nginx routes
+                               /api/v2) and accepts the Flask session cookie. #}
+                            {% if current_user.apikey_hash %}
+                            <li><a class="dropdown-item" href="#" id="copy_api_key_link"
+                                   data-api-key-url="/api/v2/users/me/apikey">Copy API Key</a></li>
                             {% endif %}
                             <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
                             <li><hr class="dropdown-divider"></li>

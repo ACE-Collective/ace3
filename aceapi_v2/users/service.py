@@ -12,6 +12,7 @@ import pytz
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from saq.crypto import encrypt_chunk
 from saq.database.model import (
     AuthGroup,
     AuthGroupPermission,
@@ -20,6 +21,7 @@ from saq.database.model import (
     AuthUserPermission,
     User,
 )
+from saq.util import sha256_str
 from aceapi_v2.users.schemas import (
     CatalogEntryRead,
     GroupPermissionRead,
@@ -42,6 +44,7 @@ def _user_read(user: User) -> UserRead:
         queue=user.queue,
         enabled=user.enabled,
         timezone=user.timezone,
+        has_api_key=user.apikey_hash is not None,
     )
 
 
@@ -377,3 +380,53 @@ async def revoke_permissions(
 
 def all_timezones() -> list[str]:
     return list(pytz.all_timezones)
+
+
+class UserNotFoundForApiKeyError(Exception):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        super().__init__(f"User {user_id} not found")
+
+
+async def generate_user_api_key(session: AsyncSession, user_id: int) -> str:
+    """Issue a new API key for the user, replacing any existing one. Returns the plaintext key.
+
+    Mirrors aceapi.auth.set_user_api_key: the sha256 is what authentication matches on, and an
+    encrypted copy is kept so the key can be shown to its owner again later.
+    """
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise UserNotFoundForApiKeyError(user_id)
+
+    api_key = str(uuid.uuid4())
+    user.apikey_hash = sha256_str(api_key)
+    user.apikey_encrypted = encrypt_chunk(api_key.encode(errors="ignore"))
+    await session.flush()
+    return api_key
+
+
+async def get_own_api_key(session: AsyncSession, user_id: int) -> str | None:
+    """Decrypt and return a user's own API key, or None if they have none.
+
+    Callers MUST pass the authenticated user's own id -- this returns a credential in plaintext and
+    performs no permission check of its own.
+    """
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise UserNotFoundForApiKeyError(user_id)
+    return user.apikey_decrypted
+
+
+async def revoke_user_api_key(session: AsyncSession, user_id: int) -> bool:
+    """Destroy the user's API key. Returns False if the user had no key. This is not reversible."""
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise UserNotFoundForApiKeyError(user_id)
+
+    if user.apikey_hash is None and user.apikey_encrypted is None:
+        return False
+
+    user.apikey_hash = None
+    user.apikey_encrypted = None
+    await session.flush()
+    return True

@@ -1063,14 +1063,30 @@ def create_api_v2_proxy():
             except (ValueError, KeyError):
                 pass
 
-        # Forward relevant headers (including cookies for auth)
+        # Forward the incoming headers. A previous version copied only Content-Type, Cookie and
+        # Accept, which silently dropped the headers the API relies on: Origin/Sec-Fetch-Site (used
+        # to reject cross-site cookie-authenticated writes) and Authorization/x-ace-auth (header
+        # auth). Forward everything except hop-by-hop headers, which are per-connection.
+        hop_by_hop = {
+            'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+            'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length',
+        }
         headers = {}
+        for env_key, env_value in environ.items():
+            if not env_key.startswith('HTTP_'):
+                continue
+            header_name = env_key[len('HTTP_'):].replace('_', '-').title()
+            if header_name.lower() in hop_by_hop:
+                continue
+            headers[header_name] = env_value
+
         if environ.get('CONTENT_TYPE'):
             headers['Content-Type'] = environ['CONTENT_TYPE']
-        if environ.get('HTTP_COOKIE'):
-            headers['Cookie'] = environ['HTTP_COOKIE']
-        if environ.get('HTTP_ACCEPT'):
-            headers['Accept'] = environ['HTTP_ACCEPT']
+
+        # urllib rewrites Host to the upstream, so pass the browser-facing host separately: the API
+        # compares it against Origin when deciding whether a cookie-authenticated write is same-origin
+        if environ.get('HTTP_HOST'):
+            headers['X-Forwarded-Host'] = environ['HTTP_HOST']
 
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:

@@ -1,11 +1,16 @@
 // Observable detection settings — toggle for_detection and adjust expiration per row.
+//
+// These call the v2 API directly (same origin, authenticated by the Flask session cookie). Flask
+// only renders the page.
 
-function post_form(url, params) {
-    var body = new URLSearchParams(params);
+var DETECTION_API = "/api/v2/detection";
+
+function patch_json(url, body) {
     return fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
     }).then(function(response) {
         if (!response.ok) {
             return response.text().then(function(text) { throw new Error(text || response.statusText); });
@@ -16,7 +21,7 @@ function post_form(url, params) {
 
 $(document).ready(function() {
     // Same jQuery UI datetimepicker configuration the alert page uses for observable expiration
-    // (see saq_analysis.js). Emits "YYYY-MM-DD HH:MM:SS", which is what the server parses.
+    // (see saq_analysis.js). Emits "YYYY-MM-DD HH:MM:SS".
     $(".obs-expires-input").datetimepicker({
         timezone: 0,
         showSecond: false,
@@ -27,13 +32,10 @@ $(document).ready(function() {
     $(".btn-toggle-detection").on("click", function() {
         var row = $(this).closest("tr");
         var observable_id = row.data("observable-id");
-        // currently enabled? then we are disabling.
         var currently_enabled = $(this).data("enabled") === true || $(this).data("enabled") === "true";
-        var new_enabled = !currently_enabled;
 
-        post_form("/ace/admin/detection/toggle", {
-            observable_id: observable_id,
-            enabled: new_enabled ? "true" : "false",
+        patch_json(DETECTION_API + "/" + observable_id + "/detection", {
+            enabled: !currently_enabled,
         }).then(function() {
             window.location.reload();
         }).catch(function(error) {
@@ -49,9 +51,9 @@ $(document).ready(function() {
             alert("Enter an expiration as YYYY-MM-DD HH:MM:SS");
             return;
         }
-        post_form("/ace/admin/detection/expiration", {
-            observable_id: observable_id,
-            expires_on: value,
+        // the picker emits "YYYY-MM-DD HH:MM:SS"; the API takes ISO 8601
+        patch_json(DETECTION_API + "/" + observable_id + "/expiration", {
+            expires_on: value.replace(" ", "T"),
         }).then(function() {
             window.location.reload();
         }).catch(function(error) {
@@ -62,9 +64,8 @@ $(document).ready(function() {
     $(".btn-clear-expiration").on("click", function() {
         var row = $(this).closest("tr");
         var observable_id = row.data("observable-id");
-        post_form("/ace/admin/detection/expiration", {
-            observable_id: observable_id,
-            never_expire: "true",
+        patch_json(DETECTION_API + "/" + observable_id + "/expiration", {
+            expires_on: null,
         }).then(function() {
             window.location.reload();
         }).catch(function(error) {

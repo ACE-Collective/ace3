@@ -21,6 +21,22 @@ class Config:
         self.SECRET_KEY = _get_secret_key()
         self.SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+        # Session cookie hardening. These were previously unset, leaving the behaviour to browser
+        # defaults. The aceapi_v2 app authenticates browser requests with this same cookie, so these
+        # attributes are part of its CSRF story too (see aceapi_v2/dependencies.py).
+        #
+        # SameSite=Lax rather than Strict: Strict would suppress the cookie when a user follows a
+        # link into ACE from an external page (an alert link in chat, say) and they would appear
+        # logged out. Lax still withholds the cookie from cross-site POSTs, which is the CSRF case.
+        self.SESSION_COOKIE_HTTPONLY = True
+        self.SESSION_COOKIE_SAMESITE = "Lax"
+        self.SESSION_COOKIE_SECURE = True
+
+        # flask-login's "remember me" cookie gets the same treatment
+        self.REMEMBER_COOKIE_HTTPONLY = True
+        self.REMEMBER_COOKIE_SAMESITE = "Lax"
+        self.REMEMBER_COOKIE_SECURE = True
+
         self.INSTANCE_NAME = get_config().global_settings.instance_name
 
         # GUI configurations for base template use

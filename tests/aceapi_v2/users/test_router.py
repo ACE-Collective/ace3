@@ -151,6 +151,74 @@ class TestHappyPath:
         assert r.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_api_key_generate_and_revoke(self, client: AsyncClient, session: AsyncSession):
+        from saq.util import is_uuid
+
+        user = await _make_user(session, "rtr_apikey", perms=[])
+        uid = user.id
+
+        created = await client.post(f"/users/{uid}/apikey")
+        assert created.status_code == 201
+        api_key = created.json()["api_key"]
+        assert is_uuid(api_key)
+
+        session.expire_all()
+        refreshed = (await session.execute(select(User).where(User.id == uid))).scalar_one()
+        assert refreshed.apikey_hash is not None
+
+        revoked = await client.delete(f"/users/{uid}/apikey")
+        assert revoked.status_code == 200 and revoked.json()["revoked"] is True
+
+        session.expire_all()
+        refreshed = (await session.execute(select(User).where(User.id == uid))).scalar_one()
+        assert refreshed.apikey_hash is None and refreshed.apikey_encrypted is None
+
+    @pytest.mark.asyncio
+    async def test_me_apikey_returns_only_the_callers_own_key(self, _override_db_session, session: AsyncSession):
+        """GET /users/me/apikey takes its id from the auth result, so no other key is reachable."""
+        from aceapi_v2.users import service as users_service
+
+        caller = await _make_user(session, "rtr_me_caller", perms=[])
+        other = await _make_user(session, "rtr_me_other", perms=[])
+        caller_key = await users_service.generate_user_api_key(session, caller.id)
+        other_key = await users_service.generate_user_api_key(session, other.id)
+        await session.flush()
+
+        async with _client_for(caller) as c:
+            r = await c.get("/users/me/apikey")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["api_key"] == caller_key
+            assert body["api_key"] != other_key
+            assert body["user_id"] == caller.id
+            # a credential must not be cached by the browser or any intermediary
+            assert r.headers.get("cache-control") == "no-store"
+
+    @pytest.mark.asyncio
+    async def test_me_apikey_requires_auth(self, unauth_client: AsyncClient):
+        assert (await unauth_client.get("/users/me/apikey")).status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_me_apikey_404_when_no_key(self, _override_db_session, session: AsyncSession):
+        user = await _make_user(session, "rtr_me_nokey", perms=[])
+        await session.flush()
+        async with _client_for(user) as c:
+            assert (await c.get("/users/me/apikey")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_api_key_unknown_user_404(self, client: AsyncClient):
+        assert (await client.post("/users/999999/apikey")).status_code == 404
+        assert (await client.delete("/users/999999/apikey")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_api_key_requires_user_write(self, _override_db_session, session: AsyncSession):
+        reader = await _make_user(session, "rtr_apikey_reader", perms=[("user", "read")])
+        target = await _make_user(session, "rtr_apikey_target", perms=[])
+        async with _client_for(reader) as c:
+            assert (await c.post(f"/users/{target.id}/apikey")).status_code == 403
+            assert (await c.delete(f"/users/{target.id}/apikey")).status_code == 403
+
+    @pytest.mark.asyncio
     async def test_grant_and_revoke_permission(self, client: AsyncClient, session: AsyncSession):
         user = await _make_user(session, "rtr_grant", perms=[])
         uid = user.id

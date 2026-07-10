@@ -276,6 +276,76 @@ class TestGroupsAndPermissions:
         assert next(p for p in perms if p.minor == "lc").effect == "DENY"
 
 
+class TestApiKeys:
+    @pytest.mark.asyncio
+    async def test_generate_sets_hash_and_encrypted_copy(self, session: AsyncSession):
+        from saq.util import is_uuid, sha256_str
+
+        user = await _make_user(session, "svc_apikey_gen")
+        assert user.apikey_hash is None
+
+        api_key = await service.generate_user_api_key(session, user.id)
+        assert is_uuid(api_key)
+        assert user.apikey_hash == sha256_str(api_key)
+        assert user.apikey_encrypted is not None
+        # the encrypted copy round-trips back to the same key
+        assert user.apikey_decrypted == api_key
+
+    @pytest.mark.asyncio
+    async def test_generate_replaces_existing_key(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_replace")
+        first = await service.generate_user_api_key(session, user.id)
+        second = await service.generate_user_api_key(session, user.id)
+        assert first != second
+        assert user.apikey_decrypted == second
+
+    @pytest.mark.asyncio
+    async def test_revoke_clears_both_columns(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_revoke")
+        await service.generate_user_api_key(session, user.id)
+
+        assert await service.revoke_user_api_key(session, user.id) is True
+        assert user.apikey_hash is None
+        assert user.apikey_encrypted is None
+
+    @pytest.mark.asyncio
+    async def test_revoke_is_false_when_no_key(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_none")
+        assert await service.revoke_user_api_key(session, user.id) is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_raises(self, session: AsyncSession):
+        with pytest.raises(service.UserNotFoundForApiKeyError):
+            await service.generate_user_api_key(session, 999999)
+        with pytest.raises(service.UserNotFoundForApiKeyError):
+            await service.revoke_user_api_key(session, 999999)
+        with pytest.raises(service.UserNotFoundForApiKeyError):
+            await service.get_own_api_key(session, 999999)
+
+    @pytest.mark.asyncio
+    async def test_get_own_api_key_round_trips(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_own")
+        assert await service.get_own_api_key(session, user.id) is None
+
+        api_key = await service.generate_user_api_key(session, user.id)
+        assert await service.get_own_api_key(session, user.id) == api_key
+
+        await service.revoke_user_api_key(session, user.id)
+        assert await service.get_own_api_key(session, user.id) is None
+
+    @pytest.mark.asyncio
+    async def test_has_api_key_reflected_in_management_view(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_view")
+        await session.flush()
+
+        view = await service.get_management_view(session)
+        assert next(u for u in view.users if u.id == user.id).has_api_key is False
+
+        await service.generate_user_api_key(session, user.id)
+        view = await service.get_management_view(session)
+        assert next(u for u in view.users if u.id == user.id).has_api_key is True
+
+
 class TestManagementViewAndCatalog:
     @pytest.mark.asyncio
     async def test_management_view_shape(self, session: AsyncSession):
