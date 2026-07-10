@@ -14,17 +14,22 @@ class ACECronConfig(ServiceConfig):
     cron_config_path: str = Field(..., description="the path to the cron configuration file")
 
 
+async def _run_cron(cron: Cron):
+    # add_signal_handler requires the running loop, and only works on the main thread
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, cron.signal_shutdown)
+    loop.add_signal_handler(signal.SIGTERM, cron.signal_shutdown)
+    try:
+        await cron.run()
+    finally:
+        loop.remove_signal_handler(signal.SIGINT)
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 class ACECronService(ACEServiceInterface):
     def start(self):
         cron = Cron(get_service_config(SERVICE_CRON).cron_config_path)
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGINT, cron.signal_shutdown)
-        loop.add_signal_handler(signal.SIGTERM, cron.signal_shutdown)
-        try:
-            loop.run_until_complete(cron.run())
-        finally:
-            loop.remove_signal_handler(signal.SIGINT)
-            loop.remove_signal_handler(signal.SIGTERM)
+        asyncio.run(_run_cron(cron))
 
     def wait_for_start(self, timeout: float = 5) -> bool:
         return True
