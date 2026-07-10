@@ -140,7 +140,7 @@ class IOCExtractionAnalyzer(AnalysisModule):
         )
 
         try:
-            with open(yaml_path, "r") as f:
+            with open(yaml_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         except Exception as e:
             logging.warning(f"failed to load IOC patterns YAML {yaml_path}: {e}")

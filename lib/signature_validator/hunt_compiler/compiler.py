@@ -108,7 +108,7 @@ def _process_yaml(
 
     packaged_rel = _check_and_packaged_rel(abs_path, abs_path, package_root)
 
-    with open(abs_path, "r") as fp:
+    with open(abs_path, "r", encoding="utf-8") as fp:
         raw = fp.read()
 
     parsed = yaml.safe_load(raw)
@@ -261,7 +261,7 @@ def _add_query_asset(
 ) -> None:
     if packaged_rel in assets or not os.path.isfile(abs_path):
         return
-    with open(abs_path, "r") as fp:
+    with open(abs_path, "r", encoding="utf-8") as fp:
         content = fp.read()
     content = _rewrite_query_includes(
         content, os.path.dirname(abs_path), package_root, assets
@@ -282,7 +282,7 @@ def _add_query_include_asset(
 ) -> None:
     if packaged_rel in assets or not os.path.isfile(abs_path):
         return
-    with open(abs_path, "r") as fp:
+    with open(abs_path, "r", encoding="utf-8") as fp:
         content = fp.read()
     content = _rewrite_query_includes(
         content, os.path.dirname(abs_path), package_root, assets
@@ -334,7 +334,9 @@ def _add_support_asset(
 def _read_file_content(abs_path: str) -> tuple[str, str]:
     """Read a file as text if possible, otherwise as base64."""
     try:
-        with open(abs_path, "r") as fp:
+        # the encoding must be explicit: without it the locale decides, and under a
+        # C/POSIX locale a utf-8 file would fail to decode and be packaged as binary
+        with open(abs_path, "r", encoding="utf-8") as fp:
             return fp.read(), "text"
     except (UnicodeDecodeError, ValueError):
         with open(abs_path, "rb") as fp:

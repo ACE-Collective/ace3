@@ -126,7 +126,7 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
     logging.debug(f"loading {path}")
 
     try:
-        with open(path, "r") as fp:
+        with open(path, "r", encoding="utf-8") as fp:
             loaded_dict = yaml.safe_load(fp)
     except Exception as e:
         logging.error(f"unable to load file {path}: {e}")

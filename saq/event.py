@@ -47,7 +47,7 @@ def load_auto_close_criteria(file_path: Optional[str]=None) -> list[AutoCloseCri
     if file_path is None:
         file_path = os.path.join(get_global_runtime_settings().analyst_data_dir, get_config().events.autoclose_path)
 
-    with open(file_path, "r") as fp:
+    with open(file_path, "r", encoding="utf-8") as fp:
         content = yaml_load(fp, Loader=Loader)
         if not content:
             return []

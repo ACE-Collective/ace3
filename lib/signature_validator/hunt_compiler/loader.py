@@ -33,7 +33,7 @@ def load_compiled_hunt(compiled: CompiledHunt, temp_dir: str) -> str:
                 fp.write(base64.b64decode(asset.content))
         else:
             content = asset.content.replace(PKG_TOKEN, expansion)
-            with open(abs_path, "w") as fp:
+            with open(abs_path, "w", encoding="utf-8") as fp:
                 fp.write(content)
 
         if asset.kind == "executable" and asset.permissions is not None:

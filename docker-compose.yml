@@ -49,6 +49,8 @@
 #
 
 x-common-env: &common-env
+  PYTHONUTF8: "1"
+  LANG: C.UTF-8
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS: ${SAQ_CONFIG_PATHS:-}
   ACE_INSTANCE_TYPE: DEV # possible values: DEV, QA, PRODUCTION

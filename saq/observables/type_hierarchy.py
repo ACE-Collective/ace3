@@ -101,21 +101,23 @@ class TypeHierarchy:
     def load_yaml_config(self, path: str) -> None:
         """Load the per-type YAML config and rebuild.
 
-        Errors (missing file, bad YAML, cycles, schema violations) are logged
-        and the prior state is preserved.
+        Errors (missing file, unreadable file, bad encoding, bad YAML, cycles,
+        schema violations) are logged and the prior state is preserved.
 
         Also records ``path`` and the file's mtime so :meth:`_maybe_reload`
         can detect changes on subsequent accessor calls.
         """
         try:
             mtime = os.stat(path).st_mtime
-            with open(path, "r") as f:
+            # the encoding must be explicit: under an embedded interpreter (uwsgi)
+            # utf-8 mode is off, so the locale decides and a C/POSIX locale means ascii
+            with open(path, "r", encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             config = ObservableTypesFile.model_validate(raw)
         except FileNotFoundError:
             logging.error("observable types config not found at %s", path)
             return
-        except (yaml.YAMLError, ValidationError) as e:
+        except (yaml.YAMLError, ValidationError, UnicodeDecodeError, OSError) as e:
             logging.error("failed to parse observable types config %s: %s", path, e)
             return
 

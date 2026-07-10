@@ -325,6 +325,107 @@ def test_get_all_valid_types_combines_yaml_and_python():
         h._yaml_declared_types = declared_snapshot
 
 
+@pytest.mark.unit
+def test_yaml_non_ascii_description_is_decoded(tmpdir):
+    """A utf-8 config must load regardless of the process locale."""
+    h = TypeHierarchy()
+    path = str(tmpdir / "types.yaml")
+    em_dash = "—"
+    with open(path, "wb") as f:
+        f.write(
+            (
+                "types:\n"
+                "  falcon_host_id:\n"
+                f'    description: "Falcon agent ID {em_dash} unique per host"\n'
+            ).encode("utf-8")
+        )
+
+    h.load_yaml_config(path)
+
+    assert h.description_for("falcon_host_id") == f"Falcon agent ID {em_dash} unique per host"
+
+
+@pytest.mark.unit
+def test_yaml_undecodable_bytes_logs_and_state_preserved(caplog):
+    """An undecodable config is logged, not raised, and prior state survives."""
+    h = TypeHierarchy()
+    good_yaml = _write_yaml(
+        """
+        types:
+          return_path: { extends: email_address }
+        """
+    )
+    h.load_yaml_config(good_yaml)
+    assert h.parent_of("return_path") == "email_address"
+
+    import os
+    import tempfile
+
+    fd, bad_path = tempfile.mkstemp(suffix=".yaml")
+    with os.fdopen(fd, "wb") as f:
+        # \xff\xfe is not valid utf-8 in any position
+        f.write(b'types:\n  bad:\n    description: "\xff\xfe"\n')
+
+    with caplog.at_level("ERROR"):
+        h.load_yaml_config(bad_path)
+
+    assert h.parent_of("return_path") == "email_address"
+    assert h.description_for("bad") is None
+    assert any("failed to parse" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_yaml_loads_under_ascii_locale():
+    """Regression: uwsgi embeds python with utf-8 mode off, so a C locale means
+    the default open() encoding is ascii. The loader must not depend on it."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    import saq
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(saq.__file__)))
+    script = textwrap.dedent(
+        """
+        import locale, sys
+        assert locale.getpreferredencoding(False).lower() in ("ansi_x3.4-1968", "ascii"), (
+            "expected an ascii locale, got %s" % locale.getpreferredencoding(False))
+        assert sys.flags.utf8_mode == 0, "expected utf-8 mode off"
+
+        from saq.observables.type_hierarchy import TypeHierarchy
+        h = TypeHierarchy()
+        h.load_yaml_config(sys.argv[1])
+        assert h.description_for("t") == "a \\u2014 b", ascii(h.description_for("t"))
+        print("OK")
+        """
+    )
+
+    fd, yaml_path = __import__("tempfile").mkstemp(suffix=".yaml")
+    with os.fdopen(fd, "wb") as f:
+        f.write('types:\n  t:\n    description: "a — b"\n'.encode("utf-8"))
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PYTHONPATH": repo_root,
+            "PYTHONUTF8": "0",
+            "PYTHONCOERCECLOCALE": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-c", script, yaml_path],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=repo_root,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "OK" in result.stdout
+
+
 def _write_yaml(content: str) -> str:
     import os
     import tempfile

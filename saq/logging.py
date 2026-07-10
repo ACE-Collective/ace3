@@ -231,7 +231,7 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
     assert isinstance(logging_config_path, str) and logging_config_path
 
     try:
-        with open(logging_config_path, "r") as config_file:
+        with open(logging_config_path, "r", encoding="utf-8") as config_file:
             logging_config = yaml.safe_load(config_file)
 
         if not isinstance(logging_config, dict):

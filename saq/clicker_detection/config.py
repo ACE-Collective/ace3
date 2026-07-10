@@ -65,7 +65,7 @@ def load_clicker_config(config_path: str) -> dict:
     (missing file, parse error) so callers degrade to a clean no-op."""
     path = resolve_config_path(config_path)
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except FileNotFoundError:
         logging.debug("clicker detection config not found: %s", path)

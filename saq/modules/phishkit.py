@@ -257,7 +257,7 @@ class PhishkitAnalyzer(AnalysisModule):
     def _load_deny_patterns(self):
         """Load deny_crawl_url_patterns from the phishkit YAML config."""
         try:
-            with open(self._yaml_config_path, "r") as fp:
+            with open(self._yaml_config_path, "r", encoding="utf-8") as fp:
                 data = yaml.safe_load(fp) or {}
         except Exception as e:
             logging.warning(

@@ -613,7 +613,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             self._rules_signature_version = SIGNATURE_VERSION_UNKNOWN
 
         try:
-            with open(yaml_path, "r") as f:
+            with open(yaml_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         except Exception as e:
             logging.warning(f"failed to load observable modifier rules YAML {yaml_path}: {e}")

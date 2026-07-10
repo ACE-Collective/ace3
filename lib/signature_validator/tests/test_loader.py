@@ -1,6 +1,8 @@
 import os
 import stat
 import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -340,6 +342,89 @@ class TestLoadVersionGuard:
         )
         with pytest.raises(ValueError, match="unsupported CompiledHunt version"):
             load_compiled_hunt(ch, str(tmp_path))
+
+
+class TestLoadNonAscii:
+    """A hunt containing non-ascii characters must materialize regardless of locale."""
+
+    ARROW = "→"
+
+    def test_writes_non_ascii_yaml(self, tmp_path):
+        content = f"rule:\n  description: source {self.ARROW} destination\n"
+        ch = CompiledHunt(
+            target="hunts/test/test.yaml",
+            package_root="/tmp",
+            assets=[EmbeddedFile(kind="yaml", path="hunts/test/test.yaml", content=content)],
+        )
+
+        target_path = load_compiled_hunt(ch, str(tmp_path))
+
+        with open(target_path, encoding="utf-8") as f:
+            assert f.read() == content
+
+    def test_writes_non_ascii_query(self, tmp_path):
+        content = f"index=proxy note=\"a {self.ARROW} b\"\n"
+        ch = CompiledHunt(
+            target="hunts/test/test.yaml",
+            package_root="/tmp",
+            assets=[
+                EmbeddedFile(kind="yaml", path="hunts/test/test.yaml", content="rule: {}"),
+                EmbeddedFile(kind="query", path="hunts/test/test.query", content=content),
+            ],
+        )
+
+        load_compiled_hunt(ch, str(tmp_path))
+
+        query_path = tmp_path / "hunts" / "test" / "test.query"
+        with open(query_path, encoding="utf-8") as f:
+            assert f.read() == content
+
+    def test_loads_under_ascii_locale(self, tmp_path):
+        """Regression: uwsgi embeds python with utf-8 mode off, so a C locale means
+        the default open() encoding is ascii. The loader must not depend on it."""
+        import hunt_compiler
+
+        package_root = os.path.dirname(os.path.dirname(os.path.abspath(hunt_compiler.__file__)))
+        script = textwrap.dedent(
+            """
+            import locale, sys
+            assert locale.getpreferredencoding(False).lower() in ("ansi_x3.4-1968", "ascii"), (
+                "expected an ascii locale, got %s" % locale.getpreferredencoding(False))
+            assert sys.flags.utf8_mode == 0, "expected utf-8 mode off"
+
+            from hunt_compiler import CompiledHunt, EmbeddedFile, load_compiled_hunt
+            content = "rule:\\n  description: source \\u2192 destination\\n"
+            ch = CompiledHunt(
+                target="hunts/test/test.yaml",
+                package_root="/tmp",
+                assets=[EmbeddedFile(kind="yaml", path="hunts/test/test.yaml", content=content)],
+            )
+            target_path = load_compiled_hunt(ch, sys.argv[1])
+            with open(target_path, encoding="utf-8") as f:
+                written = f.read()
+            assert written == content, ascii(written)
+            print("OK")
+            """
+        )
+
+        env = dict(os.environ)
+        env.update(
+            {
+                "PYTHONPATH": package_root,
+                "PYTHONUTF8": "0",
+                "PYTHONCOERCECLOCALE": "0",
+                "LC_ALL": "C",
+                "LANG": "C",
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8=0", "-c", script, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert "OK" in result.stdout
 
 
 class TestExecutableScripts:
