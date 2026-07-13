@@ -25,7 +25,12 @@ function update_status_display(status, is_locked) {
 function update_lock_ui(is_locked) {
     $(".lock-dependent").each(function() {
         var el = $(this);
+        // <button>/<input> honor the disabled property; <a> dropdown items do not, so also
+        // toggle Bootstrap's .disabled class (which greys the item and sets pointer-events:none,
+        // blocking the wired click handler) and mirror the state with aria-disabled.
         el.prop("disabled", is_locked);
+        el.toggleClass("disabled", is_locked);
+        el.attr("aria-disabled", is_locked ? "true" : null);
         var tooltip = bootstrap.Tooltip.getInstance(el[0]);
         if (tooltip) tooltip.dispose();
         if (is_locked) {

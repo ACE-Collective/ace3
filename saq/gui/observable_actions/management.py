@@ -17,6 +17,7 @@ class ObservableActionAddTag(ObservableAction):
         self.description = "Add Tag"
         self.action_path = 'analysis/observable_actions/input_tag.html'
         self.icon = 'plus'
+        self.modifies_analysis = True
 
 class ObservableActionAdjustExpiration(ObservableAction):
     def __init__(self, *args, **kwargs):

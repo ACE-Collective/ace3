@@ -426,6 +426,81 @@ class TestSorting:
             })
             assert gather_remediation_events(root) == [zach_early, alice_late]
 
+    def test_subsecond_event_time_does_not_override_when_tiebreak(self):
+        # Each source resolves event_time from its own authority: a vendor probe
+        # reports a whole second, while ACE's fallback carries microseconds
+        # through its JSON round-trip. Both render as "17:05:13" in the table,
+        # so the visible "When" column must decide the order.
+        vendor_received = datetime(2026, 7, 8, 17, 5, 13, 0, tzinfo=timezone.utc)
+        ace_received = datetime(2026, 7, 8, 17, 5, 13, 487000, tzinfo=timezone.utc)
+
+        vendor_late = _ev("vendor", datetime(2026, 7, 8, 17, 22, 38, tzinfo=timezone.utc),
+                          event_time=vendor_received)
+        ace_early = _ev("ACE", datetime(2026, 7, 8, 17, 10, 29, tzinfo=timezone.utc),
+                        event_time=ace_received)
+
+        with _temporary_provider_class() as ProviderClass:
+            root = _fake_root(analyses_by_class={
+                ProviderClass: [_provider_analysis([vendor_late, ace_early])],
+            })
+            assert gather_remediation_events(root) == [ace_early, vendor_late]
+
+    def test_subsecond_timestamp_does_not_override_target_tiebreak(self):
+        # Same message, same displayed "When" — only microseconds differ. Target
+        # (a visible column) breaks the tie, not the invisible sub-second part.
+        received = datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc)
+
+        bob = _ev("vendor", datetime(2026, 5, 6, 12, 5, 0, tzinfo=timezone.utc),
+                  event_time=received, target="bob@example.com")
+        alice = _ev("vendor", datetime(2026, 5, 6, 12, 5, 0, 750000, tzinfo=timezone.utc),
+                    event_time=received, target="alice@example.com")
+
+        with _temporary_provider_class() as ProviderClass:
+            root = _fake_root(analyses_by_class={
+                ProviderClass: [_provider_analysis([bob, alice])],
+            })
+            assert gather_remediation_events(root) == [alice, bob]
+
+    def test_event_time_truncates_rather_than_rounds(self):
+        # 12.900000 renders as "12" and must stay above "13" — rounding would
+        # push it to 13 and flip these rows.
+        early = _ev("vendor", datetime(2026, 5, 6, 13, 0, tzinfo=timezone.utc),
+                    event_time=datetime(2026, 5, 6, 12, 0, 12, 900000, tzinfo=timezone.utc))
+        late = _ev("vendor", datetime(2026, 5, 6, 12, 30, tzinfo=timezone.utc),
+                   event_time=datetime(2026, 5, 6, 12, 0, 13, 0, tzinfo=timezone.utc))
+
+        with _temporary_provider_class() as ProviderClass:
+            root = _fake_root(analyses_by_class={
+                ProviderClass: [_provider_analysis([late, early])],
+            })
+            assert gather_remediation_events(root) == [early, late]
+
+    def test_fully_tied_rows_order_deterministically_by_source(self):
+        # Identical through target: source keeps the rendering stable even though
+        # the aggregator's input order isn't (no ORDER BY on remediation_history).
+        received = datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 5, 6, 12, 5, tzinfo=timezone.utc)
+
+        def _pair():
+            ace = _ev("ACE", ts, event_time=received, target="alice@example.com")
+            vendor = _ev("vendor", ts, event_time=received, target="alice@example.com")
+            return ace, vendor
+
+        ace, vendor = _pair()
+        with _temporary_provider_class() as ProviderClass:
+            root = _fake_root(analyses_by_class={
+                ProviderClass: [_provider_analysis([vendor, ace])],
+            })
+            assert gather_remediation_events(root) == [ace, vendor]
+
+        # Reversed input yields the same rendering.
+        ace, vendor = _pair()
+        with _temporary_provider_class() as ProviderClass:
+            root = _fake_root(analyses_by_class={
+                ProviderClass: [_provider_analysis([ace, vendor])],
+            })
+            assert gather_remediation_events(root) == [ace, vendor]
+
 
 # ---------------------------------------------------------------------------
 # ACE's own remediations from the DB

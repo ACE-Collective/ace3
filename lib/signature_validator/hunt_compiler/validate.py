@@ -257,12 +257,14 @@ def parse_args():
         help="Print the original (pre-correlation) query results returned in the response.",
     )
     parser.add_argument(
+        "-sq",
         "--save-original-results",
         type=str,
         metavar="FILE",
         help="Save the original (pre-correlation) query results from the response to the given JSON file.",
     )
     parser.add_argument(
+        "-lq",
         "--query-results-file",
         type=str,
         metavar="FILE",
@@ -271,12 +273,14 @@ def parse_args():
              "Use this to iterate on correlate: YAML against a previously captured event list.",
     )
     parser.add_argument(
+        "-sc",
         "--save-correlate-results",
         type=str,
         metavar="FILE",
         help="Save the correlate (follow-up) query results from the response to the given JSON file.",
     )
     parser.add_argument(
+        "-lc",
         "--correlate-results-file",
         type=str,
         metavar="FILE",

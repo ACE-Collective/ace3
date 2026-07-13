@@ -38,7 +38,7 @@
 {% if observable_presenter.available_actions %}
 
 <span class="dropdown">
-    <button class="btn btn-outline-dark btn-xs lock-dependent" type="button" id="action_{{unique_reference}}" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+    <button class="btn btn-outline-dark btn-xs" type="button" id="action_{{unique_reference}}" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
         <span class="bi bi-caret-down-fill"></span>
     </button>
     <ul class="dropdown-menu" aria-labelledby="action_{{unique_reference}}">
@@ -54,7 +54,7 @@
 		{% elif 'file_upload_vt' in action.name and not ace_config.gui.upload_vt %}
                     <li><a class="dropdown-item" disabled tabindex="-1"><span class="bi bi-{{action.icon}}"></span>  <del>{{action.description}}</del></a></li>
 		{% else %}
-                    <li><a class="dropdown-item" style="cursor: pointer" id="action_{{action.name}}_{{unique_reference}}"><span class="bi bi-{{action.icon}}"></span>  {{action.description}}</a></li>
+                    <li><a class="dropdown-item{% if action.modifies_analysis %} lock-dependent{% endif %}" style="cursor: pointer" id="action_{{action.name}}_{{unique_reference}}"><span class="bi bi-{{action.icon}}"></span>  {{action.description}}</a></li>
 		{% endif %}
             {% endif %}
         {% endfor %}

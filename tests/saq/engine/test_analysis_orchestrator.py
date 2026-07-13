@@ -1,10 +1,12 @@
 import os
 import shutil
+import uuid
 
 import pytest
 from unittest.mock import Mock, patch
 
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_TEST, QUEUE_DEFAULT
+from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.execution_context import EngineExecutionContext
@@ -387,4 +389,111 @@ class TestApplyDetectionQueue:
         orchestrator._apply_detection_queue(root)
 
         assert root.queue == "experimental"
+
+
+@pytest.mark.unit
+class TestSyncAlertToDatabaseBuildIndex:
+    """_sync_alert_to_database must rebuild the observable index (build_index=True) whenever
+    analysis was aborted, even while root.delayed is still True.
+
+    Regression: an alert that timed out with outstanding delayed analysis had its delayed
+    requests cleared and abandoned, but root.delayed (computed from the in-memory tree) stayed
+    True, so alert.sync(build_index=False) skipped the rebuild and the alert's observables never
+    reached observable_mapping -- making it unfindable by observable filter. Since the delayed
+    analysis was abandoned, no later pass ever rebuilt the index."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        config_manager = Mock(spec=ConfigurationManager)
+        config_manager.config = Mock()
+        return AnalysisOrchestrator(
+            configuration_manager=config_manager,
+            analysis_executor=Mock(spec=AnalysisExecutor),
+            workload_manager=Mock(),
+            lock_manager=Mock(),
+        )
+
+    @pytest.mark.parametrize("delayed,analysis_aborted,expected_build_index", [
+        # normal delayed pass: skip the rebuild, a later non-delayed pass will do it
+        (True, False, False),
+        # not delayed: always rebuild (existing behavior)
+        (False, False, True),
+        # THE FIX: aborted while delayed -> force the rebuild (no later pass will run)
+        (True, True, True),
+        # aborted and not delayed -> rebuild either way
+        (False, True, True),
+    ])
+    def test_build_index_decision(self, orchestrator, delayed, analysis_aborted, expected_build_index):
+        mock_alert = Mock()
+        mock_session = Mock()
+        mock_session.query.return_value.filter.return_value.first.return_value = mock_alert
+
+        context = Mock(spec=EngineExecutionContext)
+        context.root = Mock()
+        context.root.uuid = str(uuid.uuid4())
+        context.root.delayed = delayed
+        context.analysis_aborted = analysis_aborted
+
+        with patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
+            orchestrator._sync_alert_to_database(context)
+
+        mock_alert.sync.assert_called_once_with(build_index=expected_build_index)
+
+
+@pytest.mark.integration
+class TestSyncAlertToDatabaseRebuildIndexIntegration:
+    """End-to-end variant of TestSyncAlertToDatabaseBuildIndex against a real alert + DB:
+    an observable discovered during a delayed, then aborted, analysis must become searchable
+    (present in observable_mapping) only when the abort forces the index rebuild."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        config_manager = Mock(spec=ConfigurationManager)
+        config_manager.config = Mock()
+        return AnalysisOrchestrator(
+            configuration_manager=config_manager,
+            analysis_executor=Mock(spec=AnalysisExecutor),
+            workload_manager=Mock(),
+            lock_manager=Mock(),
+        )
+
+    def test_aborted_delayed_alert_rebuilds_observable_index(self, orchestrator, monkeypatch):
+        # 1. an existing alert in CORRELATION mode: only 'initial_obs' is indexed at creation
+        root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+        root.initialize_storage()
+        root.add_observable_by_spec(F_TEST, "initial_obs")
+        root.save()
+        ALERT(root)  # sync(build_index=True) -> observable_mapping has initial_obs
+
+        # 2. an observable discovered later, during analysis, and persisted to the tree
+        root.add_observable_by_spec(F_TEST, "discovered_during_analysis")
+        root.save()
+
+        # 3. outstanding delayed analysis at the moment analysis is aborted.
+        # keep the original no-op setter so alert.load() (which assigns root.delayed) still works.
+        monkeypatch.setattr(type(root), "delayed", property(lambda self: True, lambda self, value: None))
+
+        context = Mock(spec=EngineExecutionContext)
+        context.root = root
+
+        def indexed_values():
+            # Observable.value comes back as bytes from the DB; normalize to str
+            reloaded = get_alert_by_uuid(root.uuid)
+            reloaded.load()
+            return {
+                v.decode() if isinstance(v, bytes) else v
+                for v in (o.value for o in reloaded.get_observables())
+            }
+
+        # not aborted + delayed -> index deliberately NOT rebuilt yet
+        context.analysis_aborted = False
+        orchestrator._sync_alert_to_database(context)
+        values = indexed_values()
+        assert "initial_obs" in values
+        assert "discovered_during_analysis" not in values
+
+        # aborted (timeout / exception) while delayed -> rebuild is forced despite root.delayed
+        context.analysis_aborted = True
+        orchestrator._sync_alert_to_database(context)
+        assert "discovered_during_analysis" in indexed_values()
 

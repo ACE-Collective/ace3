@@ -57,6 +57,7 @@ class ObservableActionCollectFile(ObservableAction):
         self.description = "Collect File"
         self.action_path = 'analysis/observable_actions/collect_file.html'
         self.icon = 'save-file'
+        self.modifies_analysis = True
 
 class ObservableActionFileRender(ObservableAction):
     def __init__(self, *args, **kwargs):
@@ -65,3 +66,4 @@ class ObservableActionFileRender(ObservableAction):
         self.description = "Attempt to render screenshot of HTML"
         self.action_path = 'analysis/observable_actions/file_render.html'
         self.icon = 'camera'
+        self.modifies_analysis = True

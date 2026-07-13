@@ -250,6 +250,12 @@ class AnalysisOrchestrator:
             except Exception as save_error:
                 logging.error(f"unable to save failed analysis {execution_context.root}: {save_error}")
 
+            # analysis was aborted: the outstanding delayed-analysis requests are being
+            # abandoned below, so the in-memory root.delayed flag is now stale and there
+            # will be no follow-up pass to rebuild the observable index. Mark the context
+            # so the final sync forces a build_index (see _sync_alert_to_database).
+            execution_context.analysis_aborted = True
+
             # clear any outstanding delayed analysis requests
             try:
                 self.workload_manager.clear_delayed_analysis_requests(execution_context.root)
@@ -464,8 +470,13 @@ class AnalysisOrchestrator:
             alert = session.query(Alert).filter(Alert.uuid == execution_context.root.uuid).first()
             if alert:
                 alert.load()
-                # do not rebuild the index if there are outstanding analysis requests
-                alert.sync(build_index=not execution_context.root.delayed)
+                # do not rebuild the index if there are outstanding analysis requests --
+                # a later non-delayed pass will do the final rebuild. But if analysis was
+                # aborted (timeout / exception) the delayed requests were abandoned and
+                # root.delayed is stale, so force the rebuild now or the observables never
+                # make it into observable_mapping (and the alert becomes unsearchable by them).
+                build_index = (not execution_context.root.delayed) or execution_context.analysis_aborted
+                alert.sync(build_index=build_index)
         except Exception as e:
             logging.error(f"unable to sync alert {execution_context.root}: {e}")
             report_exception()

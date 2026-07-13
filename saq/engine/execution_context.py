@@ -18,6 +18,11 @@ class EngineExecutionContext:
         # this is set to True to cancel the analysis going on in the process() function
         self._cancel_analysis_flag: bool = False
 
+        # set True when analysis was aborted (e.g. timeout / exception) and its outstanding
+        # delayed-analysis requests were cleared, meaning root.delayed is now stale and no
+        # follow-up pass will rebuild the observable index
+        self.analysis_aborted: bool = False
+
     @property
     def root(self) -> RootAnalysis:
         """Returns the RootAnalysis object the current process is analyzing."""

@@ -11,6 +11,7 @@ class ObservableActionCheckForClickers(ObservableAction):
         self.description = "Check for clickers"
         self.action_path = 'analysis/observable_actions/check_for_clickers.html'
         self.icon = 'search'
+        self.modifies_analysis = True
 
 
 class ObservableActionOpenSplunkClickerSearch(ObservableAction):

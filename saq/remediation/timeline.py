@@ -10,7 +10,9 @@ Three pieces:
 - ``RemediationEventProvider``: the duck-typed protocol an Analysis implements
   to contribute events.
 - ``gather_remediation_events()``: walks an alert's analysis tree and returns
-  all events from all providers, sorted by timestamp ascending.
+  all events from all providers, sorted the way the UI table reads: by
+  ``event_time``, then ``timestamp``, then ``target`` — all compared at the
+  whole-second precision the table displays.
 
 The aggregator is intentionally tolerant: any provider exception or unparseable
 event is logged and skipped so a misbehaving integration cannot prevent the
@@ -49,6 +51,17 @@ def _format_duration(td: timedelta) -> str:
     d, rem = divmod(total, 86400)
     h = rem // 3600
     return f"{d}d {h}h" if h else f"{d}d"
+
+
+def _display_precision(dt: datetime) -> datetime:
+    """Truncate to whole seconds — the precision the timeline template renders.
+
+    The UI formats both datetime columns with ``strftime('%Y-%m-%d %H:%M:%S')``.
+    Sorting on the full-precision values makes rows that *look* tied sort by an
+    invisible sub-second component, so the visible tiebreaker columns never get
+    consulted. Truncating (not rounding) here matches strftime exactly.
+    """
+    return dt.replace(microsecond=0)
 
 
 @dataclass
@@ -164,7 +177,11 @@ def gather_remediation_events(
        email's ``received_time``.
 
     Returns events sorted by ``event_time`` ascending, then ``timestamp``
-    ascending. Events lacking ``event_time`` sort to the end.
+    ascending, then ``target``. Both datetimes are compared truncated to whole
+    seconds — the precision the timeline table renders — so rows that display an
+    identical Event Time fall through to the visible tiebreaker columns rather
+    than ordering on invisible microseconds. Events lacking ``event_time`` sort
+    to the end.
 
     Cost model: ``load_details()`` reads the analysis details JSON from disk and
     is intentionally avoided on the alert page by default. The aggregator only
@@ -225,13 +242,28 @@ def gather_remediation_events(
     #   3. target         (the "Target" column — recipient, breaks ties when
     #                      multiple events fire at the same time on the same
     #                      message but for different recipients)
+    #   4. source, description  (final deterministic tiebreakers)
+    #
+    # The datetimes are compared at *display precision* (whole seconds). Each
+    # source resolves event_time from its own authority for the same message —
+    # one platform reports a whole second, ACE's fallback carries microseconds
+    # through its JSON round-trip — so full-precision comparison makes rows that
+    # render as an identical Event Time sort by an invisible sub-second
+    # component, and the visible tiebreakers below never get consulted.
+    #
+    # Coarsening the leading keys produces more exact ties, and the input order
+    # is not stable (the remediation_history query has no ORDER BY, and three
+    # sources are concatenated). source/description keep a fully-tied set
+    # rendering identically on every page load. Every key is a displayed column.
+    #
     # Events lacking event_time slot to the bottom of the table — they have no
     # message context to anchor them in the per-message chronology.
     def _sort_key(e: RemediationEvent):
-        target = e.target or ""
+        when = _display_precision(e.timestamp)
+        tail = (e.target or "", e.source or "", e.description or "")
         if e.event_time is None:
-            return (1, e.timestamp, e.timestamp, target)
-        return (0, e.event_time, e.timestamp, target)
+            return (1, when, when) + tail
+        return (0, _display_precision(e.event_time), when) + tail
 
     events.sort(key=_sort_key)
     return events
