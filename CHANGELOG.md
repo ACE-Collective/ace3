@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.77] - 2026-07-13
+
+- [Add shorthand aliases for saving and loading query results](https://github.com/ACE-Collective/ace3/pull/390)
+- [Allows non-modifying observable actions during analysis](https://github.com/ACE-Collective/ace3/pull/391)
+- [Builds observable index on aborted/timed out analysis](https://github.com/ACE-Collective/ace3/pull/392)
+- [Sorts entries in remediation timeline by their display precision](https://github.com/ACE-Collective/ace3/pull/384)
+
 ## [3.0.76] - 2026-07-09
 
 - [adds dnspython to support new hunt capabilities](https://github.com/ACE-Collective/ace3/pull/380)
