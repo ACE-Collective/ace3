@@ -1,5 +1,4 @@
 from flask import current_app, render_template
-from flask_login import login_required
 
 from app.blueprints import admin
 
@@ -25,7 +24,8 @@ ADMIN_MODULES = [
 
 
 @admin.route("/")
-@login_required
 def admin_hub():
+    # Auth and the admin:read umbrella gate are enforced by the blueprint before_request (see
+    # app/admin/views/access.py), so no per-view decorator is needed here.
     modules = [m for m in ADMIN_MODULES if m["endpoint"] in current_app.view_functions]
     return render_template("admin/hub.html", admin_modules=modules)

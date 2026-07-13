@@ -28,8 +28,11 @@ class CatalogEntry:
 # tests/saq/test_permission_catalog.py asserts every enforced pair appears here.
 #
 # `system:read` and `lock:delete` are reserved/aspirational (present for API completeness) and are
-# allowed to exist without a matching decorator.
+# allowed to exist without a matching decorator. `admin:read` is the umbrella gate for the /admin GUI
+# area; it is enforced by the admin blueprint's before_request guard rather than a require_permission
+# decorator, so it too has no decorator call site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
+    CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     CatalogEntry("alert", "create", "Create new alerts or upload alert data via API/GUI."),
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "write", "Modify alerts (disposition, tags, ownership, comments)."),

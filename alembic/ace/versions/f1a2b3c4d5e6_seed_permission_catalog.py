@@ -35,6 +35,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Snapshot of saq/permissions/catalog.py::PERMISSION_CATALOG at this revision.
 _CATALOG = [
+    ("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     ("system", "read", "Read system metadata and supported types via API."),
     ("email", "read", "Read archived email content via API/GUI."),
     ("alert", "create", "Create new alerts or upload alert data via API/GUI."),
