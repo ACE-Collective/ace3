@@ -1,9 +1,9 @@
 """DB helpers for the external remediation check subsystem.
 
 Mirrors :mod:`saq.file_collection.database` — short, transactional helpers that
-front the ``ExternalRemediationCheck`` / ``ExternalRemediationCheckHistory``
-ORM models. Higher-level lifecycle (locking, dispatch) lives in
-:mod:`saq.remediation.external.collector` and :mod:`.worker`.
+front the ``ExternalRemediationCheck`` ORM model. Higher-level lifecycle
+(locking, dispatch) lives in :mod:`saq.remediation.external.collector` and
+:mod:`.worker`.
 """
 from datetime import datetime, timedelta, timezone
 import json
@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func
 
-from saq.database.model import ExternalRemediationCheck, ExternalRemediationCheckHistory
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.types import CheckResult, CheckStatus
 
@@ -129,16 +129,6 @@ def get_external_checks_for_alert(alert_uuid: str) -> list[ExternalRemediationCh
     )
 
 
-def get_external_check_history(check_id: int) -> list[ExternalRemediationCheckHistory]:
-    return (
-        get_db()
-        .query(ExternalRemediationCheckHistory)
-        .filter(ExternalRemediationCheckHistory.check_id == check_id)
-        .order_by(ExternalRemediationCheckHistory.insert_date.desc())
-        .all()
-    )
-
-
 def cancel_external_check(check_id: int) -> bool:
     """Mark a check COMPLETED+CANCELLED. Returns False if the row is missing or
     already terminal."""
@@ -180,7 +170,6 @@ def delete_external_check(check_id: int) -> bool:
     check = get_external_check(check_id)
     if check is None:
         return False
-    # History rows cascade-delete via the FK.
     get_db().execute(
         ExternalRemediationCheck.__table__.delete().where(
             ExternalRemediationCheck.id == check_id

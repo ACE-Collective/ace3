@@ -115,7 +115,6 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("INSERT INTO tags ( `id`, `name` ) VALUES ( 1, 'whitelisted' )")
         cursor.execute("DELETE FROM events")
         cursor.execute("DELETE FROM remediation")
-        cursor.execute("DELETE FROM external_remediation_check_history")
         cursor.execute("DELETE FROM external_remediation_check")
         cursor.execute("DELETE FROM file_collection_history")
         cursor.execute("DELETE FROM file_collection")
