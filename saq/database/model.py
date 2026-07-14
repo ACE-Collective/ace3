@@ -2371,41 +2371,6 @@ class ExternalRemediationCheck(Base):
                 f"{self.status} - {self.observable_value} - {self.result}")
 
 
-class ExternalRemediationCheckHistory(Base):
-    """One row per probe attempt — terminal or otherwise. Mirrors
-    ``FileCollectionHistory`` / ``RemediationHistory`` for debugging."""
-
-    __tablename__ = 'external_remediation_check_history'
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-
-    check_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey('external_remediation_check.id', ondelete='CASCADE', onupdate='CASCADE'),
-        nullable=False,
-        index=True)
-
-    check: Mapped["ExternalRemediationCheck"] = relationship(
-        'ExternalRemediationCheck', backref='history')
-
-    insert_date: Mapped[datetime] = mapped_column(
-        TIMESTAMP, nullable=False, index=True,
-        server_default=text('CURRENT_TIMESTAMP'))
-
-    # PENDING captures "the probe returned no events yet" attempts; the
-    # terminal-result enum members match ExternalRemediationCheck.result.
-    result: Mapped[Optional[str]] = mapped_column(
-        Enum('CONFIRMED', 'NOT_FOUND', 'EXPIRED', 'ERROR', 'CANCELLED', 'PENDING'),
-        nullable=True)
-
-    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-
-    status: Mapped[str] = mapped_column(
-        Enum('NEW', 'IN_PROGRESS', 'COMPLETED'),
-        nullable=False,
-        default='NEW')
-
-
 class Tag(Base):
 
     __tablename__ = 'tags'

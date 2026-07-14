@@ -3,13 +3,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from saq.database.model import ExternalRemediationCheckHistory
 from saq.database.pool import get_db
 from saq.remediation.external.types import (
     CheckResult,
     CheckStatus,
     CheckWorkItem,
-    HistoryResult,
     ProbeOutcome,
 )
 from saq.remediation.external.worker import ExternalRemediationCheckWorker
@@ -27,16 +25,6 @@ def _work_item_from(check, max_retries=3, context=None):
         max_retries=max_retries,
         deadline=check.deadline,
         context=context,
-    )
-
-
-def _history_for(check_id):
-    return (
-        get_db()
-        .query(ExternalRemediationCheckHistory)
-        .filter(ExternalRemediationCheckHistory.check_id == check_id)
-        .order_by(ExternalRemediationCheckHistory.id.asc())
-        .all()
     )
 
 
@@ -58,10 +46,6 @@ def test_worker_confirms_and_stores_events(make_check):
     assert check.result == CheckResult.CONFIRMED.value
     assert json.loads(check.events_json) == events_payload
 
-    history = _history_for(check.id)
-    assert len(history) == 1
-    assert history[0].result == HistoryResult.CONFIRMED.value
-
 
 @pytest.mark.integration
 def test_worker_not_found_terminates(make_check):
@@ -75,8 +59,6 @@ def test_worker_not_found_terminates(make_check):
     db.refresh(check)
     assert check.status == CheckStatus.COMPLETED.value
     assert check.result == CheckResult.NOT_FOUND.value
-    history = _history_for(check.id)
-    assert history[0].result == HistoryResult.NOT_FOUND.value
 
 
 @pytest.mark.integration
@@ -95,8 +77,6 @@ def test_worker_pending_re_queues(make_check):
     assert check.status == CheckStatus.NEW.value
     assert check.result is None
     assert check.retry_count == 1
-    history = _history_for(check.id)
-    assert history[0].result == HistoryResult.PENDING.value
 
 
 @pytest.mark.integration
@@ -138,8 +118,6 @@ def test_worker_permanent_error_terminates_without_retries(make_check):
     assert check.result == CheckResult.ERROR.value
     assert check.retry_count == 1
     assert check.last_error == "read timeout"
-    history = _history_for(check.id)
-    assert history[0].result == HistoryResult.ERROR.value
 
 
 @pytest.mark.integration
@@ -156,8 +134,6 @@ def test_worker_expired_does_not_call_probe(make_check):
     assert check.status == CheckStatus.COMPLETED.value
     assert check.result == CheckResult.EXPIRED.value
     assert probe.calls == []
-    history = _history_for(check.id)
-    assert history[0].result == HistoryResult.EXPIRED.value
 
 
 @pytest.mark.integration

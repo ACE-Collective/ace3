@@ -24,20 +24,6 @@ class CheckResult(Enum):
     CANCELLED = "CANCELLED"       # manually cancelled (e.g. disposition sweep)
 
 
-class HistoryResult(Enum):
-    """Per-attempt result rows in ``external_remediation_check_history``.
-
-    Extends ``CheckResult`` with ``PENDING`` because non-terminal attempts get
-    history rows too (so analysts can see why a check is still polling).
-    """
-    CONFIRMED = "CONFIRMED"
-    NOT_FOUND = "NOT_FOUND"
-    EXPIRED = "EXPIRED"
-    ERROR = "ERROR"
-    CANCELLED = "CANCELLED"
-    PENDING = "PENDING"
-
-
 class ProbeOutcomeKind(Enum):
     """The five shapes a single probe attempt can return."""
     FOUND_EVENTS = "FOUND_EVENTS"           # terminal: events to persist
