@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.78] - 2026-07-14
+
+- [Drops unused external_remediation_check_history table](https://github.com/ACE-Collective/ace3/pull/395)
+
 ## [3.0.77] - 2026-07-13
 
 - [Add shorthand aliases for saving and loading query results](https://github.com/ACE-Collective/ace3/pull/390)
