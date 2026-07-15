@@ -55,6 +55,8 @@ _CATALOG = [
     ("node", "manage", "Drain and resume nodes via API."),
     ("detection", "read", "View observable-detection settings."),
     ("detection", "write", "Modify observable-detection settings."),
+    ("secret", "read", "View encrypted-secret names and config references."),
+    ("secret", "write", "Create, overwrite, or delete encrypted secrets."),
 ]
 
 

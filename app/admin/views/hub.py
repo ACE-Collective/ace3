@@ -20,6 +20,13 @@ ADMIN_MODULES = [
         "major": "user",
         "minor": "read",
     },
+    {
+        "endpoint": "admin.manage_secrets",
+        "title": "Secrets",
+        "description": "Set and manage encrypted config secrets (API keys, passwords).",
+        "major": "secret",
+        "minor": "read",
+    },
 ]
 
 

@@ -48,6 +48,8 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("observable", "read", "Query observables via the API."),
     CatalogEntry("observable", "write", "Modify observables and run observable actions."),
     CatalogEntry("remediation", "read", "View remediation actions and history."),
+    CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
+    CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),

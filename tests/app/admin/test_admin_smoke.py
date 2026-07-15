@@ -31,7 +31,7 @@ REMOVED_FLASK_ENDPOINTS = (
 )
 
 # the page views that legitimately remain
-PAGE_VIEWS = ("admin.admin_hub", "admin.manage_users", "admin.detection_settings")
+PAGE_VIEWS = ("admin.admin_hub", "admin.manage_users", "admin.detection_settings", "admin.manage_secrets")
 
 
 @pytest.fixture
@@ -94,6 +94,7 @@ class TestAdminPagesRender:
                 ("admin.admin_hub", b"Administration"),
                 ("admin.manage_users", b"User Management"),
                 ("admin.detection_settings", b"Observable Detection Settings"),
+                ("admin.manage_secrets", b"Encrypted Secrets"),
             ):
                 resp = client.get(url_for(endpoint))
                 assert resp.status_code == 200, endpoint
@@ -113,7 +114,7 @@ class TestAdminPagesRender:
                 client.post(url_for("auth.login"), data={
                     "username": "noperms_admin", "password": "TestPass123!",
                 })
-                for endpoint in ("admin.manage_users", "admin.detection_settings"):
+                for endpoint in ("admin.manage_users", "admin.detection_settings", "admin.manage_secrets"):
                     assert client.get(url_for(endpoint)).status_code in (302, 403), endpoint
         finally:
             delete_user("noperms_admin")
