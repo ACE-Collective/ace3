@@ -1,21 +1,20 @@
 """Persistence helpers shared by the worker daemon and synchronous-first
 analysis-module probes.
 
-Translating a :class:`ProbeOutcome` into row + history updates is the same
-logic regardless of who called the probe — extracting it keeps the worker and
-the analysis modules in lock-step on terminal-vs-retry decisions.
+Translating a :class:`ProbeOutcome` into a check-row update is the same logic
+regardless of who called the probe — extracting it keeps the worker and the
+analysis modules in lock-step on terminal-vs-retry decisions.
 """
 from datetime import UTC, datetime
 import json
 import logging
 from typing import Optional
 
-from saq.database.model import ExternalRemediationCheck, ExternalRemediationCheckHistory
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.types import (
     CheckResult,
     CheckStatus,
-    HistoryResult,
     ProbeOutcome,
     ProbeOutcomeKind,
 )
@@ -46,36 +45,29 @@ def persist_probe_outcome(
     events_json: Optional[str] = None
     last_error: Optional[str] = None
     result_message: Optional[str] = outcome.message
-    history_result: HistoryResult
 
     if kind is ProbeOutcomeKind.FOUND_EVENTS:
         new_status = CheckStatus.COMPLETED.value
         new_result = CheckResult.CONFIRMED.value
         events_json = json.dumps(outcome.found_events)
-        history_result = HistoryResult.CONFIRMED
     elif kind is ProbeOutcomeKind.NOT_FOUND:
         new_status = CheckStatus.COMPLETED.value
         new_result = CheckResult.NOT_FOUND.value
-        history_result = HistoryResult.NOT_FOUND
     elif kind is ProbeOutcomeKind.PENDING:
         new_status = CheckStatus.NEW.value
         new_result = None
-        history_result = HistoryResult.PENDING
     elif kind is ProbeOutcomeKind.PERMANENT_ERROR:
         last_error = outcome.permanent_error
         new_status = CheckStatus.COMPLETED.value
         new_result = CheckResult.ERROR.value
-        history_result = HistoryResult.ERROR
     else:  # TRANSIENT_ERROR
         last_error = outcome.transient_error
         if next_retry_count >= max_retries:
             new_status = CheckStatus.COMPLETED.value
             new_result = CheckResult.ERROR.value
-            history_result = HistoryResult.ERROR
         else:
             new_status = CheckStatus.NEW.value
             new_result = None
-            history_result = HistoryResult.ERROR
 
     update_values = dict(
         lock=None,
@@ -96,14 +88,6 @@ def persist_probe_outcome(
         .values(**update_values)
         .where(ExternalRemediationCheck.id == check_id)
     )
-    get_db().flush()
-
-    get_db().add(ExternalRemediationCheckHistory(
-        check_id=check_id,
-        result=history_result.value,
-        message=outcome.message or outcome.transient_error or outcome.permanent_error,
-        status=new_status,
-    ))
     get_db().commit()
 
 
@@ -126,12 +110,5 @@ def finalize_expired(check_id: int, *, now: Optional[datetime] = None) -> None:
         )
         .where(ExternalRemediationCheck.id == check_id)
     )
-    get_db().flush()
-    get_db().add(ExternalRemediationCheckHistory(
-        check_id=check_id,
-        result=HistoryResult.EXPIRED.value,
-        message="deadline reached without confirmation",
-        status=CheckStatus.COMPLETED.value,
-    ))
     get_db().commit()
     logging.info("EXPIRED external_remediation_check.id=%d", check_id)
