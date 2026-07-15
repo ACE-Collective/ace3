@@ -177,6 +177,14 @@ class FileObservable(Observable):
         return self._sha256_hash
 
     @property
+    def sha256_bytes(self) -> bytes:
+        # A FileObservable's value IS the file's sha256 hex, so its sha256_bytes must be those raw
+        # bytes -- matching how sync.py stores the observables.sha256 column (UNHEX(sha256_hash)).
+        # The base class would instead hash the hex string (a hash-of-a-hash), which never matches
+        # the synced row and breaks the detect-enabled / comments / interesting lookups for files.
+        return bytes.fromhex(self.value)
+
+    @property
     def size(self):
         """Returns the size of the file in bytes, or None if the size cannot be computed."""
         if self._size is not None:

@@ -13,6 +13,8 @@ from saq.database.util.observable_detection import (
     _match_observable,
     ObservableDetection
 )
+from saq.database.util.sync import sync_observable
+from saq.observables.file import FileObservable
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
 
@@ -348,6 +350,75 @@ def test_get_all_observable_detections(test_user, test_root_analysis):
     
     # Cleanup
     cleanup_test_observables()
+
+
+# The sha256 hex of some file's contents. A FileObservable's *value* is this string; the file
+# itself need not exist on disk for these tests.
+FILE_CONTENT_SHA256 = "33699d5edadeda6a4d87091cb701215ac698a8292ec93196146e155cf9786166"
+
+
+@pytest.mark.integration
+def test_file_observable_sha256_bytes_matches_sha256_hash():
+    """A FileObservable's sha256_bytes must be the raw bytes of its sha256_hash.
+
+    This invariant holds for every other observable type. FileObservable overrides sha256_hash (to
+    the file's content sha256) so it must also override sha256_bytes -- otherwise sha256_bytes is a
+    hash-of-the-hash, which never matches the observables.sha256 column populated by sync.py via
+    UNHEX(sha256_hash), and the detect-enabled / comments / interesting lookups silently miss files.
+    """
+    file_obs = FileObservable(value=FILE_CONTENT_SHA256, file_path="malicious.exe")
+    assert file_obs.sha256_bytes == bytes.fromhex(file_obs.sha256_hash)
+    assert file_obs.sha256_bytes == bytes.fromhex(FILE_CONTENT_SHA256)
+
+    # the invariant also holds (unchanged) for a base observable
+    base_obs = Observable(type="ipv4", value="192.168.1.1")
+    assert base_obs.sha256_bytes == bytes.fromhex(base_obs.sha256_hash)
+
+
+@pytest.mark.integration
+def test_get_observable_detections_file_observable_synced(test_user):
+    """A FILE observable synced to the observables table (as production does) is found by the
+    detect-enabled lookup once enabled.
+
+    Regression for FILE observables never showing the "(detect enabled)" marker: sync_observable
+    keys the row by UNHEX(sha256_hash) (the file's real content sha256), so get_observable_detections
+    must key files the same way. Uses a real FileObservable, not the base-Observable "file" fixture,
+    which is why the original tests did not catch this.
+    """
+    file_obs = FileObservable(value=FILE_CONTENT_SHA256, file_path="malicious.exe")
+
+    db = get_db()
+    # start clean: remove any pre-existing row for this (type, sha256)
+    existing = db.query(DBObservable).filter(
+        DBObservable.sha256 == file_obs.sha256_bytes,
+        DBObservable.type == file_obs.type,
+    ).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+
+    try:
+        # populate the observables table exactly as alert processing does
+        synced = sync_observable(file_obs)
+        db.commit()
+
+        # the synced row's identity must match what the detection lookup queries by
+        assert synced.sha256 == file_obs.sha256_bytes
+
+        enable_observable_detection(file_obs, test_user.id, "file detection context")
+
+        detections = get_observable_detections([file_obs])
+        assert file_obs.uuid in detections
+        assert detections[file_obs.uuid].for_detection is True
+        assert detections[file_obs.uuid].detection_context == "file detection context"
+    finally:
+        row = db.query(DBObservable).filter(
+            DBObservable.sha256 == file_obs.sha256_bytes,
+            DBObservable.type == file_obs.type,
+        ).first()
+        if row:
+            db.delete(row)
+            db.commit()
 
 
 @pytest.mark.integration

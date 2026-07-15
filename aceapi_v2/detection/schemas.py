@@ -5,6 +5,13 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class ObservableCommentSummary(BaseModel):
+    """A single analyst comment on an observable, for read-only display on the detection page."""
+    comment: str
+    user_display_name: str
+    insert_date: datetime
+
+
 class ObservableDetectionRead(BaseModel):
     id: int
     type: str
@@ -14,6 +21,7 @@ class ObservableDetectionRead(BaseModel):
     detection_modified_by: str | None = None
     detection_context: str | None = None
     batch_id: str | None = None
+    comments: list[ObservableCommentSummary] = []
 
 
 class ObservablePage(BaseModel):

@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import Observable, User
+from saq.database.model import Observable, ObservableComment, User
 from aceapi_v2.detection import service
 
 pytestmark = pytest.mark.integration
@@ -90,6 +90,42 @@ class TestListDetectionObservables:
 
         results = await service.list_detection_observables(session, search="10.9.9.9")
         assert results[0].detection_modified_by == "Det Enabler"
+
+
+class TestComments:
+    @pytest.mark.asyncio
+    async def test_comments_returned_oldest_first_with_author(self, session: AsyncSession):
+        """The detection row surfaces each observable's comments, oldest-first, with author name."""
+        from datetime import datetime
+
+        user = User(username="det_commenter", email="det_commenter@e.com", display_name="Commenter", password="pw")
+        session.add(user)
+        obs = await _make_observable(session, "fqdn", "commented.example.com", for_detection=True)
+        await session.flush()
+
+        # inserted newest-first so ordering can't accidentally pass on insertion order
+        session.add(ObservableComment(
+            user_id=user.id, observable_id=obs.id, comment="second",
+            insert_date=datetime(2026, 1, 2, 10, 0, 0)))
+        session.add(ObservableComment(
+            user_id=user.id, observable_id=obs.id, comment="first",
+            insert_date=datetime(2026, 1, 1, 10, 0, 0)))
+        await session.flush()
+
+        results = await service.list_detection_observables(session, search="commented.example.com")
+        assert len(results) == 1
+        comments = results[0].comments
+        assert [c.comment for c in comments] == ["first", "second"]
+        assert all(c.user_display_name == "Commenter" for c in comments)
+
+    @pytest.mark.asyncio
+    async def test_no_comments_is_empty_list(self, session: AsyncSession):
+        await _make_observable(session, "fqdn", "uncommented.example.com", for_detection=True)
+        await session.flush()
+
+        results = await service.list_detection_observables(session, search="uncommented.example.com")
+        assert len(results) == 1
+        assert results[0].comments == []
 
 
 class TestTypeFilterAndCount:

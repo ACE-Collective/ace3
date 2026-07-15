@@ -13,8 +13,12 @@ from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from saq.database.model import Observable
-from aceapi_v2.detection.schemas import ObservableDetectionRead, ObservablePage
+from saq.database.model import Observable, ObservableComment
+from aceapi_v2.detection.schemas import (
+    ObservableCommentSummary,
+    ObservableDetectionRead,
+    ObservablePage,
+)
 
 # Offset pagination is appropriate at this table's scale (~4e5 rows): with the
 # i_obs_for_detection_id covering index the filtered view is an index lookup, and even a deep offset
@@ -33,6 +37,15 @@ def _to_read(obs: Observable) -> ObservableDetectionRead:
         detection_modified_by=obs.detection_modified_by_user.display_name if obs.detection_modified_by_user else None,
         detection_context=obs.detection_context,
         batch_id=obs.batch_id,
+        comments=[
+            ObservableCommentSummary(
+                comment=c.comment,
+                user_display_name=c.user.display_name if c.user else "",
+                insert_date=c.insert_date,
+            )
+            # oldest-first, matching the observable-comments service's ordering
+            for c in sorted(obs.observable_comments, key=lambda c: c.insert_date)
+        ],
     )
 
 
@@ -96,7 +109,10 @@ async def list_detection_observables(
     offset: int = 0,
 ) -> list[ObservableDetectionRead]:
     stmt = _apply_filters(
-        select(Observable).options(selectinload(Observable.detection_modified_by_user)),
+        select(Observable).options(
+            selectinload(Observable.detection_modified_by_user),
+            selectinload(Observable.observable_comments).selectinload(ObservableComment.user),
+        ),
         for_detection=for_detection, search=search, observable_type=observable_type,
     )
     # Grouped by type, alphabetical by value, with `id` as a tiebreaker so rows sharing a value_sort
@@ -140,7 +156,10 @@ async def get_detection_page(
 async def _get(session: AsyncSession, observable_id: int) -> Observable | None:
     result = await session.execute(
         select(Observable)
-        .options(selectinload(Observable.detection_modified_by_user))
+        .options(
+            selectinload(Observable.detection_modified_by_user),
+            selectinload(Observable.observable_comments).selectinload(ObservableComment.user),
+        )
         .where(Observable.id == observable_id)
     )
     return result.scalar_one_or_none()
