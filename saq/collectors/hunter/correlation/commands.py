@@ -112,23 +112,26 @@ def _execute_query(
     query_recorder: Optional[CorrelateQueryRecorder] = None,
 ) -> str:
     """Execute a query command."""
+    # Render query with jinja first. Every cache below keys on the rendered text
+    # (the actual question asked), not the shared un-rendered template — otherwise
+    # per-event queries that differ only after interpolation collapse to one cache
+    # key and the first event's result is served to every later event. Rendering is
+    # cheap (in-memory, no I/O) so doing it before the cache lookups is fine.
+    context = build_jinja_context(event, events, secrets, config)
+    query_str = _jinja_env.from_string(command.query).render(**context)
+
     # For stream transforms, memoize the result
     if transform_type == "stream" and stream_query_cache is not None:
-        cache_key = f"query:{command.source}:{command.query}"
+        cache_key = f"query:{command.source}:{query_str}"
         if cache_key in stream_query_cache:
             return stream_query_cache[cache_key]
 
     # Check persistent cache
     if command.cache:
-        cache_args = {"type": "query", "source": command.source, "query": command.query}
+        cache_args = {"type": "query", "source": command.source, "query": query_str}
         cached = get_cached_result(cache_args)
         if cached is not None:
             return cached
-
-    # Render query with jinja. Done before resolving the time range / hitting the
-    # data source so the rendered text can key the recorder's capture/replay store.
-    context = build_jinja_context(event, events, secrets, config)
-    query_str = _jinja_env.from_string(command.query).render(**context)
 
     # Replay a previously-saved result for this exact rendered query, if available.
     output = None
@@ -155,12 +158,12 @@ def _execute_query(
     # Store in persistent cache
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
-        cache_args = {"type": "query", "source": command.source, "query": command.query}
+        cache_args = {"type": "query", "source": command.source, "query": query_str}
         set_cached_result(cache_args, output, ttl)
 
     # Store in stream query cache
     if transform_type == "stream" and stream_query_cache is not None:
-        cache_key = f"query:{command.source}:{command.query}"
+        cache_key = f"query:{command.source}:{query_str}"
         stream_query_cache[cache_key] = output
 
     return output

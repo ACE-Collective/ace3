@@ -311,6 +311,64 @@ class TestExecuteCommand:
             "env": {"MY_VAR": "test123"},
         })
 
+    def test_query_cache_hit(self, tmpdir):
+        source = MockQuerySource(results=[{"host": "should-not-run"}])
+        register_query_source("test_source", source)
+
+        cmd = CommandConfig(type="query", source="test_source", query="search index=main", cache="5m")
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value="cached value") as mock_get:
+            result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+
+        assert result == "cached value"
+        # a cache hit must short-circuit before the data source is touched
+        assert len(source.calls) == 0
+        mock_get.assert_called_once_with({"type": "query", "source": "test_source", "query": "search index=main"})
+
+    def test_query_cache_key_includes_rendered_query(self, tmpdir):
+        """The persistent cache must key on the interpolated query, not the raw template."""
+        source = MockQuerySource(results=[{"animal": "dog", "count": "10"}])
+        register_query_source("test_source", source)
+
+        cmd = CommandConfig(
+            type="query",
+            source="test_source",
+            query='search animal="{{ _event.animal }}"',
+            cache="5m",
+        )
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None) as mock_get, \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result") as mock_set:
+            execute_command(cmd, {"animal": "dog"}, [], "event", [], local_time(), str(tmpdir))
+
+        expected_args = {"type": "query", "source": "test_source", "query": 'search animal="dog"'}
+        mock_get.assert_called_once_with(expected_args)
+        mock_set.assert_called_once()
+        assert mock_set.call_args.args[0] == expected_args
+
+    def test_query_different_events_different_cache_keys(self, tmpdir):
+        """Regression: two events with the same template but different interpolated
+        values must produce different cache keys (otherwise the first event's result
+        is served to every later event)."""
+        source = MockQuerySource(results=[])
+        register_query_source("test_source", source)
+
+        cmd = CommandConfig(
+            type="query",
+            source="test_source",
+            query='search animal="{{ _event.animal }}"',
+            cache="5m",
+        )
+
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None) as mock_get, \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(cmd, {"animal": "dog"}, [], "event", [], local_time(), str(tmpdir))
+            execute_command(cmd, {"animal": "cat"}, [], "event", [], local_time(), str(tmpdir))
+
+        queried = [call.args[0]["query"] for call in mock_get.call_args_list]
+        assert queried == ['search animal="dog"', 'search animal="cat"']
+        assert queried[0] != queried[1]
+
 
 @pytest.mark.unit
 class TestResolveTimeRange:
