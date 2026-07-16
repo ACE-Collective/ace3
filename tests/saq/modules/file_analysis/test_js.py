@@ -443,3 +443,319 @@ def test_own_output_is_not_reanalyzed(tmpdir, monkeypatch, patched_deobfuscate):
 
     assert result == AnalysisExecutionResult.COMPLETED
     assert observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis) is None
+
+
+def _deobfuscated_body(analysis):
+    """Read back the deobfuscated trace emitted for an analysis."""
+    deob_obs = next(
+        o for o in analysis.observables
+        if o.type == F_FILE and o.file_name.startswith(DEOBFUSCATED_PREFIX)
+    )
+    with open(deob_obs.full_path, "r", encoding="utf-8") as fp:
+        return fp.read()
+
+
+@pytest.mark.unit
+def test_textdecoder_xor_eval_payload_is_captured(datadir, monkeypatch, patched_deobfuscate):
+    """atob -> XOR -> TextDecoder -> eval staging must reach the payload.
+
+    TextDecoder is a REAL implementation in the sandbox, not a recorder, and
+    this test pins both ways that can regress:
+
+      - Removed entirely -> ReferenceError, analysis.error is set, no events.
+      - Added to the recorder list instead -> .decode() returns a Proxy,
+        eval() silently no-ops, and there is NO error -- just zero events and
+        no URL. That failure is invisible unless we assert on the payload.
+
+    The error assertion alone would not catch the recorder case, which is the
+    more tempting fix. Both assertions are load-bearing.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "textdecoder_xor_eval.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+    # catches TextDecoder missing (ReferenceError)
+    assert analysis.error is None
+    assert analysis.error_type is None
+    # catches TextDecoder stubbed as a recorder (no error, but nothing decoded)
+    assert analysis.event_count > 0
+    assert "https://example.com/second-stage" in _deobfuscated_body(analysis)
+
+
+@pytest.mark.unit
+def test_textencoder_roundtrip_is_real(tmpdir, monkeypatch, patched_deobfuscate):
+    """TextEncoder must return real bytes, not a recorder Proxy.
+
+    The URL is assembled from the encoded byte LENGTH rather than written as a
+    literal. That matters: a recorder Proxy records its arguments, so any URL
+    passed straight into encode() would show up in the trace verbatim and the
+    test would pass without a single byte being encoded. Deriving the host from
+    _u8.length can only produce "7" if encode() really returned 7 bytes.
+    """
+    sample_path = tmpdir / "textencoder_roundtrip.js"
+    sample_path.write(
+        'var _u8 = new TextEncoder().encode("abcdefg");\n'
+        'window.location.href = "https://example.com/" + _u8.length'
+        ' + "/" + new TextDecoder().decode(_u8);\n'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error is None
+    assert "https://example.com/7/abcdefg" in _deobfuscated_body(analysis)
+
+
+@pytest.mark.unit
+def test_domready_deferred_payload_is_fired(datadir, monkeypatch, patched_deobfuscate):
+    """A payload deferred to DOMContentLoaded must still execute.
+
+    There is no event loop in the sandbox, so the harness fires DOM-ready
+    listeners itself once the main script finishes. Without that the listener
+    body never runs and its URL never reaches the trace -- and, like the
+    recorder case above, it fails silently with no error.
+
+    The fixture defines the URL AFTER registering the handler, which also pins
+    the ordering: firing at registration time instead of after the script would
+    read an undefined binding.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "domready_deferred_payload.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error is None
+    assert "https://example.com/deferred-stage.js" in _deobfuscated_body(analysis)
+
+
+@pytest.mark.unit
+def test_bare_global_addeventlistener_is_defined(datadir, monkeypatch, patched_deobfuscate):
+    """`addEventListener(...)` as a bare global, not `window.addEventListener`.
+
+    The window recorder does not provide the bare global form -- it is its own
+    global -- so without it the sample dies on ReferenceError before reaching its
+    payload, the same failure mode as a missing TextDecoder. Obfuscated samples
+    use the bare form routinely, sometimes alongside the qualified one.
+
+    The DOM-ready hook must fire for the bare form too, or the deferred payload
+    never runs and its URL never reaches the trace.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "bare_addeventlistener.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    # catches the ReferenceError regression
+    assert analysis.error is None
+    assert analysis.error_type is None
+    # catches the DOM-ready hook not being wired to the bare form
+    assert "https://example.com/bare-global-stage.js" in _deobfuscated_body(analysis)
+
+
+@pytest.mark.unit
+def test_runtime_error_still_tags_source_as_javascript(tmpdir, monkeypatch, patched_deobfuscate):
+    """A sample that parses and then dies mid-run is still JavaScript.
+
+    error_type == "runtime" means the source compiled, so the js tag must be
+    applied -- that is precisely when we want downstream extraction to run.
+    """
+    sample_path = tmpdir / "runtime_error.js"
+    # parses fine; blows up on a global the sandbox deliberately doesn't stub
+    sample_path.write('var x = SomeUndefinedGlobal.doThing();\n')
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error is not None
+    assert analysis.error_type == "runtime"
+    assert observable.has_directive(YARA_META_JS)
+
+
+@pytest.mark.unit
+def test_parse_error_does_not_tag_source_as_javascript(tmpdir, monkeypatch, patched_deobfuscate):
+    """A source that never parsed is NOT JavaScript and must not be tagged.
+
+    This is the counterweight to the test above: the two failures are only
+    distinguishable because the harness compiles and runs as separate steps.
+    """
+    sample_path = tmpdir / "not_really.js"
+    sample_path.write("This is prose, not JavaScript <<< >>>\n")
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error is not None
+    assert analysis.error_type == "compile"
+    assert not observable.has_directive(YARA_META_JS)
+
+
+@pytest.mark.unit
+def test_legacy_report_without_error_type_does_not_tag(tmpdir, monkeypatch):
+    """An errored report with no error_type must not tag the source.
+
+    A scanner image predating error_type reporting (version skew mid-rollout)
+    gives us no way to tell a parse failure from a runtime one, so the
+    conservative pre-existing behavior has to hold rather than defaulting to
+    "tag it".
+    """
+    import json as _json
+
+    def _legacy_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+        os.makedirs(output_dir, exist_ok=True)
+        out_js = os.path.join(output_dir, "deobfuscated.js")
+        with open(out_js, "w") as fp:
+            fp.write("// trace\n")
+        # note: no error_type key at all, as an older harness would emit
+        report = {"status": "error_during_run", "event_count": 0, "error": "boom"}
+        with open(os.path.join(output_dir, "report.json"), "w") as fp:
+            _json.dump(report, fp)
+        with open(os.path.join(output_dir, "exit.code"), "w") as fp:
+            fp.write("0")
+        return [out_js, os.path.join(output_dir, "report.json"), os.path.join(output_dir, "exit.code")]
+
+    monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _legacy_shim)
+
+    sample_path = tmpdir / "legacy_report.js"
+    sample_path.write("var x = 1;\n")
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error_type is None
+    assert not observable.has_directive(YARA_META_JS)
+
+
+@pytest.mark.unit
+def test_webcrack_status_is_surfaced(tmpdir, monkeypatch, patched_deobfuscate):
+    """webcrack's static-pass status must reach the analysis.
+
+    The dynamic sandbox does the real work, so a failing static pass degrades
+    the result rather than invalidating it -- but it was previously dropped on
+    the floor entirely, making a systematically failing pre-pass invisible.
+
+    Note: every test here shares one root storage directory and the suite runs
+    in random order, so this uses its own uniquely-named source. Reusing
+    another test's fixture name makes whichever test runs second collide on
+    the deobfuscated- output path and emit nothing.
+    """
+    # name deliberately free of the word "webcrack": the summary echoes the
+    # emitted filename, which would satisfy the assertion below for free.
+    sample_path = tmpdir / "static_pass_ok.js"
+    sample_path.write('window.location.href = "https://example.com/wc";\n')
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    # this sample has nothing for webcrack to trip over, so the pass succeeds
+    assert analysis.webcrack_status is not None
+    assert not analysis.webcrack_failed
+    assert analysis.webcrack_error is None
+    # a healthy pass must not clutter the analyst-facing summary
+    assert "webcrack" not in (analysis.generate_summary() or "")
+
+
+@pytest.mark.unit
+def test_webcrack_failure_is_reported_in_summary(tmpdir, monkeypatch, patched_deobfuscate):
+    """A failing static pass must be visible to the analyst.
+
+    Driving a real webcrack failure needs a specific obfuscator variant, so
+    this stubs the report instead -- the point under test is the module's
+    handling, not webcrack's matchers.
+    """
+    import json as _json
+
+    def _webcrack_failed_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+        os.makedirs(output_dir, exist_ok=True)
+        out_js = os.path.join(output_dir, "deobfuscated.js")
+        with open(out_js, "w") as fp:
+            fp.write('// trace\nwindow.location.href = "https://example.com/wcf";\n')
+        report = {
+            "status": "ok",
+            "event_count": 1,
+            "secondary_script_count": 0,
+            "error": None,
+            "error_type": None,
+            "webcrack_status": "failed: _0xabcd is not defined",
+            "webcrack_error": "_0xabcd is not defined",
+            "blob_files": [],
+        }
+        with open(os.path.join(output_dir, "report.json"), "w") as fp:
+            _json.dump(report, fp)
+        with open(os.path.join(output_dir, "exit.code"), "w") as fp:
+            fp.write("0")
+        return [out_js, os.path.join(output_dir, "report.json"), os.path.join(output_dir, "exit.code")]
+
+    monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _webcrack_failed_shim)
+
+    sample_path = tmpdir / "webcrack_failed.js"
+    sample_path.write('window.location.href = "https://example.com/wcf";\n')
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.webcrack_failed
+    assert analysis.webcrack_error == "_0xabcd is not defined"
+    # the dynamic pass still did its job, so this stays a success summary --
+    # just one that admits the static pass degraded
+    summary = analysis.generate_summary()
+    assert "webcrack failed" in summary
+    assert "extracted" in summary

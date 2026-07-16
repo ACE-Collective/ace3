@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from typing import Optional, List, Type, override
+from urlfinderlib import find_urls
 from urlfinderlib.url import URL
 
 import yaml
@@ -11,12 +12,13 @@ from fluent import sender
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis import FileTypeAnalysis, OCRAnalyzer
+from saq.modules.file_analysis.html_js_extraction import HTMLJavaScriptExtractor
 from saq.modules.tool_version import file_content_version
 from saq.observables.file import FileObservable
 from saq.phishkit import get_async_scan_result, get_phishkit_scanner_version, scan_file, scan_url
@@ -58,6 +60,21 @@ OCR_SKIP_CONTENT_TYPES = frozenset([
 
 # scanner.py writes screenshot.png, pre_bypass_screenshot.png and pre_bypass_screenshot_iter{n}.png
 SCREENSHOT_PREFIXES = ("screenshot.png", "pre_bypass_screenshot")
+
+# scanner.py writes this when the scanned URL's own response was a script instead of a
+# page. Mirrors TOP_LEVEL_SCRIPT_NAME in phishkit/scanner.py -- the scanner runs in a
+# separate image and can't be imported from here, so the two must be kept in step.
+TOP_LEVEL_SCRIPT_NAME = "script.js"
+
+# scanner.py's grep/yara corpus of captured response bodies and WebSocket traffic,
+# one "MARKER URL: <url>" line per block. Mirrors RESPONSE_BODIES_NAME in
+# phishkit/scanner.py -- keep the two in step.
+#
+# The .txt name does NOT keep this out of HTML parsing: HTMLJavaScriptExtractor
+# falls back to FileTypeAnalysis's mime type when the extension doesn't match, and
+# libmagic reads the captured HTML inside the corpus as text/html. Keeping it out
+# takes an explicit exclude_analysis below.
+RESPONSE_BODIES_NAME = "response_bodies.txt"
 
 
 class PhishkitAnalysis(Analysis):
@@ -331,14 +348,23 @@ class PhishkitAnalyzer(AnalysisModule):
                     return False
             return True
         elif observable.type == F_FILE:
-            # files require render directives
-            if not observable.has_directive(DIRECTIVE_RENDER):
+            assert isinstance(observable, FileObservable)
+
+            # Files require the render directive -- except email attachments.
+            # EmailAnalyzer picks render-vs-preview from the part's *declared*
+            # Content-Type, which the sender writes, so a malformed type (which
+            # normalizes to text/plain) silently takes the preview branch and
+            # suppresses the scan. _file_scan_enabled() below answers the same
+            # question from FileTypeAnalysis instead -- detection rather than the
+            # sender's assertion -- and file_type is a declared dependency of this
+            # module, so it is already loaded by the time we get here.
+            if not (observable.has_directive(DIRECTIVE_RENDER)
+                    or observable.has_yara_meta("type", "email.attachment")):
                 return False
             # phishkit file rendering only meaningful in correlation mode
             if self.get_root().analysis_mode != ANALYSIS_MODE_CORRELATION:
                 return False
 
-            assert isinstance(observable, FileObservable)
             local_file_path = observable.full_path
             if not os.path.exists(local_file_path) or os.path.getsize(local_file_path) == 0:
                 return False
@@ -491,6 +517,48 @@ class PhishkitAnalyzer(AnalysisModule):
 
         return None
 
+    def _extract_urls_from_captured_bodies(self, observable: Observable, analysis: PhishkitAnalysis,
+                                           scanned_url_value: Optional[str]) -> None:
+        """Promotes URLs found inside the response bodies phishkit captured.
+
+        Extracts per body rather than over the whole corpus, which is much faster.
+        """
+        bodies_path = os.path.join(analysis.output_dir, RESPONSE_BODIES_NAME)
+        if not os.path.exists(bodies_path):
+            return
+
+        try:
+            with open(bodies_path, "r", errors="ignore") as fp:
+                corpus = fp.read()
+        except Exception as e:
+            logging.error(f"failed to read {RESPONSE_BODIES_NAME} for {observable}: {e}")
+            return
+
+        for body in re.split(r"\n\nMARKER URL: \S+\n\n", corpus):
+            if not body.strip():
+                continue
+
+            try:
+                extracted = find_urls(body.encode("utf-8", errors="ignore"), mimetype="text/plain")
+            except Exception as e:
+                # a single unparseable body must not fail the analysis
+                logging.warning(f"failed to extract urls from a captured body for {observable}: {e}")
+                continue
+
+            for raw_url in extracted:
+                if raw_url.startswith(("file:///", "data:", "blob:")):
+                    continue
+                url = URL(raw_url)
+                # re-adding the scanned URL would make it a descendant of its own
+                # PhishkitAnalysis -- see the comment above scanned_url_value
+                if not url.value or url.value == scanned_url_value:
+                    continue
+                obs = analysis.add_observable_by_spec(F_URL, url.value)
+                if obs:
+                    # distinct from "Phishkit Request URL": we did not see this
+                    # requested, we found it in content the kit served
+                    obs.display_type = "Phishkit Captured URL"
+
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
         if not analysis.job_id:
@@ -597,6 +665,37 @@ class PhishkitAnalyzer(AnalysisModule):
                     if skip_screenshot_ocr and os.path.basename(file_path).startswith(SCREENSHOT_PREFIXES):
                         logging.debug(f"skipping ocr for {file_path}: top level response is not a rendered page")
                         file_observable.exclude_analysis(OCRAnalyzer)
+                    if os.path.basename(file_path) == RESPONSE_BODIES_NAME:
+                        # A concatenation of captured bodies separated by MARKER URL
+                        # lines -- a grep/yara corpus, not a document. libmagic sees the
+                        # captured HTML in it and calls the whole thing text/html, so
+                        # HTMLJavaScriptExtractor's mime fallback parses it and pulls
+                        # "inline scripts" out of a pile of unrelated files: the page's
+                        # real scripts (already extracted from dom.html) plus phantom
+                        # ones from <script> text sitting inside JS string literals.
+                        # There is no way to tell those apart in a concatenation, and
+                        # nothing here is worth extracting twice.
+                        #
+                        # The module documents this exact failure mode, but guards for it
+                        # by checking for a script.javascript tag -- which would be a lie
+                        # for a mixed corpus, and would route it to the JS deobfuscator.
+                        logging.debug(f"excluding html js extraction from corpus {file_path}")
+                        file_observable.exclude_analysis(HTMLJavaScriptExtractor)
+                    if os.path.basename(file_path) == TOP_LEVEL_SCRIPT_NAME:
+                        # The scanner writes this when the scanned URL served a script
+                        # rather than a page. Chrome displays such a response instead of
+                        # executing it, so nothing requests the URLs staged inside it and
+                        # neither promotion pass below (MARKER URL / requests.json) can
+                        # see them. They're plain string literals in the source, so the
+                        # sandbox trace won't hold them either -- a script that never
+                        # runs the code path using a URL never reveals it. Reading them
+                        # straight out of the body is the only thing that does.
+                        #
+                        # Safe to extract from because it is one response body, unlike
+                        # dom.html, which concatenates every body on the page and would
+                        # dump every CDN/font/analytics URL into the alert.
+                        logging.debug(f"extracting urls from top level script body {file_path}")
+                        file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                     analysis.output_files.append(file_observable.file_path)
 
 
@@ -620,11 +719,14 @@ class PhishkitAnalyzer(AnalysisModule):
         # PhishkitAnalysis ancestor above the URL.
         scanned_url_value = URL(observable.value).value if observable.type == F_URL else None
 
-        # extract URL observables from MARKER URL entries in dom.html
-        dom_path = os.path.join(analysis.output_dir, "dom.html")
-        if os.path.exists(dom_path):
+        # extract URL observables from MARKER URL entries in the response bodies
+        # corpus. These used to be appended to dom.html, which made dom.html both
+        # a renderable DOM and a pile of raw bodies -- and anything HTML-aware
+        # then mis-parsed the bodies.
+        bodies_path = os.path.join(analysis.output_dir, RESPONSE_BODIES_NAME)
+        if os.path.exists(bodies_path):
             try:
-                with open(dom_path, "r", errors="ignore") as fp:
+                with open(bodies_path, "r", errors="ignore") as fp:
                     for line in fp:
                         match = re.match(r"MARKER URL: (.+)$", line.strip())
                         if match:
@@ -634,7 +736,7 @@ class PhishkitAnalyzer(AnalysisModule):
                                 if obs:
                                     obs.display_type = "Phishkit Request URL"
             except Exception as e:
-                logging.error(f"failed to extract MARKER URLs from dom.html for {observable}: {e}")
+                logging.error(f"failed to extract MARKER URLs from {RESPONSE_BODIES_NAME} for {observable}: {e}")
 
         # extract URL observables from every request entry in requests.json.
         # The MARKER URL pass above only covers URLs whose response bodies
@@ -665,6 +767,15 @@ class PhishkitAnalyzer(AnalysisModule):
                         obs.display_type = "Phishkit Request URL"
             except Exception as e:
                 logging.error(f"failed to extract URLs from requests.json for {observable}: {e}")
+
+        # extract URL observables from the *content* of the captured bodies.
+        #
+        # Both passes above only see URLs the browser actually requested -- they read
+        # records of observed traffic. A kit's next-stage endpoints are string literals
+        # in the code it served: downloaded, never fetched, so they appear in neither.
+        # They are also the interesting ones. Without this, they only reach an alert if
+        # some other chain happens to crawl them, which is not something to rely on.
+        self._extract_urls_from_captured_bodies(observable, analysis, scanned_url_value)
 
         self._emit_scan_outcome(
             observable, analysis, "failed" if analysis.error else "success"

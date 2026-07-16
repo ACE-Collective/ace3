@@ -1148,7 +1148,27 @@ class EmailAnalyzer(AnalysisModule):
                     extracted_file.add_directive(DIRECTIVE_EXTRACT_URLS)
                     extracted_file.add_yara_meta("type", "email.attachment")
 
-                    if target.get_content_type() == 'text/plain':
+                    # get_content_type() returns the text/plain default when the
+                    # header is missing OR unparseable, and those two cases are not
+                    # equivalent. Missing is legitimate: RFC 2045 says a part with
+                    # no Content-Type IS text/plain. Malformed is not -- a sender
+                    # writing "Content-Type: text" (no subtype) gets it silently
+                    # normalized to text/plain and takes the preview branch, which
+                    # suppresses the render. That is attacker-controlled input
+                    # deciding whether we analyze the part, and it fails toward not
+                    # analyzing, so only trust the default when the header is
+                    # genuinely absent or the raw type really is text/plain.
+                    declared_content_type = target.get('Content-Type')
+                    if declared_content_type is None:
+                        declared_plain_text = True
+                    else:
+                        raw_type = str(declared_content_type).split(';', 1)[0].strip().lower()
+                        declared_plain_text = (
+                            target.get_content_type() == 'text/plain'
+                            and raw_type == 'text/plain'
+                        )
+
+                    if declared_plain_text:
                         extracted_file.add_directive(DIRECTIVE_PREVIEW)
                     else:
                         extracted_file.add_directive(DIRECTIVE_RENDER)

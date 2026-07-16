@@ -30,6 +30,18 @@ def sample_config_data():
                 "checkbox_pngs": ["iVBORw0KGgo="],
             }
         },
+        "non_rendered_content_types": [
+            "application/javascript",
+            "application/json",
+            "text/css",
+            "text/javascript",
+            "text/plain",
+        ],
+        "script_content_types": [
+            "application/javascript",
+            "application/x-javascript",
+            "text/javascript",
+        ],
     }
 
 
