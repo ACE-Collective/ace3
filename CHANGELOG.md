@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.79] - 2026-07-16
+
+- [Fixes interpolated correlated hunt cache key issue](https://github.com/ACE-Collective/ace3/pull/398)
+- [Fixes several Phishkit and JS deobfuscation issues](https://github.com/ACE-Collective/ace3/pull/399)
+
 ## [3.0.78] - 2026-07-14
 
 - [Drops unused external_remediation_check_history table](https://github.com/ACE-Collective/ace3/pull/395)
