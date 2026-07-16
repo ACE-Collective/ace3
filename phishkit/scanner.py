@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -808,6 +808,46 @@ window.matchMedia = function(query) {
 # Default config path baked into the scanner Docker image.
 DEFAULT_CONFIG_PATH = "/opt/app/phishkit_config.yaml"
 
+# Artifact holding the top-level response body when the scanned URL served
+# JavaScript rather than a page. The .js extension is load-bearing: ACE's
+# JavaScriptDeobfuscationAnalyzer triggers on it.
+TOP_LEVEL_SCRIPT_NAME = "script.js"
+
+# Artifact holding captured response bodies and WebSocket traffic, one
+# "MARKER URL: <url>" line per block. This is a grep/yara corpus, not a
+# document. It used to be appended to dom.html, which made dom.html both a
+# parseable DOM and a pile of raw bodies -- anything HTML-aware then mis-read the
+# bodies, extracting a <script> that sat inside a JS string literal as if it were
+# a real inline script and producing a "JavaScript" file that is not JavaScript.
+# Splitting it out is what lets ACE keep parsing dom.html (whose inline scripts
+# are genuine) while leaving the corpus alone.
+#
+# The .txt name is honest labeling, not the enforcement: ACE's PhishkitAnalyzer
+# has to exclude HTMLJavaScriptExtractor from this file explicitly, because that
+# module falls back to the detected mime type when the extension doesn't match,
+# and libmagic reads the captured HTML in here as text/html.
+RESPONSE_BODIES_NAME = "response_bodies.txt"
+
+
+def _safe_to_json(cdp_object):
+    """Serializes a CDP object, returning None instead of raising.
+
+    The "raw" dump is a bonus -- nothing downstream reads it; the url/method/
+    headers alongside it are what matter. It must therefore never be able to
+    destroy the entry it belongs to, which is exactly what it was doing:
+    mycdp's Request.to_json() reads self.is_ad_related, which is not one of
+    Request's fields, so it raised AttributeError on *every* call. That took the
+    whole request entry down with it, so requests.json only ever contained
+    type="response" rows -- silently disabling PhishkitAnalyzer's promotion pass
+    over type="request" entries. Response.to_json() has no such field and works,
+    which is why responses survived and requests never did.
+    """
+    try:
+        return cdp_object.to_json()
+    except Exception as e:
+        print(f"could not serialize {type(cdp_object).__name__} to json: {e}")
+        return None
+
 # Structural CSS selectors the visual_checkbox_bypass handler uses to locate the
 # clickable challenge element when no checkbox image matches. Polymorphic kits
 # randomize text, colors, classes, ids and even the rendered scale (defeating
@@ -817,6 +857,29 @@ DEFAULT_CONFIG_PATH = "/opt/app/phishkit_config.yaml"
 DEFAULT_CLICK_SELECTORS = [
     '[role="button"][tabindex="0"]',
     '[role="button"][aria-label]',
+]
+
+
+# Defaults for the content-type lists below. Both are denylists and both fail
+# open: an unknown or missing content type is treated as a normal page, so we
+# still screenshot it, still attempt bypasses, and still append its body to
+# dom.html. Getting a useless screenshot is a much cheaper mistake than silently
+# dropping a real one.
+DEFAULT_NON_RENDERED_CONTENT_TYPES = [
+    "application/javascript",
+    "application/json",
+    "application/x-javascript",
+    "application/xml",
+    "text/css",
+    "text/javascript",
+    "text/plain",
+    "text/xml",
+]
+
+DEFAULT_SCRIPT_CONTENT_TYPES = [
+    "application/javascript",
+    "application/x-javascript",
+    "text/javascript",
 ]
 
 
@@ -832,6 +895,15 @@ class PhishkitConfig:
     # scan_waits.max_network_wait: additional cap on top of additional_wait
     # during which the scanner keeps waiting for network/URL quiescence
     max_network_wait: float = 10.0
+    # Content types Chrome shows in its built-in plain-text viewer rather than
+    # rendering as a page. Two consequences, both handled: a screenshot of one is
+    # a picture of source we already capture verbatim, and there is no challenge
+    # UI on it to bypass. Deliberately wider than script_content_types: nothing
+    # in this list renders as a page.
+    non_rendered_content_types: list = field(default_factory=lambda: list(DEFAULT_NON_RENDERED_CONTENT_TYPES))
+    # Content types whose top-level body is JavaScript. Narrower than the list
+    # above: only these can be handed to ACE's JS deobfuscator.
+    script_content_types: list = field(default_factory=lambda: list(DEFAULT_SCRIPT_CONTENT_TYPES))
 
 
 def _load_config(config_path: str) -> PhishkitConfig:
@@ -859,6 +931,14 @@ def _load_config(config_path: str) -> PhishkitConfig:
         max_ws_frame_bytes=int(data.get("max_ws_frame_bytes", 65536)),
         additional_wait=int(scan_waits.get("additional_wait", 3)),
         max_network_wait=float(scan_waits.get("max_network_wait", 10.0)),
+        non_rendered_content_types=[
+            str(x).lower()
+            for x in (data.get("non_rendered_content_types") or DEFAULT_NON_RENDERED_CONTENT_TYPES)
+        ],
+        script_content_types=[
+            str(x).lower()
+            for x in (data.get("script_content_types") or DEFAULT_SCRIPT_CONTENT_TYPES)
+        ],
     )
 
     print(
@@ -868,7 +948,9 @@ def _load_config(config_path: str) -> PhishkitConfig:
         f"{len(config.bypasses)} bypasses, "
         f"max_ws_frame_bytes={config.max_ws_frame_bytes}, "
         f"additional_wait={config.additional_wait}s, "
-        f"max_network_wait={config.max_network_wait}s"
+        f"max_network_wait={config.max_network_wait}s, "
+        f"{len(config.non_rendered_content_types)} non-rendered content types, "
+        f"{len(config.script_content_types)} script content types"
     )
     return config
 
@@ -906,6 +988,8 @@ class Scanner:
         self.MAX_WS_FRAME_BYTES = config.max_ws_frame_bytes
         self.ADDITIONAL_WAIT = config.additional_wait
         self.MAX_NETWORK_WAIT = config.max_network_wait
+        self.NON_RENDERED_CONTENT_TYPES = frozenset(config.non_rendered_content_types)
+        self.SCRIPT_CONTENT_TYPES = frozenset(config.script_content_types)
 
         self._bypass_handlers = {
             "visual_checkbox_bypass": self.visual_checkbox_bypass,
@@ -969,7 +1053,7 @@ class Scanner:
         return len(seen - settled)
 
     def _format_websocket_block(self, ws: dict) -> str:
-        """Render a WebSocket record as a dom.html block.
+        """Render a WebSocket record as a response-bodies corpus block.
 
         Starts with 'MARKER URL: <ws_url>' so the existing PhishkitAnalyzer
         URL extractor promotes the ws/wss target to an F_URL observable.
@@ -994,9 +1078,73 @@ class Scanner:
         lines.append("")
         return "\n".join(lines)
 
+    def top_level_response(self) -> Optional[dict]:
+        """Returns the response entry for the top-level document, or None.
+
+        Prefers the CDP ResourceType ("Document"), which is exact. Falls back to
+        the first non-redirect response -- the document is the response a
+        redirect chain lands on, and subresource responses follow it. The
+        fallback matters for responses logged before resource_type was captured.
+        """
+        candidates = [r for r in self.requests if r.get("type") == "response"]
+        for entry in candidates:
+            if entry.get("resource_type") == "Document":
+                return entry
+
+        for entry in candidates:
+            status_code = entry.get("status_code")
+            if isinstance(status_code, int) and 300 <= status_code < 400:
+                continue
+            return entry
+
+        return None
+
+    def top_level_content_type(self) -> Optional[str]:
+        """Returns the lowercased content type of the top-level document, or
+        None if unknown. "application/javascript; charset=utf-8" -> "application/javascript"."""
+        entry = self.top_level_response()
+        if entry is None:
+            return None
+
+        headers = entry.get("headers")
+        if not isinstance(headers, dict):
+            return None
+
+        # header casing varies between origins
+        for name, value in headers.items():
+            if name.lower() == "content-type" and isinstance(value, str):
+                return value.split(";", 1)[0].strip().lower()
+
+        return None
+
+    def top_level_is_rendered_page(self) -> bool:
+        """Returns False when the scanned URL's own response is something Chrome
+        shows in its plain-text viewer instead of rendering as a page (JS, JSON,
+        CSS, XML...). Fails open: an unknown content type is treated as a page.
+        """
+        return self.top_level_content_type() not in self.NON_RENDERED_CONTENT_TYPES
+
+    def appendable_response_entries(self) -> list:
+        """Returns the entries whose bodies should be fetched, one per exchange.
+
+        Network.getResponseBody is keyed by requestId, and BOTH the request and
+        the response entry for a single exchange carry that id -- so taking
+        everything with a requestId fetches and appends every body twice. Only a
+        response has a body, which makes type == "response" both the correct
+        filter and the deduplicating one. It also excludes websocket_* entries,
+        which carry a requestId but are not fetchable this way; those have their
+        own pass.
+        """
+        return [
+            entry for entry in self.requests
+            if entry.get("type") == "response"
+            and "requestId" in entry
+            and "url" in entry
+        ]
+
     def check_dom_filter(self, url: str) -> bool:
         """Returns True if the URL's response body should be skipped when
-        appending sub-request content to dom.html, False otherwise."""
+        capturing sub-request content, False otherwise."""
         for pattern in self.SKIP_BODY_URL_PATTERNS:
             if pattern in url:
                 return True
@@ -1025,7 +1173,13 @@ class Scanner:
                 "headers": event.response.headers,
                 "status_code": event.response.status,
                 "encoded_data_length": event.response.encoded_data_length,
-                "raw": event.response.to_json(),
+                # CDP ResourceType -- "Document" marks the top-level navigation.
+                # It lives on the event, not event.response, so it is NOT in
+                # "raw" below. Without it, identifying which response is the page
+                # is guesswork: URL equality with the scanned URL breaks on
+                # redirects, and ordering is only a heuristic.
+                "resource_type": str(event.type_),
+                "raw": _safe_to_json(event.response),
             }
             self.requests.append(request)
             domain = urlparse(event.response.url).netloc
@@ -1136,7 +1290,7 @@ class Scanner:
                 "method": event.request.method,
                 "url": event.request.url,
                 "headers": event.request.headers,
-                "raw": event.request.to_json(),
+                "raw": _safe_to_json(event.request),
             }
             self.requests.append(request)
             domain = urlparse(event.request.url).netloc
@@ -1146,7 +1300,7 @@ class Scanner:
                 if stats["first_request_time"] is None:
                     stats["first_request_time"] = time.time()
         except Exception as e:
-            print(f"exception parsing network.ResponseReceived event: {event}: {e}")
+            print(f"exception parsing network.RequestWillBeSent event: {event}: {e}")
 
     def _get_websocket_record(self, request_id: str) -> dict:
         """Return the aggregated record for a socket, creating it if missing.
@@ -1737,22 +1891,38 @@ class Scanner:
             # /screenshot/metrics instead of an empty output dir when the
             # celery worker kills us mid-navigation.
             def _on_term(signum, frame):
+                # requests.json and metrics.json are flushed unconditionally --
+                # they are content-type agnostic, and requests.json is what marks
+                # the output as recoverable.
                 try:
                     with open(os.path.join(output_dir, "requests.json"), "w") as fp:
                         json.dump(self.requests, fp, indent=2)
                 except Exception as e:
                     print(f"sigterm: failed to flush requests.json: {e}")
-                try:
-                    with open(os.path.join(output_dir, "dom.html"), "w") as fp:
-                        fp.write(sb.get_page_source())
-                except Exception as e:
-                    print(f"sigterm: failed to flush dom.html: {e}")
-                try:
-                    sb.save_screenshot(
-                        os.path.join(output_dir, "screenshot.png"), selector="body"
+
+                # The dom/screenshot captures are worthless for the same reason
+                # they are on the normal path: if Chrome is showing its plain-text
+                # viewer there is no page to capture. Fails open -- before any
+                # response is logged this reads as a rendered page, so an
+                # interrupted navigation still flushes whatever we have.
+                interrupted_rendered_page = self.top_level_is_rendered_page()
+                if interrupted_rendered_page:
+                    try:
+                        with open(os.path.join(output_dir, "dom.html"), "w") as fp:
+                            fp.write(sb.get_page_source())
+                    except Exception as e:
+                        print(f"sigterm: failed to flush dom.html: {e}")
+                    try:
+                        sb.save_screenshot(
+                            os.path.join(output_dir, "screenshot.png"), selector="body"
+                        )
+                    except Exception as e:
+                        print(f"sigterm: failed to save screenshot: {e}")
+                else:
+                    print(
+                        f"sigterm: skipping dom/screenshot flush: top level response is "
+                        f"{self.top_level_content_type()}, not a rendered page"
                     )
-                except Exception as e:
-                    print(f"sigterm: failed to save screenshot: {e}")
                 try:
                     metrics = self._compute_metrics(url, time.time() - scan_start_time)
                     metrics["interrupted"] = True
@@ -1913,9 +2083,26 @@ class Scanner:
             print(f"waiting for {url} to load")
             sb.wait_for_ready_state_complete(timeout=3)
 
+            # Bypasses match against the page source. When the scanned URL is a
+            # script, Chrome shows the source as text -- so the *source* becomes
+            # the page text, and a challenge kit's own UI strings ("Continue",
+            # "Click to verify") match against its own source code. That fires a
+            # bypass handler against a plain-text document with no challenge on
+            # it: it clicks nothing, burns click iterations and nav waits, and
+            # leaves a pre_bypass_screenshot of rendered source behind. There is
+            # nothing to bypass on a document Chrome never rendered.
+            is_rendered_page = self.top_level_is_rendered_page()
+            if not is_rendered_page:
+                print(
+                    f"skipping bypasses: top level response is "
+                    f"{self.top_level_content_type()}, not a rendered page"
+                )
+
             # First pass — catches challenges that are already rendered.
-            self.bypass_recaptcha(sb)
-            bypassed = self.bypass_warnings(sb)
+            bypassed = False
+            if is_rendered_page:
+                self.bypass_recaptcha(sb)
+                bypassed = self.bypass_warnings(sb)
 
             # Many phishing kits defer challenge rendering: an inline stager
             # uses setTimeout(...) to inject a second-stage script that
@@ -1936,29 +2123,53 @@ class Scanner:
             if max_network_wait and max_network_wait > 0:
                 self._wait_for_network_quiescence(sb, max_extra_wait=max_network_wait)
 
-            if not bypassed:
+            if is_rendered_page and not bypassed:
                 self.bypass_recaptcha(sb)
                 self.bypass_warnings(sb)
 
             screenshot_path = os.path.join(output_dir, "screenshot.png")
 
+            # Both captures below record what Chrome rendered -- one as a picture,
+            # one as a DOM. When the top-level response is something Chrome shows
+            # in its plain-text viewer, it rendered no page: the screenshot is a
+            # picture of source, and the DOM is the viewer's own <pre> wrapper
+            # around that same source, HTML-escaped. Neither says anything the
+            # captured body doesn't already say better -- the body is kept
+            # verbatim in script.js (scripts) or response_bodies.txt
+            # (everything else). self.requests is fully populated by now (the
+            # navigation completed and _wait_for_network_quiescence ran above), so
+            # the content type is known without re-fetching anything.
+            top_level_content_type = self.top_level_content_type()
+
             # get the screenshot
-            try:
-                print(f"saving screenshot to {screenshot_path}")
-                sb.save_screenshot(screenshot_path, selector="body")
-                print(f"screenshot saved to {screenshot_path}")
+            if not is_rendered_page:
+                print(
+                    f"skipping screenshot: top level response is {top_level_content_type}, "
+                    f"not a rendered page"
+                )
+            else:
+                try:
+                    print(f"saving screenshot to {screenshot_path}")
+                    sb.save_screenshot(screenshot_path, selector="body")
+                    print(f"screenshot saved to {screenshot_path}")
 
-            except Exception as e:
-                print(f"failed to save screenshot: {e}")
+                except Exception as e:
+                    print(f"failed to save screenshot: {e}")
 
-            dom_path = os.path.join(output_dir, "dom.html")
-
-            try:
-                print(f"saving dom to {dom_path}")
-                with open(dom_path, "w") as fp:
-                    fp.write(sb.get_page_source())
-            except Exception as e:
-                print(f"Timed out waiting for html: {e}")
+            # capture the dom
+            if not is_rendered_page:
+                print(
+                    f"skipping dom capture: top level response is {top_level_content_type}, "
+                    f"not a rendered page"
+                )
+            else:
+                dom_path = os.path.join(output_dir, "dom.html")
+                try:
+                    print(f"saving dom to {dom_path}")
+                    with open(dom_path, "w") as fp:
+                        fp.write(sb.get_page_source())
+                except Exception as e:
+                    print(f"Timed out waiting for html: {e}")
 
             requests_path = os.path.join(output_dir, "requests.json")
             with open(requests_path, "w") as fp:
@@ -1975,42 +2186,71 @@ class Scanner:
             except Exception as e:
                 print(f"failed to write metrics: {e}")
 
-            # append reponse content data to dom.html unless filtered out
-            for request in self.requests:
-                # WebSocket entries have requestId + url but are not fetchable
-                # via Network.getResponseBody; they're handled in a separate
-                # pass below.
-                if request.get("type", "").startswith("websocket_"):
+            # When the scanned URL itself serves JavaScript, Chrome never executes
+            # it -- it displays the source in the plain-text viewer. So nothing
+            # requests the URLs inside it, and the promotion passes in
+            # PhishkitAnalyzer (MARKER URL lines + requests.json) can't see them.
+            # Divert that body to its own .js artifact: ACE runs the JS
+            # deobfuscator on a .js file, and the deobfuscated output carries the
+            # extract_urls directive, which is what actually recovers the staged
+            # URLs. Everything else goes to the corpus, which is grep/yara
+            # material and is never handed to a parser.
+            top_level_entry = self.top_level_response()
+            top_level_request_id = (
+                top_level_entry.get("requestId") if top_level_entry else None
+            )
+            divert_top_level_body = (
+                top_level_request_id is not None
+                and top_level_content_type in self.SCRIPT_CONTENT_TYPES
+            )
+
+            # write captured response bodies to the corpus, not into dom.html
+            bodies_path = os.path.join(output_dir, RESPONSE_BODIES_NAME)
+            for request in self.appendable_response_entries():
+                if self.check_dom_filter(request["url"]):
                     continue
-                if "requestId" in request and "url" in request:
-                    if self.check_dom_filter(request["url"]):
+
+                is_top_level_body = (
+                    divert_top_level_body
+                    and request.get("requestId") == top_level_request_id
+                )
+
+                print(f"grabbing response body for {request['url']}")
+
+                # see https://github.com/ChromeDevTools/devtools-protocol/blob/master/json/browser_protocol.json
+                try:
+                    response_data = sb.execute_cdp_cmd(
+                        "Network.getResponseBody",
+                        {"requestId": request["requestId"]},
+                    )["body"]
+
+                    if is_top_level_body:
+                        body_path = os.path.join(output_dir, TOP_LEVEL_SCRIPT_NAME)
+                        print(
+                            f"saving top level script body to {body_path} "
+                            f"({top_level_content_type})"
+                        )
+                        with open(body_path, "wb") as fp:
+                            fp.write(response_data.encode("utf-8", errors="ignore"))
                         continue
 
-                    print(f"grabbing response body for {request['url']}")
+                    appended_data = (
+                        "\n\nMARKER URL: " + request["url"] + "\n\n" + response_data
+                    )
+                    with open(bodies_path, "ab") as fp:
+                        fp.write(appended_data.encode("utf-8", errors="ignore"))
+                except Exception as e:
+                    print(
+                        f"failed to grab response body for requestId {request.get('requestId', -1)}: {e}"
+                    )
 
-                    # see https://github.com/ChromeDevTools/devtools-protocol/blob/master/json/browser_protocol.json
-                    try:
-                        response_data = sb.execute_cdp_cmd(
-                            "Network.getResponseBody",
-                            {"requestId": request["requestId"]},
-                        )["body"]
-                        appended_data = (
-                            "\n\nMARKER URL: " + request["url"] + "\n\n" + response_data
-                        )
-                        with open(dom_path, "ab") as fp:
-                            fp.write(appended_data.encode("utf-8", errors="ignore"))
-                    except Exception as e:
-                        print(
-                            f"failed to grab response body for requestId {request.get('requestId', -1)}: {e}"
-                        )
-
-            # append WebSocket lifecycle + frame data to dom.html. One MARKER URL
-            # line per socket so PhishkitAnalyzer promotes ws/wss URLs to
+            # append WebSocket lifecycle + frame data to the corpus. One MARKER
+            # URL line per socket so PhishkitAnalyzer promotes ws/wss URLs to
             # F_URL observables via the existing extraction path.
             for ws in self.websockets.values():
                 try:
                     block = self._format_websocket_block(ws)
-                    with open(dom_path, "ab") as fp:
+                    with open(bodies_path, "ab") as fp:
                         fp.write(block.encode("utf-8", errors="ignore"))
                 except Exception as e:
                     print(

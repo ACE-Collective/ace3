@@ -812,6 +812,112 @@ def test_html_fragment_body_gets_html_extension(root_analysis):
     assert plain_body.file_name.endswith('.txt')
     assert plain_body.has_directive(DIRECTIVE_PREVIEW)
 
+
+def _build_attachment_email(declared_content_type: str | None, message_id: str):
+    """Synthesizes an email with one HTML attachment whose Content-Type header is
+    set verbatim to declared_content_type (None omits the header entirely).
+
+    MIMEText/MIMEBase won't emit a malformed type, so the header is written by
+    hand -- that is the whole point of these tests.
+    """
+    headers = [
+        'From: attacker@example.com',
+        'To: victim@company.com',
+        f'Subject: attachment {message_id}',
+        f'Message-ID: <{message_id}@example.com>',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="BOUND"',
+        '',
+        '--BOUND',
+        'Content-Type: text/plain; charset="us-ascii"',
+        '',
+        'see attached',
+        '',
+        '--BOUND',
+    ]
+    if declared_content_type is not None:
+        headers.append(f'Content-Type: {declared_content_type}')
+    headers += [
+        'Content-Disposition: attachment; filename="invoice.html"',
+        '',
+        '<!DOCTYPE html><html><body><a href="https://example.com/x">x</a></body></html>',
+        '',
+        '--BOUND--',
+        '',
+    ]
+    return '\r\n'.join(headers).encode()
+
+
+def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
+    """Runs EmailAnalyzer over a synthesized email and returns the attachment observable."""
+    email_path = os.path.join(get_temp_dir(), f'{name}.email.rfc822')
+    with open(email_path, 'wb') as fp:
+        fp.write(raw_email)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(email_path)
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    reloaded = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = reloaded.get_observable(file_observable.uuid)
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    return next(
+        (o for o in email_analysis.get_observables_by_type(F_FILE)
+         if o.file_name.endswith('invoice.html')),
+        None,
+    )
+
+
+@pytest.mark.integration
+def test_malformed_content_type_attachment_still_gets_render(root_analysis):
+    """An attachment declaring a malformed Content-Type must still be rendered.
+
+    "Content-Type: text" has no subtype, so it is not a valid MIME type, and
+    python normalizes any unparseable Content-Type to the RFC 2045 default
+    text/plain -- the one value that takes the preview branch. That let a real
+    sample suppress rendering of an HTML attachment for free: the sender writes
+    the header, and the failure direction is toward not analyzing.
+    """
+    attachment = _analyze_attachment_email(
+        root_analysis, _build_attachment_email('text; name="invoice"', 'malformed-ct'), 'malformed')
+
+    assert attachment is not None
+    assert attachment.has_directive(DIRECTIVE_RENDER)
+    assert not attachment.has_directive(DIRECTIVE_PREVIEW)
+
+
+@pytest.mark.integration
+def test_honest_plain_text_attachment_still_gets_preview(root_analysis):
+    """A genuinely-declared text/plain attachment keeps preview -- the malformed
+    check must not turn every attachment into a render."""
+    attachment = _analyze_attachment_email(
+        root_analysis, _build_attachment_email('text/plain; charset="us-ascii"', 'honest-plain'), 'honest')
+
+    assert attachment is not None
+    assert attachment.has_directive(DIRECTIVE_PREVIEW)
+    assert not attachment.has_directive(DIRECTIVE_RENDER)
+
+
+@pytest.mark.integration
+def test_absent_content_type_attachment_gets_preview(root_analysis):
+    """No Content-Type header at all is NOT an evasion: RFC 2045 says a part
+    without one genuinely is text/plain. Preview stays correct."""
+    attachment = _analyze_attachment_email(
+        root_analysis, _build_attachment_email(None, 'absent-ct'), 'absent')
+
+    assert attachment is not None
+    assert attachment.has_directive(DIRECTIVE_PREVIEW)
+    assert not attachment.has_directive(DIRECTIVE_RENDER)
+
 @pytest.mark.integration
 def test_long_filename_does_not_crash_analyzer(root_analysis, datadir):
     """Regression: a .eml basename at the 255-byte per-component limit used to crash

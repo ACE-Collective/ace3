@@ -89,8 +89,17 @@ def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float =
 def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -> Optional[list[str]]:
     """Gets the result of a scan asynchronously. Returns the list of files if the scan is complete, otherwise None."""
     result = AsyncResult(result_id)
+
+    # Ask whether the result is stored before asking for it. ready() is a plain
+    # read of the backend's result key; get() instead waits on the backend's
+    # result consumer, which for redis means draining a pub/sub channel. Polling
+    # a not-yet-finished job with get() therefore blocks the calling thread for
+    # the whole timeout.
+    if not result.ready():
+        return None
+
     try:
-        result_dir = result.get(timeout=5)
+        result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
     except TimeoutError:
         return None

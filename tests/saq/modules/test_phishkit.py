@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_RENDER, F_FILE, F_URL, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_HTML_JS_EXTRACTION, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URL, AnalysisExecutionResult
 from saq.modules.phishkit import (
     PhishkitAnalysis,
     PhishkitAnalyzer,
@@ -26,6 +26,7 @@ from saq.modules.phishkit import (
     SCAN_TYPE_FILE
 )
 from saq.modules.file_analysis import FileTypeAnalysis, OCRAnalyzer
+from saq.modules.file_analysis.html_js_extraction import HTMLJavaScriptExtractor
 import saq.phishkit
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
 from saq.analysis.cache import apply_delta, generate_cache_key, get_cached_delta, put_cached_delta
@@ -1046,9 +1047,110 @@ def test_phishkit_analyzer_continue_analysis_no_proxy_json(monkeypatch, test_con
         assert analysis.proxy_status is None
 
 
+def _run_body_url_extraction(monkeypatch, corpus: str, scanned_url: str = "https://example.com/phish"):
+    """Runs continue_analysis over a corpus and returns {url: display_type}."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, scanned_url)
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-bodies"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        bodies_file = os.path.join(temp_dir, "response_bodies.txt")
+        with open(bodies_file, "w") as f:
+            f.write(corpus)
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        analysis.output_dir = temp_dir
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: [exit_code_file, bodies_file])
+
+        added = {}
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            obs = original_add(o_type, o_value, **kwargs)
+            if o_type == F_URL:
+                added[o_value] = obs
+            return obs
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+        assert result == AnalysisExecutionResult.COMPLETED
+
+        # display_type's getter appends the observable type ("... (url)"),
+        # so compare against what was actually set
+        return {u: (o.display_type.removesuffix(" (url)") if o else None) for u, o in added.items()}
+
+
+@pytest.mark.unit
+def test_phishkit_promotes_urls_found_only_inside_captured_bodies(monkeypatch, test_context):
+    """A URL that was downloaded but never requested must still be promoted.
+
+    The MARKER URL and requests.json passes only record traffic the browser
+    actually made. A kit's next-stage endpoints are string literals in the code it
+    served -- present in the body, absent from both records -- so nothing sees them
+    without reading the content itself. This is the case the pass exists for.
+    """
+    corpus = (
+        "\n\nMARKER URL: https://evil.com/kit.js\n\n"
+        "var cfg = {"
+        "  imageUrl: 'https://staged.example.net/captcha.png',"
+        "  verifyUrl: 'https://staged.example.net/captcha/verify'"
+        "};\n"
+    )
+    added = _run_body_url_extraction(monkeypatch, corpus)
+
+    # staged in the body, never requested -- neither other pass can see these
+    assert added.get("https://staged.example.net/captcha.png") == "Phishkit Captured URL"
+    assert added.get("https://staged.example.net/captcha/verify") == "Phishkit Captured URL"
+    # the MARKER pass still owns the URL whose body this is
+    assert added.get("https://evil.com/kit.js") == "Phishkit Request URL"
+
+
+@pytest.mark.unit
+def test_phishkit_body_extraction_skips_scanned_url_and_non_http_schemes(monkeypatch, test_context):
+    """The scanned URL must not be re-promoted from body content.
+
+    Re-adding it would make it a descendant of its own PhishkitAnalysis, which
+    breaks the observable-modifier crawl rules that require no PhishkitAnalysis
+    ancestor -- the same guard the other two passes apply.
+    """
+    scanned = "https://example.com/phish"
+    corpus = (
+        "\n\nMARKER URL: https://evil.com/kit.js\n\n"
+        f"var self = '{scanned}';"
+        "var f = 'file:///etc/passwd';"
+        "var d = 'data:text/html;base64,PGh0bWw+';"
+        "var b = 'blob:https://evil.com/abc123';"
+        "var real = 'https://staged.example.net/next';\n"
+    )
+    added = _run_body_url_extraction(monkeypatch, corpus, scanned_url=scanned)
+
+    assert scanned not in added
+    assert not [u for u in added if u.startswith(("file:///", "data:", "blob:"))]
+    assert added.get("https://staged.example.net/next") == "Phishkit Captured URL"
+
+
+@pytest.mark.unit
+def test_phishkit_body_extraction_survives_unparseable_body(monkeypatch, test_context):
+    """A body that urlfinderlib chokes on must not fail the analysis."""
+    corpus = "\n\nMARKER URL: https://evil.com/kit.js\n\n" + "\x00\xff binary junk \x00" * 50 + "\n"
+    added = _run_body_url_extraction(monkeypatch, corpus)
+
+    # the analysis completed (asserted in the helper) and the other passes still ran
+    assert added.get("https://evil.com/kit.js") == "Phishkit Request URL"
+
+
 @pytest.mark.unit
 def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, test_context):
-    """Test that MARKER URL lines in dom.html are extracted as URL observables."""
+    """MARKER URL lines in the response-bodies corpus become URL observables."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 
@@ -1059,10 +1161,8 @@ def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, t
     url_observable.add_analysis(analysis)
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create dom.html with MARKER URL lines mixed with HTML content
-        dom_file = os.path.join(temp_dir, "dom.html")
-        with open(dom_file, "w") as f:
-            f.write("<html><body>page content</body></html>\n")
+        bodies_file = os.path.join(temp_dir, "response_bodies.txt")
+        with open(bodies_file, "w") as f:
             f.write("\n\nMARKER URL: https://evil.com/login.php\n\n")
             f.write("<script>var x = 1;</script>\n")
             f.write("\n\nMARKER URL: https://evil.com/steal.js\n\n")
@@ -1073,7 +1173,7 @@ def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, t
         with open(exit_code_file, "w") as f:
             f.write("0")
 
-        output_files = [exit_code_file, dom_file]
+        output_files = [exit_code_file, bodies_file]
         analysis.output_dir = temp_dir
 
         monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
@@ -1102,6 +1202,54 @@ def test_phishkit_analyzer_continue_analysis_extracts_marker_urls(monkeypatch, t
 
 
 @pytest.mark.unit
+def test_phishkit_analyzer_does_not_read_marker_urls_from_dom_html(monkeypatch, test_context):
+    """dom.html is a rendered DOM, not the corpus -- MARKER lines there are ignored.
+
+    The corpus used to be appended to dom.html, which made it both a parseable
+    document and a pile of raw bodies; anything HTML-aware then mis-read the
+    bodies. This pins that the split is a move, not a copy -- if the scanner ever
+    starts appending to dom.html again, the reason for the split is back.
+    """
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-dom-marker"
+    url_observable.add_analysis(analysis)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dom_file = os.path.join(temp_dir, "dom.html")
+        with open(dom_file, "w") as f:
+            f.write("<html><body>page</body></html>\n")
+            f.write("\n\nMARKER URL: https://evil.com/should-not-be-read.php\n\n")
+
+        exit_code_file = os.path.join(temp_dir, "exit.code")
+        with open(exit_code_file, "w") as f:
+            f.write("0")
+
+        analysis.output_dir = temp_dir
+        monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                            lambda job_id, output_dir, timeout=1: [exit_code_file, dom_file])
+
+        added_urls = []
+        original_add = analysis.add_observable_by_spec
+        def tracking_add(o_type, o_value, **kwargs):
+            if o_type == F_URL:
+                added_urls.append(o_value)
+            return original_add(o_type, o_value, **kwargs)
+        monkeypatch.setattr(analysis, "add_observable_by_spec", tracking_add)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        result = analyzer.continue_analysis(url_observable, analysis)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert added_urls == []
+
+
+@pytest.mark.unit
 def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeypatch, test_context):
     """Every type=request entry in requests.json should yield a URL observable,
     including URLs that never made it into dom.html as MARKER URLs."""
@@ -1115,18 +1263,18 @@ def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeyp
     url_observable.add_analysis(analysis)
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # dom.html carries one MARKER URL; requests.json carries three more
+        # the corpus carries one MARKER URL; requests.json carries three more
         # (a filtered CSS, a failed endpoint, and a duplicate of the MARKER URL)
         # plus noise (response, error, file://, data:, blob:).
-        dom_file = os.path.join(temp_dir, "dom.html")
-        with open(dom_file, "w") as f:
+        bodies_file = os.path.join(temp_dir, "response_bodies.txt")
+        with open(bodies_file, "w") as f:
             f.write("\n\nMARKER URL: https://evil.com/login.php\n\n")
 
         requests_file = os.path.join(temp_dir, "requests.json")
         with open(requests_file, "w") as f:
             json.dump([
                 {"type": "request", "url": "https://evil.com/login.php"},  # dup of MARKER
-                {"type": "request", "url": "https://cdn.example.com/styles.css"},  # filtered from dom.html
+                {"type": "request", "url": "https://cdn.example.com/styles.css"},  # body not captured
                 {"type": "response", "url": "https://evil.com/login.php"},  # ignored
                 {"type": "request", "url": "https://blocked.example.com/captcha.png"},  # failed fetch
                 {"type": "error", "url": "https://blocked.example.com/captcha.png"},  # ignored
@@ -1140,7 +1288,7 @@ def test_phishkit_analyzer_continue_analysis_extracts_requests_json_urls(monkeyp
         with open(exit_code_file, "w") as f:
             f.write("0")
 
-        output_files = [exit_code_file, dom_file, requests_file]
+        output_files = [exit_code_file, bodies_file, requests_file]
         analysis.output_dir = temp_dir
 
         monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
@@ -1192,10 +1340,10 @@ def test_phishkit_analyzer_continue_analysis_skips_scanned_url_self_reference(mo
     url_observable.add_analysis(analysis)
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # dom.html: the top-level MARKER URL is the scanned URL itself, plus a
+        # corpus: the top-level MARKER URL is the scanned URL itself, plus a
         # genuinely discovered redirect target.
-        dom_file = os.path.join(temp_dir, "dom.html")
-        with open(dom_file, "w") as f:
+        bodies_file = os.path.join(temp_dir, "response_bodies.txt")
+        with open(bodies_file, "w") as f:
             f.write(f"\n\nMARKER URL: {scanned}\n\n")
             f.write("<html>redirected</html>\n")
             f.write("\n\nMARKER URL: https://cdn.example.com/next.html\n\n")
@@ -1213,7 +1361,7 @@ def test_phishkit_analyzer_continue_analysis_skips_scanned_url_self_reference(mo
         with open(exit_code_file, "w") as f:
             f.write("0")
 
-        output_files = [exit_code_file, dom_file, requests_file]
+        output_files = [exit_code_file, bodies_file, requests_file]
         analysis.output_dir = temp_dir
 
         monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
@@ -1350,6 +1498,65 @@ def test_phishkit_analyzer_continue_analysis_no_marker_urls(monkeypatch, test_co
 
         assert result == AnalysisExecutionResult.COMPLETED
         assert added_urls == []
+
+
+def _attachment_gate_check(monkeypatch, *, yara_meta_type: str | None, add_render: bool) -> bool:
+    """Builds an .html/text-html file observable in correlation mode and returns
+    what custom_requirement decides. Every gate except the render/attachment one
+    is satisfied, so the result isolates that gate."""
+    root = create_root_analysis(analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root.initialize_storage()
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        f.write('<html><body>Test content</body></html>')
+        test_file_path = f.name
+
+    try:
+        file_observable = root.add_file_observable(test_file_path)
+        if add_render:
+            file_observable.add_directive(DIRECTIVE_RENDER)
+        if yara_meta_type is not None:
+            file_observable.add_yara_meta("type", yara_meta_type)
+
+        file_type_analysis = FileTypeAnalysis()
+        file_type_analysis.details = {'type': 'HTML document', 'mime': 'text/html'}
+        file_observable.add_analysis(file_type_analysis)
+
+        analyzer = PhishkitAnalyzer(
+            get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+            context=create_test_context(root=root))
+        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
+        monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
+
+        return analyzer.custom_requirement(file_observable)
+    finally:
+        if os.path.exists(test_file_path):
+            os.unlink(test_file_path)
+
+
+@pytest.mark.integration
+def test_phishkit_email_attachment_scanned_without_render_directive(monkeypatch, test_context):
+    """An email attachment is scannable even without the render directive.
+
+    EmailAnalyzer decides render-vs-preview from the part's *declared*
+    Content-Type, which the sender controls -- a malformed type normalizes to
+    text/plain and silently takes the preview branch, suppressing the scan.
+    _file_scan_enabled() answers the same question from FileTypeAnalysis, so for
+    attachments we let detection decide rather than the sender's assertion.
+    """
+    assert _attachment_gate_check(monkeypatch, yara_meta_type="email.attachment", add_render=False)
+
+
+@pytest.mark.integration
+def test_phishkit_non_attachment_still_requires_render_directive(monkeypatch, test_context):
+    """The exemption is scoped to email attachments and must not leak.
+
+    Without it, phishkit would scan every .html/.pdf file observable in
+    correlation mode -- a large, unintended volume change.
+    """
+    assert not _attachment_gate_check(monkeypatch, yara_meta_type=None, add_render=False)
+    # a non-attachment with render is still scanned, as before
+    assert _attachment_gate_check(monkeypatch, yara_meta_type=None, add_render=True)
 
 
 @pytest.mark.integration
@@ -1663,13 +1870,18 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
     delayed=False and hid the capture bug.
     """
     os.makedirs(out_dir, exist_ok=True)
+    # the scanner writes both: dom.html is the rendered DOM, response_bodies.txt
+    # is the captured-traffic corpus the MARKER URLs live in
     dom_path = os.path.join(out_dir, "dom.html")
     with open(dom_path, "w") as fp:
-        fp.write("<html></html>\nMARKER URL: https://evil.example/next-stage\n")
+        fp.write("<html></html>\n")
+    bodies_path = os.path.join(out_dir, "response_bodies.txt")
+    with open(bodies_path, "w") as fp:
+        fp.write("MARKER URL: https://evil.example/next-stage\n")
     exit_code_path = os.path.join(out_dir, "exit.code")
     with open(exit_code_path, "w") as fp:
         fp.write("143" if interrupted else "0")
-    files = [exit_code_path, dom_path]
+    files = [exit_code_path, dom_path, bodies_path]
     if interrupted:
         metrics_path = os.path.join(out_dir, "metrics.json")
         with open(metrics_path, "w") as fp:
@@ -1996,7 +2208,13 @@ def _ocr_excluded(observable):
     return observable.is_excluded(OCRAnalyzer(get_analysis_module_config(ANALYSIS_MODULE_OCR)))
 
 
-def _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, content_type):
+def _html_js_extraction_excluded(observable):
+    """is_excluded() takes a module instance, not a type."""
+    return observable.is_excluded(
+        HTMLJavaScriptExtractor(get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+
+
+def _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, content_type, extra_artifacts=None):
     """Runs continue_analysis over a fake job dir and returns {basename: file_observable}."""
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -2006,6 +2224,7 @@ def _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, content_type)
     _write_requests_json(output_dir, [_response(content_type)])
 
     artifacts = ["screenshot.png", "pre_bypass_screenshot.png", "pre_bypass_screenshot_iter2.png", "dom.html"]
+    artifacts.extend(extra_artifacts or [])
     scan_results = []
     for name in artifacts:
         path = os.path.join(output_dir, name)
@@ -2059,3 +2278,93 @@ def test_phishkit_screenshot_ocr_kept_when_content_type_unknown(monkeypatch, tmp
     observables = _run_continue_analysis_with_screenshots(monkeypatch, tmp_path, None)
 
     assert not _ocr_excluded(observables["screenshot.png"])
+
+
+@pytest.mark.integration
+def test_phishkit_top_level_script_body_is_extracted_for_urls(monkeypatch, tmp_path):
+    """When the scanned URL serves JavaScript, the scanner writes the body to
+    script.js, and it must be marked for URL extraction.
+
+    This directive is the only thing that surfaces the URLs staged inside such a
+    script. Chrome displays a top-level script rather than executing it, so
+    nothing requests those URLs and neither promotion pass (MARKER URL /
+    requests.json) sees them. The sandbox trace doesn't hold them either -- they
+    are plain string literals, and a script never reveals a URL whose code path
+    it doesn't run. Reading them out of the body is what works.
+
+    The .js extension is separately load-bearing: it triggers
+    JavaScriptDeobfuscationAnalyzer, which is what catches URLs a script builds
+    at runtime rather than storing as literals.
+    """
+    observables = _run_continue_analysis_with_screenshots(
+        monkeypatch, tmp_path, "application/javascript",
+        extra_artifacts=["script.js"],
+    )
+
+    assert "script.js" in observables, "top level script body must become an observable"
+    body = observables["script.js"]
+
+    assert body.has_directive(DIRECTIVE_EXTRACT_URLS), "script body must be marked for URL extraction"
+    # the .js extension is load-bearing -- js.py triggers on it
+    assert body.full_path.endswith(".js")
+    # phishkit output must never be fed back into phishkit
+    assert body.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}type=document.html.phishkit")
+
+
+@pytest.mark.integration
+def test_phishkit_response_bodies_excluded_from_html_js_extraction(monkeypatch, tmp_path):
+    """The captured-bodies corpus must never be parsed as an HTML document.
+
+    It is a concatenation of unrelated bodies separated by MARKER URL lines. The
+    .txt name does not protect it: HTMLJavaScriptExtractor falls back to
+    FileTypeAnalysis's mime type when the extension doesn't match, and libmagic
+    reads the captured HTML inside it as text/html. Parsing it yields the page's
+    real scripts a second time (already extracted from dom.html) plus phantom
+    ones lifted from <script> text inside JS string literals -- indistinguishable
+    in a concatenation.
+    """
+    observables = _run_continue_analysis_with_screenshots(
+        monkeypatch, tmp_path, "text/html",
+        extra_artifacts=["response_bodies.txt"],
+    )
+
+    assert "response_bodies.txt" in observables
+    assert _html_js_extraction_excluded(observables["response_bodies.txt"])
+
+    # ...and it is still yara-scannable and still not fed back into phishkit
+    corpus = observables["response_bodies.txt"]
+    assert corpus.has_directive(f"{DIRECTIVE_YARA_META_PREFIX}type=document.html.phishkit")
+
+
+@pytest.mark.integration
+def test_phishkit_dom_html_still_gets_html_js_extraction(monkeypatch, tmp_path):
+    """dom.html is a real document and its inline scripts are genuine.
+
+    This is what the exclusion above must not cost: excluding the extractor from
+    dom.html too would throw away the page's actual scripts, which is why the
+    corpus was split into its own artifact rather than the module simply being
+    turned off for phishkit output.
+    """
+    observables = _run_continue_analysis_with_screenshots(
+        monkeypatch, tmp_path, "text/html",
+        extra_artifacts=["response_bodies.txt"],
+    )
+
+    assert not _html_js_extraction_excluded(observables["dom.html"])
+
+
+@pytest.mark.integration
+def test_phishkit_dom_html_is_not_marked_for_url_extraction(monkeypatch, tmp_path):
+    """dom.html must NOT get extract_urls.
+
+    It concatenates every response body on the page, so extracting from it would
+    dump every CDN/font/analytics URL into the alert. That is why phishkit
+    promotes URLs from requests.json instead. The narrow directive above applies
+    to a single script body only -- this test pins that boundary.
+    """
+    observables = _run_continue_analysis_with_screenshots(
+        monkeypatch, tmp_path, "application/javascript",
+        extra_artifacts=["script.js"],
+    )
+
+    assert not observables["dom.html"].has_directive(DIRECTIVE_EXTRACT_URLS)

@@ -33,6 +33,11 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     KEY_EVENT_COUNT = "event_count"
     KEY_SECONDARY_SCRIPT_COUNT = "secondary_script_count"
     KEY_ERROR = "error"
+    # "compile" (the source never parsed, so it is not JavaScript), "runtime"
+    # (it parsed and failed mid-execution, so it IS JavaScript), or None.
+    KEY_ERROR_TYPE = "error_type"
+    KEY_WEBCRACK_STATUS = "webcrack_status"
+    KEY_WEBCRACK_ERROR = "webcrack_error"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -44,6 +49,9 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             JavaScriptDeobfuscationAnalysis.KEY_EVENT_COUNT: 0,
             JavaScriptDeobfuscationAnalysis.KEY_SECONDARY_SCRIPT_COUNT: 0,
             JavaScriptDeobfuscationAnalysis.KEY_ERROR: None,
+            JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE: None,
+            JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS: None,
+            JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR: None,
         }
 
     @property
@@ -100,6 +108,37 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     def error(self, value):
         self.details[JavaScriptDeobfuscationAnalysis.KEY_ERROR] = value
 
+    @property
+    def error_type(self):
+        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE)
+
+    @error_type.setter
+    def error_type(self, value):
+        self.details[JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE] = value
+
+    @property
+    def webcrack_status(self):
+        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS)
+
+    @webcrack_status.setter
+    def webcrack_status(self, value):
+        self.details[JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS] = value
+
+    @property
+    def webcrack_error(self):
+        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR)
+
+    @webcrack_error.setter
+    def webcrack_error(self, value):
+        self.details[JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR] = value
+
+    @property
+    def webcrack_failed(self) -> bool:
+        """True when the static pre-pass errored out. The dynamic sandbox still
+        runs and does the real work, so this degrades the result rather than
+        invalidating it -- but it is otherwise invisible to an analyst."""
+        return (self.webcrack_status or "").startswith("failed")
+
     def generate_summary(self) -> str:
         if not self.details:
             return None
@@ -107,11 +146,16 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             return f"JavaScript Deobfuscation: failed: {self.error}"
         if self.exit_code != 0 or not self.extracted_files:
             return None
-        return (
+        summary = (
             "JavaScript Deobfuscation: extracted "
             + format_item_list_for_summary(self.extracted_files)
             + f" ({self.event_count} events, {self.secondary_script_count} secondary scripts)"
         )
+        # only mentioned when it failed -- a working static pass is unremarkable
+        # and shouldn't cost the analyst any summary width.
+        if self.webcrack_failed:
+            summary += f" (webcrack {self.webcrack_status})"
+        return summary
 
 
 class JavaScriptDeobfuscationAnalyzerConfig(AnalysisModuleConfig):
@@ -218,6 +262,14 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     analysis.secondary_script_count = int(report.get("secondary_script_count", 0) or 0)
                     if report.get("error"):
                         analysis.error = report["error"]
+                    analysis.error_type = report.get("error_type")
+                    analysis.webcrack_status = report.get("webcrack_status")
+                    analysis.webcrack_error = report.get("webcrack_error")
+                    if analysis.webcrack_failed:
+                        logging.info(
+                            f"js deobfuscator webcrack static pass failed for "
+                            f"{local_file_path}: {analysis.webcrack_error}"
+                        )
                     blob_filenames = [
                         b for b in (report.get("blob_files") or [])
                         if isinstance(b, str)
@@ -227,11 +279,18 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             elif basename == "deobfuscated.js":
                 deobfuscated_src = result_file
 
-        # if the harness ran without a hard failure (exit_code 0, no
-        # exception), the file is legitimate JavaScript regardless of whether
-        # we emit a deobfuscated observable. tag the source so downstream
-        # modules (yara rules, url extractor text/plain override) see it.
-        if analysis.exit_code == 0 and not analysis.error and not has_js_tag:
+        # tag the source as JavaScript so downstream modules (yara rules, url
+        # extractor text/plain override) see it. a run error does not mean the
+        # file isn't JavaScript: only a *parse* failure proves that. a sample
+        # that parsed and then died mid-execution (e.g. ReferenceError on a
+        # global the sandbox doesn't stub) is still JavaScript, and that is
+        # exactly when we most want downstream extraction to run on it.
+        #
+        # an errored report with no error_type comes from a harness predating
+        # that field (version skew mid-rollout), where we can't tell the two
+        # apart -- stay conservative and don't tag.
+        source_parsed = not analysis.error or analysis.error_type == "runtime"
+        if analysis.exit_code == 0 and source_parsed and not has_js_tag:
             _file.add_yara_meta("type", "script.javascript")
 
         if analysis.exit_code != 0:
