@@ -5,10 +5,10 @@ from flask import flash, redirect, request, url_for
 from flask_login import current_user
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
+from saq.constants import VALID_DIRECTIVES
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.database.util.workload import add_workload
+from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.gui.alert import GUIAlert
 from saq.util import local_time
 
@@ -106,7 +106,7 @@ def add_observable():
             logging.info(f"AUDIT: user {current_user} added directives {directives} to observable {observable}")
 
         # switch back into correlation mode (we may be in a different post-correlation mode at this point)
-        alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
+        request_analyst_analysis(alert.root_analysis)
 
         try:
             alert.sync()

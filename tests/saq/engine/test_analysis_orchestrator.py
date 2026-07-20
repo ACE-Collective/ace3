@@ -5,7 +5,14 @@ import uuid
 import pytest
 from unittest.mock import Mock, patch
 
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_TEST, QUEUE_DEFAULT
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    DISPOSITION_FALSE_POSITIVE,
+    F_TEST,
+    QUEUE_DEFAULT,
+    STATE_ANALYST_REQUESTED_ANALYSIS,
+)
+from saq.database.util.workload import request_analyst_analysis
 from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
@@ -497,3 +504,72 @@ class TestSyncAlertToDatabaseRebuildIndexIntegration:
         orchestrator._sync_alert_to_database(context)
         assert "discovered_during_analysis" in indexed_values()
 
+
+
+@pytest.mark.unit
+class TestCheckDispositionAnalystOverride:
+    """Analyst-initiated observable actions (sandbox upload, crawl, render, ...) re-queue an alert
+    in correlation mode. If that alert was already dispositioned, _check_disposition would normally
+    short-circuit the analysis and the action would silently do nothing — so the action sets the
+    STATE_ANALYST_REQUESTED_ANALYSIS flag, which grants exactly one pass."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        config_manager = Mock(spec=ConfigurationManager)
+        config_manager.config = Mock()
+        return AnalysisOrchestrator(
+            configuration_manager=config_manager,
+            analysis_executor=Mock(spec=AnalysisExecutor),
+            workload_manager=Mock(),
+            lock_manager=Mock(),
+        )
+
+    def _context(self, analysis_mode=ANALYSIS_MODE_CORRELATION):
+        context = Mock(spec=EngineExecutionContext)
+        context.root = create_root_analysis(analysis_mode=analysis_mode)
+        return context
+
+    def test_analyst_request_overrides_stop_disposition(self, orchestrator):
+        """a disposition that would otherwise stop analysis is bypassed for one pass"""
+        context = self._context()
+        request_analyst_analysis(context.root)
+
+        with patch("saq.engine.analysis_orchestrator.get_engine_config") as mock_config:
+            mock_config.return_value.stop_analysis_on_any_alert_disposition = True
+            mock_config.return_value.stop_analysis_on_dispositions = [DISPOSITION_FALSE_POSITIVE]
+            assert orchestrator._check_disposition(context) is False
+
+        # consume-once: the flag is cleared so the next pass behaves normally
+        assert STATE_ANALYST_REQUESTED_ANALYSIS not in context.root.state
+
+    def test_flag_is_consumed_only_once(self, orchestrator):
+        """after the granted pass, the same alert is short-circuited again"""
+        context = self._context()
+        request_analyst_analysis(context.root)
+
+        with patch("saq.engine.analysis_orchestrator.get_engine_config") as mock_config, \
+             patch("saq.engine.analysis_orchestrator.get_db") as mock_db:
+            mock_config.return_value.stop_analysis_on_any_alert_disposition = True
+            mock_config.return_value.stop_analysis_on_dispositions = [DISPOSITION_FALSE_POSITIVE]
+            mock_db.return_value.query.return_value.filter.return_value.scalar.return_value = (
+                DISPOSITION_FALSE_POSITIVE)
+
+            assert orchestrator._check_disposition(context) is False   # granted
+            assert orchestrator._check_disposition(context) is True    # back to normal
+
+    def test_flag_ignored_outside_correlation_mode(self, orchestrator):
+        """the mode check comes first, so a non-correlation mode is unaffected and keeps the flag"""
+        context = self._context(analysis_mode="dispositioned")
+        request_analyst_analysis(context.root)
+        context.root.analysis_mode = "dispositioned"
+
+        assert orchestrator._check_disposition(context) is False
+        assert context.root.state[STATE_ANALYST_REQUESTED_ANALYSIS] is True
+
+    def test_request_analyst_analysis_sets_mode_and_flag(self):
+        """the helper must set the mode on the RootAnalysis, which is what add_workload reads"""
+        root = create_root_analysis(analysis_mode="dispositioned")
+        request_analyst_analysis(root)
+
+        assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
+        assert root.state[STATE_ANALYST_REQUESTED_ANALYSIS] is True

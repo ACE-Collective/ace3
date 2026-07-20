@@ -3,7 +3,8 @@ from unittest.mock import Mock, patch
 from flask import url_for
 from datetime import datetime
 
-from saq.constants import ANALYSIS_MODE_CORRELATION
+from saq.analysis.root import RootAnalysis
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED
 from saq.gui.alert import GUIAlert
 
 
@@ -16,11 +17,11 @@ def mock_alert():
     alert.lock_uuid = None
     alert.load = Mock()
     alert.sync = Mock()
-    alert.root_analysis = Mock()
+    # a real RootAnalysis (not a Mock) so analysis_mode and state round-trip honestly
+    alert.root_analysis = RootAnalysis(uuid="test-root-uuid", analysis_mode=ANALYSIS_MODE_DISPOSITIONED)
     # the observable does not already exist in the alert by default
     alert.root_analysis.get_observable_by_spec = Mock(return_value=None)
     alert.root_analysis.add_observable_by_spec = Mock()
-    alert.root_analysis.analysis_mode = None
     return alert
 
 
@@ -106,7 +107,8 @@ class TestAddObservable:
             mock_alert.lock_uuid = None
             mock_alert.load = Mock()
             mock_alert.sync = Mock()
-            mock_alert.root_analysis = Mock()
+            mock_alert.root_analysis = RootAnalysis(uuid='test-root-uuid',
+                                                   analysis_mode=ANALYSIS_MODE_DISPOSITIONED)
             mock_alert.root_analysis.add_observable_by_spec = Mock()
             mock_db.query.return_value.filter.return_value.one.return_value = mock_alert
             mock_acquire_lock.return_value = True
