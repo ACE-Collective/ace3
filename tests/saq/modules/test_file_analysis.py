@@ -589,6 +589,99 @@ def test_file_type_image_yara_meta(datadir):
     assert "yara_meta:type=image" not in non_image.directives
 
 
+def _run_file_type_analyzer(root, observable):
+    analyzer = AnalysisModuleAdapter(FileTypeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE)))
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+
+@pytest.mark.unit
+def test_file_type_document_yara_meta(datadir, tmp_path):
+    """FileTypeAnalyzer stamps document type directives for html/pdf/rtf files."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    html = root.add_file_observable(datadir / "ref.html")
+    pdf = root.add_file_observable(datadir / "sample_pdf_with_qr_code.pdf")
+
+    rtf_path = tmp_path / "sample.rtf"
+    rtf_path.write_bytes(b"{\\rtf1\\ansi test}")
+    rtf = root.add_file_observable(rtf_path)
+
+    _run_file_type_analyzer(root, html)
+    assert "type=document.html" in html.yara_meta_tags
+    # equality matching: a plain html file must not match the phishkit subtype
+    assert "type=document.html.phishkit" not in html.yara_meta_tags
+
+    _run_file_type_analyzer(root, pdf)
+    assert "type=document.pdf" in pdf.yara_meta_tags
+
+    _run_file_type_analyzer(root, rtf)
+    assert "type=document.rtf" in rtf.yara_meta_tags
+
+
+@pytest.mark.unit
+def test_file_type_binary_yara_meta(datadir):
+    """FileTypeAnalyzer stamps executable/archive/email type directives (and the PE fix works)."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    pe = root.add_file_observable(datadir / "hello_autoit.exe")
+    jar = root.add_file_observable(datadir / "zipped.jar")
+    email = root.add_file_observable(datadir / "sample_rfc822.in")
+
+    _run_file_type_analyzer(root, pe)
+    # this also exercises the fixed is_pe_file details key (previously is_pe_ext)
+    assert "type=executable" in pe.yara_meta_tags
+    assert pe.has_tag("executable")
+
+    _run_file_type_analyzer(root, jar)
+    assert "type=archive.jar" in jar.yara_meta_tags
+
+    _run_file_type_analyzer(root, email)
+    assert "type=email" in email.yara_meta_tags
+
+
+@pytest.mark.unit
+def test_file_type_javascript_yara_meta(datadir, tmp_path):
+    """FileTypeAnalyzer stamps script.javascript for confirmed javascript, not for non-js."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    js_path = tmp_path / "dropper.js"
+    js_path.write_text("function pay(a){ return decode(a); }\n")
+    js = root.add_file_observable(js_path)
+
+    # a real office document must not be flagged as javascript
+    docx = root.add_file_observable(datadir / "doc.docx")
+
+    _run_file_type_analyzer(root, js)
+    assert "type=script.javascript" in js.yara_meta_tags
+
+    _run_file_type_analyzer(root, docx)
+    assert "type=script.javascript" not in docx.yara_meta_tags
+
+
+@pytest.mark.unit
+def test_file_type_no_type_for_generic_files(datadir):
+    """FileTypeAnalyzer must not over-stamp: office/zip files get no new document/office type."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+
+    docx = root.add_file_observable(datadir / "doc.docx")
+    zip_file = root.add_file_observable(datadir / "evil.zip")
+
+    _run_file_type_analyzer(root, docx)
+    _run_file_type_analyzer(root, zip_file)
+
+    # we deliberately do not stamp document.office (reserved for decrypted docs)
+    # nor archive.zip (too broad -- every ooxml doc is a zip)
+    for observable in (docx, zip_file):
+        assert "type=document.office" not in observable.yara_meta_tags
+        assert "type=archive.zip" not in observable.yara_meta_tags
+
+
 
 
 
