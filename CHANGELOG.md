@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.80] - 2026-07-20
+
+- [Cleans up alert mode changes](https://github.com/ACE-Collective/ace3/pull/402)
+- [Adds various Yara meta type tags in file type analyzer](https://github.com/ACE-Collective/ace3/pull/401)
+
 ## [3.0.79] - 2026-07-16
 
 - [Fixes interpolated correlated hunt cache key issue](https://github.com/ACE-Collective/ace3/pull/398)
