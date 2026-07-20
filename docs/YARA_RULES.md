@@ -246,13 +246,13 @@ so a `sub:` match like `type=script.` will match every script subtype.
 
 | Type | Description |
 |------|-------------|
-| `document.html` | HTML file (stamped by `FileTypeAnalyzer` from mime type) |
+| `document.html` | HTML file |
 | `document.office` | Decrypted Office document |
-| `document.pdf` | PDF file (stamped by `FileTypeAnalyzer`) |
+| `document.pdf` | PDF file |
 | `document.pdf.object` | PDF parser extracted objects |
 | `document.pdf.rendered` | Ghostscript rendered output |
 | `document.pdf.text` | Plain text extracted by pdftotext |
-| `document.rtf` | RTF file (stamped by `FileTypeAnalyzer`) |
+| `document.rtf` | RTF file |
 | `document.rtf.object` | OLE objects extracted from RTF |
 | `document.rtf.stripped` | Whitespace-stripped RTF |
 | `document.mhtml.part` | MHTML extracted parts |
@@ -268,7 +268,7 @@ so a `sub:` match like `type=script.` will match every script subtype.
 
 | Type | Description |
 |------|-------------|
-| `executable` | Portable executable (stamped by `FileTypeAnalyzer`) |
+| `executable` | Portable executable |
 | `executable.unpacked` | UPX-unpacked executable |
 | `executable.dotnet` | Deobfuscated .NET assembly (de4dot) |
 
@@ -276,7 +276,7 @@ so a `sub:` match like `type=script.` will match every script subtype.
 
 | Type | Description |
 |------|-------------|
-| `archive.jar` | Java archive (stamped by `FileTypeAnalyzer`) |
+| `archive.jar` | Java archive |
 | `archive.dmg` | Converted DMG disk image |
 
 #### Network

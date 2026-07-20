@@ -314,9 +314,6 @@ class FileTypeAnalyzer(AnalysisModule):
         if analysis.is_email_file:
             _file.add_tag('email')
 
-        # stamp yara_meta:type=<value> directives so type-scoped YARA rules
-        # (meta_tags = "type=...") only scan files of the matching content type
-
         if analysis.details['mime'].startswith('image/'):
             _file.add_yara_meta("type", "image")
 
