@@ -1087,6 +1087,12 @@ CONFIG_SERVICE_CRON_CONFIG = "cron_config_path"
 STATE_PRE_ANALYSIS_EXECUTED = "pre_analysis_executed"
 STATE_POST_ANALYSIS_EXECUTED = "post_analysis_executed"
 
+# engine state flag set by analyst-initiated observable actions (sandbox upload, crawl, render,
+# file collection, etc) to request one round of analysis even though the alert has already been
+# dispositioned. consumed (and cleared) by the engine's disposition check, so it grants exactly
+# one pass and does not permanently opt the alert out of the disposition short-circuit.
+STATE_ANALYST_REQUESTED_ANALYSIS = "analyst_requested_analysis"
+
 # storage constants
 BUCKET_ACE3 = "ace3"
 

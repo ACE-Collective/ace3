@@ -6,9 +6,9 @@ from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_URL_CRAWL, ANALYSIS_MODE_CORRELATION, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
+from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_URL_CRAWL, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.database.util.workload import add_workload
+from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.error.reporting import report_exception
 
 #
@@ -69,10 +69,10 @@ def observable_action():
                     #observable.remove_analysis_exclusion(RenderAnalyzer)
                     logging.info(f"user {current_user} removed analysis exclusion for RenderAnalyzer for {observable}")
 
-                    alert.analysis_mode = ANALYSIS_MODE_CORRELATION
+                    request_analyst_analysis(alert.root_analysis)
                     alert.sync()
 
-                    add_workload(alert)
+                    add_workload(alert.root_analysis)
 
                 except Exception:
                     logging.error(f"unable to mark observable {observable} for crawl/render")
