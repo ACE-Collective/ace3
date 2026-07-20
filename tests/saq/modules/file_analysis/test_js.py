@@ -6,6 +6,13 @@ unit test environment, so we monkeypatch
 ``saq.modules.file_analysis.js.deobfuscate_file`` with a local shim that
 runs the harness directly via ``node``. This keeps the tests fast and
 faithful to the real harness output while skipping the container plumbing.
+
+That fidelity covers the dynamic sandbox pass only. webcrack is installed
+into the scanner image by Dockerfile.js_deobfuscator and is deliberately
+absent from a checkout, so under the shim the static pre-pass always reports
+"skipped" -- its "applied" and "failed" branches are exercised only inside
+that image, and the tests below stub the report when they need to cover how
+the module handles them.
 """
 
 import json
@@ -685,7 +692,7 @@ def test_webcrack_status_is_surfaced(tmpdir, monkeypatch, patched_deobfuscate):
     """
     # name deliberately free of the word "webcrack": the summary echoes the
     # emitted filename, which would satisfy the assertion below for free.
-    sample_path = tmpdir / "static_pass_ok.js"
+    sample_path = tmpdir / "static_pass_skipped.js"
     sample_path.write('window.location.href = "https://example.com/wc";\n')
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
@@ -698,7 +705,10 @@ def test_webcrack_status_is_surfaced(tmpdir, monkeypatch, patched_deobfuscate):
     assert result == AnalysisExecutionResult.COMPLETED
     analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
     assert analysis is not None
-    # this sample has nothing for webcrack to trip over, so the pass succeeds
+    # webcrack ships only in the scanner image, so under the node shim the
+    # static pass never runs and reports "skipped". A pass that did not run is
+    # not a pass that failed -- the harness must not conflate the two, and a
+    # missing dependency must not surface to the analyst as a per-sample fault.
     assert analysis.webcrack_status is not None
     assert not analysis.webcrack_failed
     assert analysis.webcrack_error is None

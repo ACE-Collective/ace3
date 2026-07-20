@@ -46,38 +46,53 @@ let webcrackError = null;
 // ---------------------------------------------------------------------------
 // Stage 1 — webcrack static pre-pass
 // ---------------------------------------------------------------------------
+// Resolve the module separately from running it. Whether webcrack is
+// installed is a property of the deployment, not of the sample: the scanner
+// image installs it, so the production path always has it, but a bare
+// checkout (and the unit tests, which run this harness directly) does not.
+// Folding an unresolvable import into the failure path below would report a
+// per-sample "failed" for what is really a build-time condition, and would
+// leave the documented "skipped" status unreachable.
+let webcrack = null;
 try {
-  const { webcrack } = await import('webcrack');
-  // Pass a custom sandbox so webcrack runs the obfuscator's string-decoder
-  // function through node:vm instead of isolated-vm. isolated-vm needs a
-  // native C++ build which we don't want in the scanner image. Our dynamic
-  // stage runs in vm anyway, so pulling in a second sandbox runtime buys
-  // nothing.
-  const nodeVmSandbox = async (code) => {
-    const ctx = vm.createContext({});
-    return vm.runInContext(code, ctx, { timeout: 10000 });
-  };
-  const result = await webcrack(SRC, {
-    sandbox: nodeVmSandbox,
-    jsx: false,
-    unpack: false,
-    mangle: false,
-  });
-  if (result && typeof result.code === 'string' && result.code.length > 0) {
-    // Classify: did webcrack change anything meaningful, or just reformat /
-    // constant-fold a few tokens? Compare whitespace-stripped lengths — if
-    // the relative delta is under 2%, the tail block is unlikely to help
-    // an analyst (webcrack hit a JSFuck-only or eval-wrapped sample where
-    // the sandbox does the real work) and we should say so in the header.
-    const rawCompact = SRC.replace(/\s+/g, '');
-    const newCompact = result.code.replace(/\s+/g, '');
-    const delta = Math.abs(newCompact.length - rawCompact.length) / Math.max(rawCompact.length, 1);
-    webcrackStatus = (delta < 0.02) ? 'applied (cosmetic only)' : 'applied';
-    SRC = result.code;
-  }
+  ({ webcrack } = await import('webcrack'));
 } catch (e) {
-  webcrackError = e && (e.message || String(e));
-  webcrackStatus = `failed: ${webcrackError}`;
+  webcrackStatus = 'skipped';
+}
+
+if (webcrack) {
+  try {
+    // Pass a custom sandbox so webcrack runs the obfuscator's string-decoder
+    // function through node:vm instead of isolated-vm. isolated-vm needs a
+    // native C++ build which we don't want in the scanner image. Our dynamic
+    // stage runs in vm anyway, so pulling in a second sandbox runtime buys
+    // nothing.
+    const nodeVmSandbox = async (code) => {
+      const ctx = vm.createContext({});
+      return vm.runInContext(code, ctx, { timeout: 10000 });
+    };
+    const result = await webcrack(SRC, {
+      sandbox: nodeVmSandbox,
+      jsx: false,
+      unpack: false,
+      mangle: false,
+    });
+    if (result && typeof result.code === 'string' && result.code.length > 0) {
+      // Classify: did webcrack change anything meaningful, or just reformat /
+      // constant-fold a few tokens? Compare whitespace-stripped lengths — if
+      // the relative delta is under 2%, the tail block is unlikely to help
+      // an analyst (webcrack hit a JSFuck-only or eval-wrapped sample where
+      // the sandbox does the real work) and we should say so in the header.
+      const rawCompact = SRC.replace(/\s+/g, '');
+      const newCompact = result.code.replace(/\s+/g, '');
+      const delta = Math.abs(newCompact.length - rawCompact.length) / Math.max(rawCompact.length, 1);
+      webcrackStatus = (delta < 0.02) ? 'applied (cosmetic only)' : 'applied';
+      SRC = result.code;
+    }
+  } catch (e) {
+    webcrackError = e && (e.message || String(e));
+    webcrackStatus = `failed: ${webcrackError}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
