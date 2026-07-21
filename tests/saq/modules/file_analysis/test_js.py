@@ -594,6 +594,45 @@ def test_jquery_ready_payload_is_fired(datadir, monkeypatch, patched_deobfuscate
 
 
 @pytest.mark.unit
+def test_async_ready_handler_rejection_does_not_discard_output(datadir, monkeypatch, patched_deobfuscate):
+    """An async `$(document).ready` handler that throws after an await must not
+    crash the harness.
+
+    The handler's rejected continuation is an unhandled promise rejection;
+    Node's default terminates the process with a non-zero exit AFTER the trace
+    and report are written, and the client (js.py) discards any result whose
+    exit code is non-zero. So a rejecting async payload would silently throw
+    away an otherwise-complete deobfuscation. Both assertions are load-bearing:
+
+      - exit_code == 0 catches the process-crash regression (output discarded).
+      - the post-await URL catches the event-loop drain not running, which is
+        the only reason a payload staged after `await` reaches the trace.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "jquery_async_ready_payload.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    # the async rejection must not surface as a harness failure
+    assert analysis.exit_code == 0
+    assert analysis.error is None
+    # a derived observable must be emitted (not discarded)
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    body = _deobfuscated_body(analysis)
+    # pre-await exfil call
+    assert "https://example.com/async-c2-pre" in body
+    # post-await exfil call -- only present if the event loop was drained
+    assert "https://example.com/async-c2-post" in body
+
+
+@pytest.mark.unit
 def test_bare_global_addeventlistener_is_defined(datadir, monkeypatch, patched_deobfuscate):
     """`addEventListener(...)` as a bare global, not `window.addEventListener`.
 

@@ -101,6 +101,21 @@ if (webcrack) {
 const events = [];
 const secondaryScripts = [];
 
+// Phishing-kit payloads are routinely staged inside an async handler —
+// `$(document).ready(async () => { ...; await ...; payload })` is the dominant
+// shape. Such a handler runs its synchronous portion, hits an `await`, and
+// returns a pending promise; if its later continuation throws (a TypeError on
+// some obfuscated member call, a rejected fetch, ...), that surfaces as an
+// UNHANDLED REJECTION. Node's default is to terminate the process with a
+// non-zero exit code — which happens AFTER we have already written the trace
+// and the JSON report, so the client sees exit!=1..0 and discards a perfectly
+// good result. Registering this handler both (a) records the rejection and
+// (b) stops Node from crashing, so the exit code reflects the harness, not a
+// stray async payload error deep inside the sample.
+process.on('unhandledRejection', (reason) => {
+  events.push({ kind: 'unhandledRejection', error: reason && (reason.stack || reason.message || String(reason)) });
+});
+
 // Listeners the sample registers for the "page is ready" event family. There
 // is no document and no event loop here, so these would never fire on their
 // own: a sample that defers its payload to DOMContentLoaded (a very common
@@ -494,6 +509,18 @@ for (const { type, handler } of domReadyListeners) {
   } catch (e) {
     events.push({ kind: 'domready.error', error: e && (e.message || String(e)) });
   }
+}
+
+// A ready handler may be async: its synchronous portion has run, but anything
+// after an `await` is still queued. Yield to the event loop a bounded number
+// of times so those continuations (and any timers they scheduled) execute and
+// record before we snapshot the trace — otherwise the post-await payload, which
+// is often where the real credential-exfil call lives, is rendered as nothing.
+// `setImmediate` here is Node's real one (module scope), distinct from the
+// sandbox stub. The loop is bounded so a self-rescheduling promise can't wedge
+// the harness; each pass fully drains the microtask queue.
+for (let i = 0; i < 20; i++) {
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 // Re-run any secondary scripts the sample revealed so their global writes get
