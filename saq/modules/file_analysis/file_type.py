@@ -5,8 +5,29 @@ from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
-from saq.modules.file_analysis.is_file_type import is_email_file, is_jar_file, is_lnk_file, is_office_ext, is_ole_file, is_pdf_file, is_pe_file, is_rtf_file, is_x509, is_zip_file
+from saq.modules.file_analysis.is_file_type import is_email_file, is_jar_file, is_javascript_file, is_lnk_file, is_office_ext, is_ole_file, is_pdf_file, is_pe_file, is_rtf_file, is_x509, is_zip_file
 from saq.observables.file import FileObservable
+
+
+# maps a boolean detection stored in FileTypeAnalysis.details to the YARA
+# yara_meta:type=<value> directive stamped on the file observable so that
+# type-scoped YARA rules (meta_tags = "type=...") only scan matching files
+YARA_META_TYPE_BY_DETAIL = [
+    ('is_pdf_file',   'document.pdf'),
+    ('is_rtf_file',   'document.rtf'),
+    ('is_pe_file',    'executable'),
+    ('is_jar_file',   'archive.jar'),
+    ('is_x509',       'certificate.x509'),
+    ('is_email_file', 'email'),
+]
+
+# mime types / extensions that gate the (relatively expensive) is_javascript_file
+# check so we never run "node --check" against binaries, images, etc.
+JAVASCRIPT_MIME_TYPES = frozenset({
+    'text/javascript', 'application/javascript',
+    'application/x-javascript', 'application/ecmascript', 'text/ecmascript',
+})
+JAVASCRIPT_EXTENSIONS = frozenset({'.js', '.mjs', '.cjs', '.jse'})
 
 
 class FileTypeAnalysis(Analysis):
@@ -243,7 +264,7 @@ class FileTypeAnalyzer(AnalysisModule):
         analysis.details['is_ole_file'] = is_ole_file(local_file_path)
         analysis.details['is_rtf_file'] = is_rtf_file(local_file_path)
         analysis.details['is_pdf_file'] = is_pdf_file(local_file_path)
-        analysis.details['is_pe_ext'] = is_pe_file(local_file_path)
+        analysis.details['is_pe_file'] = is_pe_file(local_file_path)
         analysis.details['is_zip_file'] = is_zip_file(local_file_path)
         analysis.details['is_x509'] = is_x509(local_file_path)
         analysis.details['is_lnk_file'] = is_lnk_file(local_file_path)
@@ -295,5 +316,20 @@ class FileTypeAnalyzer(AnalysisModule):
 
         if analysis.details['mime'].startswith('image/'):
             _file.add_yara_meta("type", "image")
+
+        for detail_key, meta_value in YARA_META_TYPE_BY_DETAIL:
+            if analysis.details.get(detail_key):
+                _file.add_yara_meta("type", meta_value)
+
+        if analysis.details['mime'] in ('text/html', 'application/xhtml+xml'):
+            _file.add_yara_meta("type", "document.html")
+
+        # only run the "node --check" based javascript detection when the mime
+        # or extension already suggests javascript, to catch content that the
+        # file command mislabels (e.g. as text/plain) without checking every file
+        _, ext = os.path.splitext(_file.file_name.lower())
+        if (analysis.details['mime'] in JAVASCRIPT_MIME_TYPES or ext in JAVASCRIPT_EXTENSIONS) \
+                and is_javascript_file(local_file_path):
+            _file.add_yara_meta("type", "script.javascript")
 
         return AnalysisExecutionResult.COMPLETED

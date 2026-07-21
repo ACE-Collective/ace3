@@ -1,6 +1,7 @@
 import logging
 from typing import TYPE_CHECKING
 from saq.configuration.config import get_engine_config
+from saq.constants import ANALYSIS_MODE_CORRELATION, STATE_ANALYST_REQUESTED_ANALYSIS
 from saq.database.retry import execute_with_retry
 from saq.database.util.node import initialize_node
 from saq.environment import get_global_runtime_settings
@@ -8,6 +9,22 @@ from saq.database.pool import get_db_connection
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
+
+
+def request_analyst_analysis(root: "RootAnalysis"):
+    """Prepares the given RootAnalysis for an analyst-initiated round of analysis.
+
+       Observable actions in the GUI (sandbox upload, crawl, render, file collection, etc) add a
+       directive and then re-queue the alert. Two things block that on an alert the analyst has
+       already worked: the alert may be sitting in a post-correlation analysis mode such as
+       dispositioned (which enables almost no modules), and the engine short-circuits analysis of
+       dispositioned alerts. This switches back to correlation mode and sets the consume-once flag
+       the engine honors, so the requested analysis actually runs.
+
+       The caller is still responsible for syncing the alert and calling add_workload()."""
+
+    root.analysis_mode = ANALYSIS_MODE_CORRELATION
+    root.state[STATE_ANALYST_REQUESTED_ANALYSIS] = True
 
 
 def add_workload(root: "RootAnalysis"):

@@ -24,6 +24,50 @@ class TestLoadConfig:
         assert len(config.bypasses) == len(sample_config_data["bypasses"])
 
     @pytest.mark.unit
+    def test_load_config_content_type_lists(self, config_file, sample_config_data):
+        from scanner import _load_config
+
+        config = _load_config(config_file)
+        assert config.non_rendered_content_types == sample_config_data["non_rendered_content_types"]
+        assert config.script_content_types == sample_config_data["script_content_types"]
+
+    @pytest.mark.unit
+    def test_load_config_content_type_defaults_when_absent(self, tmpdir, sample_config_data):
+        """A config predating these keys must keep the built-in defaults rather
+        than silently disabling the gates."""
+        from scanner import (
+            _load_config,
+            DEFAULT_NON_RENDERED_CONTENT_TYPES,
+            DEFAULT_SCRIPT_CONTENT_TYPES,
+        )
+
+        data = dict(sample_config_data)
+        del data["non_rendered_content_types"]
+        del data["script_content_types"]
+        path = str(tmpdir.join("no_content_types.yaml"))
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+
+        config = _load_config(path)
+        assert config.non_rendered_content_types == DEFAULT_NON_RENDERED_CONTENT_TYPES
+        assert config.script_content_types == DEFAULT_SCRIPT_CONTENT_TYPES
+
+    @pytest.mark.unit
+    def test_load_config_content_types_are_lowercased(self, tmpdir, sample_config_data):
+        """Comparison is against a lowercased header value, so the config side
+        must be normalized too or a capitalized entry silently never matches."""
+        from scanner import _load_config
+
+        data = dict(sample_config_data)
+        data["script_content_types"] = ["Application/JavaScript"]
+        path = str(tmpdir.join("mixed_case.yaml"))
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+
+        config = _load_config(path)
+        assert config.script_content_types == ["application/javascript"]
+
+    @pytest.mark.unit
     def test_load_config_missing_file(self):
         from scanner import _load_config
 
@@ -199,11 +243,170 @@ class TestCheckDomFilter:
 
 
 # ---------------------------------------------------------------------------
+# Scanner.top_level_response / top_level_content_type
+# ---------------------------------------------------------------------------
+
+def _response(url, content_type=None, status_code=200, resource_type=None, request_id="1"):
+    """Builds a requests.json-shaped response entry."""
+    entry = {
+        "type": "response",
+        "url": url,
+        "requestId": request_id,
+        "status_code": status_code,
+        "headers": {} if content_type is None else {"Content-Type": content_type},
+    }
+    if resource_type is not None:
+        entry["resource_type"] = resource_type
+    return entry
+
+
+class TestTopLevelResponse:
+
+    @pytest.mark.unit
+    def test_resource_type_document_wins_over_ordering(self, scanner):
+        """An explicit Document marker beats position. Subresources can be
+        logged first, so ordering alone is not authoritative."""
+        scanner.requests = [
+            _response("https://example.com/app.css", "text/css", resource_type="Stylesheet", request_id="a"),
+            _response("https://example.com/", "text/html", resource_type="Document", request_id="b"),
+        ]
+        assert scanner.top_level_response()["requestId"] == "b"
+        assert scanner.top_level_content_type() == "text/html"
+
+    @pytest.mark.unit
+    def test_falls_back_to_first_non_redirect_without_resource_type(self, scanner):
+        """Responses logged before resource_type was captured must still work."""
+        scanner.requests = [
+            _response("https://example.com/", "text/html", request_id="a"),
+            _response("https://example.com/app.js", "application/javascript", request_id="b"),
+        ]
+        assert scanner.top_level_response()["requestId"] == "a"
+        assert scanner.top_level_content_type() == "text/html"
+
+    @pytest.mark.unit
+    def test_redirect_hops_are_skipped(self, scanner):
+        """The document is the response a redirect chain lands on."""
+        scanner.requests = [
+            _response("https://example.com/", None, status_code=301, request_id="a"),
+            _response("https://example.com/final.js", "application/javascript", request_id="b"),
+        ]
+        assert scanner.top_level_response()["requestId"] == "b"
+        assert scanner.top_level_content_type() == "application/javascript"
+
+    @pytest.mark.unit
+    def test_header_casing_and_charset_param(self, scanner):
+        scanner.requests = [{
+            "type": "response",
+            "url": "https://example.com/app.js",
+            "requestId": "a",
+            "status_code": 200,
+            "headers": {"content-type": "Application/JavaScript; charset=utf-8"},
+        }]
+        assert scanner.top_level_content_type() == "application/javascript"
+
+    @pytest.mark.unit
+    def test_unknown_content_type_is_none(self, scanner):
+        """No content-type header -> None -> both gates fail open."""
+        scanner.requests = [_response("https://example.com/", None)]
+        assert scanner.top_level_content_type() is None
+        assert scanner.top_level_content_type() not in scanner.NON_RENDERED_CONTENT_TYPES
+        assert scanner.top_level_content_type() not in scanner.SCRIPT_CONTENT_TYPES
+
+    @pytest.mark.unit
+    def test_no_responses_is_none(self, scanner):
+        scanner.requests = [{"type": "request", "url": "https://example.com/", "requestId": "a"}]
+        assert scanner.top_level_response() is None
+        assert scanner.top_level_content_type() is None
+
+    @pytest.mark.unit
+    def test_javascript_document_skips_screenshot_and_is_a_script(self, scanner):
+        """The case this all exists for: a scanned URL that serves JS."""
+        scanner.requests = [
+            _response("https://example.com/stage.js", "application/javascript", resource_type="Document")
+        ]
+        assert scanner.top_level_content_type() in scanner.NON_RENDERED_CONTENT_TYPES
+        assert scanner.top_level_content_type() in scanner.SCRIPT_CONTENT_TYPES
+
+    @pytest.mark.unit
+    def test_html_document_keeps_screenshot_and_is_not_a_script(self, scanner):
+        scanner.requests = [
+            _response("https://example.com/", "text/html", resource_type="Document")
+        ]
+        assert scanner.top_level_content_type() not in scanner.NON_RENDERED_CONTENT_TYPES
+        assert scanner.top_level_content_type() not in scanner.SCRIPT_CONTENT_TYPES
+
+    @pytest.mark.unit
+    def test_script_document_is_not_a_rendered_page(self, scanner):
+        """Drives both the screenshot skip and the bypass skip."""
+        scanner.requests = [
+            _response("https://example.com/stage.js", "application/javascript", resource_type="Document")
+        ]
+        assert scanner.top_level_is_rendered_page() is False
+
+    @pytest.mark.unit
+    def test_html_document_is_a_rendered_page(self, scanner):
+        scanner.requests = [
+            _response("https://example.com/", "text/html", resource_type="Document")
+        ]
+        assert scanner.top_level_is_rendered_page() is True
+
+    @pytest.mark.unit
+    def test_unknown_content_type_is_treated_as_a_rendered_page(self, scanner):
+        """Fail open: never skip a screenshot or a bypass on a guess."""
+        scanner.requests = [_response("https://example.com/", None)]
+        assert scanner.top_level_is_rendered_page() is True
+
+    @pytest.mark.unit
+    def test_no_responses_is_treated_as_a_rendered_page(self, scanner):
+        scanner.requests = []
+        assert scanner.top_level_is_rendered_page() is True
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("content_type,rendered", [
+        ("text/html", True),
+        ("application/xhtml+xml", True),
+        (None, True),                       # unknown -> fail open
+        ("application/javascript", False),
+        ("application/json", False),
+        ("text/css", False),
+        ("text/plain", False),
+    ])
+    def test_screenshot_dom_and_bypasses_share_one_predicate(self, scanner, content_type, rendered):
+        """The screenshot, the DOM capture and the bypass attempts must agree.
+
+        All three record or interrogate what Chrome rendered, so all three are
+        meaningless on a plain-text viewer -- and all three read
+        top_level_is_rendered_page(). Pinning them together keeps the consumers
+        from drifting apart as content types are added: it should not be possible
+        to skip the screenshot for a type while still capturing its DOM.
+        """
+        scanner.requests = [
+            _response("https://example.com/x", content_type, resource_type="Document")
+        ]
+        assert scanner.top_level_is_rendered_page() is rendered
+        # the screenshot/dom gate and the bypass gate are the same call, so a
+        # divergence here means one consumer grew its own rule
+        assert (scanner.top_level_content_type() not in scanner.NON_RENDERED_CONTENT_TYPES) is rendered
+
+    @pytest.mark.unit
+    def test_json_skips_screenshot_but_is_not_diverted_as_script(self, scanner):
+        """The two lists are deliberately different widths: JSON renders as
+        plain text (no useful screenshot) but is not JavaScript, so it must not
+        be handed to the deobfuscator."""
+        scanner.requests = [
+            _response("https://example.com/api", "application/json", resource_type="Document")
+        ]
+        assert scanner.top_level_content_type() in scanner.NON_RENDERED_CONTENT_TYPES
+        assert scanner.top_level_content_type() not in scanner.SCRIPT_CONTENT_TYPES
+
+
+# ---------------------------------------------------------------------------
 # Async event handlers
 # ---------------------------------------------------------------------------
 
 def _make_response_event(url="https://example.com/page", request_id="req-1",
-                         status=200, headers=None, encoded_data_length=100):
+                         status=200, headers=None, encoded_data_length=100,
+                         resource_type="Document"):
     event = MagicMock()
     event.response.url = url
     event.request_id = request_id
@@ -211,6 +414,8 @@ def _make_response_event(url="https://example.com/page", request_id="req-1",
     event.response.status = status
     event.response.encoded_data_length = encoded_data_length
     event.response.to_json.return_value = "{}"
+    # CDP ResourceType lives on the event, not event.response
+    event.type_ = resource_type
     return event
 
 
@@ -265,6 +470,119 @@ class TestReceiveHandler:
         event = _make_response_event(url="https://test.org/resource")
         await scanner.receive_handler(event)
         assert scanner.domain_stats["test.org"]["response_count"] == 1
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_receive_handler_captures_resource_type(self, scanner):
+        """resource_type is what identifies the top-level document. It lives on
+        the event rather than event.response, so it is absent from the "raw"
+        dump and has to be captured explicitly."""
+        event = _make_response_event(
+            headers={"Content-Type": "application/javascript"},
+            resource_type="Document",
+        )
+        await scanner.receive_handler(event)
+        assert scanner.requests[0]["resource_type"] == "Document"
+        assert scanner.top_level_content_type() == "application/javascript"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_receive_handler_marks_subresources(self, scanner):
+        event = _make_response_event(url="https://example.com/a.js", resource_type="Script")
+        await scanner.receive_handler(event)
+        assert scanner.requests[0]["resource_type"] == "Script"
+
+
+class TestAppendableResponseEntries:
+
+    @pytest.mark.unit
+    def test_one_entry_per_exchange_not_two(self, scanner):
+        """A request and a response entry share one requestId -- take only one.
+
+        Network.getResponseBody is keyed by requestId and both entries carry it,
+        so selecting everything with a requestId fetches and appends every body
+        twice. Only the response has a body, which makes type == "response" both
+        the correct filter and the deduplicating one.
+        """
+        scanner.requests = [
+            {"type": "request", "url": "https://example.com/a.js", "requestId": "1"},
+            {"type": "response", "url": "https://example.com/a.js", "requestId": "1"},
+        ]
+        entries = scanner.appendable_response_entries()
+        assert len(entries) == 1
+        assert entries[0]["type"] == "response"
+
+    @pytest.mark.unit
+    def test_websocket_entries_are_excluded(self, scanner):
+        """websocket_* entries carry a requestId but aren't fetchable this way;
+        they have their own pass."""
+        scanner.requests = [
+            {"type": "websocket_created", "url": "wss://example.com/s", "requestId": "1"},
+            {"type": "websocket_frame_sent", "url": "wss://example.com/s", "requestId": "1"},
+            {"type": "response", "url": "https://example.com/a.js", "requestId": "2"},
+        ]
+        entries = scanner.appendable_response_entries()
+        assert [e["requestId"] for e in entries] == ["2"]
+
+    @pytest.mark.unit
+    def test_entries_missing_ids_are_excluded(self, scanner):
+        scanner.requests = [
+            {"type": "response", "url": "https://example.com/a.js"},   # no requestId
+            {"type": "response", "requestId": "2"},                    # no url
+            {"type": "response", "url": "https://example.com/b.js", "requestId": "3"},
+        ]
+        assert [e["requestId"] for e in scanner.appendable_response_entries()] == ["3"]
+
+    @pytest.mark.unit
+    def test_multiple_exchanges_each_appear_once(self, scanner):
+        scanner.requests = [
+            {"type": "request", "url": "https://example.com/a.js", "requestId": "1"},
+            {"type": "response", "url": "https://example.com/a.js", "requestId": "1"},
+            {"type": "request", "url": "https://example.com/b.js", "requestId": "2"},
+            {"type": "response", "url": "https://example.com/b.js", "requestId": "2"},
+        ]
+        assert [e["requestId"] for e in scanner.appendable_response_entries()] == ["1", "2"]
+
+
+class TestRawSerializationIsBestEffort:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_request_entry_survives_broken_to_json(self, scanner):
+        """A request must still be recorded when its raw dump can't serialize.
+
+        mycdp's Request.to_json() reads a field Request doesn't have, so it
+        raises on every call. That used to take the whole entry down, leaving
+        requests.json with only type="response" rows -- which silently disabled
+        PhishkitAnalyzer's promotion pass over type="request" entries. Nothing
+        reads "raw"; it must never be able to drop the entry around it.
+        """
+        event = _make_request_event(url="https://example.com/staged.js")
+        event.request.to_json.side_effect = AttributeError(
+            "'Request' object has no attribute 'is_ad_related'")
+
+        await scanner.send_handler(event)
+
+        assert len(scanner.requests) == 1, "request entry must survive a broken raw dump"
+        entry = scanner.requests[0]
+        assert entry["type"] == "request"
+        assert entry["url"] == "https://example.com/staged.js"
+        assert entry["raw"] is None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_response_entry_survives_broken_to_json(self, scanner):
+        """Same guarantee on the response side, which works today but is one
+        upstream CDP field away from the identical failure."""
+        event = _make_response_event(headers={"Content-Type": "text/html"})
+        event.response.to_json.side_effect = AttributeError("boom")
+
+        await scanner.receive_handler(event)
+
+        assert len(scanner.requests) == 1
+        assert scanner.requests[0]["raw"] is None
+        # the fields that actually matter are still usable
+        assert scanner.top_level_content_type() == "text/html"
 
 
 class TestSendHandler:

@@ -355,6 +355,8 @@ These are referenced using the `defined` command type.
 
 A command can specify a cache timespec. If defined, results returned are cached in a key/value system where the key is the combined hash of the arguments provided to the command, and the value is the result returned for those arguments. These cached values are kept for the period defined for the timespec, after which they are discarded.
 
+The cached arguments are the *interpolated* ones — for a `query` command, the key is the hash of the Jinja-rendered query text (and its source), not the raw template. So a query that interpolates per-event fields (e.g. `search animal="{{ _event.animal }}"`) caches a separate result per rendered value; each distinct question is cached independently rather than the whole template sharing one entry. (Executable commands likewise key on their rendered `args`/`env`.)
+
 For example, `cache: 1d` will cache results for 1 day.
 
 ### Timespecs

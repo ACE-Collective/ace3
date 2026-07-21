@@ -11,9 +11,9 @@ from app.blueprints import analysis
 from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
 from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_URL
+from saq.constants import DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_URL
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.database.util.workload import add_workload
+from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.error.reporting import report_exception
 
 # saq config instance/name of the Splunk clicker module (analysis_module_clicker_detection_splunk).
@@ -70,10 +70,10 @@ def observable_action_check_for_clickers():
             if type(existing) in REGISTERED_CLICKER_PROVIDERS:
                 observable.delete_analysis(existing)
 
-        # NOTE set the mode on root_analysis (what sync()/add_workload read), not on the Alert ORM
-        # column — otherwise an already-dispositioned alert re-queues in 'dispositioned' mode, whose
-        # module group is empty, and no clicker module ever runs.
-        alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
+        # NOTE this sets the mode on root_analysis (what sync()/add_workload read), not on the Alert
+        # ORM column — otherwise an already-dispositioned alert re-queues in 'dispositioned' mode,
+        # whose module group is empty, and no clicker module ever runs.
+        request_analyst_analysis(alert.root_analysis)
         alert.sync()
         add_workload(alert.root_analysis)
 

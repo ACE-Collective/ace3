@@ -5,11 +5,13 @@ from flask import url_for
 
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
+    ANALYSIS_MODE_DISPOSITIONED,
     DIRECTIVE_CLICKER_DETECTION,
     F_FQDN,
     F_IP,
     F_URL,
 )
+from saq.analysis.root import RootAnalysis
 from saq.gui.alert import GUIAlert
 
 ROUTE = "app.analysis.views.edit.observable_action.clicker"
@@ -20,7 +22,9 @@ def mock_alert():
     alert = Mock(spec=GUIAlert)
     alert.uuid = "test-alert-uuid"
     alert.load = Mock(return_value=True)
-    alert.root_analysis = Mock()
+    # a real RootAnalysis (not a Mock) so analysis_mode and state round-trip honestly -- a Mock
+    # silently accepts a mode set on the wrong object, which is how the dispositioned-requeue bug hid
+    alert.root_analysis = RootAnalysis(uuid="test-root-uuid", analysis_mode=ANALYSIS_MODE_DISPOSITIONED)
     alert.root_analysis.get_observable = Mock()
     return alert
 

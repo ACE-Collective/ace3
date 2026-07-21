@@ -47,12 +47,15 @@ class CorrelateQueryRecorder:
     Used by the hunt validator (`validate.py --save-correlate-results` /
     `--correlate-results-file`) so analysts can capture a hunt's follow-up
     `correlate:` queries once and then iterate offline — e.g. on a summary_details
-    Jinja template — without re-running expensive Splunk/Logscale/Rapid7 queries.
+    Jinja template — without re-running expensive queries.
 
     Capture is always on; replay is active only when seeded with prior results.
     Entries are keyed on the *rendered* query text plus its source, which uniquely
-    identifies the question actually asked. (The persistent `command.cache` keys on
-    the unrendered template, so it cannot distinguish per-event queries.)
+    identifies the question actually asked — the same keying the persistent
+    `command.cache` uses, so both distinguish per-event queries. The recorder is
+    still a separate store because its purpose is different: it persists results to
+    a file for offline iteration (e.g. re-rendering a summary_details template)
+    without re-running expensive data-source queries.
     """
 
     def __init__(self, replay: Optional[list[dict]] = None):

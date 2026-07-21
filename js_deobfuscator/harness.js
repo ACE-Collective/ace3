@@ -46,38 +46,53 @@ let webcrackError = null;
 // ---------------------------------------------------------------------------
 // Stage 1 — webcrack static pre-pass
 // ---------------------------------------------------------------------------
+// Resolve the module separately from running it. Whether webcrack is
+// installed is a property of the deployment, not of the sample: the scanner
+// image installs it, so the production path always has it, but a bare
+// checkout (and the unit tests, which run this harness directly) does not.
+// Folding an unresolvable import into the failure path below would report a
+// per-sample "failed" for what is really a build-time condition, and would
+// leave the documented "skipped" status unreachable.
+let webcrack = null;
 try {
-  const { webcrack } = await import('webcrack');
-  // Pass a custom sandbox so webcrack runs the obfuscator's string-decoder
-  // function through node:vm instead of isolated-vm. isolated-vm needs a
-  // native C++ build which we don't want in the scanner image. Our dynamic
-  // stage runs in vm anyway, so pulling in a second sandbox runtime buys
-  // nothing.
-  const nodeVmSandbox = async (code) => {
-    const ctx = vm.createContext({});
-    return vm.runInContext(code, ctx, { timeout: 10000 });
-  };
-  const result = await webcrack(SRC, {
-    sandbox: nodeVmSandbox,
-    jsx: false,
-    unpack: false,
-    mangle: false,
-  });
-  if (result && typeof result.code === 'string' && result.code.length > 0) {
-    // Classify: did webcrack change anything meaningful, or just reformat /
-    // constant-fold a few tokens? Compare whitespace-stripped lengths — if
-    // the relative delta is under 2%, the tail block is unlikely to help
-    // an analyst (webcrack hit a JSFuck-only or eval-wrapped sample where
-    // the sandbox does the real work) and we should say so in the header.
-    const rawCompact = SRC.replace(/\s+/g, '');
-    const newCompact = result.code.replace(/\s+/g, '');
-    const delta = Math.abs(newCompact.length - rawCompact.length) / Math.max(rawCompact.length, 1);
-    webcrackStatus = (delta < 0.02) ? 'applied (cosmetic only)' : 'applied';
-    SRC = result.code;
-  }
+  ({ webcrack } = await import('webcrack'));
 } catch (e) {
-  webcrackError = e && (e.message || String(e));
-  webcrackStatus = `failed: ${webcrackError}`;
+  webcrackStatus = 'skipped';
+}
+
+if (webcrack) {
+  try {
+    // Pass a custom sandbox so webcrack runs the obfuscator's string-decoder
+    // function through node:vm instead of isolated-vm. isolated-vm needs a
+    // native C++ build which we don't want in the scanner image. Our dynamic
+    // stage runs in vm anyway, so pulling in a second sandbox runtime buys
+    // nothing.
+    const nodeVmSandbox = async (code) => {
+      const ctx = vm.createContext({});
+      return vm.runInContext(code, ctx, { timeout: 10000 });
+    };
+    const result = await webcrack(SRC, {
+      sandbox: nodeVmSandbox,
+      jsx: false,
+      unpack: false,
+      mangle: false,
+    });
+    if (result && typeof result.code === 'string' && result.code.length > 0) {
+      // Classify: did webcrack change anything meaningful, or just reformat /
+      // constant-fold a few tokens? Compare whitespace-stripped lengths — if
+      // the relative delta is under 2%, the tail block is unlikely to help
+      // an analyst (webcrack hit a JSFuck-only or eval-wrapped sample where
+      // the sandbox does the real work) and we should say so in the header.
+      const rawCompact = SRC.replace(/\s+/g, '');
+      const newCompact = result.code.replace(/\s+/g, '');
+      const delta = Math.abs(newCompact.length - rawCompact.length) / Math.max(rawCompact.length, 1);
+      webcrackStatus = (delta < 0.02) ? 'applied (cosmetic only)' : 'applied';
+      SRC = result.code;
+    }
+  } catch (e) {
+    webcrackError = e && (e.message || String(e));
+    webcrackStatus = `failed: ${webcrackError}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +100,16 @@ try {
 // ---------------------------------------------------------------------------
 const events = [];
 const secondaryScripts = [];
+
+// Listeners the sample registers for the "page is ready" event family. There
+// is no document and no event loop here, so these would never fire on their
+// own: a sample that defers its payload to DOMContentLoaded (a very common
+// staging pattern — decode a payload, then wait for the DOM before running it)
+// would register a callback we never invoke, and everything it does stays
+// invisible. We collect them during the run and fire them afterwards, the same
+// reason setTimeout runs its callback immediately.
+const DOM_READY_EVENTS = new Set(['DOMContentLoaded', 'load', 'readystatechange', 'pageshow']);
+const domReadyListeners = [];
 
 // Side-channel: when the sample constructs a Blob with a recognized text
 // MIME type (e.g. `new Blob([decoded_html], {type:'text/html'})` — the
@@ -142,6 +167,24 @@ function maybeWriteBlobPayload(args) {
 // entries here surfaces extra side effects without touching recorder().
 const constructHooks = {
   Blob: maybeWriteBlobPayload,
+};
+
+// Per-label hooks invoked from the recorder's apply trap, same idea as
+// constructHooks but for calls. The hook only observes; the trap still
+// records the call and returns a recorder, so hooks can't change the trace
+// shape.
+function queueDomReadyListener(args) {
+  const [type, handler] = args;
+  if (typeof handler !== 'function') return;  // ignore EventListener objects
+  if (!DOM_READY_EVENTS.has(String(type))) return;
+  domReadyListeners.push({ type: String(type), handler });
+}
+
+const callHooks = {
+  'document.addEventListener': queueDomReadyListener,
+  'window.addEventListener': queueDomReadyListener,
+  // bare global form -- see the recorder list for why it exists separately
+  'addEventListener': queueDomReadyListener,
 };
 
 function safeStringify(value) {
@@ -214,6 +257,12 @@ function recorder(label) {
     },
     apply(_t, _thisArg, args) {
       events.push({ kind: 'call', label, args: args.map(safeStringify) });
+      const hook = callHooks[label];
+      if (hook) {
+        try { hook(args); } catch (e) {
+          events.push({ kind: 'call.hook.error', label, error: e && (e.message || String(e)) });
+        }
+      }
       return recorder(`${label}()`);
     },
     construct(_t, args) {
@@ -230,6 +279,24 @@ function recorder(label) {
   });
 }
 
+// A node:vm context starts with ECMAScript intrinsics ONLY (Uint8Array, JSON,
+// Proxy, decodeURIComponent...). Every host global — web or node — is absent
+// unless we put it here. There are two kinds, and picking the wrong one loses
+// payloads. Ask: "if this returned a Proxy instead of a real value, would the
+// sample still reach its payload?"
+//
+//   No  -> REAL implementation (this object). The sample consumes the return
+//          value as data steering its own control flow: atob, btoa,
+//          TextDecoder, TextEncoder. It must compute the true value.
+//   Yes -> RECORDER (the list below). We only care that the call happened and
+//          what was passed in; the return value is inert: document, fetch,
+//          Blob, URL.
+//
+// When a sample dies on "ReferenceError: X is not defined", triage with that
+// question — do NOT reflexively append to the recorder list. For a data
+// transform a recorder is strictly worse than the crash: `.decode()` returns a
+// Proxy, `eval(Proxy)` is a silent no-op, and the payload is lost with no
+// error at all. TextDecoder is exactly that case and is why this note exists.
 const sandbox = {
   console: {
     log: (...a) => events.push({ kind: 'console.log', args: a.map(safeStringify) }),
@@ -240,6 +307,11 @@ const sandbox = {
   },
   atob: (s) => Buffer.from(String(s), 'base64').toString('binary'),
   btoa: (s) => Buffer.from(String(s), 'binary').toString('base64'),
+  // Host-realm classes handed to the sandbox directly. Cross-realm is fine:
+  // a Uint8Array built inside the vm decodes correctly through these because
+  // node brand-checks via internal slots, which are realm-agnostic.
+  TextDecoder,
+  TextEncoder,
   setTimeout: (fn, _ms, ...rest) => {
     if (typeof fn === 'string') {
       secondaryScripts.push({ kind: 'setTimeout', body: fn });
@@ -279,6 +351,11 @@ for (const name of [
   'sessionStorage', 'fetch', 'XMLHttpRequest', 'WebSocket', 'crypto',
   'indexedDB', 'performance', 'Image', 'Audio', 'HTMLElement', 'Element',
   'Node', 'MutationObserver', 'alert', 'prompt', 'confirm',
+  // The bare global forms. `window.addEventListener(...)` resolves through the
+  // window recorder, but plain `addEventListener(...)` is its own global and
+  // without it the sample dies on ReferenceError before reaching its payload.
+  // Real samples use both, sometimes in the same file.
+  'addEventListener', 'removeEventListener', 'dispatchEvent',
   // Web APIs commonly used to stage a payload before redirecting. The
   // SVG-redirect family does `new Blob([decoded_html], {type:'text/html'})`
   // → `URL.createObjectURL` → `document.location.replace`. node:vm doesn't
@@ -293,6 +370,14 @@ for (const name of [
   // obfuscation (e.g. `this[a0_0x471eff(0x128)]()` resolving to `getField`)
   'app', 'util', 'SOAP', 'color', 'event', 'global', 'xfa',
   'Collab', 'Doc', 'Field', 'Net', 'identity', 'security', 'spell', 'media',
+  // 'URL' sits in this block for historical reasons but is load-bearing for
+  // the web Blob-redirect flow above, not Acrobat. It stays a RECORDER: real
+  // URL.createObjectURL() rejects our Blob recorder with "TypeError: The
+  // 'obj' argument must be an instance of Blob", reintroducing the very
+  // mid-trace crash the recorders exist to prevent; real `new URL(x)` throws
+  // on the non-absolute strings obfuscated samples routinely pass; and even
+  // on success it only yields an IOC-free `blob:nodedata:<uuid>`. (Node does
+  // have createObjectURL — "node lacks it" is NOT the reason. Don't promote.)
   'getField', 'getTemplate', 'info', 'numPages', 'pageNum', 'path', 'URL',
   'submitForm', 'mailForm', 'mailDoc', 'closeDoc', 'exportDataObject',
   'resetForm', 'addScript', 'syncAnnotScan', 'importDataObject',
@@ -300,20 +385,62 @@ for (const name of [
   'getPageBox', 'getPageNthWord', 'getPageNthWordQuads', 'getPageNumWords',
   'getURL', 'print', 'setAction',
 ]) {
+  // Real implementations above win. This loop runs after the literal, so
+  // without this guard adding a name that already has a real implementation
+  // would silently downgrade it to a Proxy stub — the exact silent-miss
+  // described in the category note above. No current collisions; this is
+  // preventive.
+  if (Object.hasOwn(sandbox, name)) continue;
   sandbox[name] = recorder(name);
 }
 sandbox.globalThis = sandbox;
 
+// Compile and run as separate steps so the two failures stay distinguishable.
+// Collapsing them (vm.runInContext does both) throws away the one signal that
+// says whether the input was JavaScript at all: a SyntaxError means it never
+// parsed and is not JS, while a ReferenceError means it parsed fine and died
+// mid-execution — which proves it IS JS. Downstream tagging depends on the
+// difference. Explicit filename keeps stack traces as "evalmachine.<anonymous>".
 let runError = null;
+let errorType = null; // 'compile' | 'runtime' | null
+let script = null;
+vm.createContext(sandbox);
 try {
-  vm.createContext(sandbox);
-  vm.runInContext(SRC, sandbox, { timeout: 5000, displayErrors: true });
+  script = new vm.Script(SRC, { filename: 'evalmachine.<anonymous>' });
 } catch (e) {
   runError = e && (e.stack || e.message || String(e));
+  errorType = 'compile';
+}
+if (script) {
+  try {
+    script.runInContext(sandbox, { timeout: 5000, displayErrors: true });
+  } catch (e) {
+    runError = e && (e.stack || e.message || String(e));
+    errorType = 'runtime';
+  }
 }
 
-// Re-run any secondary scripts the sample revealed (Function ctor bodies,
-// setTimeout string handlers, etc.) so their global writes get recorded too.
+// Now that the main script has finished, fire the DOM-ready listeners it
+// registered. Deferred until here rather than fired at registration so the
+// real DOMContentLoaded ordering holds: a sample may register the handler
+// before defining what the handler needs, and firing early would throw on a
+// not-yet-initialized binding. Runs before the secondary-script loop below so
+// anything these handlers queue (e.g. a setTimeout string body) still gets
+// picked up.
+for (const { type, handler } of domReadyListeners) {
+  events.push({ kind: 'domready.start', source: type });
+  try {
+    handler(recorder(`${type}Event`));
+  } catch (e) {
+    events.push({ kind: 'domready.error', error: e && (e.message || String(e)) });
+  }
+}
+
+// Re-run any secondary scripts the sample revealed so their global writes get
+// recorded too. Today that means setTimeout handlers passed as strings — the
+// only thing that pushes to secondaryScripts. The Function constructor is the
+// raw vm intrinsic and is NOT hooked, so Function-ctor payloads are not
+// captured here.
 const alreadyRun = new Set();
 for (let i = 0; i < secondaryScripts.length; i++) {
   const entry = secondaryScripts[i];
@@ -348,6 +475,10 @@ for (const ev of events) {
     lines.push(`// --- secondary payload (${ev.source}) ---`);
   } else if (ev.kind === 'secondary.error') {
     lines.push(`// secondary error: ${ev.error}`);
+  } else if (ev.kind === 'domready.start') {
+    lines.push(`// --- deferred payload (${ev.source} listener) ---`);
+  } else if (ev.kind === 'domready.error') {
+    lines.push(`// deferred payload error: ${ev.error}`);
   }
 }
 if (secondaryScripts.length) {
@@ -388,6 +519,7 @@ process.stdout.write(JSON.stringify({
   event_count: events.length,
   secondary_script_count: secondaryScripts.length,
   error: runError,
+  error_type: errorType,
   webcrack_status: webcrackStatus,
   webcrack_error: webcrackError,
   blob_files: blobFiles,

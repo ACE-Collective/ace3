@@ -1,3 +1,40 @@
+# Content types of the TOP-LEVEL response that Chrome shows in its built-in
+# plain-text viewer instead of rendering as a page. Two things are skipped for
+# these:
+#   - the screenshot, which would just be a picture of source we already capture
+#     verbatim (no analyst value, and it costs a render)
+#   - bypass attempts, because there is no challenge UI on a document Chrome
+#     never rendered. This matters more than it sounds: bypasses match against
+#     the page source, and when the source IS the page text, a challenge kit's
+#     own UI strings ("Continue", "Click to verify") match against its own
+#     source code and fire a handler that clicks nothing.
+# Deliberately wider than script_content_types below: nothing here renders as a
+# page.
+#
+# Both lists are denylists and fail open: an unknown or missing content type is
+# treated as a normal page (screenshot taken, bypasses attempted, body appended).
+non_rendered_content_types:
+  - "application/javascript"
+  - "application/json"
+  - "application/x-javascript"
+  - "application/xml"
+  - "text/css"
+  - "text/javascript"
+  - "text/plain"
+  - "text/xml"
+
+# Content types indicating the scanned URL served JavaScript rather than a page.
+# Chrome never executes a top-level script — it displays the source — so nothing
+# requests the URLs staged inside it and PhishkitAnalyzer's promotion passes
+# (MARKER URL lines + requests.json) can't see them. For these, the top-level
+# body is written to top_level_body.js instead of being appended to dom.html, so
+# ACE runs its JS deobfuscator on it and extracts the staged URLs. Narrower than
+# the list above: only these can be handed to the deobfuscator.
+script_content_types:
+  - "application/javascript"
+  - "application/x-javascript"
+  - "text/javascript"
+
 # Extensions whose response bodies are skipped when appending sub-request
 # content to dom.html after a scan completes. The scan itself still fetches
 # these resources — this only controls what gets written into the DOM output.

@@ -12,6 +12,7 @@ from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DISPOSITION_OPEN,
     QUEUE_DEFAULT,
+    STATE_ANALYST_REQUESTED_ANALYSIS,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
@@ -172,6 +173,16 @@ class AnalysisOrchestrator:
         """
         # if we're not in alert mode then it doesn't matter
         if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
+            return False
+
+        # an analyst explicitly requested analysis from the GUI (sandbox upload, crawl, render, etc)
+        # honor it even though the alert is dispositioned, otherwise the action silently does nothing
+        # this is consume-once: clear the flag so the next disposition-triggered pass behaves normally
+        if execution_context.root.state.pop(STATE_ANALYST_REQUESTED_ANALYSIS, False):
+            logging.info(
+                f"continuing analysis on dispositioned alert {execution_context.root} "
+                "due to analyst-requested analysis"
+            )
             return False
 
         try:
