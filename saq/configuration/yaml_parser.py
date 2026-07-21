@@ -2,13 +2,12 @@ import copy
 import os
 import sys
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from deepmerge import Merger
 import yaml
 
-from saq.environment import get_global_runtime_settings, get_base_dir
-from saq.configuration.encryption import decrypt_password
+from saq.environment import get_base_dir
 
 ENV_PREFIX = "env:"
 ENCRYPTED_PREFIX = "encrypted:"
@@ -35,7 +34,6 @@ class YAMLConfig:
 
     def __init__(self) -> None:
         self._data: dict[str, dict[str, Any]] = {}
-        self.encrypted_password_cache: dict[str, Optional[str]] = {}
         self.loaded_files: set[str] = set()
         self._yaml_loader_cls = yaml.SafeLoader
 
@@ -43,7 +41,6 @@ class YAMLConfig:
         """Return a deep copy of this YAMLConfig object."""
         new_config = YAMLConfig()
         new_config._data = copy.deepcopy(self._data)
-        new_config.encrypted_password_cache = copy.deepcopy(self.encrypted_password_cache)
         new_config.loaded_files = copy.deepcopy(self.loaded_files)
         return new_config
 
@@ -60,12 +57,9 @@ class YAMLConfig:
 
                 return os.environ[var]
 
-            if value.startswith(ENCRYPTED_PREFIX):
-                key = value[len(ENCRYPTED_PREFIX) :]
-                if not get_global_runtime_settings().encryption_initialized:
-                    return value
-
-                return self._get_decrypted_password(key)
+            # NOTE: encrypted:<name> is intentionally NOT resolved here. Encrypted secrets are now
+            # resolved lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py); the
+            # marker is left intact so it validates into a SecretRef field. See resolve_all_values.
 
             if value.startswith(FILE_PREFIX):
                 path = value[len(FILE_PREFIX):]
@@ -76,15 +70,6 @@ class YAMLConfig:
 
         # otherwise no special handling
         return value
-
-    def _get_decrypted_password(self, key: str) -> Optional[str]:
-        try:
-            return self.encrypted_password_cache[key]
-        except KeyError:
-            pass
-
-        self.encrypted_password_cache[key] = decrypt_password(key)
-        return self.encrypted_password_cache[key]
 
     def merge(self, other: dict[str, dict[str, Any]]) -> None:
         """Overlay configuration from another mapping-like object.
@@ -200,54 +185,12 @@ class YAMLConfig:
             if isinstance(resolved, str):
                 sys.path.append(resolved)
 
-    def decrypt_all_values(self) -> None:
-        """Recursively decrypt all encrypted values in the configuration.
-
-        The encryption key is stored in the database, and the database connection parameters
-        are stored in the configuration. So we need to load the configuration first, then
-        decrypt the values.
-        """
-        def _decrypt_recursive(mapping: dict[str, Any]) -> None:
-            """Recursively decrypt values in a mapping."""
-            for key, value in mapping.items():
-                if isinstance(value, dict):
-                    # Recursively process nested dictionaries
-                    _decrypt_recursive(value)
-                elif isinstance(value, list):
-                    # Process list items
-                    for i, item in enumerate(value):
-                        if isinstance(item, dict):
-                            _decrypt_recursive(item)
-                        elif isinstance(item, str) and item.startswith("encrypted:"):
-                            # Decrypt list items that are encrypted strings
-                            key_name = item[len("encrypted:"):]
-                            try:
-                                decrypted = self._get_decrypted_password(key_name)
-                                if decrypted is not None:
-                                    value[i] = decrypted
-                            except Exception as e:
-                                logging.warning(f"failed to decrypt value for key {key_name}: {str(e)}")
-                elif isinstance(value, str) and value.startswith("encrypted:"):
-                    # Decrypt string values that start with "encrypted:"
-                    key_name = value[len("encrypted:"):]
-                    try:
-                        decrypted = self._get_decrypted_password(key_name)
-                        if decrypted is not None:
-                            mapping[key] = decrypted
-                    except Exception as e:
-                        logging.warning(f"failed to decrypt value for key {key_name}: {str(e)}")
-
-        # Process all sections in the configuration
-        for section_name, section_data in self._data.items():
-            if isinstance(section_data, dict):
-                _decrypt_recursive(section_data)
-
     def resolve_all_values(self) -> None:
-        """Recursively decrypt all encrypted values and resolve all env:VAR_NAME values in the configuration.
+        """Recursively resolve env:VAR_NAME and file:PATH values in the configuration, in place.
 
-        This function performs the same operations as decrypt_all_values, in addition to resolving
-        any env:VAR_NAME string values and EnvVarRef objects to their corresponding environment
-        variable values.
+        encrypted:<name> markers are intentionally left unresolved: encrypted secrets are resolved
+        lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py), so the marker must
+        survive into model validation where it becomes a SecretRef field.
         """
         def _resolve_recursive(mapping: dict[str, Any]) -> None:
             """Recursively decrypt and resolve values in a mapping."""
@@ -259,16 +202,9 @@ class YAMLConfig:
                         if isinstance(item, dict):
                             _resolve_recursive(item)
                         elif isinstance(item, str):
-                            if item.startswith("encrypted:"):
-                                # decrypt list items that are encrypted strings
-                                key_name = item[len("encrypted:"):]
-                                try:
-                                    decrypted = self._get_decrypted_password(key_name)
-                                    if decrypted is not None:
-                                        value[index] = decrypted
-                                except Exception as e:
-                                    logging.warning(f"failed to decrypt value for key {key_name}: {str(e)}")
-                            elif item.startswith("env:"):
+                            # encrypted:<name> is intentionally left unresolved -- resolved lazily at
+                            # point-of-use via SecretRef (saq/configuration/secret_ref.py)
+                            if item.startswith("env:"):
                                 # resolve env:VAR_NAME values in lists
                                 var = item[len("env:"):]
                                 if var not in os.environ:
@@ -283,16 +219,9 @@ class YAMLConfig:
                                 with open(file_path, "r", encoding="utf-8") as f:
                                     value[index] = f.read().rstrip()
                 elif isinstance(value, str):
-                    if value.startswith("encrypted:"):
-                        # decrypt string values that start with "encrypted:"
-                        key_name = value[len("encrypted:"):]
-                        try:
-                            decrypted = self._get_decrypted_password(key_name)
-                            if decrypted is not None:
-                                mapping[key] = decrypted
-                        except Exception as e:
-                            logging.warning(f"failed to decrypt value for key {key_name}: {str(e)}")
-                    elif value.startswith("env:"):
+                    # encrypted:<name> is intentionally left unresolved -- resolved lazily at
+                    # point-of-use via SecretRef (saq/configuration/secret_ref.py)
+                    if value.startswith("env:"):
                         # resolve env:VAR_NAME string values
                         var = value[len("env:"):]
                         if var not in os.environ:
