@@ -1448,27 +1448,27 @@ class EmailAnalyzer(AnalysisModule):
 
         if first_hop_ip:
             email_details[KEY_FIRST_HOP_IP] = first_hop_ip
-            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_IP, first_hop_ip, o_time=received_time)
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_IP, first_hop_ip)
 
         if first_hop_helo:
             email_details[KEY_FIRST_HOP_HELO] = first_hop_helo
-            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_HELO, first_hop_helo, o_time=received_time)
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_HELO, first_hop_helo)
 
         if first_hop_from:
             email_details[KEY_FIRST_HOP_FROM] = first_hop_from
-            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_FROM, first_hop_from, o_time=received_time)
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_FROM, first_hop_from)
 
         dkim_signing_domains = get_dkim_signing_domains(target_email)
         if dkim_signing_domains:
             email_details[KEY_DKIM_SIGNING_DOMAINS] = dkim_signing_domains
             for domain in dkim_signing_domains:
-                analysis.add_observable_by_spec(F_EMAIL_DKIM_SIGNING_DOMAIN, domain, o_time=received_time)
+                analysis.add_observable_by_spec(F_EMAIL_DKIM_SIGNING_DOMAIN, domain)
 
         sender_tenant_id = get_sender_tenant_id(
             target_email, self.config.provider_headers.sender_tenant_id)
         if sender_tenant_id:
             email_details[KEY_SENDER_TENANT_ID] = sender_tenant_id
-            analysis.add_observable_by_spec(F_EMAIL_SENDER_TENANT_ID, sender_tenant_id, o_time=received_time)
+            analysis.add_observable_by_spec(F_EMAIL_SENDER_TENANT_ID, sender_tenant_id)
 
         # message authentication verdicts + provider provenance flags. These are message-level
         # verdicts, not observables — we store them in the details and drive tags/detections.
