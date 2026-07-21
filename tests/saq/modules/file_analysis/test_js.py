@@ -557,6 +557,43 @@ def test_domready_deferred_payload_is_fired(datadir, monkeypatch, patched_deobfu
 
 
 @pytest.mark.unit
+def test_jquery_ready_payload_is_fired(datadir, monkeypatch, patched_deobfuscate):
+    """A payload wrapped in `$(document).ready(...)` must execute.
+
+    jQuery is not loaded in the sandbox, so an undefined `$` throws
+    "ReferenceError: $ is not defined" at the top of the payload and the run
+    dies with zero events -- the exact production failure this pins. `$` is a
+    REAL implementation, not a recorder: a recorder would record the .ready()
+    call but never fire the handler, so the payload would vanish with no error.
+
+    Both assertions are load-bearing, mirroring the TextDecoder/DOM-ready tests:
+      - error is None catches the ReferenceError regression (`$` undefined).
+      - the URLs catch the ready handler not firing (recorder-only regression):
+        the POST target, the harvested form `action`, and the deferred redirect
+        must all reach the trace.
+    """
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "jquery_ready_payload.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    # catches the "ReferenceError: $ is not defined" regression
+    assert analysis.error is None
+    assert analysis.error_type is None
+    # catches the ready handler not firing (jQuery stubbed as a bare recorder)
+    body = _deobfuscated_body(analysis)
+    assert "https://example.com/jquery-collect" in body
+    assert "https://example.com/jquery-harvest" in body
+    assert "https://example.com/jquery-ready-stage.js" in body
+
+
+@pytest.mark.unit
 def test_bare_global_addeventlistener_is_defined(datadir, monkeypatch, patched_deobfuscate):
     """`addEventListener(...)` as a bare global, not `window.addEventListener`.
 
