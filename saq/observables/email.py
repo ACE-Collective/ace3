@@ -3,13 +3,14 @@ import logging
 from typing import TYPE_CHECKING
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
-from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_BODY, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_HEADER, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_MESSAGE_ID, create_email_delivery, parse_email_conversation, parse_email_delivery
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_BODY, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FIRST_HOP_IP, F_EMAIL_HEADER, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_MESSAGE_ID, create_email_delivery, parse_email_conversation, parse_email_delivery
 from saq.database.pool import get_db_connection
 from saq.email import is_local_email_domain, normalize_email_address, normalize_message_id
 from saq.configuration.config import get_config
 from saq.gui import ObservableActionAddLocalEmailDomain
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
+from saq.observables.network.ip import IPObservable
 from saq.util import is_subdomain
 
 
@@ -218,6 +219,15 @@ class EmailHeaderObservable(Observable):
     def value(self, new_value):
         self._value = new_value
 
+class EmailFirstHopIPObservable(IPObservable):
+    """The sending IP of the first external hop of an email.
+
+    Values come from Received: header parsing, so the inherited ip_address()
+    validation is what keeps malformed hop tokens from becoming observables.
+    """
+    OBSERVABLE_TYPE = F_EMAIL_FIRST_HOP_IP
+
+
 register_observable_type(F_EMAIL_ADDRESS, EmailAddressObservable)
 register_observable_type(F_EMAIL_DELIVERY, EmailDeliveryObservable)
 register_observable_type(F_EMAIL_SUBJECT, EmailSubjectObservable)
@@ -226,3 +236,4 @@ register_observable_type(F_EMAIL_CONVERSATION, EmailConversationObservable)
 register_observable_type(F_MESSAGE_ID, MessageIDObservable)
 register_observable_type(F_EMAIL_BODY, EmailBodyObservable)
 register_observable_type(F_EMAIL_HEADER, EmailHeaderObservable)
+register_observable_type(F_EMAIL_FIRST_HOP_IP, EmailFirstHopIPObservable)

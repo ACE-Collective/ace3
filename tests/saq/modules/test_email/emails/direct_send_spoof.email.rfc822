@@ -1,0 +1,24 @@
+Received: from [203.0.113.10] (203.0.113.10) by
+ mx.company.com (10.0.0.5) with Microsoft SMTP Server id 15.20.0.0
+ via Frontend Transport; Fri, 17 Jul 2026 23:56:26 +0000
+Authentication-Results: spf=fail (sender IP is 203.0.113.10)
+ smtp.mailfrom=company.com; dkim=none (message not signed)
+ header.d=none;dmarc=fail action=oreject header.from=company.com;
+Received-SPF: Fail (protection.outlook.com: domain of company.com does not
+ designate 203.0.113.10 as permitted sender) receiver=protection.outlook.com;
+ client-ip=203.0.113.10; helo=[127.0.0.1];
+From: "Chief Executive" <ceo@company.com>
+To: user@company.com
+Subject: Task Submission Confirmation
+Message-ID: <direct-send-spoof-test@company.com>
+Date: Fri, 17 Jul 2026 23:56:25 +0000
+Content-Type: text/plain; charset=utf-8
+MIME-Version: 1.0
+X-MS-Exchange-Organization-MessageDirectionality: Incoming
+X-MS-Exchange-Organization-OriginalClientIPAddress: 203.0.113.10
+X-MS-Exchange-Organization-CompAuthRes: fail
+X-MS-Exchange-Organization-CompAuthReason: 000
+X-MS-Exchange-Organization-InternalOrgSender: True
+X-MS-Exchange-Organization-IsAnonymousDirectSend: True
+
+Please review the attached task submission confirmation.

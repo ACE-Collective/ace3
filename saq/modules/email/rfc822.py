@@ -8,12 +8,13 @@ import shutil
 import uuid
 from datetime import datetime
 from functools import cached_property
+from ipaddress import ip_address
 from subprocess import PIPE, Popen
-from typing import Type, override
+from typing import Optional, Type, override
 
 import dateutil
 import pytz
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
@@ -31,11 +32,16 @@ from saq.constants import (
     F_EMAIL_CC,
     F_EMAIL_CONVERSATION,
     F_EMAIL_DELIVERY,
+    F_EMAIL_DKIM_SIGNING_DOMAIN,
     F_EMAIL_ENVELOPE_MAIL_FROM,
     F_EMAIL_ENVELOPE_RCPT_TO,
+    F_EMAIL_FIRST_HOP_FROM,
+    F_EMAIL_FIRST_HOP_HELO,
+    F_EMAIL_FIRST_HOP_IP,
     F_EMAIL_FROM,
     F_EMAIL_REPLY_TO,
     F_EMAIL_RETURN_PATH,
+    F_EMAIL_SENDER_TENANT_ID,
     F_EMAIL_SUBJECT,
     F_EMAIL_TO,
     F_EMAIL_X_AUTH_ID,
@@ -51,6 +57,7 @@ from saq.constants import (
     create_email_conversation,
     create_email_delivery,
 )
+from saq.configuration.config import get_config
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.email import (
     decode_rfc2822,
@@ -64,14 +71,26 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
     KEY_CC,
+    KEY_COMPAUTH_REASON,
+    KEY_COMPAUTH_RESULT,
     KEY_DECODED_SUBJECT,
+    KEY_DKIM_RESULT,
+    KEY_DKIM_SIGNING_DOMAINS,
+    KEY_DMARC_RESULT,
     KEY_EMAIL,
     KEY_ENV_MAIL_FROM,
     KEY_ENV_RCPT_TO,
     KEY_EXTRACTION_ERRORS,
+    KEY_FIRST_HOP_FROM,
+    KEY_FIRST_HOP_HELO,
+    KEY_FIRST_HOP_IP,
     KEY_FROM,
     KEY_FROM_ADDRESS,
     KEY_HEADERS,
+    KEY_INTERNAL_ORG_SENDER,
+    KEY_IS_ANONYMOUS_DIRECT_SEND,
+    KEY_MESSAGE_DIRECTIONALITY,
+    KEY_SPF_RESULT,
     KEY_LOG_ENTRY,
     KEY_MESSAGE_ID,
     KEY_ORIGINATING_IP,
@@ -79,6 +98,7 @@ from saq.modules.email.constants import (
     KEY_REPLY_TO,
     KEY_REPLY_TO_ADDRESS,
     KEY_RETURN_PATH,
+    KEY_SENDER_TENANT_ID,
     KEY_SUBJECT,
     KEY_TO,
     KEY_TO_ADDRESSES,
@@ -92,6 +112,7 @@ from saq.modules.email.constants import (
 )
 from saq.observables.file import FileObservable
 from saq.util.filesystem import shorten_basename_for_suffix
+from saq.util.networking import is_subdomain
 from saq.whitelist import (
     WHITELIST_TYPE_SMTP_FROM,
     WHITELIST_TYPE_SMTP_TO,
@@ -101,6 +122,9 @@ from saq.whitelist import (
 TAG_OUTBOUND_EMAIL = 'outbound_email'
 TAG_OUTBOUND_EXCEPTION_EMAIL = 'outbound_email_exception'
 TAG_EMAIL_PARSE_INCOMPLETE = 'email_parse_incomplete'
+TAG_AUTHENTICATION_FAILED = 'authentication_failed'
+TAG_ANONYMOUS_DIRECT_SEND = 'anonymous_direct_send'
+TAG_SPOOFED_INTERNAL = 'spoofed_internal'
 
 # regex to match Received date
 RE_EMAIL_RECEIVED_DATE = re.compile(r';\s?(.+)$')
@@ -114,6 +138,408 @@ def get_received_time(received_header):
             logging.debug(f"unable to parse {m.group(1)} as date time: {e}")
 
     return None
+
+# the clauses of a Received: header we care about, e.g.
+# Received: from mail-lf1-f52.google.com ([209.85.167.52]) by mailserver.company.com with ESMTP
+RE_RECEIVED_FROM = re.compile(r'\bfrom\s+(\S+)', re.I)
+RE_RECEIVED_BY = re.compile(r'\bby\s+(\S+)', re.I)
+# both `(helo=foo.com)` and `(HELO foo.com)` are seen in the wild
+RE_RECEIVED_HELO = re.compile(r'\bhelo\s*[=\s]\s*([^\s()\[\],;]+)', re.I)
+# any bracketed or parenthesized group, which is where hop IPs live
+RE_RECEIVED_GROUP = re.compile(r'[(\[]([^)\]]*)[)\]]')
+# the parenthesized group of a Received `from` clause, e.g. `(rdns.host [1.2.3.4])`
+RE_RECEIVED_PARENS = re.compile(r'\(([^)]*)\)')
+# a dotted host name (at least one label separator, must contain a letter so it is not an IPv4)
+RE_HOSTNAME = re.compile(r'\b([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)\b')
+
+# the d= tag of a DKIM-Signature header (values are folded across lines, hence \s*)
+RE_DKIM_SIGNING_DOMAIN = re.compile(r'(?:^|;)\s*d\s*=\s*([^;\s]+)', re.I)
+
+# Default header names for each provider-specific fact we extract. These are the
+# shipped defaults (Microsoft 365 header names); a deployment on a different mail
+# provider overrides them via the analysis module's provider_headers config. All
+# lookups are case-insensitive (email.message membership is case-insensitive).
+
+# headers the provider stamps with the sending IP of the first external hop, most
+# authoritative first. OriginalAttributedTenantConnectingIp is only present on
+# tenant-to-tenant relayed mail and carries the true external ingress IP, whereas
+# OriginalClientIPAddress on that same mail is a Microsoft-internal hop -- so it
+# is listed first and OriginalClientIPAddress is the fallback for ordinary inbound.
+DEFAULT_FIRST_HOP_IP_HEADERS = [
+    'x-ms-exchange-organization-originalattributedtenantconnectingip',
+    'x-ms-exchange-organization-originalclientipaddress',
+    'x-sender-ip',
+]
+
+# headers identifying the tenant/organization the message was sent from
+DEFAULT_SENDER_TENANT_ID_HEADERS = [
+    'x-ms-exchange-crosstenant-id',
+    'x-ms-exchange-organization-originaltenant-id',
+    'x-ms-exchange-organization-outboundhop-sender-tenantid',
+]
+
+# headers carrying the provider's composite authentication verdict / reason code
+DEFAULT_COMPOSITE_AUTH_RESULT_HEADERS = ['x-ms-exchange-organization-compauthres']
+DEFAULT_COMPOSITE_AUTH_REASON_HEADERS = ['x-ms-exchange-organization-compauthreason']
+
+# provenance flag headers (a value of 'true' means the flag is set)
+DEFAULT_ANONYMOUS_DIRECT_SEND_HEADERS = ['x-ms-exchange-organization-isanonymousdirectsend']
+DEFAULT_INTERNAL_ORG_SENDER_HEADERS = ['x-ms-exchange-organization-internalorgsender']
+
+# headers stating the message direction (inbound vs our own outbound)
+DEFAULT_MESSAGE_DIRECTIONALITY_HEADERS = ['x-ms-exchange-organization-messagedirectionality']
+
+
+class EmailProviderHeaders(BaseModel):
+    """Per-provider header names for each provider-specific fact EmailAnalyzer extracts.
+
+    Defaults are the Microsoft 365 header names. A deployment on another mail
+    provider overrides only the lists that differ; any list left empty simply
+    disables that extraction (a provider without the concept never errors).
+    """
+    first_hop_ip: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_FIRST_HOP_IP_HEADERS),
+        description="Headers carrying the sending IP of the first external hop.")
+    sender_tenant_id: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SENDER_TENANT_ID_HEADERS),
+        description="Headers carrying the sending organization's tenant GUID.")
+    composite_auth_result: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_COMPOSITE_AUTH_RESULT_HEADERS),
+        description="Headers carrying the provider's composite authentication verdict.")
+    composite_auth_reason: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_COMPOSITE_AUTH_REASON_HEADERS),
+        description="Headers carrying the provider's composite authentication reason code.")
+    anonymous_direct_send: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ANONYMOUS_DIRECT_SEND_HEADERS),
+        description="Boolean headers set when the message arrived via unauthenticated direct send.")
+    internal_org_sender: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_INTERNAL_ORG_SENDER_HEADERS),
+        description="Boolean headers set when the provider treated the sender as internal to the org.")
+    message_directionality: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_MESSAGE_DIRECTIONALITY_HEADERS),
+        description="Headers stating the message direction (e.g. 'Incoming' vs outbound).")
+
+
+def normalize_ip_header_value(value: str) -> Optional[str]:
+    """Return the IP address carried by a header value, or None if there isn't one.
+
+    Headers like X-Originating-IP and X-Sender-IP wrap the address in brackets
+    (`[10.0.0.1]`), so the decoration has to come off. Note that stripping every
+    character outside [0-9.] would destroy IPv6 addresses, hence the parse.
+    """
+    if value is None:
+        return None
+
+    candidate = value.strip().strip('[]').strip()
+    try:
+        return str(ip_address(candidate))
+    except ValueError:
+        logging.debug(f"header value {value} is not a valid ip address")
+        return None
+
+
+# candidate IP tokens inside a structured header value (bare, or bracketed like `[10.0.0.1]`)
+RE_IP_TOKEN = re.compile(r'\[?([0-9a-fA-F:.]+)\]?')
+
+
+def extract_first_hop_ip(value: str) -> Optional[str]:
+    """Return the sending IP carried by a first-hop header value, or None.
+
+    Most first-hop headers are a bare (optionally bracketed) IP -- that fast path
+    is unchanged. Some, however, are structured; e.g. a tenant-relayed message
+    records `TenantId=<guid>;Ip=[<ip>];Helo=[<host>]`. When the whole value is not
+    itself an IP we scan for the first token that parses as one, which yields the
+    connecting IP ahead of any trailing helo/loopback token.
+    """
+    if value is None:
+        return None
+
+    direct = normalize_ip_header_value(value)
+    if direct is not None:
+        return direct
+
+    for m in RE_IP_TOKEN.finditer(value):
+        try:
+            return str(ip_address(m.group(1)))
+        except ValueError:
+            continue
+
+    return None
+
+
+def _received_from_clause(received: str) -> str:
+    """Return the part of a Received: header between its `from` and `by` clauses."""
+    m = RE_RECEIVED_FROM.search(received)
+    if not m:
+        return ''
+
+    tail = received[m.end():]
+    by = RE_RECEIVED_BY.search(tail)
+    return tail[:by.start()] if by else tail
+
+
+def _looks_like_ip(value: Optional[str]) -> bool:
+    """True if the value parses as an IP address (after stripping any brackets)."""
+    if not value:
+        return False
+    try:
+        ip_address(value.strip('[]'))
+        return True
+    except ValueError:
+        return False
+
+
+def _received_rdns_host(from_clause: str) -> Optional[str]:
+    """Return the reverse-DNS host name inside a Received `from` clause's parentheses.
+
+    e.g. `(mail.example.com [1.2.3.4])` -> `mail.example.com`. Returns None when the
+    parentheses hold only an IP, the `unknown` placeholder, or nothing host-like.
+    """
+    parens = RE_RECEIVED_PARENS.search(from_clause)
+    if not parens:
+        return None
+
+    for m in RE_HOSTNAME.finditer(parens.group(1)):
+        host = m.group(1)
+        if host.lower() == 'unknown':
+            continue
+        if _looks_like_ip(host):  # a dotted-decimal IPv4 also matches RE_HOSTNAME
+            continue
+        return host.lower()
+
+    return None
+
+
+def _extract_hop_ip(received: str) -> Optional[str]:
+    """Return the sending IP recorded in the `from` clause of a Received: header."""
+    for group in RE_RECEIVED_GROUP.findall(_received_from_clause(received)):
+        for token in group.replace('[', ' ').replace(']', ' ').split():
+            try:
+                return str(ip_address(token.strip('.,;')))
+            except ValueError:
+                continue
+
+    return None
+
+
+def resolve_first_hop(
+        target_email,
+        ip_headers: list[str] = DEFAULT_FIRST_HOP_IP_HEADERS,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve (ip, helo, from_host) for the first external hop of a message.
+
+    Prefers the ``ip_headers`` the provider stamps with the authoritative sending
+    IP. When none are present we fall back to the earliest Received: hop that was
+    accepted *by* one of our own hosts -- that is the perimeter MTA, so the host it
+    received *from* is the external sender.
+
+    We deliberately do not use "the bottom-most non-private Received: hop", because
+    the bottom hop is frequently the sender's own webmail client rather than the
+    sending MTA (e.g. `from 10.13.46.65 ([UNAVAILABLE]. [82.117.219.130])`).
+
+    Any component that does not resolve comes back as None rather than a guess.
+    """
+    received_headers = [decode_rfc2822(_) for _ in target_email.get_all('received', [])]
+
+    hop_ip = None
+    for header in ip_headers:
+        if header not in target_email:
+            continue
+
+        hop_ip = extract_first_hop_ip(decode_rfc2822(target_email[header]))
+        if hop_ip:
+            break
+
+    hop_header = None
+    if hop_ip:
+        # find the hop that carries the authoritative IP so we can read its helo/from
+        for received in received_headers:
+            if _extract_hop_ip(received) == hop_ip:
+                hop_header = received
+                break
+    else:
+        local_domains = set(get_config().global_settings.local_domains)
+        local_domains |= set(get_config().global_settings.local_email_domains)
+
+        # reversed() walks the hops earliest-first, so the first local receipt is the perimeter
+        for received in reversed(received_headers):
+            m = RE_RECEIVED_BY.search(received)
+            if not m:
+                continue
+
+            by_host = m.group(1).strip('.,;')
+            if not any(is_subdomain(by_host, _) for _ in local_domains):
+                continue
+
+            candidate_ip = _extract_hop_ip(received)
+            if candidate_ip and ip_address(candidate_ip).is_private:
+                # an internal relay handing off to another internal host (journaling,
+                # smart hosts) is not the external hop we're looking for -- keep walking
+                continue
+
+            hop_header = received
+            hop_ip = candidate_ip
+            break
+
+    if hop_header is None:
+        return hop_ip, None, None
+
+    # In `Received: from <token> (<rdns> [<ip>])`, <token> is the string the client
+    # presented in HELO/EHLO and <rdns> is the sender's reverse-DNS host name. Some MTAs
+    # (Exim style) instead write `from <rdns> ([<ip>] helo=<token>)` with an explicit
+    # helo= tag -- when that tag is present it is authoritative, and the token after `from`
+    # is then the verified host rather than the helo.
+    from_clause = _received_from_clause(hop_header)
+
+    inline_helo = None
+    m = RE_RECEIVED_HELO.search(from_clause)
+    if m:
+        inline_helo = m.group(1).strip('[]').lower()
+
+    from_token = None
+    m = RE_RECEIVED_FROM.search(hop_header)
+    if m:
+        from_token = m.group(1).strip('.,;').strip('[]').lower()
+
+    if inline_helo is not None:
+        hop_helo = inline_helo
+        # the token after `from` is the verified host in this form; keep it only if it is a
+        # host name, not an address literal
+        hop_from = from_token if not _looks_like_ip(from_token) else None
+    else:
+        # the token after `from` IS the helo (may be an address literal like `[127.0.0.1]`);
+        # the sending host, if named at all, is the reverse-DNS host inside the parentheses
+        hop_helo = from_token
+        hop_from = _received_rdns_host(from_clause)
+
+    return hop_ip, hop_helo, hop_from
+
+
+def get_dkim_signing_domains(target_email) -> list[str]:
+    """Return the d= signing domain of every DKIM-Signature header on the message."""
+    results = []
+    for header in target_email.get_all('dkim-signature', []):
+        m = RE_DKIM_SIGNING_DOMAIN.search(decode_rfc2822(header))
+        if not m:
+            continue
+
+        domain = m.group(1).strip('.').lower()
+        if domain and domain not in results:
+            results.append(domain)
+
+    return results
+
+
+def get_sender_tenant_id(
+        target_email,
+        tenant_headers: list[str] = DEFAULT_SENDER_TENANT_ID_HEADERS,
+) -> Optional[str]:
+    """Return the sending organization's tenant GUID, if any.
+
+    ``tenant_headers`` defaults to the Microsoft 365 cross-tenant headers and is
+    overridable per provider via config.
+    """
+    for header in tenant_headers:
+        if header not in target_email:
+            continue
+
+        value = decode_rfc2822(target_email[header]).strip()
+        try:
+            return str(uuid.UUID(value))
+        except ValueError:
+            logging.debug(f"{header} value {value} is not a valid guid")
+
+    return None
+
+
+# per-verdict extraction from the free-form Authentication-Results header, e.g.
+# Authentication-Results: spf=fail (...) smtp.mailfrom=x; dkim=none (...); dmarc=fail action=oreject ...
+RE_AUTH_SPF = re.compile(r'\bspf=(\w+)', re.I)
+RE_AUTH_DKIM = re.compile(r'\bdkim=(\w+)', re.I)
+RE_AUTH_DMARC = re.compile(r'\bdmarc=(\w+)', re.I)
+RE_AUTH_COMPAUTH = re.compile(r'\bcompauth=(\w+)', re.I)
+RE_AUTH_COMPAUTH_REASON = re.compile(r'\breason=(\w+)', re.I)
+
+
+def _first_present_header(target_email, headers: list[str]) -> Optional[str]:
+    """Return the decoded value of the first header in ``headers`` that is present."""
+    for header in headers:
+        if header in target_email:
+            return decode_rfc2822(target_email[header]).strip()
+
+    return None
+
+
+def _any_header_is_true(target_email, headers: list[str]) -> bool:
+    """True if any header in ``headers`` is present with a value of 'true'."""
+    value = _first_present_header(target_email, headers)
+    return value is not None and value.lower() == 'true'
+
+
+def parse_email_authentication(
+        target_email,
+        provider_headers: Optional[EmailProviderHeaders] = None,
+) -> dict:
+    """Parse the message authentication verdicts and provider provenance flags.
+
+    These are message-level verdicts (fail/pass/True/Incoming), not pivotable
+    IOCs, so callers store them in the analysis details and drive tags/detections
+    from them rather than emitting observables.
+
+    SPF/DKIM/DMARC come from the standard Authentication-Results header (RFC 8601);
+    composite auth and the provenance flags come from provider-specific headers
+    named in ``provider_headers``. Any header list left empty simply yields None --
+    a provider without a given concept never errors.
+    """
+    if provider_headers is None:
+        provider_headers = EmailProviderHeaders()
+
+    # composite auth prefers the provider's dedicated header; fall back to the
+    # compauth token inside Authentication-Results when no dedicated header is set.
+    compauth_result = _first_present_header(target_email, provider_headers.composite_auth_result)
+    compauth_reason = _first_present_header(target_email, provider_headers.composite_auth_reason)
+
+    result = {
+        KEY_SPF_RESULT: None,
+        KEY_DKIM_RESULT: None,
+        KEY_DMARC_RESULT: None,
+        KEY_COMPAUTH_RESULT: compauth_result.lower() if compauth_result else None,
+        KEY_COMPAUTH_REASON: compauth_reason,
+        KEY_IS_ANONYMOUS_DIRECT_SEND: _any_header_is_true(
+            target_email, provider_headers.anonymous_direct_send),
+        KEY_INTERNAL_ORG_SENDER: _any_header_is_true(
+            target_email, provider_headers.internal_org_sender),
+        KEY_MESSAGE_DIRECTIONALITY: _first_present_header(
+            target_email, provider_headers.message_directionality),
+    }
+
+    # prefer the Authentication-Results header that actually carries a dmarc verdict
+    # (a message can accrue several as it transits relays)
+    auth_results_headers = [decode_rfc2822(_) for _ in target_email.get_all('authentication-results', [])]
+    auth_results = next((_ for _ in auth_results_headers if RE_AUTH_DMARC.search(_)),
+                        auth_results_headers[0] if auth_results_headers else '')
+
+    for key, pattern in (
+        (KEY_SPF_RESULT, RE_AUTH_SPF),
+        (KEY_DKIM_RESULT, RE_AUTH_DKIM),
+        (KEY_DMARC_RESULT, RE_AUTH_DMARC),
+    ):
+        m = pattern.search(auth_results)
+        if m:
+            result[key] = m.group(1).lower()
+
+    if result[KEY_COMPAUTH_RESULT] is None:
+        m = RE_AUTH_COMPAUTH.search(auth_results)
+        if m:
+            result[KEY_COMPAUTH_RESULT] = m.group(1).lower()
+
+    if result[KEY_COMPAUTH_REASON] is None:
+        m = RE_AUTH_COMPAUTH_REASON.search(auth_results)
+        if m:
+            result[KEY_COMPAUTH_REASON] = m.group(1)
+
+    return result
+
 
 def add_email_address_observable(analysis, otype, address, *, conversation_source=None):
     """Add an email-address subtype observable, plus an optional supporting observable.
@@ -540,6 +966,11 @@ class EmailAnalyzerConfig(AnalysisModuleConfig):
     whitelist_path: str = Field(..., description="Relative path to the brotex custom whitelist file.")
     scan_inbound_only: bool = Field(..., description="Office365 journaling will cause outbound emails to also get journaled. Set this to no to scan outbound office365 emails.")
     outbound_exceptions: str = Field(..., description="When only scanning inbound emails from office365, scan the following outbound emails found in outbound_exceptions. Comma separated list!")
+    provider_headers: EmailProviderHeaders = Field(
+        default_factory=EmailProviderHeaders,
+        description="Per-provider header names for provider-specific facts (first-hop IP, sender tenant, "
+                    "composite auth, provenance flags). Defaults are the Microsoft 365 names; override for "
+                    "other providers. Any list left empty disables that extraction.")
 
 class EmailAnalyzer(AnalysisModule):
     @classmethod
@@ -792,11 +1223,13 @@ class EmailAnalyzer(AnalysisModule):
                 _file.whitelist()
                 return False
 
-        # for office365 we check to see if this email is inbound
+        # for journaled provider mail we check to see if this email is inbound
         # this only applies to the original email, not email attachments
         if is_office365 and _file.has_directive(DIRECTIVE_ORIGINAL_EMAIL):
-            if 'X-MS-Exchange-Organization-MessageDirectionality' in target_email:
-                if decode_rfc2822(target_email['X-MS-Exchange-Organization-MessageDirectionality']) != 'Incoming':
+            directionality = _first_present_header(
+                target_email, self.config.provider_headers.message_directionality)
+            if directionality is not None:
+                if directionality != 'Incoming':
                     _file.add_tag(TAG_OUTBOUND_EMAIL)
                     if self.config.scan_inbound_only:
                         # do we have a configured exception?
@@ -994,20 +1427,71 @@ class EmailAnalyzer(AnalysisModule):
 
         # sender IP address (office365)
         if 'x-originating-ip' in target_email:
-            value = decode_rfc2822(target_email['x-originating-ip'])
-            value = re.sub(r'[^0-9\.]', '', value) # these seem to have extra characters added
-            email_details[KEY_ORIGINATING_IP] = value
-            ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
-            if ipv4:
-                ipv4.display_type = "Originating IP"
+            value = normalize_ip_header_value(decode_rfc2822(target_email['x-originating-ip']))
+            if value:
+                email_details[KEY_ORIGINATING_IP] = value
+                ip = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
+                if ip:
+                    ip.display_type = "Originating IP"
 
         if 'x-sender-ip' in target_email:
-            value = decode_rfc2822(target_email['x-sender-ip'])
-            value = re.sub(r'[^0-9\.]', '', value)  # these seem to have extra characters added
-            email_details[KEY_X_SENDER_IP] = value
-            ipv4 = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
-            if ipv4:
-                ipv4.display_type = "Sender IP"
+            value = normalize_ip_header_value(decode_rfc2822(target_email['x-sender-ip']))
+            if value:
+                email_details[KEY_X_SENDER_IP] = value
+                ip = analysis.add_observable_by_spec(F_IP, value, o_time=received_time)
+                if ip:
+                    ip.display_type = "Sender IP"
+
+        # who handed this message to us from outside the perimeter?
+        first_hop_ip, first_hop_helo, first_hop_from = resolve_first_hop(
+            target_email, self.config.provider_headers.first_hop_ip)
+
+        if first_hop_ip:
+            email_details[KEY_FIRST_HOP_IP] = first_hop_ip
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_IP, first_hop_ip, o_time=received_time)
+
+        if first_hop_helo:
+            email_details[KEY_FIRST_HOP_HELO] = first_hop_helo
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_HELO, first_hop_helo, o_time=received_time)
+
+        if first_hop_from:
+            email_details[KEY_FIRST_HOP_FROM] = first_hop_from
+            analysis.add_observable_by_spec(F_EMAIL_FIRST_HOP_FROM, first_hop_from, o_time=received_time)
+
+        dkim_signing_domains = get_dkim_signing_domains(target_email)
+        if dkim_signing_domains:
+            email_details[KEY_DKIM_SIGNING_DOMAINS] = dkim_signing_domains
+            for domain in dkim_signing_domains:
+                analysis.add_observable_by_spec(F_EMAIL_DKIM_SIGNING_DOMAIN, domain, o_time=received_time)
+
+        sender_tenant_id = get_sender_tenant_id(
+            target_email, self.config.provider_headers.sender_tenant_id)
+        if sender_tenant_id:
+            email_details[KEY_SENDER_TENANT_ID] = sender_tenant_id
+            analysis.add_observable_by_spec(F_EMAIL_SENDER_TENANT_ID, sender_tenant_id, o_time=received_time)
+
+        # message authentication verdicts + provider provenance flags. These are message-level
+        # verdicts, not observables — we store them in the details and drive tags/detections.
+        auth = parse_email_authentication(target_email, self.config.provider_headers)
+        email_details.update(auth)
+
+        authentication_failed = (
+            auth[KEY_COMPAUTH_RESULT] == 'fail' or auth[KEY_DMARC_RESULT] == 'fail')
+        if authentication_failed:
+            _file.add_tag(TAG_AUTHENTICATION_FAILED)
+        if auth[KEY_IS_ANONYMOUS_DIRECT_SEND]:
+            _file.add_tag(TAG_ANONYMOUS_DIRECT_SEND)
+
+        # a message that forges one of our own domains in From, that the provider's
+        # authentication rejected, arriving inbound (not our own outbound) is a confirmed
+        # internal spoof. Anonymous direct send is one common vector but is not required.
+        if (mail_from and is_local_email_domain(mail_from)
+                and authentication_failed
+                and not _file.has_tag(TAG_OUTBOUND_EMAIL)):
+            _file.add_tag(TAG_SPOOFED_INTERNAL)
+            _file.add_detection_point(
+                f"Inbound email forges managed From domain ({mail_from}) and failed "
+                f"authentication (compauth={auth[KEY_COMPAUTH_RESULT]}, dmarc={auth[KEY_DMARC_RESULT]})")
 
         # is the subject rfc2822 encoded?
         if KEY_SUBJECT in email_details:
