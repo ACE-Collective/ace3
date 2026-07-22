@@ -277,7 +277,7 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
 
 USER root
 
-ARG ACE_VERSION=3.0.81
+ARG ACE_VERSION=3.0.82
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 
