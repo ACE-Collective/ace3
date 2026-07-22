@@ -100,6 +100,11 @@ types:
   email_delivery:
     description: "a delivery of a an email to a target mailbox"
 
+  email_dkim_signing_domain:
+    extends: fqdn
+    default_display_type: "DKIM Signing Domain"
+    description: "signing domain (d= tag) from a DKIM-Signature header on the message"
+
   email_envelope_mail_from:
     extends: email_address
     default_display_type: "Envelope Mail From"
@@ -109,6 +114,19 @@ types:
     extends: email_address
     default_display_type: "Envelope Recipient"
     description: "envelope RCPT TO address from the SMTP transaction"
+
+  email_first_hop_from:
+    default_display_type: "First Hop From"
+    description: "reverse-DNS host name of the first external Received: hop (the parenthesized rDNS in `from HELO (rdns [ip])`, not the RFC5322 From:); often absent when the hop records only an IP"
+
+  email_first_hop_helo:
+    default_display_type: "First Hop HELO/EHLO"
+    description: "HELO/EHLO string the client presented on the first external Received: hop (the token after `from`, or an explicit helo= tag); may be a host name or an address literal like 127.0.0.1"
+
+  email_first_hop_ip:
+    extends: ip
+    default_display_type: "First Hop IP"
+    description: "sending IP of the first external hop of an RFC822 message (from the configured provider first-hop headers, default Microsoft 365; else the Received: hop accepted by a local domain)"
 
   email_from:
     extends: email_address
@@ -127,6 +145,10 @@ types:
     extends: email_address
     default_display_type: "Mail Return Path"
     description: "email Return-Path address"
+
+  email_sender_tenant_id:
+    default_display_type: "Sender Tenant ID"
+    description: "tenant GUID of the sending organization (from the configured sender-tenant headers, default Microsoft 365 cross-tenant headers); useful for detecting tenant-relay laundering"
 
   email_subject:
     description: "the subject of an email"

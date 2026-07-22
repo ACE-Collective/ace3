@@ -9,8 +9,12 @@ from saq.observables.generator import register_observable_type
 
 
 class IPObservable(Observable):
+    # subclasses representing a more specific kind of IP (see EmailFirstHopIPObservable)
+    # override this to reuse the validation and managed-network logic under their own type
+    OBSERVABLE_TYPE = F_IP
+
     def __init__(self, *args, **kwargs):
-        super().__init__(F_IP, *args, **kwargs)
+        super().__init__(self.OBSERVABLE_TYPE, *args, **kwargs)
 
     @Observable.value.setter
     def value(self, new_value):
