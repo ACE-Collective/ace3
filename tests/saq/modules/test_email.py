@@ -296,14 +296,17 @@ def test_splunk_logging(root_analysis, datadir, monkeypatch):
     assert len(url_fields) == 3
 
     smtp_fields = smtp_logs[0].split('\x1e')
-    assert len(smtp_fields) == 26
-    
+    assert len(smtp_fields) == 37
+
     with open(fields_file, 'r') as fp:
         fields = fp.readline().strip()
 
-    assert fields == ('date,attachment_count,attachment_hashes,attachment_names,attachment_sizes,attachment_types,bcc,'
-                                'cc,env_mail_from,env_rcpt_to,extracted_urls,first_received,headers,last_received,mail_from,'
-                                'mail_to,message_id,originating_ip,path,reply_to,size,subject,subject_raw,user_agent,archive_path,x_mailer')
+    assert fields == ('date,attachment_count,attachment_hashes,attachment_names,attachment_sizes,attachment_types,'
+                                'authentication_failed,bcc,cc,compauth_reason,compauth_result,dkim_result,dmarc_result,'
+                                'env_mail_from,env_rcpt_to,extracted_urls,first_received,headers,internal_org_sender,'
+                                'is_anonymous_direct_send,last_received,mail_from,mail_from_is_local,mail_to,'
+                                'message_directionality,message_id,originating_ip,path,reply_to,size,spf_result,'
+                                'spoofed_internal,subject,subject_raw,user_agent,archive_path,x_mailer')
 
 @pytest.mark.integration
 def test_update_brocess(root_analysis, datadir):
@@ -2106,8 +2109,8 @@ def _run_email_analyzer(root_analysis, path):
 
 
 @pytest.mark.integration
-def test_confirmed_internal_spoof_detection(root_analysis, datadir):
-    """A forged-internal message that failed auth gets tagged and a detection point."""
+def test_confirmed_internal_spoof_logged(root_analysis, datadir):
+    """A forged-internal message that failed auth gets tagged and logged (but not detected on)."""
 
     file_observable, email_analysis = _run_email_analyzer(
         root_analysis, datadir / 'emails/direct_send_spoof.email.rfc822')
@@ -2115,12 +2118,21 @@ def test_confirmed_internal_spoof_detection(root_analysis, datadir):
     assert file_observable.has_tag(TAG_SPOOFED_INTERNAL)
     assert file_observable.has_tag(TAG_AUTHENTICATION_FAILED)
     assert file_observable.has_tag(TAG_ANONYMOUS_DIRECT_SEND)
-    assert file_observable.detections, "expected a detection point on the spoofed email"
 
     # the parsed verdicts are stored in the per-message email details
     assert email_analysis.email[KEY_COMPAUTH_RESULT] == 'fail'
     assert email_analysis.email[KEY_DMARC_RESULT] == 'fail'
     assert email_analysis.email[KEY_IS_ANONYMOUS_DIRECT_SEND] is True
+
+    # the verdict and everything it was computed from is surfaced in the email log entry so
+    # analysts can write and tune the detection from the log source instead
+    log_entry = email_analysis.log_entry
+    assert log_entry['spoofed_internal'] is True
+    assert log_entry['authentication_failed'] is True
+    assert log_entry['mail_from_is_local'] is True
+    assert log_entry['compauth_result'] == 'fail'
+    assert log_entry['dmarc_result'] == 'fail'
+    assert log_entry['is_anonymous_direct_send'] is True
 
     # the confirming tenant GUID here would be an org/attributed header, which we deliberately
     # do NOT treat as the sender tenant -- so no email_sender_tenant_id observable is emitted
@@ -2131,12 +2143,16 @@ def test_confirmed_internal_spoof_detection(root_analysis, datadir):
 def test_legitimate_inbound_not_flagged_as_spoof(root_analysis, datadir):
     """A normal inbound message from an external (non-managed) domain is not a spoof."""
 
-    file_observable, _ = _run_email_analyzer(
+    file_observable, email_analysis = _run_email_analyzer(
         root_analysis, datadir / 'emails/smtp.email.rfc822')
 
     # From is @gmail.com (not a managed domain), so none of the spoof machinery fires
     assert not file_observable.has_tag(TAG_SPOOFED_INTERNAL)
     assert not file_observable.detections
+
+    # the field is still present (and false) -- a log-based rule relies on that
+    assert email_analysis.log_entry['spoofed_internal'] is False
+    assert email_analysis.log_entry['mail_from_is_local'] is False
 
 
 #

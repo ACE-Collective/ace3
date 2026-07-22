@@ -70,6 +70,7 @@ from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
+    KEY_AUTHENTICATION_FAILED,
     KEY_CC,
     KEY_COMPAUTH_REASON,
     KEY_COMPAUTH_RESULT,
@@ -89,8 +90,10 @@ from saq.modules.email.constants import (
     KEY_HEADERS,
     KEY_INTERNAL_ORG_SENDER,
     KEY_IS_ANONYMOUS_DIRECT_SEND,
+    KEY_MAIL_FROM_IS_LOCAL,
     KEY_MESSAGE_DIRECTIONALITY,
     KEY_SPF_RESULT,
+    KEY_SPOOFED_INTERNAL,
     KEY_LOG_ENTRY,
     KEY_MESSAGE_ID,
     KEY_ORIGINATING_IP,
@@ -1477,21 +1480,24 @@ class EmailAnalyzer(AnalysisModule):
 
         authentication_failed = (
             auth[KEY_COMPAUTH_RESULT] == 'fail' or auth[KEY_DMARC_RESULT] == 'fail')
+        email_details[KEY_AUTHENTICATION_FAILED] = authentication_failed
         if authentication_failed:
             _file.add_tag(TAG_AUTHENTICATION_FAILED)
         if auth[KEY_IS_ANONYMOUS_DIRECT_SEND]:
             _file.add_tag(TAG_ANONYMOUS_DIRECT_SEND)
 
+        mail_from_is_local = bool(mail_from) and is_local_email_domain(mail_from)
+        email_details[KEY_MAIL_FROM_IS_LOCAL] = mail_from_is_local
+
         # a message that forges one of our own domains in From, that the provider's
-        # authentication rejected, arriving inbound (not our own outbound) is a confirmed
+        # authentication rejected, arriving inbound (not our own outbound) looks like an
         # internal spoof. Anonymous direct send is one common vector but is not required.
-        if (mail_from and is_local_email_domain(mail_from)
-                and authentication_failed
-                and not _file.has_tag(TAG_OUTBOUND_EMAIL)):
+        spoofed_internal = (mail_from_is_local
+                            and authentication_failed
+                            and not _file.has_tag(TAG_OUTBOUND_EMAIL))
+        email_details[KEY_SPOOFED_INTERNAL] = spoofed_internal
+        if spoofed_internal:
             _file.add_tag(TAG_SPOOFED_INTERNAL)
-            _file.add_detection_point(
-                f"Inbound email forges managed From domain ({mail_from}) and failed "
-                f"authentication (compauth={auth[KEY_COMPAUTH_RESULT]}, dmarc={auth[KEY_DMARC_RESULT]})")
 
         # is the subject rfc2822 encoded?
         if KEY_SUBJECT in email_details:
@@ -1739,6 +1745,17 @@ class EmailAnalyzer(AnalysisModule):
             'thread_index': decode_rfc2822(target_email['thread-index']) if 'thread-index' in target_email else None,
             'refereneces': decode_rfc2822(target_email['references']) if 'references' in target_email else None,
             'x_sender': decode_rfc2822(target_email['x-sender']) if 'x-sender' in target_email else None,
+            'spf_result': email_details.get(KEY_SPF_RESULT),
+            'dkim_result': email_details.get(KEY_DKIM_RESULT),
+            'dmarc_result': email_details.get(KEY_DMARC_RESULT),
+            'compauth_result': email_details.get(KEY_COMPAUTH_RESULT),
+            'compauth_reason': email_details.get(KEY_COMPAUTH_REASON),
+            'is_anonymous_direct_send': email_details.get(KEY_IS_ANONYMOUS_DIRECT_SEND),
+            'internal_org_sender': email_details.get(KEY_INTERNAL_ORG_SENDER),
+            'message_directionality': email_details.get(KEY_MESSAGE_DIRECTIONALITY),
+            'authentication_failed': email_details.get(KEY_AUTHENTICATION_FAILED),
+            'mail_from_is_local': email_details.get(KEY_MAIL_FROM_IS_LOCAL),
+            'spoofed_internal': email_details.get(KEY_SPOOFED_INTERNAL),
         }
 
         email_details[KEY_LOG_ENTRY] = log_entry
