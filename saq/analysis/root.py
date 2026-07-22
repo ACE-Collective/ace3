@@ -22,6 +22,7 @@ from saq.util.time import local_time
 
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
+KEY_TRANSACTION_ID = 'transaction_id'
 
 class RootAnalysis(Analysis):
     """Root of analysis. Also see saq.database.Alert."""
@@ -241,6 +242,20 @@ class RootAnalysis(Analysis):
     @playbook_url.setter
     def playbook_url(self, value):
         self.set_extension(KEY_PLAYBOOK_URL, value)
+
+    @property
+    def transaction_id(self):
+        """Returns the logging transaction id (see saq.logging) of the context that created this
+        RootAnalysis, or None if it was not recorded. Used to correlate the resulting alert with the
+        log lines emitted by whatever produced it (for example a single hunt execution)."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_TRANSACTION_ID, None)
+
+    @transaction_id.setter
+    def transaction_id(self, value):
+        self.set_extension(KEY_TRANSACTION_ID, value)
 
     @property
     def analysis_failures(self):

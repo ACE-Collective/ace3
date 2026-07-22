@@ -44,6 +44,24 @@
         <td class="col-md-2">Instance</td>
         <td class="col-md-10">{{alert.tool_instance}}</td>
     </tr>
+    {% if alert.root_analysis.transaction_id %}
+    <tr>
+        <td class="col-md-2">Transaction ID</td>
+        <td class="col-md-10">{{alert.root_analysis.transaction_id}}
+            <button class="btn btn-outline-dark btn-xs" type="button" id="copy_action_transaction_id" title="Copy to Clipboard"><span class="bi bi-copy"></span></button>
+            <script type="text/javascript">
+                $('#copy_action_transaction_id').on('click', function() {
+                    // avoid escaping issues going from python to javascript by using base64
+                    var value = decodeURIComponent(atob('{{alert.root_analysis.transaction_id | b64escape}}'));
+                    // see app/static/js/ace.js
+                    copy_to_clipboard(value);
+                    // let the user know it was copied by flashing it a bit
+                    $('#copy_action_transaction_id').effect("pulsate", { times:3 }, 500);
+                });
+            </script>
+        </td>
+    </tr>
+    {% endif %}
     {% if alert.root_analysis.playbook_url %}
     <tr>
         <td class="col-md-2">Playbook URL</td>
