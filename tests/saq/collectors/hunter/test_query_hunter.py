@@ -33,6 +33,7 @@ from saq.constants import (
     SUMMARY_DETAIL_FORMAT_TXT,
 )
 from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id, transaction_id
 from saq.observables.mapping import (
     FieldsMode,
     ObservableMapping,
@@ -571,7 +572,10 @@ def test_process_query_results(monkeypatch):
     #assert submission.root.files == []
     assert submission.root.queue == hunt.queue
     #assert submission.root.instructions == hunt.description
-    assert submission.root.extensions == { "playbook_url": hunt.playbook_url }
+    assert submission.root.extensions == {
+        "playbook_url": hunt.playbook_url,
+        "transaction_id": get_transaction_id(),
+    }
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
     assert submissions
@@ -4812,6 +4816,49 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir)
     # field present — playbook_url is set
     root = hunt.create_root_analysis({"playbook_id": "pb42"})
     assert root.extensions[KEY_PLAYBOOK_URL] == "https://playbooks.example.com/pb42"
+
+
+@pytest.mark.unit
+def test_create_root_analysis_records_transaction_id(monkeypatch, tmpdir):
+    """the transaction id of the hunt execution is recorded on the root so the resulting
+    alert can be correlated back to the log lines for that run"""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="transaction_id_test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+    )
+
+    with transaction_id("known-transaction-id"):
+        root = hunt.create_root_analysis({})
+
+    assert root.transaction_id == "known-transaction-id"
+
+
+@pytest.mark.unit
+def test_create_root_analysis_skips_default_transaction_id(monkeypatch, tmpdir):
+    """running outside of a transaction context leaves the transaction id off of the root
+    rather than recording the meaningless all-zeros sentinel"""
+    import saq.collectors.hunter.query_hunter
+    from saq.analysis.root import KEY_TRANSACTION_ID
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_temp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="transaction_id_default_test",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+    )
+
+    with transaction_id(DEFAULT_TRANSACTION_ID):
+        root = hunt.create_root_analysis({})
+
+    assert KEY_TRANSACTION_ID not in root.extensions
+    assert root.transaction_id is None
+
 
 def test_process_query_results_correlate_capture_and_replay(monkeypatch):
     """A correlate query's results are captured on a live run (exposed via

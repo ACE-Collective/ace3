@@ -16,7 +16,7 @@ import pytz
 from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
-from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
+from saq.analysis.root import KEY_PLAYBOOK_URL, KEY_TRANSACTION_ID, RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
@@ -24,6 +24,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
+from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.observables.mapping import (
     ObservableMapping,
@@ -446,6 +447,12 @@ class QueryHunt(Hunt):
         if self.alert_template:
             extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
+        # record the transaction id of the hunt execution that produced this root
+        # the default sentinel means we're running outside of one, in which case
+        # there is nothing useful to correlate on
+        current_transaction_id = get_transaction_id()
+        if current_transaction_id and current_transaction_id != DEFAULT_TRANSACTION_ID:
+            extensions[KEY_TRANSACTION_ID] = current_transaction_id
 
         root = RootAnalysis(
             uuid=root_uuid,
