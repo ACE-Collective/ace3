@@ -19,6 +19,15 @@ from saq.constants import SERVICE_HUNTER, ExecutionMode
 from saq.environment import get_data_dir
 from saq.service import ACEServiceInterface
 
+# the most submissions a single call to HunterCollector.collect() will yield
+# bounded so the collection loop keeps coming back around to report status and check
+# for shutdown even when the hunt managers are producing faster than we can schedule
+MAX_SUBMISSIONS_PER_COLLECTION = 32
+
+# log the depth of the submission queue once it is at least this deep
+# a backlog here means the hunt managers are outrunning the (single) collection thread
+SUBMISSION_QUEUE_DEPTH_LOG_THRESHOLD = 50
+
 class HunterCollector(Collector):
     """Collector that collects submissions from the hunt managers."""
     def __init__(self, submission_queue: Queue):
@@ -27,11 +36,20 @@ class HunterCollector(Collector):
 
     @override
     def collect(self) -> Generator[Submission, None, None]:
-        """Collect submissions from the hunt managers."""
-        try:
-            yield self.submission_queue.get(block=True, timeout=1)
-        except Empty:
-            pass
+        """Collect submissions from the hunt managers.
+
+        Drains up to MAX_SUBMISSIONS_PER_COLLECTION submissions per call. Only the first
+        get blocks (for up to a second) - once the queue is empty we return rather than
+        waiting again, so an idle collector still polls at the same rate as before."""
+        depth = self.submission_queue.qsize()
+        if depth >= SUBMISSION_QUEUE_DEPTH_LOG_THRESHOLD:
+            logging.info("hunter submission queue depth is %d", depth)
+
+        for count in range(MAX_SUBMISSIONS_PER_COLLECTION):
+            try:
+                yield self.submission_queue.get(block=count == 0, timeout=1)
+            except Empty:
+                return
 
 class HunterServiceConfig(CollectorServiceConfiguration):
     update_frequency: int = Field(..., description="The frequency in seconds between updates of the hunt managers.")

@@ -15,6 +15,7 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
+from saq.collectors.submission_scheduler import SubmissionScheduler
 from saq.configuration.config import get_config, get_database_config, get_engine_config, get_service_config
 from saq.configuration.schema import DatabaseConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, DB_COLLECTION, NODE_STATUS_RUNNING, QUEUE_DEFAULT
@@ -24,6 +25,7 @@ from saq.database.util.node import initialize_node
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import log_count, search_log_condition, wait_for_log_count
 
@@ -1368,3 +1370,85 @@ def test_running_node_preferred_over_draining_collectors_node(engine, monkeypatc
 
     # the running node was preferred over the local draining_collectors node
     assert submitted_to == ['test_running_node']
+
+@pytest.mark.integration
+def test_submission_adopts_root_transaction_id(engine, monkeypatch):
+    """the collector and the node group both do their work under the transaction id
+    recorded on the root, so an alert can be traced back to whatever produced it
+
+    the id is asserted against the context actually in effect (rather than the emitted log
+    records) because the filter that stamps it onto a record is only installed by
+    initialize_logging()"""
+    known_transaction_id = str(uuid4())
+
+    class _custom_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            root = create_root_analysis()
+            root.transaction_id = known_transaction_id
+            root.save()
+            self.available_work = [Submission(root)]
+
+        def collect(self) -> Generator[Submission, None, None]:
+            if not self.available_work:
+                return None
+
+            yield self.available_work.pop()
+
+    scheduled_transaction_ids = []
+    original_schedule = SubmissionScheduler.schedule_submission
+    def _record_schedule(self, submission, remote_node_groups):
+        scheduled_transaction_ids.append(get_transaction_id())
+        return original_schedule(self, submission, remote_node_groups)
+
+    submitted_transaction_ids = []
+    original_submit = RemoteNode.submit
+    def _record_submit(self, submission):
+        submitted_transaction_ids.append(get_transaction_id())
+        return original_submit(self, submission)
+
+    monkeypatch.setattr(SubmissionScheduler, "schedule_submission", _record_schedule)
+    monkeypatch.setattr(RemoteNode, "submit", _record_submit)
+
+    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    collector_service.remote_node_groups.append(tg1)
+    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
+
+    assert scheduled_transaction_ids == [known_transaction_id]
+    assert submitted_transaction_ids == [known_transaction_id]
+
+    # and the timing lines we rely on to attribute a delay to a stage are present
+    assert log_count("collected submission") == 1
+    assert log_count("queued_for=") == 1
+
+@pytest.mark.integration
+def test_submission_without_transaction_id_keeps_current(engine, monkeypatch):
+    """a root with no recorded transaction id does not clear the ambient one"""
+    class _custom_collector(TestCollector):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.available_work = [create_submission()]
+
+        def collect(self) -> Generator[Submission, None, None]:
+            if not self.available_work:
+                return None
+
+            yield self.available_work.pop()
+
+    scheduled_transaction_ids = []
+    original_schedule = SubmissionScheduler.schedule_submission
+    def _record_schedule(self, submission, remote_node_groups):
+        scheduled_transaction_ids.append(get_transaction_id())
+        return original_schedule(self, submission, remote_node_groups)
+
+    monkeypatch.setattr(SubmissionScheduler, "schedule_submission", _record_schedule)
+
+    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
+    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace')
+    collector_service.remote_node_groups.append(tg1)
+
+    with transaction_id("ambient-transaction-id"):
+        collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
+
+    assert scheduled_transaction_ids == ["ambient-transaction-id"]

@@ -13,6 +13,7 @@ from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ExecutionMode
 from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.util.hashing import sha256
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
@@ -1054,3 +1055,63 @@ def test_hunt_execution_skips_invalid_instance_type(manager_kwargs, monkeypatch)
     # invalid_hunt and empty_instance_hunt should not have executed
     assert not invalid_hunt.executed
     assert not empty_instance_hunt.executed
+
+class _RecordingQueue(Queue):
+    """records the transaction id in effect each time something is queued"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transaction_ids = []
+
+    def put(self, item, *args, **kwargs):
+        self.transaction_ids.append(get_transaction_id())
+        super().put(item, *args, **kwargs)
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
+    """the submissions a hunt produced are queued under that hunt run's transaction id
+
+    execute_with_lock() exits its transaction id context before the manager queues
+    anything, so the manager has to re-enter it explicitly"""
+    manager_kwargs["submission_queue"] = _RecordingQueue()
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    # normally set by execute_hunt() before it hands the hunt to the execution thread
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert hunt.last_transaction_id is not None
+    assert hunt.last_transaction_id != DEFAULT_TRANSACTION_ID
+    assert manager.submission_queue.transaction_ids == [hunt.last_transaction_id]
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
+    """each queued submission is stamped so the collector can report how long it waited"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    # normally set by execute_hunt() before it hands the hunt to the execution thread
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    submission = manager.submission_queue.get_nowait()
+    assert submission.queued_time is not None
+    assert submission.queue_age >= 0
+
+    assert log_count("queued 1 submissions for hunt") == 1
+    assert log_count("post-processed 1 submissions for hunt") == 1
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_survives_execution_failure(manager_kwargs):
+    """a hunt that raises does not take the execution thread down with it"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    hunt.semaphore = None
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("nope")
+
+    hunt.execute_with_lock = _boom
+    manager.execute_threaded_hunt(hunt)
+
+    assert manager.submission_queue.empty()
