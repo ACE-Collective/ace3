@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 import pytest
 from pydantic import ValidationError
 
+from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.schema import (
     ActionConfig,
     CommandConfig,
@@ -82,9 +85,18 @@ class TestCommandConfig:
         cmd = CommandConfig(type="defined", name="my_command")
         assert cmd.name == "my_command"
 
-    def test_default_timeout(self):
-        cmd = CommandConfig(type="defined", name="test")
-        assert cmd.timeout == "30s"
+    def test_default_timeout_is_a_backstop(self):
+        """The default has to clear real correlate query durations (p99 ~400s).
+
+        A command error makes the event fall through to an alert, so a default that fires during
+        normal operation manufactures false positives rather than protecting anything.
+        """
+        cmd = CommandConfig(type="query", source="splunk", query="search index=main")
+        assert parse_timespec(cmd.timeout) >= timedelta(minutes=10)
+
+    def test_explicit_timeout_wins(self):
+        cmd = CommandConfig(type="query", source="splunk", query="search index=main", timeout="45s")
+        assert parse_timespec(cmd.timeout) == timedelta(seconds=45)
 
     def test_executable_with_env(self):
         cmd = CommandConfig(type="executable", path="/usr/bin/test", env={"KEY": "value"})
@@ -323,6 +335,13 @@ class TestCorrelateConfig:
 
 @pytest.mark.unit
 class TestPredefinedCommandConfig:
+
+    def test_default_timeout_matches_command_config(self):
+        """PredefinedCommandConfig declares its own copy of the timeout default; if the two drift,
+        whether a command is inlined or predefined silently changes its timeout."""
+        predef = PredefinedCommandConfig(name="lookup", type="query", source="splunk", query="x")
+        inline = CommandConfig(type="query", source="splunk", query="x")
+        assert parse_timespec(predef.timeout) == parse_timespec(inline.timeout)
 
     def test_to_command_config(self):
         predef = PredefinedCommandConfig(

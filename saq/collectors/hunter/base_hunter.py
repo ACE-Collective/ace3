@@ -496,8 +496,6 @@ class Hunt:
                 logging.info(f"executing {self}")
                 result = self.execute()
                 self.record_execution_time(local_time() - start_time)
-                # remember the last time we started execution
-                self.last_executed_time = local_time()
                 return result
             except RemoteApiError as e:
                 result_status = "remote_api_error"
@@ -509,6 +507,14 @@ class Hunt:
                 report_exception()
                 self.record_hunt_exception(e)
             finally:
+                # Record the execution attempt whether or not it succeeded. Doing this only on
+                # success left a failing hunt immediately `ready` again, so the manager re-ran it
+                # roughly once a second with no backoff -- a brief outage in the data source then
+                # produced thousands of failures and hammered it with new search jobs while it was
+                # already unhealthy. For full_coverage hunts last_end_time is deliberately left
+                # alone on failure, so the missed window is still covered by the next run: this
+                # backs off without creating a detection gap.
+                self.last_executed_time = local_time()
                 end_time = local_time()
                 logging.info(
                     "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
