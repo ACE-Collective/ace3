@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
 
 cd ${SAQ_HOME:=/opt/ace} || { echo "unable to cd to $SAQ_HOME"; exit 1; }
+set -e
+set -o pipefail
 source bin/mysql_common.sh
 
 echo "re-creating unit test database..."
 
-for db in ace amc brocess email-archive
+for db in ace amc brocess email-archive analysis-result-cache
 do
-    echo "creating $db"
-    if $prefix mysql $options -N --batch -e 'show databases' | grep "^$db-unittest\$" > /dev/null 2>&1
-    then
-        echo "dropping $db"
-        $prefix mysqladmin $options drop -f $db-unittest
-        $prefix mysqladmin $options drop -f $db-unittest-2
-    fi
-
-    $prefix mysqladmin $options create $db-unittest
-    $prefix mysqladmin $options create $db-unittest-2
-
-    $prefix mysqldump $options --comments --no-data $db | sed -e 's/\s*AUTO_INCREMENT=[0-9]*\s*/ /g' | $prefix mysql $options --database=$db-unittest
-    $prefix mysqldump $options --comments --no-data $db | sed -e 's/\s*AUTO_INCREMENT=[0-9]*\s*/ /g' | $prefix mysql $options --database=$db-unittest-2
-    $prefix mysql $options -e "ALTER DATABASE \`$db-unittest\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci"
-    $prefix mysql $options -e "ALTER DATABASE \`$db-unittest-2\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci"
+    for target in "$db-unittest" "$db-unittest-2"
+    do
+        echo "creating $target"
+        $prefix mysql $options -e "DROP DATABASE IF EXISTS \`$target\`"
+        $prefix mysql $options -e "CREATE DATABASE \`$target\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci"
+        $prefix mysqldump $options --comments --no-data "$db" \
+            | sed -e 's/\s*AUTO_INCREMENT=[0-9]*\s*/ /g' \
+            | $prefix mysql $options --database="$target"
+    done
 done
 
 if [ -e sql/50-ace-init.sql ]
@@ -29,5 +25,10 @@ then
     grep -v '^USE' sql/50-ace-init.sql | $prefix mysql $options --database=ace-unittest
     grep -v '^USE' sql/50-ace-init.sql | $prefix mysql $options --database=ace-unittest-2
 fi
+
+# the schema is copied with --no-data, so the reference rows the tests depend on
+# (company id 1, analysis mode priorities) have to be put back
+echo "seeding unit test databases"
+${PYTHON:-/venv/bin/python} bin/seed_database.py --unittest-only
 
 echo "finished re-creating unit test database"

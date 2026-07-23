@@ -155,8 +155,16 @@ if __name__ == "__main__":
         default=False,
         help="Also seed unittest databases (ace-unittest, ace-unittest-2).",
     )
+    parser.add_argument(
+        "--unittest-only",
+        action="store_true",
+        default=False,
+        help="Only seed the unittest databases, leaving the primary ace database alone. "
+             "Used by bin/build-unittest-database.",
+    )
     args = parser.parse_args()
-    seed()
-    if args.seed_unittests:
+    if not args.unittest_only:
+        seed()
+    if args.seed_unittests or args.unittest_only:
         seed_unittest("ace-unittest")
         seed_unittest("ace-unittest-2")
