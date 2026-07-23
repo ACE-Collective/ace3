@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import threading
+import time
 from typing import Generator, Optional
 from abc import ABC, abstractmethod
 import uuid
@@ -26,6 +27,7 @@ from saq.database import remove_all_sessions
 from saq.database.util.node import get_node_status_cached, update_collector_status
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error import report_exception
+from saq.logging import get_transaction_id, transaction_id
 from saq.persistence import Persistable
 from saq.service import ACEServiceInterface
 from saq.submission_filter import SubmissionFilter
@@ -366,38 +368,80 @@ class CollectorService(ACEServiceInterface):
                 # this is a primary loop, so we need to release any database connections
                 remove_all_sessions()
     
+    def process_submission(self, submission: Submission) -> bool:
+        """Applies the tuning and duplicate filters to a single submission and schedules
+        whatever survives. Returns True if the collector is shutting down and the caller
+        should stop collecting."""
+
+        start_time = time.monotonic()
+        tuning_seconds = duplicate_seconds = schedule_seconds = 0.0
+        outcome = "scheduled"
+
+        try:
+            # does this submission match any tuning rules we have?
+            stage_time = time.monotonic()
+            tuning_matches = self.submission_filter.get_tuning_matches(submission)
+            tuning_seconds = time.monotonic() - stage_time
+            if tuning_matches:
+                self.submission_filter.log_tuning_matches(submission, tuning_matches)
+                outcome = "tuned_out"
+                return False
+
+            stage_time = time.monotonic()
+            if submission.key:
+                if self.duplicate_filter.is_duplicate(submission.key):
+                    logging.info(f"skipping duplicate submission {submission.key}")
+                    duplicate_seconds = time.monotonic() - stage_time
+                    outcome = "duplicate"
+                    return False
+
+                logging.debug(f"marking submission {submission.key} as processed")
+                self.duplicate_filter.mark_as_processed(submission.key)
+
+            duplicate_seconds = time.monotonic() - stage_time
+
+            stage_time = time.monotonic()
+            if self.submission_scheduler:
+                self.submission_scheduler.schedule_submission(submission, self.remote_node_groups)
+
+            schedule_seconds = time.monotonic() - stage_time
+
+        finally:
+            total_seconds = time.monotonic() - start_time
+            queue_age = submission.queue_age
+            logging.info(
+                "collected submission %s outcome=%s queue_age=%s tuning=%.3fs duplicate=%.3fs "
+                "schedule=%.3fs total=%.3fs",
+                submission.root.uuid,
+                outcome,
+                "unknown" if queue_age is None else "%.1fs" % queue_age,
+                tuning_seconds,
+                duplicate_seconds,
+                schedule_seconds,
+                total_seconds,
+            )
+
+        return self.is_shutdown()
+
     def execute_collection_loop(self) -> int:
         submissions_processed = 0
-        
+
         try:
             # collect submissions from the collector
             for submission in self.collector.collect():
                 submissions_processed += 1
-                
-                # does this submission match any tuning rules we have?
-                tuning_matches = self.submission_filter.get_tuning_matches(submission)
-                if tuning_matches:
-                    self.submission_filter.log_tuning_matches(submission, tuning_matches)
-                    continue
 
-                if submission.key:
-                    if self.duplicate_filter.is_duplicate(submission.key):
-                        logging.info(f"skipping duplicate submission {submission.key}")
-                        continue
+                # whatever produced this submission recorded its transaction id on the root
+                # (see RootAnalysis.transaction_id) -- adopt it so everything we log about
+                # this submission correlates back to that hunt run, email, etc
+                with transaction_id(submission.root.transaction_id or get_transaction_id()):
+                    if self.process_submission(submission):
+                        break
 
-                    logging.debug(f"marking submission {submission.key} as processed")
-                    self.duplicate_filter.mark_as_processed(submission.key)
-                
-                if self.submission_scheduler:
-                    self.submission_scheduler.schedule_submission(submission, self.remote_node_groups)
-                
-                if self.is_shutdown():
-                    break
-                    
         except Exception as e:
             logging.error(f"error during collection: {e}")
             report_exception()
-        
+
         # clear expired persistent data periodically
         self.clear_expired_persistent_data()
         return submissions_processed

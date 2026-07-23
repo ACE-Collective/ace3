@@ -3,6 +3,7 @@ import os
 import os.path
 from queue import Queue
 import threading
+import time
 
 
 from saq.configuration.config import get_config
@@ -10,6 +11,7 @@ from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ExecutionMode
 from saq.error import report_exception
 from saq.git import get_commit_hash, git_dir_contains
+from saq.logging import get_transaction_id, transaction_id
 from saq.network_semaphore import NetworkSemaphoreClient
 from saq.signatures import SIGNATURE_VERSION_UNKNOWN
 from saq.util import local_time, abs_path
@@ -396,29 +398,47 @@ class HuntManager:
         hunt.startup_barrier.wait()
 
     def execute_threaded_hunt(self, hunt):
+        # if execute_with_lock() raises we still fall through to the queueing block below,
+        # so this must be bound before the try
+        submissions = None
         try:
             submissions = hunt.execute_with_lock(execution_mode=self.execution_mode)
-            if submissions:
-                if hunt.group_by is None:
-                    hunt.last_alert_time = local_time()
-                else:
-                    # record last_alert_time per-group so each group_by value gets its own
-                    # suppression window. dedupe so we only write once per group even if
-                    # multiple submissions somehow share a group_value.
-                    now = local_time()
-                    seen_groups = set()
-                    for submission in submissions:
-                        group_value = getattr(submission, "group_value", None)
-                        if group_value is None or group_value in seen_groups:
-                            continue
-                        seen_groups.add(group_value)
-                        hunt.set_last_alert_time(now, group_value)
 
-            # explicit maintenance pass: keep last_alert_times bounded for hunts with
-            # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
-            # setter so set_last_alert_time stays a do-one-thing function.
-            if hunt.group_by is not None:
-                hunt.prune_expired_last_alert_times()
+            # execute_with_lock() logs "completed hunt" and then exits its transaction id
+            # context, but the work below still belongs to that hunt run - re-enter the id
+            # so the post-processing and queueing log lines correlate with it
+            with transaction_id(hunt.last_transaction_id or get_transaction_id()):
+                post_processing_start = time.monotonic()
+                if submissions:
+                    if hunt.group_by is None:
+                        hunt.last_alert_time = local_time()
+                    else:
+                        # record last_alert_time per-group so each group_by value gets its own
+                        # suppression window. dedupe so we only write once per group even if
+                        # multiple submissions somehow share a group_value.
+                        now = local_time()
+                        seen_groups = set()
+                        for submission in submissions:
+                            group_value = getattr(submission, "group_value", None)
+                            if group_value is None or group_value in seen_groups:
+                                continue
+                            seen_groups.add(group_value)
+                            hunt.set_last_alert_time(now, group_value)
+
+                # explicit maintenance pass: keep last_alert_times bounded for hunts with
+                # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
+                # setter so set_last_alert_time stays a do-one-thing function.
+                if hunt.group_by is not None:
+                    hunt.prune_expired_last_alert_times()
+
+                if submissions:
+                    # each set_last_alert_time() rewrites the entire persistence file, so a
+                    # high-cardinality group_by can spend real time here before anything is queued
+                    logging.info(
+                        "post-processed %d submissions for hunt %s (uuid=%s, type=%s) in %.2fs",
+                        len(submissions), hunt.name, hunt.uuid, hunt.type,
+                        time.monotonic() - post_processing_start,
+                    )
         except Exception as e:
             logging.error(f"uncaught exception: {e}")
             report_exception()
@@ -428,8 +448,18 @@ class HuntManager:
             self.wait_control_event.set()
 
         if submissions is not None:
-            for submission in submissions:
-                self.submission_queue.put(submission)
+            with transaction_id(hunt.last_transaction_id or get_transaction_id()):
+                queued_time = time.monotonic()
+                for submission in submissions:
+                    # lets the collector report how long this waited to be picked up
+                    submission.queued_time = queued_time
+                    self.submission_queue.put(submission)
+
+                if submissions:
+                    logging.info(
+                        "queued %d submissions for hunt %s (uuid=%s, type=%s) (submission queue depth=%d)",
+                        len(submissions), hunt.name, hunt.uuid, hunt.type, self.submission_queue.qsize(),
+                    )
 
     def cancel_hunts(self):
         """Cancels all the currently executing hunts."""

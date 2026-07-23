@@ -2,6 +2,7 @@ from datetime import datetime
 import gc
 import logging
 import os
+import time
 import traceback
 from typing import Callable, Optional, Union
 from uuid import uuid4
@@ -873,6 +874,20 @@ class Submission:
 
         # XXX this is a hack for now...
         self.files_prepared = False # sets set to True once we've "prepared" the files
+
+        # time.monotonic() value recorded when this submission was placed on a collector
+        # queue. in-memory only (it never survives the trip through the database) and used
+        # to log how long a submission waited before the collector picked it up.
+        self.queued_time: Optional[float] = None
+
+    @property
+    def queue_age(self) -> Optional[float]:
+        """Returns the number of seconds since this submission was queued, or None if it
+        was never stamped with queued_time."""
+        if self.queued_time is None:
+            return None
+
+        return time.monotonic() - self.queued_time
 
     def __str__(self):
         return f"Submission({self.root} ({self.root.analysis_mode}))"

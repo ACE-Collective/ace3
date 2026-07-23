@@ -437,3 +437,44 @@ rule test_all {
     submission_filter.log_tuning_matches(submission, matches)
     assert len(matches) == 1
     assert matches[0]['rule'] == 'test_all'
+
+@pytest.mark.unit
+def test_tuning_rules_observable_match_reported_once(mock_tuning_rules, submission):
+    """an observable-target rule is reported once per submission, not once per observable
+
+    the entire observable list is scanned as a single buffer, so a rule that matches
+    anywhere in it matches exactly once no matter how many observables are present"""
+    with open(os.path.join(mock_tuning_rules, 'test.yar'), 'w') as fp:
+        fp.write("""
+rule test_observable {
+    meta:
+        targets = "observable"
+    strings:
+        $ = /"type": "ip"/
+    condition:
+        all of them
+}
+""")
+    submission_filter = create_submission_filter()
+    for octet in range(1, 11):
+        submission.root.add_observable_by_spec(F_IP, f"1.2.3.{octet}", local_time())
+
+    matches = submission_filter.get_tuning_matches(submission)
+    assert len([_ for _ in matches if _['rule'] == 'test_observable']) == 1
+
+@pytest.mark.unit
+def test_tuning_rules_observable_no_observables(mock_tuning_rules, submission):
+    """a submission with no observables produces no observable-target matches"""
+    with open(os.path.join(mock_tuning_rules, 'test.yar'), 'w') as fp:
+        fp.write("""
+rule test_observable {
+    meta:
+        targets = "observable"
+    strings:
+        $ = /"type"/
+    condition:
+        all of them
+}
+""")
+    submission_filter = create_submission_filter()
+    assert submission_filter.get_tuning_matches_observable(submission) == []
