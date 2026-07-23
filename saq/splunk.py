@@ -445,11 +445,11 @@ class SplunkQueryObject:
             timeout = create_timedelta("30:00")
 
         try:
-            # check if we've timed out. this is measured from when the search was submitted, NOT
-            # from when it entered the RUNNING state -- a search that never leaves QUEUED/PARSING
-            # has no running_start_time and would otherwise be polled forever.
-            if job is not None and timeout is not None:
-                if local_time() >= self.start_time + timeout:
+            # check if we've timed out. this is measured from when the search entered the RUNNING
+            # state, not from submit, so time spent waiting in the dispatch queue behind other
+            # searches does not count against the query's run budget.
+            if self.is_running() and timeout is not None:
+                if local_time() >= self.running_start_time + timeout:
                     self._abort_timed_out_search(job, query, timeout)
 
             # queue the query if we have not already

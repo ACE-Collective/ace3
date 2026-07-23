@@ -467,12 +467,9 @@ def test_query_async_error_204_requeue():
 
 
 @pytest.mark.unit
-def test_query_async_timeout_from_submit_time_not_running_time():
-    """A search stuck in a pre-RUNNING dispatch state must still time out.
-
-    The timeout used to be measured from the moment the search entered RUNNING, which a queued
-    search never reaches -- so it was polled forever.
-    """
+def test_query_async_timeout_measured_from_running_not_submit():
+    """The timeout is a run-time budget: time spent queued before the search starts running
+    must not count against it, so a search that has not reached RUNNING is never timed out."""
     class MockSplunk(SplunkQueryObject):
         cancelled = False
 
@@ -489,25 +486,18 @@ def test_query_async_timeout_from_submit_time_not_running_time():
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
         assert splunk.is_running() is False
 
-        # still inside the budget -> keep polling
+        # even after a long time queued, a search that never started running is not aborted
+        splunk.start_time = splunk.start_time - timedelta(hours=1)
+
         job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
         assert results is None
         assert splunk.cancelled is False
 
-        # pretend the search was submitted an hour ago
-        splunk.start_time = splunk.start_time - timedelta(hours=1)
-
-        with pytest.raises(RemoteApiError) as exc_info:
-            splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
-        # a timeout must NOT come back as an empty result set: callers treat results as a
-        # successful search and would record the time range as covered
-        assert exc_info.value.status_code == 504
-        assert splunk.cancelled is True
-
 
 @pytest.mark.unit
-def test_query_async_timeout_applies_once_running_too():
-    """The budget is total elapsed time, so reaching RUNNING does not reset the clock."""
+def test_query_async_timeout_once_running():
+    """Once the search is running, exceeding the run-time budget aborts it and raises 504
+    rather than returning an empty result set (which callers treat as a covered time window)."""
     class MockSplunk(SplunkQueryObject):
         cancelled = False
 
@@ -522,16 +512,17 @@ def test_query_async_timeout_applies_once_running_too():
 
     with patch("saq.splunk.client.connect", return_value=Mock()):
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        # enter RUNNING (this stamps running_start_time), then still inside the budget
         splunk.dispatch_state = "RUNNING"
         assert splunk.is_running() is True
-
-        splunk.start_time = splunk.start_time - timedelta(minutes=15)
 
         job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
         assert results is None
         assert splunk.cancelled is False
 
-        splunk.start_time = splunk.start_time - timedelta(minutes=20)
+        # push the run start past the budget
+        splunk.running_start_time = splunk.running_start_time - timedelta(minutes=31)
 
         with pytest.raises(RemoteApiError) as exc_info:
             splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
