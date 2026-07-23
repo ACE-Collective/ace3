@@ -139,6 +139,16 @@ class TestCorrelationEngine:
         result = engine.execute(events)
         assert len(result.events) == 2
 
+    def test_execute_populates_event_duration(self):
+        """Every event trace records how long the event took to process."""
+        config = _make_config([{"action": {"type": "log", "log_message": "x"}}])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1}, {"id": 2}])
+        assert all(et.duration_ms is not None and et.duration_ms >= 0
+                   for et in result.trace.event_traces)
+        assert all(step.duration_ms is not None
+                   for et in result.trace.event_traces for step in et.steps)
+
     def test_log_action_continues_processing(self):
         """Log action should not interrupt processing."""
         config = _make_config([
@@ -318,6 +328,9 @@ class TestSourceAwareTimeDefaults:
         assert result.trace.event_traces[0].outcome == "error"
         # event still produces an alert per the fail-safe error policy
         assert len(result.events) == 1
+        # the error path still stamps durations: the event total and the failing step
+        assert result.trace.event_traces[0].duration_ms is not None
+        assert result.trace.event_traces[0].steps[0].duration_ms is not None
 
     def test_stream_mutate_query_switches_current_source(self, _clean_registry, tmpdir):
         splunk = _RecordingSource(results=[{"_time": "2099-01-01T00:00:00+00:00"}])

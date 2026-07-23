@@ -910,6 +910,49 @@ def test_process_query_results_captures_original_events(monkeypatch):
     assert hunt.original_query_results[2]["tag"] == "keep"
 
 
+@pytest.mark.unit
+def test_process_query_results_logs_per_step_timing(monkeypatch, caplog):
+    """A correlate run emits one INFO 'correlation step' line per step per event,
+    recursing into nested condition branches, plus the per-event duration on the
+    existing 'correlation trace' summary line."""
+    import logging as _logging
+
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    correlate = CorrelateConfig.model_validate({
+        "logic": [
+            {
+                "when": {"type": "equals", "value": "drop", "property": "tag"},
+                "execute": [{"action": "filter"}],
+            },
+        ],
+    })
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="timing_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+    )
+
+    with caplog.at_level(_logging.INFO):
+        hunt.process_query_results([{"src": "5.6.7.8", "tag": "drop"}])
+
+    # the outer condition step and the nested (depth=1) filter action are both logged
+    assert "correlation step hunt=timing_hunt" in caplog.text
+    assert "step=condition" in caplog.text
+    assert "depth=1 step=action" in caplog.text
+    assert "duration_ms=" in caplog.text
+    # the per-event summary line carries the event total duration
+    assert "correlation trace hunt=timing_hunt" in caplog.text
+    step_lines = [r for r in caplog.messages if r.startswith("correlation step hunt=timing_hunt")]
+    assert len(step_lines) == 2  # condition + nested action
+
+
 class _StubCorrelationResult:
     """Minimal stand-in for CorrelationEngine.execute()'s result so a unit test can
     exercise the post-correlation submission path without running real queries. The
