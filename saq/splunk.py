@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from saq.configuration.schema import ProxyConfig
 
 from splunklib import __version__ as splunklib_version
-from splunklib.binding import _spliturl
+from splunklib.binding import _spliturl, handler as splunk_http_handler
 from splunklib.client import AuthenticationError, Job
 import splunklib.client as client
 from splunklib.results import JSONResultsReader, Message
@@ -28,6 +28,16 @@ from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
 from saq.error.remote import RemoteApiError
+
+# socket timeout (seconds) applied to every splunk HTTP request. without this a stalled
+# connection blocks the calling thread forever.
+DEFAULT_REQUEST_TIMEOUT = 60
+
+# How many consecutive 401s to ride out while polling an already-dispatched search.
+#
+# NOTE This was added as a work-around for Splunk occasionally failing auth when
+# multiple search heads are used for a single query.
+DEFAULT_MAX_CONSECUTIVE_AUTH_FAILURES = 20
 
 
 def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
@@ -198,6 +208,8 @@ class SplunkQueryObject:
         running_start_time: Optional[datetime]=None,
         end_time: Optional[datetime]=None,
         performance_logging_directory: Optional[str]=None,
+        request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
+        max_consecutive_auth_failures: int = DEFAULT_MAX_CONSECUTIVE_AUTH_FAILURES,
 
     ):
         """
@@ -212,6 +224,9 @@ class SplunkQueryObject:
             proxies (dict, optional): the proxy info used to connect to splunk api (default None -> no proxy)
             user_context (str): the user context for operations (default '-' -> any user)
             app (str): the app conext for operations (default '-' -> any app)
+            request_timeout (int, optional): socket timeout in seconds for each HTTP request
+            max_consecutive_auth_failures (int, optional): how many consecutive 401s to tolerate while
+                polling a running search before giving up (see query_async)
         """
 
         self.host = host
@@ -219,13 +234,20 @@ class SplunkQueryObject:
 
         self.user_context = user_context
         self.app = app
+        self.max_consecutive_auth_failures = max_consecutive_auth_failures
 
         connect_kwargs = {
             "host": self.host,
             "port": self.port,
             "app": self.app,
             "owner": self.user_context,
-            "autologin": True,
+            # splunklib's autologin only does anything useful when we hold a username/password:
+            # Context.login() is an explicit no-op when authenticating with a token, so leaving
+            # autologin on for token auth just re-issues every failing request a second time and
+            # reports it as "session token expired" when the real cause is something else.
+            "autologin": bool(username),
+            # these retries only cover transport-level exceptions, not HTTP error statuses.
+            # note splunklib decrements this counter permanently and never resets it.
             "retries": 5,
             "retryDelay": 10,
         }
@@ -243,7 +265,12 @@ class SplunkQueryObject:
                 proxy_host=proxies.host,
                 proxy_port=proxies.port,
                 proxy_scheme=proxies.transport,
+                timeout=request_timeout,
             )
+        else:
+            # splunklib's default handler is only given a timeout if we build it ourselves.
+            # verify=False matches splunklib's own default (it uses an unverified SSL context).
+            connect_kwargs["handler"] = splunk_http_handler(timeout=request_timeout, verify=False)
 
         self.client = client.connect(**connect_kwargs)
 
@@ -277,6 +304,9 @@ class SplunkQueryObject:
         self.is_failed = None
         self.event_count = None
         self.run_duration = None
+
+        # consecutive 401s seen while polling the current search (see query_async)
+        self.consecutive_auth_failures = 0
 
         self.start_time = local_time() if start_time is None else start_time
         self.running_start_time = running_start_time
@@ -411,35 +441,57 @@ class SplunkQueryObject:
             timeout = create_timedelta("30:00")
 
         try:
-            # check if we've timed out 
+            # check if we've timed out. this is measured from when the search entered the RUNNING
+            # state, not from submit, so time spent waiting in the dispatch queue behind other
+            # searches does not count against the query's run budget.
             if self.is_running() and timeout is not None:
                 if local_time() >= self.running_start_time + timeout:
-                    logging.warning(f"splunk query timed out: {query}")
-                    self.cancel(job)
-                    return None, []
+                    self._abort_timed_out_search(job, query, timeout)
 
             # queue the query if we have not already
+            # NOTE an auth failure here means the credentials really are bad, so it is not retried
             if job is None:
                 job = self.queue(query, limit, start=start, end=end, use_index_time=use_index_time, embed_time_in_query=embed_time_in_query)
                 return job, None
 
-            # wait for the job to complete
-            if not self.complete(job):
+            try:
+                # wait for the job to complete
+                if not self.complete(job):
+                    self.consecutive_auth_failures = 0
+                    return job, None
+
+                # return the results
+                results_reader = JSONResultsReader(job.results(count="0", output_mode="json"))
+                results = []
+                for item in results_reader:
+                    if isinstance(item, Message):
+                        logging.info(f"splunk message ({item.type}): {item.message}")
+                    else:
+                        results.append(item)
+            except AuthenticationError as e:
+                # The search itself is still alive on the search head that owns it -- this is
+                # almost always a transient search-head-cluster proxy failure rather than a
+                # credential problem. Keep polling instead of discarding the job.
+                self.consecutive_auth_failures += 1
+                if self.consecutive_auth_failures > self.max_consecutive_auth_failures:
+                    raise
+
+                logging.info(
+                    "splunk returned 401 polling search %s (%s/%s consecutive): %s",
+                    job.name, self.consecutive_auth_failures,
+                    self.max_consecutive_auth_failures, e)
                 return job, None
 
-            # return the results
-            results_reader = JSONResultsReader(job.results(count="0", output_mode="json"))
-            results = []
-            for item in results_reader:
-                if isinstance(item, Message):
-                    logging.info(f"splunk message ({item.type}): {item.message}")
-                else:
-                    results.append(item)
+            self.consecutive_auth_failures = 0
             logging.info(f"got results for {job.name}")
             self.end_time = local_time()
             self.record_splunk_query_performance(job)
             self.delete_search_job(job)
             return job, results
+
+        except RemoteApiError:
+            # already classified (e.g. by _abort_timed_out_search); do not re-wrap as a 500
+            raise
 
         except HTTPError as e:
             # requeue query if splunk lost the query
@@ -460,7 +512,16 @@ class SplunkQueryObject:
             raise RemoteApiError(502, f"Splunk search failed: {e}")
 
         except AuthenticationError as e:
-            logging.warning(f"invalid credentials OR splunk session token expired: {e}")
+            # NOTE splunklib reports every 401 as "session token expired" regardless of the actual
+            # cause, so do not take that wording at face value. A static token that never expires
+            # can still produce this when the search head cluster fails to proxy the request.
+            logging.warning(
+                "splunk rejected the request with 401 (search %s): this is either invalid "
+                "credentials or a search head cluster proxy failure: %s",
+                job.name if job else "<not dispatched>", e)
+            if job:
+                self.delete_search_job(job)
+            self.record_splunk_query_performance(job, error=e)
             raise RemoteApiError(401, f"Splunk authentication failed: {e}")
 
         except Exception as e:
@@ -470,6 +531,21 @@ class SplunkQueryObject:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
             raise RemoteApiError(500, f"Splunk search failed: {e}")
+
+    def _abort_timed_out_search(self, job: Job, query: str, timeout: timedelta):
+        """Cancels a search that exceeded its time budget and raises RemoteApiError(504).
+
+        We deliberately raise rather than returning empty results: callers treat a result list as
+        a successful search, and a query hunt would then record the time range as covered and
+        never look at it again, silently losing detection coverage for that window.
+        """
+        logging.warning(
+            "splunk query timeout after %s (dispatch state %s) for search %s: %s",
+            timeout, self.dispatch_state, job.name, query)
+        self.cancel(job)
+        self.end_time = local_time()
+        self.record_splunk_query_performance(job, error=f"query timeout after {timeout}")
+        raise RemoteApiError(504, f"Splunk search timed out after {timeout}")
 
     def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False, embed_time_in_query:bool=True) -> Optional[Job]:
         """Queue the query and return the job object.
@@ -543,7 +619,11 @@ class SplunkQueryObject:
             bool: True if complete, False otherwise
         """
         if not job.is_ready():
-            logging.debug(f"job {job.name} is not ready yet")
+            # log at INFO so a search sitting in QUEUED/PARSING is visibly waiting rather than
+            # looking like a hang. the elapsed time is what tells an operator which one it is.
+            logging.info(
+                "splunk search %s is not ready yet (waiting %ds since submit)",
+                job.name, int((local_time() - self.start_time).total_seconds()))
             return False
 
         # gather all the stats at once
@@ -662,7 +742,10 @@ def SplunkClient(name: str = "default", **kwargs) -> SplunkQueryObject:
         "host": splunk_config.host,
         "port": splunk_config.port,
     })
-        
+
+    kwargs.setdefault("request_timeout", splunk_config.request_timeout)
+    kwargs.setdefault("max_consecutive_auth_failures", splunk_config.max_consecutive_auth_failures)
+
     if splunk_config.proxy is not None:
         kwargs["proxies"] = get_proxy_config(splunk_config.proxy)
 

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -466,6 +466,70 @@ def test_query_async_error_204_requeue():
         assert result is None
 
 
+@pytest.mark.unit
+def test_query_async_timeout_measured_from_running_not_submit():
+    """The timeout is a run-time budget: time spent queued before the search starts running
+    must not count against it, so a search that has not reached RUNNING is never timed out."""
+    class MockSplunk(SplunkQueryObject):
+        cancelled = False
+
+        def complete(self, job):
+            return False  # never becomes ready, so running_start_time is never set
+
+        def cancel(self, job):
+            self.cancelled = True
+
+    mock_job = Mock()
+    mock_job.name = "123"
+
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        assert splunk.is_running() is False
+
+        # even after a long time queued, a search that never started running is not aborted
+        splunk.start_time = splunk.start_time - timedelta(hours=1)
+
+        job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
+        assert results is None
+        assert splunk.cancelled is False
+
+
+@pytest.mark.unit
+def test_query_async_timeout_once_running():
+    """Once the search is running, exceeding the run-time budget aborts it and raises 504
+    rather than returning an empty result set (which callers treat as a covered time window)."""
+    class MockSplunk(SplunkQueryObject):
+        cancelled = False
+
+        def complete(self, job):
+            return False
+
+        def cancel(self, job):
+            self.cancelled = True
+
+    mock_job = Mock()
+    mock_job.name = "123"
+
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        # enter RUNNING (this stamps running_start_time), then still inside the budget
+        splunk.dispatch_state = "RUNNING"
+        assert splunk.is_running() is True
+
+        job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
+        assert results is None
+        assert splunk.cancelled is False
+
+        # push the run start past the budget
+        splunk.running_start_time = splunk.running_start_time - timedelta(minutes=31)
+
+        with pytest.raises(RemoteApiError) as exc_info:
+            splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
+        assert exc_info.value.status_code == 504
+        assert splunk.cancelled is True
+
+
 @pytest.mark.parametrize('exception, expected_status_code', [
     (HTTPError('error', response=MockResponse(404)), 404),
     (ConnectionError(), 502),
@@ -529,12 +593,72 @@ def test_query_async_authentication_error():
     mock_client = Mock()
 
     with patch("saq.splunk.client.connect", return_value=mock_client):
-        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
+                            max_consecutive_auth_failures=3)
 
+        # a 401 while polling an already-dispatched search is treated as transient: the search is
+        # still alive on the search head that owns it, so we keep polling rather than discard it
+        for expected in (1, 2, 3):
+            job, results = splunk.query_async("whatever", job=mock_job)
+            assert job is mock_job
+            assert results is None
+            assert splunk.consecutive_auth_failures == expected
+
+        # ...but only up to the configured bound, after which it becomes a real failure
         with pytest.raises(RemoteApiError) as exc_info:
             splunk.query_async("whatever", job=mock_job)
         assert exc_info.value.status_code == 401
-        assert splunk.cancelled is False
+
+
+@pytest.mark.unit
+def test_query_async_authentication_error_resets_after_success():
+    """A transient 401 followed by a successful poll clears the consecutive failure counter."""
+    class MockSplunk(SplunkQueryObject):
+        fail = True
+
+        def complete(self, job):
+            if self.fail:
+                mock_response = Mock()
+                mock_response.status = 401
+                mock_response.reason = "Unauthorized"
+                mock_response.body = Mock(read=lambda: b"Session expired")
+                mock_response.headers = {}
+                raise AuthenticationError("session expired", cause=SplunkHTTPError(mock_response))
+            return False
+
+    mock_job = Mock()
+    mock_job.name = "123"
+
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        splunk.query_async("whatever", job=mock_job)
+        assert splunk.consecutive_auth_failures == 1
+
+        splunk.fail = False
+        job, results = splunk.query_async("whatever", job=mock_job)
+        assert results is None
+        assert splunk.consecutive_auth_failures == 0
+
+
+@pytest.mark.unit
+def test_query_async_authentication_error_on_queue_is_fatal():
+    """A 401 while dispatching the search really does mean bad credentials, so it is not retried."""
+    class MockSplunk(SplunkQueryObject):
+        def queue(self, *args, **kwargs):
+            mock_response = Mock()
+            mock_response.status = 401
+            mock_response.reason = "Unauthorized"
+            mock_response.body = Mock(read=lambda: b"no")
+            mock_response.headers = {}
+            raise AuthenticationError("bad credentials", cause=SplunkHTTPError(mock_response))
+
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+
+        with pytest.raises(RemoteApiError) as exc_info:
+            splunk.query_async("whatever", job=None)
+        assert exc_info.value.status_code == 401
 
 
 @pytest.mark.unit
@@ -770,8 +894,9 @@ def test_splunk_query_object_passes_handler_when_proxied():
 
 
 @pytest.mark.unit
-def test_splunk_query_object_no_handler_without_proxy():
-    """When proxies is None, no handler kwarg is passed (backward compat)."""
+def test_splunk_query_object_handler_without_proxy():
+    """Without a proxy we still supply a handler, because that is the only way to give
+    splunklib's default HTTP handler a socket timeout."""
     with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
         SplunkQueryObject(
             host="splunk.example.com",
@@ -782,7 +907,20 @@ def test_splunk_query_object_no_handler_without_proxy():
 
     mock_connect.assert_called_once()
     call_kwargs = mock_connect.call_args[1]
-    assert "handler" not in call_kwargs
+    assert callable(call_kwargs["handler"])
+
+
+@pytest.mark.unit
+def test_splunk_query_object_autologin_only_for_password_auth():
+    """splunklib's login() is a no-op under token auth, so autologin there only doubles up
+    failing requests and mislabels them as an expired session."""
+    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
+        SplunkQueryObject(host="splunk.example.com", port=8089, username="user", password="pass")
+    assert mock_connect.call_args[1]["autologin"] is True
+
+    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
+        SplunkQueryObject(host="splunk.example.com", port=8089, token="abc123")
+    assert mock_connect.call_args[1]["autologin"] is False
 
 
 @pytest.mark.unit

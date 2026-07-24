@@ -496,8 +496,6 @@ class Hunt:
                 logging.info(f"executing {self}")
                 result = self.execute()
                 self.record_execution_time(local_time() - start_time)
-                # remember the last time we started execution
-                self.last_executed_time = local_time()
                 return result
             except RemoteApiError as e:
                 result_status = "remote_api_error"
@@ -509,6 +507,9 @@ class Hunt:
                 report_exception()
                 self.record_hunt_exception(e)
             finally:
+                # NOTE we record this whether or not it succeeded. Otherwise ACE
+                # will repeatedly spam the request.
+                self.last_executed_time = local_time()
                 end_time = local_time()
                 logging.info(
                     "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
