@@ -35,12 +35,8 @@ DEFAULT_REQUEST_TIMEOUT = 60
 
 # How many consecutive 401s to ride out while polling an already-dispatched search.
 #
-# A search head cluster serves the REST endpoint behind a load balancer, but a search artifact
-# is owned by the single member that dispatched it. When a poll lands on a different member,
-# splunkd proxies the request to the owner; if it cannot mint a cluster-wide session token for
-# the caller it returns 401 even though the credentials are fine and the search is still running.
-# That condition is transient and per-member, so the right response is to keep polling rather
-# than throw away a live search job. The overall query timeout remains the hard ceiling.
+# NOTE This was added as a work-around for Splunk occasionally failing auth when
+# multiple search heads are used for a single query.
 DEFAULT_MAX_CONSECUTIVE_AUTH_FAILURES = 20
 
 
@@ -480,10 +476,8 @@ class SplunkQueryObject:
                 if self.consecutive_auth_failures > self.max_consecutive_auth_failures:
                     raise
 
-                logging.warning(
-                    "splunk returned 401 polling search %s (%s/%s consecutive); the search is still "
-                    "running, so this is most likely a transient search head cluster proxy failure "
-                    "and not an expired credential: %s",
+                logging.info(
+                    "splunk returned 401 polling search %s (%s/%s consecutive): %s",
                     job.name, self.consecutive_auth_failures,
                     self.max_consecutive_auth_failures, e)
                 return job, None
