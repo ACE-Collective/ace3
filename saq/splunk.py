@@ -33,11 +33,26 @@ from saq.error.remote import RemoteApiError
 # connection blocks the calling thread forever.
 DEFAULT_REQUEST_TIMEOUT = 60
 
-# How many consecutive 401s to ride out while polling an already-dispatched search.
+# How long to ride out 401s while polling an already-dispatched search, in seconds.
 #
 # NOTE This was added as a work-around for Splunk occasionally failing auth when
 # multiple search heads are used for a single query.
-DEFAULT_MAX_CONSECUTIVE_AUTH_FAILURES = 20
+#
+# This is deliberately a duration rather than a count of polls: the poll interval
+# backs off (see POLL_INTERVAL_* below), so a count would silently mean a different
+# real-world tolerance depending on how long the search had already been running.
+DEFAULT_AUTH_FAILURE_GRACE_PERIOD = 60
+
+# Polling schedule for an already-dispatched search. The first status check happens
+# after POLL_INTERVAL_INITIAL and the delay doubles up to POLL_INTERVAL_MAX.
+#
+# NOTE This starts small on purpose. query() cannot check completion on its first
+# pass (query_async only *submits* the search then), so a flat interval was charged
+# in full to every query -- roughly 4s of dead time on searches Splunk answered in
+# under a second. Long searches reach POLL_INTERVAL_MAX within a few polls and are
+# unaffected.
+POLL_INTERVAL_INITIAL = 0.25
+POLL_INTERVAL_MAX = 3.0
 
 
 def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
@@ -209,7 +224,7 @@ class SplunkQueryObject:
         end_time: Optional[datetime]=None,
         performance_logging_directory: Optional[str]=None,
         request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
-        max_consecutive_auth_failures: int = DEFAULT_MAX_CONSECUTIVE_AUTH_FAILURES,
+        auth_failure_grace_period: int = DEFAULT_AUTH_FAILURE_GRACE_PERIOD,
 
     ):
         """
@@ -225,7 +240,7 @@ class SplunkQueryObject:
             user_context (str): the user context for operations (default '-' -> any user)
             app (str): the app conext for operations (default '-' -> any app)
             request_timeout (int, optional): socket timeout in seconds for each HTTP request
-            max_consecutive_auth_failures (int, optional): how many consecutive 401s to tolerate while
+            auth_failure_grace_period (int, optional): how long (seconds) to keep tolerating 401s while
                 polling a running search before giving up (see query_async)
         """
 
@@ -234,7 +249,7 @@ class SplunkQueryObject:
 
         self.user_context = user_context
         self.app = app
-        self.max_consecutive_auth_failures = max_consecutive_auth_failures
+        self.auth_failure_grace_period = auth_failure_grace_period
 
         connect_kwargs = {
             "host": self.host,
@@ -305,8 +320,9 @@ class SplunkQueryObject:
         self.event_count = None
         self.run_duration = None
 
-        # consecutive 401s seen while polling the current search (see query_async)
-        self.consecutive_auth_failures = 0
+        # when the current unbroken run of 401s started while polling a search, or None if the
+        # last poll succeeded (see query_async)
+        self.first_auth_failure_time = None
 
         self.start_time = local_time() if start_time is None else start_time
         self.running_start_time = running_start_time
@@ -400,6 +416,7 @@ class SplunkQueryObject:
 
         # run the query
         job = None
+        poll_interval = POLL_INTERVAL_INITIAL
         while True:
             # submit/check query
             job, results = self.query_async(query, job=job, limit=limit, start=start, end=end, use_index_time=use_index_time, timeout=timeout)
@@ -407,8 +424,10 @@ class SplunkQueryObject:
             if results is not None:
                 return results
 
-            # wait a bit
-            time.sleep(3)
+            # wait a bit, backing off so a fast search is not charged the full interval while a
+            # long one still settles onto POLL_INTERVAL_MAX after a handful of polls
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 2, POLL_INTERVAL_MAX)
 
     def query_async(
         self,
@@ -457,7 +476,7 @@ class SplunkQueryObject:
             try:
                 # wait for the job to complete
                 if not self.complete(job):
-                    self.consecutive_auth_failures = 0
+                    self.first_auth_failure_time = None
                     return job, None
 
                 # return the results
@@ -472,17 +491,19 @@ class SplunkQueryObject:
                 # The search itself is still alive on the search head that owns it -- this is
                 # almost always a transient search-head-cluster proxy failure rather than a
                 # credential problem. Keep polling instead of discarding the job.
-                self.consecutive_auth_failures += 1
-                if self.consecutive_auth_failures > self.max_consecutive_auth_failures:
+                if self.first_auth_failure_time is None:
+                    self.first_auth_failure_time = local_time()
+
+                elapsed = (local_time() - self.first_auth_failure_time).total_seconds()
+                if elapsed > self.auth_failure_grace_period:
                     raise
 
                 logging.info(
-                    "splunk returned 401 polling search %s (%s/%s consecutive): %s",
-                    job.name, self.consecutive_auth_failures,
-                    self.max_consecutive_auth_failures, e)
+                    "splunk returned 401 polling search %s (%.1fs/%ss into the grace period): %s",
+                    job.name, elapsed, self.auth_failure_grace_period, e)
                 return job, None
 
-            self.consecutive_auth_failures = 0
+            self.first_auth_failure_time = None
             logging.info(f"got results for {job.name}")
             self.end_time = local_time()
             self.record_splunk_query_performance(job)
@@ -744,7 +765,7 @@ def SplunkClient(name: str = "default", **kwargs) -> SplunkQueryObject:
     })
 
     kwargs.setdefault("request_timeout", splunk_config.request_timeout)
-    kwargs.setdefault("max_consecutive_auth_failures", splunk_config.max_consecutive_auth_failures)
+    kwargs.setdefault("auth_failure_grace_period", splunk_config.auth_failure_grace_period)
 
     if splunk_config.proxy is not None:
         kwargs["proxies"] = get_proxy_config(splunk_config.proxy)

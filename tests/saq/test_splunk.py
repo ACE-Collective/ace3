@@ -10,6 +10,8 @@ from saq.configuration import get_config
 from saq.configuration.schema import ProxyConfig, SplunkConfig
 from saq.error.remote import RemoteApiError
 from saq.splunk import (
+    POLL_INTERVAL_INITIAL,
+    POLL_INTERVAL_MAX,
     SplunkClient,
     SplunkQueryObject,
     _proxy_handler,
@@ -592,19 +594,25 @@ def test_query_async_authentication_error():
     # create mock client
     mock_client = Mock()
 
-    with patch("saq.splunk.client.connect", return_value=mock_client):
+    # the grace period is measured in wall time, so drive a controllable clock rather than
+    # counting polls -- the poll interval backs off, so a poll count would not pin the tolerance
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with patch("saq.splunk.client.connect", return_value=mock_client), \
+         patch("saq.splunk.local_time", side_effect=lambda: now):
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
-                            max_consecutive_auth_failures=3)
+                            auth_failure_grace_period=30)
 
         # a 401 while polling an already-dispatched search is treated as transient: the search is
         # still alive on the search head that owns it, so we keep polling rather than discard it
-        for expected in (1, 2, 3):
+        for offset in (0, 10, 20, 30):
+            now = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=offset)
             job, results = splunk.query_async("whatever", job=mock_job)
             assert job is mock_job
             assert results is None
-            assert splunk.consecutive_auth_failures == expected
 
-        # ...but only up to the configured bound, after which it becomes a real failure
+        # ...but only until the grace period elapses, after which it becomes a real failure
+        now = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=31)
         with pytest.raises(RemoteApiError) as exc_info:
             splunk.query_async("whatever", job=mock_job)
         assert exc_info.value.status_code == 401
@@ -612,7 +620,7 @@ def test_query_async_authentication_error():
 
 @pytest.mark.unit
 def test_query_async_authentication_error_resets_after_success():
-    """A transient 401 followed by a successful poll clears the consecutive failure counter."""
+    """A transient 401 followed by a successful poll restarts the grace period."""
     class MockSplunk(SplunkQueryObject):
         fail = True
 
@@ -633,12 +641,50 @@ def test_query_async_authentication_error_resets_after_success():
         splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
 
         splunk.query_async("whatever", job=mock_job)
-        assert splunk.consecutive_auth_failures == 1
+        assert splunk.first_auth_failure_time is not None
 
         splunk.fail = False
         job, results = splunk.query_async("whatever", job=mock_job)
         assert results is None
-        assert splunk.consecutive_auth_failures == 0
+        assert splunk.first_auth_failure_time is None
+
+
+@pytest.mark.unit
+def test_query_polls_with_backoff():
+    """query() checks status quickly at first, then backs off to POLL_INTERVAL_MAX.
+
+    query_async cannot report completion on its first pass (it only *submits* the search), so a
+    flat interval was charged in full to every query -- several seconds of dead time on searches
+    splunk answered in under a second.
+    """
+    class MockSplunk(SplunkQueryObject):
+        def __init__(self, *args, ready_after, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.polls = 0
+            self.ready_after = ready_after
+
+        def query_async(self, query, job=None, **kwargs):
+            self.polls += 1
+            if self.polls > self.ready_after:
+                return Mock(), [{"result": "done"}]
+            return Mock(), None
+
+    sleeps = []
+    with patch("saq.splunk.client.connect", return_value=Mock()), \
+         patch("saq.splunk.time.sleep", side_effect=sleeps.append):
+        # a search that completes on the first status check pays only the initial interval
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
+                            ready_after=1)
+        assert splunk.query("whatever") == [{"result": "done"}]
+        assert sleeps == [POLL_INTERVAL_INITIAL]
+
+        # a longer-running search doubles up to the cap and stays there
+        sleeps.clear()
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
+                            ready_after=7)
+        assert splunk.query("whatever") == [{"result": "done"}]
+        assert sleeps == [0.25, 0.5, 1.0, 2.0, 3.0, 3.0, 3.0]
+        assert all(s <= POLL_INTERVAL_MAX for s in sleeps)
 
 
 @pytest.mark.unit
