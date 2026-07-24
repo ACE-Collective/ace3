@@ -829,12 +829,34 @@ class QueryHunt(Hunt):
             # emit one INFO log line per trace entry so detection engineers can monitor
             # filtering and performance of correlated hunts in real time
             if self.correlation_trace is not None:
+                def _log_step_timings(event_trace, steps, depth=0):
+                    # one INFO line per step per event so engineers can see which step
+                    # (especially transform/query steps) is slow. condition steps recurse
+                    # into their taken branch; their duration_ms is inclusive of the
+                    # nested branch steps logged below them.
+                    for step_trace in steps:
+                        if step_trace.duration_ms is None:
+                            continue
+                        logging.info(
+                            f"correlation step hunt={self.name} type={self.type} uuid={self.uuid} "
+                            f"event_index={event_trace.event_index} depth={depth} "
+                            f"step={step_trace.step.trace_type} desc={step_trace.description!r} "
+                            f"duration_ms={step_trace.duration_ms:.1f}"
+                        )
+                        if step_trace.step.trace_type == "condition":
+                            _log_step_timings(event_trace, step_trace.step.branch_steps, depth + 1)
+
                 for event_trace in self.correlation_trace.event_traces:
+                    event_duration = (
+                        f" duration_ms={event_trace.duration_ms:.1f}"
+                        if event_trace.duration_ms is not None else ""
+                    )
                     logging.info(
                         f"correlation trace hunt={self.name} type={self.type} uuid={self.uuid} "
                         f"event_index={event_trace.event_index} outcome={event_trace.outcome} "
-                        f"steps={len(event_trace.steps)}"
+                        f"steps={len(event_trace.steps)}{event_duration}"
                     )
+                    _log_step_timings(event_trace, event_trace.steps)
                 for stream_event in self.correlation_trace.stream_events:
                     logging.info(
                         f"correlation stream event hunt={self.name} type={self.type} uuid={self.uuid} "
