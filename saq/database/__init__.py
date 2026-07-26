@@ -20,7 +20,7 @@ from saq.database.model import Tag
 from saq.database.model import User, Owner, DispositionBy, RemediatedBy, Comment
 from saq.database.model import Workload
 
-from saq.database.util.alert import ALERT, refresh_observable_expires_on, set_dispositions
+from saq.database.util.alert import ALERT, refresh_observable_expires_on, set_dispositions, set_disposition_reviews
 from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.delayed_analysis import add_delayed_analysis_request, clear_delayed_analysis_requests
 from saq.database.util.locking import acquire_lock, release_lock, force_release_lock, clear_expired_locks

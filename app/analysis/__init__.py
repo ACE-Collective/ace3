@@ -8,6 +8,7 @@ from app.analysis.views.edit.comment import add_comment, delete_comment
 from app.analysis.views.edit.ownership import assign_ownership, set_owner
 from app.analysis.views.edit.new import new_alert, new_alert_observable, file
 from app.analysis.views.edit.disposition import set_disposition
+from app.analysis.views.edit.review import review_disposition
 from app.analysis.views.edit.filters import set_sort_filter, reset_filters, reset_filters_special, set_filters, add_filter, remove_filter, remove_filter_category, new_filter_option 
 from app.analysis.views.edit.legacy import mark_suspect
 from app.analysis.views.observables import observables

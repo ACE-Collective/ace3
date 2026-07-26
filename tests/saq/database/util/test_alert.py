@@ -4,10 +4,19 @@ import pytest
 import uuid
 
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_DISPOSITIONED, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
+from saq.constants import (
+    ANALYSIS_MODE_DISPOSITIONED,
+    DISPOSITION_FALSE_POSITIVE,
+    DISPOSITION_IGNORE,
+    DISPOSITION_REVIEW_CORRECT,
+    DISPOSITION_REVIEW_INCORRECT,
+    DISPOSITION_REVIEW_UNREVIEWED,
+    DISPOSITION_WEAPONIZATION,
+    REVIEW_COMMENT_PREFIX,
+)
 from saq.database.model import Alert, Comment, Observable, ObservableMapping, Workload
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, get_alert_by_uuid, refresh_observable_expires_on, set_dispositions
+from saq.database.util.alert import ALERT, get_alert_by_uuid, refresh_observable_expires_on, set_dispositions, set_disposition_reviews
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
 from saq.permissions.user import add_user_permission
@@ -477,11 +486,130 @@ def test_set_dispositions_already_dispositioned():
         
         # Try to set same disposition again (should not change anything)
         set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
-        
+
         # Should still work but might not update if already set to same value
         db = get_db()
         db.refresh(alert)
         assert alert.disposition == DISPOSITION_FALSE_POSITIVE
-        
+
     finally:
         delete_user("testuser_redispo")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_correct():
+    """Test recording a review that finds the disposition correct."""
+    analyst = add_user("review_analyst", "review_analyst@test.com", "Analyst", "password123")
+    reviewer = add_user("review_reviewer", "review_reviewer@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+
+        # the analyst dispositions the alert
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+
+        # the reviewer confirms the disposition is correct
+        set_disposition_reviews([alert.uuid], DISPOSITION_REVIEW_CORRECT, reviewer.id, review_comment="looks good")
+
+        db = get_db()
+        db.refresh(alert)
+
+        # the review is recorded but the disposition is untouched
+        assert alert.disposition_review == DISPOSITION_REVIEW_CORRECT
+        assert alert.review_user_id == reviewer.id
+        assert alert.review_time is not None
+        assert alert.disposition == DISPOSITION_FALSE_POSITIVE
+        assert alert.disposition_user_id == analyst.id
+        assert alert.incorrect_disposition is None
+
+        # a prefixed review comment was added
+        comment = db.query(Comment).filter(
+            Comment.uuid == alert.uuid,
+            Comment.user_id == reviewer.id,
+        ).first()
+        assert comment is not None
+        assert comment.comment == f"{REVIEW_COMMENT_PREFIX}looks good"
+
+    finally:
+        delete_user("review_analyst")
+        delete_user("review_reviewer")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_incorrect_preserves_original_and_corrects():
+    """Test recording a review that finds the disposition incorrect and corrects it."""
+    analyst = add_user("review_analyst2", "review_analyst2@test.com", "Analyst", "password123")
+    reviewer = add_user("review_reviewer2", "review_reviewer2@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+
+        # the analyst dispositions the alert (incorrectly)
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+        db = get_db()
+        db.refresh(alert)
+        original_disposition_time = alert.disposition_time
+
+        # the reviewer corrects the disposition
+        set_disposition_reviews(
+            [alert.uuid], DISPOSITION_REVIEW_INCORRECT, reviewer.id,
+            corrected_disposition=DISPOSITION_WEAPONIZATION, review_comment="actually malicious")
+
+        db.refresh(alert)
+
+        # the original (incorrect) disposition is preserved
+        assert alert.incorrect_disposition == DISPOSITION_FALSE_POSITIVE
+        assert alert.incorrect_disposition_user_id == analyst.id
+        assert alert.incorrect_disposition_time == original_disposition_time
+
+        # the disposition is corrected and attributed to the reviewer
+        assert alert.disposition == DISPOSITION_WEAPONIZATION
+        assert alert.disposition_user_id == reviewer.id
+
+        # the review is recorded
+        assert alert.disposition_review == DISPOSITION_REVIEW_INCORRECT
+        assert alert.review_user_id == reviewer.id
+        assert alert.review_time is not None
+
+        # a prefixed review comment was added
+        comment = db.query(Comment).filter(
+            Comment.uuid == alert.uuid,
+            Comment.comment == f"{REVIEW_COMMENT_PREFIX}actually malicious",
+        ).first()
+        assert comment is not None
+
+        # the corrected (non-IGNORE) disposition re-inserts the alert into the workload
+        workload_entry = db.query(Workload).filter(
+            Workload.uuid == alert.uuid,
+            Workload.analysis_mode == ANALYSIS_MODE_DISPOSITIONED,
+        ).first()
+        assert workload_entry is not None
+
+    finally:
+        delete_user("review_analyst2")
+        delete_user("review_reviewer2")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_default_unreviewed():
+    """Test that a freshly dispositioned alert starts out unreviewed."""
+    user = add_user("review_default", "review_default@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+
+        db = get_db()
+        db.refresh(alert)
+        assert alert.disposition_review == DISPOSITION_REVIEW_UNREVIEWED
+        assert alert.review_user_id is None
+        assert alert.review_time is None
+        assert alert.incorrect_disposition is None
+
+    finally:
+        delete_user("review_default")

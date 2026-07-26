@@ -106,6 +106,7 @@ def seed() -> None:
             ("alert", "create", "Create new alerts or upload alert data via API/GUI."),
             ("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
             ("alert", "write", "Modify alerts."),
+            ("alert", "review", "Review and correct alert dispositions."),
             ("lock", "delete", "Clear processing locks on alerts or resources."),
             ("event", "read", "View events, details, and export event data."),
             ("event", "write", "Modify events."),

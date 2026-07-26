@@ -90,6 +90,22 @@
 	<td class="col-md-10"><b>{{alert.disposition}}</b> by {{alert.disposition_user.gui_display}} @ {{alert.display_disposition_time}} ({{alert.disposition_time}} UTC)</td>
     </tr>
     {% endif %}
+    {% if alert.disposition_review != 'UNREVIEWED' %}
+    <tr>
+        <td class="col-md-2">Review</td>
+        <td class="col-md-10">
+            {% if alert.disposition_review == 'CORRECT' %}
+            <span class="badge text-bg-success">disposition correct</span>
+            {% else %}
+            <span class="badge text-bg-danger">disposition incorrect</span>
+            {% endif %}
+            by {{alert.review_user.gui_display}} @ {{alert.review_time}} UTC
+            {% if alert.incorrect_disposition %}
+            <br>corrected from <b>{{alert.incorrect_disposition}}</b>{% if alert.incorrect_disposition_user %} (originally set by {{alert.incorrect_disposition_user.gui_display}}{% if alert.incorrect_disposition_time %} @ {{alert.incorrect_disposition_time}} UTC{% endif %}){% endif %}
+            {% endif %}
+        </td>
+    </tr>
+    {% endif %}
     {% if alert.event_mapping %}
     <tr>
         <td class="col-md-2">Event</td>

@@ -29,6 +29,14 @@ function showSaveToEventButton() {
   document.getElementById("btn-save-to-event").style.display = 'inline';
 }
 
+// shows or hides the corrected-disposition section of the review modal based on the review result
+function toggle_review_incorrect(show) {
+  const section = document.getElementById("review_incorrect_section");
+  if (section) {
+    section.style.display = show ? 'flex' : 'none';
+  }
+}
+
 function showEventSaveButton() {
   document.getElementById("btn-add-to-event").style.display = "inline";
 }
