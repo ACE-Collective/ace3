@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from typing import Optional, Union
 import uuid
 
@@ -14,11 +15,12 @@ from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, NODE_STATUS_RUNNING, WORK_SUBMITTED
-from saq.database import ALERT, execute_with_retry, get_db, get_db_connection, remove_all_sessions
+from saq.database import ALERT, execute_with_retry, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error import report_exception
+from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
 
 
@@ -79,16 +81,36 @@ class RemoteNode:
         """Attempts to submit the given the local engine node."""
         logging.debug(f"submitting {submission} locally")
 
+        start_time = time.monotonic()
+
         # we duplicate because we could be sending multiple copies to multiple remote nodes
         new_root = submission.root.duplicate()
+        duplicate_seconds = time.monotonic() - start_time
+
+        stage_time = time.monotonic()
         new_root.move(storage_dir_from_uuid(new_root.uuid))
         new_root.save()
+        move_seconds = time.monotonic() - stage_time
 
         # if we received a submission for correlation mode then we go ahead and add it to the database
+        stage_time = time.monotonic()
         if new_root.analysis_mode == ANALYSIS_MODE_CORRELATION:
             ALERT(new_root)
 
+        alert_seconds = time.monotonic() - stage_time
+
+        stage_time = time.monotonic()
         new_root.schedule()
+        schedule_seconds = time.monotonic() - stage_time
+
+        # each of these stages serializes the root at least once, so this is where the
+        # per-submission cost of local delivery lives
+        total_seconds = time.monotonic() - start_time
+        logging.info(
+            "submitted %s locally as %s duplicate=%.3fs move=%.3fs alert=%.3fs schedule=%.3fs total=%.3fs",
+            submission.root.uuid, new_root.uuid, duplicate_seconds, move_seconds, alert_seconds,
+            schedule_seconds, total_seconds,
+        )
 
         # XXX what is with this return value?
         return { 'result': new_root.uuid }
@@ -284,6 +306,24 @@ class RemoteNodeGroup:
             """, (self.group_id,))
             db.commit()
 
+    def get_pending_count(self, cursor) -> int:
+        """Returns how many work items are still waiting to be delivered by this group.
+        Used for logging only - a failure here must not stop a delivery."""
+        try:
+            cursor.execute("""
+SELECT COUNT(*)
+FROM
+    incoming_workload JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
+WHERE
+    incoming_workload.type_id = %s
+    AND work_distribution.group_id = %s
+    AND work_distribution.status IN ( 'READY', 'LOCKED' )
+""", (self.workload_type_id, self.group_id,))
+            return cursor.fetchone()[0]
+        except Exception as e:
+            logging.warning("unable to determine pending work count for {}: {}".format(self, e))
+            return -1
+
     def execute(self, db, cursor, work_lock_uuid):
         # first we get a list of all the distinct analysis modes available in the work queue
         cursor.execute("""
@@ -422,12 +462,19 @@ ORDER BY
             return NO_NODES_AVAILABLE
 
         # do we have anything locked yet?
-        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE lock_uuid = %s AND status IN ( 'READY', 'LOCKED' )", (work_lock_uuid,))
+        cursor.execute("SELECT COUNT(*), MIN(lock_time) FROM work_distribution WHERE lock_uuid = %s AND status IN ( 'READY', 'LOCKED' )", (work_lock_uuid,))
         result = cursor.fetchone()
         lock_count = result[0]
+        oldest_lock_time = result[1]
 
         if lock_count > 0:
-            logging.debug(f"already have {lock_count} work items locked by {work_lock_uuid}")
+            # we did not finish delivering the previous batch. nothing else can claim these
+            # rows until their lock is 10 minutes old (see the lock_time check below), so a
+            # batch that keeps showing up here is holding back everything queued behind it
+            logging.info(
+                "already have %d work items locked by %s since %s",
+                lock_count, work_lock_uuid, oldest_lock_time,
+            )
 
         # if we don't have any locks yet, go make some
         if lock_count == 0:
@@ -472,7 +519,9 @@ WHERE
 SELECT
     incoming_workload.id,
     incoming_workload.mode,
-    incoming_workload.work
+    incoming_workload.work,
+    incoming_workload.insert_date,
+    TIMESTAMPDIFF(SECOND, incoming_workload.insert_date, NOW())
 FROM
     incoming_workload
     JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
@@ -488,87 +537,111 @@ ORDER BY
         db.commit()
 
         if len(work_batch) > 0:
-            logging.info("submitting {} items".format(len(work_batch)))
+            # report what is still waiting behind this batch -- a backlog that keeps growing
+            # is the signal that this group cannot deliver as fast as the collector schedules
+            logging.info(
+                "submitting %d items (%d still pending delivery for this group)",
+                len(work_batch), self.get_pending_count(cursor),
+            )
 
         # simple flag that gets set if ANY submission is successful
         submission_success = False
 
         # we should have a small list of things to submit to remote nodes for this group
-        for work_id, analysis_mode, root_uuid in work_batch:
-            logging.info(f"preparing workload {work_id} with uuid {root_uuid}")
+        for work_id, analysis_mode, root_uuid, insert_date, queued_seconds in work_batch:
+            logging.info(
+                "preparing workload %s with uuid %s (queued %ss ago at %s)",
+                work_id, root_uuid, queued_seconds, insert_date,
+            )
 
             # first make sure we can load this
             # XXX not sure we really need to do this
+            load_start_time = time.monotonic()
             try:
                 root = RootAnalysis(storage_dir=os.path.join(self.incoming_dir, root_uuid))
                 root.load()
                 submission = Submission(root)
             except Exception as e:
-                execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'ERROR' 
+                execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'ERROR'
                                              WHERE group_id = %s AND work_id = %s""",
                                   (self.group_id, work_id), commit=True)
                 logging.error("unable to load submission root for id {} uuid {}: {}".format(work_id, root_uuid, e))
                 continue
 
-            # simple flag to remember if we failed to send
-            submission_failed = False
+            load_seconds = time.monotonic() - load_start_time
 
-            # the result of the submission (we pass to Submission.success later)
-            submission_result = None
-                
-            self.coverage_counter += self.coverage
-            if self.coverage_counter < 100:
-                # we'll be skipping this one
-                logging.debug("skipping work id {} for group {} due to coverage constraints".format(
-                              work_id, self.name))
-            else:
-                # otherwise we try to submit it
-                self.coverage_counter -= 100
+            with transaction_id(root.transaction_id or get_transaction_id()):
+                # simple flag to remember if we failed to send
+                submission_failed = False
 
-                # sort the list of RemoteNode objects by the workload_count
-                # running nodes are preferred over nodes that are starting to drain
-                available_targets = any_mode_nodes[:]
-                if analysis_mode in analysis_mode_mapping:
-                    available_targets.extend(analysis_mode_mapping[analysis_mode])
+                # the result of the submission (we pass to Submission.success later)
+                submission_result = None
 
-                target = sorted(available_targets, key=lambda n: (0 if n.status == NODE_STATUS_RUNNING else 1, n.workload_count))
-                target = target[0] 
+                self.coverage_counter += self.coverage
+                if self.coverage_counter < 100:
+                    # we'll be skipping this one
+                    logging.debug("skipping work id {} for group {} due to coverage constraints".format(
+                                  work_id, self.name))
+                else:
+                    # otherwise we try to submit it
+                    self.coverage_counter -= 100
 
-                # attempt the send
-                try:
-                    submission_result = target.submit(submission)
-                    logging.info("{} got submission result {} for {}".format(self, submission_result, submission))
-                    submission_success = True
-                except Exception as e:
-                    if self.full_delivery:
-                        if not isinstance(e, urllib3.exceptions.MaxRetryError) \
-                                and not isinstance(e, urllib3.exceptions.NewConnectionError) \
-                                and not isinstance(e, requests.exceptions.ConnectionError):
-                            # if it's not a connection issue then report it
-                            report_exception()
+                    # sort the list of RemoteNode objects by the workload_count
+                    # running nodes are preferred over nodes that are starting to drain
+                    available_targets = any_mode_nodes[:]
+                    if analysis_mode in analysis_mode_mapping:
+                        available_targets.extend(analysis_mode_mapping[analysis_mode])
 
-                    logging.warning("unable to submit work item {} to {} via group {}: {}".format(
-                            submission, target, self, e))
-                    report_exception()
+                    target = sorted(available_targets, key=lambda n: (0 if n.status == NODE_STATUS_RUNNING else 1, n.workload_count))
+                    target = target[0]
 
-                    # if we are in full delivery mode then we need to try this one again later
-                    if self.full_delivery and (isinstance(e, urllib3.exceptions.MaxRetryError) \
-                                               or isinstance(e, urllib3.exceptions.NewConnectionError) \
-                                               or isinstance(e, requests.exceptions.ConnectionError) \
-                                               or isinstance(e, requests.exceptions.HTTPError)):
-                        continue
+                    # attempt the send
+                    submit_start_time = time.monotonic()
+                    try:
+                        submission_result = target.submit(submission)
+                        # NOTE format eagerly - log records are shipped between processes by
+                        # the unit test log handler and neither self nor submission can be pickled
+                        logging.info("{} got submission result {} for {} "
+                                     "(queued_for={}s load={:.3f}s submit={:.3f}s)".format(
+                                         self, submission_result, submission, queued_seconds,
+                                         load_seconds, time.monotonic() - submit_start_time))
+                        submission_success = True
+                    except Exception as e:
+                        if self.full_delivery:
+                            if not isinstance(e, urllib3.exceptions.MaxRetryError) \
+                                    and not isinstance(e, urllib3.exceptions.NewConnectionError) \
+                                    and not isinstance(e, requests.exceptions.ConnectionError):
+                                # if it's not a connection issue then report it
+                                report_exception()
 
-                    # otherwise we consider it a failure
-                    submission_failed = True
-                    execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'ERROR' 
+                        logging.warning("unable to submit work item {} to {} via group {}: {}".format(
+                                submission, target, self, e))
+                        report_exception()
+
+                        # if we are in full delivery mode then we need to try this one again later
+                        if self.full_delivery and (isinstance(e, urllib3.exceptions.MaxRetryError) \
+                                                   or isinstance(e, urllib3.exceptions.NewConnectionError) \
+                                                   or isinstance(e, requests.exceptions.ConnectionError) \
+                                                   or isinstance(e, requests.exceptions.HTTPError)):
+                            # this item stays LOCKED and blocks the rest of this group's
+                            # queue until the 10 minute lock timeout lets it be re-locked
+                            logging.warning(
+                                "work item %s stays locked for retry by group %s - the lock will not "
+                                "expire for 10 minutes", work_id, self.name,
+                            )
+                            continue
+
+                        # otherwise we consider it a failure
+                        submission_failed = True
+                        execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'ERROR'
+                                                     WHERE group_id = %s AND work_id = %s""",
+                                           (self.group_id, work_id), commit=True)
+
+                # if we skipped it or we sent it, then we're done with it
+                if not submission_failed:
+                    execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'COMPLETED'
                                                  WHERE group_id = %s AND work_id = %s""",
-                                       (self.group_id, work_id), commit=True)
-            
-            # if we skipped it or we sent it, then we're done with it
-            if not submission_failed:
-                execute_with_retry(db, cursor, """UPDATE work_distribution SET status = 'COMPLETED' 
-                                             WHERE group_id = %s AND work_id = %s""",
-                                  (self.group_id, work_id), commit=True)
+                                      (self.group_id, work_id), commit=True)
 
         if submission_success:
             return WORK_SUBMITTED

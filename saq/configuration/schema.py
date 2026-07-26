@@ -288,6 +288,8 @@ class SplunkConfig(BaseModel):
     user_context: Optional[str] = Field(default=None, description="default app and user context to use if not specified")
     app_context: Optional[str] = Field(default=None, description="default app and user context to use if not specified")
     proxy: Optional[str] = Field(default=None, description="optional proxy to use for splunk access")
+    request_timeout: int = Field(default=60, description="socket timeout (seconds) for each splunk API request")
+    auth_failure_grace_period: int = Field(default=60, description="how long (seconds) to keep tolerating 401s while polling an already-dispatched search before failing the query (rides out transient search head cluster proxy failures)")
 
 class SplunkExportConfig(BaseModel):
     export_list: list[str] = Field(..., description="a comma separated list of for_detect observables types to export to splunk lookup table")

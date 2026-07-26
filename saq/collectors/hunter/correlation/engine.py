@@ -1,6 +1,7 @@
 import datetime
 import logging
 import tempfile
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -168,6 +169,7 @@ class CorrelationEngine:
             event = events[event_index]
             event_trace = EventTrace(event_index=event_index)
 
+            event_t0 = time.perf_counter()
             try:
                 action_result = self._process_event_steps(
                     self.config.logic, event, events, event_index, start_time,
@@ -202,6 +204,8 @@ class CorrelationEngine:
                 trace.event_traces.append(event_trace)
                 event_index += 1
                 continue
+            finally:
+                event_trace.duration_ms = (time.perf_counter() - event_t0) * 1000.0
 
             if action_result is None:
                 action_result = ActionResult(action_type="alert")
@@ -307,14 +311,22 @@ class CorrelationEngine:
             if step.debug:
                 self._render_debug(step.debug, event, events)
 
+            # wall time for this step. For condition steps this is inclusive of the
+            # nested branch steps run by _execute_condition (each of which is timed the
+            # same way by the recursive _process_event_steps call).
+            step_t0 = time.perf_counter()
+
             if isinstance(step.step, ConditionConfig):
                 try:
                     action_result, step_trace = self._execute_condition(
                         step.step, event, events, event_index, start_time, step.description,
                     )
                 except _StepError as se:
+                    if se.step_trace is not None:
+                        se.step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
                     self._append_step_trace_on_error(se, trace_steps)
                     raise
+                step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
                 if trace_steps is not None:
                     trace_steps.append(step_trace)
                 if action_result is not None and action_result.is_interrupt:
@@ -327,10 +339,16 @@ class CorrelationEngine:
                         trace_steps,
                     )
                 except _StepError as se:
+                    if se.step_trace is not None:
+                        se.step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
                     self._append_step_trace_on_error(se, trace_steps)
                     raise
-                if trace_steps is not None and step_trace is not None:
-                    trace_steps.append(step_trace)
+                # step_trace is None on the _StreamReset path (its duration is set inside
+                # _execute_transform before the reset propagates).
+                if step_trace is not None:
+                    step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
+                    if trace_steps is not None:
+                        trace_steps.append(step_trace)
                 if action_result is not None and action_result.is_interrupt:
                     return action_result
                 # Note: if _StreamReset is raised, it propagates up
@@ -346,11 +364,14 @@ class CorrelationEngine:
                         error=str(e),
                     )
                     step_trace = StepTrace(description=step.description, step=action_trace)
+                    step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
                     if trace_steps is not None:
                         trace_steps.append(step_trace)
                     raise _StepError(str(e), None) from e
                 if trace_steps is not None:
-                    trace_steps.append(self._trace_action(step.step, action_result, event, events, step.description))
+                    step_trace = self._trace_action(step.step, action_result, event, events, step.description)
+                    step_trace.duration_ms = (time.perf_counter() - step_t0) * 1000.0
+                    trace_steps.append(step_trace)
                 if action_result.is_interrupt:
                     return action_result
 
@@ -437,6 +458,11 @@ class CorrelationEngine:
         )
         step_trace = StepTrace(description=description, step=transform_trace)
 
+        # Stream transforms append their own step_trace and raise _StreamReset before
+        # returning to the caller's loop, so the loop never times them. Measure here and
+        # stamp the duration onto step_trace just before the reset propagates.
+        transform_t0 = time.perf_counter()
+
         # Build a summary of the rendered command for the trace
         transform_trace.rendered_command = sanitize_value(
             self._render_command_summary(transform.command, event, events),
@@ -502,6 +528,7 @@ class CorrelationEngine:
                         self._current_source = new_source
 
                 # Append trace before raising since the exception skips the caller's append
+                step_trace.duration_ms = (time.perf_counter() - transform_t0) * 1000.0
                 if parent_trace_steps is not None:
                     parent_trace_steps.append(step_trace)
                 # Stream transform - signal reset, resume at next step

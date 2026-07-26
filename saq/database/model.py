@@ -2819,6 +2819,14 @@ class IncomingWorkload(Base):
         String(36),
         nullable=False)
 
+    # when this work item was handed to the collector, used to measure how long a
+    # submission waits before a RemoteNodeGroup picks it up (see saq/collectors/remote_node.py)
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP'))
+
     type: Mapped["IncomingWorkloadType"] = relationship('IncomingWorkloadType')
 
 

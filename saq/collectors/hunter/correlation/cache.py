@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Optional
 
+from saq.collectors.hunter.correlation.trace import sanitize_value
 from saq.constants import REDIS_DB_HUNT_CACHE
 from saq.redis_client import get_redis_connection
 
@@ -14,14 +15,32 @@ def _make_cache_key(command_args: dict) -> str:
     return f"hunt_cache:{digest}"
 
 
-def get_cached_result(command_args: dict) -> Optional[str]:
+def _describe_command(command_args: dict) -> str:
+    """Render a compact, single-line summary of what a cache entry is for."""
+    ctype = command_args.get("type", "?")
+    if ctype == "query":
+        query = " ".join((command_args.get("query") or "").split())
+        if len(query) > 300:
+            query = query[:300] + "…"
+
+        return f"type=query source={command_args.get('source')} query={query!r}"
+
+    if ctype == "executable":
+        return (f"type=executable path={command_args.get('path')} "
+                f"args={command_args.get('args') or []!r}")
+
+    return f"type={ctype}"
+
+
+def get_cached_result(command_args: dict, secrets: dict | None = None) -> Optional[str]:
     """Get a cached command result."""
     try:
         r = get_redis_connection(REDIS_DB_HUNT_CACHE)
         key = _make_cache_key(command_args)
         result = r.get(key)
         if result:
-            logging.info(f"cache hit for {key}")
+            desc = sanitize_value(_describe_command(command_args), secrets or {})
+            logging.info(f"cache hit for {key} ({desc})")
 
         return result
 
@@ -30,13 +49,14 @@ def get_cached_result(command_args: dict) -> Optional[str]:
         return None
 
 
-def set_cached_result(command_args: dict, value: str, ttl_seconds: int):
+def set_cached_result(command_args: dict, value: str, ttl_seconds: int, secrets: dict | None = None):
     """Cache a command result with a TTL."""
     try:
         r = get_redis_connection(REDIS_DB_HUNT_CACHE)
         key = _make_cache_key(command_args)
         r.setex(key, ttl_seconds, value)
-        logging.info(f"cached result with key {key} for {ttl_seconds} seconds")
+        desc = sanitize_value(_describe_command(command_args), secrets or {})
+        logging.info(f"cached result with key {key} ({desc}) for {ttl_seconds}s, {len(value)} bytes")
     except Exception:
         logging.warning("failed to write to hunt cache", exc_info=True)
 

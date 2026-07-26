@@ -48,7 +48,11 @@ class CommandConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     type: str = Field(..., description="Command type: query, executable, defined")
-    timeout: str = Field(default="30s", description="Command timeout as timespec")
+    # This is a runaway backstop, not a routine limiter, so a short default fails a large fraction
+    # of legitimate queries -- and a command error makes the event fall through to an alert, so
+    # each failure can be a false positive. The correlate block's own `timeout` remains the real
+    # governor of how long a correlated hunt may take.
+    timeout: str = Field(default="10m", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 
     # query-specific fields
@@ -218,7 +222,8 @@ class PredefinedCommandConfig(BaseModel):
     name: str = Field(..., description="Name of the command")
     description: Optional[str] = Field(default=None, description="Description of the command")
     type: str = Field(..., description="Command type: query, executable")
-    timeout: str = Field(default="30s", description="Command timeout as timespec")
+    # see CommandConfig.timeout for why this is a backstop rather than a routine limiter
+    timeout: str = Field(default="10m", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
 
     # query-specific fields

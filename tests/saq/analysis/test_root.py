@@ -5,7 +5,7 @@ import pytest
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
-from saq.analysis.root import RootAnalysis, Submission
+from saq.analysis.root import RootAnalysis, Submission, load_root
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_TEST
 from saq.database.database_observable import get_observable_disposition_history
@@ -33,6 +33,19 @@ class TestRootAnalysis:
 
         assert isinstance(submission, Submission)
         assert submission.root is analysis
+
+    @pytest.mark.unit
+    def test_transaction_id_round_trip(self, tmp_path):
+        analysis = RootAnalysis(storage_dir=str(tmp_path))
+        analysis.initialize_storage()
+        assert analysis.transaction_id is None
+
+        analysis.transaction_id = "known-transaction-id"
+        assert analysis.transaction_id == "known-transaction-id"
+        analysis.save()
+
+        reloaded = load_root(str(tmp_path))
+        assert reloaded.transaction_id == "known-transaction-id"
 
 @pytest.mark.skip(reason="Revisit. Serialization of Analysis objects is being refactored.")
 @pytest.mark.unit

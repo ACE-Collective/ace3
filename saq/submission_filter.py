@@ -225,17 +225,21 @@ class SubmissionFilter:
 
         scanner = self.tuning_scanners[TUNING_TARGET_OBSERVABLE]
 
-        matches = []
-        for observable in submission.root.observables:   
-            target_buffer = json.dumps(submission.root.observables, 
-                                       indent=True, 
-                                       sort_keys=True, 
-                                       cls=_JSONEncoder).encode('utf8', errors='backslashreplace')
+        if not submission.root.observables:
+            return []
 
-            scanner.scan_data(target_buffer)
-            matches.extend(scanner.scan_results[:])
+        # NOTE this scans the entire observable list as a single buffer. it used to do that
+        # once per observable (the loop variable was never used), which made the cost
+        # quadratic in the number of observables for an identical result. the original
+        # intent was most likely to serialize each observable on its own, but changing that
+        # would change which tuning rules match, so it is left alone here.
+        target_buffer = json.dumps(submission.root.observables,
+                                   indent=True,
+                                   sort_keys=True,
+                                   cls=_JSONEncoder).encode('utf8', errors='backslashreplace')
 
-        return matches
+        scanner.scan_data(target_buffer)
+        return scanner.scan_results[:]
 
     def get_tuning_matches_files(self, submission):
         from saq.analysis.root import Submission

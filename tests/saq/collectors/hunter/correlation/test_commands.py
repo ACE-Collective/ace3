@@ -245,7 +245,7 @@ class TestExecuteCommand:
             result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
 
         assert result == "cached value"
-        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')"], "env": None})
+        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')"], "env": None}, None)
 
     def test_executable_cache_miss_stores_result(self, tmpdir):
         cmd = CommandConfig(
@@ -263,6 +263,7 @@ class TestExecuteCommand:
             {"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')"], "env": None},
             result,
             3600,
+            None,
         )
 
     def test_executable_no_cache_skips_cache(self, tmpdir):
@@ -290,7 +291,7 @@ class TestExecuteCommand:
              patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
             execute_command(cmd, {"user": "admin"}, [], "event", [], local_time(), str(tmpdir))
 
-        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')", "admin"], "env": None})
+        mock_get.assert_called_once_with({"type": "executable", "path": PYTHON, "args": ["-c", "print('hello')", "admin"], "env": None}, None)
 
     def test_executable_cache_key_includes_rendered_env(self, tmpdir):
         cmd = CommandConfig(
@@ -309,7 +310,7 @@ class TestExecuteCommand:
             "path": PYTHON,
             "args": ["-c", "import os; print(os.environ['MY_VAR'])"],
             "env": {"MY_VAR": "test123"},
-        })
+        }, None)
 
     def test_query_cache_hit(self, tmpdir):
         source = MockQuerySource(results=[{"host": "should-not-run"}])
@@ -323,7 +324,7 @@ class TestExecuteCommand:
         assert result == "cached value"
         # a cache hit must short-circuit before the data source is touched
         assert len(source.calls) == 0
-        mock_get.assert_called_once_with({"type": "query", "source": "test_source", "query": "search index=main"})
+        mock_get.assert_called_once_with({"type": "query", "source": "test_source", "query": "search index=main"}, None)
 
     def test_query_cache_key_includes_rendered_query(self, tmpdir):
         """The persistent cache must key on the interpolated query, not the raw template."""
@@ -342,7 +343,7 @@ class TestExecuteCommand:
             execute_command(cmd, {"animal": "dog"}, [], "event", [], local_time(), str(tmpdir))
 
         expected_args = {"type": "query", "source": "test_source", "query": 'search animal="dog"'}
-        mock_get.assert_called_once_with(expected_args)
+        mock_get.assert_called_once_with(expected_args, None)
         mock_set.assert_called_once()
         assert mock_set.call_args.args[0] == expected_args
 

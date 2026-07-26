@@ -9,6 +9,8 @@ from saq.collectors.hunter.correlation.schema import CorrelateConfig, Expression
 from saq.collectors.hunter.correlation.trace import (
     ActionTrace,
     ConditionTrace,
+    EventTrace,
+    StepTrace,
     TransformTrace,
     sanitize_value,
 )
@@ -433,6 +435,49 @@ class TestEngineTrace:
         assert restored.query_start_time == start
         assert restored.query_end_time == end
         assert restored.query_time_spec == "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
+
+    def test_step_and_event_duration_round_trip(self):
+        """StepTrace.duration_ms and EventTrace.duration_ms survive a
+        model_dump/model_validate cycle so per-step timing reaches the UI from a
+        persisted alert."""
+        step = StepTrace(
+            description="enrich",
+            step=ActionTrace(action_type="filter"),
+            duration_ms=12.5,
+        )
+        restored_step = StepTrace.model_validate(step.model_dump())
+        assert restored_step.duration_ms == 12.5
+
+        event = EventTrace(event_index=0, steps=[step], duration_ms=34.25)
+        restored_event = EventTrace.model_validate(event.model_dump())
+        assert restored_event.duration_ms == 34.25
+        assert restored_event.steps[0].duration_ms == 12.5
+
+    def test_step_duration_defaults_to_none(self):
+        """duration_ms defaults to None so older persisted traces still load."""
+        assert StepTrace(step=ActionTrace(action_type="alert")).duration_ms is None
+        assert EventTrace(event_index=0).duration_ms is None
+
+    def test_execute_populates_step_and_event_durations(self):
+        """A run through the engine stamps duration_ms on every step and event."""
+        config = _make_config([
+            {
+                "when": {"type": "equals", "value": "admin", "property": "user"},
+                "execute": [{"action": "filter"}],
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"user": "admin"}])
+
+        et = result.trace.event_traces[0]
+        assert et.duration_ms is not None and et.duration_ms >= 0
+        cond_step = et.steps[0]
+        assert cond_step.duration_ms is not None and cond_step.duration_ms >= 0
+        # nested branch step is timed too
+        nested = cond_step.step.branch_steps[0]
+        assert nested.duration_ms is not None and nested.duration_ms >= 0
+        # condition duration is inclusive of its nested branch steps
+        assert cond_step.duration_ms >= nested.duration_ms
 
     def test_transform_error_short_circuits_to_alert(self):
         """A failing transform stops step processing for the event and alerts it."""
