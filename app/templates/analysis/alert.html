@@ -95,9 +95,9 @@
         <td class="col-md-2">Review</td>
         <td class="col-md-10">
             {% if alert.disposition_review == 'CORRECT' %}
-            <span class="badge text-bg-success">disposition correct</span>
+            <span class="bi bi-hand-thumbs-up"></span> disposition correct
             {% else %}
-            <span class="badge text-bg-danger">disposition incorrect</span>
+            <span class="bi bi-exclamation-triangle" style="color: red; background-color: white;"> disposition incorrect</span>
             {% endif %}
             by {{alert.review_user.gui_display}} @ {{alert.review_time}} UTC
             {% if alert.incorrect_disposition %}
