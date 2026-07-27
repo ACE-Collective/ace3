@@ -172,6 +172,17 @@ th {
     border : 1px solid black;
 }
 
+/* small colored dot used on quick-filter badges to flag pending items;
+   color is set inline per-badge from the quick-filter's config */
+.quick-filter-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
 .sim-table {
     display:table;
     width:auto;

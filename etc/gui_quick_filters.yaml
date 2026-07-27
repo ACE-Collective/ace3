@@ -1,0 +1,40 @@
+# GUI quick-filter badges (Alerts management page filter bar)
+# ============================================================
+# Ships with ACE's original built-in "Needs Research" quick filter (Queue =
+# your default queue, Tag = needs_research) and no indicator dots -- this is
+# the same behavior ACE had before quick filters became config-driven. Point
+# gui.quick_filters_config_path (see etc/saq.default.yaml) at a site-specific
+# file (e.g. data/gui_quick_filters.yaml) to add/replace
+# badges -- including adding indicator dots -- without an ACE code change.
+# This file is re-read on every alert management page load, so edits take
+# effect immediately -- no GUI restart needed.
+#
+# Schema
+# ------
+# quick_filters:
+#   - id: <string>              # unique; used in the URL path / onclick handler
+#     label: <string>           # badge text
+#     color: <string, optional> # hex color for the indicator dot (default gray)
+#     session_filters:          # applied to session['filters'] when clicked
+#                                # (same {name, inverted, values} shape the
+#                                # GUI's own filter editor uses)
+#       - name: <string>              # a filter name from getFilters(), e.g.
+#                                      # Queue / Tag / Disposition / Owner
+#         inverted: <bool, optional, default false>
+#         values: [<string>, ...]     # "$USER_QUEUE" resolves to the current
+#                                      # user's default queue
+#     indicator:                      # optional; omit entirely for no dot
+#       tag: <string, optional>          # Tag.name must match
+#       queue: <string, optional>        # alert queue must equal
+#       disposition: <string, optional>  # alert disposition must equal
+#       owned_only: <bool, optional>     # scope count to alerts owned by the
+#                                         # current user
+
+quick_filters:
+  - id: needs_research
+    label: Needs Research
+    session_filters:
+      - name: Queue
+        values: ["$USER_QUEUE"]
+      - name: Tag
+        values: ["needs_research"]

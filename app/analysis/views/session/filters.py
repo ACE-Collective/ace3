@@ -1,13 +1,18 @@
 from datetime import timedelta
+import logging
+import os
+import yaml
 from flask import session
 from flask_login import current_user
 
 from app.filters import AutoTextFilter, BoolFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
+from saq.environment import get_base_dir
 from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
 from saq.constants import REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS
-from saq.database.model import DispositionBy, Observable, Owner, RemediatedBy, Remediation, Tag
+from saq.database.model import DispositionBy, Observable, Owner, RemediatedBy, Remediation, Tag, TagMapping
+from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
 from saq.util.time import local_time
 
@@ -29,12 +34,62 @@ def _reset_filters_special(hours: int):
     ]
     session["search"] = None
 
-def _reset_filters_needs_research():
-    session["filters"] = [
-        { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
-        { "name": "Tag", "inverted": False, "values": [ "needs_research" ] },
-    ]
-    session["search"] = None
+def get_quick_filters() -> list:
+    """Loads GUI quick-filter badge definitions (see etc/gui_quick_filters.yaml
+    for the schema). Deployments point gui.quick_filters_config_path at a
+    site-specific file (e.g. signatures/analyst_data/gui_quick_filters.yaml)
+    to add/edit quick filters without an ACE code change. Re-read on every
+    call so those edits take effect immediately, with no GUI restart."""
+    path = os.path.join(get_base_dir(), get_config().gui.quick_filters_config_path)
+    try:
+        with open(path, 'r') as fp:
+            data = yaml.safe_load(fp) or {}
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logging.warning(f"failed to load quick filters config {path}: {e}")
+        return []
+
+    return data.get('quick_filters', []) or []
+
+def _resolve_quick_filter_values(values: list) -> list:
+    return [current_user.queue if value == "$USER_QUEUE" else value for value in values]
+
+def _reset_filters_quick(filter_id: str) -> bool:
+    """Applies the named quick filter's session_filters. Returns False if no
+    quick filter with that id is configured."""
+    for quick_filter in get_quick_filters():
+        if quick_filter.get('id') == filter_id:
+            session["filters"] = [
+                {
+                    "name": session_filter["name"],
+                    "inverted": session_filter.get("inverted", False),
+                    "values": _resolve_quick_filter_values(session_filter.get("values", [])),
+                }
+                for session_filter in quick_filter.get("session_filters", [])
+            ]
+            session["search"] = None
+            return True
+
+    return False
+
+def get_quick_filter_indicator_count(indicator: dict) -> int:
+    """Computes the alert count for a quick filter's indicator dot definition.
+    Supported keys: tag (str), queue (str), disposition (str), owned_only (bool).
+    A quick filter with no `indicator` key configured never shows a dot (see
+    manage.py, which only calls this when quick_filter.get('indicator') is set)."""
+    query = get_db().query(GUIAlert)
+    if indicator.get('tag'):
+        query = query.join(TagMapping, GUIAlert.id == TagMapping.alert_id)\
+            .join(Tag, TagMapping.tag_id == Tag.id)\
+            .filter(Tag.name == indicator['tag'])
+    if indicator.get('queue'):
+        query = query.filter(GUIAlert.queue == indicator['queue'])
+    if indicator.get('disposition'):
+        query = query.filter(GUIAlert.disposition == indicator['disposition'])
+    if indicator.get('owned_only'):
+        query = query.filter(GUIAlert.owner_id == current_user.id)
+    return query.count()
 
 def reset_checked_alerts():
     session['checked'] = []

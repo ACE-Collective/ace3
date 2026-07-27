@@ -447,6 +447,12 @@ gui:
   # by default we only show alerts that exist on the local node
   # if you've set up something with NFS you can set this to no and show alerts from any node
   local_node_only: true
+  # path (relative to SAQ_HOME) to a YAML file defining the quick-filter badges
+  # shown on the alert management page filter bar. Ships empty by default --
+  # point this at a site-specific file (e.g. signatures/analyst_data/gui_quick_filters.yaml)
+  # to add/edit quick filters without an ACE code change. Re-read on every page
+  # load, so edits take effect immediately.
+  quick_filters_config_path: etc/gui_quick_filters.yaml
   # enabling this option forces all observables in the root analysis to be visible in the critical analysis view
   show_root_observables: true
   # a comma separated list of navigation tables visible from this node
