@@ -17,7 +17,7 @@ The catalog values here are a point-in-time snapshot; new permissions added to
 saq/permissions/catalog.py later get their own migration (or `ace perm catalog sync` in dev).
 
 Revision ID: f1a2b3c4d5e6
-Revises: 418783a10fa4
+Revises: 607a723dd55f
 Create Date: 2026-07-07 00:00:00.000000
 
 """
@@ -28,7 +28,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'f1a2b3c4d5e6'
-down_revision: Union[str, None] = '1524a2e6bf28'
+down_revision: Union[str, None] = '607a723dd55f'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
