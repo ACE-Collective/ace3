@@ -590,7 +590,12 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     assert os.path.exists(f'{target_path}.json')
 
 @pytest.mark.integration
-def test_file_analysis_004_yara_008_for_detection(yss_server, root_analysis, datadir):
+def test_file_analysis_004_yara_008_for_detection_legacy_obs_prefix(yss_server, root_analysis, datadir):
+    """A rule already on disk carrying a `$obs_<observables.id>` string still resolves.
+
+    The export now emits `$obsd_<observable_detections.id>`, but rules generated before that change
+    are still deployed, so the legacy prefix is read for one release.
+    """
     # Make sure there is one observable in the database
     from saq.database.model import Observable as DBObservable
     db_observable = DBObservable(id=1, type='uri_path', value=b'test_uri_path', sha256=b'asdf')
@@ -626,6 +631,37 @@ def test_file_analysis_004_yara_008_for_detection(yss_server, root_analysis, dat
     # we should have a single uri_path observable
     uri_path_observable = analysis.get_observables_by_type(F_URI_PATH)
     assert len(uri_path_observable) == 1
+
+@pytest.mark.integration
+def test_file_analysis_004_yara_009_for_detection(yss_server, root_analysis, datadir):
+    """A `$obsd_<observable_detections.id>` string resolves through the detections table."""
+    from saq.database.model import ObservableDetection
+    import hashlib
+    detection = ObservableDetection(
+        id=1, type='uri_path', value='test_detection_path',
+        value_sha256=hashlib.sha256(b'test_detection_path').digest())
+    get_db().add(detection)
+    get_db().commit()
+
+    root_analysis.analysis_mode = "test_groups"
+    _file = root_analysis.add_file_observable(str(datadir / 'scan_targets/for_detection_new'))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    alert = load_alert(root_analysis.uuid)
+    _file = alert.root_analysis.get_observable(_file.uuid)
+
+    analysis = _file.get_and_load_analysis(YaraScanResults_v3_4)
+    assert analysis
+
+    # the detection's type+value was added to the analysis
+    uri_path_observable = analysis.get_observables_by_type(F_URI_PATH)
+    assert len(uri_path_observable) == 1
+    assert uri_path_observable[0].value == 'test_detection_path'
 
 @pytest.mark.integration
 def test_file_analysis_005_pcode_000_extract_pcode(root_analysis, datadir):

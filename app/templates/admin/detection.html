@@ -5,7 +5,7 @@
     <form class="row row-cols-lg-auto g-2 align-items-end" method="GET" action="{{ url_for('admin.detection_settings') }}">
         <div class="col">
             <label class="form-label mb-0" for="q">Search value</label>
-            <input type="text" class="form-control form-control-sm" id="q" name="q" value="{{ search }}" placeholder="substring…">
+            <input type="text" class="form-control form-control-sm" id="q" name="q" value="{{ search }}" placeholder="substring, or * to anchor…">
         </div>
         <div class="col">
             <label class="form-label mb-0" for="type">Type</label>
@@ -14,13 +14,6 @@
                 {% for t in observable_types %}
                     <option value="{{ t }}" {% if t == selected_type %}selected{% endif %}>{{ t }}</option>
                 {% endfor %}
-            </select>
-        </div>
-        <div class="col">
-            <label class="form-label mb-0" for="show">Show</label>
-            <select class="form-select form-select-sm" id="show" name="show">
-                <option value="enabled" {% if show == 'enabled' %}selected{% endif %}>Enabled for detection</option>
-                <option value="all" {% if show == 'all' %}selected{% endif %}>All observables</option>
             </select>
         </div>
         <div class="col">
@@ -54,15 +47,16 @@
 #observable_detection_table .obs-comments { overflow-wrap: anywhere; word-break: break-word; }
 #observable_detection_table .obs-value code { white-space: normal; }
 #observable_detection_table .obs-expires-input { width: 100%; max-width: 12rem; }
+#add_detection_value { min-width: 22rem; }
 </style>
 
 {% macro page_url(n) -%}
-{{ url_for('admin.detection_settings', show=show, q=search or None, type=selected_type or None, page_size=page.page_size, page=n) }}
+{{ url_for('admin.detection_settings', q=search or None, type=selected_type or None, page_size=page.page_size, page=n) }}
 {%- endmacro %}
 
 {% macro pagination() -%}
 {% if page.total_pages > 1 %}
-<nav aria-label="Observable pages">
+<nav aria-label="Detection pages">
     <ul class="pagination pagination-sm mb-0">
         <li class="page-item {% if not page.has_prev %}disabled{% endif %}">
             <a class="page-link" href="{{ page_url(1) }}">First</a>
@@ -86,35 +80,66 @@
 
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h3 class="mb-0">Observable Detection Settings</h3>
+        <h3 class="mb-0">Observable Detections</h3>
         <div class="d-flex align-items-center gap-3">
             <div class="text-muted small">
                 {% if page.total %}
                     Showing {{ page.first_index }}–{{ page.last_index }} of {{ page.total }}
                 {% else %}
-                    No matching observables
+                    No matching detections
                 {% endif %}
             </div>
             {{ pagination() }}
         </div>
     </div>
+
+    <div class="card mt-2 mb-3">
+        <div class="card-body py-2">
+            {# The observable does not need to have ever been seen -- adding a detection ahead of
+               the first sighting is the point of this form. #}
+            <form id="add_detection_form" class="row row-cols-lg-auto g-2 align-items-end">
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_type">Type</label>
+                    <select class="form-select form-select-sm" id="add_detection_type" required>
+                        {% for t in all_observable_types %}
+                            <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_value">Value</label>
+                    <input type="text" class="form-control form-control-sm" id="add_detection_value" required>
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_expires">Expires (optional)</label>
+                    <input type="text" class="form-control form-control-sm obs-expires-input" id="add_detection_expires" placeholder="YYYY-MM-DD HH:MM:SS">
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_context">Context (optional)</label>
+                    <input type="text" class="form-control form-control-sm" id="add_detection_context" placeholder="why this detection exists">
+                </div>
+                <div class="col">
+                    <button type="submit" class="btn btn-sm btn-outline-success">Add detection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <table id="observable_detection_table" class="table table-hover table-sm mt-2">
         <colgroup>
             <col style="width: 11%">
-            <col style="width: 24%">
-            <col style="width: 7%">
-            <col style="width: 9%">
+            <col style="width: 25%">
+            <col style="width: 10%">
             <col style="width: 16%">
-            <col style="width: 16%">
-            <col style="width: 12%">
+            <col style="width: 15%">
+            <col style="width: 13%">
             <col style="width: 5%">
         </colgroup>
         <thead>
             <tr>
                 <th>Type</th>
                 <th>Value</th>
-                <th>For Detection</th>
-                <th>Modified By</th>
+                <th>Added By</th>
                 <th>Context</th>
                 <th>Comments</th>
                 <th>Expires</th>
@@ -122,15 +147,28 @@
             </tr>
         </thead>
         <tbody>
-            {% for obs in observables %}
-            <tr data-observable-id="{{ obs.id }}">
-                <td class="obs-type">{{ obs.type }}</td>
-                <td class="obs-value"><code>{{ obs.value }}</code></td>
-                <td class="obs-for-detection">{{ 'yes' if obs.for_detection else 'no' }}</td>
-                <td>{{ obs.detection_modified_by or '' }}</td>
-                <td class="obs-context">{{ obs.detection_context or '' }}</td>
+            {% for det in detections %}
+            <tr data-detection-id="{{ det.id }}">
+                <td class="obs-type">{{ det.type }}</td>
+                <td class="obs-value">
+                    <code>{{ det.value }}</code>
+                    {% if det.fa_hits is not none %}
+                        <div class="text-muted small">{{ det.fa_hits }} FA hits</div>
+                    {% endif %}
+                    {% if det.observable_id is none %}
+                        {# no row in the observables index: this value has not appeared in an alert yet #}
+                        <div class="text-muted small">not yet observed</div>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ det.created_by or '' }}
+                    {% if det.created_at %}
+                        <div class="text-muted small">{{ det.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+                    {% endif %}
+                </td>
+                <td class="obs-context">{{ det.detection_context or '' }}</td>
                 <td class="obs-comments">
-                    {% for c in obs.comments %}
+                    {% for c in det.comments %}
                     <div class="obs-comment mb-1">
                         <div>{{ c.comment }}</div>
                         <div class="text-muted small">— {{ c.user_display_name }} · {{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</div>
@@ -138,7 +176,7 @@
                     {% endfor %}
                 </td>
                 <td>
-                    <div class="obs-expires">{{ obs.expires_on.strftime('%Y-%m-%d %H:%M:%S') if obs.expires_on else 'never' }}</div>
+                    <div class="obs-expires">{{ det.expires_on.strftime('%Y-%m-%d %H:%M:%S') if det.expires_on else 'never' }}</div>
                     <input type="text" class="form-control form-control-sm obs-expires-input" placeholder="YYYY-MM-DD HH:MM:SS">
                     <div class="mt-1">
                         <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
@@ -146,14 +184,11 @@
                     </div>
                 </td>
                 <td>
-                    <button type="button" class="btn btn-xs {{ 'btn-outline-danger' if obs.for_detection else 'btn-outline-success' }} btn-toggle-detection"
-                            data-enabled="{{ 'true' if obs.for_detection else 'false' }}">
-                        {{ 'Disable' if obs.for_detection else 'Enable' }}
-                    </button>
+                    <button type="button" class="btn btn-xs btn-outline-danger btn-delete-detection">Delete</button>
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="8" class="text-muted">No observables found.</td></tr>
+            <tr><td colspan="7" class="text-muted">No detections found.</td></tr>
             {% endfor %}
         </tbody>
     </table>
