@@ -1,7 +1,7 @@
 import json
 from flask import redirect, render_template, request, session, url_for
 from flask_login import login_required
-from app.analysis.views.session.filters import _reset_filters, _reset_filters_needs_research, _reset_filters_special, get_existing_filter, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
+from app.analysis.views.session.filters import _reset_filters, _reset_filters_quick, _reset_filters_special, get_existing_filter, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.blueprints import analysis
 
 
@@ -48,10 +48,12 @@ def reset_filters_special():
     # return empy page
     return ('', 204)
 
-@analysis.route('/reset_filters_needs_research', methods=['GET'])
+@analysis.route('/reset_filters_quick/<filter_id>', methods=['GET'])
 @login_required
-def reset_filters_needs_research():
-    _reset_filters_needs_research()
+def reset_filters_quick(filter_id):
+    if not _reset_filters_quick(filter_id):
+        return ('', 404)
+
     reset_pagination()
     reset_sort_filter()
     reset_checked_alerts()

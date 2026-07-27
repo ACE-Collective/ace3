@@ -231,6 +231,7 @@ class GUIConfig(BaseModel):
     show_root_observables: bool = Field(..., description="enabling this option forces all observables in the root analysis to be visible in the critical analysis view")
     navigation_tabs: str = Field(..., description="a comma separated list of navigation tables visible from this node")
     display_node_list: Optional[list[str]] = Field(default=None, description="a comma separated list of nodes to display alerts for")
+    quick_filters_config_path: str = Field(..., description="path (relative to SAQ_HOME) to a YAML file defining the GUI quick-filter badges shown on the alert management page")
 
 class NetworkConfigurationConfig(BaseModel):
     managed_networks: list[str] = Field(..., description="command separated list of CIDR notation for managed networks")
