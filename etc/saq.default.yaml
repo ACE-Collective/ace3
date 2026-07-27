@@ -2485,10 +2485,17 @@ domain_generation:
 settings:
   refresh_seconds: 60
 
-# yes/no to set any observables expires_on value to Null (never expire) if the observable is inside an event
-# that has a threat actor assigned to it.
+# How long a new observable detection of a given type lives before it stops firing, as a time delta
+# in DD:HH:MM:SS format. Applied when a detection is created without an explicit expiration; a type
+# that is not listed here produces detections that never expire. An analyst can always override the
+# expiration on an individual detection.
+#
+# This is only a default for *new* detections -- it is never applied retroactively, and re-enabling
+# an existing detection does not reset its expiration.
+#
+# format: <observable_type>: "DD:HH:MM:SS"
 observable_expiration_mappings: {}
-  #never_expire_with_threat_actor: true
+  #ipv4: "14:00:00:00"
 
 # Events
 # The event status that you use to indicate that the event is closed or fully processed. The status listed here will

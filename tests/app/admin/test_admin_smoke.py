@@ -93,7 +93,7 @@ class TestAdminPagesRender:
             for endpoint, needle in (
                 ("admin.admin_hub", b"Administration"),
                 ("admin.manage_users", b"User Management"),
-                ("admin.detection_settings", b"Observable Detection Settings"),
+                ("admin.detection_settings", b"Observable Detections"),
                 ("admin.manage_secrets", b"Encrypted Secrets"),
             ):
                 resp = client.get(url_for(endpoint))
@@ -129,6 +129,8 @@ class TestAdminPagesRender:
             assert b"/ace/admin/users/add" not in users_page
             detection_page = client.get(url_for("admin.detection_settings")).data
             assert b"/ace/admin/detection/toggle" not in detection_page
+            # the add form and the delete button both go straight to the v2 API
+            assert b"/api/v2/detection" in detection_page or b"admin_detection.js" in detection_page
 
 
 # The nav link is `<a ... >Admin</a>`; the hub heading is "Administration", so this needle matches

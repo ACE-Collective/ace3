@@ -627,6 +627,12 @@ INTEL_DB_SIP = 'sip'
 # alert queues
 QUEUE_DEFAULT = 'default'
 
+# Maximum length (in characters) of an observable detection value. The column is a VARCHAR rather
+# than a BLOB so that it sorts and searches under a collation; this bounds it. Detection values are
+# analyst-curated indicators, so this is generous -- writers reject longer values outright rather
+# than truncating, which would produce a detection that silently never matches.
+MAX_DETECTION_VALUE_LENGTH = 4096
+
 # redis databases
 REDIS_DB_SNORT = 1
 REDIS_DB_TIP_A = 2

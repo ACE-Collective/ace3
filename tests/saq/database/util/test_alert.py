@@ -7,7 +7,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_DISPOSITIONED, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
 from saq.database.model import Alert, Comment, Observable, ObservableMapping, Workload
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, get_alert_by_uuid, refresh_observable_expires_on, set_dispositions
+from saq.database.util.alert import ALERT, get_alert_by_uuid, set_dispositions
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
 from saq.permissions.user import add_user_permission
@@ -69,160 +69,6 @@ def test_get_alert_by_uuid_nonexistent():
     
     # Should return None
     assert alert is None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_basic():
-    """Test basic functionality of refresh_observable_expires_on."""
-    # Create alert with observables
-    alert = insert_alert()
-    
-    # Create some test observables for this alert
-    db = get_db()
-    
-    # Create observable with current expires_on
-    observable1 = Observable(
-        type="ipv4",
-        value=b"192.168.1.1",
-        sha256=b"test_hash_1" * 2,  # 32 bytes
-        expires_on=datetime.utcnow() + timedelta(days=1)
-    )
-    db.add(observable1)
-    db.commit()
-    
-    # Map observable to alert
-    mapping = ObservableMapping(
-        observable_id=observable1.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    original_expires_on = observable1.expires_on
-    
-    # Call refresh function
-    refresh_observable_expires_on([alert.uuid])
-    
-    # Verify expires_on was updated (should be different if config has expiration settings)
-    db.refresh(observable1)
-    # Note: The actual value depends on configuration, we just verify it was processed
-    assert observable1.expires_on is not None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_nullify():
-    """Test refresh_observable_expires_on with nullify=True."""
-    # Create alert with observables
-    alert = insert_alert()
-    
-    db = get_db()
-    
-    # Create observable with expires_on set
-    observable = Observable(
-        type="fqdn",
-        value=b"test.example.com",
-        sha256=b"test_hash_2" * 2,  # 32 bytes
-        expires_on=datetime.utcnow() + timedelta(days=7)
-    )
-    db.add(observable)
-    db.commit()
-    
-    # Map to alert
-    mapping = ObservableMapping(
-        observable_id=observable.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    # Call refresh with nullify=True
-    refresh_observable_expires_on([alert.uuid], nullify=True)
-    
-    # Verify expires_on was set to None
-    db.refresh(observable)
-    assert observable.expires_on is None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_already_null():
-    """Test refresh_observable_expires_on doesn't affect already null expires_on."""
-    alert = insert_alert()
-    
-    db = get_db()
-    
-    # Create observable with expires_on already null
-    observable = Observable(
-        type="url",
-        value=b"http://test.example.com",
-        sha256=b"test_hash_3" * 2,  # 32 bytes
-        expires_on=None
-    )
-    db.add(observable)
-    db.commit()
-    
-    # Map to alert
-    mapping = ObservableMapping(
-        observable_id=observable.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    # Call refresh function
-    refresh_observable_expires_on([alert.uuid])
-    
-    # Verify expires_on remains None (should be filtered out by the query)
-    db.refresh(observable)
-    assert observable.expires_on is None
-
-def hash_bytes(data: bytes) -> bytes:
-    hasher = hashlib.sha256()
-    hasher.update(data)
-    return hasher.digest()
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_multiple_alerts():
-    """Test refresh_observable_expires_on with multiple alerts."""
-    get_config().observable_expiration_mappings["ipv4"] = "30:00:00:00"  # 1 day expiration for ipv4
-    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"  # 1 day expiration for ipv4
-    alert1 = insert_alert()
-    alert2 = insert_alert()
-    
-    db = get_db()
-    
-    # Create observables for both alerts
-    observable1 = Observable(
-        type="ipv4",
-        value=b"1.2.3.4",
-        sha256=hash_bytes(b"1.2.3.4"),
-        expires_on=datetime.utcnow() + timedelta(days=1)
-    )
-    observable2 = Observable(
-        type="fqdn",
-        value=b"test.com",
-        sha256=hash_bytes(b"test.com"),
-        expires_on=datetime.utcnow() + timedelta(days=2)
-    )
-    
-    db.add_all([observable1, observable2])
-    db.commit()
-    
-    # Map observables to alerts
-    mappings = [
-        ObservableMapping(observable_id=observable1.id, alert_id=alert1.id),
-        ObservableMapping(observable_id=observable2.id, alert_id=alert2.id)
-    ]
-    db.add_all(mappings)
-    db.commit()
-    
-    # Refresh for both alerts
-    refresh_observable_expires_on([alert1.uuid, alert2.uuid])
-    
-    # Both should have been processed
-    db.refresh(observable1)
-    db.refresh(observable2)
-    assert observable1.expires_on is not None
-    assert observable2.expires_on is not None
 
 
 @pytest.mark.integration
@@ -326,50 +172,45 @@ def test_set_dispositions_multiple_alerts():
 
 
 @pytest.mark.integration
-def test_set_dispositions_malicious_updates_observables():
-    """Test that malicious dispositions trigger observable expires_on updates."""
-    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"  # 1 day expiration for ipv4
+def test_set_dispositions_malicious_leaves_observable_expiration_alone():
+    """Dispositioning malicious no longer rewrites observables.expires_on.
+
+    It used to call refresh_observable_expires_on(), which pushed that column forward for every
+    observable in the alert. Nothing read it except the detection cache, and detection expiration
+    now lives in observable_detections.expires_on where only an analyst sets it -- silently
+    extending an analyst's chosen expiration as a side effect of triage would be wrong.
+    """
+    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"
 
     user = add_user("testuser_mal", "testuser_mal@test.com", "Test User", "password123")
     add_user_permission(user.id, "*", "*")
 
     try:
         alert = insert_alert()
-        
-        # Create observable for this alert
+
         db = get_db()
+        original_expires_on = datetime(2030, 1, 1, 0, 0, 0)
         observable = Observable(
             type="fqdn",
             value=b"malicious.example.com",
             sha256=b"test_hash_6" * 2,
-            expires_on=datetime.utcnow() + timedelta(days=1)
+            expires_on=original_expires_on,
         )
         db.add(observable)
         db.commit()
-        
-        # Map to alert
-        mapping = ObservableMapping(
-            observable_id=observable.id,
-            alert_id=alert.id
-        )
-        db.add(mapping)
+
+        db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
         db.commit()
-        
-        original_expires_on = observable.expires_on
-        
-        # Set malicious disposition
+
         malicious_disposition = next(iter(get_malicious_dispositions()))
         set_dispositions([alert.uuid], malicious_disposition, user.id)
-        
-        # Verify disposition was set
+
         db.refresh(alert)
         assert alert.disposition == malicious_disposition
-        
-        # Verify observable expires_on was potentially updated
-        # (exact behavior depends on configuration)
+
         db.refresh(observable)
-        assert observable.expires_on is not None
-        
+        assert observable.expires_on == original_expires_on
+
     finally:
         delete_user("testuser_mal")
 

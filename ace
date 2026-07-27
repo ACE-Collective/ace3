@@ -2285,36 +2285,13 @@ update_for_detection_observable_cache_parser.set_defaults(func=update_for_detect
 
 
 def _get_for_detect_observables_by_type() -> dict:
-    """Builds and returns a dictionary containing observables marked 'for_detection', organized by type.
+    """The active observable detections, organized by type.
 
-        Returns:
-            dict containing for_detection observables, organized by type.
-            Ex. {observable_type_1: [{'id': obs1_id, 'value': obs1_value}, {id': obs2_id, 'value': obs2_value}],
-                                     observable_type_2: [id': obs3_id, 'value': obs3_value}], etc.}
+        Thin wrapper so this file's callers keep their name; the query itself lives in
+        saq.database.util.observable_detection where it can be imported and tested.
     """
-    from saq.database import Observable
-    from saq.util.time import local_time
-
-    observables_by_type = {}
-    for_detect_observables = get_db().query(Observable.id, Observable.type, Observable.value).filter(
-        and_(
-            Observable.for_detection.is_(True),
-            or_(
-                Observable.expires_on.is_(None),
-                local_time() < Observable.expires_on
-                #datetime.datetime.utcnow() < Observable.expires_on
-            )
-        )
-    ).all()
-
-    for observable in for_detect_observables:
-        observable_info = {'id': observable.id, 'value': observable.value.decode()}
-        if observable.type in observables_by_type:
-            observables_by_type[observable.type].extend([observable_info])
-        else:
-            observables_by_type[observable.type] = [observable_info]
-
-    return observables_by_type
+    from saq.database.util.observable_detection import get_active_detections_by_type
+    return get_active_detections_by_type()
 
 
 def _create_rule_dir(dir_path: str) -> bool:
@@ -2354,7 +2331,10 @@ def _export_yara_rules(export_dir: str, for_detect_observables: dict) -> None:
     # Func-specific Imports
     #
     from datetime import date
-    from saq.environment import get_analyst_data_dir
+    # NOTE: this used to import get_analyst_data_dir from saq.environment, which no longer exists --
+    # the yara export has been failing on ImportError before doing any work. The directory now lives
+    # on the runtime settings.
+    from saq.environment import get_global_runtime_settings
     import yara
     yara.set_config(max_strings_per_rule=int(get_config().yara_export.max_strings_per_rule))
 
@@ -2375,7 +2355,9 @@ def _export_yara_rules(export_dir: str, for_detect_observables: dict) -> None:
     export_minimum_length = get_config().yara_export.export_minimum_length
 
     # What observable types should be exported to yara?
-    observable_types = [_.strip() for _ in get_config().yara_export.export_list.split(',')]
+    # NOTE: export_list is a YAML list (schema.YaraExportConfig.export_list); this used to .split(',')
+    # it, a leftover from when the config was INI and this was a comma-separated string.
+    observable_types = [_.strip() for _ in get_config().yara_export.export_list]
 
     #
     # Define helper functions
@@ -2388,9 +2370,15 @@ def _export_yara_rules(export_dir: str, for_detect_observables: dict) -> None:
 
     def format_yara_default_string():
         # add yara rule for observable
+        #
+        # NOTE the $obsd_ prefix. These ids used to be observables.id and were emitted as $obs_;
+        # they are now observable_detections.id. Rules generated before the change are still on disk
+        # carrying $obs_ ids, so FileTypeAnalyzer resolves both prefixes for one release -- see
+        # saq/modules/file_analysis/yara.py. Namespacing keeps the deploy order-independent instead
+        # of requiring a re-export before the new code goes live.
         yara_value = format_yara_string(obs_value)
         mods = string_modifiers[observable_type.lower()]
-        observable_string_data.write(f'          $obs_{obs_id} = "{yara_value}" {mods}\n')
+        observable_string_data.write(f'          $obsd_{obs_id} = "{yara_value}" {mods}\n')
 
         # skip json value if it is the same as the regular value
         yara_json_value = format_yara_json_string(obs_value)
@@ -2398,7 +2386,7 @@ def _export_yara_rules(export_dir: str, for_detect_observables: dict) -> None:
             return
 
         # add json value which will hit in json files
-        observable_string_data.write(f'          $obs_json_{obs_id} = "{yara_json_value}" {mods}\n')
+        observable_string_data.write(f'          $obsd_json_{obs_id} = "{yara_json_value}" {mods}\n')
 
     #
     # Check/create directory for rule output
@@ -2416,9 +2404,9 @@ def _export_yara_rules(export_dir: str, for_detect_observables: dict) -> None:
         logging.info(f"exporting observable type {observable_type}")
 
         # Check if there's a template for current observable type
-        template_path = os.path.join(get_analyst_data_dir(), get_config().yara_export.export_template_dir, f'{observable_type}.template')
+        template_path = os.path.join(get_global_runtime_settings().analyst_data_dir, get_config().yara_export.export_template_dir, f'{observable_type}.template')
         if not os.path.exists(template_path):
-            template_path = os.path.join(get_analyst_data_dir(), get_config().yara_export.export_template_dir, 'default.template')
+            template_path = os.path.join(get_global_runtime_settings().analyst_data_dir, get_config().yara_export.export_template_dir, 'default.template')
         logging.debug(f"using template {template_path} for {observable_type}")
 
         # Load and setup the template we're going to be using

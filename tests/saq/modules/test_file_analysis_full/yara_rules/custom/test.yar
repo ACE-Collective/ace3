@@ -64,7 +64,19 @@ rule test_qa_modifier
 rule detect_uri_path : detect_uri_path
 {
     strings:
+          // legacy string key: an observables row id, as the export emitted before detections
+          // moved to their own table. Rules generated then are still on disk.
           $obs_1 = "test_uri_path" ascii wide nocase
+
+    condition:
+        any of them
+}
+
+rule detect_detection_path : detect_detection_path
+{
+    strings:
+          // current string key: an observable_detections row id
+          $obsd_1 = "test_detection_path" ascii wide nocase
 
     condition:
         any of them

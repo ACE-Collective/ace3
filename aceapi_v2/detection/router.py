@@ -2,77 +2,95 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Security
+from fastapi import APIRouter, Depends, HTTPException, Security, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from saq.database.util.observable_detection import InvalidDetectionValue
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.detection import service
 from aceapi_v2.detection.schemas import (
-    DetectionUpdate,
+    DetectionCreate,
+    DetectionPage,
     ExpirationUpdate,
     ObservableDetectionRead,
-    ObservablePage,
+    ObservableTypeOptions,
 )
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
 
-@router.get("/", response_model=ObservablePage)
-async def list_observables(
+@router.get("/", response_model=DetectionPage)
+async def list_detections(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("detection", "read"))],
-    for_detection: bool | None = None,
     search: str | None = None,
     observable_type: str | None = None,
     page: int = 1,
     page_size: int = service.DEFAULT_PAGE_SIZE,
-) -> ObservablePage:
+) -> DetectionPage:
     return await service.get_detection_page(
         session,
-        for_detection=for_detection, search=search, observable_type=observable_type,
+        search=search, observable_type=observable_type,
         page=page, page_size=page_size,
     )
 
 
-@router.get("/types", response_model=list[str])
+@router.get("/types", response_model=ObservableTypeOptions)
 async def observable_types(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("detection", "read"))],
-) -> list[str]:
-    return await service.list_observable_types(session)
+) -> ObservableTypeOptions:
+    return ObservableTypeOptions(
+        present=await service.list_present_types(session),
+        all=service.list_all_observable_types(),
+    )
 
 
-@router.patch("/{observable_id}/detection", response_model=ObservableDetectionRead)
-async def set_detection(
-    observable_id: int,
-    body: DetectionUpdate,
+@router.post("/", response_model=ObservableDetectionRead, status_code=status.HTTP_201_CREATED)
+async def create_detection(
+    body: DetectionCreate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
 ) -> ObservableDetectionRead:
-    # record who changed the detection status and why; callers may override the wording
-    detection_context = body.detection_context
-    if not detection_context:
-        action = "enabled" if body.enabled else "disabled"
-        detection_context = f"manually {action} by {auth.auth_name}"
+    detection_context = body.detection_context or f"manually added by {auth.auth_name}"
 
-    result = await service.set_observable_for_detection(
-        session, observable_id, body.enabled, auth.auth_user_id, detection_context
-    )
-    if result is None:
-        raise HTTPException(status_code=404, detail="Observable not found")
-    return result
+    try:
+        return await service.create_detection(
+            session,
+            observable_type=body.type,
+            value=body.value,
+            created_by_user_id=auth.auth_user_id,
+            detection_context=detection_context,
+            expires_on=body.expires_on,
+            batch_id=body.batch_id,
+        )
+    except InvalidDetectionValue as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except service.DetectionAlreadyExists as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
-@router.patch("/{observable_id}/expiration", response_model=ObservableDetectionRead)
-async def set_expiration(
-    observable_id: int,
-    body: ExpirationUpdate,
+@router.delete("/{detection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_detection(
+    detection_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
+) -> None:
+    if not await service.delete_detection(session, detection_id):
+        raise HTTPException(status_code=404, detail="Detection not found")
+
+
+@router.patch("/{detection_id}/expiration", response_model=ObservableDetectionRead)
+async def set_expiration(
+    detection_id: int,
+    body: ExpirationUpdate,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
 ) -> ObservableDetectionRead:
-    result = await service.set_observable_expiration(session, observable_id, body.expires_on)
+    result = await service.set_detection_expiration(
+        session, detection_id, body.expires_on, auth.auth_user_id)
     if result is None:
-        raise HTTPException(status_code=404, detail="Observable not found")
+        raise HTTPException(status_code=404, detail="Detection not found")
     return result
