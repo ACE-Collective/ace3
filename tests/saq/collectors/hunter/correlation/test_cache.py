@@ -4,6 +4,7 @@ import pytest
 
 from saq.collectors.hunter.correlation.cache import (
     CorrelateQueryRecorder,
+    _describe_command,
     _make_cache_key,
     get_cached_result,
     set_cached_result,
@@ -28,6 +29,30 @@ class TestCacheKeyGeneration:
         key = _make_cache_key({"test": "value"})
         assert key.startswith("hunt_cache:")
         assert len(key) == len("hunt_cache:") + 64  # sha256 hex digest
+
+
+@pytest.mark.unit
+class TestDescribeCommand:
+
+    def test_query_summary_collapses_whitespace(self):
+        desc = _describe_command({
+            "type": "query",
+            "source": "logscale",
+            "query": "ComputerName=/x/i\n  | foo   bar",
+        })
+        assert desc == "type=query source=logscale query='ComputerName=/x/i | foo bar'"
+
+    def test_query_summary_truncates_long_query(self):
+        desc = _describe_command({"type": "query", "source": "splunk", "query": "a" * 500})
+        assert desc.endswith("…'")
+        assert len(desc) < 400
+
+    def test_executable_summary(self):
+        desc = _describe_command({"type": "executable", "path": "/bin/foo", "args": ["-c", "x"]})
+        assert desc == "type=executable path=/bin/foo args=['-c', 'x']"
+
+    def test_unknown_type(self):
+        assert _describe_command({}) == "type=?"
 
 
 @pytest.mark.unit
@@ -58,6 +83,52 @@ class TestCacheOperations:
 
         set_cached_result({"query": "test"}, "output", 3600)
         mock_redis.setex.assert_called_once()
+
+    @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
+    def test_set_cached_logs_command_identity(self, mock_get_redis, caplog):
+        mock_get_redis.return_value = MagicMock()
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            set_cached_result(
+                {"type": "query", "source": "logscale", "query": "index=main"},
+                "output",
+                300,
+            )
+
+        # the log line must identify what was cached (source + query), not just the hash
+        assert "source=logscale" in caplog.text
+        assert "index=main" in caplog.text
+        assert "for 300s" in caplog.text
+
+    @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
+    def test_set_cached_redacts_secrets(self, mock_get_redis, caplog):
+        mock_get_redis.return_value = MagicMock()
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            set_cached_result(
+                {"type": "query", "source": "splunk", "query": "token=SUPERSECRET index=main"},
+                "output",
+                300,
+                {"api_key": "SUPERSECRET"},
+            )
+
+        assert "SUPERSECRET" not in caplog.text
+        assert "***" in caplog.text
+
+    @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
+    def test_get_cached_hit_logs_command_identity(self, mock_get_redis, caplog):
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = "cached_output"
+        mock_get_redis.return_value = mock_redis
+
+        import logging
+        with caplog.at_level(logging.INFO):
+            get_cached_result({"type": "query", "source": "logscale", "query": "index=main"})
+
+        assert "cache hit" in caplog.text
+        assert "source=logscale" in caplog.text
 
     @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
     def test_get_handles_redis_error(self, mock_get_redis):

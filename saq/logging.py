@@ -154,8 +154,8 @@ def _install_suppression_filter():
             handler.addFilter(ThreadSuppressionFilter())
 
 
-_DEFAULT_TRANSACTION_ID = "00000000-0000-0000-0000-000000000000"
-_transaction_id = contextvars.ContextVar("transactionId", default=_DEFAULT_TRANSACTION_ID)
+DEFAULT_TRANSACTION_ID = "00000000-0000-0000-0000-000000000000"
+_transaction_id = contextvars.ContextVar("transactionId", default=DEFAULT_TRANSACTION_ID)
 
 
 def initialize_transaction_id() -> str:

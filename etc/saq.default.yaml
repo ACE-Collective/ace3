@@ -1150,6 +1150,33 @@ analysis_module_email_analyzer:
   # When only scanning inbound emails from office365, scan the following outbound emails
   # found in outbound_exceptions. Comma separated list!
   outbound_exceptions: ""
+  # Header names for provider-specific facts EmailAnalyzer extracts. The shipped defaults are
+  # the Microsoft 365 header names and live in EmailProviderHeaders in
+  # saq/modules/email/rfc822.py -- you only need this block to point at a DIFFERENT provider.
+  # Override just the sub-keys that differ; each is a list of header names (first present wins),
+  # and any list left empty disables that extraction (a provider without the concept never
+  # errors). Note: SPF/DKIM/DMARC come from the standard Authentication-Results header and the
+  # DKIM d= tag from DKIM-Signature -- those are RFC standards, not configurable here.
+  # The complete set of overridable keys and their Microsoft 365 defaults:
+  # provider_headers:
+  #   first_hop_ip:                 # sending IP of the first external hop (most authoritative first)
+  #     - X-MS-Exchange-Organization-OriginalAttributedTenantConnectingIp
+  #     - X-MS-Exchange-Organization-OriginalClientIPAddress
+  #     - X-Sender-IP
+  #   sender_tenant_id:             # sending organization's tenant GUID
+  #     - X-MS-Exchange-CrossTenant-Id
+  #     - X-MS-Exchange-Organization-OriginalTenant-Id
+  #     - X-MS-Exchange-Organization-OutboundHop-Sender-TenantId
+  #   composite_auth_result:        # provider's composite authentication verdict
+  #     - X-MS-Exchange-Organization-CompAuthRes
+  #   composite_auth_reason:        # provider's composite authentication reason code
+  #     - X-MS-Exchange-Organization-CompAuthReason
+  #   anonymous_direct_send:        # boolean header set on unauthenticated direct-send mail
+  #     - X-MS-Exchange-Organization-IsAnonymousDirectSend
+  #   internal_org_sender:          # boolean header set when the sender was treated as internal
+  #     - X-MS-Exchange-Organization-InternalOrgSender
+  #   message_directionality:       # message direction, e.g. Incoming vs outbound
+  #     - X-MS-Exchange-Organization-MessageDirectionality
 
 analysis_module_email_archiver:
   name: email_archiver

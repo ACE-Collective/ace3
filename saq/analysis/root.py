@@ -2,6 +2,7 @@ from datetime import datetime
 import gc
 import logging
 import os
+import time
 import traceback
 from typing import Callable, Optional, Union
 from uuid import uuid4
@@ -22,6 +23,7 @@ from saq.util.time import local_time
 
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
+KEY_TRANSACTION_ID = 'transaction_id'
 
 class RootAnalysis(Analysis):
     """Root of analysis. Also see saq.database.Alert."""
@@ -241,6 +243,20 @@ class RootAnalysis(Analysis):
     @playbook_url.setter
     def playbook_url(self, value):
         self.set_extension(KEY_PLAYBOOK_URL, value)
+
+    @property
+    def transaction_id(self):
+        """Returns the logging transaction id (see saq.logging) of the context that created this
+        RootAnalysis, or None if it was not recorded. Used to correlate the resulting alert with the
+        log lines emitted by whatever produced it (for example a single hunt execution)."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_TRANSACTION_ID, None)
+
+    @transaction_id.setter
+    def transaction_id(self, value):
+        self.set_extension(KEY_TRANSACTION_ID, value)
 
     @property
     def analysis_failures(self):
@@ -858,6 +874,20 @@ class Submission:
 
         # XXX this is a hack for now...
         self.files_prepared = False # sets set to True once we've "prepared" the files
+
+        # time.monotonic() value recorded when this submission was placed on a collector
+        # queue. in-memory only (it never survives the trip through the database) and used
+        # to log how long a submission waited before the collector picked it up.
+        self.queued_time: Optional[float] = None
+
+    @property
+    def queue_age(self) -> Optional[float]:
+        """Returns the number of seconds since this submission was queued, or None if it
+        was never stamped with queued_time."""
+        if self.queued_time is None:
+            return None
+
+        return time.monotonic() - self.queued_time
 
     def __str__(self):
         return f"Submission({self.root} ({self.root.analysis_mode}))"

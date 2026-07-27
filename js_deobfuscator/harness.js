@@ -101,6 +101,21 @@ if (webcrack) {
 const events = [];
 const secondaryScripts = [];
 
+// Phishing-kit payloads are routinely staged inside an async handler —
+// `$(document).ready(async () => { ...; await ...; payload })` is the dominant
+// shape. Such a handler runs its synchronous portion, hits an `await`, and
+// returns a pending promise; if its later continuation throws (a TypeError on
+// some obfuscated member call, a rejected fetch, ...), that surfaces as an
+// UNHANDLED REJECTION. Node's default is to terminate the process with a
+// non-zero exit code — which happens AFTER we have already written the trace
+// and the JSON report, so the client sees exit!=1..0 and discards a perfectly
+// good result. Registering this handler both (a) records the rejection and
+// (b) stops Node from crashing, so the exit code reflects the harness, not a
+// stray async payload error deep inside the sample.
+process.on('unhandledRejection', (reason) => {
+  events.push({ kind: 'unhandledRejection', error: reason && (reason.stack || reason.message || String(reason)) });
+});
+
 // Listeners the sample registers for the "page is ready" event family. There
 // is no document and no event loop here, so these would never fire on their
 // own: a sample that defers its payload to DOMContentLoaded (a very common
@@ -297,7 +312,67 @@ function recorder(label) {
 // transform a recorder is strictly worse than the crash: `.decode()` returns a
 // Proxy, `eval(Proxy)` is a silent no-op, and the payload is lost with no
 // error at all. TextDecoder is exactly that case and is why this note exists.
+// jQuery (`$` / `jQuery`). A REAL implementation, not a recorder — see the
+// category note above. The dominant staging pattern for jQuery-based phishing
+// kits is `$(document).ready(function(){ ...payload... })`; a plain recorder
+// would record the `.ready()` call but never invoke the handler, so the whole
+// payload would vanish silently (and before that, an undefined `$` throws
+// `ReferenceError: $ is not defined` at the top of the IIFE and kills the run
+// with zero events captured). We route ready/load handlers into the same
+// domReadyListeners array drained after the main run (identical to the
+// addEventListener('DOMContentLoaded') path), and let every other jQuery
+// method fall back to a chainable recorder so IOCs like `.attr('action', url)`
+// and `$.post(url, ...)` still surface in the trace.
+function queueJqueryHandler(fn) {
+  if (typeof fn === 'function') {
+    domReadyListeners.push({ type: 'DOMContentLoaded', handler: fn });
+  }
+}
+function makeJqueryObject() {
+  return new Proxy(function () {}, {
+    get(_t, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      if (prop === 'toString' || prop === 'valueOf') return () => '[$()]';
+      if (prop === 'then') return undefined; // don't look like a thenable
+      // `.ready(fn)` / `.load(fn)` — fire the handler after the main run.
+      if (prop === 'ready' || prop === 'load') {
+        return (...args) => { queueJqueryHandler(args[0]); return makeJqueryObject(); };
+      }
+      // `.on('load', fn)` / `.bind(...)` / `.one(...)` — queue only when the
+      // event is a page-ready event; otherwise it's a UI handler we can't fire.
+      if (prop === 'on' || prop === 'bind' || prop === 'one') {
+        return (...args) => {
+          if (DOM_READY_EVENTS.has(String(args[0]))) queueJqueryHandler(args[1]);
+          return makeJqueryObject();
+        };
+      }
+      // Every other jQuery method stays a chainable recorder.
+      return recorder(`$().${String(prop)}`);
+    },
+    apply() { return makeJqueryObject(); },
+    has() { return true; },
+  });
+}
+// `$` itself is callable (`$(document)`, `$(fn)` ready shorthand) and carries
+// static helpers (`$.post`, `$.ajax`, `$.get`, ...). The get trap hands those
+// back as recorders so their URL arguments are captured.
+const jqueryGlobal = new Proxy(function () {}, {
+  apply(_t, _thisArg, args) {
+    if (typeof args[0] === 'function') queueJqueryHandler(args[0]);
+    return makeJqueryObject();
+  },
+  get(_t, prop) {
+    if (typeof prop === 'symbol') return undefined;
+    if (prop === 'toString' || prop === 'valueOf') return () => '[$]';
+    if (prop === 'then') return undefined;
+    return recorder(`$.${String(prop)}`);
+  },
+  has() { return true; },
+});
+
 const sandbox = {
+  $: jqueryGlobal,
+  jQuery: jqueryGlobal,
   console: {
     log: (...a) => events.push({ kind: 'console.log', args: a.map(safeStringify) }),
     warn: (...a) => events.push({ kind: 'console.warn', args: a.map(safeStringify) }),
@@ -434,6 +509,18 @@ for (const { type, handler } of domReadyListeners) {
   } catch (e) {
     events.push({ kind: 'domready.error', error: e && (e.message || String(e)) });
   }
+}
+
+// A ready handler may be async: its synchronous portion has run, but anything
+// after an `await` is still queued. Yield to the event loop a bounded number
+// of times so those continuations (and any timers they scheduled) execute and
+// record before we snapshot the trace — otherwise the post-await payload, which
+// is often where the real credential-exfil call lives, is rendered as nothing.
+// `setImmediate` here is Node's real one (module scope), distinct from the
+// sandbox stub. The loop is bounded so a self-rescheduling promise can't wedge
+// the harness; each pass fully drains the microtask queue.
+for (let i = 0; i < 20; i++) {
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 // Re-run any secondary scripts the sample revealed so their global writes get

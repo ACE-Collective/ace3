@@ -1,4 +1,5 @@
 from datetime import datetime
+import email
 import filecmp
 import gzip
 import json
@@ -11,7 +12,7 @@ import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_EMAIL_TO, F_FILE, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_FROM, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
@@ -28,7 +29,27 @@ from saq.modules.email.logging import EmailLoggingAnalyzer
 from saq.modules.email.mailbox import MAILBOX_ALERT_PREFIX
 from saq.modules.email.message_id import MessageIDAnalysisV2
 from saq.modules.email.constants import KEY_LOG_ENTRY
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import (
+    EmailAnalysis,
+    EmailAnalyzerConfig,
+    EmailProviderHeaders,
+    TAG_ANONYMOUS_DIRECT_SEND,
+    TAG_AUTHENTICATION_FAILED,
+    TAG_SPOOFED_INTERNAL,
+    get_dkim_signing_domains,
+    get_sender_tenant_id,
+    normalize_ip_header_value,
+    parse_email_authentication,
+    resolve_first_hop,
+)
+from saq.modules.email.constants import (
+    KEY_COMPAUTH_REASON,
+    KEY_COMPAUTH_RESULT,
+    KEY_DMARC_RESULT,
+    KEY_IS_ANONYMOUS_DIRECT_SEND,
+    KEY_SPF_RESULT,
+)
+from saq.observables.email import EmailFirstHopIPObservable
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
@@ -275,14 +296,17 @@ def test_splunk_logging(root_analysis, datadir, monkeypatch):
     assert len(url_fields) == 3
 
     smtp_fields = smtp_logs[0].split('\x1e')
-    assert len(smtp_fields) == 26
-    
+    assert len(smtp_fields) == 37
+
     with open(fields_file, 'r') as fp:
         fields = fp.readline().strip()
 
-    assert fields == ('date,attachment_count,attachment_hashes,attachment_names,attachment_sizes,attachment_types,bcc,'
-                                'cc,env_mail_from,env_rcpt_to,extracted_urls,first_received,headers,last_received,mail_from,'
-                                'mail_to,message_id,originating_ip,path,reply_to,size,subject,subject_raw,user_agent,archive_path,x_mailer')
+    assert fields == ('date,attachment_count,attachment_hashes,attachment_names,attachment_sizes,attachment_types,'
+                                'authentication_failed,bcc,cc,compauth_reason,compauth_result,dkim_result,dmarc_result,'
+                                'env_mail_from,env_rcpt_to,extracted_urls,first_received,headers,internal_org_sender,'
+                                'is_anonymous_direct_send,last_received,mail_from,mail_from_is_local,mail_to,'
+                                'message_directionality,message_id,originating_ip,path,reply_to,size,spf_result,'
+                                'spoofed_internal,subject,subject_raw,user_agent,archive_path,x_mailer')
 
 @pytest.mark.integration
 def test_update_brocess(root_analysis, datadir):
@@ -1798,3 +1822,484 @@ def test_log_entry_subject(root_analysis, datadir, email_file, expected_subject,
     for name, value in email_analysis.headers:
         assert isinstance(name, str)
         assert isinstance(value, str)
+
+
+#
+# first hop / DKIM / sender tenant id header extraction
+#
+
+def _load_email(path):
+    with open(path, 'rb') as fp:
+        return email.message_from_binary_file(fp)
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_authoritative_header(datadir):
+    """The X-MS-* client IP header wins, and the matching Received: hop supplies the host."""
+
+    # the journal envelope wraps the real message, so the authoritative headers are on the inner one
+    outer = _load_email(str(datadir / 'emails/o365_journaled.email.rfc822'))
+    inner = [
+        sub
+        for part in outer.walk() if part.get_content_type() == 'message/rfc822'
+        for sub in part.get_payload()
+    ][0]
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(inner)
+    assert hop_ip == '207.211.31.81'
+    # the token after `from` (us-smtp-1.mimecast.com) is the HELO; the parens hold only the IP,
+    # so there is no reverse-DNS host name
+    assert hop_helo == 'us-smtp-1.mimecast.com'
+    assert hop_from is None
+
+    # the journal envelope itself only has internal relay hops, so it resolves to nothing
+    assert resolve_first_hop(outer) == (None, None, None)
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_local_domain_fallback(datadir):
+    """Without an X-MS-* header we fall back to the hop accepted by one of our own hosts."""
+
+    target_email = _load_email(str(datadir / 'emails/smtp.email.rfc822'))
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+    # Received: from mail-lf1-f52.google.com ([209.85.167.52]) by mailserver.company.com
+    # the token after `from` is the HELO; the parens hold only the IP so there is no rDNS host
+    assert hop_ip == '209.85.167.52'
+    assert hop_helo == 'mail-lf1-f52.google.com'
+    assert hop_from is None
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_helo():
+    """A helo=/HELO token on the perimeter hop becomes email_first_hop_helo."""
+
+    for received in [
+        'from relay.example.com (helo=Spoofed.Example.NET) by mailserver.company.com with ESMTP',
+        'from relay.example.com (HELO Spoofed.Example.NET) by mailserver.company.com with ESMTP',
+    ]:
+        target_email = email.message_from_string(f'Received: {received}\r\n\r\nbody\r\n')
+        hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+        assert hop_helo == 'spoofed.example.net'
+        assert hop_from == 'relay.example.com'
+        assert hop_ip is None
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_helo_and_rdns_host():
+    """`from HELO (rdns [ip])` splits the HELO (token) from the reverse-DNS host (in parens)."""
+
+    target_email = email.message_from_string(
+        'X-Sender-IP: 203.0.113.5\r\n'
+        'Received: from HELO-NAME.example (rdns.sender.example [203.0.113.5]) by mx.company.com\r\n'
+        '\r\nbody\r\n')
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+    assert hop_ip == '203.0.113.5'
+    assert hop_helo == 'helo-name.example'
+    assert hop_from == 'rdns.sender.example'
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_ipv6():
+    """IPv6 hop addresses must survive -- the older x-sender-ip handling strips them to junk."""
+
+    target_email = email.message_from_string(
+        'X-MS-Exchange-Organization-OriginalClientIPAddress: 2a01:111:f403:c201::3\r\n'
+        'Received: from mail.example.com (2a01:111:f403:c201::3) by mailserver.company.com\r\n'
+        '\r\nbody\r\n')
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+    assert hop_ip == '2a01:111:f403:c201::3'
+    # token after `from` is the HELO; parens hold only the IP
+    assert hop_helo == 'mail.example.com'
+    assert hop_from is None
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_missing():
+    """Nothing to resolve means no observables, not a guess."""
+
+    target_email = email.message_from_string('Subject: hello\r\n\r\nbody\r\n')
+    assert resolve_first_hop(target_email) == (None, None, None)
+
+
+@pytest.mark.unit
+def test_normalize_ip_header_value():
+    """Bracket decoration comes off, and IPv6 survives (it used to be stripped to junk)."""
+
+    assert normalize_ip_header_value('[10.0.0.1]') == '10.0.0.1'
+    assert normalize_ip_header_value(' 10.0.0.1 ') == '10.0.0.1'
+    assert normalize_ip_header_value('[2a01:111:f403:c201::3]') == '2a01:111:f403:c201::3'
+    assert normalize_ip_header_value('2a01:111:f403:c201::3') == '2a01:111:f403:c201::3'
+
+    # garbage yields nothing rather than a mangled value
+    assert normalize_ip_header_value('unknown') is None
+    assert normalize_ip_header_value('') is None
+    assert normalize_ip_header_value(None) is None
+
+
+@pytest.mark.integration
+def test_ipv6_originating_and_sender_ip(root_analysis, tmp_path):
+    """X-Originating-IP / X-Sender-IP must survive as IPv6 addresses."""
+
+    path = tmp_path / 'ipv6.email.rfc822'
+    path.write_text(
+        'Message-ID: <ipv6test@example.com>\r\n'
+        'From: sender@example.com\r\n'
+        'To: recipient@company.com\r\n'
+        'Subject: ipv6\r\n'
+        'X-Originating-IP: [2a01:111:f403:c201::3]\r\n'
+        'X-Sender-IP: [2a01:111:f403:c201::4]\r\n'
+        '\r\nbody\r\n')
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(path))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+
+    assert email_analysis.originating_ip == '2a01:111:f403:c201::3'
+    assert email_analysis.x_sender_ip == '2a01:111:f403:c201::4'
+
+    ip_values = sorted(_.value for _ in email_analysis.get_observables_by_type(F_IP))
+    assert ip_values == ['2a01:111:f403:c201::3', '2a01:111:f403:c201::4']
+
+
+@pytest.mark.unit
+def test_get_dkim_signing_domains(datadir):
+    target_email = _load_email(str(datadir / 'emails/smtp.email.rfc822'))
+    assert get_dkim_signing_domains(target_email) == ['gmail.com']
+
+    # one observable per signature, deduplicated, and the d= tag is not confused with other tags
+    multi = email.message_from_string(
+        'DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=first.example.com; s=sel;\r\n'
+        'DKIM-Signature: v=1; a=rsa-sha256; d=Second.Example.COM; s=sel;\r\n'
+        'DKIM-Signature: v=1; a=rsa-sha256; d=first.example.com; s=other;\r\n'
+        '\r\nbody\r\n')
+    assert get_dkim_signing_domains(multi) == ['first.example.com', 'second.example.com']
+
+    assert get_dkim_signing_domains(email.message_from_string('Subject: x\r\n\r\nbody\r\n')) == []
+
+
+@pytest.mark.unit
+def test_get_sender_tenant_id(datadir):
+    target_email = _load_email(str(datadir / 'emails/smtp.email.rfc822'))
+    assert get_sender_tenant_id(target_email) == 'cfddba29-ca2a-450c-a415-595e7fcce8e5'
+
+    # a non-GUID value is ignored rather than emitted
+    assert get_sender_tenant_id(email.message_from_string(
+        'X-MS-Exchange-CrossTenant-Id: not-a-guid\r\n\r\nbody\r\n')) is None
+
+    assert get_sender_tenant_id(email.message_from_string('Subject: x\r\n\r\nbody\r\n')) is None
+
+
+@pytest.mark.integration
+def test_email_header_observables(root_analysis, datadir):
+    """The new header observables land on the analysis tree end to end."""
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/smtp.email.rfc822'))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+
+    def values(o_type):
+        return sorted(_.value for _ in email_analysis.get_observables_by_type(o_type))
+
+    assert values(F_EMAIL_FIRST_HOP_IP) == ['209.85.167.52']
+    # the Received `from` token is the HELO; there is no reverse-DNS host in the parens
+    assert values(F_EMAIL_FIRST_HOP_HELO) == ['mail-lf1-f52.google.com']
+    assert values(F_EMAIL_FIRST_HOP_FROM) == []
+    assert values(F_EMAIL_DKIM_SIGNING_DOMAIN) == ['gmail.com']
+    assert values(F_EMAIL_SENDER_TENANT_ID) == ['cfddba29-ca2a-450c-a415-595e7fcce8e5']
+
+    # the first hop IP observable must be the validating subclass, not DefaultObservable
+    first_hop_ip = email_analysis.get_observables_by_type(F_EMAIL_FIRST_HOP_IP)[0]
+    assert isinstance(first_hop_ip, EmailFirstHopIPObservable)
+
+
+#
+# message authentication + confirmed internal-spoof detection
+#
+
+@pytest.mark.unit
+def test_parse_email_authentication():
+    """SPF/DKIM/DMARC verdicts, composite auth, and the provider provenance flags."""
+
+    target_email = email.message_from_string(
+        'Authentication-Results: spf=fail (sender IP is 203.0.113.10) smtp.mailfrom=company.com;\r\n'
+        ' dkim=none (message not signed) header.d=none;dmarc=fail action=oreject header.from=company.com;\r\n'
+        'X-MS-Exchange-Organization-CompAuthRes: fail\r\n'
+        'X-MS-Exchange-Organization-CompAuthReason: 000\r\n'
+        'X-MS-Exchange-Organization-IsAnonymousDirectSend: True\r\n'
+        'X-MS-Exchange-Organization-InternalOrgSender: True\r\n'
+        'X-MS-Exchange-Organization-MessageDirectionality: Incoming\r\n'
+        '\r\nbody\r\n')
+
+    auth = parse_email_authentication(target_email)
+    assert auth[KEY_SPF_RESULT] == 'fail'
+    assert auth[KEY_DMARC_RESULT] == 'fail'
+    assert auth[KEY_COMPAUTH_RESULT] == 'fail'
+    assert auth[KEY_COMPAUTH_REASON] == '000'
+    assert auth[KEY_IS_ANONYMOUS_DIRECT_SEND] is True
+
+    # composite auth token inside Authentication-Results is used when the dedicated header is absent
+    fallback = email.message_from_string(
+        'Authentication-Results: spf=pass; dkim=pass; dmarc=pass action=none; compauth=pass reason=100\r\n'
+        '\r\nbody\r\n')
+    assert parse_email_authentication(fallback)[KEY_COMPAUTH_RESULT] == 'pass'
+
+    # the Authentication-Results header carrying dmarc is preferred over an earlier relay's
+    multi = email.message_from_string(
+        'Authentication-Results: mx1.relay.example; spf=none\r\n'
+        'Authentication-Results: protection.outlook.com; spf=fail; dmarc=fail action=oreject\r\n'
+        '\r\nbody\r\n')
+    assert parse_email_authentication(multi)[KEY_DMARC_RESULT] == 'fail'
+
+    # a clean message resolves to no verdicts and no flags
+    clean = parse_email_authentication(email.message_from_string('Subject: hi\r\n\r\nbody\r\n'))
+    assert clean[KEY_COMPAUTH_RESULT] is None
+    assert clean[KEY_IS_ANONYMOUS_DIRECT_SEND] is False
+
+
+def _run_email_analyzer(root_analysis, path):
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(path))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    email_analysis.load_details()
+    return file_observable, email_analysis
+
+
+@pytest.mark.integration
+def test_confirmed_internal_spoof_logged(root_analysis, datadir):
+    """A forged-internal message that failed auth gets tagged and logged (but not detected on)."""
+
+    file_observable, email_analysis = _run_email_analyzer(
+        root_analysis, datadir / 'emails/direct_send_spoof.email.rfc822')
+
+    assert file_observable.has_tag(TAG_SPOOFED_INTERNAL)
+    assert file_observable.has_tag(TAG_AUTHENTICATION_FAILED)
+    assert file_observable.has_tag(TAG_ANONYMOUS_DIRECT_SEND)
+
+    # the parsed verdicts are stored in the per-message email details
+    assert email_analysis.email[KEY_COMPAUTH_RESULT] == 'fail'
+    assert email_analysis.email[KEY_DMARC_RESULT] == 'fail'
+    assert email_analysis.email[KEY_IS_ANONYMOUS_DIRECT_SEND] is True
+
+    # the verdict and everything it was computed from is surfaced in the email log entry so
+    # analysts can write and tune the detection from the log source instead
+    log_entry = email_analysis.log_entry
+    assert log_entry['spoofed_internal'] is True
+    assert log_entry['authentication_failed'] is True
+    assert log_entry['mail_from_is_local'] is True
+    assert log_entry['compauth_result'] == 'fail'
+    assert log_entry['dmarc_result'] == 'fail'
+    assert log_entry['is_anonymous_direct_send'] is True
+
+    # the confirming tenant GUID here would be an org/attributed header, which we deliberately
+    # do NOT treat as the sender tenant -- so no email_sender_tenant_id observable is emitted
+    assert email_analysis.get_observables_by_type(F_EMAIL_SENDER_TENANT_ID) == []
+
+
+@pytest.mark.integration
+def test_legitimate_inbound_not_flagged_as_spoof(root_analysis, datadir):
+    """A normal inbound message from an external (non-managed) domain is not a spoof."""
+
+    file_observable, email_analysis = _run_email_analyzer(
+        root_analysis, datadir / 'emails/smtp.email.rfc822')
+
+    # From is @gmail.com (not a managed domain), so none of the spoof machinery fires
+    assert not file_observable.has_tag(TAG_SPOOFED_INTERNAL)
+    assert not file_observable.detections
+
+    # the field is still present (and false) -- a log-based rule relies on that
+    assert email_analysis.log_entry['spoofed_internal'] is False
+    assert email_analysis.log_entry['mail_from_is_local'] is False
+
+
+#
+# provider header configurability (non-Microsoft providers override the header names)
+#
+
+@pytest.mark.unit
+def test_provider_headers_defaults_are_microsoft():
+    """Out of the box the provider header lists are the Microsoft 365 names."""
+
+    headers = EmailProviderHeaders()
+    assert 'x-ms-exchange-organization-originalclientipaddress' in headers.first_hop_ip
+    assert 'x-ms-exchange-crosstenant-id' in headers.sender_tenant_id
+    assert headers.composite_auth_result == ['x-ms-exchange-organization-compauthres']
+
+
+@pytest.mark.unit
+def test_provider_headers_partial_override_keeps_other_defaults():
+    """Overriding one list (as a deployment would) leaves the rest at their defaults."""
+
+    headers = EmailProviderHeaders(first_hop_ip=['X-Received'])
+    assert headers.first_hop_ip == ['X-Received']
+    # untouched lists still hold the shipped Microsoft defaults
+    assert 'x-ms-exchange-crosstenant-id' in headers.sender_tenant_id
+    assert headers.composite_auth_result == ['x-ms-exchange-organization-compauthres']
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_honors_configured_headers():
+    """A provider that reports the sending IP in a different header is picked up via config."""
+
+    # the custom header carries a bare IP distinct from the Received hop, so a result of
+    # 203.0.113.99 can only have come from consulting the configured header. (The Received
+    # hop uses a genuinely public IP; the fallback skips private/reserved ranges.)
+    target_email = email.message_from_string(
+        'X-Provider-Client-IP: 203.0.113.99\r\n'
+        'Received: from mail.sender.example (209.85.167.52) by mx.company.com\r\n'
+        '\r\nbody\r\n')
+
+    # default Microsoft headers -> none present, falls back to the local-domain Received hop
+    default_ip, _, _ = resolve_first_hop(target_email)
+    assert default_ip == '209.85.167.52'
+
+    # configured to trust X-Provider-Client-IP -> that header's value wins
+    config_ip, _, _ = resolve_first_hop(target_email, ip_headers=['x-provider-client-ip'])
+    assert config_ip == '203.0.113.99'
+
+
+@pytest.mark.unit
+def test_get_sender_tenant_id_honors_configured_headers():
+    target_email = email.message_from_string(
+        'X-Provider-Tenant: 7a53b4fc-e87d-4c46-9972-0570ac271b27\r\n\r\nbody\r\n')
+
+    # not one of the default Microsoft headers
+    assert get_sender_tenant_id(target_email) is None
+    assert get_sender_tenant_id(target_email, tenant_headers=['x-provider-tenant']) == \
+        '7a53b4fc-e87d-4c46-9972-0570ac271b27'
+
+
+@pytest.mark.unit
+def test_parse_email_authentication_graceful_when_headers_absent_from_config():
+    """A provider lacking a concept (empty header list) yields None without error."""
+
+    # a message that DOES carry Microsoft composite-auth headers...
+    target_email = email.message_from_string(
+        'Authentication-Results: spf=fail; dmarc=fail action=oreject\r\n'
+        'X-MS-Exchange-Organization-CompAuthRes: fail\r\n'
+        'X-MS-Exchange-Organization-IsAnonymousDirectSend: True\r\n'
+        '\r\nbody\r\n')
+
+    # ...parsed for a provider configured with NO composite-auth / direct-send headers
+    provider = EmailProviderHeaders(
+        composite_auth_result=[],
+        composite_auth_reason=[],
+        anonymous_direct_send=[],
+        internal_org_sender=[],
+        message_directionality=[],
+    )
+    auth = parse_email_authentication(target_email, provider)
+    assert auth[KEY_COMPAUTH_RESULT] is None          # header ignored per config, no error
+    assert auth[KEY_IS_ANONYMOUS_DIRECT_SEND] is False
+    # the RFC-standard Authentication-Results parsing is provider-neutral and still works
+    assert auth[KEY_DMARC_RESULT] == 'fail'
+
+
+@pytest.mark.unit
+def test_email_analyzer_config_exposes_provider_headers_default():
+    """The loaded module config surfaces provider_headers with the Microsoft defaults."""
+
+    config = get_analysis_module_config('email_analyzer')
+    assert isinstance(config, EmailAnalyzerConfig)
+    assert 'x-ms-exchange-organization-originalclientipaddress' in config.provider_headers.first_hop_ip
+    assert 'x-ms-exchange-crosstenant-id' in config.provider_headers.sender_tenant_id
+
+
+@pytest.mark.unit
+def test_extract_first_hop_ip_structured_value():
+    """A structured header (tenant-relayed mail) yields the connecting IP, not junk."""
+
+    from saq.modules.email.rfc822 import extract_first_hop_ip
+
+    # bare / bracketed values keep working (fast path)
+    assert extract_first_hop_ip('135.125.140.186') == '135.125.140.186'
+    assert extract_first_hop_ip('[135.125.140.186]') == '135.125.140.186'
+    assert extract_first_hop_ip('2a01:111:f403:c101::7') == '2a01:111:f403:c101::7'
+
+    # X-MS-Exchange-Organization-OriginalAttributedTenantConnectingIp form: the GUID must
+    # not be mistaken for an IP, and the connecting Ip= wins over the trailing Helo= loopback
+    structured = 'TenantId=39f8e1f5-7405-4ce3-be3f-3712fbf3c157;Ip=[135.125.140.186];Helo=[[127.0.0.1]]'
+    assert extract_first_hop_ip(structured) == '135.125.140.186'
+
+    assert extract_first_hop_ip('no ip here') is None
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_prefers_tenant_connecting_ip_over_internal_client_ip():
+    """On tenant-relayed mail the true external ingress beats the Microsoft-internal hop.
+
+    OriginalClientIPAddress can be a Microsoft datacenter IPv6 when a message is relayed
+    tenant-to-tenant; OriginalAttributedTenantConnectingIp carries the real external IP and
+    is listed first, so it wins.
+    """
+    target_email = email.message_from_string(
+        'X-MS-Exchange-Organization-OriginalAttributedTenantConnectingIp: '
+        'TenantId=39f8e1f5-7405-4ce3-be3f-3712fbf3c157;Ip=[135.125.140.186];Helo=[[127.0.0.1]]\r\n'
+        'X-MS-Exchange-Organization-OriginalClientIPAddress: 2a01:111:f403:c101::7\r\n'
+        'Received: from [127.0.0.1] (135.125.140.186) by mx.company.com\r\n'
+        '\r\nbody\r\n')
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+    assert hop_ip == '135.125.140.186'
+    # the Received `from` token is a bracketed loopback literal: not a hostname, so it is not
+    # first_hop_from, but it IS the (spoofed) HELO the client presented
+    assert hop_from is None
+    assert hop_helo == '127.0.0.1'
+
+
+@pytest.mark.unit
+def test_resolve_first_hop_address_literal_helo_becomes_helo():
+    """An address-literal HELO (spoofed `[127.0.0.1]`) is the helo, not first_hop_from."""
+
+    target_email = email.message_from_string(
+        'X-Sender-IP: 203.0.113.5\r\n'
+        'Received: from [127.0.0.1] (203.0.113.5) by mx.company.com\r\n'
+        '\r\nbody\r\n')
+
+    hop_ip, hop_helo, hop_from = resolve_first_hop(target_email)
+    assert hop_ip == '203.0.113.5'
+    assert hop_helo == '127.0.0.1'
+    assert hop_from is None

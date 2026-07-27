@@ -129,7 +129,7 @@ def _execute_query(
     # Check persistent cache
     if command.cache:
         cache_args = {"type": "query", "source": command.source, "query": query_str}
-        cached = get_cached_result(cache_args)
+        cached = get_cached_result(cache_args, secrets)
         if cached is not None:
             return cached
 
@@ -159,7 +159,7 @@ def _execute_query(
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
         cache_args = {"type": "query", "source": command.source, "query": query_str}
-        set_cached_result(cache_args, output, ttl)
+        set_cached_result(cache_args, output, ttl, secrets)
 
     # Store in stream query cache
     if transform_type == "stream" and stream_query_cache is not None:
@@ -288,7 +288,7 @@ def _execute_executable(
     # Check persistent cache
     if command.cache:
         cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
-        cached = get_cached_result(cache_args)
+        cached = get_cached_result(cache_args, secrets)
         if cached is not None:
             return cached
 
@@ -320,6 +320,6 @@ def _execute_executable(
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
         cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
-        set_cached_result(cache_args, result.stdout, ttl)
+        set_cached_result(cache_args, result.stdout, ttl, secrets)
 
     return result.stdout

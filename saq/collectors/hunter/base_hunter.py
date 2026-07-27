@@ -168,6 +168,11 @@ class Hunt:
         # a way for the controlling thread to wait for the hunt execution thread to start
         self.startup_barrier = threading.Barrier(2)
 
+        # the logging transaction id of the most recent execute_with_lock() call
+        # the transaction id context exits when execute_with_lock() returns, so this is how
+        # the hunt manager re-enters it to log the queueing of the submissions that run produced
+        self.last_transaction_id: Optional[str] = None
+
         # if this is True then we're executing the Hunt outside of normal operations
         # in that case we don't want to record any of the execution time stamps
         # XXX do we still need this?
@@ -465,7 +470,11 @@ class Hunt:
     def execute_with_lock(self, execution_mode: ExecutionMode):
         # correlate every log line for this hunt run under a fresh transaction id
         from saq.logging import transaction_id
-        with transaction_id():
+        with transaction_id() as current_transaction_id:
+            # remember it so the hunt manager can log the queueing of our submissions
+            # under the same transaction id (this context exits before that happens)
+            self.last_transaction_id = current_transaction_id
+
             # we use this lock to determine if a hunt is running, and, to wait for execution to complete.
             logging.debug(f"waiting for execution lock on {self}")
             self.execution_lock.acquire()
@@ -487,8 +496,6 @@ class Hunt:
                 logging.info(f"executing {self}")
                 result = self.execute()
                 self.record_execution_time(local_time() - start_time)
-                # remember the last time we started execution
-                self.last_executed_time = local_time()
                 return result
             except RemoteApiError as e:
                 result_status = "remote_api_error"
@@ -500,6 +507,9 @@ class Hunt:
                 report_exception()
                 self.record_hunt_exception(e)
             finally:
+                # NOTE we record this whether or not it succeeded. Otherwise ACE
+                # will repeatedly spam the request.
+                self.last_executed_time = local_time()
                 end_time = local_time()
                 logging.info(
                     "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",

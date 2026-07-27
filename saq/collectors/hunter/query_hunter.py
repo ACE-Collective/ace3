@@ -16,7 +16,7 @@ import pytz
 from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
-from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis, Submission
+from saq.analysis.root import KEY_PLAYBOOK_URL, KEY_TRANSACTION_ID, RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
@@ -24,6 +24,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
 from saq.environment import get_temp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
+from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.observables.mapping import (
     ObservableMapping,
@@ -446,6 +447,12 @@ class QueryHunt(Hunt):
         if self.alert_template:
             extensions[KEY_ALERT_TEMPLATE] = self.alert_template
 
+        # record the transaction id of the hunt execution that produced this root
+        # the default sentinel means we're running outside of one, in which case
+        # there is nothing useful to correlate on
+        current_transaction_id = get_transaction_id()
+        if current_transaction_id and current_transaction_id != DEFAULT_TRANSACTION_ID:
+            extensions[KEY_TRANSACTION_ID] = current_transaction_id
 
         root = RootAnalysis(
             uuid=root_uuid,
@@ -822,12 +829,34 @@ class QueryHunt(Hunt):
             # emit one INFO log line per trace entry so detection engineers can monitor
             # filtering and performance of correlated hunts in real time
             if self.correlation_trace is not None:
+                def _log_step_timings(event_trace, steps, depth=0):
+                    # one INFO line per step per event so engineers can see which step
+                    # (especially transform/query steps) is slow. condition steps recurse
+                    # into their taken branch; their duration_ms is inclusive of the
+                    # nested branch steps logged below them.
+                    for step_trace in steps:
+                        if step_trace.duration_ms is None:
+                            continue
+                        logging.info(
+                            f"correlation step hunt={self.name} type={self.type} uuid={self.uuid} "
+                            f"event_index={event_trace.event_index} depth={depth} "
+                            f"step={step_trace.step.trace_type} desc={step_trace.description!r} "
+                            f"duration_ms={step_trace.duration_ms:.1f}"
+                        )
+                        if step_trace.step.trace_type == "condition":
+                            _log_step_timings(event_trace, step_trace.step.branch_steps, depth + 1)
+
                 for event_trace in self.correlation_trace.event_traces:
+                    event_duration = (
+                        f" duration_ms={event_trace.duration_ms:.1f}"
+                        if event_trace.duration_ms is not None else ""
+                    )
                     logging.info(
                         f"correlation trace hunt={self.name} type={self.type} uuid={self.uuid} "
                         f"event_index={event_trace.event_index} outcome={event_trace.outcome} "
-                        f"steps={len(event_trace.steps)}"
+                        f"steps={len(event_trace.steps)}{event_duration}"
                     )
+                    _log_step_timings(event_trace, event_trace.steps)
                 for stream_event in self.correlation_trace.stream_events:
                     logging.info(
                         f"correlation stream event hunt={self.name} type={self.type} uuid={self.uuid} "
