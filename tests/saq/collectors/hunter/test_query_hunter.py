@@ -1165,6 +1165,168 @@ def test_correlated_hunt_auto_tags_alert(monkeypatch):
         assert "other_tag" in s.root.tags
 
 
+class _StubCorrelationResultWithTrace:
+    """Like _StubCorrelationResult but ships a real CorrelationTrace whose per-event
+    outcomes are caller-controlled. Used to exercise the hunt_error auto-tag path
+    without a real correlation engine run — the tagging logic only inspects the
+    per-alert-scoped trace's EventTrace.outcome values."""
+    def __init__(self, events, outcomes):
+        from saq.collectors.hunter.correlation.trace import CorrelationTrace, EventTrace
+        assert len(outcomes) == len(events)
+        self.trace = CorrelationTrace(
+            event_traces=[
+                EventTrace(event_index=i, outcome=o)
+                for i, o in enumerate(outcomes)
+            ]
+        )
+        self.captured_queries = []
+        self.discarded = False
+        self.events = events
+        self.event_actions = {}
+        self.alert_event_origin_indices = list(range(len(events)))
+
+
+def _stub_correlation_engine_returning(outcomes):
+    """Build a CorrelationEngine stub whose execute() ships a canned trace with the
+    given per-event outcomes."""
+    class _E:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def execute(self, events):
+            return _StubCorrelationResultWithTrace(events, outcomes)
+
+    return _E
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("outcome", ["error", "timeout"])
+def test_hunt_error_tag_added_on_error_or_timeout_outcome(monkeypatch, outcome):
+    """A correlated-hunt event whose trace outcome is `error` (a step raised) or
+    `timeout` (correlation timeout fell the event through to alert as a fail-safe)
+    should tag the resulting alert with `warning:hunt_error` so it surfaces on
+    /ace/manage. Both outcomes route the event to alert, so both must tag."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _stub_correlation_engine_returning([outcome]),
+    )
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt_error_tag_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert "warning:hunt_error" in s.root.tags
+
+
+@pytest.mark.unit
+def test_hunt_error_tag_absent_on_clean_run(monkeypatch):
+    """A correlated hunt whose events all resolve to `alert` (no error, no timeout)
+    must NOT carry the `warning:hunt_error` tag. Verifies the tag is a real signal
+    and not applied to every correlated alert."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _stub_correlation_engine_returning(["alert"]),
+    )
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt_error_clean_hunt",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert "warning:hunt_error" not in s.root.tags
+
+
+@pytest.mark.unit
+def test_hunt_error_tag_deduped_when_predeclared(monkeypatch):
+    """When a hunt YAML already declares `warning:hunt_error` in its tags list and
+    the correlation trace also reports an error outcome, the tag must appear
+    exactly once on the alert — matches the dedup contract enforced for the
+    `correlated` auto-tag."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _stub_correlation_engine_returning(["error"]),
+    )
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt_error_predeclared",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by=None,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+        tags=["warning:hunt_error", "other_tag"],
+    )
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    for s in submissions:
+        assert s.root.tags.count("warning:hunt_error") == 1
+        assert "other_tag" in s.root.tags
+
+
+@pytest.mark.unit
+def test_hunt_error_tag_scoped_per_alert_no_cross_group_taint(monkeypatch):
+    """The hunt_error auto-tag must use the per-alert scoped trace, not the
+    hunt-wide trace. If two events from different groups produce two alerts and
+    only one event errors, only that alert may carry the tag — a timeout/error
+    in group A must not taint alerts in group B."""
+    import saq.collectors.hunter.query_hunter
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    # event 0 (group A) errors, event 1 (group B) alerts cleanly
+    monkeypatch.setattr(
+        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
+        _stub_correlation_engine_returning(["error", "alert"]),
+    )
+
+    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="hunt_error_grouped",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        group_by="user",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+        correlate=correlate,
+    )
+    submissions = hunt.process_query_results([
+        {"src": "1.2.3.4", "user": "alice"},   # event 0 -> group A -> error
+        {"src": "5.6.7.8", "user": "bob"},     # event 1 -> group B -> clean alert
+    ])
+    assert len(submissions) == 2
+
+    by_group = {s.group_value: s for s in submissions}
+    assert "warning:hunt_error" in by_group["alice"].root.tags
+    assert "warning:hunt_error" not in by_group["bob"].root.tags
+
+
 @pytest.mark.unit
 def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
     """Without group_by, two query results become two separate alerts. Each alert's
