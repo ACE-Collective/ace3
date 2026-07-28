@@ -251,8 +251,10 @@ def set_observables():
         except ValueError as e:
             return _create_results(error=str(e))
 
+        requested = _requested_detection_state(update_spec)
+
         # A row here *is* an active detection, so disabling one removes it.
-        if update_spec.get(KEY_UPDATE_FOR_DETECTION) is False or update_spec.get(KEY_UPDATE_FOR_DETECTION) == 0:
+        if requested is False:
             if detection is not None:
                 logging.info("observable detection type %s value %s disabled by %s",
                              detection.type, detection.value, user.username if user else "unknown")
@@ -262,6 +264,11 @@ def set_observables():
         if detection is None:
             if identity is None:
                 return _create_results(error=f"could not find detection {update_spec}")
+
+            if requested is not True:
+                return _create_results(
+                    error=f"no detection exists for {identity.type} {identity.value!r}: "
+                          "pass for_detection=1 to create one")
 
             # This is the create-for-a-never-seen-observable path. It writes nothing to the
             # observables index -- that table is owned by the ingest path.
@@ -275,13 +282,12 @@ def set_observables():
                 created_by=user.id if user else None)
             get_db().add(detection)
 
+            logging.info("observable detection type %s value %s enabled by %s",
+                         detection.type, detection.value, user.username if user else "unknown")
+
         # modified_by tracks whoever last changed the detection, matching modified_at (which MySQL
         # maintains on any update), so it is stamped for every change and not just an enable.
         detection.modified_by = user.id if user else None
-
-        if KEY_UPDATE_FOR_DETECTION in update_spec:
-            logging.info("observable detection type %s value %s enabled by %s",
-                         detection.type, detection.value, user.username if user else "unknown")
 
         if KEY_UPDATE_EXPIRES_ON in update_spec:
             expires_on = update_spec[KEY_UPDATE_EXPIRES_ON]
@@ -328,6 +334,17 @@ def _current_api_user() -> Optional[User]:
     except Exception as e:
         logging.warning("unable to resolve the api user for an observable detection update: %s", e)
         return None
+
+def _requested_detection_state(update_spec: dict) -> Optional[bool]:
+    """The enable/disable the spec asked for, or None if it did not ask."""
+    if KEY_UPDATE_FOR_DETECTION not in update_spec:
+        return None
+
+    value = update_spec[KEY_UPDATE_FOR_DETECTION]
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "")
+
+    return bool(value)
 
 def _resolve_update_target(update_spec: dict):
     """Resolves one update spec to (existing detection or None, identity or None).

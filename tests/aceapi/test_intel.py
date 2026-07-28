@@ -202,13 +202,20 @@ def test_set_observable_rejects_expires_on_true(test_client, api_client_kwargs):
     A detection's expiration is only ever set explicitly now, so this fails loudly instead of being
     reinterpreted.
     """
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "reset.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+
+    # against the existing detection, so this reaches the expires_on validation rather than
+    # stopping at the create gate
     result = _post(test_client, [{
         KEY_UPDATE_TYPE: F_FQDN,
         KEY_UPDATE_VALUE: "reset.example.com",
         KEY_UPDATE_EXPIRES_ON: True,
     }], api_client_kwargs)
 
-    assert json.loads(result.data)[KEY_ERROR] is not None
+    assert "expires_on" in json.loads(result.data)[KEY_ERROR]
 
 
 @pytest.mark.integration
@@ -227,6 +234,92 @@ def test_set_observable_expires_on_false_clears(test_client, api_client_kwargs):
     detection = get_db().query(ObservableDetection).filter(
         ObservableDetection.value == "clear.example.com").one()
     assert detection.expires_on is None
+
+
+@pytest.mark.parametrize("update_spec", [
+    pytest.param({KEY_UPDATE_DETECTION_CONTEXT: "staging only"}, id="context"),
+    pytest.param({KEY_UPDATE_BATCH_ID: "9f0d1c3e-0000-4000-8000-000000000001"}, id="batch_id"),
+    pytest.param({KEY_UPDATE_EXPIRES_ON: "2030-01-01 00:00:00"}, id="expires_on"),
+])
+@pytest.mark.integration
+def test_set_observable_metadata_only_does_not_create(test_client, api_client_kwargs, update_spec):
+    """Creating a detection has to be asked for.
+
+    A row *is* an active detection, so a spec that only carries metadata must not fall through to
+    the create branch -- that would turn `set the context on this indicator` into `start alerting
+    on this indicator`. The bulk csv import is the path that made this matter: it addresses every
+    row by type and value, so a candidate-indicator file with no for_detection column would have
+    gone live in its entirety.
+    """
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "ungated.example.com", **update_spec,
+    }], api_client_kwargs)
+
+    assert "for_detection=1" in json.loads(result.data)[KEY_ERROR]
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "ungated.example.com").count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_csv_import_shape_does_not_create(test_client, api_client_kwargs):
+    """The exact payload `set-observables --import-csv` sends for a csv with no for_detection column.
+
+    That path always addresses rows by type and b64value, so it was the one that could turn a
+    several-hundred-row candidate file into several hundred live detections in a single command.
+    """
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_B64VALUE: _b64("candidate.example.com"),
+        KEY_UPDATE_DETECTION_CONTEXT: "pending review",
+    }], api_client_kwargs)
+
+    assert "for_detection=1" in json.loads(result.data)[KEY_ERROR]
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "candidate.example.com").count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_metadata_only_updates_an_existing_detection(test_client, api_client_kwargs):
+    """The gate gates creation, not updates -- a type/value spec still edits a detection that exists."""
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "existing.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "existing.example.com",
+        KEY_UPDATE_DETECTION_CONTEXT: "updated without an enable",
+    }], api_client_kwargs)
+    get_db().close()
+
+    detection = get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "existing.example.com").one()
+    assert detection.detection_context == "updated without an enable"
+
+
+@pytest.mark.integration
+def test_set_observable_for_detection_string_zero_disables(test_client, api_client_kwargs):
+    """The string "0" is a disable, not an enable.
+
+    The disable check compared against False and 0, so a caller sending JSON-ish strings missed it
+    and was then treated as having asked to enable.
+    """
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "strzero.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "strzero.example.com").count() == 1
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "strzero.example.com",
+        KEY_UPDATE_FOR_DETECTION: "0",
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "strzero.example.com").count() == 0
 
 
 @pytest.mark.integration

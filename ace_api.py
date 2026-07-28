@@ -1935,6 +1935,8 @@ def _cli_set_observables(args):
         for_detection = True
     elif args.disable_detection:
         for_detection = False
+    elif args.create:
+        for_detection = True
 
     expires_on = None
     if args.expires_on:
@@ -1973,7 +1975,9 @@ set_observables_parser = _api_command(subparsers.add_parser('set-observables',
     help="""Set ICE observable detection."""))
 _add_observable_query_arguments(set_observables_parser)
 set_observables_parser.add_argument("--create", action="store_true", default=False,
-    help="Create detections for the given observables if they do not already have one. The observable does not need to have ever been seen in an alert.")
+    help="""Create active detections for the given observables if they do not already have one.
+    The observable does not need to have ever been seen in an alert. A detection is live as soon as
+    it exists, so this implies --enable-detection.""")
 set_observables_parser.add_argument("--enable-detection", action="store_true", default=False,
     help="Enable detection.")
 set_observables_parser.add_argument("--disable-detection", action="store_true", default=False,
@@ -1991,7 +1995,10 @@ set_observables_parser.add_argument("--import-csv",
     help="""Import and apply the given csv file.
     The CSV file must have a header row and must have either a column named id or columns named type and value.
     The CSV file can also contain the following columns: for_detection, expires_on, batch_id, context.
-    Any other columns are ignored.""")
+    Any other columns are ignored.
+    This only updates detections that already exist. Creating a detection for a value that has none
+    requires --enable-detection or a for_detection column set to Yes; other such rows are reported
+    as errors and skipped.""")
 set_observables_parser.set_defaults(func=_cli_set_observables)
 
 def iter_archived_email(message_id: str, *args, **kwargs):
