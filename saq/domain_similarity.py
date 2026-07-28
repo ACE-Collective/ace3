@@ -204,6 +204,70 @@ def compare_domains(suspect: str, reference: str, *, dl_max: int = DEFAULT_DL_MA
     )
 
 
+@dataclass
+class LocalPartSimilarityResult:
+    """How closely the local parts (the bit before the @) of two addresses match."""
+
+    suspect_local: str
+    reference_local: str
+    # the local parts are the same string, ignoring case - the strongest identity-cloning signal
+    is_exact: bool
+    skeleton_equal: bool
+    damerau_levenshtein: int
+    jaro_winkler: float
+    is_similar: bool = False
+
+
+def local_part(address: str) -> str:
+    """Return the lowercased local part of an email address ('' when there is no @)."""
+    cleaned = (address or "").strip().lower()
+    at = cleaned.rfind("@")
+    return cleaned[:at] if at > 0 else ""
+
+
+def compare_local_parts(suspect: str, reference: str, *, dl_max: int = DEFAULT_DL_MAX,
+                        jw_threshold: float = DEFAULT_JW_THRESHOLD) -> LocalPartSimilarityResult:
+    """Compare the local parts of two email addresses.
+
+    a look-a-like domain that reuses an existing conversation participant's local part verbatim
+    (jane.doe@exarnple.com against jane.doe@example.com) is impersonating a specific person, not just
+    a company - a much stronger signal than domain similarity alone. exact match is the dominant
+    real-world case; the edit-distance signals catch nickname-style near misses.
+
+    takes full addresses rather than bare local parts so callers don't each have to split them, and
+    deliberately does NOT run registrable_domain() the way compare_domains() does - that would mangle
+    a local part.
+    """
+    suspect_local = local_part(suspect)
+    reference_local = local_part(reference)
+
+    if not suspect_local or not reference_local:
+        return LocalPartSimilarityResult(
+            suspect_local=suspect_local,
+            reference_local=reference_local,
+            is_exact=False,
+            skeleton_equal=False,
+            damerau_levenshtein=-1,
+            jaro_winkler=0.0,
+            is_similar=False)
+
+    is_exact = suspect_local == reference_local
+    skeleton_equal = (not is_exact) and skeleton(suspect_local) == skeleton(reference_local)
+    damerau_levenshtein = jellyfish.damerau_levenshtein_distance(suspect_local, reference_local)
+    jaro_winkler = jellyfish.jaro_winkler_similarity(suspect_local, reference_local)
+
+    edit_close = (not is_exact) and (0 < damerau_levenshtein <= dl_max or jaro_winkler >= jw_threshold)
+
+    return LocalPartSimilarityResult(
+        suspect_local=suspect_local,
+        reference_local=reference_local,
+        is_exact=is_exact,
+        skeleton_equal=skeleton_equal,
+        damerau_levenshtein=damerau_levenshtein,
+        jaro_winkler=jaro_winkler,
+        is_similar=is_exact or skeleton_equal or edit_close)
+
+
 def compare_against_set(suspect: str, references, *, dl_max: int = DEFAULT_DL_MAX,
                         jw_threshold: float = DEFAULT_JW_THRESHOLD) -> list:
     """Compare a suspect domain against every reference domain, returning all results (not just similar ones)."""
