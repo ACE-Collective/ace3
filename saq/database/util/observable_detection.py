@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import NamedTuple, Optional
 
 from sqlalchemy import or_
+from sqlalchemy.orm import selectinload
 
 from saq.analysis.observable import Observable, get_observable_type_expiration_time
 from saq.analysis.root import RootAnalysis
@@ -285,8 +286,11 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
     # Query by hash alone (one indexed IN), then match on type as well -- the same shape as before,
     # since a hash can be shared across types.
     hashes = {observable.sha256_bytes for observable in observables}
-    db_detections = get_db().query(DBObservableDetection).filter(
-        DBObservableDetection.value_sha256.in_(hashes)).all()
+    db_detections = get_db().query(DBObservableDetection).options(
+        selectinload(DBObservableDetection.modified_by_user),
+    ).filter(
+        DBObservableDetection.value_sha256.in_(hashes),
+    ).all()
 
     for db_detection in db_detections:
         observable = _match_observable(observables, db_detection)
