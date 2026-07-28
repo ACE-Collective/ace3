@@ -37,7 +37,9 @@ def _get_user_api_key_match(auth_sha256: str) -> ApiAuthResult:
     """Returns an ApiAuthResult object if the given auth token is valid for a user, None otherwise."""
     with get_db_connection() as db:
         c = db.cursor()
-        c.execute("""SELECT username, id FROM users WHERE apikey_hash = %s""", (auth_sha256.lower(),))
+        # `enabled` is part of the match: disabling a user must revoke API access too, not just
+        # browser access. The session and JWT paths already enforce this.
+        c.execute("""SELECT username, id FROM users WHERE apikey_hash = %s AND enabled = 1""", (auth_sha256.lower(),))
         result = c.fetchone()
         if not result:
             return None

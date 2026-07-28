@@ -7,6 +7,7 @@ Supports dual authentication:
 
 import logging
 from typing import Annotated, Callable, Optional
+from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
@@ -36,6 +37,60 @@ oauth2_scheme = OAuth2PasswordBearer(
     description="Username/password login for users",
     auto_error=False,
 )
+
+
+# Methods that cannot change state, and so cannot be a CSRF target.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _request_hostname(request: Request) -> Optional[str]:
+    """The hostname this request was addressed to, port stripped, honouring the reverse proxy."""
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    host = host.split(",")[0].strip()  # x-forwarded-host may be a list
+    if not host:
+        return None
+    return urlsplit(f"//{host}").hostname
+
+
+def _reject_cross_site_cookie_write(request: Request) -> None:
+    """Reject state-changing requests authenticated by the Flask session cookie unless they are
+    same-origin.
+
+    Cookie authentication is the only CSRF-exposed path here: an attacker's page cannot make a
+    browser attach an `x-ace-auth` header or a bearer token, but it *can* make it send cookies.
+
+    Both signals used below are set by the browser and cannot be forged by page JavaScript:
+      * `Sec-Fetch-Site` is sent by modern browsers and states the request's site relationship.
+      * `Origin` is sent on every cross-origin request and on same-origin state-changing requests.
+
+    A cookie-authenticated write carrying neither signal is not a browser request we recognize, and
+    cookie auth exists solely for the Flask GUI, so it is refused. Non-browser clients should use an
+    API key or a bearer token, neither of which reaches this check.
+    """
+    if request.method.upper() in SAFE_METHODS:
+        return
+
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None:
+        # "none" means a user-initiated navigation (typing a URL, a bookmark); not cross-site.
+        if fetch_site in ("same-origin", "none"):
+            return
+        logging.warning("rejected cross-site cookie-authenticated %s (sec-fetch-site=%s)", request.method, fetch_site)
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
+
+    origin = request.headers.get("origin")
+    if origin:
+        host = _request_hostname(request)
+        # Compare hostnames, not netlocs: the reverse proxy forwards `Host: $host`, which drops the
+        # port, so an Origin of "https://ace.example.com:8443" would never equal a Host of
+        # "ace.example.com". Browsers reach this branch only when Sec-Fetch-Site is absent.
+        if host and urlsplit(origin).hostname == host:
+            return
+        logging.warning("rejected cross-origin cookie-authenticated %s (origin=%s host=%s)", request.method, origin, host)
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
+
+    logging.warning("rejected cookie-authenticated %s with no Origin or Sec-Fetch-Site header", request.method)
+    raise HTTPException(status_code=403, detail="cross-site request rejected")
 
 
 async def get_current_auth(
@@ -76,6 +131,8 @@ async def get_current_auth(
     if flask_cookie:
         result = await verify_flask_session(flask_cookie, session)
         if result:
+            # cookies ride along automatically, so this is the only CSRF-exposed auth path
+            _reject_cross_site_cookie_write(request)
             return result
 
     raise HTTPException(

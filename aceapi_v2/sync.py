@@ -58,6 +58,11 @@ def run_async_with_session(fn: Callable[..., Coroutine[Any, Any, T]], *args: Any
     The first argument passed to *fn* will be an AsyncSession obtained from
     get_async_session(); any extra positional/keyword args follow it.
 
+    The get_async_session() generator commits on its normal-exit path and rolls back on error, so
+    the generator must be driven to completion for writes to persist -- returning out of an
+    ``async for`` mid-iteration would leave the commit unrun. We therefore resume the generator after
+    the call (success -> commit) or throw into it (error -> rollback).
+
     Usage from Flask views::
 
         from aceapi_v2.sync import run_async_with_session
@@ -66,7 +71,22 @@ def run_async_with_session(fn: Callable[..., Coroutine[Any, Any, T]], *args: Any
         threat_types = run_async_with_session(get_threat_types)
     """
     async def _run():
-        async for session in get_async_session():
-            return await fn(session, *args, **kwargs)
+        agen = get_async_session()
+        session = await agen.__anext__()
+        try:
+            result = await fn(session, *args, **kwargs)
+        except BaseException as exc:
+            # drive the generator's error path (rollback) and propagate the original exception
+            try:
+                await agen.athrow(exc)
+            except StopAsyncIteration:
+                pass
+            raise
+        # drive the generator's success path (commit)
+        try:
+            await agen.__anext__()
+        except StopAsyncIteration:
+            pass
+        return result
 
     return run_async(_run())

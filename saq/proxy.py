@@ -5,6 +5,7 @@
 from typing import Optional
 import urllib
 from saq.configuration.config import get_config, get_proxy_config
+from saq.configuration.secret_ref import resolve_secret
 
 def proxies(proxy_name: Optional[str] = None) -> dict[str, str]:
     """Returns the current proxy settings pulled from the configuration.
@@ -27,14 +28,15 @@ def proxies(proxy_name: Optional[str] = None) -> dict[str, str]:
     config = get_proxy_config(proxy_name)
 
     if config is not None:
+        password = resolve_secret(config.password)
         for proxy_key in [ 'http', 'https' ]:
             if config.host and config.port and config.transport:
-                if config.user and config.password:
+                if config.user and password:
                     result[proxy_key] = '{}://{}:{}@{}:{}'.format(
-                        config.transport, 
-                        urllib.parse.quote_plus(config.user), 
-                        urllib.parse.quote_plus(config.password), 
-                        config.host, 
+                        config.transport,
+                        urllib.parse.quote_plus(config.user),
+                        urllib.parse.quote_plus(password),
+                        config.host,
                         config.port)
                 else:
                     result[proxy_key] = '{}://{}:{}'.format(config.transport,
@@ -59,8 +61,9 @@ def proxy_string_for_seleniumbase(proxy_name: Optional[str] = None) -> Optional[
     if config is None:
         return None
 
-    if config.user and config.password:
-        auth = f"{config.user}:{config.password}@"
+    password = resolve_secret(config.password)
+    if config.user and password:
+        auth = f"{config.user}:{password}@"
     else:
         auth = ""
 

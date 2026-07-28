@@ -10,6 +10,7 @@ from saq import x509
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
+from saq.configuration.secret_ref import resolve_secret
 from saq.constants import F_IP, F_IPV4, F_SHA1, SUMMARY_DETAIL_FORMAT_PRE, AnalysisExecutionResult, register_directive
 from saq.modules import AnalysisModule
 
@@ -184,10 +185,11 @@ class ShodanAnalyzer(AnalysisModule):
                 file_observable.add_yara_meta("type", "certificate.x509")
 
     def _get_shodan_client(self):
-        if not get_config().shodan.api_key:
+        api_key = resolve_secret(get_config().shodan.api_key)
+        if not api_key:
             raise ValueError("missing api key for shodan")
 
-        return shodan.Shodan(get_config().shodan.api_key)
+        return shodan.Shodan(api_key)
 
     def search_cert(self, sha1):
         if self._test_data:

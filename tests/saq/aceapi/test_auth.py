@@ -62,6 +62,32 @@ def test_get_user_api_key_match():
     assert _get_user_api_key_match(sha256_str(api_key)) == ApiAuthResult(auth_name="ace", auth_type=API_AUTH_TYPE_USER, auth_user_id=get_global_runtime_settings().automation_user_id)
 
 @pytest.mark.integration
+def test_disabled_user_api_key_does_not_authenticate():
+    """Disabling a user must revoke API access, not just browser access."""
+    from saq.database.model import User
+    from saq.database.pool import get_db
+
+    user_id = get_global_runtime_settings().automation_user_id
+    api_key = set_user_api_key(user_id, None)
+    assert _get_user_api_key_match(sha256_str(api_key)).auth_user_id == user_id
+
+    db = get_db()
+    user = db.query(User).filter(User.id == user_id).one()
+    original_enabled = user.enabled
+    try:
+        user.enabled = False
+        db.commit()
+        assert _get_user_api_key_match(sha256_str(api_key)) is None
+        assert verify_api_key(api_key) is None
+    finally:
+        user.enabled = original_enabled
+        db.commit()
+
+    # re-enabling restores API access with the same key
+    assert _get_user_api_key_match(sha256_str(api_key)).auth_user_id == user_id
+
+
+@pytest.mark.integration
 def test_verify_api_key(monkeypatch):
     assert verify_api_key(None) is None
     assert verify_api_key(API_KEY) is None

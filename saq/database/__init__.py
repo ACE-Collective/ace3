@@ -13,14 +13,14 @@ from saq.database.model import Malware, ThreatType, Threat
 from saq.database.model import ObservableMapping, ObservableRemediationMapping, ObservableTagMapping, ObservableTagIndex, TagMapping, CompanyMapping, EventMapping, EventTagMapping, MalwareMapping
 from saq.database.model import Message, MessageRouting
 from saq.database.model import Nodes
-from saq.database.model import Observable
+from saq.database.model import Observable, ObservableDetection
 from saq.database.model import Persistence, PersistenceSource
 from saq.database.model import Remediation
 from saq.database.model import Tag
 from saq.database.model import User, Owner, DispositionBy, RemediatedBy, Comment
 from saq.database.model import Workload
 
-from saq.database.util.alert import ALERT, refresh_observable_expires_on, set_dispositions
+from saq.database.util.alert import ALERT, set_dispositions
 from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.delayed_analysis import add_delayed_analysis_request, clear_delayed_analysis_requests
 from saq.database.util.locking import acquire_lock, release_lock, force_release_lock, clear_expired_locks

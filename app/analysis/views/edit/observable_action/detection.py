@@ -6,7 +6,12 @@ from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import ACTION_ENABLE_DETECTION
-from saq.database.util.observable_detection import disable_observable_detection, enable_observable_detection
+from saq.database.util.observable_detection import (
+    disable_observable_detection,
+    enable_observable_detection,
+    get_observable_detection_for,
+    set_observable_detection_expiration,
+)
 from saq.error.reporting import report_exception
 
 @analysis.route('/observable_action_set_for_detection', methods=['POST'])
@@ -38,7 +43,7 @@ def observable_action_set_for_detection():
             enable_observable_detection(observable, current_user.id, f"manually enabled in the gui by {current_user} for alert {alert.description} ({alert.uuid})")
             for_detection_status = 'enabled'
         else:
-            disable_observable_detection(observable)
+            disable_observable_detection(observable, current_user.id, f"manually disabled in the gui by {current_user} for alert {alert.description} ({alert.uuid})")
 
         logging.info(f"AUDIT: {current_user} {for_detection_status} observable {observable.value} for detection")
 
@@ -76,8 +81,16 @@ def observable_action_adjust_expiration():
         new_expiration_time = request.form.get('observable_expiration_time')
         new_expiration_time = datetime.strptime(new_expiration_time, '%Y-%m-%d %H:%M:%S')
 
+    # NOTE: this used to assign observable.expires_on on the in-memory analysis Observable, which
+    # has no such attribute and is discarded when the request ends -- so the action reported success
+    # and changed nothing. Expiration belongs to the detection, so it is written there.
     try:
-        observable.expires_on = new_expiration_time
+        detection = get_observable_detection_for(observable)
+        if detection is None:
+            flash("Error: this observable is not enabled for detection", 'error')
+            return redirection
+
+        set_observable_detection_expiration(detection.id, new_expiration_time, current_user.id)
     except Exception as e:
         logging.error(f"Error: unable to update observable expiration date to {new_expiration_time}: {e}")
         report_exception()

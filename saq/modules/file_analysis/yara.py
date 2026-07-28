@@ -15,7 +15,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
-from saq.database import Observable as db_Observable
+from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_data_dir
 from saq.error.reporting import report_exception
@@ -74,6 +74,17 @@ def _yara_detection_signature(match_result: dict) -> tuple[str, str]:
         logging.warning("yara rule %s has no uuid meta - using built-in fallback signature", match_result.get("rule"))
         rule_uuid = YARA_RULE_MATCH.uuid
     return rule_uuid, match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
+
+
+def _parse_yara_string_key_id(string_key: str) -> int | None:
+    """Extracts the trailing row id from a generated yara string key.
+
+    Handles both `$obsd_12` and `$obsd_json_12` (and their legacy `$obs_` equivalents). Returns None
+    if the key does not end in an integer."""
+    try:
+        return int(string_key.rsplit('_', 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 class YaraScanResults_v3_4(Analysis):
@@ -438,34 +449,44 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 try:
                     # yara_result is a dictionary that should have a "strings" key that looks like:
-                    # 'strings': [(50, '$obs_1', b'blah')]
+                    # 'strings': [(50, '$obsd_1', b'blah')]
                     string_keys = set([s[1] for s in yara_result['strings']])
                 except:
                     string_keys = []
 
-                # Parse out the observable ID from each string key. Then fetch those observables from the database
-                # and add their type+values as observables to this analysis.
+                # Parse the row id out of each string key and add the corresponding type+value to
+                # this analysis.
+                #
+                # $obsd_<id> is an observable_detections row, which is what the export emits now.
+                # $obs_<id> is an observables row -- the format used before detections moved to
+                # their own table. Rules generated before that change are still on disk, so both are
+                # resolved for one release. The legacy branch can be deleted after every deployed
+                # rule set has been re-exported.
                 for string_key in string_keys:
-                    if string_key.startswith('$obs_'):
-                        try:
-                            observable_id = int(string_key.rsplit('_', 1)[1])
-                        except:
-                            observable_id = None
+                    if string_key.startswith('$obsd_'):
+                        model, row_id = db_ObservableDetection, _parse_yara_string_key_id(string_key)
+                    elif string_key.startswith('$obs_'):
+                        model, row_id = db_Observable, _parse_yara_string_key_id(string_key)
+                    else:
+                        continue
 
-                        # Query for the observable in the database
-                        if observable_id:
-                            observable = get_db().query(db_Observable).get(observable_id)
+                    if not row_id:
+                        continue
 
-                            # If one was found, add it to the analysis
-                            if observable:
-                                logging.debug(f'found observable {observable_id} in database matching the yara hit')
-                                try:
-                                    obs = analysis.add_observable_by_spec(observable.type, observable.value.decode())
-                                    # Add the Yara rule name as a tag to the observable
-                                    if obs:
-                                        obs.add_tag(yara_result['rule'])
-                                except Exception as e:
-                                    logging.error(f"unable to add observable value {observable.value}: {e}")
+                    row = get_db().query(model).get(row_id)
+                    if not row:
+                        continue
+
+                    logging.debug(f'found {model.__tablename__} row {row_id} in database matching the yara hit')
+                    # observables.value is a BLOB, observable_detections.value is text
+                    value = row.value.decode() if isinstance(row.value, bytes) else row.value
+                    try:
+                        obs = analysis.add_observable_by_spec(row.type, value)
+                        # Add the Yara rule name as a tag to the observable
+                        if obs:
+                            obs.add_tag(yara_result['rule'])
+                    except Exception as e:
+                        logging.error(f"unable to add observable value {value}: {e}")
 
 
             # if this yara rule did not have the no_alert modifier then it becomes a detection point.

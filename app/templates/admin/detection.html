@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block control_panel %}
+<div class="container-fluid">
+    <form class="row row-cols-lg-auto g-2 align-items-end" method="GET" action="{{ url_for('admin.detection_settings') }}">
+        <div class="col">
+            <label class="form-label mb-0" for="q">Search value</label>
+            <input type="text" class="form-control form-control-sm" id="q" name="q" value="{{ search }}" placeholder="substring, or * to anchor…">
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="type">Type</label>
+            <select class="form-select form-select-sm" id="type" name="type">
+                <option value="">all types</option>
+                {% for t in observable_types %}
+                    <option value="{{ t }}" {% if t == selected_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="page_size">Per page</label>
+            <select class="form-select form-select-sm" id="page_size" name="page_size">
+                {% for size in page_size_choices %}
+                    <option value="{{ size }}" {% if size == page.page_size %}selected{% endif %}>{{ size }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
+            <button type="submit" class="btn btn-sm btn-outline-dark">Apply</button>
+            {# a link to the bare URL, so the server's defaults apply rather than a client-side
+               guess at what they are #}
+            <a href="{{ url_for('admin.detection_settings') }}" class="btn btn-sm btn-outline-secondary">Reset</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block page_content %}
+<style>
+/* Fixed layout keeps the table inside the viewport regardless of how long an observable value is;
+   without it a single long URL (which has no natural break opportunities) widens the whole table. */
+#observable_detection_table { table-layout: fixed; width: 100%; }
+#observable_detection_table td, #observable_detection_table th { vertical-align: top; }
+/* long, unbroken strings (urls, hashes, long type names) need an explicit break opportunity */
+#observable_detection_table .obs-type,
+#observable_detection_table .obs-value,
+#observable_detection_table .obs-context,
+#observable_detection_table .obs-comments { overflow-wrap: anywhere; word-break: break-word; }
+#observable_detection_table .obs-value code { white-space: normal; }
+#observable_detection_table .obs-expires-input { width: 100%; max-width: 12rem; }
+#add_detection_value { min-width: 22rem; }
+</style>
+
+{% macro page_url(n) -%}
+{{ url_for('admin.detection_settings', q=search or None, type=selected_type or None, page_size=page.page_size, page=n) }}
+{%- endmacro %}
+
+{% macro pagination() -%}
+{% if page.total_pages > 1 %}
+<nav aria-label="Detection pages">
+    <ul class="pagination pagination-sm mb-0">
+        <li class="page-item {% if not page.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(1) }}">First</a>
+        </li>
+        <li class="page-item {% if not page.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.page - 1) }}">Previous</a>
+        </li>
+        <li class="page-item disabled">
+            <span class="page-link">Page {{ page.page }} of {{ page.total_pages }}</span>
+        </li>
+        <li class="page-item {% if not page.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.page + 1) }}">Next</a>
+        </li>
+        <li class="page-item {% if not page.has_next %}disabled{% endif %}">
+            <a class="page-link" href="{{ page_url(page.total_pages) }}">Last</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+{%- endmacro %}
+
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h3 class="mb-0">Observable Detections</h3>
+        <div class="d-flex align-items-center gap-3">
+            <div class="text-muted small">
+                {% if page.total %}
+                    Showing {{ page.first_index }}–{{ page.last_index }} of {{ page.total }}
+                {% else %}
+                    No matching detections
+                {% endif %}
+            </div>
+            {{ pagination() }}
+        </div>
+    </div>
+
+    <div class="card mt-2 mb-3">
+        <div class="card-body py-2">
+            {# The observable does not need to have ever been seen -- adding a detection ahead of
+               the first sighting is the point of this form. #}
+            <form id="add_detection_form" class="row row-cols-lg-auto g-2 align-items-end">
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_type">Type</label>
+                    <select class="form-select form-select-sm" id="add_detection_type" required>
+                        {% for t in all_observable_types %}
+                            <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_value">Value</label>
+                    <input type="text" class="form-control form-control-sm" id="add_detection_value" required>
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_expires">Expires (optional)</label>
+                    <input type="text" class="form-control form-control-sm obs-expires-input" id="add_detection_expires" placeholder="YYYY-MM-DD HH:MM:SS">
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0" for="add_detection_context">Context (optional)</label>
+                    <input type="text" class="form-control form-control-sm" id="add_detection_context" placeholder="why this detection exists">
+                </div>
+                <div class="col">
+                    <button type="submit" class="btn btn-sm btn-outline-success">Add detection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <table id="observable_detection_table" class="table table-hover table-sm mt-2">
+        <colgroup>
+            <col style="width: 11%">
+            <col style="width: 25%">
+            <col style="width: 10%">
+            <col style="width: 16%">
+            <col style="width: 15%">
+            <col style="width: 13%">
+            <col style="width: 5%">
+        </colgroup>
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Value</th>
+                <th>Added By</th>
+                <th>Context</th>
+                <th>Comments</th>
+                <th>Expires</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for det in detections %}
+            <tr data-detection-id="{{ det.id }}">
+                <td class="obs-type">{{ det.type }}</td>
+                <td class="obs-value">
+                    <code>{{ det.value }}</code>
+                    {% if det.fa_hits is not none %}
+                        <div class="text-muted small">{{ det.fa_hits }} FA hits</div>
+                    {% endif %}
+                    {% if det.observable_id is none %}
+                        {# no row in the observables index: this value has not appeared in an alert yet #}
+                        <div class="text-muted small">not yet observed</div>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ det.created_by or '' }}
+                    {% if det.created_at %}
+                        <div class="text-muted small">{{ det.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+                    {% endif %}
+                </td>
+                <td class="obs-context">{{ det.detection_context or '' }}</td>
+                <td class="obs-comments">
+                    {% for c in det.comments %}
+                    <div class="obs-comment mb-1">
+                        <div>{{ c.comment }}</div>
+                        <div class="text-muted small">— {{ c.user_display_name }} · {{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</div>
+                    </div>
+                    {% endfor %}
+                </td>
+                <td>
+                    <div class="obs-expires">{{ det.expires_on.strftime('%Y-%m-%d %H:%M:%S') if det.expires_on else 'never' }}</div>
+                    <input type="text" class="form-control form-control-sm obs-expires-input" placeholder="YYYY-MM-DD HH:MM:SS">
+                    <div class="mt-1">
+                        <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
+                        <button type="button" class="btn btn-xs btn-outline-secondary btn-clear-expiration">never</button>
+                    </div>
+                </td>
+                <td>
+                    <button type="button" class="btn btn-xs btn-outline-danger btn-delete-detection">Delete</button>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-muted">No detections found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/admin_detection.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

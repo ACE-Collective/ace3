@@ -3,6 +3,8 @@ import sys
 from typing import TYPE_CHECKING, Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from saq.configuration.secret_ref import SecretRef
+
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
     from saq.modules.config import AnalysisModuleConfig
@@ -72,7 +74,7 @@ class ProxyConfig(BaseModel):
     host: str = Field(..., description="The host of the proxy.")
     port: int = Field(..., description="The port of the proxy.")
     user: Optional[str] = Field(default=None, description="The username to use for authentication.")
-    password: Optional[str] = Field(default=None, description="The password to use for authentication.")
+    password: Optional[SecretRef] = Field(default=None, description="The password to use for authentication (dynamic secret).")
 
 class CollectionGroupConfig(BaseModel):
     name: str = Field(..., description="The name of the collection group.")
@@ -279,8 +281,8 @@ class SplunkConfig(BaseModel):
     host: str = Field(..., description="the splunk query server")
     port: int = Field(..., description="the port of the splunk query server")
     username: Optional[str] = Field(default=None, description="user account information for splunk")
-    password: Optional[str] = Field(default=None, description="password for authentication")
-    token: Optional[str] = Field(default=None, description="token for authentication")
+    password: Optional[SecretRef] = Field(default=None, description="password for authentication (dynamic secret)")
+    token: Optional[SecretRef] = Field(default=None, description="token for authentication (dynamic secret)")
     timezone: str = Field(..., description="timezone for the splunk server")
     performance_logging_dir: str = Field(..., description="directory that contains splunk query performance data")
     user_context: Optional[str] = Field(default=None, description="default app and user context to use if not specified")
@@ -303,7 +305,7 @@ class SIPConfig(BaseModel):
     cache_db_path: str = Field(..., description="path to SIP cache database")
 
 class ShodanConfig(BaseModel):
-    api_key: Optional[str] = Field(default=None, description="Shodan API key")
+    api_key: Optional[SecretRef] = Field(default=None, description="Shodan API key (dynamic secret)")
     delay: int = Field(default=1, description="how long to sleep before making the next query (see the rate limit comment)")
 
 class YaraExportConfig(BaseModel):
@@ -487,6 +489,11 @@ class ObservableTypesConfig(BaseModel):
     reload_check_interval_seconds: float = Field(default=60.0, description="how often (in seconds) accessors stat the YAML and reload if mtime changed; set to 0 (or negative) to disable runtime reload entirely")
 
 
+class SecretsConfig(BaseModel):
+    """Configuration for dynamic (SecretRef) encrypted-secret resolution."""
+    cache_ttl_seconds: int = Field(default=60, description="how long (in seconds) a decrypted secret is cached in-process before it is re-read from the encrypted store; bounds how long a rotated/newly-set secret takes to take effect on a running node")
+
+
 class BlobStoreSpec(BaseModel):
     """Selects and configures a pluggable blob store backend.
 
@@ -562,6 +569,7 @@ class ACEConfig(BaseModel):
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")
     observable_types: ObservableTypesConfig = Field(default_factory=ObservableTypesConfig, description="per-observable-type configuration (inheritance, default display types, ...)")
+    secrets: SecretsConfig = Field(default_factory=SecretsConfig, description="dynamic encrypted-secret (SecretRef) resolution configuration")
     analysis_cache: AnalysisCacheConfig = Field(default_factory=AnalysisCacheConfig, description="analysis result cache configuration")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
