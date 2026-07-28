@@ -428,9 +428,11 @@ def test_get_observable(test_client, api_client_kwargs):
     json_result = _get(test_client, api_client_kwargs, **{KEY_FOR_DETECTION: "0"})
     assert len(json_result[KEY_RESULTS]) == 0
 
-    # query for expired
+    # query for expired -- NULL expires_on means never expires, so expired=0 must include those
     json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "1"})
     assert len(json_result[KEY_RESULTS]) == 0
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "0"})
+    assert len(json_result[KEY_RESULTS]) == 3
 
     detection = get_db().query(ObservableDetection).filter(ObservableDetection.id == detection_id).one()
     detection.expires_on = datetime.datetime.now() - datetime.timedelta(days=1)
@@ -438,6 +440,8 @@ def test_get_observable(test_client, api_client_kwargs):
 
     json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "1"})
     assert len(json_result[KEY_RESULTS]) == 1
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "0"})
+    assert len(json_result[KEY_RESULTS]) == 2
 
     # fa_hits comes from the joined observables row, so only the seen detection can have one
     json_result = _get(test_client, api_client_kwargs, **{KEY_FA_HITS: "null"})

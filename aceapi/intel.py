@@ -25,7 +25,7 @@ from saq.database.util.observable_detection import (
 )
 
 from flask import request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from saq.database.pool import get_db
 
@@ -146,7 +146,12 @@ def get_observables():
         if request.values[KEY_EXPIRED] == "1":
             query = query.filter(ObservableDetection.expires_on < func.NOW())
         else:
-            query = query.filter(ObservableDetection.expires_on >= func.NOW())
+            # NULL means never expires; a bare >= NOW() drops those rows (NULL comparisons
+            # are unknown). Same semantics as get_active_detections_by_type.
+            query = query.filter(or_(
+                ObservableDetection.expires_on.is_(None),
+                ObservableDetection.expires_on >= func.NOW(),
+            ))
 
     if KEY_FA_HITS in request.values:
         if request.values[KEY_FA_HITS].lower() == "true":
