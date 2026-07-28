@@ -409,10 +409,19 @@ class HuntManager:
             # so the post-processing and queueing log lines correlate with it
             with transaction_id(hunt.last_transaction_id or get_transaction_id()):
                 post_processing_start = time.monotonic()
+
+                # per-group last_alert_times only exist to drive is_group_suppressed(), which
+                # returns False without ever reading them when the hunt has no suppression
+                # configured. recording them anyway costs a full dict copy and a pickle of the
+                # entire (never pruned, so unbounded) dict per group value, which for a
+                # high-cardinality group_by starves the collector and delivery threads sharing
+                # this process. skip the whole pass when nothing can read the result.
+                track_suppression = bool(hunt.suppression)
+
                 if submissions:
                     if hunt.group_by is None:
                         hunt.last_alert_time = local_time()
-                    else:
+                    elif track_suppression:
                         # record last_alert_time per-group so each group_by value gets its own
                         # suppression window. dedupe so we only write once per group even if
                         # multiple submissions somehow share a group_value.
@@ -428,16 +437,20 @@ class HuntManager:
                 # explicit maintenance pass: keep last_alert_times bounded for hunts with
                 # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
                 # setter so set_last_alert_time stays a do-one-thing function.
-                if hunt.group_by is not None:
+                # prune_expired_last_alert_times() self-guards on suppression, but gating the
+                # call here keeps the intent readable alongside the block above.
+                if hunt.group_by is not None and track_suppression:
                     hunt.prune_expired_last_alert_times()
 
                 if submissions:
                     # each set_last_alert_time() rewrites the entire persistence file, so a
                     # high-cardinality group_by can spend real time here before anything is queued
                     logging.info(
-                        "post-processed %d submissions for hunt %s (uuid=%s, type=%s) in %.2fs",
+                        "post-processed %d submissions for hunt %s (uuid=%s, type=%s) in %.2fs "
+                        "(suppression tracking %s)",
                         len(submissions), hunt.name, hunt.uuid, hunt.type,
                         time.monotonic() - post_processing_start,
+                        "enabled" if track_suppression else "disabled",
                     )
         except Exception as e:
             logging.error(f"uncaught exception: {e}")

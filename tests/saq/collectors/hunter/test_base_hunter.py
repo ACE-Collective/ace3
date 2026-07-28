@@ -1102,6 +1102,105 @@ def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
     assert log_count("queued 1 submissions for hunt") == 1
     assert log_count("post-processed 1 submissions for hunt") == 1
 
+class _GroupedTestHunt(TestHunt):
+    """a grouped hunt that emits one submission per group value
+
+    the base Hunt.group_by property always returns None and group_by is a QueryHuntConfig
+    field, so grouping has to be introduced by a subclass rather than by config"""
+    __test__ = False
+
+    def __init__(self, *args, group_values=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.group_values = group_values or []
+
+    @property
+    def group_by(self):
+        return "src"
+
+    def execute(self):
+        self.executed = True
+        submissions = []
+        for group_value in self.group_values:
+            root_uuid = str(uuid4())
+            root = RootAnalysis(
+                uuid=root_uuid,
+                storage_dir=get_storage_dir(root_uuid),
+                desc='test',
+                analysis_mode=ANALYSIS_MODE_CORRELATION,
+                tool='test_tool',
+                tool_instance='test_tool_instance',
+                alert_type='test_type')
+            root.initialize_storage()
+            submission = Submission(root)
+            submission.group_value = group_value
+            submissions.append(submission)
+
+        return submissions
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_skips_suppression_tracking_when_not_configured(manager_kwargs):
+    """a grouped hunt with no suppression must not write last_alert_times
+
+    the only reader of last_alert_times is is_group_suppressed(), which returns False without
+    reading them when suppression is unset - so recording them is pure cost. each write pickles
+    the entire (never pruned) dict, which starves the collector and delivery threads sharing
+    this process"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_no_suppression"),
+        group_values=["alice", "bob", "charlie"])
+    # normally set by execute_hunt() before it hands the hunt to the execution thread
+    hunt.semaphore = None
+
+    assert hunt.suppression is None
+
+    manager.execute_threaded_hunt(hunt)
+
+    # all three submissions still make it to the queue
+    assert manager.submission_queue.qsize() == 3
+
+    # but nothing was recorded, in memory or on disk
+    assert hunt.last_alert_times == {}
+    assert read_persistence_data(hunt.type, hunt.name, "last_alert_times") is None
+    assert log_count("suppression tracking disabled") == 1
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_records_suppression_state_when_configured(manager_kwargs):
+    """a grouped hunt that does configure suppression still records per-group times"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_with_suppression", suppression="00:01:00"),
+        group_values=["alice", "bob"])
+    hunt.semaphore = None
+
+    assert hunt.suppression is not None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert hunt.get_last_alert_time("alice") is not None
+    assert hunt.get_last_alert_time("bob") is not None
+
+    # and it was persisted
+    persisted = read_persistence_data(hunt.type, hunt.name, "last_alert_times")
+    assert persisted is not None
+    assert set(persisted.keys()) == {"alice", "bob"}
+    assert log_count("suppression tracking enabled") == 1
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_still_records_ungrouped_last_alert_time(manager_kwargs):
+    """the ungrouped branch is untouched - it writes once per run, not once per submission"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager, name="test_ungrouped")
+    hunt.semaphore = None
+
+    assert hunt.group_by is None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert hunt.last_alert_time is not None
+
 @pytest.mark.integration
 def test_execute_threaded_hunt_survives_execution_failure(manager_kwargs):
     """a hunt that raises does not take the execution thread down with it"""
