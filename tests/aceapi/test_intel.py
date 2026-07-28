@@ -36,511 +36,482 @@ from aceapi.intel import (
 from saq.analysis import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_IP, F_FQDN
-from saq.database import Observable, User, Alert, Event, ALERT
+from saq.database import Observable, ObservableDetection, User, Alert, Event, ALERT
 
 from flask import url_for
 
 from saq.database.pool import get_db
 from tests.saq.helpers import create_root_analysis
 
+
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode()).decode()
+
+
+def _post(test_client, updates: list[dict], client_kwargs: dict):
+    return test_client.post(
+        url_for('intel.set_observables'),
+        data={KEY_UPDATES: json.dumps({KEY_UPDATES: updates})},
+        **client_kwargs)
+
+
+def _get(test_client, client_kwargs: dict, **query):
+    result = test_client.get(url_for('intel.get_observables'), query_string=query, **client_kwargs)
+    assert result.status_code == 200
+    return json.loads(result.data)
+
+
+@pytest.fixture
+def api_client_kwargs():
+    return {"headers": {'x-ace-auth': get_config().api.api_key}}
+
+
 @pytest.mark.integration
-def test_set_observable(test_client):
-    # create a new alert
-    root = create_root_analysis()
-    root.add_observable_by_spec(F_FQDN, "test.com")
-    root.save()
-    ALERT(root)
-
-    get_db().close()
-
-    # get the single observable
-    observable = get_db().query(Observable).filter().one()
-    assert observable.for_detection == 0
-
-    # update the existing observable by id
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { KEY_UPDATE_ID: observable.id, KEY_UPDATE_FOR_DETECTION: 1 },
-            ]
-        })
-    }
-
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
-
-    get_db().close()
-    observable = get_db().query(Observable).filter().one()
-    assert observable.for_detection == 1
-
-    # update the existing observable by type and value
+def test_set_observable_by_type_and_value(test_client, api_client_kwargs):
+    """A detection is created from a type and value, with no observables row involved."""
     _detection_context = str(uuid.uuid4())
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { KEY_UPDATE_TYPE: observable.type, KEY_UPDATE_VALUE: observable.value.decode(), KEY_UPDATE_FOR_DETECTION: 0 },
-            ]
-        })
-    }
-
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_VALUE: "evil.com",
+        KEY_UPDATE_FOR_DETECTION: 1,
+        KEY_UPDATE_DETECTION_CONTEXT: _detection_context,
+    }], api_client_kwargs)
 
     get_db().close()
-    observable = get_db().query(Observable).filter().one()
-    assert observable.for_detection == 0
+    detection = get_db().query(ObservableDetection).filter(
+        ObservableDetection.type == F_FQDN, ObservableDetection.value == "evil.com").one()
+    assert detection.detection_context == _detection_context
 
-    # update the existing observable by type and base64 value
-    _detection_context = str(uuid.uuid4())
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { KEY_UPDATE_TYPE: observable.type, KEY_UPDATE_B64VALUE: base64.b64encode(observable.value).decode(), KEY_UPDATE_FOR_DETECTION: 1 },
-            ]
-        })
-    }
+    # the observables index was not touched -- that table is the ingest path's
+    assert get_db().query(Observable).filter(Observable.type == F_FQDN).count() == 0
 
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
 
-    get_db().close()
-    observable = get_db().query(Observable).filter().one()
-    assert observable.for_detection == 1
-
-    # update everything by id
-    _batch_id = str(uuid.uuid4())
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { 
-                    KEY_UPDATE_ID: observable.id, 
-                    KEY_UPDATE_FOR_DETECTION: 1,
-                    KEY_UPDATE_EXPIRES_ON: "2020-01-01 00:00:00",
-                    KEY_UPDATE_DETECTION_CONTEXT: "test",
-                    KEY_UPDATE_BATCH_ID: _batch_id,
-                },
-            ]
-        })
-    }
-
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
+@pytest.mark.integration
+def test_set_observable_creates_detection_for_never_seen_value(test_client, api_client_kwargs):
+    """The capability the old design could not express: no alert has ever contained this value."""
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_VALUE: "never-seen.example.com",
+        KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
 
     get_db().close()
-    observable = get_db().query(Observable).filter().one()
-    observable.for_detection == 1
-    observable.detection_context == "test"
-    observable.expires_on == datetime.datetime(year=2020, month=1, day=1, hour=0, minute=0, second=0)
-    observable.batch_id == _batch_id
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "never-seen.example.com").count() == 1
 
-    # add a new observable
 
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { 
-                    KEY_UPDATE_TYPE: F_FQDN,
-                    KEY_UPDATE_VALUE: "evil.com",
-                    KEY_UPDATE_FOR_DETECTION: 1,
-                    KEY_UPDATE_BATCH_ID: _batch_id,
-                },
-            ]
-        })
-    }
-
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
+@pytest.mark.integration
+def test_set_observable_by_b64value(test_client, api_client_kwargs):
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_B64VALUE: _b64("b64.example.com"),
+        KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
 
     get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "b64.example.com").count() == 1
 
-    new_observable = get_db().query(Observable).filter(Observable.type == F_FQDN, Observable.value == "evil.com".encode()).one()
-    assert new_observable.for_detection == 1
-    assert new_observable.batch_id == _batch_id
 
-    # update multiple observables (using both id and type/value pair)
+@pytest.mark.integration
+def test_set_observable_by_id(test_client, api_client_kwargs):
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "byid.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+
+    detection_id = get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "byid.example.com").one().id
 
     _batch_id = str(uuid.uuid4())
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { 
-                    KEY_UPDATE_TYPE: F_FQDN,
-                    KEY_UPDATE_VALUE: "test.com",
-                    KEY_UPDATE_FOR_DETECTION: 1,
-                    KEY_UPDATE_BATCH_ID: _batch_id,
-                },
-                { 
-                    KEY_UPDATE_ID: new_observable.id,
-                    KEY_UPDATE_FOR_DETECTION: 1,
-                    KEY_UPDATE_BATCH_ID: _batch_id,
-                },
-            ]
-        })
-    }
-
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
+    _post(test_client, [{
+        KEY_UPDATE_ID: detection_id,
+        KEY_UPDATE_EXPIRES_ON: "2030-01-01 00:00:00",
+        KEY_UPDATE_DETECTION_CONTEXT: "updated",
+        KEY_UPDATE_BATCH_ID: _batch_id,
+    }], api_client_kwargs)
 
     get_db().close()
+    detection = get_db().query(ObservableDetection).filter(ObservableDetection.id == detection_id).one()
+    assert detection.detection_context == "updated"
+    assert detection.expires_on == datetime.datetime(2030, 1, 1, 0, 0, 0)
+    assert detection.batch_id == _batch_id
 
-    observables = get_db().query(Observable).filter(Observable.batch_id == _batch_id).all()
-    assert len(observables) == 2
+
+@pytest.mark.integration
+def test_set_observable_disable_deletes_the_detection(test_client, api_client_kwargs):
+    """A row is an active detection, so for_detection=0 removes it."""
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "gone.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "gone.example.com").count() == 1
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "gone.example.com", KEY_UPDATE_FOR_DETECTION: 0,
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "gone.example.com").count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_multiple_updates(test_client, api_client_kwargs):
+    _batch_id = str(uuid.uuid4())
+    _post(test_client, [
+        {KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "one.example.com",
+         KEY_UPDATE_FOR_DETECTION: 1, KEY_UPDATE_BATCH_ID: _batch_id},
+        {KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "two.example.com",
+         KEY_UPDATE_FOR_DETECTION: 1, KEY_UPDATE_BATCH_ID: _batch_id},
+    ], api_client_kwargs)
+
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.batch_id == _batch_id).count() == 2
+
+
+@pytest.mark.integration
+def test_set_observable_rejects_an_invalid_value(test_client, api_client_kwargs):
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: "ipv4", KEY_UPDATE_VALUE: "notanip", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+
+    assert json.loads(result.data)[KEY_ERROR] is not None
+    get_db().close()
+    assert get_db().query(ObservableDetection).count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_rejects_non_utf8_b64value(test_client, api_client_kwargs):
+    """Bytes that cannot round-trip through text could never match at runtime, so they are refused
+    rather than silently stored lossily."""
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_B64VALUE: base64.b64encode(b"\xff\xfe\x00bad").decode(),
+        KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+
+    assert json.loads(result.data)[KEY_ERROR] is not None
+
+
+@pytest.mark.integration
+def test_set_observable_rejects_expires_on_true(test_client, api_client_kwargs):
+    """`true` meant "reset to the per-type default", which was the ingest-expiration concept.
+
+    A detection's expiration is only ever set explicitly now, so this fails loudly instead of being
+    reinterpreted.
+    """
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "reset.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+
+    # against the existing detection, so this reaches the expires_on validation rather than
+    # stopping at the create gate
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_VALUE: "reset.example.com",
+        KEY_UPDATE_EXPIRES_ON: True,
+    }], api_client_kwargs)
+
+    assert "expires_on" in json.loads(result.data)[KEY_ERROR]
+
+
+@pytest.mark.integration
+def test_set_observable_expires_on_false_clears(test_client, api_client_kwargs):
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "clear.example.com",
+        KEY_UPDATE_FOR_DETECTION: 1, KEY_UPDATE_EXPIRES_ON: "2030-01-01 00:00:00",
+    }], api_client_kwargs)
+    get_db().close()
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "clear.example.com", KEY_UPDATE_EXPIRES_ON: False,
+    }], api_client_kwargs)
+    get_db().close()
+
+    detection = get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "clear.example.com").one()
+    assert detection.expires_on is None
+
+
+@pytest.mark.parametrize("update_spec", [
+    pytest.param({KEY_UPDATE_DETECTION_CONTEXT: "staging only"}, id="context"),
+    pytest.param({KEY_UPDATE_BATCH_ID: "9f0d1c3e-0000-4000-8000-000000000001"}, id="batch_id"),
+    pytest.param({KEY_UPDATE_EXPIRES_ON: "2030-01-01 00:00:00"}, id="expires_on"),
+])
+@pytest.mark.integration
+def test_set_observable_metadata_only_does_not_create(test_client, api_client_kwargs, update_spec):
+    """Creating a detection has to be asked for.
+
+    A row *is* an active detection, so a spec that only carries metadata must not fall through to
+    the create branch -- that would turn `set the context on this indicator` into `start alerting
+    on this indicator`. The bulk csv import is the path that made this matter: it addresses every
+    row by type and value, so a candidate-indicator file with no for_detection column would have
+    gone live in its entirety.
+    """
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "ungated.example.com", **update_spec,
+    }], api_client_kwargs)
+
+    assert "for_detection=1" in json.loads(result.data)[KEY_ERROR]
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "ungated.example.com").count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_csv_import_shape_does_not_create(test_client, api_client_kwargs):
+    """The exact payload `set-observables --import-csv` sends for a csv with no for_detection column.
+
+    That path always addresses rows by type and b64value, so it was the one that could turn a
+    several-hundred-row candidate file into several hundred live detections in a single command.
+    """
+    result = _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN,
+        KEY_UPDATE_B64VALUE: _b64("candidate.example.com"),
+        KEY_UPDATE_DETECTION_CONTEXT: "pending review",
+    }], api_client_kwargs)
+
+    assert "for_detection=1" in json.loads(result.data)[KEY_ERROR]
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "candidate.example.com").count() == 0
+
+
+@pytest.mark.integration
+def test_set_observable_metadata_only_updates_an_existing_detection(test_client, api_client_kwargs):
+    """The gate gates creation, not updates -- a type/value spec still edits a detection that exists."""
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "existing.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "existing.example.com",
+        KEY_UPDATE_DETECTION_CONTEXT: "updated without an enable",
+    }], api_client_kwargs)
+    get_db().close()
+
+    detection = get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "existing.example.com").one()
+    assert detection.detection_context == "updated without an enable"
+
+
+@pytest.mark.integration
+def test_set_observable_for_detection_string_zero_disables(test_client, api_client_kwargs):
+    """The string "0" is a disable, not an enable.
+
+    The disable check compared against False and 0, so a caller sending JSON-ish strings missed it
+    and was then treated as having asked to enable.
+    """
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "strzero.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "strzero.example.com").count() == 1
+
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "strzero.example.com",
+        KEY_UPDATE_FOR_DETECTION: "0",
+    }], api_client_kwargs)
+    get_db().close()
+    assert get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "strzero.example.com").count() == 0
+
 
 @pytest.mark.integration
 def test_set_observable_as_user(test_client):
     user = get_db().query(User).first()
-    api_key = set_user_api_key(user.id)
-    client_kwargs = { "headers": { 'x-ace-auth': set_user_api_key(user.id) } }
-
-    root = create_root_analysis()
-    root.add_observable_by_spec(F_FQDN, "test.com")
-    root.save()
-    ALERT(root)
-
+    client_kwargs = {"headers": {'x-ace-auth': set_user_api_key(user.id)}}
     user_id = user.id
     get_db().close()
 
-    # get the single observable
-    observable = get_db().query(Observable).filter().one()
-    assert observable.for_detection == 0
-
-    # update the existing observable by id
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { KEY_UPDATE_ID: observable.id, KEY_UPDATE_FOR_DETECTION: 1 },
-            ]
-        })
-    }
-
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
+    _post(test_client, [{
+        KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "byuser.example.com", KEY_UPDATE_FOR_DETECTION: 1,
+    }], client_kwargs)
 
     get_db().close()
+    detection = get_db().query(ObservableDetection).filter(
+        ObservableDetection.value == "byuser.example.com").one()
+    assert detection.created_by == user_id
+    assert detection.modified_by == user_id
 
-    observable = get_db().query(Observable).filter(Observable.type == F_FQDN, Observable.value == "test.com".encode()).one()
-    assert observable.for_detection == 1
-    assert observable.detection_modified_by == user_id
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.add_observable_by_spec(F_FQDN, "evil.com")
-    root.save()
-    ALERT(root)
-
-    get_db().close()
-
-    # update the existing observable by id
-    data = {
-        KEY_UPDATES: json.dumps({
-            KEY_UPDATES: [
-                { KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "evil.com", KEY_UPDATE_FOR_DETECTION: 0 },
-            ]
-        })
-    }
-
-    result = test_client.post(url_for('intel.set_observables'), data=data, **client_kwargs)
-
-    get_db().close()
-
-    observable = get_db().query(Observable).filter(Observable.type == F_FQDN, Observable.value == "evil.com".encode()).one()
-    assert observable.for_detection == 0
-    # disabling records who made the change too -- the column tracks the last detection-status
-    # change either way, not just the enable
-    assert observable.detection_modified_by == user_id
 
 @pytest.mark.integration
-def test_get_observable(test_client):
-    client_kwargs = { "headers": { 'x-ace-auth': get_config().api.api_key } }
-
-    result = test_client.get(url_for('intel.get_observables'), **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+def test_get_observable(test_client, api_client_kwargs):
+    json_result = _get(test_client, api_client_kwargs)
     assert KEY_RESULTS in json_result
     assert KEY_ERROR in json_result
     assert json_result[KEY_RESULTS] == []
     assert json_result[KEY_ERROR] is None
 
-    root = create_root_analysis()
+    # create an alert whose observable is also a detection, so the LEFT JOIN has something to find
+    alert_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=alert_uuid)
     root.add_observable_by_spec(F_IP, "1.2.3.4")
     root.save()
     ALERT(root)
+    get_db().close()
 
-    alert_uuid = root.uuid
+    _post(test_client, [
+        {KEY_UPDATE_TYPE: F_IP, KEY_UPDATE_VALUE: "1.2.3.4", KEY_UPDATE_FOR_DETECTION: 1},
+        {KEY_UPDATE_TYPE: F_IP, KEY_UPDATE_VALUE: "1.2.3.5", KEY_UPDATE_FOR_DETECTION: 1},
+        {KEY_UPDATE_TYPE: F_FQDN, KEY_UPDATE_VALUE: "other.example.com", KEY_UPDATE_FOR_DETECTION: 1},
+    ], api_client_kwargs)
     get_db().close()
 
     # query all
-    result = test_client.get(url_for('intel.get_observables'), **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["type"] == F_IP
-    assert base64.b64decode(json_result[KEY_RESULTS][0]["value"]).decode() == "1.2.3.4"
+    json_result = _get(test_client, api_client_kwargs)
+    assert len(json_result[KEY_RESULTS]) == 3
 
-    observable_id = json_result[KEY_RESULTS][0]["id"]
+    by_value = {base64.b64decode(r["value"]).decode(): r for r in json_result[KEY_RESULTS]}
+    seen = by_value["1.2.3.4"]
+    unseen = by_value["1.2.3.5"]
+
+    # the detection whose value is in an alert carries the joined observables row; the other does not
+    assert seen["observable_id"] is not None
+    assert unseen["observable_id"] is None
+    assert seen["for_detection"] is True
+
+    detection_id = seen["id"]
 
     # query id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: observable_id }, **client_kwargs)
-    result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs, **{KEY_IDS: detection_id})
     assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["id"] == observable_id
+    assert json_result[KEY_RESULTS][0]["id"] == detection_id
 
-    # same thing but wrong id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: observable_id + 1}, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    # unknown id
+    json_result = _get(test_client, api_client_kwargs, **{KEY_IDS: 999999})
     assert len(json_result[KEY_RESULTS]) == 0
 
-    # insert another observable
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.add_observable_by_spec(F_IP, "1.2.3.5")
-    root.save()
-    ALERT(root)
-
-    get_db().close()
-
-    # get the observable ids
-    result = test_client.get(url_for('intel.get_observables'), **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    observable_ids = [_["id"] for _ in json_result[KEY_RESULTS]]
-    assert len(observable_ids) == 2
-
-    # query ids
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: ",".join(map(str, observable_ids)) }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 2
-
-    # query ids with limit
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: ",".join(map(str, observable_ids)), KEY_LIMIT: "1", KEY_OFFSET: "0" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["id"] == observable_ids[0]
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: ",".join(map(str, observable_ids)), KEY_LIMIT: "1", KEY_OFFSET: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["id"] == observable_ids[1]
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_IDS: ",".join(map(str, observable_ids)), KEY_LIMIT: "1", KEY_OFFSET: "2" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    # limit and offset
+    all_ids = [r["id"] for r in _get(test_client, api_client_kwargs)[KEY_RESULTS]]
+    json_result = _get(test_client, api_client_kwargs, **{KEY_LIMIT: "1", KEY_OFFSET: "0"})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [all_ids[0]]
+    json_result = _get(test_client, api_client_kwargs, **{KEY_LIMIT: "1", KEY_OFFSET: "1"})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [all_ids[1]]
+    json_result = _get(test_client, api_client_kwargs, **{KEY_LIMIT: "1", KEY_OFFSET: "99"})
     assert len(json_result[KEY_RESULTS]) == 0
 
     # query value
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_VALUES: "1.2.3.4" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["id"] == observable_id
+    json_result = _get(test_client, api_client_kwargs, **{KEY_VALUES: "1.2.3.4"})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [detection_id]
 
-    # query unknown value
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_VALUES: "1.2.3.3" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs, **{KEY_VALUES: "1.2.3.3"})
     assert len(json_result[KEY_RESULTS]) == 0
 
-    # query multiple values
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_VALUES: "1.2.3.4,1.2.3.5" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    len(json_result[KEY_RESULTS]) == 2
-    json_result[KEY_RESULTS][0]["id"] == observable_ids[0]
-    json_result[KEY_RESULTS][1]["id"] == observable_ids[1]
+    json_result = _get(test_client, api_client_kwargs, **{KEY_VALUES: "1.2.3.4,1.2.3.5"})
+    assert len(json_result[KEY_RESULTS]) == 2
 
     # query base64 value
-    b64 = lambda s: base64.b64encode(s.encode()).decode()
-    
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_B64VALUES: b64("1.2.3.4") }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    assert json_result[KEY_RESULTS][0]["id"] == observable_id
+    json_result = _get(test_client, api_client_kwargs, **{KEY_B64VALUES: _b64("1.2.3.4")})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [detection_id]
 
-    # query multiple base64 values
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_B64VALUES: ",".join([b64("1.2.3.4"), b64("1.2.3.5")]) }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs,
+                       **{KEY_B64VALUES: ",".join([_b64("1.2.3.4"), _b64("1.2.3.5")])})
     assert len(json_result[KEY_RESULTS]) == 2
-    assert json_result[KEY_RESULTS][0]["id"] == observable_ids[0]
-    assert json_result[KEY_RESULTS][1]["id"] == observable_ids[1]
-
-    # insert another observable
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.add_observable_by_spec(F_FQDN, "test.com")
-    root.save()
-    ALERT(root)
-
-    get_db().close()
 
     # query type
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ip" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs, **{KEY_TYPES: F_IP})
     assert len(json_result[KEY_RESULTS]) == 2
 
     # query type and value
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_TYPES: "ip", KEY_VALUES: "1.2.3.4" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs, **{KEY_TYPES: F_IP, KEY_VALUES: "1.2.3.4"})
     assert len(json_result[KEY_RESULTS]) == 1
 
-    # query for_detection
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FOR_DETECTION: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    # every row is an active detection
+    json_result = _get(test_client, api_client_kwargs, **{KEY_FOR_DETECTION: "1"})
+    assert len(json_result[KEY_RESULTS]) == 3
+    json_result = _get(test_client, api_client_kwargs, **{KEY_FOR_DETECTION: "0"})
     assert len(json_result[KEY_RESULTS]) == 0
 
-    # enable observable for detection
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
-    observable.for_detection = True
-    get_db().commit()
-
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FOR_DETECTION: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # query for expired
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_EXPIRED: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    # query for expired -- NULL expires_on means never expires, so expired=0 must include those
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "1"})
     assert len(json_result[KEY_RESULTS]) == 0
-
-    # expire observable
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
-    observable.expires_on = datetime.datetime.now() - datetime.timedelta(days=1)
-    get_db().commit()
-
-    # query for expired
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_EXPIRED: "1" }, **client_kwargs)
-    result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # query for fahits
-    # all should be None at this point
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: "null" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "0"})
     assert len(json_result[KEY_RESULTS]) == 3
 
-    # set fahits to 0
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
+    detection = get_db().query(ObservableDetection).filter(ObservableDetection.id == detection_id).one()
+    detection.expires_on = datetime.datetime.now() - datetime.timedelta(days=1)
+    get_db().commit()
+
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "1"})
+    assert len(json_result[KEY_RESULTS]) == 1
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EXPIRED: "0"})
+    assert len(json_result[KEY_RESULTS]) == 2
+
+    # fa_hits comes from the joined observables row, so only the seen detection can have one
+    json_result = _get(test_client, api_client_kwargs, **{KEY_FA_HITS: "null"})
+    assert len(json_result[KEY_RESULTS]) == 3
+
+    observable = get_db().query(Observable).filter(Observable.type == F_IP).one()
     observable.fa_hits = 0
     get_db().commit()
 
-    # one observable passed frequency analysis
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: "false" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-    
-    # set fahits to 1
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
+    assert len(_get(test_client, api_client_kwargs, **{KEY_FA_HITS: "false"})[KEY_RESULTS]) == 1
+
     observable.fa_hits = 1
     get_db().commit()
 
-    # one observable failed frequency analysis
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: "true" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs, **{KEY_FA_HITS: "true"})[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs, **{KEY_FA_HITS: ">0"})[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs, **{KEY_FA_HITS: "<2"})[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs, **{KEY_FA_HITS: "1"})[KEY_RESULTS]) == 1
 
-    # test >
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: ">0" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # test <
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: "<2" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # test ==
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_FA_HITS: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # get a user to use
+    # query by who last modified the detection
     user = get_db().query(User).first()
+    assert len(_get(test_client, api_client_kwargs,
+                    **{KEY_DETECTION_MODIFIED_BY_NAMES: user.username})[KEY_RESULTS]) == 0
 
-    # query by enabled by name
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_NAMES: user.username }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 0
-
-    # set the enabled by to this user
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
-    observable.detection_modified_by = user.id
+    detection = get_db().query(ObservableDetection).filter(ObservableDetection.id == detection_id).one()
+    detection.modified_by = user.id
     get_db().commit()
 
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_NAMES: user.username }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    # query by user id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_DETECTION_MODIFIED_BY_IDS: user.id }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
-
-    batch_id = str(uuid.uuid4())
+    assert len(_get(test_client, api_client_kwargs,
+                    **{KEY_DETECTION_MODIFIED_BY_NAMES: user.username})[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs,
+                    **{KEY_DETECTION_MODIFIED_BY_IDS: user.id})[KEY_RESULTS]) == 1
 
     # query by batch id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_BATCH_IDS: batch_id }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 0
+    batch_id = str(uuid.uuid4())
+    assert len(_get(test_client, api_client_kwargs, **{KEY_BATCH_IDS: batch_id})[KEY_RESULTS]) == 0
 
-    # set the batch id
-    observable = get_db().query(Observable).filter(Observable.id == observable_id).one()
-    observable.batch_id = batch_id
+    detection = get_db().query(ObservableDetection).filter(ObservableDetection.id == detection_id).one()
+    detection.batch_id = batch_id
     get_db().commit()
 
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_BATCH_IDS: batch_id }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
+    assert len(_get(test_client, api_client_kwargs, **{KEY_BATCH_IDS: batch_id})[KEY_RESULTS]) == 1
 
-    # get alert information
+    # the alert/event filters go through observable_mapping, so they can only ever match a detection
+    # whose value has actually been seen
     alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).one()
 
-    # query by alert id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_ALERT_IDS: alert.id }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
+    json_result = _get(test_client, api_client_kwargs, **{KEY_ALERT_IDS: alert.id})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [detection_id]
 
-    # query by alert uuid
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_ALERT_UUIDS: alert.uuid }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
+    json_result = _get(test_client, api_client_kwargs, **{KEY_ALERT_UUIDS: alert.uuid})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [detection_id]
 
-    # create a new event
-    from saq.database import EventStatus, EventRemediation, EventVector, EventRiskLevel, EventPreventionTool, EventType, EventMapping
+    from saq.database import (
+        EventStatus, EventRemediation, EventVector, EventRiskLevel, EventPreventionTool, EventType,
+        EventMapping,
+    )
     get_db().add(EventStatus(id=1, value="test"))
     get_db().add(EventRemediation(id=1, value="test"))
     get_db().add(EventVector(id=1, value="test"))
     get_db().add(EventRiskLevel(id=1, value="test"))
     get_db().add(EventPreventionTool(id=1, value="test"))
     get_db().add(EventType(id=1, value="test"))
-    event = Event(id=1, creation_date=datetime.datetime.now(), name="test", status_id=1, remediation_id=1, vector_id=1, risk_level_id=1, prevention_tool_id=1, type_id=1)
-    get_db().add(event)
+    get_db().add(Event(id=1, creation_date=datetime.datetime.now(), name="test", status_id=1,
+                       remediation_id=1, vector_id=1, risk_level_id=1, prevention_tool_id=1, type_id=1))
     get_db().commit()
 
     alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).one()
     get_db().add(EventMapping(alert_id=alert.id, event_id=1))
     get_db().commit()
 
-    # query by event id
-    result = test_client.get(url_for('intel.get_observables'), query_string={ KEY_EVENT_IDS: "1" }, **client_kwargs)
-    assert result.status_code == 200
-    json_result = json.loads(result.data)
-    assert len(json_result[KEY_RESULTS]) == 1
+    json_result = _get(test_client, api_client_kwargs, **{KEY_EVENT_IDS: "1"})
+    assert [r["id"] for r in json_result[KEY_RESULTS]] == [detection_id]

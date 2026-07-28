@@ -1,7 +1,6 @@
 # vim: sw=4:ts=4:et:cc=120
 import datetime
 import pytest
-import time
 
 from saq.configuration import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
@@ -38,61 +37,61 @@ def test_snort_signature_observable():
 
 
 @pytest.mark.integration
-def test_observable_expires_on(db_event):
-    from saq.database import Alert, ALERT, Campaign, EventMapping, Observable, ObservableMapping, User, set_dispositions
+def test_ingest_does_not_stamp_observable_expiration(db_event):
+    """Indexing an observable no longer writes observables.expires_on.
+
+    It used to be set to now + observable_expiration_mappings[type] for every observable ever seen,
+    and bumped again on a malicious disposition. Nothing read it except the detection cache, which
+    meant an observable last seen a while ago carried an already-expired timestamp -- so enabling
+    detection on it produced a detection that was dead on arrival. Detection expiration now lives on
+    the detection itself (observable_detections.expires_on), where only an analyst sets it.
+    """
+    from saq.database import Alert, ALERT, Observable, ObservableMapping, User, set_dispositions
 
     get_config().observable_expiration_mappings[F_TEST] = '01:00:00:00'
+    try:
+        root = create_root_analysis(analysis_mode='test_single')
+        root.initialize_storage()
+        root.add_observable_by_spec(F_TEST, 'test_detection')
+        root.save()
 
-    # Create an analysis that turns into an alert
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    root.add_observable_by_spec(F_TEST, 'test_detection')
-    root.save()
+        ALERT(root)
 
-    ALERT(root)
+        def current_expires_on():
+            return get_db().query(Observable.expires_on) \
+                .join(ObservableMapping, Observable.id == ObservableMapping.observable_id) \
+                .join(Alert, ObservableMapping.alert_id == Alert.id) \
+                .filter(Alert.uuid == root.uuid).one().expires_on
 
-    # Get the expires_on time of the observable in the alert
-    expires_on_original = get_db().query(Observable.expires_on) \
-        .join(ObservableMapping, Observable.id == ObservableMapping.observable_id) \
-        .join(Alert, ObservableMapping.alert_id == Alert.id) \
-        .filter(Alert.uuid == root.uuid).one().expires_on
+        # the type has a configured delta, and it is still not applied here
+        assert current_expires_on() is None
 
-    # The expires_on value should be greater than now() based on the 01:00:00:00 configured delta
-    assert expires_on_original > datetime.datetime.now()
+        set_dispositions([root.uuid], DISPOSITION_DELIVERY, get_db().query(User).first().id)
 
-    # Set the disposition of this alert to something malicious after sleeping for a second
-    time.sleep(1)
-    set_dispositions([root.uuid], DISPOSITION_DELIVERY, get_db().query(User).first().id)
+        # dispositioning malicious no longer rewrites it either
+        assert current_expires_on() is None
+    finally:
+        del get_config().observable_expiration_mappings[F_TEST]
 
-    # Get the updated expires_on time of the observable in the alert
-    expires_on_updated = get_db().query(Observable.expires_on) \
-        .join(ObservableMapping, Observable.id == ObservableMapping.observable_id) \
-        .join(Alert, ObservableMapping.alert_id == Alert.id) \
-        .filter(Alert.uuid == root.uuid).one().expires_on
 
-    # The expires_on time should have been updated by virtue of setting the alert disposition
-    assert expires_on_updated > expires_on_original
+@pytest.mark.integration
+def test_observable_type_expiration_time_is_the_detection_default():
+    """The config setting now supplies a *detection's* default lifetime, which is what its own
+    description has always claimed it was."""
+    from saq.analysis.observable import get_observable_type_expiration_time
 
-    # Add the alert to the event
-    alert_id = get_db().query(Alert.id).filter(Alert.uuid == root.uuid).one().id
-    event_mapping = EventMapping(event_id=db_event.id, alert_id=alert_id)
-    get_db().add(event_mapping)
-    get_db().commit()
+    assert get_observable_type_expiration_time(F_TEST) is None
 
-    # Add a threat actor to the event
-    threat_actor = Campaign(name='Test Actor')
-    get_db().add(threat_actor)
-    db_event.campaign = threat_actor
-    get_db().commit()
+    get_config().observable_expiration_mappings[F_TEST] = '01:00:00:00'
+    try:
+        expires_on = get_observable_type_expiration_time(F_TEST)
+        assert expires_on is not None
+        # roughly one day out
+        delta = expires_on - datetime.datetime.now(datetime.UTC)
+        assert datetime.timedelta(hours=23) < delta < datetime.timedelta(hours=25)
+    finally:
+        del get_config().observable_expiration_mappings[F_TEST]
 
-    # Get the final expires_on time of the observable in the alert
-    expires_on_closed = get_db().query(Observable.expires_on) \
-        .join(ObservableMapping, Observable.id == ObservableMapping.observable_id) \
-        .join(Alert, ObservableMapping.alert_id == Alert.id) \
-        .filter(Alert.uuid == root.uuid).one().expires_on
-
-    # The expires_on time should now be null since the event was closed with a threat actor assigned
-    #assert expires_on_closed is None
 
 @pytest.mark.unit
 def test_observable_sha256():

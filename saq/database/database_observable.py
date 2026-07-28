@@ -30,19 +30,12 @@ def observable_is_set_for_detection(observable: Observable) -> bool:
     """Returns True if the observable is set for detection, False otherwise."""
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT for_detection FROM observables WHERE sha256 = UNHEX(%s)", (observable.sha256_hash,))
-        result = cursor.fetchone()
-        return bool(result[0]) if result else False
-
-def observable_set_for_detection(observable: Observable, value: bool):
-    """Sets the observable for detection."""
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("UPDATE observables SET for_detection = %s WHERE sha256 = UNHEX(%s)", (value, observable.sha256_hash))
-        if cursor.rowcount == 0:
-            cursor.execute("INSERT INTO observables (`type`, `value`, `sha256`, `for_detection`) VALUES (%s, %s, UNHEX(%s), %s)", (observable.type, observable.value, observable.sha256_hash, value))
-
-        db.commit()
+        # NOTE: the type predicate matters. This used to match on the hash alone, so a value enabled
+        # for detection as one type reported as enabled for every type sharing that value.
+        cursor.execute(
+            "SELECT 1 FROM observable_detections WHERE type = %s AND value_sha256 = %s",
+            (observable.type, observable.sha256_bytes))
+        return cursor.fetchone() is not None
 
 def get_observable_disposition_history(observable: Observable) -> Optional[DispositionHistory]:
     """Returns a DispositionHistory object if self.obj is an Observable, None otherwise."""
