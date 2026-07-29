@@ -110,6 +110,9 @@ class CollectorService(ACEServiceInterface):
         # primary collection thread that pulls Submission objects from the collector
         self.collection_thread = None
         
+        # thread that repeatedly calls the collector's update() routine
+        self.update_thread = None
+        
         # repeatedly calls execute_workload_cleanup
         self.cleanup_thread = None
 
@@ -207,6 +210,9 @@ class CollectorService(ACEServiceInterface):
 
     def start_single_threaded(self, execution_mode: CollectorExecutionMode=CollectorExecutionMode.SINGLE_SHOT, execute_nodes: bool=True):
         assert execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION], "invalid execution mode for single threaded collector"
+
+        # must precede collection_loop(), which schedules submissions against self.remote_node_groups
+        self.load_groups()
 
         self.recover_staging()
         self.execution_mode = execution_mode
