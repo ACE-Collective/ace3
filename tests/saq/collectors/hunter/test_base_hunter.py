@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 import logging
 import os
-from queue import Queue
 import shutil
 from uuid import uuid4
 import pytest
@@ -18,7 +17,7 @@ from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.util.hashing import sha256
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import log_count, wait_for_log_count
+from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
 
 def default_hunt_config(**kwargs):
     config_kwargs = {
@@ -89,7 +88,7 @@ class TestHunt(Hunt):
         root_uuid = str(uuid4())
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=get_storage_dir(root_uuid),
+            storage_dir=self.manager.file_manager.get_staging_tmp_path(root_uuid),
             desc='test',
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             tool='test_tool',
@@ -108,8 +107,8 @@ def rules_dir(tmpdir, datadir) -> str:
     return str(temp_rules_dir)
 
 @pytest.fixture
-def manager_kwargs(rules_dir):
-    yield { 'submission_queue': Queue(),
+def manager_kwargs(rules_dir, tmpdir):
+    yield { 'file_manager': create_submission_file_manager(tmpdir),
                 'hunt_type': 'test',
                 'rule_dirs': [rules_dir,],
                 'hunt_cls': TestHunt,
@@ -122,7 +121,7 @@ def manager_kwargs(rules_dir):
 @pytest.fixture
 def hunter_service(manager_kwargs):
     hunter_service = HunterService()
-    manager_kwargs["submission_queue"] = hunter_service.submission_queue
+    manager_kwargs["file_manager"] = hunter_service.collector_service.file_manager
     hunter_service.add_hunt_manager(HuntManager(**manager_kwargs))
     yield hunter_service
 
@@ -842,6 +841,8 @@ def test_last_alert_times_persistence(monkeypatch, tmpdir):
 
     hunt.set_last_alert_time(now, "bob")
     hunt.set_last_alert_time(now, "alice")
+    # set_last_alert_time records in memory only; persistence is an explicit flush
+    hunt.save_last_alert_times()
 
     # rehydrate from disk by constructing a fresh Hunt with the same name
     fresh = Hunt(manager=MockManager(),
@@ -881,6 +882,8 @@ def test_prune_expired_last_alert_times(monkeypatch, tmpdir):
     hunt.set_last_alert_time(now, "current")
 
     hunt.prune_expired_last_alert_times()
+    # prune mutates in memory only; persistence is an explicit flush
+    hunt.save_last_alert_times()
 
     # rehydrate to confirm the prune was persisted to disk
     fresh = Hunt(manager=MockManager(),
@@ -1057,15 +1060,19 @@ def test_hunt_execution_skips_invalid_instance_type(manager_kwargs, monkeypatch)
     assert not invalid_hunt.executed
     assert not empty_instance_hunt.executed
 
-class _RecordingQueue(Queue):
-    """records the transaction id in effect each time something is queued"""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.transaction_ids = []
+def _record_staging_transaction_ids(file_manager) -> list:
+    """Records the transaction id in effect each time a submission is staged.
 
-    def put(self, item, *args, **kwargs):
-        self.transaction_ids.append(get_transaction_id())
-        super().put(item, *args, **kwargs)
+    Returns the list the ids are appended to."""
+    transaction_ids = []
+    real_stage = file_manager.stage_submission
+
+    def _recording_stage(submission):
+        transaction_ids.append(get_transaction_id())
+        return real_stage(submission)
+
+    file_manager.stage_submission = _recording_stage
+    return transaction_ids
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
@@ -1073,8 +1080,8 @@ def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
 
     execute_with_lock() exits its transaction id context before the manager queues
     anything, so the manager has to re-enter it explicitly"""
-    manager_kwargs["submission_queue"] = _RecordingQueue()
     manager = HuntManager(**manager_kwargs)
+    transaction_ids = _record_staging_transaction_ids(manager.file_manager)
     hunt = default_hunt(manager=manager)
     # normally set by execute_hunt() before it hands the hunt to the execution thread
     hunt.semaphore = None
@@ -1083,7 +1090,7 @@ def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
 
     assert hunt.last_transaction_id is not None
     assert hunt.last_transaction_id != DEFAULT_TRANSACTION_ID
-    assert manager.submission_queue.transaction_ids == [hunt.last_transaction_id]
+    assert transaction_ids == [hunt.last_transaction_id]
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
@@ -1095,9 +1102,11 @@ def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
 
     manager.execute_threaded_hunt(hunt)
 
-    submission = manager.submission_queue.get_nowait()
-    assert submission.queued_time is not None
-    assert submission.queue_age >= 0
+    staged = list(manager.file_manager.iter_staged_submissions())
+    assert len(staged) == 1
+    # queued_time round trips through the staging directory, so it is still readable here
+    assert staged[0].queued_time is not None
+    assert staged[0].queue_age >= 0
 
     assert log_count("queued 1 submissions for hunt") == 1
     assert log_count("post-processed 1 submissions for hunt") == 1
@@ -1124,7 +1133,7 @@ class _GroupedTestHunt(TestHunt):
             root_uuid = str(uuid4())
             root = RootAnalysis(
                 uuid=root_uuid,
-                storage_dir=get_storage_dir(root_uuid),
+                storage_dir=self.manager.file_manager.get_staging_tmp_path(root_uuid),
                 desc='test',
                 analysis_mode=ANALYSIS_MODE_CORRELATION,
                 tool='test_tool',
@@ -1158,7 +1167,7 @@ def test_execute_threaded_hunt_skips_suppression_tracking_when_not_configured(ma
     manager.execute_threaded_hunt(hunt)
 
     # all three submissions still make it to the queue
-    assert manager.submission_queue.qsize() == 3
+    assert len(manager.file_manager.list_staged_submissions()) == 3
 
     # but nothing was recorded, in memory or on disk
     assert hunt.last_alert_times == {}
@@ -1201,6 +1210,165 @@ def test_execute_threaded_hunt_still_records_ungrouped_last_alert_time(manager_k
 
     assert hunt.last_alert_time is not None
 
+def _count_persistence_writes(monkeypatch, value_name="last_alert_times"):
+    """patches write_persistence_data to count writes of a given value name
+
+    returns a single-element list holding the count so callers can read it after the fact"""
+    import saq.collectors.hunter.base_hunter as base_hunter_module
+
+    count = [0]
+    real_write = base_hunter_module.write_persistence_data
+
+    def _counting_write(hunt_type, hunt_name, name, value):
+        if name == value_name:
+            count[0] += 1
+        return real_write(hunt_type, hunt_name, name, value)
+
+    monkeypatch.setattr(base_hunter_module, "write_persistence_data", _counting_write)
+    return count
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_writes_last_alert_times_once_per_run(manager_kwargs, monkeypatch):
+    """a suppressed grouped hunt writes the persistence file exactly once, not once per group
+
+    this is the assertion that encodes the fix: set_last_alert_time used to pickle the whole
+    dict on every call, making a run O(groups^2)"""
+    writes = _count_persistence_writes(monkeypatch)
+
+    group_values = [f"group{i}" for i in range(20)]
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_single_write", suppression="00:01:00"),
+        group_values=group_values)
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    # every group was recorded...
+    for group_value in group_values:
+        assert hunt.get_last_alert_time(group_value) is not None
+
+    # ...in exactly one disk write (previously this would have been 20)
+    assert writes[0] == 1
+
+    # and it round trips
+    persisted = read_persistence_data(hunt.type, hunt.name, "last_alert_times")
+    assert set(persisted.keys()) == set(group_values)
+
+@pytest.mark.unit
+def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir):
+    """set_last_alert_time records in memory only - the write is an explicit flush"""
+    class MockManager:
+        @property
+        def hunt_type(self):
+            return "test"
+
+    data_dir = tmpdir / "data"
+    data_dir.mkdir()
+    p_dir = data_dir / "p"
+    p_dir.mkdir()
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
+    monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
+
+    writes = _count_persistence_writes(monkeypatch)
+
+    hunt = Hunt(manager=MockManager(),
+                config=default_hunt_config(name="test_no_write", suppression="00:01:00"))
+    now = local_time()
+
+    hunt.set_last_alert_time(now, "alice")
+
+    # readable in memory, but nothing on disk yet
+    assert hunt.get_last_alert_time("alice") == now
+    assert writes[0] == 0
+    assert read_persistence_data(hunt.type, hunt.name, "last_alert_times") is None
+
+    hunt.save_last_alert_times()
+    assert writes[0] == 1
+
+    # a second flush with nothing changed is a no-op
+    hunt.save_last_alert_times()
+    assert writes[0] == 1
+
+@pytest.mark.unit
+def test_prune_expired_last_alert_times_preserves_concurrent_inserts(monkeypatch, tmpdir):
+    """pruning removes expired keys in place rather than assigning a rebuilt dict
+
+    a hunt can be re-dispatched while the previous run is still post-processing, so a rebuilt
+    dict would silently drop entries the other run inserted after the snapshot was taken"""
+    class MockManager:
+        @property
+        def hunt_type(self):
+            return "test"
+
+    data_dir = tmpdir / "data"
+    data_dir.mkdir()
+    p_dir = data_dir / "p"
+    p_dir.mkdir()
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
+    monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
+
+    hunt = Hunt(manager=MockManager(),
+                config=default_hunt_config(name="test_prune_concurrent", suppression="00:01:00"))
+    now = local_time()
+
+    hunt.set_last_alert_time(now - timedelta(minutes=10), "expired")
+    hunt.set_last_alert_time(now, "current")
+
+    # hold the same dict object a concurrent run would be mutating
+    shared = hunt.last_alert_times
+    hunt.prune_expired_last_alert_times()
+    # simulate the other run inserting after the prune decided what to drop
+    hunt.set_last_alert_time(now, "inserted_concurrently")
+
+    assert hunt.last_alert_times is shared, "prune must not replace the dict object"
+    assert hunt.get_last_alert_time("expired") is None
+    assert hunt.get_last_alert_time("current") is not None
+    assert hunt.get_last_alert_time("inserted_concurrently") is not None
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_discards_suppression_state_when_unsuppressed(manager_kwargs):
+    """a grouped hunt with no suppression drops any state a previous version persisted"""
+    manager = HuntManager(**manager_kwargs)
+
+    # stand in for what the old code left on disk
+    seeded = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_discard", suppression="00:01:00"),
+        group_values=[])
+    seeded.set_last_alert_time(local_time(), "stale")
+    seeded.save_last_alert_times()
+    assert read_persistence_data(seeded.type, seeded.name, "last_alert_times") is not None
+
+    # same hunt name, but suppression is no longer configured
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_discard"),
+        group_values=["alice"])
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert hunt.last_alert_times == {}
+    assert read_persistence_data(hunt.type, hunt.name, "last_alert_times") is None
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_does_not_write_when_nothing_changed(manager_kwargs, monkeypatch):
+    """a run that produces no submissions must not touch the persistence file"""
+    writes = _count_persistence_writes(monkeypatch)
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_no_submissions", suppression="00:01:00"),
+        group_values=[])
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert writes[0] == 0
+
 @pytest.mark.integration
 def test_execute_threaded_hunt_survives_execution_failure(manager_kwargs):
     """a hunt that raises does not take the execution thread down with it"""
@@ -1214,7 +1382,7 @@ def test_execute_threaded_hunt_survives_execution_failure(manager_kwargs):
     hunt.execute_with_lock = _boom
     manager.execute_threaded_hunt(hunt)
 
-    assert manager.submission_queue.empty()
+    assert manager.file_manager.list_staged_submissions() == []
 
 @pytest.mark.integration
 def test_failed_hunt_backs_off(manager_kwargs):

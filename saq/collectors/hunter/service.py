@@ -1,8 +1,7 @@
 import importlib
 import logging
 import os
-from queue import Empty, Queue
-from typing import Generator, Type, override
+from typing import Generator, Optional, Type, override
 
 from pydantic import Field
 
@@ -10,6 +9,7 @@ from pydantic import Field
 from saq.analysis.root import Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
+from saq.collectors.submission_file_manager import SubmissionFileManager
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.manager import HuntManager
 from saq.configuration import get_config
@@ -29,27 +29,28 @@ MAX_SUBMISSIONS_PER_COLLECTION = 32
 SUBMISSION_QUEUE_DEPTH_LOG_THRESHOLD = 50
 
 class HunterCollector(Collector):
-    """Collector that collects submissions from the hunt managers."""
-    def __init__(self, submission_queue: Queue):
+    """Collector that collects submissions staged by the hunt managers.
+
+    The staging directory is the queue. Hunt managers serialize each submission and atomically
+    rename it into place, so anything found here survived whatever killed the previous process."""
+    def __init__(self, file_manager: Optional[SubmissionFileManager] = None):
         super().__init__()
-        self.submission_queue = submission_queue
+        # assigned by HunterService once the CollectorService that owns the staging
+        # directories has been constructed
+        self.file_manager = file_manager
 
     @override
     def collect(self) -> Generator[Submission, None, None]:
-        """Collect submissions from the hunt managers.
+        """Collect submissions the hunt managers have staged.
 
-        Drains up to MAX_SUBMISSIONS_PER_COLLECTION submissions per call. Only the first
-        get blocks (for up to a second) - once the queue is empty we return rather than
-        waiting again, so an idle collector still polls at the same rate as before."""
-        depth = self.submission_queue.qsize()
+        Yields up to MAX_SUBMISSIONS_PER_COLLECTION per call so the collection loop keeps coming
+        back around to report status and check for shutdown even when the hunt managers are
+        producing faster than we can schedule."""
+        depth = len(self.file_manager.list_staged_submissions())
         if depth >= SUBMISSION_QUEUE_DEPTH_LOG_THRESHOLD:
             logging.info("hunter submission queue depth is %d", depth)
 
-        for count in range(MAX_SUBMISSIONS_PER_COLLECTION):
-            try:
-                yield self.submission_queue.get(block=count == 0, timeout=1)
-            except Empty:
-                return
+        yield from self.file_manager.iter_staged_submissions(limit=MAX_SUBMISSIONS_PER_COLLECTION)
 
 class HunterServiceConfig(CollectorServiceConfiguration):
     update_frequency: int = Field(..., description="The frequency in seconds between updates of the hunt managers.")
@@ -57,9 +58,12 @@ class HunterServiceConfig(CollectorServiceConfiguration):
 class HunterService(ACEServiceInterface):
     """Service that hosts and manages detection hunts for ACE."""
     def __init__(self):
-        self.submission_queue = Queue()
-        self.collector = HunterCollector(self.submission_queue)
+        self.collector = HunterCollector()
         self.collector_service = CollectorService(self.collector, config=get_service_config(SERVICE_HUNTER))
+
+        # the collector service owns the staging directories. the hunt managers stage into them
+        # and the collector reads them back out, so both sides share one SubmissionFileManager
+        self.collector.file_manager = self.collector_service.file_manager
         self.hunt_managers: dict[str, HuntManager] = {} # key = hunt_type, value = HuntManager
 
     @override
@@ -146,7 +150,7 @@ class HunterService(ACEServiceInterface):
 
             logging.debug(f"loading hunt manager for {hunt_type} class {class_definition}")
             self.add_hunt_manager(
-                HuntManager(submission_queue=self.submission_queue,
+                HuntManager(file_manager=self.collector_service.file_manager,
                             hunt_type=hunt_type, 
                             rule_dirs=hunt_type_config.rule_dirs,
                             hunt_cls=class_definition,

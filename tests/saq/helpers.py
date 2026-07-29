@@ -659,3 +659,50 @@ def reset_s3_email_archive_bucket():
             kwargs["ContinuationToken"] = response["NextContinuationToken"]
         else:
             break
+
+def create_submission_file_manager(base_dir) -> "SubmissionFileManager":
+    """Returns a SubmissionFileManager rooted at base_dir with all four directories created.
+
+    Used by collector tests that need the staging directory (the durable submission queue) but
+    do not want a full CollectorService.
+    """
+    from saq.collectors.submission_file_manager import SubmissionFileManager
+
+    base_dir = str(base_dir)
+    file_manager = SubmissionFileManager(
+        incoming_dir=os.path.join(base_dir, "incoming"),
+        persistence_dir=os.path.join(base_dir, "persistence"),
+        staging_dir=os.path.join(base_dir, "staging"),
+        staging_tmp_dir=os.path.join(base_dir, "staging.tmp"),
+        error_dir=os.path.join(base_dir, "error"))
+    file_manager.initialize_directories()
+    return file_manager
+
+
+def create_staged_submission(file_manager, key=None, group_value=None, group_assignments=None) -> str:
+    """Builds a submission in the staging scratch directory and publishes it.
+
+    Returns the root uuid.
+    """
+    root_uuid = str(uuid.uuid4())
+    root = RootAnalysis(
+        uuid=root_uuid,
+        storage_dir=file_manager.get_staging_tmp_path(root_uuid),
+        desc="test staged submission",
+        analysis_mode=ANALYSIS_MODE_ANALYSIS,
+        tool="test_tool",
+        tool_instance="test_tool_instance",
+        alert_type="test_type")
+    root.initialize_storage()
+
+    submission = Submission(root)
+    if key is not None:
+        submission.key = key
+    if group_value is not None:
+        submission.group_value = group_value
+    if group_assignments is not None:
+        submission.group_assignments = group_assignments
+
+    submission.queued_time = time.time()
+    file_manager.stage_submission(submission)
+    return root_uuid

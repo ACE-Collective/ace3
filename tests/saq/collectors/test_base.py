@@ -27,7 +27,8 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import log_count, search_log_condition, wait_for_log_count
+from saq.collectors.hunter.service import HunterCollector
+from tests.saq.helpers import create_staged_submission, log_count, search_log_condition, wait_for_log_count
 
 def create_root_analysis() -> RootAnalysis:
     root_uuid = str(uuid4())
@@ -1452,3 +1453,117 @@ def test_submission_without_transaction_id_keeps_current(engine, monkeypatch):
         collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
     assert scheduled_transaction_ids == ["ambient-transaction-id"]
+
+
+#
+# durable staging directory
+#
+# the collector process is always hard-killed rather than shut down cleanly, so work that has
+# been emitted but not yet collected has to survive on disk.
+#
+
+@pytest.mark.integration
+def test_staged_submissions_survive_a_restart():
+    """a fresh CollectorService collects whatever the previous one left staged"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    staged = [create_staged_submission(file_manager) for _ in range(3)]
+
+    # stand in for a restart - a brand new service against the same directories
+    recovered_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    recovered = recovered_service.file_manager.list_staged_submissions()
+
+    assert sorted(recovered) == sorted(staged)
+
+
+@pytest.mark.integration
+def test_purge_incomplete_staging_leaves_committed_work():
+    """startup cleanup removes half-built submissions but not staged ones"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    staged_uuid = create_staged_submission(file_manager)
+    incomplete_dir = file_manager.get_staging_tmp_path("half-built")
+    os.makedirs(incomplete_dir, exist_ok=True)
+
+    assert file_manager.purge_incomplete_staging() >= 1
+
+    assert not os.path.exists(incomplete_dir)
+    assert file_manager.list_staged_submissions() == [staged_uuid]
+
+
+@pytest.mark.integration
+def test_scheduling_removes_submission_from_staging():
+    """a scheduled submission leaves the staging directory - that move is the commit point"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    create_staged_submission(file_manager)
+    submission = next(iter(file_manager.iter_staged_submissions()))
+
+    collector_service.process_submission(submission)
+
+    assert file_manager.list_staged_submissions() == []
+    assert file_manager.submission_directory_exists(submission.root.uuid)
+
+
+@pytest.mark.integration
+def test_duplicate_submission_removed_from_staging():
+    """a duplicate never reaches the incoming dir, so it must be discarded explicitly
+
+    without this it would be re-collected on every pass forever"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    # first one through marks the key as seen
+    create_staged_submission(file_manager, key="repeated-key")
+    first = next(iter(file_manager.iter_staged_submissions()))
+    collector_service.process_submission(first)
+
+    # second one with the same key is a duplicate
+    duplicate_uuid = create_staged_submission(file_manager, key="repeated-key")
+    duplicate = next(iter(file_manager.iter_staged_submissions()))
+    assert duplicate.root.uuid == duplicate_uuid
+
+    collector_service.process_submission(duplicate)
+
+    assert file_manager.list_staged_submissions() == []
+    assert not file_manager.submission_directory_exists(duplicate_uuid)
+
+
+@pytest.mark.integration
+def test_failing_submission_is_quarantined_not_retried_forever():
+    """a submission that fails to process is moved aside rather than blocking the queue
+
+    staged submissions persist until they reach a terminal outcome, so without this a
+    permanently failing submission would be retried on every pass and - because one exception
+    abandons the rest of the batch - would block everything queued behind it"""
+    # HunterCollector is the collector that actually reads from the staging directory
+    collector = HunterCollector()
+    collector_service = CollectorService(collector=collector, config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+    collector.file_manager = file_manager
+
+    poison_uuid = create_staged_submission(file_manager)
+    good_uuid = create_staged_submission(file_manager)
+
+    processed = []
+
+    def _explode(submission):
+        if submission.root.uuid == poison_uuid:
+            raise RuntimeError("nope")
+
+        processed.append(submission.root.uuid)
+        return False
+
+    collector_service.process_submission = _explode
+    collector_service.execute_collection_loop()
+
+    # the poison submission is out of staging and available for review
+    assert poison_uuid not in file_manager.list_staged_submissions()
+    assert os.path.isdir(os.path.join(file_manager.error_dir, poison_uuid))
+
+    # and the submission queued behind it was still handed to process_submission rather than
+    # being abandoned along with the rest of the batch
+    assert good_uuid in processed

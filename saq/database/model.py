@@ -2982,6 +2982,13 @@ class WorkDistribution(Base):
     __tablename__ = 'work_distribution'
     __table_args__ = (
         Index('fk_work_status', 'work_id', 'status'),
+        # RemoteNodeGroup.execute() checks "do I already hold locks" on every pass
+        # (WHERE lock_uuid = ? AND status IN (...)) and then selects the locked batch by the
+        # same column - both were full table scans
+        Index('idx_wd_lock_uuid_status', 'lock_uuid', 'status'),
+        # the dispatch and backlog queries filter on (group_id, status); group_id alone is only
+        # the leading half of the primary key, which does not help the status predicate
+        Index('idx_wd_group_status', 'group_id', 'status'),
     )
 
     group_id: Mapped[int] = mapped_column(
@@ -3008,6 +3015,16 @@ class WorkDistribution(Base):
     lock_uuid: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True)
+
+    # how many times delivery of this work item has failed with a retriable error.
+    # RemoteNodeGroup only claims a new batch when it holds no locks, so an item that retries
+    # forever stalls everything queued behind it - this bounds that and lets the item be
+    # dead-lettered to ERROR once the group's max_delivery_attempts is exceeded
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text('0'))
 
 
 class SandboxSubmission(Base):
