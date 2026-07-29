@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 import logging
 import os
-from queue import Queue
 import shutil
 from uuid import uuid4
 import pytest
@@ -18,7 +17,7 @@ from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.util.hashing import sha256
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import log_count, wait_for_log_count
+from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
 
 def default_hunt_config(**kwargs):
     config_kwargs = {
@@ -89,7 +88,7 @@ class TestHunt(Hunt):
         root_uuid = str(uuid4())
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=get_storage_dir(root_uuid),
+            storage_dir=self.manager.file_manager.get_staging_tmp_path(root_uuid),
             desc='test',
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             tool='test_tool',
@@ -108,8 +107,8 @@ def rules_dir(tmpdir, datadir) -> str:
     return str(temp_rules_dir)
 
 @pytest.fixture
-def manager_kwargs(rules_dir):
-    yield { 'submission_queue': Queue(),
+def manager_kwargs(rules_dir, tmpdir):
+    yield { 'file_manager': create_submission_file_manager(tmpdir),
                 'hunt_type': 'test',
                 'rule_dirs': [rules_dir,],
                 'hunt_cls': TestHunt,
@@ -122,7 +121,7 @@ def manager_kwargs(rules_dir):
 @pytest.fixture
 def hunter_service(manager_kwargs):
     hunter_service = HunterService()
-    manager_kwargs["submission_queue"] = hunter_service.submission_queue
+    manager_kwargs["file_manager"] = hunter_service.collector_service.file_manager
     hunter_service.add_hunt_manager(HuntManager(**manager_kwargs))
     yield hunter_service
 
@@ -1061,15 +1060,19 @@ def test_hunt_execution_skips_invalid_instance_type(manager_kwargs, monkeypatch)
     assert not invalid_hunt.executed
     assert not empty_instance_hunt.executed
 
-class _RecordingQueue(Queue):
-    """records the transaction id in effect each time something is queued"""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.transaction_ids = []
+def _record_staging_transaction_ids(file_manager) -> list:
+    """Records the transaction id in effect each time a submission is staged.
 
-    def put(self, item, *args, **kwargs):
-        self.transaction_ids.append(get_transaction_id())
-        super().put(item, *args, **kwargs)
+    Returns the list the ids are appended to."""
+    transaction_ids = []
+    real_stage = file_manager.stage_submission
+
+    def _recording_stage(submission):
+        transaction_ids.append(get_transaction_id())
+        return real_stage(submission)
+
+    file_manager.stage_submission = _recording_stage
+    return transaction_ids
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
@@ -1077,8 +1080,8 @@ def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
 
     execute_with_lock() exits its transaction id context before the manager queues
     anything, so the manager has to re-enter it explicitly"""
-    manager_kwargs["submission_queue"] = _RecordingQueue()
     manager = HuntManager(**manager_kwargs)
+    transaction_ids = _record_staging_transaction_ids(manager.file_manager)
     hunt = default_hunt(manager=manager)
     # normally set by execute_hunt() before it hands the hunt to the execution thread
     hunt.semaphore = None
@@ -1087,7 +1090,7 @@ def test_execute_threaded_hunt_queues_under_hunt_transaction_id(manager_kwargs):
 
     assert hunt.last_transaction_id is not None
     assert hunt.last_transaction_id != DEFAULT_TRANSACTION_ID
-    assert manager.submission_queue.transaction_ids == [hunt.last_transaction_id]
+    assert transaction_ids == [hunt.last_transaction_id]
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
@@ -1099,9 +1102,11 @@ def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
 
     manager.execute_threaded_hunt(hunt)
 
-    submission = manager.submission_queue.get_nowait()
-    assert submission.queued_time is not None
-    assert submission.queue_age >= 0
+    staged = list(manager.file_manager.iter_staged_submissions())
+    assert len(staged) == 1
+    # queued_time round trips through the staging directory, so it is still readable here
+    assert staged[0].queued_time is not None
+    assert staged[0].queue_age >= 0
 
     assert log_count("queued 1 submissions for hunt") == 1
     assert log_count("post-processed 1 submissions for hunt") == 1
@@ -1128,7 +1133,7 @@ class _GroupedTestHunt(TestHunt):
             root_uuid = str(uuid4())
             root = RootAnalysis(
                 uuid=root_uuid,
-                storage_dir=get_storage_dir(root_uuid),
+                storage_dir=self.manager.file_manager.get_staging_tmp_path(root_uuid),
                 desc='test',
                 analysis_mode=ANALYSIS_MODE_CORRELATION,
                 tool='test_tool',
@@ -1162,7 +1167,7 @@ def test_execute_threaded_hunt_skips_suppression_tracking_when_not_configured(ma
     manager.execute_threaded_hunt(hunt)
 
     # all three submissions still make it to the queue
-    assert manager.submission_queue.qsize() == 3
+    assert len(manager.file_manager.list_staged_submissions()) == 3
 
     # but nothing was recorded, in memory or on disk
     assert hunt.last_alert_times == {}
@@ -1377,7 +1382,7 @@ def test_execute_threaded_hunt_survives_execution_failure(manager_kwargs):
     hunt.execute_with_lock = _boom
     manager.execute_threaded_hunt(hunt)
 
-    assert manager.submission_queue.empty()
+    assert manager.file_manager.list_staged_submissions() == []
 
 @pytest.mark.integration
 def test_failed_hunt_backs_off(manager_kwargs):

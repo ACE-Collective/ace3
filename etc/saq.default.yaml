@@ -243,6 +243,13 @@ collection:
   # all the files attached to the submission into this directory
   # (relative to DATA_DIR)
   incoming_dir: var/collection/incoming
+  # durable queue of submissions emitted by a collector but not yet collected (relative to DATA_DIR)
+  # a submission here has been fully serialized and is recoverable after a crash
+  # must be on the same filesystem as incoming_dir so the handoff is an atomic rename
+  staging_dir: var/collection/staging
+  # submissions are built here and atomically renamed into staging_dir when complete
+  # (relative to DATA_DIR); anything left behind is incomplete and is purged at startup
+  staging_tmp_dir: var/collection/staging.tmp
   # contains failed submission (relative to DATA_DIR)
   error_dir: var/collection/error
   # path (relative to SAQ_HOME) to directory that contains the yara rules used to tune collection

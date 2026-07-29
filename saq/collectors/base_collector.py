@@ -100,6 +100,12 @@ class CollectorService(ACEServiceInterface):
         
         # the directory that can contain various forms of persistence for collections
         self.persistence_dir = os.path.join(get_data_dir(), self.config.persistence_dir)
+
+        # durable queue of submissions a collector has emitted but that have not been collected
+        # yet, plus the scratch area they are built in. both live alongside incoming_dir so the
+        # handoffs between them are atomic renames
+        self.staging_dir = os.path.join(get_data_dir(), get_config().collection.staging_dir)
+        self.staging_tmp_dir = os.path.join(get_data_dir(), get_config().collection.staging_tmp_dir)
         
         # primary collection thread that pulls Submission objects from the collector
         self.collection_thread = None
@@ -126,7 +132,12 @@ class CollectorService(ACEServiceInterface):
         self.workload_type_id = self.workload_repository.get_workload_type_id(self.config.workload_type)
         
         # file manager for file system operations
-        self.file_manager = SubmissionFileManager(self.incoming_dir, self.persistence_dir)
+        self.file_manager = SubmissionFileManager(
+            self.incoming_dir,
+            self.persistence_dir,
+            staging_dir=self.staging_dir,
+            staging_tmp_dir=self.staging_tmp_dir,
+            error_dir=get_collection_error_dir())
         
         # scheduler for handling submission orchestration
         self.submission_scheduler = None
@@ -168,6 +179,20 @@ class CollectorService(ACEServiceInterface):
         # set once we have logged that collection is paused so we don't log it every cycle
         self.collection_paused_logged = False
 
+    def recover_staging(self):
+        """Prepares the durable staging directory for collection.
+
+        Anything left in the staging temp dir was mid-construction when the previous process
+        died, so it is incomplete by definition and is dropped. Anything in the staging dir was
+        emitted but never collected; it is replayed simply by being collected, so this only
+        reports it. Must run before any collector begins producing.
+        """
+        self.file_manager.purge_incomplete_staging()
+
+        staged_count = len(self.file_manager.list_staged_submissions())
+        if staged_count:
+            logging.info("recovered %d staged submissions from a previous run", staged_count)
+
     def start(self, single_threaded: bool = False, execution_mode: CollectorExecutionMode = CollectorExecutionMode.CONTINUOUS):
         self.load_groups()
 
@@ -177,11 +202,13 @@ class CollectorService(ACEServiceInterface):
         if single_threaded:
             self.start_single_threaded(execution_mode)
         else:
+            self.recover_staging()
             self.start_multi_threaded(execution_mode)
 
     def start_single_threaded(self, execution_mode: CollectorExecutionMode=CollectorExecutionMode.SINGLE_SHOT, execute_nodes: bool=True):
         assert execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION], "invalid execution mode for single threaded collector"
-        
+
+        self.recover_staging()
         self.execution_mode = execution_mode
         self.update_loop()
         self.collection_loop()
@@ -385,6 +412,9 @@ class CollectorService(ACEServiceInterface):
             if tuning_matches:
                 self.submission_filter.log_tuning_matches(submission, tuning_matches)
                 outcome = "tuned_out"
+                # terminal outcome that never reaches prepare_submission_files, so nothing else
+                # would take this out of the staging dir and it would be collected forever
+                self.file_manager.discard_staged_submission(submission.root.uuid)
                 return False
 
             stage_time = time.monotonic()
@@ -393,6 +423,7 @@ class CollectorService(ACEServiceInterface):
                     logging.info(f"skipping duplicate submission {submission.key}")
                     duplicate_seconds = time.monotonic() - stage_time
                     outcome = "duplicate"
+                    self.file_manager.discard_staged_submission(submission.root.uuid)
                     return False
 
                 logging.debug(f"marking submission {submission.key} as processed")
@@ -435,8 +466,17 @@ class CollectorService(ACEServiceInterface):
                 # (see RootAnalysis.transaction_id) -- adopt it so everything we log about
                 # this submission correlates back to that hunt run, email, etc
                 with transaction_id(submission.root.transaction_id or get_transaction_id()):
-                    if self.process_submission(submission):
-                        break
+                    try:
+                        if self.process_submission(submission):
+                            break
+                    except Exception as e:
+                        # a staged submission stays on disk until it reaches a terminal outcome,
+                        # so a submission that fails every time would be retried forever and,
+                        # because one exception used to abandon the whole batch, would block
+                        # everything queued behind it. quarantine it instead
+                        logging.error("unable to process submission %s: %s", submission.root.uuid, e)
+                        report_exception()
+                        self.file_manager.quarantine_staged_submission(submission.root.uuid)
 
         except Exception as e:
             logging.error(f"error during collection: {e}")

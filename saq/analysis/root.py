@@ -24,6 +24,12 @@ from saq.util.time import local_time
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
 KEY_TRANSACTION_ID = 'transaction_id'
+# collector-layer submission metadata. these live on the root (rather than on Submission) because
+# a staged submission is reconstructed from disk after a restart, and only the root is serialized.
+KEY_SUBMISSION_KEY = 'submission_key'
+KEY_GROUP_ASSIGNMENTS = 'group_assignments'
+KEY_GROUP_VALUE = 'group_value'
+KEY_QUEUED_AT = 'queued_at'
 
 class RootAnalysis(Analysis):
     """Root of analysis. Also see saq.database.Alert."""
@@ -232,6 +238,19 @@ class RootAnalysis(Analysis):
 
         self._extensions[name] = value
 
+    def set_optional_extension(self, name: str, value):
+        """Records an extension only when it has a value, removing it otherwise.
+
+        Absence and None mean the same thing for these keys, so this keeps a None from being
+        serialized into every root as a meaningless entry."""
+        if value is None:
+            if self._extensions is not None:
+                self._extensions.pop(name, None)
+
+            return
+
+        self.set_extension(name, value)
+
     @property
     def playbook_url(self):
         """Returns a url to a playbook for this alert, or None if not defined."""
@@ -257,6 +276,60 @@ class RootAnalysis(Analysis):
     @transaction_id.setter
     def transaction_id(self, value):
         self.set_extension(KEY_TRANSACTION_ID, value)
+
+    @property
+    def submission_key(self):
+        """Returns the deduplication key of the Submission this root belongs to, or None.
+        Stored here rather than only on Submission so it survives the trip through the staging
+        directory (see SubmissionFileManager.stage_submission)."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_SUBMISSION_KEY, None)
+
+    @submission_key.setter
+    def submission_key(self, value):
+        self.set_optional_extension(KEY_SUBMISSION_KEY, value)
+
+    @property
+    def group_assignments(self):
+        """Returns the list of RemoteNodeGroup names this submission is limited to, or None for
+        all configured groups."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_GROUP_ASSIGNMENTS, None)
+
+    @group_assignments.setter
+    def group_assignments(self, value):
+        self.set_optional_extension(KEY_GROUP_ASSIGNMENTS, value)
+
+    @property
+    def group_value(self):
+        """Returns the group_by value that produced this submission, or None if the hunt is not
+        grouped. Used by the hunt manager to record per-group suppression windows."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_GROUP_VALUE, None)
+
+    @group_value.setter
+    def group_value(self, value):
+        self.set_optional_extension(KEY_GROUP_VALUE, value)
+
+    @property
+    def queued_at(self) -> Optional[float]:
+        """Returns the wall clock (epoch seconds) at which this submission was staged for
+        collection, or None. Wall clock rather than time.monotonic() specifically so it remains
+        meaningful after the process that staged it has died."""
+        if not self._extensions:
+            return None
+
+        return self._extensions.get(KEY_QUEUED_AT, None)
+
+    @queued_at.setter
+    def queued_at(self, value: float):
+        self.set_optional_extension(KEY_QUEUED_AT, value)
 
     @property
     def analysis_failures(self):
@@ -866,28 +939,66 @@ class Submission:
         key: Optional[str]=None,
     ):
         self.root = root
-        self.key = key
 
-        # list of RemoteNodeGroup.name values
-        # empty list means send to all configured groups
-        self.group_assignments = group_assignments
+        # key, group_assignments and group_value are all stored on the root rather than here,
+        # so they survive being staged to disk and reconstructed after a restart. only assign
+        # when a value was actually supplied - reconstructing a Submission from a loaded root
+        # (Submission(root)) must not wipe what came back off disk.
+        if key is not None:
+            self.key = key
+
+        if group_assignments is not None:
+            self.group_assignments = group_assignments
 
         # XXX this is a hack for now...
         self.files_prepared = False # sets set to True once we've "prepared" the files
 
-        # time.monotonic() value recorded when this submission was placed on a collector
-        # queue. in-memory only (it never survives the trip through the database) and used
-        # to log how long a submission waited before the collector picked it up.
-        self.queued_time: Optional[float] = None
+    @property
+    def key(self) -> Optional[str]:
+        """The deduplication key for this submission, or None if it is not deduplicated."""
+        return self.root.submission_key
+
+    @key.setter
+    def key(self, value: Optional[str]):
+        self.root.submission_key = value
+
+    @property
+    def group_assignments(self) -> Optional[list]:
+        """List of RemoteNodeGroup.name values. Empty or None means send to all configured groups."""
+        return self.root.group_assignments
+
+    @group_assignments.setter
+    def group_assignments(self, value: Optional[list]):
+        self.root.group_assignments = value
+
+    @property
+    def group_value(self) -> Optional[str]:
+        """The group_by value that produced this submission, or None if the hunt is not grouped."""
+        return self.root.group_value
+
+    @group_value.setter
+    def group_value(self, value: Optional[str]):
+        self.root.group_value = value
+
+    @property
+    def queued_time(self) -> Optional[float]:
+        """Wall clock (epoch seconds) at which this submission was staged for collection.
+        Stored on the root so it survives the staging directory round trip."""
+        return self.root.queued_at
+
+    @queued_time.setter
+    def queued_time(self, value: Optional[float]):
+        self.root.queued_at = value
 
     @property
     def queue_age(self) -> Optional[float]:
         """Returns the number of seconds since this submission was queued, or None if it
-        was never stamped with queued_time."""
+        was never stamped with queued_time. Clamped at zero because this is wall clock and a
+        clock adjustment between staging and collection could otherwise report a negative age."""
         if self.queued_time is None:
             return None
 
-        return time.monotonic() - self.queued_time
+        return max(0.0, time.time() - self.queued_time)
 
     def __str__(self):
         return f"Submission({self.root} ({self.root.analysis_mode}))"

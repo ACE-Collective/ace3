@@ -1,7 +1,6 @@
 import logging
 import os
 import os.path
-from queue import Queue
 import threading
 import time
 
@@ -17,6 +16,7 @@ from saq.signatures import SIGNATURE_VERSION_UNKNOWN
 from saq.util import local_time, abs_path
 from saq.util.hashing import sha256
 from saq.collectors.hunter.base_hunter import Hunt, InvalidHuntTypeError
+from saq.collectors.submission_file_manager import SubmissionFileManager
 
 
 def _normalize_rule_dir(entry) -> tuple[str, "str | None"]:
@@ -36,7 +36,7 @@ CONCURRENCY_TYPE_LOCAL_SEMAPHORE = 'local_semaphore'
 class HuntManager:
     """Manages the hunting for a single hunt type."""
     def __init__(self,
-                 submission_queue,
+                 file_manager,
                  hunt_type,
                  rule_dirs,
                  hunt_cls,
@@ -46,7 +46,7 @@ class HuntManager:
                  config: HuntTypeConfig,
                  execution_mode: ExecutionMode = ExecutionMode.CONTINUOUS):
 
-        assert isinstance(submission_queue, Queue)
+        assert isinstance(file_manager, SubmissionFileManager)
         assert isinstance(hunt_type, str)
         assert isinstance(rule_dirs, list)
         assert issubclass(hunt_cls, Hunt)
@@ -55,8 +55,9 @@ class HuntManager:
         assert isinstance(update_frequency, int)
         assert isinstance(execution_mode, ExecutionMode)
 
-        # reference to the submission queue (used to send the Submission objects)
-        self.submission_queue = submission_queue
+        # used to publish Submission objects into the durable staging directory the collector
+        # reads from, and to build them in the matching scratch directory beforehand
+        self.file_manager = file_manager
 
         # primary execution thread
         self.manager_thread = None
@@ -464,16 +465,30 @@ class HuntManager:
 
         if submissions is not None:
             with transaction_id(hunt.last_transaction_id or get_transaction_id()):
-                queued_time = time.monotonic()
+                # wall clock rather than time.monotonic() so it still means something after the
+                # process that staged these has been replaced
+                queued_time = time.time()
+                staged = 0
                 for submission in submissions:
                     # lets the collector report how long this waited to be picked up
                     submission.queued_time = queued_time
-                    self.submission_queue.put(submission)
+                    try:
+                        self.file_manager.stage_submission(submission)
+                        staged += 1
+                    except Exception as e:
+                        # a submission we cannot stage is one we cannot deliver. log it loudly
+                        # rather than dropping it silently the way the in-memory queue used to
+                        logging.error(
+                            "unable to stage submission %s for hunt %s (uuid=%s, type=%s): %s",
+                            submission.root.uuid, hunt.name, hunt.uuid, hunt.type, e,
+                        )
+                        report_exception()
 
                 if submissions:
                     logging.info(
                         "queued %d submissions for hunt %s (uuid=%s, type=%s) (submission queue depth=%d)",
-                        len(submissions), hunt.name, hunt.uuid, hunt.type, self.submission_queue.qsize(),
+                        staged, hunt.name, hunt.uuid, hunt.type,
+                        len(self.file_manager.list_staged_submissions()),
                     )
 
     def cancel_hunts(self):

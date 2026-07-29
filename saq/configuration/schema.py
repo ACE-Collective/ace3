@@ -162,6 +162,8 @@ class EncryptionConfig(BaseModel):
 class CollectionConfig(BaseModel):
     persistence_dir: str = Field(..., description="contains various persistent information used by collectors (relative to DATA_DIR)")
     incoming_dir: str = Field(..., description="directory for incoming submissions (relative to DATA_DIR)")
+    staging_dir: str = Field(default="var/collection/staging", description="durable queue of submissions that have been emitted by a collector but not yet collected (relative to DATA_DIR). must be on the same filesystem as incoming_dir so the handoff is an atomic rename")
+    staging_tmp_dir: str = Field(default="var/collection/staging.tmp", description="where submissions are built before being atomically renamed into staging_dir (relative to DATA_DIR). anything left here is incomplete by definition and is purged at startup")
     error_dir: str = Field(..., description="contains failed submission (relative to DATA_DIR)")
     #tuning_dir_default: str = Field(..., description="path (relative to SAQ_HOME) to directory that contains the yara rules used to tune collection")
     tuning_temp_dir: str = Field(..., description="path (relative to DATA_DIR) to use to store temporary file buffers for tuning")
