@@ -4,7 +4,7 @@ from flask_login import current_user
 import pytz
 from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
-from app.analysis.views.session.filters import _reset_filters, create_filter, getFilters, hasFilter, reset_checked_alerts, reset_pagination, reset_sort_filter
+from app.analysis.views.session.filters import _reset_filters, create_filter, get_quick_filter_indicator_count, get_quick_filters, getFilters, hasFilter, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
@@ -190,6 +190,13 @@ def manage():
     if search_result_uuids:
         alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
 
+    # quick-filter badges + their indicator dot counts (config-driven, see
+    # etc/gui_quick_filters.yaml / gui.quick_filters_config_path)
+    quick_filters = get_quick_filters()
+    for quick_filter in quick_filters:
+        indicator = quick_filter.get('indicator')
+        quick_filter['indicator_count'] = get_quick_filter_indicator_count(indicator) if indicator else 0
+
     return render_template(
         'analysis/manage.html',
         # settings
@@ -200,7 +207,8 @@ def manage():
         # filter
         filters=getFilters(),
         search_query=search_query,
-        
+        quick_filters=quick_filters,
+
         # alert data
         alerts=alerts,
         comments=comments,
