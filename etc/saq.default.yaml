@@ -2134,6 +2134,7 @@ tags:
   guest_wireless: fp
   pentester: fp
   new_sender: interesting
+  warning: warning
   executive: warning
   treasury: warning
   suspicious_url: warning

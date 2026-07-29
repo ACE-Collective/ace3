@@ -1211,6 +1211,16 @@ class QueryHunt(Hunt):
                 )
                 submission.root.details[QUERY_DETAILS_CORRELATION_TRACE] = per_alert_trace.model_dump()
 
+                # Surface hunt execution errors/timeouts to /ace/manage: if any event that
+                # contributed to this alert failed (a step raised) or fell through to alert
+                # because of a correlation timeout, tag the root so analysts can spot the
+                # failure from the alert list without opening the in-alert correlation trace.
+                # Uses the scoped per_alert_trace (not self.correlation_trace) so an error in
+                # one group's event never taints sibling alerts in other groups. add_tag is
+                # idempotent, so a hunt YAML that already declares this tag won't duplicate.
+                if any(et.outcome in ("error", "timeout") for et in per_alert_trace.event_traces):
+                    submission.root.add_tag('warning:hunt_error')
+
         # Attach the pre-correlation events to each correlated alert so hunt authors can inspect
         # what came back from the data source before correlation filtered/transformed it.
         if self.config.correlate is not None and self.original_query_results is not None:
