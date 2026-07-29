@@ -412,10 +412,7 @@ class HuntManager:
 
                 # per-group last_alert_times only exist to drive is_group_suppressed(), which
                 # returns False without ever reading them when the hunt has no suppression
-                # configured. recording them anyway costs a full dict copy and a pickle of the
-                # entire (never pruned, so unbounded) dict per group value, which for a
-                # high-cardinality group_by starves the collector and delivery threads sharing
-                # this process. skip the whole pass when nothing can read the result.
+                # configured. skip the whole pass when nothing can read the result
                 track_suppression = bool(hunt.suppression)
 
                 if submissions:
@@ -439,12 +436,17 @@ class HuntManager:
                 # setter so set_last_alert_time stays a do-one-thing function.
                 # prune_expired_last_alert_times() self-guards on suppression, but gating the
                 # call here keeps the intent readable alongside the block above.
-                if hunt.group_by is not None and track_suppression:
-                    hunt.prune_expired_last_alert_times()
+                if hunt.group_by is not None:
+                    if track_suppression:
+                        hunt.prune_expired_last_alert_times()
+                        hunt.save_last_alert_times()
+                    else:
+                        # not strictly needed, but doing it anyways
+                        hunt.discard_suppression_state()
 
                 if submissions:
-                    # each set_last_alert_time() rewrites the entire persistence file, so a
-                    # high-cardinality group_by can spend real time here before anything is queued
+                    # this whole pass is in-memory plus at most one persistence write, but it
+                    # still runs before anything is queued - keep measuring it
                     logging.info(
                         "post-processed %d submissions for hunt %s (uuid=%s, type=%s) in %.2fs "
                         "(suppression tracking %s)",
