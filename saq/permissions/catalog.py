@@ -35,6 +35,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     CatalogEntry("alert", "create", "Create new alerts or upload alert data via API/GUI."),
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
+    CatalogEntry("alert", "review", "Review and correct alert dispositions."),
     CatalogEntry("alert", "write", "Modify alerts (disposition, tags, ownership, comments)."),
     CatalogEntry("detection", "read", "View observable-detection settings."),
     CatalogEntry("detection", "write", "Modify observable-detection settings."),

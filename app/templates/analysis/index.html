@@ -5,6 +5,10 @@
 <input type="hidden" id="alert_uuid" name="alert_uuid" value="{{alert.uuid}}"></input>
 {% endblock disposition_form %}
 
+{% block review_form %}
+<input type="hidden" name="alert_uuid" value="{{alert.uuid}}"></input>
+{% endblock review_form %}
+
 {% block control_panel %}
 <div class="col-md-auto">
     <form class="form-horizontal" role="form" method="POST" action={{url_for('analysis.set_disposition')}} data-action-bar>
@@ -12,6 +16,7 @@
         <button type="submit" name="disposition" value="FALSE_POSITIVE" class="btn btn-success btn-sm"><span class="bi bi-check-circle"></span> FP</button>
         <button type="submit" name="disposition" value="IGNORE" class="btn btn-outline-dark btn-sm"><span class="bi bi-x-circle"></span> Ignore</button>
         <button type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-disposition="{{ alert.disposition }}" data-bs-target="#disposition_modal"><span class="bi bi-hand-thumbs-up"></span> Disposition</button>
+        <button type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#review_modal"><span class="bi bi-clipboard-check"></span> Review</button>
         <button id="add_comment_button_alert" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#comment_modal" uuid="{{alert.uuid}}"><span class="bi bi-chat-right-text"></span> Add Comment</button>
         <button onclick="set_owner('{{alert.uuid}}')" type="button" class="btn btn-outline-dark btn-sm"><span class="bi bi-lock"></span> Take Ownership</button>
         <button id="btn-assign-ownership-dialog" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#assign_ownership_modal"><span class="bi bi-person-plus"></span> Assign Ownership</button>

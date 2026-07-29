@@ -52,6 +52,7 @@ from saq.configuration.config import get_config
 from saq.constants import (
     DISPOSITION_DELIVERY,
     DISPOSITION_OPEN,
+    DISPOSITION_REVIEW_UNREVIEWED,
     F_FILE,
     F_FQDN,
     F_URL,
@@ -284,6 +285,38 @@ class Alert(Base):
         TIMESTAMP,
         nullable=True)
 
+    # disposition review tracking
+    # records whether a senior analyst has reviewed the disposition and the result of that review
+    disposition_review: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+        default=DISPOSITION_REVIEW_UNREVIEWED,
+        server_default=text("'UNREVIEWED'"))
+
+    review_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True)
+
+    review_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
+    # when a disposition is corrected these preserve the original (incorrect) disposition and who set it
+    incorrect_disposition: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True)
+
+    incorrect_disposition_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True)
+
+    incorrect_disposition_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
     # blueprint icons are a legacy feature that is not commonly used anymore
     icon_blueprint_name: Mapped[Optional[str]] = mapped_column(
         String(256),
@@ -306,6 +339,10 @@ class Alert(Base):
         'User', primaryjoin='Alert.owner_id == User.id', foreign_keys=[owner_id])
     remover: Mapped[Optional["User"]] = relationship(
         'User', primaryjoin='Alert.removal_user_id == User.id', foreign_keys=[removal_user_id])
+    review_user: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.review_user_id == User.id', foreign_keys=[review_user_id])
+    incorrect_disposition_user: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.incorrect_disposition_user_id == User.id', foreign_keys=[incorrect_disposition_user_id])
     #observable_mapping = relationship('ObservableMapping')
     tag_mappings: Mapped[list["TagMapping"]] = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
     #delayed_analysis = relationship('DelayedAnalysis')
@@ -529,6 +566,12 @@ class Alert(Base):
     KEY_OWNER_TIME = 'owner_time'
     KEY_REMOVAL_USER_ID = 'removal_user_id'
     KEY_REMOVAL_TIME = 'removal_time'
+    KEY_DISPOSITION_REVIEW = 'disposition_review'
+    KEY_REVIEW_USER_ID = 'review_user_id'
+    KEY_REVIEW_TIME = 'review_time'
+    KEY_INCORRECT_DISPOSITION = 'incorrect_disposition'
+    KEY_INCORRECT_DISPOSITION_USER_ID = 'incorrect_disposition_user_id'
+    KEY_INCORRECT_DISPOSITION_TIME = 'incorrect_disposition_time'
 
     @property
     def json(self):
@@ -542,7 +585,13 @@ class Alert(Base):
             Alert.KEY_OWNER_ID: self.owner_id,
             Alert.KEY_OWNER_TIME: self.owner_time,
             Alert.KEY_REMOVAL_USER_ID: self.removal_user_id,
-            Alert.KEY_REMOVAL_TIME: self.removal_time
+            Alert.KEY_REMOVAL_TIME: self.removal_time,
+            Alert.KEY_DISPOSITION_REVIEW: self.disposition_review,
+            Alert.KEY_REVIEW_USER_ID: self.review_user_id,
+            Alert.KEY_REVIEW_TIME: self.review_time,
+            Alert.KEY_INCORRECT_DISPOSITION: self.incorrect_disposition,
+            Alert.KEY_INCORRECT_DISPOSITION_USER_ID: self.incorrect_disposition_user_id,
+            Alert.KEY_INCORRECT_DISPOSITION_TIME: self.incorrect_disposition_time
         })
         return result
 
@@ -582,6 +631,30 @@ class Alert(Base):
         if not self.removal_time:
             if Alert.KEY_REMOVAL_TIME in value:
                 self.removal_time = value[Alert.KEY_REMOVAL_TIME]
+
+        if not self.disposition_review or self.disposition_review == DISPOSITION_REVIEW_UNREVIEWED:
+            if Alert.KEY_DISPOSITION_REVIEW in value and value[Alert.KEY_DISPOSITION_REVIEW]:
+                self.disposition_review = value[Alert.KEY_DISPOSITION_REVIEW]
+
+        if not self.review_user_id:
+            if Alert.KEY_REVIEW_USER_ID in value:
+                self.review_user_id = value[Alert.KEY_REVIEW_USER_ID]
+
+        if not self.review_time:
+            if Alert.KEY_REVIEW_TIME in value:
+                self.review_time = value[Alert.KEY_REVIEW_TIME]
+
+        if not self.incorrect_disposition:
+            if Alert.KEY_INCORRECT_DISPOSITION in value:
+                self.incorrect_disposition = value[Alert.KEY_INCORRECT_DISPOSITION]
+
+        if not self.incorrect_disposition_user_id:
+            if Alert.KEY_INCORRECT_DISPOSITION_USER_ID in value:
+                self.incorrect_disposition_user_id = value[Alert.KEY_INCORRECT_DISPOSITION_USER_ID]
+
+        if not self.incorrect_disposition_time:
+            if Alert.KEY_INCORRECT_DISPOSITION_TIME in value:
+                self.incorrect_disposition_time = value[Alert.KEY_INCORRECT_DISPOSITION_TIME]
 
     #def track_delayed_analysis_start(self, observable, analysis_module):
         #super().track_delayed_analysis_start(observable, analysis_module)

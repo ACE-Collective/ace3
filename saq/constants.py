@@ -316,6 +316,21 @@ VALID_DISPOSITIONS = [
     DISPOSITION_APPROVED_PERSONAL,
 ]
 
+# disposition review states
+# tracks whether an alert's disposition has been reviewed by a senior analyst and, if so, the result
+DISPOSITION_REVIEW_UNREVIEWED = 'UNREVIEWED'
+DISPOSITION_REVIEW_CORRECT = 'CORRECT'
+DISPOSITION_REVIEW_INCORRECT = 'INCORRECT'
+
+VALID_DISPOSITION_REVIEWS = [
+    DISPOSITION_REVIEW_UNREVIEWED,
+    DISPOSITION_REVIEW_CORRECT,
+    DISPOSITION_REVIEW_INCORRECT,
+]
+
+# prefix applied to alert comments that record the result of a disposition review
+REVIEW_COMMENT_PREFIX = "[REVIEW] "
+
 # --- DIRECTIVES
 DIRECTIVE_ANALYZE_ACTIVITY = 'analyze_activity'
 DIRECTIVE_ARCHIVE = 'archive'

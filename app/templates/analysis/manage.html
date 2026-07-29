@@ -5,6 +5,7 @@
     <div class="row">
         <div class="col" data-action-bar>
             <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#disposition_modal"><span class="bi bi-hand-thumbs-up"></span> Set Disposition</button>
+            <button type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#review_modal"><span class="bi bi-clipboard-check"></span> Review Disposition</button>
             <button id="btn-add-comment" type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#comment_modal" uuid=""><span class="bi bi-chat-right-text"></span> Add Comment</button>
             <button id="btn-take-ownership" type="button" class="btn btn-outline-dark"><span class="bi bi-lock"></span> Take Ownership</button>
             <button id="btn-assign-ownership-dialog" type="button" class="btn btn-outline-dark" data-bs-toggle="modal" data-bs-target="#assign_ownership_modal"><span class="bi bi-person-plus"></span> Assign Ownership</button>
@@ -38,7 +39,8 @@
             <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()()'>Last 7d</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_needs_research()'>Needs Research</span> |
+            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_needs_research()'>Needs Research</span>
+            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_unreviewed()'>Unreviewed</span> |
             {% for _filter in session['filters'] %}
                 {% set name = _filter['name'] %}
                 {% set inverted = _filter['inverted'] %}
