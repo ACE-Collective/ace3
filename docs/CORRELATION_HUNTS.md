@@ -359,6 +359,31 @@ The cached arguments are the *interpolated* ones — for a `query` command, the 
 
 For example, `cache: 1d` will cache results for 1 day.
 
+#### Choosing the timespec
+
+Pick it from **how fast the underlying data changes**, not by copying the neighbouring step. Two
+things make a too-short value expensive rather than merely suboptimal:
+
+- **A TTL shorter than the hunt's `frequency` never survives to the next run.** With
+  `frequency: 00:10:00` and `cache: 3m`, an entry has expired before the hunt asks again, so the
+  command re-executes every run for every event. Within a single run it still deduplicates events
+  that render the same command, which is often mistaken for the cache working. If the answer is
+  stable over the hunt interval, the TTL must exceed `frequency` to get any reuse across runs.
+- **This cache is not shared with analysis.** Correlate runs at collection time, before the event
+  is submitted, so it cannot read analysis results — and its cache is a separate store from the
+  engine's analysis result cache. A command that fetches something an analysis module also fetches
+  is a genuinely additional call, and the two are cached independently and on unrelated schedules
+  (an analysis module may hold a result for days while a correlate step re-fetches it every run).
+
+That difference matters when deciding *where* an enrichment belongs. Correlate is the only place a
+signal can influence a filter decision, so a signal that changes the outcome has to go here even if
+something downstream also looks it up. A signal that only informs the analyst belongs in an analysis
+module instead, where it is computed once per observable and every alert type benefits. Before
+adding a command that calls an external service, price it as a fresh call for every candidate event
+on every run, then set `cache` from the data's volatility — registration or ownership records that
+change over months tolerate hours or days; a query over a rolling multi-month window does not need
+a TTL measured in minutes.
+
 ### Timespecs
 
 A timespec specifies some amount of time and uses an abbreviated format of `count[s|m|h|d|w|y]` defined as follows:
