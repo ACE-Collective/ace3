@@ -10,7 +10,7 @@ from saq.configuration.config import get_config
 from saq.environment import get_base_dir
 from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
-from saq.constants import DISPOSITION_REVIEW_UNREVIEWED, REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
+from saq.constants import REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import DispositionBy, Observable, Owner, RemediatedBy, Remediation, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
@@ -77,26 +77,24 @@ def get_quick_filter_indicator_count(indicator: dict) -> int:
     """Computes the alert count for a quick filter's indicator dot definition.
     Supported keys: tag (str), queue (str), disposition (str), owned_only (bool).
     A quick filter with no `indicator` key configured never shows a dot (see
-    manage.py, which only calls this when quick_filter.get('indicator') is set)."""
+    manage.py, which only calls this when quick_filter.get('indicator') is set).
+    The `queue` key accepts the "$USER_QUEUE" sentinel, resolved to the current
+    user's default queue."""
     query = get_db().query(GUIAlert)
     if indicator.get('tag'):
         query = query.join(TagMapping, GUIAlert.id == TagMapping.alert_id)\
             .join(Tag, TagMapping.tag_id == Tag.id)\
             .filter(Tag.name == indicator['tag'])
     if indicator.get('queue'):
-        query = query.filter(GUIAlert.queue == indicator['queue'])
+        queue = current_user.queue if indicator['queue'] == "$USER_QUEUE" else indicator['queue']
+        query = query.filter(GUIAlert.queue == queue)
     if indicator.get('disposition'):
         query = query.filter(GUIAlert.disposition == indicator['disposition'])
+    if indicator.get('reviewed'):
+        query = query.filter(GUIAlert.disposition_review == indicator['reviewed'])
     if indicator.get('owned_only'):
         query = query.filter(GUIAlert.owner_id == current_user.id)
     return query.count()
-
-def _reset_filters_unreviewed():
-    session["filters"] = [
-        { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
-        { "name": "Reviewed", "inverted": False, "values": [ DISPOSITION_REVIEW_UNREVIEWED ] },
-    ]
-    session["search"] = None
 
 def reset_checked_alerts():
     session['checked'] = []

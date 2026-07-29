@@ -25,8 +25,11 @@
 #                                      # user's default queue
 #     indicator:                      # optional; omit entirely for no dot
 #       tag: <string, optional>          # Tag.name must match
-#       queue: <string, optional>        # alert queue must equal
+#       queue: <string, optional>        # alert queue must equal ("$USER_QUEUE"
+#                                         # resolves to the current user's queue)
 #       disposition: <string, optional>  # alert disposition must equal
+#       reviewed: <string, optional>     # alert disposition_review must equal
+#                                         # (e.g. UNREVIEWED / CORRECT / INCORRECT)
 #       owned_only: <bool, optional>     # scope count to alerts owned by the
 #                                         # current user
 
@@ -38,3 +41,14 @@ quick_filters:
         values: ["$USER_QUEUE"]
       - name: Tag
         values: ["needs_research"]
+  - id: unreviewed
+    label: Unreviewed
+    color: "#dc3545"
+    session_filters:
+      - name: Queue
+        values: ["$USER_QUEUE"]
+      - name: Reviewed
+        values: ["UNREVIEWED"]
+    indicator:
+      queue: "$USER_QUEUE"
+      reviewed: UNREVIEWED

@@ -604,19 +604,6 @@ function set_quick_filter(filter_id) {
     })();
 }
 
-function set_special_filter_unreviewed() {
-    (function() {
-        fetch('reset_filters_unreviewed', { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){
-            alert('DOH: ' + err.message);
-        });
-    })();
-}
-
 // adds a filter
 function add_filter(name, values) {
     (function() {
