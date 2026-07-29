@@ -5,8 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.85] - 2026-07-29
+
+- [submission pipeline reliability improvements](https://github.com/ACE-Collective/ace3/pull/424)
+
 ## [3.0.84] - 2026-07-28
 
+- [fixes issue with unbounded growth of suppression tracking](https://github.com/ACE-Collective/ace3/pull/423)
 - [Admin UI](https://github.com/ACE-Collective/ace3/pull/397)
 
 ## [3.0.83] - 2026-07-24
