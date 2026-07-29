@@ -14,6 +14,7 @@ import urllib3
 from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
+from saq.configuration.schema import DEFAULT_MAX_DELIVERY_ATTEMPTS
 from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, NODE_STATUS_RUNNING, WORK_SUBMITTED
 from saq.database import ALERT, execute_with_retry, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
@@ -163,7 +164,8 @@ class RemoteNodeGroup:
             batch_size: Optional[int]=32,
             target_node_as_company_id: Optional[int]=None,
             target_nodes: Optional[list]=None,
-            thread_count: Optional[int]=1):
+            thread_count: Optional[int]=1,
+            max_delivery_attempts: int=DEFAULT_MAX_DELIVERY_ATTEMPTS):
 
         assert isinstance(name, str) and name
         assert isinstance(coverage, int) and coverage > 0 and coverage <= 100
@@ -204,6 +206,11 @@ class RemoteNodeGroup:
 
         # the (maximum) number of work items to pull at once from the database
         self.batch_size = batch_size
+
+        # how many retriable delivery failures a single work item is allowed before it is
+        # marked ERROR. a new batch is only claimed when this thread holds no locks, so an
+        # item that retries forever stalls every item queued behind it
+        self.max_delivery_attempts = max_delivery_attempts
 
         # metrics
         self.assigned_count = 0 # how many emails were assigned to this group
@@ -305,6 +312,25 @@ class RemoteNodeGroup:
                 status = 'LOCKED' AND group_id = %s
             """, (self.group_id,))
             db.commit()
+
+    def record_delivery_attempt(self, db, cursor, work_id: int) -> int:
+        """Increments and returns the number of failed delivery attempts for the given work item.
+        Returns max_delivery_attempts if the count cannot be read, so an item we cannot track
+        is dead-lettered rather than retried forever."""
+        execute_with_retry(db, cursor, """UPDATE work_distribution SET attempt_count = attempt_count + 1
+                                     WHERE group_id = %s AND work_id = %s""",
+                           (self.group_id, work_id), commit=True)
+
+        cursor.execute("SELECT attempt_count FROM work_distribution WHERE group_id = %s AND work_id = %s",
+                       (self.group_id, work_id))
+        row = cursor.fetchone()
+        db.commit()
+        if row is None:
+            logging.warning("unable to read attempt_count for work item %s in group %s",
+                            work_id, self.name)
+            return self.max_delivery_attempts
+
+        return row[0]
 
     def get_pending_count(self, cursor) -> int:
         """Returns how many work items are still waiting to be delivered by this group.
@@ -623,13 +649,28 @@ ORDER BY
                                                    or isinstance(e, urllib3.exceptions.NewConnectionError) \
                                                    or isinstance(e, requests.exceptions.ConnectionError) \
                                                    or isinstance(e, requests.exceptions.HTTPError)):
-                            # this item stays LOCKED and blocks the rest of this group's
-                            # queue until the 10 minute lock timeout lets it be re-locked
-                            logging.warning(
-                                "work item %s stays locked for retry by group %s - the lock will not "
-                                "expire for 10 minutes", work_id, self.name,
+                            attempts = self.record_delivery_attempt(db, cursor, work_id)
+                            if attempts < self.max_delivery_attempts:
+                                # this item stays LOCKED and blocks the rest of this group's
+                                # queue until it succeeds or exhausts its attempts. nothing else
+                                # can claim it in the meantime -- a new batch is only locked when
+                                # this thread holds no locks at all
+                                logging.warning(
+                                    "work item %s stays locked for retry by group %s "
+                                    "(attempt %d of %d)",
+                                    work_id, self.name, attempts, self.max_delivery_attempts,
+                                )
+                                continue
+
+                            # out of attempts. we must not keep this locked: with a single
+                            # delivery thread there is no other lock_uuid to steal it after the
+                            # 10 minute timeout, so retrying forever would stall this group's
+                            # queue permanently. dead-letter it instead so delivery can advance
+                            logging.error(
+                                "work item %s failed delivery %d times via group %s, giving up "
+                                "and marking ERROR: %s",
+                                work_id, attempts, self.name, e,
                             )
-                            continue
 
                         # otherwise we consider it a failure
                         submission_failed = True

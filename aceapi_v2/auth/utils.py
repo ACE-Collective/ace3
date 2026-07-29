@@ -116,8 +116,10 @@ async def _get_user_api_key_match(
     auth_sha256: str, session: AsyncSession
 ) -> ApiAuthResult:
     """Returns an ApiAuthResult if the auth token matches a user API key."""
+    # `enabled` is part of the match: disabling a user must revoke API access too, not just browser
+    # access. The Flask-session and JWT paths already enforce this.
     result = await session.execute(
-        text("SELECT username, id FROM users WHERE apikey_hash = :apikey"),
+        text("SELECT username, id FROM users WHERE apikey_hash = :apikey AND enabled = 1"),
         {"apikey": auth_sha256.lower()},
     )
     row = result.first()

@@ -10,7 +10,7 @@ from saq.configuration.config import get_config
 from saq.environment import get_base_dir
 from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
-from saq.constants import REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS
+from saq.constants import DISPOSITION_REVIEW_UNREVIEWED, REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import DispositionBy, Observable, Owner, RemediatedBy, Remediation, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
@@ -91,6 +91,13 @@ def get_quick_filter_indicator_count(indicator: dict) -> int:
         query = query.filter(GUIAlert.owner_id == current_user.id)
     return query.count()
 
+def _reset_filters_unreviewed():
+    session["filters"] = [
+        { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
+        { "name": "Reviewed", "inverted": False, "values": [ DISPOSITION_REVIEW_UNREVIEWED ] },
+    ]
+    session["search"] = None
+
 def reset_checked_alerts():
     session['checked'] = []
 
@@ -126,6 +133,7 @@ def create_filter(filter_name: str, inverted: bool):
         'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types()), inverted=inverted),
         'Owner': SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
         'Queue': SelectFilter(GUIAlert.queue, inverted=inverted),
+        'Reviewed': MultiSelectFilter(GUIAlert.disposition_review, nullable=False, options=VALID_DISPOSITION_REVIEWS, inverted=inverted),
         #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True, inverted=inverted),
         #'Remediated Date': DateRangeFilter(GUIAlert.removal_time, inverted=inverted),
         #'Remediation Status': BoolFilter(Remediation.status, nullable=True, option_names=REMEDIATION_STATUS_GUI, inverted=inverted),
@@ -144,6 +152,7 @@ def getFilters():
         'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types())),
         'Owner': SelectFilter(Owner.display_name, nullable=True),
         'Queue': SelectFilter(GUIAlert.queue),
+        'Reviewed': MultiSelectFilter(GUIAlert.disposition_review, nullable=False, options=VALID_DISPOSITION_REVIEWS),
         #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True),
         #'Remediated Date': DateRangeFilter(GUIAlert.removal_time),
         #'Remediation Status': BoolFilter(Remediation.status, nullable=True, option_names=REMEDIATION_STATUS_GUI),

@@ -1,12 +1,102 @@
-function parse_permission_str(permission_str) {
-    // returns an object with the effect, major, and minor fields
-    // the format of the string is "effect major:minor"
-    var parts = permission_str.split(" ");
-    return {
-        effect: parts[0].toUpperCase(),
-        major: parts[1].split(":")[0],
-        minor: parts[1].split(":")[1],
+// User/role management calls the v2 API directly (same origin, authenticated by the Flask session
+// cookie). Flask only renders this page.
+var USERS_API = "/api/v2/users";
+
+function api_request(method, url, body) {
+    var options = {
+        method: method,
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
     };
+    if (body !== undefined) {
+        options.body = JSON.stringify(body);
+    }
+    return fetch(url, options).then(function(response) {
+        if (!response.ok) {
+            return response.text().then(function(text) {
+                throw new Error(text || response.statusText);
+            });
+        }
+        return response;
+    });
+}
+
+// the common case: mutate, then re-render the page from the server
+function api_request_then_reload(method, url, body) {
+    return api_request(method, url, body)
+        .then(function() { window.location.reload(); })
+        .catch(function(error) { alert(error.message); });
+}
+
+// The authoritative permission catalog, rendered into the page by the template.
+var PERMISSION_CATALOG = (function() {
+    var el = document.getElementById("permission_catalog_json");
+    if (!el) { return []; }
+    try { return JSON.parse(el.textContent); } catch (e) { return []; }
+})();
+
+var CUSTOM_PERMISSION = "__custom__";
+
+// Wildcard grants are legitimate but are not catalog rows, so they get their own options.
+var WILDCARD_PERMISSIONS = ["*:*"];
+
+function permission_key(permission) {
+    if (!permission.major && !permission.minor) { return ""; }
+    return permission.major + ":" + permission.minor;
+}
+
+function build_permission_select(selected_key) {
+    var select = $("<select class='form-select form-select-sm d-inline-block perm-select' style='width:auto; margin-left:8px;'></select>");
+    var known = [];
+
+    // a new row starts unselected rather than defaulting to a superuser grant
+    $("<option></option>").val("").text("— choose permission —").appendTo(select);
+
+    PERMISSION_CATALOG.forEach(function(entry) {
+        var key = entry.major + ":" + entry.minor;
+        known.push(key);
+        $("<option></option>").val(key).text(key).attr("title", entry.description || "").appendTo(select);
+    });
+    WILDCARD_PERMISSIONS.forEach(function(key) {
+        known.push(key);
+        $("<option></option>").val(key).text(key).appendTo(select);
+    });
+
+    // an existing grant that is neither catalogued nor a listed wildcard (e.g. "observable:*")
+    // still needs to round-trip, so surface it as its own option.
+    if (selected_key && known.indexOf(selected_key) === -1) {
+        $("<option></option>").val(selected_key).text(selected_key).appendTo(select);
+        known.push(selected_key);
+    }
+
+    $("<option></option>").val(CUSTOM_PERMISSION).text("custom…").appendTo(select);
+
+    if (selected_key && known.indexOf(selected_key) !== -1) {
+        select.val(selected_key);
+    }
+    return select;
+}
+
+function collect_user_permissions() {
+    // reads the permission rows in the add/edit user modal
+    var permissions = [];
+    $("#edit_user_permissions_list").children().each(function() {
+        var row = $(this);
+        var effect = row.find(".perm-effect").val();
+        var selected = row.find(".perm-select").val();
+        var value = (selected === CUSTOM_PERMISSION) ? row.find(".perm-custom").val().trim() : selected;
+
+        if (!value || value.indexOf(":") === -1) {
+            return; // skip incomplete rows
+        }
+        var parts = value.split(":");
+        permissions.push({
+            effect: effect,
+            major: parts[0],
+            minor: parts.slice(1).join(":"),
+        });
+    });
+    return permissions;
 }
 
 function get_selected_user_ids() {
@@ -45,29 +135,39 @@ function clear_edit_user_permissions() {
 }
 
 function add_user_permission_elements(permission) {
-    var li = $("<li></li>").css("list-style-type", "none");
+    var li = $("<li class='mb-1 d-flex align-items-center'></li>").css("list-style-type", "none");
     var deleteButton = $("<button type='button' class='btn btn-xs btn-outline-danger ms-1'>delete</button>");
-    // Optionally, you can add a data attribute to the button for the permission id
     deleteButton.attr("data-permission-id", permission.id);
 
-    // Create a textbox containing the permission text
-    var permissionText = permission.effect + " " + permission.major + ":" + permission.minor;
-    var inputBox = $("<input type='text' class='form-control form-control-sm d-inline-block' style='width:auto; margin-left: 8px; margin-right: 8px;'>")
-        .val(permissionText);
+    var effectSelect = $("<select class='form-select form-select-sm d-inline-block perm-effect' style='width:auto; margin-left:8px;'>" +
+        "<option value='ALLOW'>ALLOW</option><option value='DENY'>DENY</option></select>");
+    effectSelect.val((permission.effect || "ALLOW").toUpperCase());
 
-    li.append(deleteButton);
-    li.append(inputBox);
-    $("#edit_user_permissions_list").append(li);
+    var key = permission_key(permission);
+    var permSelect = build_permission_select(key);
 
-    // when the delete button is clicked, remove the permission from the list
-    deleteButton.on('click', function() {
-        var li = $(this).parent();
-        li.remove();
+    // Free-text fallback, shown only when "custom…" is selected. Note: no `d-inline-block` here --
+    // that Bootstrap class is `display: inline-block !important` and would override the inline
+    // `display: none` that .hide() sets, leaving the box permanently visible.
+    var customInput = $("<input type='text' class='form-control form-control-sm perm-custom' " +
+        "style='width:auto; margin-left:8px;' placeholder='major:minor'>").hide();
+
+    permSelect.on("change", function() {
+        if ($(this).val() === CUSTOM_PERMISSION) {
+            customInput.show().trigger("focus");
+        } else {
+            // clear as well as hide, so a stale custom value can never reappear (or be
+            // mistaken for what will be submitted) after switching to a catalog entry
+            customInput.val("").hide();
+        }
     });
 
-    // grab focus and select all the text in the input box
-    inputBox.trigger("focus");
-    inputBox.trigger("select");
+    li.append(deleteButton).append(effectSelect).append(permSelect).append(customInput);
+    $("#edit_user_permissions_list").append(li);
+
+    deleteButton.on('click', function() {
+        $(this).closest("li").remove();
+    });
 }
 
 function submit_edit_user() {
@@ -90,13 +190,7 @@ function submit_edit_user() {
             groups: [],
         };
 
-        // get the permissions from the form
-        var permissions = [];
-        $("#edit_user_permissions_list").children().each(function() {
-            permissions.push(parse_permission_str($(this).find("input").val()));
-        });
-
-        json_submission[selected_user_ids[i]].permissions = permissions;
+        json_submission[selected_user_ids[i]].permissions = collect_user_permissions();
 
         // get the groups from the form
         var groups = [];
@@ -110,46 +204,35 @@ function submit_edit_user() {
         json_submission[selected_user_ids[i]].groups = groups;
     }
 
-    fetch("/ace/auth/edit", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(json_submission),
-    }).then(response => {
-        if (!response.ok) {
-            response.text().then(text => {
-                alert(text);
-            });
-        } else {
-            window.location.reload();
-        }
-    }).catch(error => {
-        console.error('There was a problem with the fetch operation:', error);
-    });
+    api_request_then_reload("PATCH", USERS_API + "/", json_submission);
 }
 
 function submit_add_user() {
     // submits the request to add a new user based on the form values
 
+    // username and email are required; the server enforces this too, but fail fast here
+    if (!$("#edit_user_username").val().trim()) {
+        alert("Username is required");
+        return;
+    }
+    if (!$("#edit_user_email").val().trim()) {
+        alert("Email is required");
+        return;
+    }
+
+    // the API applies its own defaults, so send nothing rather than an empty string
     json_submission = {
-        username: $("#edit_user_username").val(),
-        password: $("#edit_user_password").val(),
-        display_name: $("#edit_user_display_name").val(),
-        email: $("#edit_user_email").val(),
-        queue: $("#edit_user_queue").val(),
-        timezone: $("#edit_user_timezone").val(),
+        username: $("#edit_user_username").val().trim(),
+        password: $("#edit_user_password").val() || null,
+        display_name: $("#edit_user_display_name").val() || null,
+        email: $("#edit_user_email").val().trim(),
+        queue: $("#edit_user_queue").val() || "default",
+        timezone: $("#edit_user_timezone").val() || "UTC",
         permissions: [],
         groups: [],
     };
 
-    // get the permissions from the form
-    var permissions = [];
-    $("#edit_user_permissions_list").children().each(function() {
-        permissions.push(parse_permission_str($(this).find("input").val()));
-    });
-
-    json_submission.permissions = permissions;
+    json_submission.permissions = collect_user_permissions();
 
     // get the groups from the form
     var groups = [];
@@ -162,23 +245,7 @@ function submit_add_user() {
 
     json_submission.groups = groups;
 
-    fetch("/ace/auth/add", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify(json_submission),
-    }).then(response => {
-        if (!response.ok) {
-            response.text().then(text => {
-                alert(text);
-            });
-        } else {
-            window.location.reload();
-        }
-    }).catch(error => {
-        console.error('There was a problem with the fetch operation:', error);
-    });
+    api_request_then_reload("POST", USERS_API + "/", json_submission);
 }
 
 function reset_edit_user_form() {
@@ -216,12 +283,7 @@ $(document).ready(function() {
     });
 
     $("#btn_edit_user_add_permission").on('click', function() {
-        add_user_permission_elements({
-            id: null,
-            effect: "ALLOW",
-            major: "*",
-            minor: "*"
-        });
+        add_user_permission_elements({ id: null, effect: "ALLOW", major: "", minor: "" });
     });
 
     $("#btn_edit_user").on('click', function() {
@@ -251,16 +313,8 @@ $(document).ready(function() {
             $("#edit_user_modal_label").text("Edit User");
             // get the details of the selected user
             var user_id = selected_user_ids[0];
-            fetch(`/ace/auth/user?user_ids=${user_id}`)
-                .then(response => {
-                    if (!response.ok) {
-                        response.text().then(text => {
-                            alert(text);
-                        });
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
+            api_request("GET", USERS_API + "/details?user_ids=" + user_id)
+                .then(response => response.json())
                 .then(data => {
                     var user_details = data[user_id];
 
@@ -330,23 +384,7 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/auth/edit", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("PATCH", USERS_API + "/", json_submission);
     });
 
     $("#btn_disable_user").on('click', function() {
@@ -360,27 +398,26 @@ $(document).ready(function() {
             };
         }
 
-        fetch("/ace/auth/edit", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("PATCH", USERS_API + "/", json_submission);
     });
 
     $("#btn_add_group").on('click', function() {
+        $("#add_auth_group_name").val("");
         $("#add_auth_group_modal").modal("show");
+    });
+
+    // this form posts natively; block the submit when no name was entered so the user gets a
+    // message instead of the server's error response
+    $("#add_auth_group_form").on('submit', function(e) {
+        e.preventDefault();
+        var name = $("#add_auth_group_name").val().trim();
+        if (!name) {
+            alert("Enter a name for the permission group.");
+            $("#add_auth_group_name").trigger("focus");
+            return false;
+        }
+        api_request_then_reload("POST", USERS_API + "/groups", { name: name });
+        return false;
     });
 
     $("#btn_remove_group").on('click', function() {
@@ -392,35 +429,47 @@ $(document).ready(function() {
 
         var json_submission = { groups: selected_group_ids };
 
-        fetch("/ace/auth/group/delete", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("POST", USERS_API + "/groups/delete", json_submission);
     });
 
     $("#btn_add_permissions").on('click', function() {
+        // reset to an empty selection so the modal never carries a stale (or superuser) default
+        $("#add_permission_effect").val("ALLOW");
+        $("#add_permission_catalog").val("");
+        $("#add_permission_major").val("");
+        $("#add_permission_minor").val("");
         $("#add_permission_modal").modal("show");
+    });
+
+    // choosing a catalog entry fills the major/minor fields (which remain editable for wildcards)
+    $("#add_permission_catalog").on('change', function() {
+        var value = $(this).val();
+        if (!value) { return; }
+        var parts = value.split(":");
+        $("#add_permission_major").val(parts[0]);
+        $("#add_permission_minor").val(parts[1]);
     });
 
     $("#btn_execute_add_permission").on('click', function() {
         var effect = $("#add_permission_effect").val();
-        var major = $("#add_permission_major").val();
-        var minor = $("#add_permission_minor").val();
+        var major = $("#add_permission_major").val().trim();
+        var minor = $("#add_permission_minor").val().trim();
         var users = get_selected_user_ids();
         var groups = get_selected_group_ids();
+
+        // the server enforces these too, but fail fast rather than silently granting nothing
+        if (!major || !minor) {
+            alert("Choose a permission from the catalog, or enter both a major and a minor.");
+            return false;
+        }
+        if (users.length === 0 && groups.length === 0) {
+            alert("Select at least one user or group to grant this permission to.");
+            return false;
+        }
+        if (major === "*" && minor === "*" &&
+            !confirm("Grant *:* (full administrative access) to the selected users/groups?")) {
+            return false;
+        }
 
         var json_submission = {
             effect: effect,
@@ -430,23 +479,7 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/auth/permission/add", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
-        });
+        api_request_then_reload("POST", USERS_API + "/permissions", json_submission);
     });
 
     $("#btn_remove_permissions").on('click', function() {
@@ -458,22 +491,69 @@ $(document).ready(function() {
             groups: groups,
         };
 
-        fetch("/ace/auth/permission/delete", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(json_submission),
-        }).then(response => {
-            if (!response.ok) {
-                response.text().then(text => {
-                    alert(text);
-                });
-            } else {
-                window.location.reload();
-            }
-        }).catch(error => {
-            console.error('There was a problem with the fetch operation:', error);
+        api_request_then_reload("POST", USERS_API + "/permissions/delete", json_submission);
+    });
+
+    function username_for(user_id) {
+        return $("input[name='user_id_" + user_id + "']").closest("tr").find("td:first").text().trim();
+    }
+
+    $("#btn_generate_api_key").on('click', function() {
+        // one user at a time: generating returns a secret that we display once
+        var selected_user_ids = get_selected_user_ids();
+        if (selected_user_ids.length != 1) {
+            alert("Select exactly one user to generate an API key for.");
+            return;
+        }
+        var user_id = selected_user_ids[0];
+        var name = username_for(user_id);
+        if (!confirm("Generate a new API key for " + name + "?\n\nAny existing key for this user will stop working immediately.")) {
+            return;
+        }
+
+        api_request("POST", USERS_API + "/" + user_id + "/apikey")
+            .then(response => response.json())
+            .then(data => {
+                $("#api_key_username").text(name);
+                $("#api_key_value").val(data.api_key);
+                $("#api_key_modal").modal("show");
+            })
+            .catch(error => alert(error.message));
+    });
+
+    // the key is only shown while this modal is open; reload once it closes so the table updates
+    $("#api_key_modal").on("hidden.bs.modal", function() {
+        window.location.reload();
+    });
+
+    $("#btn_copy_api_key").on('click', function() {
+        var button = $(this);
+        Promise.resolve(copy_to_clipboard($("#api_key_value").val())).then(function() {
+            button.text("Copied!");
+            setTimeout(function() { button.text("Copy"); }, 1500);
+        }).catch(function() {
+            // never leave the analyst believing a key was copied when it wasn't
+            alert("Unable to copy to the clipboard. Select the key and copy it manually.");
+        });
+    });
+
+    $("#btn_revoke_api_key").on('click', function() {
+        var selected_user_ids = get_selected_user_ids();
+        if (selected_user_ids.length == 0) {
+            alert("Select one or more users to revoke API keys for.");
+            return;
+        }
+        if (!confirm("Revoke the API key for " + selected_user_ids.length + " user(s)?\n\nThis cannot be undone; a new key must be generated to restore API access.")) {
+            return;
+        }
+
+        // the API revokes one key per call; fan out and reload once they all succeed
+        Promise.all(selected_user_ids.map(function(user_id) {
+            return api_request("DELETE", USERS_API + "/" + user_id + "/apikey");
+        })).then(function() {
+            window.location.reload();
+        }).catch(function(error) {
+            alert(error.message);
         });
     });
 

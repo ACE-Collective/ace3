@@ -16,7 +16,6 @@ def test_yaml_config_initialization():
     
     assert isinstance(config._data, dict)
     assert len(config._data) == 0
-    assert isinstance(config.encrypted_password_cache, dict)
     assert isinstance(config.loaded_files, set)
     assert len(config.loaded_files) == 0
 
@@ -48,15 +47,11 @@ def test_yaml_config_environment_variable_resolution():
 
 
 @pytest.mark.unit
-def test_yaml_config_encrypted_password_resolution(monkeypatch):
-    """Test encrypted password resolution in YAMLConfig."""
+def test_yaml_config_encrypted_marker_left_unresolved():
+    """encrypted:<name> markers are never resolved by the loader -- they are left intact so they
+    validate into a SecretRef field and are resolved lazily at point-of-use."""
     config = YAMLConfig()
-    
-    monkeypatch.setattr(get_global_runtime_settings(), "encryption_initialized", False)
-        
-    # Test encrypted: prefix when encryption not initialized
-    result = config._resolve_value("encrypted:test_key")
-    assert result == "encrypted:test_key"
+    assert config._resolve_value("encrypted:test_key") == "encrypted:test_key"
 
 
 @pytest.mark.unit
@@ -375,18 +370,6 @@ section2:
     # Both files should be in loaded_files (loaded only once each)
     assert str(file1) in config.loaded_files
     assert str(file2) in config.loaded_files
-
-
-@pytest.mark.unit
-def test_yaml_config_get_decrypted_password_cached():
-    """Test _get_decrypted_password with cached value."""
-    config = YAMLConfig()
-    
-    # Pre-populate cache
-    config.encrypted_password_cache["test_key"] = "cached_password"
-    
-    result = config._get_decrypted_password("test_key")
-    assert result == "cached_password"
 
 
 @pytest.mark.unit

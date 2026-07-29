@@ -13,13 +13,90 @@ function escape_html(unsafe) {
         .replace(/'/g, "&#039;");
 }
 
-function copy_to_clipboard(str) {
-    var $temp = $("<input>");
-    $("body").append($temp);
-    $temp.val(str).select();
-    document.execCommand("copy");
-    $temp.remove();
+// Legacy fallback for browsers/contexts without the async Clipboard API.
+//
+// The temp input is appended INSIDE the open modal (when there is one) rather than to <body>:
+// Bootstrap's modal focus trap steals focus back from any element outside the modal, which clears
+// the selection before execCommand runs. execCommand still returns true in that case, so it fails
+// silently and copies nothing.
+function _copy_to_clipboard_fallback(str) {
+    var host = document.querySelector(".modal.show") || document.body;
+    var temp = document.createElement("input");
+    temp.value = str;
+    temp.setAttribute("readonly", "");
+    temp.style.position = "absolute";
+    temp.style.left = "-9999px";
+    host.appendChild(temp);
+    temp.select();
+
+    var copied = false;
+    try {
+        // guard against the silent-success case above
+        copied = document.execCommand("copy") && window.getSelection().toString().length > 0;
+    } catch (e) {
+        copied = false;
+    }
+    temp.remove();
+    return copied;
 }
+
+// Returns a Promise that resolves when the text is on the clipboard, and rejects if it could not
+// be copied. Callers that don't care may ignore the return value.
+function copy_to_clipboard(str) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(str).catch(function() {
+            return _copy_to_clipboard_fallback(str)
+                ? Promise.resolve()
+                : Promise.reject(new Error("unable to copy to clipboard"));
+        });
+    }
+    return _copy_to_clipboard_fallback(str)
+        ? Promise.resolve()
+        : Promise.reject(new Error("unable to copy to clipboard"));
+}
+
+// "Copy API Key" in the nav bar. The key is not rendered into the page; it is fetched on demand
+// from the v2 API (GET /api/v2/users/me/apikey), which is served at the same origin and accepts the
+// Flask session cookie. The URL comes from the link's data-api-key-url attribute.
+$(document).ready(function() {
+    var link = document.getElementById("copy_api_key_link");
+    if (!link) {
+        return;
+    }
+
+    var in_flight = false;
+
+    // The key is requested only when the link is clicked -- never on merely opening the menu, and
+    // it is not cached in memory afterward. Each click fetches it, copies it, and drops it.
+    link.addEventListener("click", function(event) {
+        event.preventDefault();
+        if (in_flight) {
+            return;
+        }
+        in_flight = true;
+
+        var original_text = link.textContent;
+
+        fetch(link.dataset.apiKeyUrl, { credentials: "same-origin" })
+            .then(function(response) {
+                if (!response.ok) { throw new Error("unable to retrieve api key"); }
+                return response.json();
+            })
+            .then(function(data) {
+                return copy_to_clipboard(data.api_key);
+            })
+            .then(function() {
+                link.textContent = "Copied!";
+                setTimeout(function() { link.textContent = original_text; }, 1500);
+            })
+            .catch(function() {
+                alert("Unable to copy your API key to the clipboard.");
+            })
+            .then(function() {
+                in_flight = false;
+            });
+    });
+});
 
 function hideSaveToEventButton() {
   document.getElementById("btn-save-to-event").style.display = 'none';
@@ -27,6 +104,14 @@ function hideSaveToEventButton() {
 
 function showSaveToEventButton() {
   document.getElementById("btn-save-to-event").style.display = 'inline';
+}
+
+// shows or hides the corrected-disposition section of the review modal based on the review result
+function toggle_review_incorrect(show) {
+  const section = document.getElementById("review_incorrect_section");
+  if (section) {
+    section.style.display = show ? 'flex' : 'none';
+  }
 }
 
 function showEventSaveButton() {

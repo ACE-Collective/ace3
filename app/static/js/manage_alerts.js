@@ -120,6 +120,35 @@ $(document).ready(function() {
         // and then allow the form to follow through
     });
 
+    $("#btn-review").click(function(e) {
+        // compile a list of all the alerts that are checked
+        all_alert_uuids = get_all_checked_alerts();
+        if (all_alert_uuids.length == 0) {
+            e.preventDefault();
+            alert("You must select one or more alerts to review.");
+            return;
+        }
+
+        // when marking a disposition incorrect a corrected disposition and comment are required
+        if ($("input[name='review_result']:checked").val() == "INCORRECT") {
+            if (!$("input[name='corrected_disposition']:checked").val()) {
+                e.preventDefault();
+                alert("You must select the correct disposition.");
+                return;
+            }
+            if (!$("#review-form textarea[name='comment']").val().trim()) {
+                e.preventDefault();
+                alert("A review comment is required when marking a disposition incorrect.");
+                return;
+            }
+        }
+
+        // add a hidden field to the form
+        $("#review-form").append('<input type="hidden" name="alert_uuids" value="' + all_alert_uuids.join(",") + '" />');
+
+        // and then allow the form to follow through
+    });
+
     $("#btn-save-to-event").click(function(e) {
         let all_alert_uuids = get_all_checked_alerts();
         let disposition = $("input[name='disposition']:checked").val()
@@ -565,6 +594,19 @@ function set_special_filter_7_days() {
 function set_quick_filter(filter_id) {
     (function() {
         fetch('reset_filters_quick/' + encodeURIComponent(filter_id), { credentials: 'same-origin' })
+        .then(function(resp){
+            if (!resp.ok) { throw new Error(resp.statusText); }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err){
+            alert('DOH: ' + err.message);
+        });
+    })();
+}
+
+function set_special_filter_unreviewed() {
+    (function() {
+        fetch('reset_filters_unreviewed', { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');

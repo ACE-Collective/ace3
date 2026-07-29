@@ -316,6 +316,21 @@ VALID_DISPOSITIONS = [
     DISPOSITION_APPROVED_PERSONAL,
 ]
 
+# disposition review states
+# tracks whether an alert's disposition has been reviewed by a senior analyst and, if so, the result
+DISPOSITION_REVIEW_UNREVIEWED = 'UNREVIEWED'
+DISPOSITION_REVIEW_CORRECT = 'CORRECT'
+DISPOSITION_REVIEW_INCORRECT = 'INCORRECT'
+
+VALID_DISPOSITION_REVIEWS = [
+    DISPOSITION_REVIEW_UNREVIEWED,
+    DISPOSITION_REVIEW_CORRECT,
+    DISPOSITION_REVIEW_INCORRECT,
+]
+
+# prefix applied to alert comments that record the result of a disposition review
+REVIEW_COMMENT_PREFIX = "[REVIEW] "
+
 # --- DIRECTIVES
 DIRECTIVE_ANALYZE_ACTIVITY = 'analyze_activity'
 DIRECTIVE_ARCHIVE = 'archive'
@@ -631,6 +646,12 @@ INTEL_DB_SIP = 'sip'
 
 # alert queues
 QUEUE_DEFAULT = 'default'
+
+# Maximum length (in characters) of an observable detection value. The column is a VARCHAR rather
+# than a BLOB so that it sorts and searches under a collation; this bounds it. Detection values are
+# analyst-curated indicators, so this is generous -- writers reject longer values outright rather
+# than truncating, which would produce a detection that silently never matches.
+MAX_DETECTION_VALUE_LENGTH = 4096
 
 # redis databases
 REDIS_DB_SNORT = 1

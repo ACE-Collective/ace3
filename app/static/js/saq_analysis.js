@@ -142,6 +142,22 @@ $(document).ready(function() {
         $("#option_" + disposition).click();
     });
 
+    // validate the review modal before it submits (the alert_uuid is already injected via the review_form block)
+    $("#btn-review").click(function(e) {
+        if ($("input[name='review_result']:checked").val() == "INCORRECT") {
+            if (!$("input[name='corrected_disposition']:checked").val()) {
+                e.preventDefault();
+                alert("You must select the correct disposition.");
+                return;
+            }
+            if (!$("#review-form textarea[name='comment']").val().trim()) {
+                e.preventDefault();
+                alert("A review comment is required when marking a disposition incorrect.");
+                return;
+            }
+        }
+    });
+
     // Reset directive selection when add observable modal opens
     $('#add_observable_modal').on('show.bs.modal', function () {
         $("#add_observable_directives_multiselect").val([]);

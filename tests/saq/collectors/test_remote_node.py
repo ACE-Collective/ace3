@@ -1,11 +1,13 @@
+import os
 from threading import Event
 import uuid as uuid_module
 import pytest
+import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION
-from saq.database.pool import get_db_connection
+from saq.database.pool import execute_with_db_cursor, get_db_connection
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
@@ -411,3 +413,187 @@ def test_default_seed_correlation_before_analysis(remote_node_group):
         result_ids = [r[0] for r in rows]
         # Correlation (priority 1) should come before analysis (priority 0)
         assert result_ids == sorted(correlation_ids) + sorted(analysis_ids)
+
+
+#
+# delivery retry bounding / dead-lettering
+#
+# RemoteNodeGroup.execute() only claims a new batch when it holds no locks of its own, and the
+# 10 minute stale-lock steal requires a *different* lock_uuid. With thread_count=1 there is no
+# other lock_uuid, so an item that keeps failing with a retriable error used to hold the batch
+# lock forever and stall every item queued behind it.
+#
+
+def _ensure_live_any_mode_node():
+    """Makes sure the local node exists, accepts any analysis mode and looks alive to the
+    node availability query in RemoteNodeGroup.execute()."""
+    from saq.database import initialize_node
+
+    if get_global_runtime_settings().saq_node_id is None:
+        initialize_node()
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE nodes SET any_mode = 1, status = 'running', last_update = NOW()")
+        cursor.execute("DELETE FROM node_modes_excluded")
+        db.commit()
+
+
+def insert_deliverable_work_item(cursor, group, mode=ANALYSIS_MODE_ANALYSIS):
+    """Like insert_workload_item, but also writes a real RootAnalysis into the group's incoming
+    dir so execute() can load it. Returns (work_id, work_uuid)."""
+    work_uuid = str(uuid_module.uuid4())
+    root = RootAnalysis(
+        uuid=work_uuid,
+        storage_dir=os.path.join(group.incoming_dir, work_uuid),
+        desc='test delivery',
+        analysis_mode=mode,
+        tool='test_tool',
+        tool_instance='test_tool_instance',
+        alert_type='test_type')
+    root.initialize_storage()
+    root.save()
+
+    cursor.execute(
+        "INSERT INTO incoming_workload (type_id, mode, work) VALUES (%s, %s, %s)",
+        (group.workload_type_id, mode, work_uuid),
+    )
+    work_id = cursor.lastrowid
+    cursor.execute(
+        "INSERT INTO work_distribution (group_id, work_id, status) VALUES (%s, %s, 'READY')",
+        (group.group_id, work_id),
+    )
+    return work_id, work_uuid
+
+
+def _work_distribution_row(group, work_id):
+    """Returns (status, attempt_count) for the given work item."""
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT status, attempt_count FROM work_distribution WHERE group_id = %s AND work_id = %s",
+            (group.group_id, work_id))
+        return cursor.fetchone()
+
+
+@pytest.mark.integration
+def test_record_delivery_attempt_increments(remote_node_group):
+    """each recorded failure bumps the persisted attempt counter"""
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        work_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id)
+        db.commit()
+
+        assert remote_node_group.record_delivery_attempt(db, cursor, work_id) == 1
+        assert remote_node_group.record_delivery_attempt(db, cursor, work_id) == 2
+
+    assert _work_distribution_row(remote_node_group, work_id)[1] == 2
+
+
+@pytest.mark.integration
+def test_record_delivery_attempt_dead_letters_unknown_item(remote_node_group):
+    """an item we cannot track is reported as exhausted rather than retried forever"""
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        attempts = remote_node_group.record_delivery_attempt(db, cursor, 999999999)
+
+    assert attempts == remote_node_group.max_delivery_attempts
+
+
+@pytest.mark.integration
+def test_delivery_retries_then_dead_letters(monkeypatch, remote_node_group):
+    """a work item that always fails is retried up to max_delivery_attempts, then marked ERROR
+
+    without the bound it would stay LOCKED forever and stall this group's queue"""
+    _ensure_live_any_mode_node()
+    remote_node_group.max_delivery_attempts = 3
+
+    def _always_fails(self, submission):
+        raise requests.exceptions.ConnectionError("target is unreachable")
+
+    monkeypatch.setattr(RemoteNode, "submit", _always_fails)
+
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        work_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    work_lock_uuid = str(uuid_module.uuid4())
+
+    # first two passes retry and leave the item locked
+    for expected_attempts in (1, 2):
+        execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+        status, attempt_count = _work_distribution_row(remote_node_group, work_id)
+        assert status == "LOCKED"
+        assert attempt_count == expected_attempts
+
+    # the third exhausts the budget and dead-letters it
+    execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+    status, attempt_count = _work_distribution_row(remote_node_group, work_id)
+    assert status == "ERROR"
+    assert attempt_count == 3
+
+
+@pytest.mark.integration
+def test_dead_lettered_item_does_not_block_following_work(monkeypatch, remote_node_group):
+    """once a poison item is dead-lettered the group delivers what was queued behind it
+
+    this is the regression: a new batch is only locked when the thread holds no locks, so a
+    permanently failing item used to stall everything behind it indefinitely"""
+    _ensure_live_any_mode_node()
+    remote_node_group.max_delivery_attempts = 2
+    # force each pass to handle a single item so the poison item is a batch of its own
+    remote_node_group.batch_size = 1
+
+    poison_uuid = {}
+
+    def _fail_only_poison(self, submission):
+        if submission.root.uuid == poison_uuid["value"]:
+            raise requests.exceptions.ConnectionError("target is unreachable")
+        return {"result": submission.root.uuid}
+
+    monkeypatch.setattr(RemoteNode, "submit", _fail_only_poison)
+
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        poison_id, poison_root_uuid = insert_deliverable_work_item(cursor, remote_node_group)
+        good_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    poison_uuid["value"] = poison_root_uuid
+
+    work_lock_uuid = str(uuid_module.uuid4())
+
+    # drive the loop until the poison item is dead-lettered and the good item is delivered
+    for _ in range(6):
+        execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+        if _work_distribution_row(remote_node_group, good_id)[0] == "COMPLETED":
+            break
+
+    assert _work_distribution_row(remote_node_group, poison_id)[0] == "ERROR"
+    assert _work_distribution_row(remote_node_group, good_id)[0] == "COMPLETED", \
+        "work queued behind a poison item must still be delivered"
+
+
+@pytest.mark.integration
+def test_successful_delivery_does_not_record_attempts(monkeypatch, remote_node_group):
+    """the attempt counter only moves on failure"""
+    _ensure_live_any_mode_node()
+
+    def _always_succeeds(self, submission):
+        return {"result": submission.root.uuid}
+
+    monkeypatch.setattr(RemoteNode, "submit", _always_succeeds)
+
+    with get_db_connection(DB_COLLECTION) as db:
+        cursor = db.cursor()
+        work_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, str(uuid_module.uuid4()))
+
+    status, attempt_count = _work_distribution_row(remote_node_group, work_id)
+    assert status == "COMPLETED"
+    assert attempt_count == 0

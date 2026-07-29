@@ -3,6 +3,7 @@ from typing import Optional
 
 from saq.collectors.remote_node import RemoteNodeGroup
 from saq.configuration import get_config
+from saq.configuration.schema import DEFAULT_MAX_DELIVERY_ATTEMPTS
 from saq.environment import get_global_runtime_settings
 
 
@@ -57,7 +58,8 @@ class GroupConfigurationLoader:
                 collection_group_config.company_id,
                 collection_group_config.database,
                 target_nodes=target_nodes,
-                thread_count=collection_group_config.thread_count
+                thread_count=collection_group_config.thread_count,
+                max_delivery_attempts=collection_group_config.max_delivery_attempts
             )
             
             remote_node_groups.append(remote_node_group)
@@ -75,7 +77,8 @@ class GroupConfigurationLoader:
         batch_size: Optional[int] = 32,
         target_node_as_company_id: Optional[int] = None,
         target_nodes: Optional[list] = None,
-        thread_count: Optional[int] = 1
+        thread_count: Optional[int] = 1,
+        max_delivery_attempts: int = DEFAULT_MAX_DELIVERY_ATTEMPTS
     ) -> RemoteNodeGroup:
         """
         Create a RemoteNodeGroup instance.
@@ -90,7 +93,9 @@ class GroupConfigurationLoader:
             target_node_as_company_id: Target node as company ID (optional)
             target_nodes: List of target nodes (optional)
             thread_count: Thread count (default: 1)
-            
+            max_delivery_attempts: Retriable delivery failures allowed per work item before
+                it is marked ERROR (default: DEFAULT_MAX_DELIVERY_ATTEMPTS)
+
         Returns:
             Configured RemoteNodeGroup instance
         """
@@ -108,7 +113,8 @@ class GroupConfigurationLoader:
             batch_size=batch_size,
             target_node_as_company_id=target_node_as_company_id,
             target_nodes=target_nodes,
-            thread_count=thread_count
+            thread_count=thread_count,
+            max_delivery_attempts=max_delivery_attempts
         )
-        
+
         return remote_node_group 

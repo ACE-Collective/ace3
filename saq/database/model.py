@@ -47,15 +47,16 @@ from werkzeug.security import check_password_hash as werkzeug_check_password_has
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable
-from saq.analysis.observable import get_observable_type_expiration_time
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import (
     DISPOSITION_DELIVERY,
     DISPOSITION_OPEN,
+    DISPOSITION_REVIEW_UNREVIEWED,
     F_FILE,
     F_FQDN,
     F_URL,
+    MAX_DETECTION_VALUE_LENGTH,
     QUEUE_DEFAULT,
 )
 from saq.crypto import decrypt_chunk
@@ -284,6 +285,38 @@ class Alert(Base):
         TIMESTAMP,
         nullable=True)
 
+    # disposition review tracking
+    # records whether a senior analyst has reviewed the disposition and the result of that review
+    disposition_review: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+        default=DISPOSITION_REVIEW_UNREVIEWED,
+        server_default=text("'UNREVIEWED'"))
+
+    review_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True)
+
+    review_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
+    # when a disposition is corrected these preserve the original (incorrect) disposition and who set it
+    incorrect_disposition: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True)
+
+    incorrect_disposition_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True)
+
+    incorrect_disposition_time: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP,
+        nullable=True)
+
     # blueprint icons are a legacy feature that is not commonly used anymore
     icon_blueprint_name: Mapped[Optional[str]] = mapped_column(
         String(256),
@@ -306,6 +339,10 @@ class Alert(Base):
         'User', primaryjoin='Alert.owner_id == User.id', foreign_keys=[owner_id])
     remover: Mapped[Optional["User"]] = relationship(
         'User', primaryjoin='Alert.removal_user_id == User.id', foreign_keys=[removal_user_id])
+    review_user: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.review_user_id == User.id', foreign_keys=[review_user_id])
+    incorrect_disposition_user: Mapped[Optional["User"]] = relationship(
+        'User', primaryjoin='Alert.incorrect_disposition_user_id == User.id', foreign_keys=[incorrect_disposition_user_id])
     #observable_mapping = relationship('ObservableMapping')
     tag_mappings: Mapped[list["TagMapping"]] = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
     #delayed_analysis = relationship('DelayedAnalysis')
@@ -529,6 +566,12 @@ class Alert(Base):
     KEY_OWNER_TIME = 'owner_time'
     KEY_REMOVAL_USER_ID = 'removal_user_id'
     KEY_REMOVAL_TIME = 'removal_time'
+    KEY_DISPOSITION_REVIEW = 'disposition_review'
+    KEY_REVIEW_USER_ID = 'review_user_id'
+    KEY_REVIEW_TIME = 'review_time'
+    KEY_INCORRECT_DISPOSITION = 'incorrect_disposition'
+    KEY_INCORRECT_DISPOSITION_USER_ID = 'incorrect_disposition_user_id'
+    KEY_INCORRECT_DISPOSITION_TIME = 'incorrect_disposition_time'
 
     @property
     def json(self):
@@ -542,7 +585,13 @@ class Alert(Base):
             Alert.KEY_OWNER_ID: self.owner_id,
             Alert.KEY_OWNER_TIME: self.owner_time,
             Alert.KEY_REMOVAL_USER_ID: self.removal_user_id,
-            Alert.KEY_REMOVAL_TIME: self.removal_time
+            Alert.KEY_REMOVAL_TIME: self.removal_time,
+            Alert.KEY_DISPOSITION_REVIEW: self.disposition_review,
+            Alert.KEY_REVIEW_USER_ID: self.review_user_id,
+            Alert.KEY_REVIEW_TIME: self.review_time,
+            Alert.KEY_INCORRECT_DISPOSITION: self.incorrect_disposition,
+            Alert.KEY_INCORRECT_DISPOSITION_USER_ID: self.incorrect_disposition_user_id,
+            Alert.KEY_INCORRECT_DISPOSITION_TIME: self.incorrect_disposition_time
         })
         return result
 
@@ -582,6 +631,30 @@ class Alert(Base):
         if not self.removal_time:
             if Alert.KEY_REMOVAL_TIME in value:
                 self.removal_time = value[Alert.KEY_REMOVAL_TIME]
+
+        if not self.disposition_review or self.disposition_review == DISPOSITION_REVIEW_UNREVIEWED:
+            if Alert.KEY_DISPOSITION_REVIEW in value and value[Alert.KEY_DISPOSITION_REVIEW]:
+                self.disposition_review = value[Alert.KEY_DISPOSITION_REVIEW]
+
+        if not self.review_user_id:
+            if Alert.KEY_REVIEW_USER_ID in value:
+                self.review_user_id = value[Alert.KEY_REVIEW_USER_ID]
+
+        if not self.review_time:
+            if Alert.KEY_REVIEW_TIME in value:
+                self.review_time = value[Alert.KEY_REVIEW_TIME]
+
+        if not self.incorrect_disposition:
+            if Alert.KEY_INCORRECT_DISPOSITION in value:
+                self.incorrect_disposition = value[Alert.KEY_INCORRECT_DISPOSITION]
+
+        if not self.incorrect_disposition_user_id:
+            if Alert.KEY_INCORRECT_DISPOSITION_USER_ID in value:
+                self.incorrect_disposition_user_id = value[Alert.KEY_INCORRECT_DISPOSITION_USER_ID]
+
+        if not self.incorrect_disposition_time:
+            if Alert.KEY_INCORRECT_DISPOSITION_TIME in value:
+                self.incorrect_disposition_time = value[Alert.KEY_INCORRECT_DISPOSITION_TIME]
 
     #def track_delayed_analysis_start(self, observable, analysis_module):
         #super().track_delayed_analysis_start(observable, analysis_module)
@@ -827,16 +900,16 @@ class Alert(Base):
             observables.append(observable.value)
             observables.append(observable.sha256_hash)
 
-            expires_on = get_observable_type_expiration_time(observable.type)
-            if expires_on:
-                observables.append(expires_on.strftime('%Y-%m-%d %H:%M:%S'))
-            else:
-                observables.append(None)
-
         observables = tuple(observables)
 
         if all_observables:
-            sql = "INSERT IGNORE INTO observables ( type, value, sha256, expires_on ) VALUES {}".format(','.join('(%s, %s, UNHEX(%s), %s)' for o in all_observables))
+            # NOTE: expires_on is deliberately not written here. It used to be set to
+            # now + observable_expiration_mappings[type] for every observable ever indexed, but its
+            # only reader was the detection cache -- which meant an observable last seen long ago
+            # carried an already-expired timestamp, and enabling detection on it produced a
+            # detection that was dead on arrival. Detection expiration now lives in
+            # observable_detections.expires_on, which only an analyst writes.
+            sql = "INSERT IGNORE INTO observables ( type, value, sha256 ) VALUES {}".format(','.join('(%s, %s, UNHEX(%s))' for o in all_observables))
             c.execute(sql, observables)
 
         tag_mapping = {} # key = tag_name, value = tag_id
@@ -1837,35 +1910,47 @@ class Observable(Base):
         BLOB,
         nullable=False)
 
+    # DEPRECATED: detection management moved to the `observable_detections` table. This column and
+    # the four others marked below (expires_on, enabled_by, detection_context, batch_id) are no
+    # longer read; they are retained only so the migration that created that table can be rolled
+    # back without data loss. A follow-up migration drops them.
     for_detection: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
         default=False,
         server_default=text('0'))
 
+    # NOT deprecated: an analyst annotation on the observable itself, managed via aceapi_v2.observables.
     is_interesting: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
         default=False,
         server_default=text('0'))
 
+    # DEPRECATED: see the note on for_detection above.
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
+    # Frequency-analysis hit count for this observable. Nothing in this repository writes it; it is
+    # populated externally and read for display and for the v1 intel API filter. It describes the
+    # observable's prevalence, not a detection, so it stays here.
     fa_hits: Mapped[Optional[int]] = mapped_column(
         Integer,
         nullable=True)
 
+    # DEPRECATED: see the note on for_detection above.
     enabled_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
+    # DEPRECATED: see the note on for_detection above.
     detection_context: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
 
+    # DEPRECATED: see the note on for_detection above.
     batch_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True,
@@ -1876,7 +1961,6 @@ class Observable(Base):
         return self.value.decode('utf8', errors='ignore')
 
     tags: Mapped[list["ObservableTagIndex"]] = relationship('ObservableTagIndex', passive_deletes=True, passive_updates=True, overlaps="observable,observable_tag_index")
-    enabled_by_user: Mapped[Optional["User"]] = relationship('User')
 
     @property
     def json(self):
@@ -1885,14 +1969,120 @@ class Observable(Base):
             "type": self.type,
             "value": base64.b64encode(self.value).decode(),
             "sha256": self.sha256.hex(),
-            "for_detection": self.for_detection == 1,
             "is_interesting": self.is_interesting == 1,
-            "expires_on": self.expires_on,
             "fa_hits": self.fa_hits,
-            "enabled_by": self.enabled_by_user.json if self.enabled_by else None,
-            "detection_context": self.detection_context,
-            "batch_id": self.batch_id, 
         }
+
+
+class ObservableDetection(Base):
+    """An observable that ACE should alert on.
+
+    This is deliberately a separate table from ``observables``. ``observables`` is an *index* of
+    everything that has ever appeared in an alert (hundreds of thousands of rows, grown by ingest);
+    this is a curated list a human manages (thousands of rows at most). Keeping them apart is what
+    makes the management UI's substring search cheap, and it is what allows a detection to exist for
+    an observable that has never been seen.
+
+    A row here *is* an active detection. Disabling one deletes the row.
+
+    There is no foreign key to ``observables``. A detection may legitimately have no corresponding
+    index row (it was added ahead of ever seeing the value), and the ingest path would never
+    back-fill such a key. Join on ``(type, value_sha256) == observables.(type, sha256)`` instead,
+    which is an index lookup against ``i_type_sha256``.
+
+    Note the deliberate asymmetry between uniqueness and search: uniqueness is on the *binary*
+    ``value_sha256``, so ``evil.com`` and ``EVIL.com`` are two distinct detections (correct -- the
+    runtime redis match is case-sensitive), while ``value`` carries a case-insensitive collation so
+    a single search finds both (correct for the analyst).
+    """
+
+    __tablename__ = 'observable_detections'
+    __table_args__ = (
+        UniqueConstraint('type', 'value_sha256', name='uq_obs_det_type_sha256'),
+        Index('i_obs_det_batch_id', 'batch_id'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False)
+
+    # A collatable VARCHAR rather than observables' BLOB, which is what makes ORDER BY and a
+    # case-insensitive LIKE work with no generated sort column. Detection values are inherently
+    # str: the runtime redis key is f"{type}:{value}" built from a Python str, so a non-UTF-8
+    # detection value could never match anything anyway. Writers reject non-UTF-8 and over-length
+    # values rather than storing them lossily.
+    value: Mapped[str] = mapped_column(
+        String(MAX_DETECTION_VALUE_LENGTH, collation='utf8mb4_unicode_520_ci'),
+        nullable=False)
+
+    # Observable.sha256_bytes semantics -- NOT sha256(value) for every type. A FileObservable's
+    # value is already the file's sha256 hex, so its sha256_bytes is unhex(value). Always compute
+    # this through saq.database.util.observable_detection.resolve_detection_identity().
+    value_sha256: Mapped[bytes] = mapped_column(
+        VARBINARY(32),
+        nullable=False)
+
+    # When this detection stops firing. Unlike observables.expires_on -- which ingest wrote for
+    # every observable it had ever seen -- this has exactly one meaning and exactly one writer.
+    expires_on: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True)
+
+    detection_context: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
+    # Groups a bulk import together (see `ace_api.py --generate-batch-id`).
+    batch_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        nullable=True)
+
+    # No index=True on the two foreign keys: MySQL creates an implicit index named after the column
+    # for each, which is the only naming the model-drift check tolerates. See the migration.
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL'),
+        nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    modified_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL'),
+        nullable=True)
+
+    # Maintained by MySQL so it cannot drift across the several write paths.
+    modified_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+
+    created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
+    modified_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[modified_by])
+
+    @property
+    def json(self):
+        return {
+            "id": self.id,
+            "type": self.type,
+            "value": base64.b64encode(self.value.encode("utf8")).decode(),
+            "sha256": self.value_sha256.hex(),
+            "expires_on": self.expires_on,
+            "detection_context": self.detection_context,
+            "batch_id": self.batch_id,
+            "created_by": self.created_by_user.json if self.created_by_user else None,
+            "created_at": self.created_at,
+            "modified_by": self.modified_by_user.json if self.modified_by_user else None,
+            "modified_at": self.modified_at,
+        }
+
 
 class PersistenceSource(Base):
 
@@ -2865,6 +3055,13 @@ class WorkDistribution(Base):
     __tablename__ = 'work_distribution'
     __table_args__ = (
         Index('fk_work_status', 'work_id', 'status'),
+        # RemoteNodeGroup.execute() checks "do I already hold locks" on every pass
+        # (WHERE lock_uuid = ? AND status IN (...)) and then selects the locked batch by the
+        # same column - both were full table scans
+        Index('idx_wd_lock_uuid_status', 'lock_uuid', 'status'),
+        # the dispatch and backlog queries filter on (group_id, status); group_id alone is only
+        # the leading half of the primary key, which does not help the status predicate
+        Index('idx_wd_group_status', 'group_id', 'status'),
     )
 
     group_id: Mapped[int] = mapped_column(
@@ -2891,6 +3088,16 @@ class WorkDistribution(Base):
     lock_uuid: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True)
+
+    # how many times delivery of this work item has failed with a retriable error.
+    # RemoteNodeGroup only claims a new batch when it holds no locks, so an item that retries
+    # forever stalls everything queued behind it - this bounds that and lets the item be
+    # dead-lettered to ERROR once the group's max_delivery_attempts is exceeded
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text('0'))
 
 
 class SandboxSubmission(Base):

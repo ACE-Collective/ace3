@@ -22,7 +22,7 @@ from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
-from saq.environment import get_temp_dir
+from saq.collectors.submission_file_manager import get_staging_tmp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
@@ -456,7 +456,7 @@ class QueryHunt(Hunt):
 
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=os.path.join(get_temp_dir(), root_uuid),
+            storage_dir=os.path.join(get_staging_tmp_dir(), root_uuid),
             desc=self._render_name(event),
             instructions=self.description,
             analysis_mode=self.analysis_mode,
@@ -990,7 +990,7 @@ class QueryHunt(Hunt):
                     submission.root.add_observable(observable)
 
                 for file_content in file_contents:
-                    fd, temp_file_path = mkstemp(dir=get_temp_dir())
+                    fd, temp_file_path = mkstemp(dir=get_staging_tmp_dir())
                     os.write(fd, file_content.content)
                     os.close(fd)
 
@@ -1038,7 +1038,7 @@ class QueryHunt(Hunt):
                             event_grouping[grouping_target].root.add_observable(observable)
 
                     for file_content in file_contents:
-                        fd, temp_file_path = mkstemp(dir=get_temp_dir())
+                        fd, temp_file_path = mkstemp(dir=get_staging_tmp_dir())
                         os.write(fd, file_content.content)
                         os.close(fd)
 

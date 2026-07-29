@@ -127,6 +127,19 @@ def read_persistence_data(hunt_type: str, hunt_name: str, value_name: str):
     with open(target_path, 'rb') as fp:
         return pickle.load(fp)
 
+def delete_persistence_data(hunt_type: str, hunt_name: str, value_name: str) -> bool:
+    """Deletes the given persistence data for this hunt.
+       Returns True if a file was removed, False if there was nothing to remove."""
+    target_path = os.path.join(get_hunt_state_dir(hunt_type, hunt_name), value_name)
+    try:
+        os.remove(target_path)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        logging.warning("unable to delete persistence data %s: %s", target_path, e)
+        return False
+
 class Hunt:
     """Abstract class that represents a single hunt."""
 
@@ -404,8 +417,9 @@ class Hunt:
     def set_last_alert_time(self, value: datetime.datetime, group_value: Optional[str]):
         """Sets the last alert time for the given group_value.
            When group_value is None, sets the singular hunt-level last_alert_time.
-           This method does exactly one thing: it sets the value. Pruning of expired entries
-           is handled separately by prune_expired_last_alert_times()."""
+
+           NOTE: This records the value in memory only - call save_last_alert_times() once when done
+           to persist."""
         if group_value is None:
             self.last_alert_time = value
             return
@@ -413,10 +427,12 @@ class Hunt:
         if value.tzinfo is None:
             value = pytz.utc.localize(value)
 
-        # access through the property to ensure _last_alert_times is loaded
-        current = dict(self.last_alert_times)
-        current[group_value] = value
-        self.last_alert_times = current
+        # access through the property to ensure _last_alert_times is loaded, then mutate in
+        # place. in place matters: a hunt can be re-dispatched while the previous run is still
+        # post-processing (execute_with_lock releases execution_lock before the manager records
+        # alert times), and the old copy-modify-write dropped the other run's updates.
+        self.last_alert_times[group_value] = value
+        self._last_alert_times_dirty = True
 
     def is_group_suppressed(self, group_value: str) -> bool:
         """Returns True if alerts for the given group_value are currently suppressed."""
@@ -431,8 +447,11 @@ class Hunt:
 
     def prune_expired_last_alert_times(self):
         """Drops entries from last_alert_times whose suppression window has already ended.
-           Writes the pruned dict back to disk. No-op if suppression is not configured or
-           the dict is empty. Intended to be called explicitly (not as a side effect of a setter)."""
+           Mutates in memory only - call save_last_alert_times() to persist. No-op if
+           suppression is not configured or the dict is empty. Intended to be called explicitly
+           (not as a side effect of a setter).
+
+           This is what bounds the dict: entries cannot outlive the suppression window."""
         if not self.suppression:
             return
 
@@ -442,18 +461,56 @@ class Hunt:
 
         now = local_time()
         suppression = self.suppression
-        pruned = {k: v for k, v in current.items() if now < v + suppression}
 
-        if len(pruned) == len(current):
-            # nothing to prune; avoid an unnecessary disk write
+        # snapshot the items before deciding what to drop
+        expired = [k for k, v in dict(current).items() if now >= v + suppression]
+
+        if not expired:
             return
 
-        removed_count = len(current) - len(pruned)
+        # remove key by key rather than assigning a rebuilt dict: a rebuilt dict would discard
+        # any entry a concurrent run inserted after the snapshot was taken
+        for key in expired:
+            current.pop(key, None)
+
+        self._last_alert_times_dirty = True
+
         logging.debug(
             "pruned %s expired last_alert_times entries for hunt %s (uuid=%s, type=%s)",
-            removed_count, self.name, self.uuid, self.type,
+            len(expired), self.name, self.uuid, self.type,
         )
-        self.last_alert_times = pruned
+
+    def save_last_alert_times(self):
+        """Persists last_alert_times if anything changed since the last save.
+           This is the single write per hunt run that replaces the old per-group writes."""
+        if not getattr(self, '_last_alert_times_dirty', False):
+            return
+
+        # snapshot before pickling. dict(...) is atomic under the GIL, so a concurrently
+        # re-dispatched run inserting entries cannot make pickle.dump raise
+        # "dictionary changed size during iteration"
+        snapshot = dict(self.last_alert_times)
+        write_persistence_data(self.type, self.name, 'last_alert_times', snapshot)
+        self._last_alert_times_dirty = False
+
+    def discard_suppression_state(self):
+        """Drops any persisted per-group alert times for a hunt that does not configure
+           suppression. Nothing reads that state (is_group_suppressed and
+           prune_expired_last_alert_times both return before reading it when suppression is
+           unset), so this reclaims whatever a previous version of this code left on disk.
+           Cheap no-op after the first call."""
+        if getattr(self, '_suppression_state_discarded', False):
+            return
+
+        self._last_alert_times = {}
+        self._last_alert_times_dirty = False
+        self._suppression_state_discarded = True
+
+        if delete_persistence_data(self.type, self.name, 'last_alert_times'):
+            logging.info(
+                "discarded persisted suppression state for unsuppressed hunt %s (uuid=%s, type=%s)",
+                self.name, self.uuid, self.type,
+            )
 
     #
     # misc

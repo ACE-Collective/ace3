@@ -107,18 +107,12 @@
                     </li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item">
-                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Observables</a>
-                    </li>
-                    <li class="nav-item"><span class="nav-separator"></span></li>
-                    <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">DetectOps</a>
                     </li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
-                    <li class="nav-item"><a class="nav-link" href="{{ url_for('auth.manage_users') }}">Users</a></li>
-                    <li class="nav-item"><span class="nav-separator"></span></li>
-                    <li class="nav-item">
-                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Settings</a>
-                    </li>
+                    {% if has_permission('admin', 'read') %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin.admin_hub') }}">Admin</a></li>
+                    {% endif %}
                 {% endif %}
             </ul>
             <ul class="navbar-nav">
@@ -128,8 +122,14 @@
                             {{ current_user.display_name }} ({{ current_user.username }})
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="user-dropdown">
-                            {% if current_user.apikey_decrypted %}
-                            <li><a class="dropdown-item" href="#" onclick="copy_to_clipboard('{{current_user.apikey_decrypted}}'); return false;">Copy API Key</a></li>
+                            {# The key is fetched on demand from the v2 API rather than interpolated
+                               here: inlining it put a plaintext credential into the HTML source of
+                               every page. The condition checks apikey_hash so no decryption happens
+                               on page render. The v2 app is served at the same origin (nginx routes
+                               /api/v2) and accepts the Flask session cookie. #}
+                            {% if current_user.apikey_hash %}
+                            <li><a class="dropdown-item" href="#" id="copy_api_key_link"
+                                   data-api-key-url="/api/v2/users/me/apikey">Copy API Key</a></li>
                             {% endif %}
                             <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
                             <li><hr class="dropdown-divider"></li>
@@ -322,6 +322,65 @@
         </div>
     </div>
     {% endblock disposition_modal %}
+
+    {% block review_modal %}
+    <div class="modal fade" id="review_modal" tabindex="-1" role="dialog" aria-labelledby="review_modal_label" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <form id="review-form" class="form-horizontal" role="form" method="POST" action={{url_for('analysis.review_disposition')}}>
+            {% block review_form %}{% endblock review_form %}
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h4 class="modal-title fs-5" id="review_modal_label">Review Disposition</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
+                    <div class="row">
+                        <div class="col-md-12">
+                            <p class="mb-2">Is the disposition correct?</p>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="review_result_correct" name="review_result" value="CORRECT" autocomplete="off" checked onclick="toggle_review_incorrect(false);" />
+                                <label class="form-check-label" for="review_result_correct">Correct</label>
+                            </div>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="review_result_incorrect" name="review_result" value="INCORRECT" autocomplete="off" onclick="toggle_review_incorrect(true);" />
+                                <label class="form-check-label" for="review_result_incorrect">Incorrect &mdash; needs correction</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row" id="review_incorrect_section" style="display: none; flex: 1; margin-top: 10px;">
+                        <div class="col-md-4" style="display: flex; flex-direction: column;">
+                            <p class="mb-1">Correct disposition:</p>
+                            {% for disposition in dispositions %}
+                                <div class="form-check">
+                                    <input
+                                        type="radio"
+                                        class="form-check-input"
+                                        id="corrected_option_{{disposition}}"
+                                        name="corrected_disposition"
+                                        value="{{disposition}}"
+                                        autocomplete="off"
+                                    />
+                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="corrected_option_{{disposition}}">
+                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    </label>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-8" style="display: flex; flex-direction: column;">
+                            <p class="mb-1">Review comment (required):</p>
+                            <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="submit" class="btn btn-outline-primary" id="btn-review">Save</button>
+                </div>
+            </div>
+            </form>
+        </div>
+    </div>
+    {% endblock review_modal %}
 
     {% block comment_modal %}
     <div class="modal fade" id="comment_modal" tabindex="-1" role="dialog" aria-labelledby="comment_modal_label" aria-hidden="true">

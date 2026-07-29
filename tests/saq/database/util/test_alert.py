@@ -4,10 +4,19 @@ import pytest
 import uuid
 
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_DISPOSITIONED, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
+from saq.constants import (
+    ANALYSIS_MODE_DISPOSITIONED,
+    DISPOSITION_FALSE_POSITIVE,
+    DISPOSITION_IGNORE,
+    DISPOSITION_REVIEW_CORRECT,
+    DISPOSITION_REVIEW_INCORRECT,
+    DISPOSITION_REVIEW_UNREVIEWED,
+    DISPOSITION_WEAPONIZATION,
+    REVIEW_COMMENT_PREFIX,
+)
 from saq.database.model import Alert, Comment, Observable, ObservableMapping, Workload
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, get_alert_by_uuid, refresh_observable_expires_on, set_dispositions
+from saq.database.util.alert import ALERT, get_alert_by_uuid, set_dispositions, set_disposition_reviews
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
 from saq.permissions.user import add_user_permission
@@ -69,160 +78,6 @@ def test_get_alert_by_uuid_nonexistent():
     
     # Should return None
     assert alert is None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_basic():
-    """Test basic functionality of refresh_observable_expires_on."""
-    # Create alert with observables
-    alert = insert_alert()
-    
-    # Create some test observables for this alert
-    db = get_db()
-    
-    # Create observable with current expires_on
-    observable1 = Observable(
-        type="ipv4",
-        value=b"192.168.1.1",
-        sha256=b"test_hash_1" * 2,  # 32 bytes
-        expires_on=datetime.utcnow() + timedelta(days=1)
-    )
-    db.add(observable1)
-    db.commit()
-    
-    # Map observable to alert
-    mapping = ObservableMapping(
-        observable_id=observable1.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    original_expires_on = observable1.expires_on
-    
-    # Call refresh function
-    refresh_observable_expires_on([alert.uuid])
-    
-    # Verify expires_on was updated (should be different if config has expiration settings)
-    db.refresh(observable1)
-    # Note: The actual value depends on configuration, we just verify it was processed
-    assert observable1.expires_on is not None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_nullify():
-    """Test refresh_observable_expires_on with nullify=True."""
-    # Create alert with observables
-    alert = insert_alert()
-    
-    db = get_db()
-    
-    # Create observable with expires_on set
-    observable = Observable(
-        type="fqdn",
-        value=b"test.example.com",
-        sha256=b"test_hash_2" * 2,  # 32 bytes
-        expires_on=datetime.utcnow() + timedelta(days=7)
-    )
-    db.add(observable)
-    db.commit()
-    
-    # Map to alert
-    mapping = ObservableMapping(
-        observable_id=observable.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    # Call refresh with nullify=True
-    refresh_observable_expires_on([alert.uuid], nullify=True)
-    
-    # Verify expires_on was set to None
-    db.refresh(observable)
-    assert observable.expires_on is None
-
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_already_null():
-    """Test refresh_observable_expires_on doesn't affect already null expires_on."""
-    alert = insert_alert()
-    
-    db = get_db()
-    
-    # Create observable with expires_on already null
-    observable = Observable(
-        type="url",
-        value=b"http://test.example.com",
-        sha256=b"test_hash_3" * 2,  # 32 bytes
-        expires_on=None
-    )
-    db.add(observable)
-    db.commit()
-    
-    # Map to alert
-    mapping = ObservableMapping(
-        observable_id=observable.id,
-        alert_id=alert.id
-    )
-    db.add(mapping)
-    db.commit()
-    
-    # Call refresh function
-    refresh_observable_expires_on([alert.uuid])
-    
-    # Verify expires_on remains None (should be filtered out by the query)
-    db.refresh(observable)
-    assert observable.expires_on is None
-
-def hash_bytes(data: bytes) -> bytes:
-    hasher = hashlib.sha256()
-    hasher.update(data)
-    return hasher.digest()
-
-@pytest.mark.integration
-def test_refresh_observable_expires_on_multiple_alerts():
-    """Test refresh_observable_expires_on with multiple alerts."""
-    get_config().observable_expiration_mappings["ipv4"] = "30:00:00:00"  # 1 day expiration for ipv4
-    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"  # 1 day expiration for ipv4
-    alert1 = insert_alert()
-    alert2 = insert_alert()
-    
-    db = get_db()
-    
-    # Create observables for both alerts
-    observable1 = Observable(
-        type="ipv4",
-        value=b"1.2.3.4",
-        sha256=hash_bytes(b"1.2.3.4"),
-        expires_on=datetime.utcnow() + timedelta(days=1)
-    )
-    observable2 = Observable(
-        type="fqdn",
-        value=b"test.com",
-        sha256=hash_bytes(b"test.com"),
-        expires_on=datetime.utcnow() + timedelta(days=2)
-    )
-    
-    db.add_all([observable1, observable2])
-    db.commit()
-    
-    # Map observables to alerts
-    mappings = [
-        ObservableMapping(observable_id=observable1.id, alert_id=alert1.id),
-        ObservableMapping(observable_id=observable2.id, alert_id=alert2.id)
-    ]
-    db.add_all(mappings)
-    db.commit()
-    
-    # Refresh for both alerts
-    refresh_observable_expires_on([alert1.uuid, alert2.uuid])
-    
-    # Both should have been processed
-    db.refresh(observable1)
-    db.refresh(observable2)
-    assert observable1.expires_on is not None
-    assert observable2.expires_on is not None
 
 
 @pytest.mark.integration
@@ -326,50 +181,45 @@ def test_set_dispositions_multiple_alerts():
 
 
 @pytest.mark.integration
-def test_set_dispositions_malicious_updates_observables():
-    """Test that malicious dispositions trigger observable expires_on updates."""
-    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"  # 1 day expiration for ipv4
+def test_set_dispositions_malicious_leaves_observable_expiration_alone():
+    """Dispositioning malicious no longer rewrites observables.expires_on.
+
+    It used to call refresh_observable_expires_on(), which pushed that column forward for every
+    observable in the alert. Nothing read it except the detection cache, and detection expiration
+    now lives in observable_detections.expires_on where only an analyst sets it -- silently
+    extending an analyst's chosen expiration as a side effect of triage would be wrong.
+    """
+    get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"
 
     user = add_user("testuser_mal", "testuser_mal@test.com", "Test User", "password123")
     add_user_permission(user.id, "*", "*")
 
     try:
         alert = insert_alert()
-        
-        # Create observable for this alert
+
         db = get_db()
+        original_expires_on = datetime(2030, 1, 1, 0, 0, 0)
         observable = Observable(
             type="fqdn",
             value=b"malicious.example.com",
             sha256=b"test_hash_6" * 2,
-            expires_on=datetime.utcnow() + timedelta(days=1)
+            expires_on=original_expires_on,
         )
         db.add(observable)
         db.commit()
-        
-        # Map to alert
-        mapping = ObservableMapping(
-            observable_id=observable.id,
-            alert_id=alert.id
-        )
-        db.add(mapping)
+
+        db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
         db.commit()
-        
-        original_expires_on = observable.expires_on
-        
-        # Set malicious disposition
+
         malicious_disposition = next(iter(get_malicious_dispositions()))
         set_dispositions([alert.uuid], malicious_disposition, user.id)
-        
-        # Verify disposition was set
+
         db.refresh(alert)
         assert alert.disposition == malicious_disposition
-        
-        # Verify observable expires_on was potentially updated
-        # (exact behavior depends on configuration)
+
         db.refresh(observable)
-        assert observable.expires_on is not None
-        
+        assert observable.expires_on == original_expires_on
+
     finally:
         delete_user("testuser_mal")
 
@@ -477,11 +327,130 @@ def test_set_dispositions_already_dispositioned():
         
         # Try to set same disposition again (should not change anything)
         set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
-        
+
         # Should still work but might not update if already set to same value
         db = get_db()
         db.refresh(alert)
         assert alert.disposition == DISPOSITION_FALSE_POSITIVE
-        
+
     finally:
         delete_user("testuser_redispo")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_correct():
+    """Test recording a review that finds the disposition correct."""
+    analyst = add_user("review_analyst", "review_analyst@test.com", "Analyst", "password123")
+    reviewer = add_user("review_reviewer", "review_reviewer@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+
+        # the analyst dispositions the alert
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+
+        # the reviewer confirms the disposition is correct
+        set_disposition_reviews([alert.uuid], DISPOSITION_REVIEW_CORRECT, reviewer.id, review_comment="looks good")
+
+        db = get_db()
+        db.refresh(alert)
+
+        # the review is recorded but the disposition is untouched
+        assert alert.disposition_review == DISPOSITION_REVIEW_CORRECT
+        assert alert.review_user_id == reviewer.id
+        assert alert.review_time is not None
+        assert alert.disposition == DISPOSITION_FALSE_POSITIVE
+        assert alert.disposition_user_id == analyst.id
+        assert alert.incorrect_disposition is None
+
+        # a prefixed review comment was added
+        comment = db.query(Comment).filter(
+            Comment.uuid == alert.uuid,
+            Comment.user_id == reviewer.id,
+        ).first()
+        assert comment is not None
+        assert comment.comment == f"{REVIEW_COMMENT_PREFIX}looks good"
+
+    finally:
+        delete_user("review_analyst")
+        delete_user("review_reviewer")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_incorrect_preserves_original_and_corrects():
+    """Test recording a review that finds the disposition incorrect and corrects it."""
+    analyst = add_user("review_analyst2", "review_analyst2@test.com", "Analyst", "password123")
+    reviewer = add_user("review_reviewer2", "review_reviewer2@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+
+        # the analyst dispositions the alert (incorrectly)
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+        db = get_db()
+        db.refresh(alert)
+        original_disposition_time = alert.disposition_time
+
+        # the reviewer corrects the disposition
+        set_disposition_reviews(
+            [alert.uuid], DISPOSITION_REVIEW_INCORRECT, reviewer.id,
+            corrected_disposition=DISPOSITION_WEAPONIZATION, review_comment="actually malicious")
+
+        db.refresh(alert)
+
+        # the original (incorrect) disposition is preserved
+        assert alert.incorrect_disposition == DISPOSITION_FALSE_POSITIVE
+        assert alert.incorrect_disposition_user_id == analyst.id
+        assert alert.incorrect_disposition_time == original_disposition_time
+
+        # the disposition is corrected and attributed to the reviewer
+        assert alert.disposition == DISPOSITION_WEAPONIZATION
+        assert alert.disposition_user_id == reviewer.id
+
+        # the review is recorded
+        assert alert.disposition_review == DISPOSITION_REVIEW_INCORRECT
+        assert alert.review_user_id == reviewer.id
+        assert alert.review_time is not None
+
+        # a prefixed review comment was added
+        comment = db.query(Comment).filter(
+            Comment.uuid == alert.uuid,
+            Comment.comment == f"{REVIEW_COMMENT_PREFIX}actually malicious",
+        ).first()
+        assert comment is not None
+
+        # the corrected (non-IGNORE) disposition re-inserts the alert into the workload
+        workload_entry = db.query(Workload).filter(
+            Workload.uuid == alert.uuid,
+            Workload.analysis_mode == ANALYSIS_MODE_DISPOSITIONED,
+        ).first()
+        assert workload_entry is not None
+
+    finally:
+        delete_user("review_analyst2")
+        delete_user("review_reviewer2")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_default_unreviewed():
+    """Test that a freshly dispositioned alert starts out unreviewed."""
+    user = add_user("review_default", "review_default@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+
+        db = get_db()
+        db.refresh(alert)
+        assert alert.disposition_review == DISPOSITION_REVIEW_UNREVIEWED
+        assert alert.review_user_id is None
+        assert alert.review_time is None
+        assert alert.incorrect_disposition is None
+
+    finally:
+        delete_user("review_default")
