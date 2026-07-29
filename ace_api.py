@@ -1519,8 +1519,8 @@ def get_observables(
     for_detection=None,
     expired=None,
     fa_hits=None,
-    enabled_by_names=None,
-    enabled_by_ids=None,
+    detection_modified_by_names=None,
+    detection_modified_by_ids=None,
     batch_ids=None,
     alert_ids=None,
     alert_uuids=None,
@@ -1549,10 +1549,10 @@ def get_observables(
         params["expired"] = "1" if expired else "0"
     if isinstance(fa_hits, str) and fa_hits:
         params["fa_hits"] = fa_hits
-    if isinstance(enabled_by_names, list) and enabled_by_names:
-        params["enabled_by_names"] = ",".join(enabled_by_names)
-    if isinstance(enabled_by_ids, list) and enabled_by_ids:
-        params["enabled_by_ids"] = ",".join(map(str, enabled_by_ids))
+    if isinstance(detection_modified_by_names, list) and detection_modified_by_names:
+        params["detection_modified_by_names"] = ",".join(detection_modified_by_names)
+    if isinstance(detection_modified_by_ids, list) and detection_modified_by_ids:
+        params["detection_modified_by_ids"] = ",".join(map(str, detection_modified_by_ids))
     if isinstance(batch_ids, list) and batch_ids:
         params["batch_ids"] = ",".join(batch_ids)
     if isinstance(alert_ids, list) and alert_ids:
@@ -1630,8 +1630,8 @@ def _iter_get_observables_args(args):
         for_detection=for_detection,
         expired=expired,
         fa_hits=args.fa_hits,
-        enabled_by_names=args.enabled_by.split(",") if args.enabled_by else None,
-        enabled_by_ids=args.enabled_by_ids.split(",") if args.enabled_by_ids else None,
+        detection_modified_by_names=args.detection_modified_by.split(",") if args.detection_modified_by else None,
+        detection_modified_by_ids=args.detection_modified_by_ids.split(",") if args.detection_modified_by_ids else None,
         batch_ids=args.batch_ids.split(",") if args.batch_ids else None,
         alert_ids=args.alert_ids.split(",") if args.alert_ids else None,
         alert_uuids=args.alert_uuids.split(",") if args.alert_uuids else None,
@@ -1645,16 +1645,23 @@ def _iter_get_observables_args(args):
 
         yield observable
 
+# NOTE: "id" is the observable_detections row id. "observable_id" is the observables index row for
+# the same value, and is empty for a detection added before the value was ever seen in an alert.
+#
+# "md5" has never been returned by the API, so this column has always been empty -- reading it used
+# to raise KeyError and abort the export on the first row. It is kept (empty) rather than dropped so
+# an existing downstream parser does not see the column count change.
 OBSERVABLE_CSV_HEADERS = [
     "id",
+    "observable_id",
     "type",
     "value",
     "md5",
     "fa_hits",
     "for_detection",
     "expires_on",
-    "enabled_by",
-    "enabled_by_display",
+    "detection_modified_by",
+    "detection_modified_by_display",
     "batch_id",
     "context"]
 
@@ -1675,24 +1682,29 @@ def _cli_get_observables(args):
     for observable in _iter_get_observables_args(args):
         observable["value"] = base64.b64decode(observable["value"]).decode()
         if csv_writer:
-            enabled_by = ""
-            enabled_by_display = ""
-            if observable["enabled_by"]:
-                enabled_by = observable["enabled_by"]["username"]
-                enabled_by_display = observable["enabled_by"]["display_name"]
+            # every field is read with .get() so that a newer client stays usable against an older
+            # server (and vice versa) instead of dying on a KeyError
+            detection_modified_by = ""
+            detection_modified_by_display = ""
+            if observable.get("detection_modified_by"):
+                detection_modified_by = observable["detection_modified_by"]["username"]
+                detection_modified_by_display = observable["detection_modified_by"]["display_name"]
+
+            expires_on = observable.get("expires_on")
 
             csv_writer.writerow([
-                observable["id"],
-                observable["type"],
-                observable["value"],
-                observable["md5"],
-                observable["fa_hits"],
-                "Yes" if observable["for_detection"] else "No",
-                datetime.datetime.strptime(observable["expires_on"], "%a, %d %b %Y %H:%M:%S %Z").strftime("%Y-%m-%d %H:%M:%S") if observable["expires_on"] else "",
-                enabled_by,
-                enabled_by_display,
-                observable["batch_id"] if observable["batch_id"] else "",
-                observable["detection_context"] if observable["detection_context"] else ""])
+                observable.get("id"),
+                observable.get("observable_id") or "",
+                observable.get("type"),
+                observable.get("value"),
+                observable.get("md5"),
+                observable.get("fa_hits"),
+                "Yes" if observable.get("for_detection") else "No",
+                datetime.datetime.strptime(expires_on, "%a, %d %b %Y %H:%M:%S %Z").strftime("%Y-%m-%d %H:%M:%S") if expires_on else "",
+                detection_modified_by,
+                detection_modified_by_display,
+                observable.get("batch_id") or "",
+                observable.get("detection_context") or ""])
         else:
             pprint.pprint(observable)
 
@@ -1724,8 +1736,8 @@ def _add_observable_query_arguments(parser):
             | <N: Return observables with < N hits.
             | N: Return observables with exactly N hits.
             | NOTE: Remember to escape > and < in your shell!""")
-    parser.add_argument("--enabled-by", help="Comma separated list of user names.")
-    parser.add_argument("--enabled-by-ids", help="Comma separated list of user ids.")
+    parser.add_argument("--detection-modified-by", help="Comma separated list of user names.")
+    parser.add_argument("--detection-modified-by-ids", help="Comma separated list of user ids.")
     parser.add_argument("--batch-ids", help="Comma separated list of batch ids.")
     parser.add_argument("--alert-ids", help="Comma separated list of alert ids.")
     parser.add_argument("--alert-uuids", help="Comma separated list of alert uuids.")
@@ -1787,8 +1799,8 @@ CSV_COLUMN_MD5 = "md5"
 CSV_COLUMN_FA_HITS = "fa_hits"
 CSV_COLUMN_FOR_DETECTION = "for_detection"
 CSV_COLUMN_EXPIRES_ON = "expires_on"
-CSV_COLUMN_ENABLED_BY = "enabled_by"
-CSV_COLUMN_ENABLED_NAME = "enabled_by_display"
+CSV_COLUMN_DETECTION_MODIFIED_BY = "detection_modified_by"
+CSV_COLUMN_DETECTION_MODIFIED_NAME = "detection_modified_by_display"
 CSV_COLUMN_BATCH_ID = "batch_id"
 CSV_COLUMN_CONTEXT = "context"
 CSV_COLUMN_NAMES = set([
@@ -1799,8 +1811,8 @@ CSV_COLUMN_NAMES = set([
     CSV_COLUMN_FA_HITS,
     CSV_COLUMN_FOR_DETECTION,
     CSV_COLUMN_EXPIRES_ON,
-    CSV_COLUMN_ENABLED_BY,
-    CSV_COLUMN_ENABLED_NAME,
+    CSV_COLUMN_DETECTION_MODIFIED_BY,
+    CSV_COLUMN_DETECTION_MODIFIED_NAME,
     CSV_COLUMN_BATCH_ID,
     CSV_COLUMN_CONTEXT,
 ])
@@ -1846,7 +1858,10 @@ def _cli_set_observables_import_csv(args):
                 for_detection = True
             elif args.disable_detection:
                 for_detection = False
-            else:
+            elif CSV_COLUMN_FOR_DETECTION in column_mapping:
+                # Only act on the column when the csv actually has it. This used to compare
+                # unconditionally, so a csv without a for_detection column silently sent
+                # for_detection=False for every row -- which now means "delete the detection".
                 for_detection = _get_csv_value(column_mapping, CSV_COLUMN_FOR_DETECTION, row) == "Yes"
 
             expires_on = None
@@ -1860,8 +1875,6 @@ def _cli_set_observables_import_csv(args):
                     sys.exit(1)
             elif args.clear_expiration:
                 expires_on = False
-            elif args.reset_expiration:
-                expires_on = True
             else:
                 expires_on = _get_csv_value(column_mapping, CSV_COLUMN_EXPIRES_ON, row)
                 if expires_on:
@@ -1922,6 +1935,8 @@ def _cli_set_observables(args):
         for_detection = True
     elif args.disable_detection:
         for_detection = False
+    elif args.create:
+        for_detection = True
 
     expires_on = None
     if args.expires_on:
@@ -1934,8 +1949,6 @@ def _cli_set_observables(args):
             sys.exit(1)
     elif args.clear_expiration:
         expires_on = False
-    elif args.reset_expiration:
-        expires_on = True
 
     batch_id = args.batch_id
     if args.generate_batch_id:
@@ -1962,16 +1975,16 @@ set_observables_parser = _api_command(subparsers.add_parser('set-observables',
     help="""Set ICE observable detection."""))
 _add_observable_query_arguments(set_observables_parser)
 set_observables_parser.add_argument("--create", action="store_true", default=False,
-    help="Create the observables if they do not exist. Otherwise return an error if no observables match the search criteria.")
+    help="""Create active detections for the given observables if they do not already have one.
+    The observable does not need to have ever been seen in an alert. A detection is live as soon as
+    it exists, so this implies --enable-detection.""")
 set_observables_parser.add_argument("--enable-detection", action="store_true", default=False,
     help="Enable detection.")
 set_observables_parser.add_argument("--disable-detection", action="store_true", default=False,
-    help="Disable detection.")
-set_observables_parser.add_argument("--expires-on", help="Set observable expiration in %%Y-%%m-%%d %%H:%%M:%%S format.")
+    help="Disable detection. A detection is a row, so this deletes it.")
+set_observables_parser.add_argument("--expires-on", help="Set the detection expiration in %%Y-%%m-%%d %%H:%%M:%%S format.")
 set_observables_parser.add_argument("--clear-expiration", action="store_true", default=False,
-    help="Clear expiration of observable.")
-set_observables_parser.add_argument("--reset-expiration", action="store_true", default=False,
-    help="Reset expiration of observable according to type.")
+    help="Clear the expiration of the detection so that it never expires.")
 set_observables_parser.add_argument("--context", 
     help="Free form string to add context to the observable.")
 set_observables_parser.add_argument("--batch-id", 
@@ -1982,7 +1995,10 @@ set_observables_parser.add_argument("--import-csv",
     help="""Import and apply the given csv file.
     The CSV file must have a header row and must have either a column named id or columns named type and value.
     The CSV file can also contain the following columns: for_detection, expires_on, batch_id, context.
-    Any other columns are ignored.""")
+    Any other columns are ignored.
+    This only updates detections that already exist. Creating a detection for a value that has none
+    requires --enable-detection or a for_detection column set to Yes; other such rows are reported
+    as errors and skipped.""")
 set_observables_parser.set_defaults(func=_cli_set_observables)
 
 def iter_archived_email(message_id: str, *args, **kwargs):

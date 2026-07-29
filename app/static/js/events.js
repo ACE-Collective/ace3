@@ -68,48 +68,6 @@ function export_events_to_csv() {
     })();
 }
 
-function get_all_checked_observables() {
-    // returns the list of all checked observable IDs
-    var result = Array();
-    $("input[name^='observable_']").each(function(index) {
-        var $this = $(this);
-        if ($this.is(":checked")){
-            result.push($this.prop("name").replace(/^observable_/, ""));
-        }
-    });
-
-    return result;
-}
-
-function get_all_unchecked_observables() {
-    // returns the list of all unchecked observable IDs
-    var result = Array();
-    $("input[name^='observable_']").each(function(index) {
-        var $this = $(this);
-        if (!$this.is(":checked")){
-            result.push($this.prop("name").replace(/^observable_/, ""));
-        }
-    });
-
-    return result;
-}
-
-function toggle_all_low_faqueue_hit_observables(low_hits) {
-    $("td[id^='faqueue_hits_']").each(function(index) {
-        var $this = $(this);
-        if (parseInt($this.text()) < parseInt(low_hits)){
-
-            // Strip off the observable ID number
-            var id = $this.prop("id").replace(/^faqueue_hits_/, "")
-
-            // Toggle the checkbox
-            var corresponding_checkbox = $("#observable_"+id);
-            var current_checkbox_state = corresponding_checkbox.prop("checked");
-            corresponding_checkbox.prop("checked", !current_checkbox_state);
-        }
-    });
-}
-
 function toggle_max_hit_observables_visible() {
     let max_hit_observables = $( ".max-hit-observable" );
     let toggle_max_hits_text = $( "#toggle_max_hit_observables_visible" );
@@ -124,30 +82,10 @@ function toggle_max_hit_observables_visible() {
 
 }
 
-function set_observable_detection_status() {
-    var checked = get_all_checked_observables();
-    var unchecked = get_all_unchecked_observables();
-
-    var data_obj = {enabled: checked, disabled: unchecked};
-
-    (function() {
-        fetch('set_observables_detection_status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data_obj),
-            credentials: 'same-origin'
-        })
-        .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
 function close_event() {
     if (! confirm("Are you sure you want to close this event?")) {
         return;
     }
-
-    set_observable_detection_status();
 
     (function() {
         fetch('close_event', { method: 'POST', credentials: 'same-origin' })

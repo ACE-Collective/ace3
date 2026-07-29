@@ -153,6 +153,21 @@ def create_app(testing: Optional[bool]=False):
     def inject():
         return { "ACE_VERSION": os.environ.get("ACE_VERSION", "") }
 
+    @flask_app.context_processor
+    def inject_permission_helpers():
+        # Expose a template-callable permission check for gating nav links and admin tiles.
+        # Uses the same synchronous enforcement path as the @require_permission decorator so nav
+        # rendering does not pay a background-loop round-trip.
+        from flask_login import current_user
+        from saq.permissions.logic import user_has_permission
+
+        def has_permission(major: str, minor: str) -> bool:
+            if not current_user.is_authenticated:
+                return False
+            return user_has_permission(current_user.id, major, minor)
+
+        return {"has_permission": has_permission}
+
     flask_app.jinja_env.filters['btoa'] = btoa
     flask_app.jinja_env.filters['b64decode'] = b64decode_wrapper
     flask_app.jinja_env.filters['b64encode'] = base64.b64encode

@@ -1,4 +1,7 @@
+import sys
+
 from saq.permissions.constants import ALLOW, DENY, WILDCARD
+from saq.permissions.catalog import is_grantable
 from saq.permissions.user import get_user_permissions
 from saq.database.pool import get_db
 from saq.cli.cli_main import get_cli_subparsers
@@ -23,6 +26,16 @@ def parse_permission(permission: str) -> tuple[str, str]:
         raise ValueError(f"invalid permission format: {permission} (expected 'major:minor')")
 
     return major, minor
+
+
+def warn_if_not_grantable(major: str, minor: str) -> None:
+    """Print a warning (but do not block) when a permission is neither in the catalog nor a wildcard."""
+    if not is_grantable(major, minor):
+        print(
+            f"warning: '{major}:{minor}' is not in the permission catalog and is not a wildcard; "
+            f"granting it anyway (run 'ace perm catalog list' to see known permissions)",
+            file=sys.stderr,
+        )
 
 permissions_parser = get_cli_subparsers().add_parser("perm", help="Manage user/group permissions.")
 permissions_sp = permissions_parser.add_subparsers(dest="permissions_cmd")
@@ -76,6 +89,7 @@ def cli_add_user_permission(args) -> int:
         return 1
 
     major, minor = parse_permission(args.permission)
+    warn_if_not_grantable(major, minor)
     add_user_permission(user.id, major, minor, DENY if args.deny else ALLOW)
     return 0
 
@@ -194,6 +208,7 @@ def cli_add_group_permission(args) -> int:
         return 1
 
     major, minor = parse_permission(args.permission)
+    warn_if_not_grantable(major, minor)
     add_group_permission(group.id, major, minor, DENY if args.deny else ALLOW)
     return 0
 
@@ -351,3 +366,43 @@ test_user_permission_parser = user_permissions_sp.add_parser("test", help="Test 
 test_user_permission_parser.add_argument("name", help="The name of the user.")
 test_user_permission_parser.add_argument("permission", help="The permission to test in the format 'major:minor'.")
 test_user_permission_parser.set_defaults(func=cli_test_user_permission)
+
+
+# Permission catalog CLI
+catalog_parser = permissions_sp.add_parser("catalog", help="Manage the authoritative permission catalog.")
+catalog_sp = catalog_parser.add_subparsers(dest="catalog_cmd")
+
+
+def cli_sync_permission_catalog(args) -> int:
+    from saq.permissions.catalog import sync_permission_catalog
+
+    session = get_db()
+    inserted, updated, pruned = sync_permission_catalog(session, prune=not args.no_prune)
+    session.commit()
+    print(f"permission catalog synced: {inserted} inserted, {updated} updated, {pruned} pruned")
+    return 0
+
+
+sync_catalog_parser = catalog_sp.add_parser("sync", help="Reconcile the auth_permission_catalog table with the code-defined catalog.")
+sync_catalog_parser.add_argument("--no-prune", action="store_true", help="Do not delete catalog rows that are no longer defined in code.")
+sync_catalog_parser.set_defaults(func=cli_sync_permission_catalog)
+
+
+def cli_list_permission_catalog(args) -> int:
+    from tabulate import tabulate
+    from saq.database.model import AuthPermissionCatalog
+
+    rows = get_db().query(AuthPermissionCatalog).order_by(
+        AuthPermissionCatalog.major, AuthPermissionCatalog.minor
+    ).all()
+    if not rows:
+        print("Permission catalog is empty (run 'ace perm catalog sync')")
+        return 0
+
+    table = [[r.major, r.minor, r.description] for r in rows]
+    print(tabulate(table, headers=["Major", "Minor", "Description"], tablefmt="github"))
+    return 0
+
+
+list_catalog_parser = catalog_sp.add_parser("list", help="List the permissions currently in the catalog table.")
+list_catalog_parser.set_defaults(func=cli_list_permission_catalog)

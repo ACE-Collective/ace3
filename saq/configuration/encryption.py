@@ -1,5 +1,8 @@
 import base64
 import logging
+import os
+
+import yaml
 
 from saq.configuration.error import EncryptedPasswordError
 from saq.environment import get_global_runtime_settings
@@ -32,6 +35,84 @@ def import_encrypted_passwords(export):
     for key, value in export.items():
         logging.info(f"importing password for {key}")
         encrypt_password(key, value)
+
+def list_encrypted_password_keys():
+    """Returns a sorted list of the stored encrypted-password key names.
+
+    Unlike export_encrypted_passwords(), this never decrypts anything -- it is safe to call from a
+    write-only management surface that must not surface plaintext secret values.
+    """
+    from saq.database import get_db_connection
+    from saq.configuration.config import get_config
+    with get_db_connection(name=get_config().global_settings.encrypted_passwords_db) as db:
+        c = db.cursor()
+        c.execute("SELECT `key` FROM `encrypted_passwords` ORDER BY `key`")
+        return [row[0] for row in c]
+
+def _collect_encrypted_references(value, references):
+    """Recursively add every ``encrypted:<name>`` marker in *value* to the *references* set."""
+    # keep the literal in sync with yaml_parser.ENCRYPTED_PREFIX (importing it would create an
+    # encryption -> yaml_parser -> encryption import cycle)
+    encrypted_prefix = "encrypted:"
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_encrypted_references(item, references)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_encrypted_references(item, references)
+    elif isinstance(value, str) and value.startswith(encrypted_prefix):
+        references.add(value[len(encrypted_prefix):])
+
+def find_encrypted_config_references():
+    """Returns the set of secret names *declared* as ``encrypted:<name>`` in any loaded config file.
+
+    A name is "referenced" if *any* config file this node loaded declares ``encrypted:<name>``. We
+    scan each loaded file's raw YAML **independently** and union the results, rather than merging or
+    walking the live config, and that distinction matters:
+
+    - The live config (``get_config().raw._data``) can't be used here: ``resolve_all_values`` resolves
+      every ``encrypted:`` marker away in place at startup, so set secrets and, in some load orders,
+      unset ones leave no marker behind. (See find_effective_encrypted_config_references, which uses
+      exactly that property to detect plaintext overrides.)
+    - Re-merging the loaded files into one parser is order-dependent -- ``loaded_files`` is a set, and
+      a later-merged file (e.g. a dev override that pins an integration's key to a literal value)
+      silently replaces an earlier ``encrypted:`` marker, so the result flips with iteration order.
+
+    Scanning per file avoids both: it is deterministic and surfaces every secret name the config asks
+    for, which is exactly what the management UI needs. ``loaded_files`` is the exact set this process
+    loaded -- default, integration configs, command-line files, and ``config:`` includes alike.
+    """
+    from saq.configuration.config import get_config
+    references = set()
+    for path in get_config().raw.loaded_files:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                # raw YAML only: no merge, no encrypted:/env:/file: resolution, so markers survive
+                _collect_encrypted_references(yaml.load(f, Loader=yaml.SafeLoader), references)
+        except Exception as e:
+            logging.warning(f"unable to scan config file {path} for encrypted references: {e}")
+
+    return references
+
+def find_effective_encrypted_config_references():
+    """Returns the secret names whose ``encrypted:<name>`` marker survives in the *effective* config.
+
+    Walks the live merged config (``get_config().raw._data``), which reflects the real load order and
+    has had ``resolve_all_values`` applied. A marker survives there only when the effective value at
+    that key is still ``encrypted:<name>`` -- i.e. no later-loaded file overrode it with a literal,
+    and the secret was not resolved to a stored value.
+
+    Compared against find_encrypted_config_references(), this is how a plaintext override is detected:
+    a name that is *declared* but does not appear here, and is not set in the store, has had its
+    marker masked by a later-loaded plaintext value (an unset secret's marker otherwise survives
+    resolution untouched, since decryption of a missing secret is a no-op).
+    """
+    from saq.configuration.config import get_config
+    references = set()
+    _collect_encrypted_references(get_config().raw._data, references)
+    return references
 
 def encrypt_password(key, value):
     """Stores sensitive data as an encrypted value."""

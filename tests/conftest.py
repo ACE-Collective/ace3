@@ -111,6 +111,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM workload")
         cursor.execute("DELETE FROM observables")
         cursor.execute("DELETE FROM observable_mapping")
+        cursor.execute("DELETE FROM observable_detections")
         cursor.execute("DELETE FROM tags")
         cursor.execute("INSERT INTO tags ( `id`, `name` ) VALUES ( 1, 'whitelisted' )")
         cursor.execute("DELETE FROM events")

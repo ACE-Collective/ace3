@@ -24,6 +24,7 @@ import splunklib.client as client
 from splunklib.results import JSONResultsReader, Message
 
 from saq.configuration.config import get_proxy_config, get_splunk_config
+from saq.configuration.secret_ref import resolve_secret
 from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
@@ -772,9 +773,9 @@ def SplunkClient(name: str = "default", **kwargs) -> SplunkQueryObject:
 
     if splunk_config.username is not None:
         kwargs["username"] = splunk_config.username
-        kwargs["password"] = splunk_config.password
+        kwargs["password"] = resolve_secret(splunk_config.password)
     else:
-        kwargs["token"] = splunk_config.token
+        kwargs["token"] = resolve_secret(splunk_config.token)
 
     if splunk_config.user_context is not None:
         kwargs["user_context"] = splunk_config.user_context

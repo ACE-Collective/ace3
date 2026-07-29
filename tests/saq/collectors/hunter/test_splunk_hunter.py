@@ -5,6 +5,8 @@ from queue import Queue
 import shutil
 import pytest
 
+from tests.saq.helpers import create_submission_file_manager
+
 from saq.analysis.root import RootAnalysis
 from saq.collectors.hunter import HuntManager, HunterCollector
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
@@ -37,9 +39,9 @@ class TestSplunkHunter(HunterCollector):
         pass
 
 @pytest.fixture
-def manager_kwargs(rules_dir):
+def manager_kwargs(rules_dir, tmpdir):
     return {
-        'submission_queue': Queue(),
+        'file_manager': create_submission_file_manager(tmpdir),
         'hunt_type': 'splunk',
         'rule_dirs': [ rules_dir, ],
         'hunt_cls': SplunkHunt,
@@ -50,9 +52,9 @@ def manager_kwargs(rules_dir):
     }
 
 @pytest.fixture
-def manager_kwargs_alt(rules_dir):
+def manager_kwargs_alt(rules_dir, tmpdir):
     return {
-        'submission_queue': Queue(),
+        'file_manager': create_submission_file_manager(tmpdir),
         'hunt_type': 'splunk_alt',
         'rule_dirs': [ rules_dir, ],
         'hunt_cls': SplunkHunt,
