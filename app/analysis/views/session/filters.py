@@ -1,3 +1,4 @@
+import copy
 from datetime import timedelta
 import logging
 import os
@@ -34,23 +35,53 @@ def _reset_filters_special(hours: int):
     ]
     session["search"] = None
 
+# cache for get_quick_filters(): the parsed quick-filter list, the mtime of the
+# file it was parsed from, and the path it was loaded from. The file is only
+# re-read when its mtime changes (or the configured path changes), mirroring
+# ACE's store-mtime/compare-on-next-access reload idiom (see saq/whitelist.py).
+_quick_filters_cache: list = []
+_quick_filters_mtime: float | None = None
+_quick_filters_path: str | None = None
+
 def get_quick_filters() -> list:
     """Loads GUI quick-filter badge definitions (see etc/gui_quick_filters.yaml
     for the schema). Deployments point gui.quick_filters_config_path at a
     site-specific file to add/edit quick filters without an ACE code change.
-    Re-read on every call so those edits take effect immediately, with no
-    GUI restart."""
+    The file is reloaded whenever its mtime changes, so those edits take effect
+    on the next page load with no GUI restart -- but we avoid re-parsing the
+    YAML on every call when the file is unchanged."""
+    global _quick_filters_cache, _quick_filters_mtime, _quick_filters_path
+
     path = os.path.join(get_base_dir(), get_config().gui.quick_filters_config_path)
     try:
-        with open(path, 'r') as fp:
-            data = yaml.safe_load(fp) or {}
-    except FileNotFoundError:
-        return []
-    except Exception as e:
-        logging.warning(f"failed to load quick filters config {path}: {e}")
+        mtime = os.path.getmtime(path)
+    except OSError:
+        # missing or unreadable file -- preserve the "return []" behavior and
+        # drop any previously cached values so we re-check on the next call.
+        _quick_filters_cache = []
+        _quick_filters_mtime = None
+        _quick_filters_path = path
         return []
 
-    return data.get('quick_filters', []) or []
+    # cache hit: same file, same mtime -- return a copy without touching disk.
+    if not (path == _quick_filters_path and mtime == _quick_filters_mtime):
+        try:
+            with open(path, 'r') as fp:
+                data = yaml.safe_load(fp) or {}
+        except Exception as e:
+            logging.warning(f"failed to load quick filters config {path}: {e}")
+            # leave the previously cached good copy in place on a transient
+            # parse error rather than poisoning it.
+            return copy.deepcopy(_quick_filters_cache)
+
+        _quick_filters_cache = data.get('quick_filters', []) or []
+        _quick_filters_mtime = mtime
+        _quick_filters_path = path
+
+    # return a deep copy so callers (e.g. manage.py, which writes a per-user
+    # 'indicator_count' into each dict) can mutate their result without
+    # corrupting the shared cache across concurrent requests.
+    return copy.deepcopy(_quick_filters_cache)
 
 def _resolve_quick_filter_values(values: list) -> list:
     return [current_user.queue if value == "$USER_QUEUE" else value for value in values]
