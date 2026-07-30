@@ -359,6 +359,20 @@ The cached arguments are the *interpolated* ones — for a `query` command, the 
 
 For example, `cache: 1d` will cache results for 1 day.
 
+#### Choosing the timespec
+
+Make sure that you pick the timespec based on how fast the underlying data
+changes, not by just copying the neighbouring step.
+
+A couple of key points to consider when deciding what value to use for the timespec:
+
+- **A TTL shorter than the hunt's `frequency` never survives to the next run.** For example, if a hunt has
+  `frequency: 00:10:00` and the timespec for a command is `cache: 3m`, the items
+  in the cache will expire before the hunt runs again, making the cache useless.
+- **This cache is not shared with analysis.** If an ACE analysis module performs
+  the same action, it may end up with a different result. ACE analysis modules
+  use a separate caching system.
+
 ### Timespecs
 
 A timespec specifies some amount of time and uses an abbreviated format of `count[s|m|h|d|w|y]` defined as follows:
