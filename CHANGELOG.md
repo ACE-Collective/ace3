@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.86] - 2026-07-30
+
+- [Adds email thread analysis module](https://github.com/ACE-Collective/ace3/pull/421)
+- [Tag root analysis of alerts with hunt error or timeout](https://github.com/ACE-Collective/ace3/pull/420)
+- [Formalize the Quick Filter Functionality](https://github.com/ACE-Collective/ace3/pull/417)
+- [disposition error tracking](https://github.com/ACE-Collective/ace3/pull/416)
+
 ## [3.0.85] - 2026-07-29
 
 - [submission pipeline reliability improvements](https://github.com/ACE-Collective/ace3/pull/424)
