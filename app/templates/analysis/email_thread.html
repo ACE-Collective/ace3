@@ -1,0 +1,254 @@
+{# Email conversation timeline.
+
+   Rendered on the analysis drill-down page for EmailThreadAnalysis. The decisive findings are also
+   published as a summary detail so they appear inline in the alert tree without a click; this page
+   carries the full message-by-message detail.
+
+   load_details() is required: the drill-down view does not load analysis details, so every
+   details-backed property reads an empty dict until this runs. #}
+{% set _ = analysis.load_details() %}
+
+<b>Conversation</b>
+<table class="table table-bordered table-condensed">
+    <tr>
+        <td class="col-md-2">Subject</td>
+        <td class="col-md-10">{{ analysis.normalized_subject or '(none recorded)' }}</td>
+    </tr>
+    <tr>
+        <td class="col-md-2">Messages</td>
+        <td class="col-md-10">
+            {{ analysis.messages | length }}
+            {% if analysis.truncated %}
+                <span class="badge text-bg-warning">truncated</span>
+            {% endif %}
+        </td>
+    </tr>
+    {# How the conversation was assembled decides how much to trust it as a conversation at all.
+       Stated from the recorded threading method rather than inferred from the thread count. #}
+    <tr>
+        <td class="col-md-2">Assembled by</td>
+        <td class="col-md-10">
+            {% if analysis.thread_method == 'headers' %}
+                <span class="badge text-bg-success">In-Reply-To / References</span>
+                <span class="text-muted">
+                    the messages reference each other, so this is a real reply chain
+                </span>
+            {% elif analysis.thread_count > 1 %}
+                <span class="badge text-bg-warning">subject + shared domain</span>
+                <span class="text-muted">
+                    these messages carry no In-Reply-To/References, so
+                    {{ analysis.thread_count }} separate threads were joined on an identical subject
+                    plus a shared participant domain{% if analysis.link_domains %}
+                    (<tt>{{ analysis.link_domains | join('</tt>, <tt>') | safe }}</tt>){% endif %}.
+                    A generic subject and one ubiquitous domain can link genuinely unrelated mail
+                    &mdash; check the senders below before reading this as one conversation.
+                </span>
+                {% if analysis.thread_message_counts %}
+                <br>
+                <small class="text-muted">
+                    Messages per joined thread:
+                    {{ analysis.thread_message_counts | join(', ') }}
+                    {%- if analysis.thread_message_counts | max == 1 %}
+                        &mdash; every thread contributed exactly one message, which is what a subject
+                        collision looks like rather than a conversation
+                    {%- endif %}
+                </small>
+                {% endif %}
+            {% else %}
+                <span class="badge text-bg-secondary">single thread</span>
+                <span class="text-muted">
+                    no In-Reply-To/References, and no same-subject thread shared a participant domain
+                </span>
+            {% endif %}
+        </td>
+    </tr>
+</table>
+
+{% if analysis.lookalikes %}
+<b>Look-a-like domains in this conversation</b>
+{% for entry in analysis.lookalikes %}
+<table class="table table-bordered table-condensed">
+    <tr>
+        <td class="col-md-2">Domain</td>
+        <td class="col-md-10">
+            <tt>{{ entry.domain }}</tt> looks like <tt>{{ entry.counterpart }}</tt>
+            <small class="text-muted">
+                (Damerau-Levenshtein {{ entry.damerau_levenshtein }},
+                Jaro-Winkler {{ '%.4f' | format(entry.jaro_winkler) }}{% if entry.skeleton_equal %},
+                visually confusable{% endif %})
+            </small>
+        </td>
+    </tr>
+    <tr>
+        <td class="col-md-2">Sent mail?</td>
+        <td class="col-md-10">
+            {% if entry.ever_sent %}
+                <span class="badge text-bg-danger">Yes</span>
+                mail originated from this domain ({{ entry.roles | join(', ') }}) in this conversation
+            {% elif entry.ever_reply_to %}
+                <span class="badge text-bg-warning">Reply-To only</span>
+                no mail originated from this domain, but replies were directed to it
+                ({{ entry.roles | join(', ') }})
+            {% else %}
+                <span class="badge text-bg-success">No</span>
+                only ever a recipient ({{ entry.roles | join(', ') }}) &mdash; no mail was received from
+                this domain in this conversation
+            {% endif %}
+        </td>
+    </tr>
+    {% if entry.shared_reply_to %}
+    <tr>
+        <td class="col-md-2">Replies go to</td>
+        <td class="col-md-10">
+            {% for address in entry.shared_reply_to %}<tt>{{ address }}</tt>{% if not loop.last %}, {% endif %}{% endfor %}
+            <span class="badge text-bg-success">both sides</span>
+            <br>
+            <span class="text-muted">
+                Messages from <em>both</em> domains direct replies here. Two look-a-like domains
+                sharing one reply address are usually one operator (a bulk sender using several
+                sending domains), not an impersonation &mdash; confirm before escalating.
+            </span>
+        </td>
+    </tr>
+    {% elif entry.reply_to_addresses %}
+    <tr>
+        <td class="col-md-2">Replies go to</td>
+        <td class="col-md-10">
+            {% for address in entry.reply_to_addresses %}<tt>{{ address }}</tt>{% if not loop.last %}, {% endif %}{% endfor %}
+            <span class="badge text-bg-warning">one side only</span>
+            <br>
+            <span class="text-muted">
+                Only one side of this pair points here, so this is <em>not</em> the shared-operator
+                pattern. Replies to this conversation leave for the look-a-like domain &mdash; check
+                which message introduced it and whether anyone answered.
+            </span>
+        </td>
+    </tr>
+    {% endif %}
+    <tr>
+        <td class="col-md-2">Presence</td>
+        <td class="col-md-10">
+            on {{ entry.message_count }} of {{ entry.total_messages }} messages
+            {% if entry.introduced_on %}
+                &mdash; introduced {{ entry.introduced_on }}
+                {% if entry.introduced_by_address %}by <tt>{{ entry.introduced_by_address }}</tt>{% endif %}
+            {% endif %}
+            {% if not entry.present_in_anchor_message %}
+                <br>
+                <span class="text-muted">
+                    Not present in the message this alert fired on &mdash; it comes from earlier
+                    messages in the conversation.
+                </span>
+            {% endif %}
+        </td>
+    </tr>
+    <tr>
+        <td class="col-md-2">Addresses</td>
+        <td class="col-md-10">
+            {% for address in entry.addresses %}<tt>{{ address }}</tt>{% if not loop.last %}, {% endif %}{% endfor %}
+        </td>
+    </tr>
+    {% if entry.impersonations %}
+    <tr>
+        <td class="col-md-2">Impersonates</td>
+        <td class="col-md-10">
+            {% for item in entry.impersonations %}
+            <div>
+                <tt>{{ item.address }}</tt> &rarr; <tt>{{ item.impersonates }}</tt>
+                {% if item.exact_local_part %}
+                    <span class="badge text-bg-danger">identical local part</span>
+                {% else %}
+                    <span class="badge text-bg-warning">similar local part</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </td>
+    </tr>
+    {% endif %}
+</table>
+{% endfor %}
+{% endif %}
+
+<b>Timeline</b>
+<table class="table table-bordered table-condensed">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Date</th>
+            <th>Direction</th>
+            <th>From</th>
+            <th>Recipients</th>
+            <th>Look-a-like</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for message in analysis.messages %}
+        <tr{% if message.is_anchor %} class="table-active"{% endif %}>
+            <td>{{ message.index }}{% if message.is_anchor %} &larr;{% endif %}</td>
+            <td>
+                {{ message.date or '' }}
+                {% if message.date_is_estimated %}
+                    <small class="text-muted" title="No Date header was recorded; showing when ACE processed the message">(processed)</small>
+                {% endif %}
+            </td>
+            <td>{{ message.direction }}</td>
+            <td>
+                {% if message.from_is_lookalike %}
+                    <tt><mark>{{ message.from_address or '' }}</mark></tt>
+                {% else %}
+                    <tt>{{ message.from_address or '' }}</tt>
+                {% endif %}
+                {% for sender in message.other_senders %}
+                    <br>
+                    <small class="text-muted">{{ sender.role | replace('_', '-') }}:</small>
+                    {% if sender.is_lookalike %}
+                        <tt><mark>{{ sender.address }}</mark></tt>
+                    {% else %}
+                        <tt>{{ sender.address }}</tt>
+                    {% endif %}
+                {% endfor %}
+            </td>
+            <td>
+                {% for recipient in message.recipients %}
+                    {% if recipient.is_lookalike %}
+                        <tt><mark>{{ recipient.address }}</mark></tt>
+                    {% else %}
+                        <tt>{{ recipient.address }}</tt>
+                    {% endif %}{% if not loop.last %}, {% endif %}
+                {% endfor %}
+                {% if message.recipients_omitted %}
+                    <small class="text-muted">+{{ message.recipients_omitted }} more</small>
+                {% endif %}
+            </td>
+            <td>
+                {% for domain in message.lookalike_domains_present %}
+                    <span class="badge text-bg-warning"><tt>{{ domain }}</tt></span>
+                {% endfor %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if analysis.truncated %}
+<p class="text-muted">
+    <small>
+        This conversation is larger than the configured limit, so the timeline above is only partly
+        shown &mdash; the oldest messages were kept, so any look-a-like domain's entry point stays
+        visible, along with the message this alert fired on.
+        The findings above are <em>not</em> limited to the messages listed here: roles, addresses and
+        the "sent mail?" verdict are computed across the whole conversation, so they do not change
+        depending on where the cap fell. Only the per-message counts and "introduced by" refer to the
+        visible timeline.
+    </small>
+</p>
+{% endif %}
+
+{% if analysis.unattributed_participants %}
+<p class="text-muted">
+    <small>
+        Recorded before per-message participant tracking, so not attributable to a specific message:
+        {% for address in analysis.unattributed_participants %}<tt>{{ address }}</tt>{% if not loop.last %}, {% endif %}{% endfor %}
+    </small>
+</p>
+{% endif %}

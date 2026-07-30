@@ -1,9 +1,12 @@
+from datetime import datetime, timedelta
+
 import pytest
 
 from saq.modules.email.conversation import (
     Participant,
     ThreadContext,
     derive_thread_id,
+    get_conversation,
     get_established_domains,
     get_thread_message_count,
     normalize_subject,
@@ -22,7 +25,7 @@ def _context(thread_id, method, message_id, normalized_subject, participants, **
         in_reply_to=kwargs.get("in_reply_to"),
         references=kwargs.get("references"),
         normalized_subject=normalized_subject,
-        message_date=None,
+        message_date=kwargs.get("message_date"),
         from_address=from_participant.address if from_participant else None,
         from_domain=from_participant.domain if from_participant else None,
         direction=0,
@@ -140,3 +143,222 @@ def test_subject_fallback_requires_shared_domain():
         "<other@unrelated.org>", "self", "<other@unrelated.org>", "wire transfer",
         [Participant("bob@unrelated.org", "unrelated.org", "from")])
     assert get_established_domains(unrelated) == []
+
+
+@pytest.mark.integration
+def test_established_domains_collapse_per_message_rows():
+    # a participant present on several messages of one thread is recorded once per message, but the
+    # established-domain set that look-a-like scoring compares against must hold one entry per
+    # (domain, address, role) - otherwise every reference is scored once per message it appeared on
+    for index in (1, 2, 3):
+        record_thread(_context(
+            "<collapse@example.com>", "references", f"<collapse-{index}@example.com>", "status report",
+            [Participant("ceo@example.com", "example.com", "from"),
+             Participant("cfo@company.com", "company.com", "to")],
+            references="<collapse@example.com>"))
+
+    reply = _context(
+        "<collapse@example.com>", "references", "<collapse-reply@examp1e.com>", "status report",
+        [Participant("ceo@examp1e.com", "examp1e.com", "from")],
+        references="<collapse@example.com>")
+
+    established = get_established_domains(reply)
+    assert sorted((d.domain, d.address, d.role) for d in established) == [
+        ("company.com", "cfo@company.com", "to"),
+        ("example.com", "ceo@example.com", "from"),
+    ]
+
+
+def _record_conversation():
+    """Record a three-message conversation with no threading headers (each message threads to itself).
+
+    a look-a-like of example.com is cc'd on the second message only, and is never a sender.
+    """
+    record_thread(_context(
+        "<c1@example.com>", "self", "<c1@example.com>", "quarterly review",
+        [Participant("jane.doe@example.com", "example.com", "from"),
+         Participant("bob@company.com", "company.com", "to")],
+        message_date=datetime(2026, 3, 1, 9, 0, 0)))
+
+    record_thread(_context(
+        "<c2@company.com>", "self", "<c2@company.com>", "quarterly review",
+        [Participant("bob@company.com", "company.com", "from"),
+         Participant("jane.doe@example.com", "example.com", "to"),
+         Participant("jane.doe@exarnple.com", "exarnple.com", "cc")],
+        message_date=datetime(2026, 3, 2, 9, 0, 0)))
+
+    record_thread(_context(
+        "<c3@example.com>", "self", "<c3@example.com>", "quarterly review",
+        [Participant("jane.doe@example.com", "example.com", "from"),
+         Participant("bob@company.com", "company.com", "to")],
+        message_date=datetime(2026, 3, 3, 9, 0, 0)))
+
+
+@pytest.mark.integration
+def test_get_conversation_spans_subject_linked_threads():
+    _record_conversation()
+
+    # every message threads to ITSELF (no In-Reply-To/References), so the three live under three
+    # different thread ids. the conversation is only recoverable through normalized subject plus a
+    # shared participant domain - the same rule get_established_domains uses.
+    conversation = get_conversation("<c3@example.com>")
+    assert conversation is not None
+    assert conversation.thread_count == 3
+    assert [m.message_id for m in conversation.messages] == [
+        "<c1@example.com>", "<c2@company.com>", "<c3@example.com>"]
+    assert conversation.truncated is False
+
+
+@pytest.mark.integration
+def test_get_conversation_participants_are_per_message():
+    _record_conversation()
+
+    conversation = get_conversation("<c3@example.com>")
+    by_message = {m.message_id: {p.address for p in conversation.participants(m)}
+                  for m in conversation.messages}
+
+    # the look-a-like was only ever on the second message
+    assert "jane.doe@exarnple.com" not in by_message["<c1@example.com>"]
+    assert "jane.doe@exarnple.com" in by_message["<c2@company.com>"]
+    assert "jane.doe@exarnple.com" not in by_message["<c3@example.com>"]
+
+    assert conversation.messages_containing_domain("exarnple.com") == [conversation.messages[1]]
+    # only ever cc'd - it never sent mail into this conversation
+    assert conversation.roles_for_domain("exarnple.com") == {"cc"}
+    assert conversation.roles_for_domain("example.com") == {"from", "to"}
+
+
+@pytest.mark.integration
+def test_get_conversation_unknown_message():
+    assert get_conversation("<never-recorded@example.com>") is None
+    assert get_conversation("") is None
+
+
+@pytest.mark.integration
+def test_get_conversation_truncates_but_keeps_the_anchor():
+    _record_conversation()
+
+    # the cap keeps the OLDEST messages so a look-a-like's entry point stays visible, but the
+    # message the analyst is actually looking at must survive regardless
+    conversation = get_conversation("<c3@example.com>", max_messages=1)
+    assert conversation.truncated is True
+    message_ids = [m.message_id for m in conversation.messages]
+    assert "<c1@example.com>" in message_ids
+    assert "<c3@example.com>" in message_ids
+
+
+@pytest.mark.integration
+def test_get_conversation_reports_how_it_was_assembled():
+    _record_conversation()
+
+    conversation = get_conversation("<c3@example.com>")
+    # nothing carried threading headers, so this is the subject + shared-domain path
+    assert conversation.thread_method == "self"
+    assert conversation.thread_count == 3
+    # company.com and example.com both span the threads and are what justified joining them
+    assert "company.com" in conversation.link_domains
+    # one message per joined thread - the shape a subject collision produces
+    assert conversation.thread_message_counts == [1, 1, 1]
+
+
+@pytest.mark.integration
+def test_get_conversation_does_not_subject_merge_a_header_threaded_message():
+    """A message grouped by References must not have same-subject threads merged on top of it.
+
+    get_established_domains scores such a message against its thread ONLY, so merging here would
+    show the analyst a wider conversation than the look-a-like comparison was actually made against.
+    """
+    # a real reply chain: root plus two replies, all sharing one thread_id
+    record_thread(_context("<hdr-root@example.com>", "self", "<hdr-root@example.com>", "budget review",
+                           [Participant("ceo@example.com", "example.com", "from"),
+                            Participant("cfo@company.com", "company.com", "to")],
+                           message_date=datetime(2026, 4, 1, 9, 0, 0)))
+    for index in (1, 2):
+        record_thread(_context(
+            "<hdr-root@example.com>", "references", f"<hdr-{index}@company.com>", "budget review",
+            [Participant("cfo@company.com", "company.com", "from"),
+             Participant("ceo@example.com", "example.com", "to")],
+            references="<hdr-root@example.com>",
+            message_date=datetime(2026, 4, 1 + index, 9, 0, 0)))
+
+    # an unrelated self-threaded message with the SAME subject and an overlapping domain, which the
+    # subject fallback would happily absorb
+    record_thread(_context("<unrelated@company.com>", "self", "<unrelated@company.com>", "budget review",
+                           [Participant("intern@company.com", "company.com", "from"),
+                            Participant("ceo@example.com", "example.com", "to")],
+                           message_date=datetime(2026, 4, 9, 9, 0, 0)))
+
+    conversation = get_conversation("<hdr-2@company.com>")
+    assert conversation.thread_method == "headers"
+    assert conversation.thread_count == 1
+    assert conversation.link_domains == []
+    assert "<unrelated@company.com>" not in [m.message_id for m in conversation.messages]
+    assert len(conversation.messages) == 3
+
+
+@pytest.mark.integration
+def test_display_cap_does_not_change_the_ever_sent_verdict():
+    """The cap bounds what is rendered; it must not bound the "did it ever send?" answer.
+
+    Built from the case that exposed the bug: 60 self-threaded messages where a look-a-like sends
+    exactly once, late. When the thread cap dropped that one message, roles_for_domain lost 'from'
+    and the module reported "never sent mail into this conversation" about a domain that did -
+    the malicious shape rendering as the benign one, stated as fact.
+    """
+    lookalike = "exarnple.com"
+    for index in range(60):
+        if index == 55:
+            sender, domain = f"ops@{lookalike}", lookalike       # the single malicious send
+        elif index % 2 == 0:
+            sender, domain = "ops@example.com", "example.com"
+        else:
+            sender, domain = "ops@company.com", "company.com"
+
+        record_thread(_context(
+            f"<cap-{index:03d}@{domain}>", "self", f"<cap-{index:03d}@{domain}>", "status update",
+            [Participant(sender, domain, "from"),
+             Participant(sender, domain, "return_path"),
+             Participant("ops@company.com", "company.com", "to")],
+            message_date=datetime(2026, 1, 1, 9, 0, 0) + timedelta(days=index)))
+
+    anchor = "<cap-059@company.com>"
+
+    uncapped = get_conversation(anchor, max_messages=100, max_threads=100)
+    assert uncapped.truncated is False
+    assert "from" in uncapped.roles_for_domain(lookalike)
+
+    # a cap tight enough that the look-a-like's one message is not displayed at all
+    capped = get_conversation(anchor, max_messages=50, max_threads=10)
+    assert capped.truncated is True
+    assert f"<cap-055@{lookalike}>" not in [m.message_id for m in capped.messages]
+
+    # ...and the verdict is unchanged regardless
+    assert capped.roles_for_domain(lookalike) == uncapped.roles_for_domain(lookalike)
+    assert f"ops@{lookalike}" in capped.addresses_for_domain(lookalike)
+    assert lookalike in capped.participant_domains
+
+
+@pytest.mark.integration
+def test_thread_cap_keeps_the_oldest_threads():
+    """Ordering before the cap is by first-seen, not by hash - otherwise which messages survive is
+    unpredictable and the "oldest were kept" explanation shown to the analyst is untrue."""
+    _record_conversation()
+
+    capped = get_conversation("<c3@example.com>", max_messages=50, max_threads=2)
+    kept = [m.message_id for m in capped.messages]
+    assert "<c1@example.com>" in kept          # oldest sibling survives
+    assert "<c3@example.com>" in kept          # anchor always survives
+
+
+@pytest.mark.integration
+def test_get_conversation_thread_cap_reports_truncation():
+    _record_conversation()
+
+    # every message here threads to itself, so the conversation is 3 messages across 3 threads and
+    # the THREAD cap is what bites first - a smaller max_threads than max_messages silently becomes
+    # the real message limit. it must still report itself as truncated, or a trimmed timeline is
+    # indistinguishable from a complete one.
+    conversation = get_conversation("<c3@example.com>", max_messages=50, max_threads=2)
+    assert conversation.thread_count == 2
+    assert len(conversation.messages) < 3
+    assert conversation.truncated is True

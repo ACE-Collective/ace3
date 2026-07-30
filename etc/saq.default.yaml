@@ -1353,6 +1353,25 @@ analysis_module_email_conversation_link_analyzer:
   python_class: EmailConversationLinkAnalyzer
   enabled: true
 
+analysis_module_email_thread_analyzer:
+  name: email_thread_analyzer
+  python_module: saq.modules.email.thread
+  python_class: EmailThreadAnalyzer
+  enabled: true
+  # reads the brocess email_thread_* tables (written by email_logger with thread_recording_enabled)
+  # and renders the conversation a message belongs to as a timeline. display only - no detections.
+  # deliberately in module_group_correlation and NOT module_group_email
+  cooldown_period: 60
+  # maximum number of conversation messages to assemble into the timeline
+  max_messages: 50
+  # maximum number of subject-linked threads to merge into a single conversation. messages with no
+  # In-Reply-To/References thread to themselves, so one conversation can span many thread ids and a
+  # generic subject line ("invoice") could otherwise fan out without limit. keep this >= max_messages
+  # or it silently becomes the real message limit for self-threaded conversations.
+  max_threads: 50
+  # maximum recipients listed per timeline row before the rest are summarized as "+N more"
+  max_recipients_displayed: 8
+
 analysis_module_url_email_pivot_analyzer:
   name: url_email_pivot_analyzer
   python_module: saq.modules.email.correlation
@@ -2204,6 +2223,7 @@ module_group_correlation:
   modules:
     - active_directory_analyzer
     - clicker_detection_splunk
+    - email_thread_analyzer
     - fqdn_analyzer
     - idna_analyzer
     - message_id_analyzer_v2
