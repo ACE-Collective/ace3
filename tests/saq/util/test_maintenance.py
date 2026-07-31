@@ -139,6 +139,7 @@ def test_emit_cache_stats_emits_heartbeat(caplog):
 
     stats_lines = [r for r in caplog.records if "cache_stats" in r.getMessage()]
     assert stats_lines, "expected cache_stats heartbeat"
-    msg = stats_lines[0].getMessage()
-    for field in ("total_rows=", "total_on_disk_bytes=", "blob_refs_rows="):
-        assert field in msg, f"cache_stats line missing field {field!r}: {msg}"
+    # the fields ride in extra={} so Splunk can timechart them without a rex
+    record = stats_lines[0]
+    for field in ("total_rows", "total_on_disk_bytes", "blob_refs_rows"):
+        assert hasattr(record, field), f"cache_stats line missing field {field!r}"

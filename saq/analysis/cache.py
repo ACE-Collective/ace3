@@ -224,9 +224,7 @@ def put_cached_delta(
 
         if delta.has_removals:
             logging.warning(
-                "refusing to cache delta module_name=%s observable_type=%s "
-                "observable_value=%s refusal_reason=removals",
-                module.config.name, delta.observable_type, delta.observable_value,
+                "refusing to cache delta",
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
@@ -245,11 +243,7 @@ def put_cached_delta(
         out_of_scope = delta.out_of_scope_relationship_targets()
         if out_of_scope:
             logging.warning(
-                "refusing to cache delta module_name=%s observable_type=%s "
-                "observable_value=%s refusal_reason=relationship_out_of_scope "
-                "relationship_count=%d",
-                module.config.name, delta.observable_type, delta.observable_value,
-                len(out_of_scope),
+                "refusing to cache delta",
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
@@ -269,9 +263,7 @@ def put_cached_delta(
         # intermediate cycle and is expected behavior.
         if delta.analysis is not None and delta.analysis.get("delayed"):
             logging.info(
-                "skipping cache write module_name=%s observable_type=%s "
-                "observable_value=%s skip_reason=still_delayed",
-                module.config.name, delta.observable_type, delta.observable_value,
+                "skipping cache write",
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
@@ -290,10 +282,7 @@ def put_cached_delta(
         refusal_reason = _validate_file_specs(file_specs, root) if file_specs else None
         if refusal_reason is not None:
             logging.warning(
-                "refusing to cache delta module_name=%s observable_type=%s "
-                "observable_value=%s refusal_reason=%s",
-                module.config.name, delta.observable_type, delta.observable_value,
-                refusal_reason,
+                "refusing to cache delta",
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
@@ -333,18 +322,15 @@ def put_cached_delta(
                     stored_sha = blob_store.put(fp)
                 if stored_sha != spec.value:
                     logging.warning(
-                        "refusing to cache delta module_name=%s observable_type=%s "
-                        "observable_value=%s refusal_reason=file_hash_mismatch "
-                        "file_path=%s expected_sha256=%s actual_sha256=%s",
-                        module.config.name, delta.observable_type,
-                        delta.observable_value, spec.file_path,
-                        spec.value, stored_sha,
+                        "refusing to cache delta",
                         extra={
                             "module_name": module.config.name,
                             "observable_type": delta.observable_type,
                             "observable_value": delta.observable_value,
                             "refusal_reason": "file_hash_mismatch",
                             "file_path": spec.file_path,
+                            "expected_sha256": spec.value,
+                            "actual_sha256": stored_sha,
                         },
                     )
                     _unreference_blob_refs(delta_dict, blob_store, cache_key)
@@ -363,11 +349,7 @@ def put_cached_delta(
 
         if len(delta_zstd) > max_compressed_bytes:
             logging.warning(
-                "refusing to cache delta module_name=%s observable_type=%s "
-                "observable_value=%s refusal_reason=size_cap compressed_bytes=%d "
-                "max_compressed_bytes=%d",
-                module.config.name, delta.observable_type, delta.observable_value,
-                len(delta_zstd), max_compressed_bytes,
+                "refusing to cache delta",
                 extra={
                     "module_name": module.config.name,
                     "observable_type": delta.observable_type,
@@ -421,8 +403,8 @@ def put_cached_delta(
     except Exception:
         module_name = getattr(getattr(module, "config", None), "name", "<unknown>")
         logging.warning(
-            "failed to write analysis cache entry module_name=%s",
-            module_name, exc_info=True,
+            "failed to write analysis cache entry",
+            exc_info=True,
             extra={"module_name": module_name},
         )
         try:
@@ -542,8 +524,8 @@ def _unreference_blob_refs(delta_dict: dict, blob_store: BlobStore, cache_key: s
             blob_store.unreference(sha, REFERRER_KIND_CACHE_ROW, cache_key)
         except Exception:
             logging.warning(
-                "failed to unreference blob sha256=%s after cache-write bailout",
-                sha, exc_info=True,
+                "failed to unreference blob after cache-write bailout",
+                exc_info=True,
                 extra={"sha256": sha},
             )
 
@@ -695,8 +677,8 @@ def get_cached_delta(
                 delta_dict = json.loads(delta_json.decode("utf-8"))
         except Exception:
             logging.warning(
-                "failed to decode cached delta module_name=%s cache_key_prefix=%s",
-                module_name, cache_key_prefix, exc_info=True,
+                "failed to decode cached delta",
+                exc_info=True,
                 extra={
                     "module_name": module_name,
                     "cache_key_prefix": cache_key_prefix,
@@ -718,9 +700,8 @@ def get_cached_delta(
                     _inline_blob_refs(delta_dict, blob_store)
             except BlobNotFound as e:
                 logging.warning(
-                    "cached delta references missing blob module_name=%s "
-                    "cache_key_prefix=%s sha256=%s",
-                    module_name, cache_key_prefix, e, exc_info=False,
+                    "cached delta references missing blob",
+                    exc_info=False,
                     extra={
                         "module_name": module_name,
                         "cache_key_prefix": cache_key_prefix,
@@ -734,8 +715,8 @@ def get_cached_delta(
                 delta = ModuleExecutionDelta.from_dict(delta_dict)
         except Exception:
             logging.warning(
-                "failed to deserialize cached delta module_name=%s cache_key_prefix=%s",
-                module_name, cache_key_prefix, exc_info=True,
+                "failed to deserialize cached delta",
+                exc_info=True,
                 extra={
                     "module_name": module_name,
                     "cache_key_prefix": cache_key_prefix,
@@ -753,9 +734,7 @@ def get_cached_delta(
         for spec in delta.file_observable_specs():
             if not spec.file_path:
                 logging.warning(
-                    "cached delta has file spec without file_path module_name=%s "
-                    "cache_key_prefix=%s",
-                    module_name, cache_key_prefix,
+                    "cached delta has file spec without file_path",
                     extra={
                         "module_name": module_name,
                         "cache_key_prefix": cache_key_prefix,
@@ -766,9 +745,7 @@ def get_cached_delta(
                 blob_exists = blob_store.exists(spec.value)
             if not blob_exists:
                 logging.warning(
-                    "cached delta references missing file blob module_name=%s "
-                    "cache_key_prefix=%s sha256=%s",
-                    module_name, cache_key_prefix, spec.value,
+                    "cached delta references missing file blob",
                     extra={
                         "module_name": module_name,
                         "cache_key_prefix": cache_key_prefix,
@@ -781,8 +758,8 @@ def get_cached_delta(
 
     except Exception:
         logging.warning(
-            "cache lookup failed module_name=%s cache_key_prefix=%s",
-            module_name, cache_key_prefix, exc_info=True,
+            "cache lookup failed",
+            exc_info=True,
             extra={
                 "module_name": module_name,
                 "cache_key_prefix": cache_key_prefix,
@@ -879,9 +856,7 @@ def apply_delta(
                     new_obs._redirection = redirect_target.uuid
                 else:
                     logging.warning(
-                        "skipping redirection on cache replay — target unresolved "
-                        "source_uuid=%s",
-                        spec.initial_redirection,
+                        "skipping redirection on cache replay — target unresolved",
                         extra={"source_uuid": spec.initial_redirection},
                     )
 
@@ -929,10 +904,8 @@ def _rehydrate_analysis(
         analysis = _class()
     except Exception as e:
         logging.warning(
-            "failed to instantiate analysis for cache replay module_path=%s error=%s "
-            "— falling back to UnknownAnalysis",
-            module_path, e,
-            extra={"module_path": module_path},
+            "failed to instantiate analysis for cache replay — falling back to UnknownAnalysis",
+            extra={"module_path": module_path, "error": str(e)},
         )
         analysis = UnknownAnalysis(module_path)
 
@@ -953,8 +926,8 @@ def _rehydrate_analysis(
         analysis.json = stripped
     except Exception:
         logging.warning(
-            "failed to apply cached analysis dict module_path=%s observable_uuid=%s",
-            module_path, target_observable.uuid, exc_info=True,
+            "failed to apply cached analysis dict",
+            exc_info=True,
             extra={
                 "module_path": module_path,
                 "observable_uuid": target_observable.uuid,
@@ -996,9 +969,7 @@ def _apply_observable_spec(parent_analysis, spec, staged_file: Optional[str] = N
             # Shouldn't happen — get_cached_delta validates file specs and
             # apply_delta stages every one of them before this point.
             logging.warning(
-                "skipping file spec on cache replay — no staged content "
-                "file_path=%s sha256=%s",
-                spec.file_path, spec.value,
+                "skipping file spec on cache replay — no staged content",
                 extra={"file_path": spec.file_path, "sha256": spec.value},
             )
             return None
@@ -1064,9 +1035,7 @@ def _apply_relationship(observable, rel_dict, root, uuid_map) -> None:
         # Legacy uuid-only delta (pre target-spec capture) or an
         # out-of-scope target from before the write-time refusal.
         logging.warning(
-            "skipping relationship on cache replay — target unresolved "
-            "r_type=%s target_uuid=%s target_type=%s",
-            r_type, target_uuid, rel_dict.get("target_type"),
+            "skipping relationship on cache replay — target unresolved",
             extra={
                 "r_type": r_type,
                 "target_uuid": target_uuid,

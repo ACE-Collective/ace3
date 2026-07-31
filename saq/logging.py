@@ -2,6 +2,7 @@
 import contextlib
 import contextvars
 from datetime import datetime
+import json
 import logging
 import logging.config
 import os
@@ -12,6 +13,49 @@ import uuid
 import yaml
 
 from fluent.handler import FluentRecordFormatter
+
+
+# Attributes the logging framework itself puts on a LogRecord, plus the ones ACE
+# stamps on every record via a filter. Neither extra-aware formatter treats these
+# as caller-supplied fields: walking record.__dict__ would otherwise dump all of
+# them into every event, which is a lot of noise (and includes the legacy
+# ``module`` name -- which can confuse Splunk by colliding with module-execution
+# fields). ``hostname`` is added by FluentRecordFormatter itself; ``transactionId``
+# comes from TransactionIdFilter and is already rendered as its own configured
+# field where it matters.
+STANDARD_LOGRECORD_ATTRS = frozenset({
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "hostname", "levelname", "levelno", "lineno",
+    "message", "module", "msecs", "msg", "name", "pathname",
+    "process", "processName", "relativeCreated", "stack_info",
+    "taskName", "thread", "threadName", "transactionId",
+})
+
+
+def iter_extra_fields(record: logging.LogRecord, exclude=frozenset()):
+    """Yield the ``(key, value)`` pairs a caller passed via ``extra={}``.
+
+    Skips the standard framework attributes and anything in ``exclude``
+    (used by callers that have already rendered a field by another name).
+    """
+    for key, value in record.__dict__.items():
+        if key in STANDARD_LOGRECORD_ATTRS:
+            continue
+        if key in exclude:
+            continue
+        yield key, value
+
+
+def format_extra_field(key: str, value) -> str:
+    """Render one ``extra={}`` field as a ``key=value`` token.
+
+    Values that would break token boundaries -- anything with whitespace or a
+    quote in it -- get JSON-quoted so the result stays parseable by eye and by
+    ``rex``. Scalars stay bare.
+    """
+    if isinstance(value, str) and (value == "" or any(c.isspace() or c == '"' for c in value)):
+        return f"{key}={json.dumps(value)}"
+    return f"{key}={value}"
 
 
 class ExtraAwareFluentFormatter(FluentRecordFormatter):
@@ -38,28 +82,39 @@ class ExtraAwareFluentFormatter(FluentRecordFormatter):
     readable ``message`` text continues to work for free-text search.
     """
 
-    # Standard LogRecord attributes set by the logging framework. Walking
-    # record.__dict__ would otherwise dump all of these into every event,
-    # which is a lot of noise (and includes the legacy ``module`` name —
-    # which can confuse Splunk by colliding with module-execution fields).
-    # ``hostname`` is added by the parent formatter itself.
-    _STANDARD_LOGRECORD_ATTRS = frozenset({
-        "args", "asctime", "created", "exc_info", "exc_text", "filename",
-        "funcName", "hostname", "levelname", "levelno", "lineno",
-        "message", "module", "msecs", "msg", "name", "pathname",
-        "process", "processName", "relativeCreated", "stack_info",
-        "taskName", "thread", "threadName",
-    })
-
     def format(self, record):
         data = super().format(record)
-        for key, value in record.__dict__.items():
-            if key in self._STANDARD_LOGRECORD_ATTRS:
-                continue
-            if key in data:
-                continue
+        for key, value in iter_extra_fields(record, exclude=data.keys()):
             data[key] = value
         return data
+
+
+class ExtraAwareTextFormatter(logging.Formatter):
+    """``logging.Formatter`` that appends ``extra={}`` keys to the formatted
+    line as ``key=value`` tokens.
+
+    This is the plain-text sibling of ``ExtraAwareFluentFormatter`` and exists
+    so ACE has one logging rule everywhere: **the message text describes the
+    event, ``extra={}`` carries the fields.** Without it, ``extra`` is visible
+    only on the fluent/Splunk path, which is why call sites used to repeat
+    every field in the message text as well -- duplication that had to be kept
+    in sync by hand and bought nothing for Splunk.
+
+    Wired into the plain-text configs (console/unittest/debug) so a developer
+    tailing a log or reading unittest output sees the same fields an analyst
+    sees in Splunk.
+    """
+
+    def format(self, record):
+        formatted = super().format(record)
+        fields = [format_extra_field(k, v) for k, v in iter_extra_fields(record)]
+        if not fields:
+            return formatted
+
+        # super().format() appends the traceback (and stack info) after the
+        # message; the fields belong with the message, not after the traceback.
+        message, separator, trailer = formatted.partition("\n")
+        return f"{message} {' '.join(fields)}{separator}{trailer}"
 
 
 class CustomFileHandler(logging.StreamHandler):

@@ -219,7 +219,8 @@ class TestPutCachedDelta:
             assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
         assert any(
-            "relationship_out_of_scope" in rec.message for rec in caplog.records
+            getattr(rec, "refusal_reason", None) == "relationship_out_of_scope"
+            for rec in caplog.records
         )
 
     @pytest.mark.integration
@@ -264,11 +265,11 @@ class TestPutCachedDelta:
         with caplog.at_level(logging.INFO):
             assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
-        skip_logs = [r for r in caplog.records if "skip_reason=still_delayed" in r.getMessage()]
+        # the fields live in extra={} only; the formatters surface them as
+        # top-level JSON fields (Splunk) or key=value tokens (plain text)
+        skip_logs = [r for r in caplog.records if getattr(r, "skip_reason", None) == "still_delayed"]
         assert skip_logs
         assert skip_logs[0].levelno == logging.INFO
-        # ExtraAwareFluentFormatter surfaces these as top-level JSON fields.
-        assert skip_logs[0].skip_reason == "still_delayed"
         assert skip_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
@@ -289,10 +290,12 @@ class TestPutCachedDelta:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
-        warn_logs = [r for r in caplog.records if "refusal_reason=file_observables_no_root" in r.getMessage()]
+        warn_logs = [
+            r for r in caplog.records
+            if getattr(r, "refusal_reason", None) == "file_observables_no_root"
+        ]
         assert warn_logs
         assert warn_logs[0].levelno == logging.WARNING
-        assert warn_logs[0].refusal_reason == "file_observables_no_root"
         assert warn_logs[0].module_name == module.config.name
 
     @pytest.mark.integration
@@ -456,7 +459,7 @@ class TestPutCachedDeltaFileObservables:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store, root=root) is None
         assert _row_count(delta.cache_key) == 0
-        assert any("refusal_reason=file_missing" in r.getMessage() for r in caplog.records)
+        assert any(getattr(r, "refusal_reason", None) == "file_missing" for r in caplog.records)
 
     @pytest.mark.integration
     def test_refuses_when_file_too_large(self, blob_store, tmp_path, caplog, monkeypatch):
@@ -468,7 +471,7 @@ class TestPutCachedDeltaFileObservables:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store, root=root) is None
         assert _row_count(delta.cache_key) == 0
-        assert any("refusal_reason=file_too_large" in r.getMessage() for r in caplog.records)
+        assert any(getattr(r, "refusal_reason", None) == "file_too_large" for r in caplog.records)
 
     @pytest.mark.integration
     def test_does_not_refuse_when_size_cap_disabled(self, blob_store, tmp_path, monkeypatch):
@@ -494,7 +497,7 @@ class TestPutCachedDeltaFileObservables:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store, root=root) is None
         assert _row_count(delta.cache_key) == 0
-        assert any("refusal_reason=file_spec_missing_path" in r.getMessage() for r in caplog.records)
+        assert any(getattr(r, "refusal_reason", None) == "file_spec_missing_path" for r in caplog.records)
 
     @pytest.mark.integration
     def test_refuses_on_hash_mismatch(self, blob_store, tmp_path, caplog):
@@ -513,7 +516,7 @@ class TestPutCachedDeltaFileObservables:
         with caplog.at_level(logging.WARNING):
             assert put_cached_delta(delta, module, blob_store, root=root) is None
         assert _row_count(delta.cache_key) == 0
-        assert any("refusal_reason=file_hash_mismatch" in r.getMessage() for r in caplog.records)
+        assert any(getattr(r, "refusal_reason", None) == "file_hash_mismatch" for r in caplog.records)
         # The expected sha never landed in the store.
         assert not blob_store.exists(file_obs.value)
 

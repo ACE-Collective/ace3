@@ -3,9 +3,15 @@ disable_existing_loggers: false
 
 formatters:
   base:
+    # ExtraAwareTextFormatter appends any extra={} keys to the line as
+    # key=value tokens. Call sites put fields in extra={} only, so without
+    # this the fields would be visible on the fluent/Splunk path alone.
+    '()': saq.logging.ExtraAwareTextFormatter
     format: '[%(asctime)s] [%(name)s] [%(pathname)s:%(funcName)s:%(lineno)d] [%(threadName)s] [%(process)d] [%(levelname)s] - %(message)s'
   fluent_fmt:
-    '()': fluent.handler.FluentRecordFormatter
+    # matches ace_logging.yaml -- the stock FluentRecordFormatter drops every
+    # extra={} field, which would make dev output differ from production
+    '()': saq.logging.ExtraAwareFluentFormatter
     format:
       asctime: '%(asctime)s'
       filename: '%(filename)s'

@@ -3279,6 +3279,11 @@ the stored delta instead of executing. Shipped as Steps 3.0–3.8 (the outline's
   surfaces `extra={}` as top-level JSON fields for Splunk; all Phase 2/3
   telemetry call sites were converted to `extra=`, and the field `module=` was
   renamed to `module_name=` (Python's `LogRecord` reserves `module`).
+  (These call sites originally repeated every field as `key=value` text in the
+  message as well. They no longer do: `ExtraAwareTextFormatter` renders `extra={}`
+  on the plain-text configs too, so the rule is now *the message text describes
+  the event, `extra={}` carries the fields*. Assert on `LogRecord` attributes,
+  not on message substrings.)
 
 **Explicitly NOT in PR #211** (status as of PR #211): phishkit read-side opt-in
 (*since shipped 2026-06-29 — see the Phishkit opt-in notes*); the tool-version
