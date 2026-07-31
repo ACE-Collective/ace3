@@ -11,11 +11,15 @@ automatically.
 
 Usage (inside dev container):
     /venv/bin/python bin/check_model_drift.py                       # main ace DB (default)
-    /venv/bin/python bin/check_model_drift.py --database cache      # analysis cache DB
+    /venv/bin/python bin/check_model_drift.py --database cache          # analysis cache DB
+    /venv/bin/python bin/check_model_drift.py --database brocess        # brocess DB
+    /venv/bin/python bin/check_model_drift.py --database email-archive  # email-archive DB
 
 Or via Make:
     make db-check
     make cache-db-check
+    make brocess-db-check
+    make email-archive-db-check
 """
 
 import argparse
@@ -42,8 +46,8 @@ from sqlalchemy import Column, create_engine
 # Re-add project root so saq is importable
 sys.path.insert(0, project_root)
 
-from saq.database.meta import Base, CacheBase
-import saq.database.model  # noqa: F401 — populates Base.metadata and CacheBase.metadata
+from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
+import saq.database.model  # noqa: F401 — populates the Base, CacheBase, BrocessBase and EmailArchiveBase metadata
 
 
 DATABASES = {
@@ -58,6 +62,18 @@ DATABASES = {
         "env_var": "CACHE_DATABASE_NAME",
         "default_name": "analysis-result-cache-unittest",
         "revision_cmd": "make cache-db-revision",
+    },
+    "brocess": {
+        "metadata": BrocessBase.metadata,
+        "env_var": "BROCESS_DATABASE_NAME",
+        "default_name": "brocess-unittest",
+        "revision_cmd": "make brocess-db-revision",
+    },
+    "email-archive": {
+        "metadata": EmailArchiveBase.metadata,
+        "env_var": "EMAIL_ARCHIVE_DATABASE_NAME",
+        "default_name": "email-archive-unittest",
+        "revision_cmd": "make email-archive-db-revision",
     },
 }
 

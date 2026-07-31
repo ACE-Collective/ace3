@@ -6,6 +6,8 @@ on:
       - 'saq/database/model.py'
       - 'alembic/ace/versions/**'
       - 'alembic/analysis_cache/versions/**'
+      - 'alembic/brocess/versions/**'
+      - 'alembic/email_archive/versions/**'
   merge_group:
 
 jobs:
@@ -39,6 +41,8 @@ jobs:
           mysql -h 127.0.0.1 -u root -proot -e "
             ALTER DATABASE ace CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci;
             CREATE DATABASE \`analysis-result-cache\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci;
+            CREATE DATABASE \`brocess\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci;
+            CREATE DATABASE \`email-archive\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci;
             CREATE USER 'ace-superuser'@'%' IDENTIFIED BY 'ci-password';
             GRANT ALL PRIVILEGES ON *.* TO 'ace-superuser'@'%' WITH GRANT OPTION;
             FLUSH PRIVILEGES;
@@ -61,6 +65,20 @@ jobs:
           CACHE_DATABASE_NAME: analysis-result-cache
         run: alembic -c alembic/analysis_cache.ini upgrade head
 
+      - name: Run brocess migrations
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          BROCESS_DATABASE_NAME: brocess
+        run: alembic -c alembic/brocess.ini upgrade head
+
+      - name: Run email archive migrations
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          EMAIL_ARCHIVE_DATABASE_NAME: email-archive
+        run: alembic -c alembic/email_archive.ini upgrade head
+
       - name: Check for ace model drift
         env:
           ACE_DB_HOST: 127.0.0.1
@@ -74,3 +92,17 @@ jobs:
           ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
           CACHE_DATABASE_NAME: analysis-result-cache
         run: python bin/check_model_drift.py --database cache
+
+      - name: Check for brocess model drift
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          BROCESS_DATABASE_NAME: brocess
+        run: python bin/check_model_drift.py --database brocess
+
+      - name: Check for email archive model drift
+        env:
+          ACE_DB_HOST: 127.0.0.1
+          ACE_SUPERUSER_DB_USER_PASSWORD: ci-password
+          EMAIL_ARCHIVE_DATABASE_NAME: email-archive
+        run: python bin/check_model_drift.py --database email-archive
