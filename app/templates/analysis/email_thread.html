@@ -133,7 +133,15 @@
                 &mdash; introduced {{ entry.introduced_on }}
                 {% if entry.introduced_by_address %}by <tt>{{ entry.introduced_by_address }}</tt>{% endif %}
             {% endif %}
-            {% if not entry.present_in_anchor_message %}
+            {% if entry.presence_is_partial %}
+                <span class="badge text-bg-secondary">at least</span>
+                <br>
+                <span class="text-muted">
+                    Some records for this domain predate per-message tracking (listed at the bottom
+                    of this page), so they cannot be tied to a message. The count above is a floor
+                    &mdash; the roles and &ldquo;sent mail?&rdquo; verdict do include those records.
+                </span>
+            {% elif not entry.present_in_anchor_message %}
                 <br>
                 <span class="text-muted">
                     Not present in the message this alert fired on &mdash; it comes from earlier

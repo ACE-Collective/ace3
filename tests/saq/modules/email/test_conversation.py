@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from saq.database import get_db_connection
 from saq.modules.email.conversation import (
     Participant,
     ThreadContext,
@@ -169,6 +170,21 @@ def test_established_domains_collapse_per_message_rows():
     ]
 
 
+def _strip_message_attribution(thread_id):
+    """Blank message_id_hash on a thread's participant rows, reproducing pre-per-message records.
+
+    email_thread_domain.message_id_hash was added to live tables after the recorder had already been
+    writing per-thread rows, so production carries rows that cannot be tied to a message. Nothing
+    in the code path can produce them any more, which is exactly why they need a fixture.
+    """
+    with get_db_connection(name="brocess") as db:
+        cursor = db.cursor()
+        cursor.execute("""
+UPDATE email_thread_domain SET message_id_hash = NULL
+WHERE thread_id_hash = UNHEX(SHA2(%s, 256))""", (thread_id,))
+        db.commit()
+
+
 def _record_conversation():
     """Record a three-message conversation with no threading headers (each message threads to itself).
 
@@ -226,6 +242,43 @@ def test_get_conversation_participants_are_per_message():
     # only ever cc'd - it never sent mail into this conversation
     assert conversation.roles_for_domain("exarnple.com") == {"cc"}
     assert conversation.roles_for_domain("example.com") == {"from", "to"}
+
+
+@pytest.mark.integration
+def test_messages_containing_domain_counts_the_message_sender():
+    """A message's own sender counts as presence even with no attributable participant rows.
+
+    from_domain lives on the MESSAGE row, so it survives the case that broke this: participant rows
+    written before message_id_hash existed are unattributable, and reading them alone reported
+    "present on 0 of N" for a domain that sent N of the messages - while the same analysis said it
+    had sent mail, because the role verdicts do count unattributable rows.
+    """
+    _record_conversation()
+
+    # a fourth message sent BY the look-a-like, whose participant rows predate per-message tracking
+    record_thread(_context(
+        "<c4@exarnple.com>", "self", "<c4@exarnple.com>", "quarterly review",
+        [Participant("jane.doe@exarnple.com", "exarnple.com", "from"),
+         Participant("jane.doe@exarnple.com", "exarnple.com", "return_path"),
+         Participant("bob@company.com", "company.com", "to")],
+        message_date=datetime(2026, 3, 4, 9, 0, 0)))
+    _strip_message_attribution("<c4@exarnple.com>")
+
+    conversation = get_conversation("<c4@exarnple.com>")
+
+    # nothing attributes a participant to message 4...
+    assert conversation.participants(conversation.messages[3]) == []
+    assert {p.address for p in conversation.unattributed_participants} == {
+        "jane.doe@exarnple.com", "bob@company.com"}
+
+    # ...but the message row still says who sent it, so presence is not lost
+    assert conversation.messages_containing_domain("exarnple.com") == [
+        conversation.messages[1], conversation.messages[3]]
+    assert conversation.has_unattributed_domain("exarnple.com") is True
+    assert conversation.has_unattributed_domain("example.com") is False
+
+    # the role verdicts were never affected by attribution and must not change
+    assert conversation.roles_for_domain("exarnple.com") == {"cc", "from", "return_path"}
 
 
 @pytest.mark.integration

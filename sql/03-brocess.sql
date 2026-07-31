@@ -149,10 +149,14 @@ CREATE TABLE `email_thread_message` (
 -- saq/modules/email/conversation.py collapse these back to one entry per (domain, address, role)
 -- with the earliest firstseendate.
 --
--- message_id_hash is nullable only so the ALTER in sql/tools/ can be applied to a live table:
--- rows written before that change carry NULL and the older three-part entry_hash. because the
--- hash input changed, legacy and per-message rows cannot collide on uniq_thread_domain, and the
--- table self-heals as new mail arrives. always write it non-NULL.
+-- message_id_hash is nullable only so it could be added to live tables by hand (there is no
+-- migration script for it): rows written before that carry NULL and the older three-part
+-- entry_hash. because the hash input changed, legacy and per-message rows cannot collide on
+-- uniq_thread_domain, and the table self-heals as new mail arrives. always write it non-NULL.
+--
+-- a NULL row cannot be attributed to a message, so readers must not treat "not on any message" as
+-- absence while a NULL row for that domain exists. Conversation.has_unattributed_domain() is how
+-- callers detect that; email_thread_message.from_domain stays authoritative either way.
 --
 -- deliberately NOT indexed. every read filters on thread_id_hash and merely SELECTs
 -- message_id_hash to bucket participants by message; nothing looks a row up by it. an index here

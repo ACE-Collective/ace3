@@ -4,6 +4,7 @@ import pytest
 
 from saq.analysis.root import load_root
 from saq.constants import F_MESSAGE_ID
+from saq.database import get_db_connection
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.email.conversation import Participant, ThreadContext, record_thread
@@ -33,6 +34,21 @@ def _context(thread_id, message_id, participants, message_date, normalized_subje
         participants=participants,
         senders=senders,
     )
+
+
+def _strip_message_attribution(thread_id):
+    """Blank message_id_hash on a thread's participant rows, reproducing pre-per-message records.
+
+    email_thread_domain.message_id_hash was added to live tables after the recorder had already
+    been writing per-thread rows, so production carries rows that cannot be tied to a message.
+    Nothing in the code path can produce them any more, which is exactly why they need a fixture.
+    """
+    with get_db_connection(name="brocess") as db:
+        cursor = db.cursor()
+        cursor.execute("""
+UPDATE email_thread_domain SET message_id_hash = NULL
+WHERE thread_id_hash = UNHEX(SHA2(%s, 256))""", (thread_id,))
+        db.commit()
 
 
 def _record_conversation():
@@ -251,6 +267,109 @@ def test_thread_analysis_names_the_newcomer_as_the_lookalike(root_analysis):
     entry = next(e for e in analysis.lookalikes if cyrillic in (e["domain"], e["counterpart"]))
     assert entry["domain"] == cyrillic
     assert entry["counterpart"] == "example.com"
+
+
+def _record_conversation_opened_by_the_lookalike():
+    """The look-a-like opens the exchange, the real domain replies later, nothing threads by header.
+
+    Reduced from a production alert. The two oldest messages' participant rows predate per-message
+    tracking, so nothing attributes them to a message - the state that made the module report
+    "Sent mail into this conversation" and "Present on 0 of 5 messages" about the same domain.
+    """
+    for index, when in enumerate([datetime(2026, 7, 30, 13, 58, 0),
+                                  datetime(2026, 7, 30, 14, 24, 0)]):
+        thread_id = f"<op-{index}@{LOOKALIKE_DOMAIN}>"
+        record_thread(_context(
+            thread_id, thread_id,
+            [Participant("jane.doe@" + LOOKALIKE_DOMAIN, LOOKALIKE_DOMAIN, "from"),
+             Participant("jane.doe@" + LOOKALIKE_DOMAIN, LOOKALIKE_DOMAIN, "return_path"),
+             Participant(f"bob{index}@company.com", "company.com", "to")],
+            when, normalized_subject="please confirm"))
+        _strip_message_attribution(thread_id)
+
+    for index, when in enumerate([datetime(2026, 7, 31, 15, 23, 0),
+                                  datetime(2026, 7, 31, 15, 23, 51),
+                                  datetime(2026, 7, 31, 15, 42, 0)]):
+        thread_id = f"<op-real-{index}@example.com>"
+        record_thread(_context(
+            thread_id, thread_id,
+            [Participant("jane.doe@example.com", "example.com", "from"),
+             Participant("jane.doe@example.com", "example.com", "return_path"),
+             Participant(f"carol{index}@company.com", "company.com", "to")],
+            when, normalized_subject="please confirm"))
+
+
+@pytest.mark.integration
+def test_thread_analysis_counts_messages_the_lookalike_sent(root_analysis):
+    """Presence must count the message's own sender, not just the participant rows.
+
+    from_domain is on the message row and stays attributable; participant rows written before
+    message_id_hash existed do not. Reading only the latter reported a domain as present on zero
+    messages while the timeline rendered it as the sender of two of them.
+    """
+    _record_conversation_opened_by_the_lookalike()
+
+    analysis, _ = _analyze(root_analysis, "<op-real-2@example.com>")
+    entry = analysis.lookalikes[0]
+
+    assert entry["domain"] == LOOKALIKE_DOMAIN
+    assert entry["counterpart"] == "example.com"
+    assert entry["ever_sent"] is True
+
+    # the two messages it sent, found through from_domain alone
+    assert entry["message_count"] == 2
+    assert entry["total_messages"] == 5
+    assert entry["introduced_on"] == "2026-07-30 13:58:00"
+    assert entry["introduced_by_address"] == "jane.doe@" + LOOKALIKE_DOMAIN
+
+    # the timeline agrees with itself: the badge column is set on the rows whose From it highlights
+    assert [m["from_is_lookalike"] for m in analysis.messages] == [True, True, False, False, False]
+    assert [m["lookalike_domains_present"] for m in analysis.messages] == [
+        [LOOKALIKE_DOMAIN], [LOOKALIKE_DOMAIN], [], [], []]
+
+
+@pytest.mark.integration
+def test_thread_analysis_reports_partial_attribution(root_analysis):
+    """An unattributable record makes the count a floor, and it has to say so.
+
+    The role verdicts count those records and the per-message count cannot, so an unqualified count
+    contradicts the line above it.
+    """
+    _record_conversation_opened_by_the_lookalike()
+
+    analysis, _ = _analyze(root_analysis, "<op-real-2@example.com>")
+    entry = analysis.lookalikes[0]
+    assert entry["presence_is_partial"] is True
+
+    content = analysis.summary_details[0].content
+    assert "Present on 2 of 5 messages" in content
+    assert "That count is a floor" in content
+    # the contradiction this replaces
+    assert "Present on 0 of 5" not in content
+    # and we no longer claim absence from the anchor, which we cannot know in this state
+    assert "Not present in the message this alert fired on" not in content
+
+
+@pytest.mark.integration
+def test_thread_analysis_names_the_side_on_fewer_messages(root_analysis):
+    """A look-a-like that sent FIRST is still the look-a-like.
+
+    "Whichever side is on fewer messages" outranks arrival order - the same rule the phishfinder
+    hunt uses when it re-picks which side to display. Arrival order only means anything in a
+    conversation the threading headers grouped; a subject-merged pile of self-threaded messages is
+    ordered by nothing but when each independent message landed, so ranking by it named the real
+    domain as the imposter whenever the impostor opened the exchange.
+    """
+    _record_conversation_opened_by_the_lookalike()
+
+    analysis, _ = _analyze(root_analysis, "<op-real-2@example.com>")
+    entry = analysis.lookalikes[0]
+
+    # the look-a-like is on messages 1-2, the real domain on 3-5, so it is FIRST in the timeline
+    assert analysis.messages[0]["from_domain"] == LOOKALIKE_DOMAIN
+    assert entry["domain"] == LOOKALIKE_DOMAIN
+    assert entry["counterpart"] == "example.com"
+    assert LOOKALIKE_DOMAIN in analysis.summary_details[0].content.split("(looks like")[0]
 
 
 @pytest.mark.integration
