@@ -1,0 +1,6 @@
+{# expands the observable list for an alert; included anywhere a table of alerts is rendered.
+   expects `alert` in the surrounding context. see toggle_alert_observables() in js/ace.js #}
+<button type="button" class="btn btn-outline-primary btn-sm" title="Show observables"
+        onclick="toggle_alert_observables(this, '{{alert.uuid}}', '{{ url_for('analysis.observables') }}')">
+    <span class="bi bi-chevron-down"></span>
+</button>

@@ -83,7 +83,7 @@
                     {# we can use this ID to modify an alert row #}
                     <tr id="alert_row_{{alert.uuid}}" >
                         <td>
-                            <button onclick="load_alert_observables('{{alert.uuid}}'); toggle_chevron('alert_row_dropdown_{{alert.uuid}}')" type="button" class="btn btn-outline-primary btn-sm"><span id="alert_row_dropdown_{{alert.uuid}}" class="bi bi-chevron-down"></span></button>
+                            {% include "analysis/_observable_expand_button.html" %}
                         </td>
                         <td>
                             <div class="form-check">
