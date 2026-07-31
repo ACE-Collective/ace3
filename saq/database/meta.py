@@ -8,3 +8,6 @@ CacheBase = declarative_base()
 
 # brocess database
 BrocessBase = declarative_base()
+
+# email-archive database
+EmailArchiveBase = declarative_base()

@@ -2630,15 +2630,6 @@ export_for_detect_parser.add_argument(
 )
 export_for_detect_parser.set_defaults(func=export_for_detect_observables)
 
-def cleanup_email_archive(args):
-    from saq.email import maintain_archive
-    maintain_archive(verbose=True)
-    sys.exit(0)
-
-cleanup_email_archive_parser = get_cli_subparsers().add_parser('cleanup-email-archive',
-    help="Removes emails from the archive that have expired.")
-cleanup_email_archive_parser.set_defaults(func=cleanup_email_archive)
-
 # ============================================================================
 # company management
 #

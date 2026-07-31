@@ -25,6 +25,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -36,6 +37,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.mysql import (
     DATETIME as MYSQL_DATETIME,
     DOUBLE,
+    ENUM as MYSQL_ENUM,
     INTEGER as MYSQL_INTEGER,
     LONGBLOB,
     MEDIUMTEXT,
@@ -68,7 +70,7 @@ from saq.constants import (
     QUEUE_DEFAULT,
 )
 from saq.crypto import decrypt_chunk
-from saq.database.meta import Base, BrocessBase, CacheBase
+from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
@@ -3496,6 +3498,127 @@ class EmailThreadDomain(BrocessBase):
     firstseendate: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
+
+
+class EmailArchive(EmailArchiveBase):
+    """One row per archived email, keyed by (server_id, SHA-256 hash)."""
+
+    __tablename__ = 'archive'
+    __table_args__ = (
+        UniqueConstraint('server_id', 'hash', 'insert_date', name='idx_server_id'),
+        Index('idx_insert_date', 'insert_date'),
+    )
+
+    archive_id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True)
+
+    server_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False)
+
+    hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        DateTime,
+        primary_key=True,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+
+class EmailArchiveIndex(EmailArchiveBase):
+    """Fast-search index over archived emails: (field, hashed value) -> archive_id."""
+
+    __tablename__ = 'archive_index'
+    __table_args__ = (
+        PrimaryKeyConstraint('hash', 'archive_id', 'field', 'insert_date'),
+        Index('idx_archive_id', 'archive_id'),
+        Index('idx_field_hash', 'field', 'hash'),
+    )
+
+    field: Mapped[str] = mapped_column(
+        MYSQL_ENUM('env_from', 'env_to', 'body_from', 'body_to', 'subject',
+                   'decoded_subject', 'message_id', 'content', 'url'),
+        nullable=False)
+
+    hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    archive_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+
+class EmailHistory(EmailArchiveBase):
+    """Per-(message-id, recipient) delivery history.
+
+    message_id / recipient have no hard length limit so they are stored
+    full-length as TEXT and indexed via fixed-width BINARY(32) SHA-256 hash
+    columns (UNHEX(SHA2(value, 256))).
+    """
+
+    __tablename__ = 'email_history'
+    __table_args__ = (
+        UniqueConstraint('message_id_hash', 'recipient_hash', 'insert_date',
+                         name='idx_eh_message_id_recipient'),
+        Index('idx_eh_insert_date', 'insert_date'),
+        Index('idx_eh_message_id', 'message_id_hash'),
+        Index('idx_eh_recipient', 'recipient_hash'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        DateTime,
+        primary_key=True,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    message_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    message_id_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    recipient: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    recipient_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+
+class EmailArchiveServer(EmailArchiveBase):
+    """Registry of hosts that own archived emails. Not partitioned."""
+
+    __tablename__ = 'archive_server'
+    __table_args__ = (
+        UniqueConstraint('hostname', name='idx_hostname'),
+    )
+
+    server_id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True)
+
+    hostname: Mapped[str] = mapped_column(
+        String(256),
+        nullable=False)
 
 
 # NOTE there is no database relationship between these tables

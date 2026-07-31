@@ -6,6 +6,7 @@ on:
       - 'alembic/ace/versions/**'
       - 'alembic/analysis_cache/versions/**'
       - 'alembic/brocess/versions/**'
+      - 'alembic/email_archive/versions/**'
   merge_group:
 
 jobs:
@@ -17,7 +18,7 @@ jobs:
       - name: Check for migration conflicts
         run: |
           set -e
-          for cfg in alembic/ace.ini alembic/analysis_cache.ini alembic/brocess.ini; do
+          for cfg in alembic/ace.ini alembic/analysis_cache.ini alembic/brocess.ini alembic/email_archive.ini; do
             echo "checking $cfg"
             heads=$(alembic -c "$cfg" heads | wc -l)
             if [ "$heads" -gt 1 ]; then
