@@ -591,9 +591,10 @@ function set_special_filter_7_days() {
     })();
 }
 
-function set_quick_filter(filter_id) {
+// applies the quick filter identified by the clicked badge's data-quick-filter-id
+function set_quick_filter(badge) {
     (function() {
-        fetch('reset_filters_quick/' + encodeURIComponent(filter_id), { credentials: 'same-origin' })
+        fetch('reset_filters_quick/' + encodeURIComponent(badge.dataset.quickFilterId), { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');

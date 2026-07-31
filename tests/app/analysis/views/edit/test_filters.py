@@ -461,3 +461,223 @@ def test_pagination_and_checked_reset(web_client):
         with web_client.session_transaction() as sess:
             assert sess['page_offset'] == 0
             assert sess['checked'] == []
+
+#
+# quick filters
+#
+
+QUICK_FILTER_CONFIG = """
+quick_filters:
+  - id: needs_research
+    label: Needs Research
+    filters:
+      - name: Queue
+        values: ["$USER_QUEUE"]
+      - name: Tag
+        values: ["needs_research"]
+    indicator: true
+  - id: mine
+    label: Mine
+    filters:
+      - name: Owner
+        values: ["$USER"]
+  - id: two_queues
+    label: Two Queues
+    filters:
+      - name: Queue
+        values: ["queue_a"]
+      - name: Queue
+        values: ["queue_b"]
+  - id: bad_filter_name
+    label: Bad
+    filters:
+      - name: Tags
+        values: ["needs_research"]
+"""
+
+
+@pytest.fixture
+def quick_filters(tmp_path, monkeypatch):
+    """Points gui.quick_filters_config_path at QUICK_FILTER_CONFIG and clears the
+    module-level cache so the test's file is what gets loaded."""
+    import app.analysis.views.session.filters as filters_mod
+    from saq.configuration.config import get_config
+
+    path = tmp_path / "gui_quick_filters.yaml"
+    path.write_text(QUICK_FILTER_CONFIG)
+
+    monkeypatch.setattr(filters_mod, "get_base_dir", lambda: "")
+    monkeypatch.setattr(get_config().gui, "quick_filters_config_path", str(path))
+    monkeypatch.setattr(filters_mod, "_quick_filters_cache", [])
+    monkeypatch.setattr(filters_mod, "_quick_filters_mtime", None)
+    monkeypatch.setattr(filters_mod, "_quick_filters_path", None)
+
+    yield path
+
+    monkeypatch.setattr(filters_mod, "_quick_filters_cache", [])
+    monkeypatch.setattr(filters_mod, "_quick_filters_mtime", None)
+    monkeypatch.setattr(filters_mod, "_quick_filters_path", None)
+
+
+@pytest.mark.integration
+def test_reset_filters_quick(web_client, quick_filters):
+    """Clicking a quick filter badge loads its filters and resets the page state."""
+    with web_client.session_transaction() as sess:
+        sess['filters'] = [{"name": "Description", "inverted": False, "values": ["something else"]}]
+        sess['search'] = "an old search"
+        sess['page_offset'] = 50
+        sess['checked'] = ['uuid1']
+
+    response = web_client.get(url_for("analysis.reset_filters_quick", filter_id="needs_research"))
+
+    assert response.status_code == 204
+
+    with web_client.session_transaction() as sess:
+        assert sess['filters'] == [
+            {"name": "Queue", "inverted": False, "values": ["default"]},
+            {"name": "Tag", "inverted": False, "values": ["needs_research"]},
+        ]
+        assert sess['search'] is None
+        assert sess['page_offset'] == 0
+        assert sess['sort_filter'] == 'Alert Date'
+        assert sess['sort_filter_desc'] == True
+        assert sess['checked'] == []
+
+
+@pytest.mark.integration
+def test_reset_filters_quick_unknown_id(web_client, quick_filters):
+    """An unknown id is a 404 and leaves the session alone."""
+    original = [{"name": "Description", "inverted": False, "values": ["keep me"]}]
+    with web_client.session_transaction() as sess:
+        sess['filters'] = original
+
+    response = web_client.get(url_for("analysis.reset_filters_quick", filter_id="does_not_exist"))
+
+    assert response.status_code == 404
+
+    with web_client.session_transaction() as sess:
+        assert sess['filters'] == original
+
+
+@pytest.mark.integration
+def test_reset_filters_quick_resolves_user_sentinel(web_client, quick_filters, analyst):
+    """$USER resolves to the logged in user's display name, which is what the Owner
+    filter matches on."""
+    web_client.get(url_for("analysis.reset_filters_quick", filter_id="mine"))
+
+    with web_client.session_transaction() as sess:
+        assert sess['filters'] == [{"name": "Owner", "inverted": False, "values": ["john"]}]
+
+
+@pytest.mark.integration
+def test_reset_filters_quick_merges_same_name_filters(web_client, quick_filters):
+    """Two entries with the same name have to become one session filter -- separate
+    entries are ANDed together and would match nothing."""
+    web_client.get(url_for("analysis.reset_filters_quick", filter_id="two_queues"))
+
+    with web_client.session_transaction() as sess:
+        assert sess['filters'] == [
+            {"name": "Queue", "inverted": False, "values": ["queue_a", "queue_b"]},
+        ]
+
+
+@pytest.mark.integration
+def test_quick_filter_with_bad_filter_name_is_not_usable(web_client, quick_filters):
+    """A quick filter naming a filter that doesn't exist is dropped at load, so it can
+    never write a value into session['filters'] that makes /manage raise KeyError."""
+    response = web_client.get(url_for("analysis.reset_filters_quick", filter_id="bad_filter_name"))
+
+    assert response.status_code == 404
+
+    # the valid badges still render and the page still works
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    assert b'data-quick-filter-id="needs_research"' in response.data
+    assert b'data-quick-filter-id="bad_filter_name"' not in response.data
+
+
+def _insert_alert(uuid, queue, location, tag=None):
+    """Inserts a minimal alert, optionally tagged."""
+    from saq.database.model import Tag, TagMapping
+    from saq.database.pool import get_db
+    from saq.gui.alert import GUIAlert
+
+    db = get_db()
+    alert = GUIAlert()
+    alert.uuid = uuid
+    alert.storage_dir = f'/tmp/{uuid}'
+    alert.tool = 'test'
+    alert.tool_instance = 'test'
+    alert.alert_type = 'test'
+    alert.description = 'quick filter test alert'
+    alert.priority = 1
+    alert.disposition = None
+    alert.queue = queue
+    alert.location = location
+    alert.insert_date = '2023-01-01 00:00:00'
+    db.add(alert)
+    db.flush()
+
+    if tag:
+        tag_row = db.query(Tag).filter(Tag.name == tag).first()
+        if tag_row is None:
+            tag_row = Tag(name=tag)
+            db.add(tag_row)
+            db.flush()
+
+        db.add(TagMapping(alert_id=alert.id, tag_id=tag_row.id))
+
+    db.commit()
+    return alert
+
+
+@pytest.mark.integration
+def test_quick_filter_indicator_count_matches_the_alert_list(app, web_client, quick_filters):
+    """The indicator dot has to count exactly the alerts the badge shows -- including
+    honoring the local_node_only scoping the alert list applies. A count built from its
+    own hand-rolled query drifts from the list; this is the regression test for that."""
+    from app.analysis.views.session.filters import (
+        build_alert_query,
+        get_quick_filter_indicator_count,
+        get_quick_filters,
+        resolve_quick_filter_filters,
+    )
+    from saq.environment import get_global_runtime_settings
+    from saq.gui.alert import GUIAlert
+
+    local_node = get_global_runtime_settings().saq_node
+
+    # two matching alerts on this node
+    _insert_alert('qf-local-1', 'default', local_node, tag='needs_research')
+    _insert_alert('qf-local-2', 'default', local_node, tag='needs_research')
+    # ... one on another node, which the alert list will not show
+    _insert_alert('qf-remote', 'default', 'some-other-node', tag='needs_research')
+    # ... one on this node that doesn't match the filter at all
+    _insert_alert('qf-untagged', 'default', local_node)
+
+    quick_filter = [_ for _ in get_quick_filters() if _.id == 'needs_research'][0]
+    filters = resolve_quick_filter_filters(quick_filter)
+
+    listed = build_alert_query(filters).group_by(GUIAlert.id).all()
+
+    assert get_quick_filter_indicator_count(quick_filter) == len(listed)
+    assert sorted(_.uuid for _ in listed) == ['qf-local-1', 'qf-local-2']
+
+
+@pytest.mark.integration
+def test_quick_filter_indicator_rendered_only_when_configured(web_client, quick_filters):
+    """indicator: true gets a dot with the count; the default gets no dot."""
+    from saq.environment import get_global_runtime_settings
+
+    _insert_alert('qf-dot-1', 'default', get_global_runtime_settings().saq_node, tag='needs_research')
+
+    response = web_client.get(url_for("analysis.manage"))
+
+    assert response.status_code == 200
+    html = response.data.decode()
+
+    # 'needs_research' has indicator: true and one matching alert
+    assert 'title="1 Needs Research alert(s)"' in html
+    # 'mine' does not opt in, so no dot regardless of what it would match
+    assert 'title="0 Mine alert(s)"' not in html
+    assert html.count('quick-filter-dot') == 1

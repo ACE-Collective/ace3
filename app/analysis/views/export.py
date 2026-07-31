@@ -13,14 +13,14 @@ import zipfile
 from flask import flash, make_response, redirect, request, send_from_directory, session, url_for
 from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert, load_current_alert
-from app.analysis.views.session.filters import _reset_filters, create_filter, hasFilter
+from app.analysis.views.session.filters import _reset_filters, build_alert_query
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.csv_builder import CSV
-from saq.database.model import DispositionBy, Observable, ObservableMapping, Owner, RemediatedBy, Tag, TagMapping, Comment
+from saq.database.model import Comment
 from saq.database.pool import get_db
-from saq.environment import get_base_dir, get_global_runtime_settings, get_temp_dir
+from saq.environment import get_base_dir, get_temp_dir
 from saq.error.reporting import report_exception
 from saq.gui.alert import GUIAlert
 
@@ -117,32 +117,9 @@ def export_alerts_to_csv():
     if 'filters' not in session:
         _reset_filters()
 
-    # create alert view by joining required tables
-    query = get_db().query(GUIAlert).with_labels()
-    query = query.outerjoin(Owner, GUIAlert.owner_id == Owner.id)
-    if hasFilter('Disposition By'):
-        query = query.outerjoin(DispositionBy, GUIAlert.disposition_user_id == DispositionBy.id)
-    if hasFilter('Remediated By'):
-        query = query.outerjoin(RemediatedBy, GUIAlert.removal_user_id == RemediatedBy.id)
-    if hasFilter('Tag'):
-        query = query.join(TagMapping, GUIAlert.id == TagMapping.alert_id).join(Tag, TagMapping.tag_id == Tag.id)
-    if hasFilter('Observable'):
-        query = query.join(ObservableMapping, GUIAlert.id == ObservableMapping.alert_id).join(Observable, ObservableMapping.observable_id == Observable.id)
-
-    # apply filters
-    for filter_dict in session["filters"]:
-        _filter = create_filter(filter_dict["name"], inverted=filter_dict["inverted"])
-        query = _filter.apply(query, filter_dict["values"])
-
-    # only show alerts from this node
-    # NOTE: this will not be necessary once alerts are stored externally
-    if get_config().gui.local_node_only:
-        query = query.filter(GUIAlert.location == get_global_runtime_settings().saq_node)
-    elif get_config().gui.display_node_list:
-        # alternatively we can display alerts for specific nodes
-        # this was added on 05/02/2023 to support a DR mode of operation
-        display_node_list = get_config().gui.display_node_list
-        query = query.filter(GUIAlert.location.in_(display_node_list))
+    # create alert view by joining required tables, applying the session filters and
+    # scoping to the alerts visible from this node 
+    query = build_alert_query(session["filters"])
 
     # group by id to prevent duplicates
     query = query.group_by(GUIAlert.id)
