@@ -55,6 +55,52 @@ function copy_to_clipboard(str) {
         : Promise.reject(new Error("unable to copy to clipboard"));
 }
 
+// Expands or collapses the observable list under an alert row. Shared by every page that renders a
+// table of alerts: the manage alerts page, the event page, and the event list expandable row.
+//
+// The row is located by traversing up from the button rather than by element id: on the event list
+// an alert mapped to two expanded events appears twice in the same DOM, so ids are not unique.
+function toggle_alert_observables(button, alert_uuid, observables_url) {
+    const row = $(button).closest("tr");
+    const icon = $(button).find("span.bi");
+    const existing = row.next(".alert-observables-row");
+
+    if (existing.length != 0) {
+        existing.remove();
+        icon.removeClass("bi-chevron-up").addClass("bi-chevron-down");
+        return;
+    }
+
+    const params = new URLSearchParams({ alert_uuid: alert_uuid });
+    fetch(observables_url + "?" + params.toString(), { credentials: "same-origin" })
+    .then(function(resp){
+        if (!resp.ok) { throw new Error(resp.statusText); }
+        return resp.text();
+    })
+    .then(function(data){
+        row.after('<tr class="alert-observables-row"><td colspan="' + row.children("td").length + '">' + data + '</td></tr>');
+        icon.removeClass("bi-chevron-down").addClass("bi-chevron-up");
+    })
+    .catch(function(err){
+        alert('DOH: ' + err.message);
+    });
+}
+
+// Pivots the alert list to a single observable. Used by analysis/load_observables.html, which renders
+// on pages served by different blueprints, so the urls are passed in from the template.
+function add_observable_filter(observable_type, observable_value, filter_url, manage_url) {
+    const filter = { name: "Observable", values: [[observable_type, observable_value]] };
+    const params = new URLSearchParams({ filter: JSON.stringify(filter) });
+    fetch(filter_url + "?" + params.toString(), { credentials: "same-origin" })
+    .then(function(resp){
+        if (!resp.ok) { throw new Error(resp.statusText); }
+        window.location.replace(manage_url);
+    })
+    .catch(function(err){
+        alert('DOH: ' + err.message);
+    });
+}
+
 // "Copy API Key" in the nav bar. The key is not rendered into the page; it is fetched on demand
 // from the v2 API (GET /api/v2/users/me/apikey), which is served at the same origin and accepts the
 // Flask session cookie. The URL comes from the link's data-api-key-url attribute.
@@ -179,15 +225,6 @@ let placeholder_dst = {
 
 window.localStorage.setItem('placeholder_src', JSON.stringify(placeholder_src));
 window.localStorage.setItem('placeholder_dst', JSON.stringify(placeholder_dst));
-
-function toggle_chevron(element_id) {
-    let element_class = document.getElementById(element_id).className;
-    if (element_class == "bi bi-chevron-right") {
-        document.getElementById(element_id).className = "bi bi-chevron-down";
-    } else {
-        document.getElementById(element_id).className = "bi bi-chevron-right";
-    }
-}
 
 function toggle(element_id) {
     $("[id='"+element_id+"']").toggle()
