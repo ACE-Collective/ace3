@@ -10,6 +10,7 @@ import bcrypt
 import pymysql
 from flask_login import UserMixin
 from sqlalchemy import (
+    BINARY,
     BLOB,
     BOOLEAN,
     CHAR,
@@ -32,7 +33,14 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME, LONGBLOB, MEDIUMTEXT
+from sqlalchemy.dialects.mysql import (
+    DATETIME as MYSQL_DATETIME,
+    DOUBLE,
+    INTEGER as MYSQL_INTEGER,
+    LONGBLOB,
+    MEDIUMTEXT,
+    TINYINT,
+)
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import (
     Mapped,
@@ -60,7 +68,7 @@ from saq.constants import (
     QUEUE_DEFAULT,
 )
 from saq.crypto import decrypt_chunk
-from saq.database.meta import Base, CacheBase
+from saq.database.meta import Base, BrocessBase, CacheBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
@@ -3236,6 +3244,258 @@ class BlobRef(CacheBase):
         primary_key=True,
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP(6)'))
+
+
+class BrocessConnErr(BrocessBase):
+    """Failed connection counts by (source, destination, port).
+
+    Populated by an external bro/zeek feed, not by ACE. No code in this repo
+    reads this table.
+    """
+
+    __tablename__ = 'connerr'
+    __table_args__ = (
+        Index('idx_sourceip_destip', 'sourceip', 'destip'),
+        Index('idx_sourceip', 'sourceip'),
+        Index('idx_destip', 'destip'),
+    )
+
+    sourceip: Mapped[int] = mapped_column(
+        MYSQL_INTEGER(unsigned=True),
+        primary_key=True)
+
+    destip: Mapped[int] = mapped_column(
+        MYSQL_INTEGER(unsigned=True),
+        primary_key=True)
+
+    destport: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    numconnections: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True)
+
+    firstconnectdate: Mapped[Optional[float]] = mapped_column(
+        DOUBLE(asdecimal=False),
+        nullable=True)
+
+
+class BrocessConnLog(BrocessBase):
+    """Successful connection counts by (source, destination, port)."""
+
+    __tablename__ = 'connlog'
+    __table_args__ = (
+        Index('idx_sourceip_destip', 'sourceip', 'destip'),
+        Index('idx_sourceip', 'sourceip'),
+        Index('idx_destip', 'destip'),
+    )
+
+    sourceip: Mapped[int] = mapped_column(
+        MYSQL_INTEGER(unsigned=True),
+        primary_key=True)
+
+    destip: Mapped[int] = mapped_column(
+        MYSQL_INTEGER(unsigned=True),
+        primary_key=True)
+
+    destport: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    numconnections: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True)
+
+    firstconnectdate: Mapped[Optional[float]] = mapped_column(
+        DOUBLE(asdecimal=False),
+        nullable=True)
+
+
+class BrocessHttpLog(BrocessBase):
+    """How often each http host has been seen.
+
+    Backs the "uncommon network" heuristic in saq/crawlphish_filter.py. Written
+    by saq/brocess.py::add_httplog, which upserts one row per fqdn part.
+    """
+
+    __tablename__ = 'httplog'
+
+    host: Mapped[bytes] = mapped_column(
+        VARBINARY(255),
+        primary_key=True)
+
+    numconnections: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True)
+
+    firstconnectdate: Mapped[Optional[float]] = mapped_column(
+        DOUBLE(asdecimal=False),
+        nullable=True)
+
+
+class BrocessSmtpLog(BrocessBase):
+    """How often each (sender, recipient) email conversation has been seen.
+
+    Backs the new_sender / frequent_conversation tags in
+    saq/modules/email/fa.py. source and destination are varbinary(255), a BYTE
+    limit -- saq/modules/email/logging.py::export_to_brocess encodes to utf-8
+    and truncates to 255 bytes before writing.
+    """
+
+    __tablename__ = 'smtplog'
+
+    source: Mapped[bytes] = mapped_column(
+        VARBINARY(255),
+        primary_key=True)
+
+    destination: Mapped[bytes] = mapped_column(
+        VARBINARY(255),
+        primary_key=True)
+
+    numconnections: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True)
+
+    firstconnectdate: Mapped[Optional[float]] = mapped_column(
+        DOUBLE(asdecimal=False),
+        nullable=True)
+
+
+class EmailThreadMessage(BrocessBase):
+    """Per-message metadata used to reconstruct email conversations (threads).
+
+    Identifiers such as message-id / thread-id have no hard length limit
+    (RFC 5322), so they are stored full-length as TEXT and indexed via
+    fixed-width BINARY(32) SHA-256 hash columns (UNHEX(SHA2(value, 256))).
+    """
+
+    __tablename__ = 'email_thread_message'
+    __table_args__ = (
+        UniqueConstraint('thread_id_hash', 'message_id_hash', name='uniq_thread_message'),
+        Index('idx_thread_date', 'thread_id_hash', 'message_date'),
+        Index('idx_subject', 'normalized_subject_hash'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    thread_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    thread_id_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    message_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    message_id_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    in_reply_to: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
+    normalized_subject: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
+    normalized_subject_hash: Mapped[Optional[bytes]] = mapped_column(
+        BINARY(32),
+        nullable=True)
+
+    from_address: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
+    from_domain: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True)
+
+    direction: Mapped[Optional[int]] = mapped_column(
+        TINYINT(),
+        nullable=True)
+
+    message_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True)
+
+
+class EmailThreadDomain(BrocessBase):
+    """Participant domains seen in each thread.
+
+    Used as the "established in-thread domains" that a newly-arriving sender
+    domain is compared against for look-a-like detection. entry_hash keeps the
+    per-thread uniqueness key fixed-width so domain/address can stay
+    arbitrary-length TEXT.
+
+    Rows are per-MESSAGE: entry_hash covers (message_id, domain, address, role),
+    so a participant present on five messages of a thread produces five rows.
+    This is what lets the conversation timeline say which message a domain
+    appeared on.
+    """
+
+    __tablename__ = 'email_thread_domain'
+    __table_args__ = (
+        UniqueConstraint('thread_id_hash', 'entry_hash', name='uniq_thread_domain'),
+        Index('idx_thread', 'thread_id_hash'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True)
+
+    thread_id: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    thread_id_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    message_id_hash: Mapped[Optional[bytes]] = mapped_column(
+        BINARY(32),
+        nullable=True)
+
+    domain: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    address: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    role: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False)
+
+    entry_hash: Mapped[bytes] = mapped_column(
+        BINARY(32),
+        nullable=False)
+
+    # deprecated. it counted repeat sightings back when a row was per-thread;
+    # with per-message rows it stays 1. count messages with
+    # COUNT(DISTINCT message_id_hash) instead.
+    numseen: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        server_default=text('1'))
+
+    firstseendate: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True)
 
 
 # NOTE there is no database relationship between these tables
