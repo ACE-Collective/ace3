@@ -267,7 +267,15 @@ def _build_findings(analysis: EmailThreadAnalysis) -> Optional[str]:
                 presence += f" by {entry['introduced_by_address']}"
         lines.append(presence + ".")
 
-        if not entry["present_in_anchor_message"]:
+        # a floor, not the answer - and it has to be said, because the roles above DO count the
+        # records this leaves out, so an unqualified count contradicts them
+        if entry["presence_is_partial"]:
+            lines.append("- That count is a floor: some records for this domain predate "
+                         "per-message tracking and cannot be tied to a specific message.")
+
+        # with unattributable records in play we do not know the domain is absent from the anchor,
+        # only that nothing placed it there - so say nothing rather than assert it
+        if not entry["present_in_anchor_message"] and not entry["presence_is_partial"]:
             lines.append("- Not present in the message this alert fired on; it comes from earlier "
                          "messages in the conversation.")
 
@@ -289,7 +297,12 @@ def _build_timeline(conversation: Conversation, anchor_message_id: str, lookalik
         participants = conversation.participants(message)
 
         by_address = {p.address: p.domain for p in participants if p.role not in SENDER_ROLES}
-        present = sorted({p.domain for p in participants if p.domain in lookalike_domains})
+
+        # from_domain comes off the message row rather than the participant rows, so it survives
+        # where per-message participant attribution is missing. without it the badge column reads
+        # empty on the very rows whose From cell is highlighted as the look-a-like.
+        present = sorted({p.domain for p in participants if p.domain in lookalike_domains}
+                         | ({message.from_domain} & lookalike_domains))
 
         # Reply-To / Return-Path are sender-side roles, so they land in neither the From column nor
         # Recipients and would otherwise be recorded but never shown. They matter: two look-a-like
@@ -339,7 +352,12 @@ def _build_lookalikes(conversation: Conversation, anchor_message_id: str) -> lis
     """
     domains = sorted(conversation.participant_domains)
     anchor = next((m for m in conversation.messages if m.message_id == anchor_message_id), None)
-    anchor_domains = {p.domain for p in conversation.participants(anchor)} if anchor else set()
+    anchor_domains = set()
+    if anchor:
+        anchor_domains = {p.domain for p in conversation.participants(anchor)}
+        # the anchor's own sender, from the message row - see messages_containing_domain
+        if anchor.from_domain:
+            anchor_domains.add(anchor.from_domain)
 
     entries = []
     for i, suspect in enumerate(domains):
@@ -364,13 +382,19 @@ def _suspect_rank(conversation: Conversation, domain: str) -> tuple:
     this cannot fall through to alphabetical order. A Cyrillic homoglyph sorts after its ASCII twin,
     which is exactly how the real domain ended up being labelled the imposter.
 
-    In order: a domain that never sent is the anomaly worth calling out; otherwise the one that
-    turned up LATER is the newcomer to an established conversation; then the one on fewer messages.
+    In order: a domain that never sent is the anomaly worth calling out; then the one on FEWER
+    messages, which is the same rule the phishfinder look-a-like hunt applies when it re-picks
+    which side to display; then the one that turned up later, as a tiebreak on equal counts.
+
+    Volume outranks arrival order because arrival order is only meaningful in a conversation the
+    threading headers actually grouped. A subject-merged pile of self-threaded messages is ordered
+    by nothing but when each independent message happened to land, and an impostor who opened the
+    exchange before the real party replied then sorts as the established side.
     """
     containing = conversation.messages_containing_domain(domain)
     first_seen_index = conversation.messages.index(containing[0]) if containing else len(conversation.messages)
 
-    return (_ever_sent(conversation, domain), -first_seen_index, len(containing), domain)
+    return (_ever_sent(conversation, domain), len(containing), -first_seen_index, domain)
 
 
 def _ever_sent(conversation: Conversation, domain: str) -> bool:
@@ -460,6 +484,11 @@ def _describe_lookalike(conversation: Conversation, domain: str, counterpart: st
         "shared_reply_to": _shared_reply_to(conversation, domain, counterpart),
         "message_count": len(containing),
         "total_messages": len(conversation.messages),
+        # this domain also has participant rows that cannot be tied to a message, so message_count
+        # is a floor rather than the answer. stating it flat contradicts the role-based verdicts
+        # above, which DO count those rows - that is how a domain that sent two of the messages
+        # gets reported as "sent mail into this conversation" and "present on 0 of 5" at once.
+        "presence_is_partial": conversation.has_unattributed_domain(domain),
         "introduced_by_address": introduced_by.from_address if introduced_by else None,
         "introduced_on": _format_date(
             (introduced_by.message_date or introduced_by.insert_date) if introduced_by else None),

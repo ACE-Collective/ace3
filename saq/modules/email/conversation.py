@@ -189,8 +189,26 @@ class Conversation:
         return set(self.domain_addresses.get(domain, ()))
 
     def messages_containing_domain(self, domain: str) -> list:
+        """Every message this domain appears on, in order.
+
+        from_domain is checked as well as the participant rows because it lives on the MESSAGE row,
+        which is always attributable to its message - participant rows written before message_id_hash
+        existed are not (see unattributed_participants). It is also the strongest presence there is:
+        the message was sent from this domain. Reading participants alone reports "present on 0 of N"
+        for a domain the timeline is simultaneously rendering as the sender.
+        """
         return [m for m in self.messages
-                if any(p.domain == domain for p in self.participants(m))]
+                if m.from_domain == domain
+                or any(p.domain == domain for p in self.participants(m))]
+
+    def has_unattributed_domain(self, domain: str) -> bool:
+        """Does this domain have participant rows that predate per-message recording?
+
+        If so, the messages it appears on are a LOWER BOUND - the unattributable rows may belong to
+        messages it was not otherwise counted on. Callers have to say so rather than state the count
+        as fact.
+        """
+        return any(p.domain == domain for p in self.unattributed_participants)
 
     @property
     def all_participants(self) -> list:
@@ -531,7 +549,9 @@ WHERE thread_id_hash IN ({placeholders})""", tuple(thread_hexes))
 
         participant = MessageParticipant(message_id_hex, domain, address, role, firstseendate)
         if message_id_hex is None:
-            # written before per-message participant recording - see sql/tools/alter_email_thread_domain_message_id.sql
+            # written before per-message participant recording (the column was added to live tables
+            # by hand, so there is no migration script here) - see the schema comment in
+            # sql/03-brocess.sql for what NULL means and why the table self-heals
             unattributed.append(participant)
         else:
             participants_by_message.setdefault(message_id_hex, []).append(participant)
