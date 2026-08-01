@@ -3,6 +3,10 @@ disable_existing_loggers: false
 
 formatters:
   base:
+    # ExtraAwareTextFormatter appends any extra={} keys to the line as
+    # key=value tokens. Call sites put fields in extra={} only, so without
+    # this the fields would be visible on the fluent/Splunk path alone.
+    '()': saq.logging.ExtraAwareTextFormatter
     format: '[%(asctime)s] [%(pathname)s:%(funcName)s:%(lineno)d] [%(threadName)s-%(thread)d] [%(process)d] [%(levelname)s] - %(message)s'
 
 handlers:

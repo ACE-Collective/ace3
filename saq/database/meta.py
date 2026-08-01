@@ -5,3 +5,9 @@ Base = declarative_base()
 
 # analysis result cache database
 CacheBase = declarative_base()
+
+# brocess database
+BrocessBase = declarative_base()
+
+# email-archive database
+EmailArchiveBase = declarative_base()

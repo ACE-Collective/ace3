@@ -591,9 +591,10 @@ function set_special_filter_7_days() {
     })();
 }
 
-function set_quick_filter(filter_id) {
+// applies the quick filter identified by the clicked badge's data-quick-filter-id
+function set_quick_filter(badge) {
     (function() {
-        fetch('reset_filters_quick/' + encodeURIComponent(filter_id), { credentials: 'same-origin' })
+        fetch('reset_filters_quick/' + encodeURIComponent(badge.dataset.quickFilterId), { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -819,42 +820,6 @@ function new_filter_option() {
       alert('DOH: ' + err.message);
     });
   })();
-}
-
-// gets called when the user clicks on the right triangle button next to each alert
-// this loads the observable information for the alerts and allows the user to select one for filtering
-function load_alert_observables(alert_uuid) {
-    // have we already loaded this?
-    var existing_dom_element = $("#alert_observables_" + alert_uuid);
-    if (existing_dom_element.length != 0) {
-        existing_dom_element.remove();
-        return;
-    }
-
-    (function() {
-        const params = new URLSearchParams({ alert_uuid: alert_uuid });
-        fetch('observables?' + params.toString(), { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            return resp.text();
-        })
-        .then(function(data){
-            $('#alert_row_' + alert_uuid).after('<tr id="alert_observables_' + alert_uuid + '"><td colspan="6">' + data);
-        })
-        .catch(function(err){
-            alert('DOH: ' + err.message);
-        });
-    })();
-    
-}
-
-function toggle_chevron(alert_row_id) {
-    let button_state = document.getElementById(alert_row_id).className;
-    if (button_state == "bi bi-chevron-down") {
-        document.getElementById(alert_row_id).className = "bi bi-chevron-up";
-    } else {
-        document.getElementById(alert_row_id).className = "bi bi-chevron-down";
-    }
 }
 
 function toggle_include_exclude(filter_row_unique_id) {

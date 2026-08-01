@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import hashlib
+import logging
 import pytest
 import uuid
 
@@ -454,3 +455,206 @@ def test_set_disposition_reviews_default_unreviewed():
 
     finally:
         delete_user("review_default")
+
+#
+# Disposition audit logging
+#
+# Alerts dispositioned IGNORE are eventually deleted outright, so these log
+# lines are the only lasting record of what was ignored. The fields ride in
+# extra={} rather than the message text (see saq/logging.py), so the assertions
+# below read LogRecord attributes.
+#
+
+DISPOSITION_LOG_FIELDS = (
+    "alert_uuid", "alert_description", "old_disposition", "new_disposition",
+    "disposition_user", "disposition_comment", "alert_type", "alert_tool",
+    "alert_tool_instance", "alert_queue", "alert_company", "alert_owner",
+    "alert_insert_date", "alert_event_time",
+)
+
+
+def _audit_records(caplog, event):
+    return [r for r in caplog.records if r.getMessage() == event]
+
+
+def _titled_alert(description):
+    """An alert with a known title, which is the whole point of these lines."""
+    alert = insert_alert()
+    alert.description = description
+    get_db().commit()
+    return alert
+
+
+@pytest.mark.integration
+def test_set_dispositions_logs_alert_title(caplog):
+    """The title is what an analyst searches by once the alert is deleted."""
+    user = add_user("disp_log_title", "disp_log_title@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Phish Reported - Invoice Due")
+
+        with caplog.at_level(logging.INFO):
+            set_dispositions([alert.uuid], DISPOSITION_IGNORE, user.id, "not a real phish")
+
+        records = _audit_records(caplog, "AUDIT: alert dispositioned")
+        assert len(records) == 1
+        record = records[0]
+        assert record.alert_uuid == alert.uuid
+        assert record.alert_description == "Phish Reported - Invoice Due"
+        assert record.new_disposition == DISPOSITION_IGNORE
+        assert record.disposition_user == "disp_log_title"
+        assert record.disposition_comment == "not a real phish"
+
+    finally:
+        delete_user("disp_log_title")
+
+
+@pytest.mark.integration
+def test_set_dispositions_logs_all_fields(caplog):
+    """Anything missing from this line is unrecoverable once the alert is gone."""
+    user = add_user("disp_log_fields", "disp_log_fields@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Suspicious Login")
+
+        with caplog.at_level(logging.INFO):
+            set_dispositions([alert.uuid], DISPOSITION_IGNORE, user.id)
+
+        record = _audit_records(caplog, "AUDIT: alert dispositioned")[0]
+        for field in DISPOSITION_LOG_FIELDS:
+            assert hasattr(record, field), f"disposition log line missing field {field!r}"
+
+    finally:
+        delete_user("disp_log_fields")
+
+
+@pytest.mark.integration
+def test_set_dispositions_logs_previous_disposition(caplog):
+    """The outgoing disposition is overwritten in place, so it has to be
+    captured before the UPDATE or it is lost."""
+    user = add_user("disp_log_prev", "disp_log_prev@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Malicious URL")
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+
+        # that first call logged too; only the second one is under test
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            set_dispositions([alert.uuid], DISPOSITION_IGNORE, user.id)
+
+        record = _audit_records(caplog, "AUDIT: alert dispositioned")[0]
+        assert record.old_disposition == DISPOSITION_FALSE_POSITIVE
+        assert record.new_disposition == DISPOSITION_IGNORE
+
+    finally:
+        delete_user("disp_log_prev")
+
+
+@pytest.mark.integration
+def test_set_dispositions_logs_one_line_per_alert(caplog):
+    """A bulk disposition must not collapse into a single line -- each alert
+    needs its own title attached to its own uuid."""
+    user = add_user("disp_log_bulk", "disp_log_bulk@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        titles = {}
+        for index in range(3):
+            alert = _titled_alert(f"Bulk Alert {index}")
+            titles[alert.uuid] = f"Bulk Alert {index}"
+
+        with caplog.at_level(logging.INFO):
+            set_dispositions(list(titles), DISPOSITION_IGNORE, user.id)
+
+        records = _audit_records(caplog, "AUDIT: alert dispositioned")
+        assert len(records) == 3
+        assert {r.alert_uuid: r.alert_description for r in records} == titles
+
+    finally:
+        delete_user("disp_log_bulk")
+
+
+@pytest.mark.integration
+def test_set_dispositions_no_log_when_disposition_unchanged(caplog):
+    """The UPDATE skips alerts already at the target disposition, so logging
+    one would report an event that never happened."""
+    user = add_user("disp_log_noop", "disp_log_noop@test.com", "Analyst", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Already Ignored")
+        set_dispositions([alert.uuid], DISPOSITION_IGNORE, user.id)
+
+        # that first call logged too; only the second one is under test
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            set_dispositions([alert.uuid], DISPOSITION_IGNORE, user.id)
+
+        assert _audit_records(caplog, "AUDIT: alert dispositioned") == []
+
+    finally:
+        delete_user("disp_log_noop")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_incorrect_logs_correction(caplog):
+    """An INCORRECT review can correct an alert to IGNORE, which deletes it
+    just as a direct disposition would."""
+    analyst = add_user("rev_log_analyst", "rev_log_analyst@test.com", "Analyst", "password123")
+    reviewer = add_user("rev_log_reviewer", "rev_log_reviewer@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Credential Harvester")
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+
+        with caplog.at_level(logging.INFO):
+            set_disposition_reviews(
+                [alert.uuid], DISPOSITION_REVIEW_INCORRECT, reviewer.id,
+                corrected_disposition=DISPOSITION_IGNORE, review_comment="should have been ignored")
+
+        records = _audit_records(caplog, "AUDIT: alert disposition reviewed")
+        assert len(records) == 1
+        record = records[0]
+        assert record.alert_description == "Credential Harvester"
+        assert record.review_result == DISPOSITION_REVIEW_INCORRECT
+        assert record.old_disposition == DISPOSITION_FALSE_POSITIVE
+        assert record.new_disposition == DISPOSITION_IGNORE
+        assert record.disposition_user == "rev_log_reviewer"
+
+    finally:
+        delete_user("rev_log_analyst")
+        delete_user("rev_log_reviewer")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_correct_logs_unchanged_disposition(caplog):
+    """A CORRECT review confirms rather than changes the disposition, so old
+    and new match -- but the review is still an event worth recording."""
+    analyst = add_user("rev_ok_analyst", "rev_ok_analyst@test.com", "Analyst", "password123")
+    reviewer = add_user("rev_ok_reviewer", "rev_ok_reviewer@test.com", "Reviewer", "password123")
+    add_user_permission(analyst.id, "*", "*")
+    add_user_permission(reviewer.id, "*", "*")
+
+    try:
+        alert = _titled_alert("Beaconing Host")
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+
+        with caplog.at_level(logging.INFO):
+            set_disposition_reviews(
+                [alert.uuid], DISPOSITION_REVIEW_CORRECT, reviewer.id, review_comment="agreed")
+
+        record = _audit_records(caplog, "AUDIT: alert disposition reviewed")[0]
+        assert record.alert_description == "Beaconing Host"
+        assert record.review_result == DISPOSITION_REVIEW_CORRECT
+        assert record.old_disposition == DISPOSITION_FALSE_POSITIVE
+        assert record.new_disposition == DISPOSITION_FALSE_POSITIVE
+
+    finally:
+        delete_user("rev_ok_analyst")
+        delete_user("rev_ok_reviewer")

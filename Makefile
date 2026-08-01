@@ -1,5 +1,7 @@
 .PHONY: db-revision db-upgrade db-downgrade db-seed db-check \
-        cache-db-revision cache-db-upgrade cache-db-downgrade cache-db-check
+        cache-db-revision cache-db-upgrade cache-db-downgrade cache-db-check \
+        brocess-db-revision brocess-db-upgrade brocess-db-downgrade brocess-db-check \
+        email-archive-db-revision email-archive-db-upgrade email-archive-db-downgrade email-archive-db-check
 
 db-revision:
 	docker compose exec dev /venv/bin/alembic -c alembic/ace.ini revision --autogenerate -m "$(MESSAGE)"
@@ -27,3 +29,27 @@ cache-db-downgrade:
 
 cache-db-check:
 	docker compose exec -e CACHE_DATABASE_NAME=analysis-result-cache-unittest dev /venv/bin/python bin/check_model_drift.py --database cache
+
+brocess-db-revision:
+	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini revision --autogenerate -m "$(MESSAGE)"
+
+brocess-db-upgrade:
+	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini upgrade head
+
+brocess-db-downgrade:
+	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini downgrade -1
+
+brocess-db-check:
+	docker compose exec -e BROCESS_DATABASE_NAME=brocess-unittest dev /venv/bin/python bin/check_model_drift.py --database brocess
+
+email-archive-db-revision:
+	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini revision --autogenerate -m "$(MESSAGE)"
+
+email-archive-db-upgrade:
+	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini upgrade head
+
+email-archive-db-downgrade:
+	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini downgrade -1
+
+email-archive-db-check:
+	docker compose exec -e EMAIL_ARCHIVE_DATABASE_NAME=email-archive-unittest dev /venv/bin/python bin/check_model_drift.py --database email-archive

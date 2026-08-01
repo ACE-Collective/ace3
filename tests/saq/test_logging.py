@@ -1,5 +1,6 @@
-"""Tests for ExtraAwareFluentFormatter and the transaction id correlation field."""
+"""Tests for the extra-aware formatters and the transaction id correlation field."""
 import logging
+import logging.config
 import threading
 import uuid
 
@@ -7,6 +8,7 @@ import pytest
 
 from saq.logging import (
     ExtraAwareFluentFormatter,
+    ExtraAwareTextFormatter,
     TransactionIdFilter,
     _install_transaction_id_filter,
     get_transaction_id,
@@ -139,8 +141,7 @@ def test_via_logging_call_extra_flows_through():
     logger.addHandler(probe)
     logger.setLevel(logging.INFO)
     logger.info(
-        "wrote analysis cache entry op=%s",
-        "insert",
+        "wrote analysis cache entry",
         extra={
             "op": "insert",
             "module_name": "rdap_analyzer",
@@ -150,10 +151,108 @@ def test_via_logging_call_extra_flows_through():
 
     assert captured
     rec = captured[0]
-    assert rec["message"].startswith("wrote analysis cache entry op=insert")
+    assert rec["message"] == "wrote analysis cache entry"
     assert rec["op"] == "insert"
     assert rec["module_name"] == "rdap_analyzer"
     assert rec["compressed_bytes"] == 187
+
+
+@pytest.mark.unit
+def test_text_formatter_appends_extras():
+    """The plain-text formatter must render extra={} fields, otherwise call
+    sites that put fields only in extra={} would log nothing useful outside
+    the fluent/Splunk path.
+    """
+    formatter = ExtraAwareTextFormatter("[%(levelname)s] - %(message)s")
+    record = _make_record(
+        msg="refusing to cache delta",
+        module_name="rdap_analyzer",
+        refusal_reason="size_cap",
+        compressed_bytes=9437184,
+    )
+    line = formatter.format(record)
+    assert line.startswith("[INFO] - refusing to cache delta ")
+    assert "module_name=rdap_analyzer" in line
+    assert "refusal_reason=size_cap" in line
+    assert "compressed_bytes=9437184" in line
+
+
+@pytest.mark.unit
+def test_text_formatter_quotes_values_needing_it():
+    """Values with whitespace or quotes would break token boundaries, so they
+    get JSON-quoted. Alert descriptions are free text, so this is the common
+    case rather than an edge case.
+    """
+    formatter = ExtraAwareTextFormatter("%(message)s")
+    record = _make_record(
+        msg="AUDIT: alert dispositioned",
+        alert_description='Phish Reported - "Invoice" Due',
+        alert_queue="default",
+        alert_owner="",
+    )
+    line = formatter.format(record)
+    assert 'alert_description="Phish Reported - \\"Invoice\\" Due"' in line
+    # no whitespace or quotes, so it stays bare
+    assert "alert_queue=default" in line
+    # an empty value would otherwise render as a dangling 'key='
+    assert 'alert_owner=""' in line
+
+
+@pytest.mark.unit
+def test_text_formatter_excludes_standard_attrs():
+    """Every record carries the framework's own attributes plus the
+    transaction id stamped by TransactionIdFilter. None of those are
+    caller-supplied fields, and appending them to every line would be noise.
+    """
+    formatter = ExtraAwareTextFormatter("%(message)s")
+    record = _make_record(msg="hello")
+    line = formatter.format(record)
+    assert line == "hello"
+
+
+@pytest.mark.unit
+def test_text_formatter_keeps_traceback_after_fields():
+    """super().format() appends the traceback after the message. The fields
+    belong with the message, not stranded after the traceback.
+    """
+    formatter = ExtraAwareTextFormatter("%(message)s")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys
+        record = logging.LogRecord(
+            name="root", level=logging.WARNING, pathname="test.py", lineno=1,
+            msg="failed to write analysis cache", args=(), exc_info=sys.exc_info(),
+        )
+    record.module_name = "rdap_analyzer"
+
+    line = formatter.format(record)
+    first_line, _, traceback_text = line.partition("\n")
+    assert first_line == "failed to write analysis cache module_name=rdap_analyzer"
+    assert "Traceback (most recent call last)" in traceback_text
+    assert "ValueError: boom" in traceback_text
+
+
+@pytest.mark.unit
+def test_text_formatter_no_extras_leaves_line_untouched():
+    """Most log calls pass no extras at all; they must not gain a trailing space."""
+    formatter = ExtraAwareTextFormatter("[%(levelname)s] %(message)s")
+    record = _make_record(msg="starting engine")
+    assert formatter.format(record) == "[INFO] starting engine"
+
+
+@pytest.mark.unit
+def test_text_formatter_configurable_via_dictconfig():
+    """The shipped YAML configs declare the formatter with a ``format:`` key,
+    but logging.Formatter's parameter is ``fmt``. dictConfig bridges that, and
+    a mismatch here would break every plain-text config at startup.
+    """
+    formatter = logging.config.DictConfigurator({"version": 1}).configure_formatter({
+        "()": "saq.logging.ExtraAwareTextFormatter",
+        "format": "[%(levelname)s] %(message)s",
+    })
+    assert isinstance(formatter, ExtraAwareTextFormatter)
+    assert formatter.format(_make_record(msg="hi", op="insert")) == "[INFO] hi op=insert"
 
 
 @pytest.mark.unit

@@ -1267,9 +1267,7 @@ class AnalysisExecutor:
                 )
         except Exception:
             logging.warning(
-                "failed to write analysis cache module_name=%s "
-                "observable_uuid=%s",
-                analysis_module.config.name, observable.uuid,
+                "failed to write analysis cache",
                 exc_info=True,
                 extra={
                     "module_name": analysis_module.config.name,
@@ -1495,9 +1493,7 @@ class AnalysisExecutor:
                         context.record_cache_lookup(module_name, lookup_result)
                 except Exception:
                     logging.warning(
-                        "cache replay failed module_name=%s observable_uuid=%s "
-                        "— falling through to live run",
-                        analysis_module.config.name, work_item.observable.uuid,
+                        "cache replay failed — falling through to live run",
                         exc_info=True,
                         extra={
                             "module_name": analysis_module.config.name,
@@ -1549,9 +1545,7 @@ class AnalysisExecutor:
                         snapshot_before = ModuleExecutionSnapshot.narrow(root, work_item.observable, analysis_module)
                 except Exception:
                     logging.warning(
-                        "failed to capture pre-execution snapshot module_name=%s "
-                        "observable_uuid=%s",
-                        analysis_module.config.name, work_item.observable.uuid,
+                        "failed to capture pre-execution snapshot",
                         exc_info=True,
                         extra={
                             "module_name": analysis_module.config.name,
@@ -1597,9 +1591,7 @@ class AnalysisExecutor:
                                 delta.cache_key = generate_cache_key(work_item.observable, analysis_module)
                             except Exception:
                                 logging.warning(
-                                    "failed to generate cache key module_name=%s "
-                                    "observable_uuid=%s",
-                                    analysis_module.config.name, work_item.observable.uuid,
+                                    "failed to generate cache key",
                                     exc_info=True,
                                     extra={
                                         "module_name": analysis_module.config.name,
@@ -1635,9 +1627,7 @@ class AnalysisExecutor:
 
                         if delta.has_removals:
                             logging.info(
-                                "module produced removals in delta module_name=%s "
-                                "observable_uuid=%s",
-                                analysis_module.config.name, work_item.observable.uuid,
+                                "module produced removals in delta",
                                 extra={
                                     "module_name": analysis_module.config.name,
                                     "observable_uuid": work_item.observable.uuid,
@@ -1651,9 +1641,7 @@ class AnalysisExecutor:
                         )
                     except Exception:
                         logging.warning(
-                            "failed to record module execution delta module_name=%s "
-                            "observable_uuid=%s",
-                            analysis_module.config.name, work_item.observable.uuid,
+                            "failed to record module execution delta",
                             exc_info=True,
                             extra={
                                 "module_name": analysis_module.config.name,

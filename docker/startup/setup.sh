@@ -32,6 +32,20 @@ if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
 fi
 echo "analysis cache database migrations complete"
 
+echo "running brocess database migrations..."
+/venv/bin/alembic -c alembic/brocess.ini upgrade head
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    BROCESS_DATABASE_NAME=brocess-unittest /venv/bin/alembic -c alembic/brocess.ini upgrade head
+fi
+echo "brocess database migrations complete"
+
+echo "running email archive database migrations..."
+/venv/bin/alembic -c alembic/email_archive.ini upgrade head
+if [ "${ACE_INSTANCE_TYPE}" = "DEV" ]; then
+    EMAIL_ARCHIVE_DATABASE_NAME=email-archive-unittest /venv/bin/alembic -c alembic/email_archive.ini upgrade head
+fi
+echo "email archive database migrations complete"
+
 # Seed database before encryption check — ace enc test calls initialize_node()
 # which INSERTs into nodes with a company_id FK, so company must exist first.
 echo "seeding database..."

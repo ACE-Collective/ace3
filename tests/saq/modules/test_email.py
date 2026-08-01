@@ -1705,7 +1705,7 @@ def test_message_id_remediation(root_analysis, datadir):
     assert email_delivery.message_id == message_id_observable.value
     assert not email_delivery.has_directive(DIRECTIVE_REMEDIATE)
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_export_to_brocess(test_context):
     with get_db_connection(DB_BROCESS) as db:
         _cursor = db.cursor()
@@ -1727,7 +1727,7 @@ def test_export_to_brocess(test_context):
         result = _cursor.fetchone()
         assert result
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_export_to_brocess_large_email(test_context):
     with get_db_connection(DB_BROCESS) as db:
         _cursor = db.cursor()
@@ -1750,7 +1750,7 @@ def test_export_to_brocess_large_email(test_context):
         result = _cursor.fetchone()
         assert result
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_export_to_brocess_multibyte_oversize(test_context):
     # smtplog.source/destination are varbinary(255) — a byte limit.
     # values whose UTF-8 encoding exceeds 255 bytes must not crash the export

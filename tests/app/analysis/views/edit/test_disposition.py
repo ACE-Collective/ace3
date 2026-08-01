@@ -369,11 +369,26 @@ def test_set_disposition_audit_logging(web_client, caplog):
     
     assert response.status_code == 302
     
-    # Check that audit log entry was created
-    audit_logs = [record for record in caplog.records if 'AUDIT:' in record.message]
-    assert len(audit_logs) >= 1
-    
-    audit_log = audit_logs[0]
+    # the batch line covers the whole request and is what existing Splunk
+    # searches match on, so its wording must not drift
+    batch_logs = [
+        record for record in caplog.records
+        if record.message.startswith('AUDIT: user ')
+    ]
+    assert len(batch_logs) == 1
+
+    audit_log = batch_logs[0]
     assert DISPOSITION_FALSE_POSITIVE in audit_log.message
     assert alert.uuid in audit_log.message
     assert "Audit test comment" in audit_log.message
+
+    # the per-alert line carries the fields in extra={}; it is the only record
+    # that survives once an IGNORE'd alert is deleted
+    per_alert_logs = [
+        record for record in caplog.records
+        if record.message == 'AUDIT: alert dispositioned'
+    ]
+    assert len(per_alert_logs) == 1
+    assert per_alert_logs[0].alert_uuid == alert.uuid
+    assert per_alert_logs[0].new_disposition == DISPOSITION_FALSE_POSITIVE
+    assert per_alert_logs[0].disposition_comment == "Audit test comment"

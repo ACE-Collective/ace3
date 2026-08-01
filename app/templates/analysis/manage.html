@@ -38,9 +38,9 @@
             <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
             <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()()'>Last 7d</span>
+            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()'>Last 7d</span>
             {% for quick_filter in quick_filters %}
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_quick_filter("{{ quick_filter.id }}")'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" style="background-color: {{ quick_filter.color | default('#6c757d') }}" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
+            <span class="badge label-special" style="cursor:pointer" data-quick-filter-id="{{ quick_filter.id }}" onclick='set_quick_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
             {% endfor %} |
             {% for _filter in session['filters'] %}
                 {% set name = _filter['name'] %}
@@ -83,7 +83,7 @@
                     {# we can use this ID to modify an alert row #}
                     <tr id="alert_row_{{alert.uuid}}" >
                         <td>
-                            <button onclick="load_alert_observables('{{alert.uuid}}'); toggle_chevron('alert_row_dropdown_{{alert.uuid}}')" type="button" class="btn btn-outline-primary btn-sm"><span id="alert_row_dropdown_{{alert.uuid}}" class="bi bi-chevron-down"></span></button>
+                            {% include "analysis/_observable_expand_button.html" %}
                         </td>
                         <td>
                             <div class="form-check">

@@ -1,6 +1,7 @@
 <table class="table table-bordered table-condensed">
     <tr>
         <th></th>
+        <th></th>
         <th><span>Date</span></th>
         <th><span>(Priority) Alert</span></th>
         <th><span>Owner</span></th>
@@ -9,6 +10,7 @@
     </tr>
     {% for alert in alerts %}
     <tr>
+        <td>{% include "analysis/_observable_expand_button.html" %}</td>
         <td class="event-cell"><label><input type="checkbox" name="detail_{{event.id}}_{{alert.id}}"></input></label></td>
         <td style="white-space: nowrap;">{{alert.insert_date}}</td>
         <td>

@@ -210,10 +210,7 @@ def emit_cache_stats() -> None:
     try:
         stats = collect_cache_stats()
         logging.info(
-            "cache_stats total_rows=%d total_on_disk_bytes=%d blob_refs_rows=%d",
-            stats["total_rows"],
-            stats["total_on_disk_bytes"],
-            stats["blob_refs_rows"],
+            "cache_stats",
             # NOTE this was added to support timechart queries in Splunk
             extra={
                 "total_rows": stats["total_rows"],
@@ -250,11 +247,7 @@ def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:
 
     elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
     logging.info(
-        "blob_gc blobs_scanned=%d blobs_deleted=%d bytes_reclaimed=%d "
-        "skipped_referenced=%d skipped_within_grace=%d errors=%d dry_run=%s in %dms",
-        stats.blobs_scanned, stats.blobs_deleted, stats.bytes_reclaimed,
-        stats.skipped_referenced, stats.skipped_within_grace, stats.errors,
-        dry_run, elapsed_ms,
+        "blob_gc",
         extra={
             "blobs_scanned": stats.blobs_scanned,
             "blobs_deleted": stats.blobs_deleted,
@@ -262,6 +255,8 @@ def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:
             "skipped_referenced": stats.skipped_referenced,
             "skipped_within_grace": stats.skipped_within_grace,
             "errors": stats.errors,
+            "dry_run": dry_run,
+            "elapsed_ms": elapsed_ms,
         },
     )
     return stats
@@ -290,17 +285,15 @@ def maintain_local_cache(dry_run: bool = False) -> LocalMaintenanceStats:
 
     elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
     logging.info(
-        "local_cache_maintenance entries_scanned=%d entries_evicted=%d "
-        "bytes_reclaimed=%d skipped_unflushed=%d errors=%d dry_run=%s in %dms",
-        stats.cache_entries_scanned, stats.cache_entries_evicted,
-        stats.bytes_reclaimed, stats.skipped_unflushed, stats.errors,
-        dry_run, elapsed_ms,
+        "local_cache_maintenance",
         extra={
             "entries_scanned": stats.cache_entries_scanned,
             "entries_evicted": stats.cache_entries_evicted,
             "bytes_reclaimed": stats.bytes_reclaimed,
             "skipped_unflushed": stats.skipped_unflushed,
             "errors": stats.errors,
+            "dry_run": dry_run,
+            "elapsed_ms": elapsed_ms,
         },
     )
     return stats
