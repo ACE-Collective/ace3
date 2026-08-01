@@ -364,3 +364,32 @@ def test_html_details_with_field(web_client, root_analysis):
                           })
     assert result.status_code == 200
     assert b"<h1>Test HTML</h1>" in result.data
+
+@pytest.mark.integration
+def test_export_alerts_to_csv_matches_the_alert_list(web_client, root_analysis):
+    """The CSV export and the alert management page build the same query
+    (build_alert_query), so an alert that /manage shows has to appear in the export.
+
+    Regression test for an inverted Observable filter: the export used to inner-join
+    ObservableMapping, which dropped every alert that has no observables at all before
+    the NOT condition was even evaluated, so "NOT Observable X" exported fewer alerts
+    than the analyst was looking at."""
+    from app.analysis.views.session.filters import build_alert_query
+
+    root_analysis.event_time = local_time()
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    filters = [{"name": "Observable", "inverted": True, "values": [["ipv4", "10.0.0.1"]]}]
+    with web_client.session_transaction() as sess:
+        sess['filters'] = filters
+
+    listed = build_alert_query(filters).group_by(Alert.id).all()
+    assert alert.uuid in [_.uuid for _ in listed]
+
+    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
+
+    assert result.status_code == 200
+    csv_content = result.get_data(as_text=True)
+    for listed_alert in listed:
+        assert str(listed_alert.uuid) in csv_content

@@ -457,8 +457,8 @@ gui:
   # path (relative to SAQ_HOME) to a YAML file defining the quick-filter badges
   # shown on the alert management page filter bar. Ships with ACE's built-in
   # defaults (see etc/gui_quick_filters.yaml) -- point this at a site-specific
-  # file to add/edit quick filters without an ACE code change. Re-read on
-  # every page load, so edits take effect immediately.
+  # file to add/edit quick filters without an ACE code change. Re-read whenever
+  # it changes, so edits take effect on the next page load.
   quick_filters_config_path: etc/gui_quick_filters.yaml
   # enabling this option forces all observables in the root analysis to be visible in the critical analysis view
   show_root_observables: true

@@ -4,17 +4,16 @@ from flask_login import current_user
 import pytz
 from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
-from app.analysis.views.session.filters import _reset_filters, create_filter, get_quick_filter_indicator_count, get_quick_filters, getFilters, hasFilter, reset_checked_alerts, reset_pagination, reset_sort_filter
+from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_quick_filter_display_data, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, GUI_DIRECTIVES
-from saq.database.model import Campaign, DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping, Comment, Event, User
+from saq.database.model import Campaign, Observable, ObservableMapping, ObservableRemediationMapping, Owner, Tag, TagMapping, Comment, Event, User
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
-from saq.environment import get_global_runtime_settings
 from saq.gui.alert import GUIAlert
 from sqlalchemy.orm import selectinload
 
@@ -31,22 +30,9 @@ def manage():
     if 'sort_filter' not in session or 'sort_filter_desc' not in session:
         reset_sort_filter()
 
-    # create alert view by joining required tables
-    query = get_db().query(GUIAlert).with_labels()
-    query = query.outerjoin(Owner, GUIAlert.owner_id == Owner.id)
-    if hasFilter('Disposition By'):
-        query = query.outerjoin(DispositionBy, GUIAlert.disposition_user_id == DispositionBy.id)
-    if hasFilter('Remediated By'):
-        query = query.outerjoin(RemediatedBy, GUIAlert.removal_user_id == RemediatedBy.id)
-
-    if hasFilter('Observable') or hasFilter('Remediation Status'):
-        query = query.outerjoin(ObservableMapping)\
-            .outerjoin(Observable)\
-            .outerjoin(ObservableRemediationMapping)\
-            .outerjoin(Remediation)\
-
-    if hasFilter('Tag'):
-        query= query.outerjoin(TagMapping, GUIAlert.id == TagMapping.alert_id).join(Tag, TagMapping.tag_id == Tag.id)
+    # create alert view by joining required tables, applying the session filters and
+    # scoping to the alerts visible from this node
+    query = build_alert_query(session["filters"])
 
     #query = query.options(selectinload('workload'))
     query = query.options(selectinload(GUIAlert.workload))
@@ -69,21 +55,6 @@ def manage():
     # eager-load detection points so the detection_count hybrid property does not
     # issue a separate query per alert when the template renders the count
     query = query.options(selectinload(GUIAlert.detection_points))
-
-    # apply filters
-    for filter_dict in session["filters"]:
-        _filter = create_filter(filter_dict["name"], inverted=filter_dict["inverted"])
-        query = _filter.apply(query, filter_dict["values"])
-
-    # only show alerts from this node
-    # NOTE: this will not be necessary once alerts are stored externally
-    if get_config().gui.local_node_only:
-        query = query.filter(GUIAlert.location == get_global_runtime_settings().saq_node)
-    elif get_config().gui.display_node_list:
-        # alternatively we can display alerts for specific nodes
-        # this was added on 05/02/2023 to support a DR mode of operation
-        display_node_list = get_config().gui.display_node_list
-        query = query.filter(GUIAlert.location.in_(display_node_list))
 
     # if we have a search query then apply it
     search_query = session.get("search", None)
@@ -190,13 +161,6 @@ def manage():
     if search_result_uuids:
         alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
 
-    # quick-filter badges + their indicator dot counts (config-driven, see
-    # etc/gui_quick_filters.yaml / gui.quick_filters_config_path)
-    quick_filters = get_quick_filters()
-    for quick_filter in quick_filters:
-        indicator = quick_filter.get('indicator')
-        quick_filter['indicator_count'] = get_quick_filter_indicator_count(indicator) if indicator else 0
-
     return render_template(
         'analysis/manage.html',
         # settings
@@ -207,7 +171,7 @@ def manage():
         # filter
         filters=getFilters(),
         search_query=search_query,
-        quick_filters=quick_filters,
+        quick_filters=get_quick_filter_display_data(),
 
         # alert data
         alerts=alerts,

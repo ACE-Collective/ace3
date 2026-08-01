@@ -1,54 +1,62 @@
 # GUI quick-filter badges (Alerts management page filter bar)
 # ============================================================
-# Ships with ACE's original built-in "Needs Research" quick filter (Queue =
-# your default queue, Tag = needs_research) and no indicator dots -- this is
-# the same behavior ACE had before quick filters became config-driven. Point
-# gui.quick_filters_config_path (see etc/saq.default.yaml) at a site-specific
-# file (e.g. data/gui_quick_filters.yaml) to add/replace
-# badges -- including adding indicator dots -- without an ACE code change.
-# This file is re-read on every alert management page load, so edits take
-# effect immediately -- no GUI restart needed.
+# A quick filter is a named set of alert filters that gets loaded into your session when
+# you click its badge. This file ships the two badges ACE has always had -- "Needs
+# Research" and "Unreviewed" -- which used to be hardcoded in the GUI.
+#
+# Point gui.quick_filters_config_path (see etc/saq.default.yaml) at a site-specific file
+# to add or replace badges without an ACE code change. This file is re-read whenever it
+# changes, so edits take effect on the next page load -- no GUI restart needed.
+#
+# An entry that fails validation is logged and skipped: that badge does not render and the
+# rest of the page keeps working.
 #
 # Schema
 # ------
 # quick_filters:
-#   - id: <string>              # unique; used in the URL path / onclick handler
-#     label: <string>           # badge text
-#     color: <string, optional> # hex color for the indicator dot (default gray)
-#     session_filters:          # applied to session['filters'] when clicked
-#                                # (same {name, inverted, values} shape the
-#                                # GUI's own filter editor uses)
-#       - name: <string>              # a filter name from getFilters(), e.g.
-#                                      # Queue / Tag / Disposition / Owner
-#         inverted: <bool, optional, default false>
-#         values: [<string>, ...]     # "$USER_QUEUE" resolves to the current
-#                                      # user's default queue
-#     indicator:                      # optional; omit entirely for no dot
-#       tag: <string, optional>          # Tag.name must match
-#       queue: <string, optional>        # alert queue must equal ("$USER_QUEUE"
-#                                         # resolves to the current user's queue)
-#       disposition: <string, optional>  # alert disposition must equal
-#       reviewed: <string, optional>     # alert disposition_review must equal
-#                                         # (e.g. UNREVIEWED / CORRECT / INCORRECT)
-#       owned_only: <bool, optional>     # scope count to alerts owned by the
-#                                         # current user
+#   - id: <string>          # unique; goes in the URL path, so [A-Za-z0-9_-] only
+#     label: <string>       # the text on the badge
+#     filters:              # loaded into session['filters'] when the badge is clicked
+#                            # (the same {name, inverted, values} shape the GUI's own
+#                            # filter editor writes)
+#       - name: <string>            # Alert Date | Alert Type | Description | Disposition
+#                                    # | Disposition By | Disposition Date | Event Date
+#                                    # | Observable | Owner | Queue | Reviewed | Tag
+#         inverted: <bool>          # optional, default false; negates the filter
+#         values: [<string>, ...]   # at least one. two sentinels are resolved against
+#                                    # whoever is logged in:
+#                                    #   $USER_QUEUE -> their default queue
+#                                    #   $USER       -> their display name (for Owner)
+#                                    # Observable values are [type, value] pairs.
+#     indicator: <bool>     # optional, default false. when true the badge shows a dot
+#                            # with the number of alerts it would show. The count runs
+#                            # through the same query the alert list does, so it always
+#                            # agrees with what you get when you click.
+#
+# Entries that repeat a name are merged, so this matches queue A *or* queue B:
+#
+#   filters:
+#     - name: Queue
+#       values: ["A"]
+#     - name: Queue
+#       values: ["B"]
+#
+# while two entries with *different* names are ANDed together.
 
 quick_filters:
   - id: needs_research
     label: Needs Research
-    session_filters:
+    filters:
       - name: Queue
         values: ["$USER_QUEUE"]
       - name: Tag
         values: ["needs_research"]
+    indicator: true
   - id: unreviewed
     label: Unreviewed
-    color: "#dc3545"
-    session_filters:
+    filters:
       - name: Queue
         values: ["$USER_QUEUE"]
       - name: Reviewed
         values: ["UNREVIEWED"]
-    indicator:
-      queue: "$USER_QUEUE"
-      reviewed: UNREVIEWED
+    indicator: true
