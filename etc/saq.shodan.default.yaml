@@ -1,17 +1,14 @@
-# [shodan]
 shodan:
   api_key: ""
   # how long to sleep before making the next query
   # (see the rate limit comment below)
   delay: 1
 
-# [service_network_semaphore]
 # Be mindful of the fact that Shodan's API is rate limited to 1 query/second:
 # https://twitter.com/shodanhq/status/860334085373272064
 service_network_semaphore:
   semaphore_shodan: 1
 
-# [analysis_module_shodan]
 analysis_module_shodan:
   name: shodan
   python_module: saq.modules.shodan
@@ -19,10 +16,9 @@ analysis_module_shodan:
   enabled: true
   semaphore: shodan
 
-# [module_group_correlation]
 module_group_correlation:
-  analysis_module_shodan: true
+  modules:
+    - shodan
 
-# [config]
 config:
   shodan_local: etc/saq.shodan.yaml

@@ -77,11 +77,6 @@
                                         $('#copy_action_{{unique_reference}}').effect("pulsate", {times: 3}, 500);
                                     });
                                 </script>
-                                {% for sim in alert.similar_alerts() %}
-                                <a href="{{ url_for('analysis.index', direct=sim.uuid) }}">
-                                    <span class="badge text-bg-{{dispositions[sim.disposition]['css']}}"><small>{{sim.disposition}} {{sim.percent}}%</small></span>
-                                </a>
-                                {% endfor %}
                             </h4>
                         </div>
                         <div class="card-body">

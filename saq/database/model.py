@@ -4,7 +4,7 @@ import logging
 import uuid
 import warnings
 from datetime import date, datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import bcrypt
 import pymysql
@@ -76,10 +76,12 @@ from saq.database.retry import execute_with_retry, retry
 from saq.database.util.sync import sync_observable
 from saq.disposition import get_dispositions
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 from saq.performance import track_execution_time
 from saq.util import find_all_url_domains, validate_uuid
 from saq.util.ui import get_tag_score
+
+if TYPE_CHECKING:
+    from saq.database.model.icon_configuration import IconConfiguration
 
 
 def verify_password_hash(plain_password: str, hashed_password: str) -> bool:
@@ -101,7 +103,7 @@ class Alert(Base):
 
     @classmethod
     def create_from_root_analysis(cls, root_analysis: RootAnalysis) -> "Alert":
-        alert = cls(
+        return cls(
             uuid=root_analysis.uuid,
             storage_dir=root_analysis.storage_dir,
             location=root_analysis.location,
@@ -113,8 +115,6 @@ class Alert(Base):
             description=root_analysis.description,
             queue=root_analysis.queue,
         )
-        #alert.root_analysis = root_analysis
-        return alert
 
     def _initialize(self):
         # keep track of what Tag and Observable objects we add as we analyze
@@ -122,8 +122,6 @@ class Alert(Base):
         self._tracked_observables = [] # of saq.analysis.Observable
         self._synced_tags = set() # of Tag.name
         self._synced_observables = set() # of '{}:{}'.format(observable.type, observable.value)
-        #self.add_event_listener(EVENT_GLOBAL_TAG_ADDED, self._handle_tag_added)
-        #self.add_event_listener(EVENT_GLOBAL_OBSERVABLE_ADDED, self._handle_observable_added)
 
         # when we lock the Alert this is the UUID we used to lock it with
         self.lock_uuid = str(uuid.uuid4())
@@ -164,25 +162,6 @@ class Alert(Base):
         self._root_analysis = RootAnalysis(storage_dir=self.storage_dir)
         self._root_analysis.set_log_error_on_load(self._log_error_on_load)
         return self._root_analysis.load()
-
-        #try:
-            #result = super().load(*args, **kwargs)
-        #finally:
-            ## the RootAnalysis object actually loads everything from JSON
-            ## this may not exactly match what is in the database (it should)
-            ## the data in the json is the authoritative source
-            ## see https://ace-ecosystem.github.io/ACE/design/alert_storage/#alert-storage-vs-database-storage
-            #session = Session.object_session(self)
-            #if session:
-                ## so if this alert is attached to a Session, at this point the session becomes dirty
-                ## because we've loaded all the values from json that we've already loaded from the database
-                ## so we discard those changes
-                #session.expire(self)
-                ## and then reload from the database
-                #session.refresh(self)
-                ## XXX inefficient but we'll move to a better design when we're fully containerized
-
-        #return result
 
     __tablename__ = 'alerts'
     __table_args__ = (
@@ -353,9 +332,7 @@ class Alert(Base):
         'User', primaryjoin='Alert.review_user_id == User.id', foreign_keys=[review_user_id])
     incorrect_disposition_user: Mapped[Optional["User"]] = relationship(
         'User', primaryjoin='Alert.incorrect_disposition_user_id == User.id', foreign_keys=[incorrect_disposition_user_id])
-    #observable_mapping = relationship('ObservableMapping')
     tag_mappings: Mapped[list["TagMapping"]] = relationship('TagMapping', passive_deletes=True, passive_updates=True, lazy='joined', overlaps="tag_mapping")
-    #delayed_analysis = relationship('DelayedAnalysis')
 
     def get_observables(self):
         query = get_db().query(Observable)
@@ -423,7 +400,7 @@ class Alert(Base):
         return {}
 
         if self._observable_open_event_counts is None:
-            results = dict()
+            results = {}
 
             # Skip file observables. The calculations will consider their hash observables instead.
             for observable in [o for o in self.root_analysis.observable_store.values() if o.type != F_FILE]:
@@ -458,8 +435,6 @@ class Alert(Base):
             if rem.status != 'COMPLETED':
                 s = 'processing'
         return s
-
-        #return self._remediation_status if hasattr(self, '_remediation_status') else self.get_remediation_status()
 
     @property
     def remediation_targets(self):
@@ -511,22 +486,6 @@ class Alert(Base):
         self.archived = True
         return result
 
-
-    #lock_owner = Column(
-        #String(256), 
-        #nullable=True)
-
-    #lock_id = Column(
-        #String(36),
-        #nullable=True)
-
-    #lock_transaction_id = Column(
-        #String(36),
-        #nullable=True)
-
-    #lock_time = Column(
-        #TIMESTAMP, 
-        #nullable=True)
 
     @hybrid_property
     def detection_count(self):
@@ -610,88 +569,47 @@ class Alert(Base):
         assert isinstance(value, dict)
         RootAnalysis.json.fset(self, value)
 
-        if not self.id:
-            if Alert.KEY_DATABASE_ID in value:
-                self.id = value[Alert.KEY_DATABASE_ID]
+        if not self.id and Alert.KEY_DATABASE_ID in value:
+            self.id = value[Alert.KEY_DATABASE_ID]
 
-        if not self.disposition:
-            if Alert.KEY_DISPOSITION in value:
-                self.disposition = value[Alert.KEY_DISPOSITION]
+        if not self.disposition and Alert.KEY_DISPOSITION in value:
+            self.disposition = value[Alert.KEY_DISPOSITION]
 
-        if not self.disposition_user_id:
-            if Alert.KEY_DISPOSITION_USER_ID in value:
-                self.disposition_user_id = value[Alert.KEY_DISPOSITION_USER_ID]
+        if not self.disposition_user_id and Alert.KEY_DISPOSITION_USER_ID in value:
+            self.disposition_user_id = value[Alert.KEY_DISPOSITION_USER_ID]
 
-        if not self.disposition_time:
-            if Alert.KEY_DISPOSITION_TIME in value:
-                self.disposition_time = value[Alert.KEY_DISPOSITION_TIME]
+        if not self.disposition_time and Alert.KEY_DISPOSITION_TIME in value:
+            self.disposition_time = value[Alert.KEY_DISPOSITION_TIME]
 
-        if not self.owner_id:
-            if Alert.KEY_OWNER_ID in value:
-                self.owner_id = value[Alert.KEY_OWNER_ID]
+        if not self.owner_id and Alert.KEY_OWNER_ID in value:
+            self.owner_id = value[Alert.KEY_OWNER_ID]
 
-        if not self.owner_time:
-            if Alert.KEY_OWNER_TIME in value:
-                self.owner_time = value[Alert.KEY_OWNER_TIME]
+        if not self.owner_time and Alert.KEY_OWNER_TIME in value:
+            self.owner_time = value[Alert.KEY_OWNER_TIME]
 
-        if not self.removal_user_id:
-            if Alert.KEY_REMOVAL_USER_ID in value:
-                self.removal_user_id = value[Alert.KEY_REMOVAL_USER_ID]
+        if not self.removal_user_id and Alert.KEY_REMOVAL_USER_ID in value:
+            self.removal_user_id = value[Alert.KEY_REMOVAL_USER_ID]
 
-        if not self.removal_time:
-            if Alert.KEY_REMOVAL_TIME in value:
-                self.removal_time = value[Alert.KEY_REMOVAL_TIME]
+        if not self.removal_time and Alert.KEY_REMOVAL_TIME in value:
+            self.removal_time = value[Alert.KEY_REMOVAL_TIME]
 
-        if not self.disposition_review or self.disposition_review == DISPOSITION_REVIEW_UNREVIEWED:
-            if Alert.KEY_DISPOSITION_REVIEW in value and value[Alert.KEY_DISPOSITION_REVIEW]:
-                self.disposition_review = value[Alert.KEY_DISPOSITION_REVIEW]
+        if (not self.disposition_review or self.disposition_review == DISPOSITION_REVIEW_UNREVIEWED) and Alert.KEY_DISPOSITION_REVIEW in value and value[Alert.KEY_DISPOSITION_REVIEW]:
+            self.disposition_review = value[Alert.KEY_DISPOSITION_REVIEW]
 
-        if not self.review_user_id:
-            if Alert.KEY_REVIEW_USER_ID in value:
-                self.review_user_id = value[Alert.KEY_REVIEW_USER_ID]
+        if not self.review_user_id and Alert.KEY_REVIEW_USER_ID in value:
+            self.review_user_id = value[Alert.KEY_REVIEW_USER_ID]
 
-        if not self.review_time:
-            if Alert.KEY_REVIEW_TIME in value:
-                self.review_time = value[Alert.KEY_REVIEW_TIME]
+        if not self.review_time and Alert.KEY_REVIEW_TIME in value:
+            self.review_time = value[Alert.KEY_REVIEW_TIME]
 
-        if not self.incorrect_disposition:
-            if Alert.KEY_INCORRECT_DISPOSITION in value:
-                self.incorrect_disposition = value[Alert.KEY_INCORRECT_DISPOSITION]
+        if not self.incorrect_disposition and Alert.KEY_INCORRECT_DISPOSITION in value:
+            self.incorrect_disposition = value[Alert.KEY_INCORRECT_DISPOSITION]
 
-        if not self.incorrect_disposition_user_id:
-            if Alert.KEY_INCORRECT_DISPOSITION_USER_ID in value:
-                self.incorrect_disposition_user_id = value[Alert.KEY_INCORRECT_DISPOSITION_USER_ID]
+        if not self.incorrect_disposition_user_id and Alert.KEY_INCORRECT_DISPOSITION_USER_ID in value:
+            self.incorrect_disposition_user_id = value[Alert.KEY_INCORRECT_DISPOSITION_USER_ID]
 
-        if not self.incorrect_disposition_time:
-            if Alert.KEY_INCORRECT_DISPOSITION_TIME in value:
-                self.incorrect_disposition_time = value[Alert.KEY_INCORRECT_DISPOSITION_TIME]
-
-    #def track_delayed_analysis_start(self, observable, analysis_module):
-        #super().track_delayed_analysis_start(observable, analysis_module)
-        ##with get_db_connection() as db:
-            #c = db.cursor()
-            #c.execute("""INSERT INTO delayed_analysis ( alert_id, observable_id, analysis_module ) VALUES ( %s, %s, %s )""",
-                     #(self.id, observable.id, analysis_module.name))
-            #db.commit()
-
-    #def track_delayed_analysis_stop(self, observable, analysis_module):
-        #super().track_delayed_analysis_stop(observable, analysis_module)
-        #with get_db_connection() as db:
-            #c = db.cursor()
-            #c.execute("""DELETE FROM delayed_analysis where alert_id = %s AND observable_id = %s AND analysis_module = %s""",
-                     #(self.id, observable.id, analysis_module.name))
-            #db.commit()
-
-    def _handle_tag_added(self, source, event_type, *args, **kwargs):
-        assert args
-        assert isinstance(args[0], _Tag)
-        tag = args[0]
-
-        try:
-            self.sync_tag_mapping(tag)
-        except Exception as e:
-            logging.error("sync_tag_mapping failed: {}".format(e))
-            report_exception()
+        if not self.incorrect_disposition_time and Alert.KEY_INCORRECT_DISPOSITION_TIME in value:
+            self.incorrect_disposition_time = value[Alert.KEY_INCORRECT_DISPOSITION_TIME]
 
     def sync_tag_mapping(self, tag):
         tag_id = None
@@ -715,12 +633,12 @@ class Alert(Base):
                             # another process added it just before we did
                             try:
                                 db.rollback()
-                            except:
-                                pass
+                            except Exception as e2:
+                                logging.warning(f"rollback failed: {e2}")
 
                             break
                         else:
-                            raise e
+                            raise
 
             if not tag_id:
                 logging.error("unable to find tag_id for tag {}".format(tag.name))
@@ -734,18 +652,7 @@ class Alert(Base):
                 if e.args[0] == 1062: # already mapped
                     return
                 else:
-                    raise e
-
-    def _handle_observable_added(self, source, event_type, *args, **kwargs):
-        assert args
-        assert isinstance(args[0], _Observable)
-        observable = args[0]
-
-        try:
-            self.sync_observable_mapping(observable)
-        except Exception as e:
-            logging.error("sync_observable_mapping failed: {}".format(e))
-            #report_exception()
+                    raise
 
     @retry
     def sync_observable_mapping(self, observable):
@@ -779,23 +686,9 @@ class Alert(Base):
         assert self.storage_dir is not None # requires a valid storage_dir at this point
         assert isinstance(self.storage_dir, str)
 
-        from saq.llm.embedding.service import submit_embedding_task
 
         if self.root_analysis:
             self.root_analysis.save()
-
-        # XXX is this check still required?
-        # newly generated alerts will have a company_name but no company_id
-        # we look that up here if we don't have it yet if self.company_name and not self.company_id:
-        #if self.company_name and not self.company_id:
-            #self.company_id = get_db().query(Company).filter(Company.name == self.company_name).one().id
-            #with get_db_connection() as db:
-                #c = db.cursor()
-                #c.execute("SELECT `id` FROM company WHERE `name` = %s", (self.company_name))
-                #row = c.fetchone()
-                #if row:
-                    #logging.debug("found company_id {} for company_name {}".format(self.company_id, self.company_name))
-                    #self.company_id = row[0]
 
         # mirror the icon configuration from the root analysis extensions into the
         # icon_* columns so the management screen can render it without load()
@@ -814,25 +707,7 @@ class Alert(Base):
         if build_index:
             self.build_index()
 
-
-        #self.root_analysis.save() # save this alert now that it has the id
-
-        # we want to unlock it here since the corelation is going to want to pick it up as soon as it gets added
-        #if self.is_locked():
-            #self.unlock()
-
-        # update the embedding vectors for this alert
-        #vectorize(self)
-
         return True
-
-    #def lock(self):
-        #"""Acquire a lock on the analysis. Returns True if a lock was obtained, False otherwise."""
-        #return acquire_lock(self.uuid, self.lock_uuid, lock_owner="Alert ({})".format(os.getpid()))
-
-    #def unlock(self):
-        #"""Releases a lock on the analysis."""
-        #return release_lock(self.uuid, self.lock_uuid)
 
     def is_locked(self):
         """Returns True if this Alert has already been locked."""
@@ -841,36 +716,6 @@ class Alert(Base):
             c.execute("""SELECT uuid FROM locks WHERE uuid = %s AND TIMESTAMPDIFF(SECOND, lock_time, NOW()) < %s""", 
                      (self.uuid, get_global_runtime_settings().lock_timeout_seconds))
             return c.fetchone() is not None
-
-    #@track_execution_time
-    #def sync_tracked_objects(self):
-        #"""Updates the observable_mapping and tag_mapping tables according to what objects were added during analysis."""
-        # make sure we have something to do
-        #if not self._tracked_tags and not self._tracked_observables:
-            #return
-
-        #with get_db_connection() as db:
-            #c = db.cursor()
-            #if self._tracked_tags:
-                #logging.debug("syncing {} tags to {}".format(len(self._tracked_tags), self))
-                #self._sync_tags(db, c, self._tracked_tags)
-
-            #if self._tracked_observables:
-                #logging.debug("syncing {} observables to {}".format(len(self._tracked_observables), self))
-                #self._sync_observables(db, c, self._tracked_observables)
-
-            #db.commit()
-
-        #self._tracked_tags.clear()
-        #self._tracked_observables.clear()
-
-    #def flush(self):
-        #super().flush()
-        
-        # if this Alert is in the database then
-        # we want to go ahead and update if we added any new Tags or Observables
-        #if self.id:
-            #self.sync_tracked_objects()
 
     def reset(self):
         super().reset()
@@ -913,12 +758,6 @@ class Alert(Base):
         observables = tuple(observables)
 
         if all_observables:
-            # NOTE: expires_on is deliberately not written here. It used to be set to
-            # now + observable_expiration_mappings[type] for every observable ever indexed, but its
-            # only reader was the detection cache -- which meant an observable last seen long ago
-            # carried an already-expired timestamp, and enabling detection on it produced a
-            # detection that was dead on arrival. Detection expiration now lives in
-            # observable_detections.expires_on, which only an analyst writes.
             sql = "INSERT IGNORE INTO observables ( type, value, sha256 ) VALUES {}".format(','.join('(%s, %s, UNHEX(%s))' for o in all_observables))
             c.execute(sql, observables)
 
@@ -957,7 +796,7 @@ class Alert(Base):
                 observable_id, observable_type, sha256_hex = row
                 observable_mapping[f'{observable_type}{sha256_hex.lower()}'] = observable_id
 
-            sql = "INSERT INTO observable_mapping ( alert_id, observable_id ) VALUES {}".format(','.join(['(%s, %s)' for o in observable_mapping.keys()]))
+            sql = "INSERT INTO observable_mapping ( alert_id, observable_id ) VALUES {}".format(','.join(['(%s, %s)' for o in observable_mapping]))
             parameters = []
             for observable_id in observable_mapping.values():
                 parameters.append(self.id)
@@ -993,12 +832,7 @@ class Alert(Base):
         db.commit()
 
     def _sync_detection_points(self, db, c):
-        """reconciles this alert's detection points in the detection_points table so the
-        table matches the current analysis tree. existing rows are upserted keyed on the
-        (alert_id, content_hash) unique constraint (no duplicates, insert_date preserved),
-        and any row whose content_hash is no longer in the tree is deleted (so detections
-        removed via Observable.delete_analysis do not outlive the tree). shares the
-        transaction with _rebuild_index (the caller commits)."""
+        """Syncs the detection points for this alert to the detection_points table."""
         # all_detection_points already includes the root analysis's own detections
         # (all_analysis includes the root), so do NOT also add root.detections here.
         # de-dup by content_hash so a single INSERT never lists the same key twice.
@@ -1029,8 +863,6 @@ class Alert(Base):
 
         parameters = []
         for content_hash, dp in detection_points.items():
-            # the column is nullable JSON-as-text; falsy details -> NULL (not "").
-            # default=str tolerates non-JSON-native objects (datetimes, etc.)
             details = json.dumps(dp.details, sort_keys=True, default=str) if dp.details else None
             parameters.append(self.id)
             parameters.append(dp.description)
@@ -1041,76 +873,6 @@ class Alert(Base):
             parameters.append(content_hash)
 
         c.execute(sql, tuple(parameters))
-
-    @track_execution_time
-    def rebuild_index_old(self):
-        """Rebuilds the data for this Alert in the observables, tags, observable_mapping and tag_mapping tables."""
-        logging.debug("updating detailed information for {}".format(self))
-
-        with get_db_connection() as db:
-            c = db.cursor()
-            c.execute("""DELETE FROM observable_mapping WHERE alert_id = %s""", ( self.id, ))
-            c.execute("""DELETE FROM tag_mapping WHERE alert_id = %s""", ( self.id, ))
-            db.commit()
-
-        self.build_index()
-
-    def similar_alerts(self):
-        """Returns list of similar alerts uuid, similarity score and disposition."""
-        similarities = []
-
-        #with get_db_connection() as db:
-            #c = db.cursor()
-            #c.execute("""SELECT count(*) FROM tag_mapping where alert_id = %s group by alert_id""", (self.id))
-            #result = c.fetchone()
-            #db.commit()
-            #if result is None:
-                #return similarities
-
-            #num_tags = result[0]
-            #if num_tags == 0:
-                #return similarities
-
-            #c.execute("""
-                #SELECT alerts.uuid, alerts.disposition, 200 * count(*)/(total + %s) AS sim
-                #FROM tag_mapping tm1
-                #JOIN tag_mapping tm2 ON tm1.tag_id = tm2.tag_id
-                #JOIN (SELECT alert_id, count(*) AS total FROM tag_mapping GROUP BY alert_id) AS t1 ON tm1.alert_id = t1.alert_id
-                #JOIN alerts on tm1.alert_id = alerts.id
-                #WHERE tm2.alert_id = %s AND tm1.alert_id != %s AND alerts.disposition IS NOT NULL AND (alerts.alert_type != 'faqueue' OR (alerts.disposition != 'FALSE_POSITIVE' AND alerts.disposition != 'IGNORE'))
-                #GROUP BY tm1.alert_id
-                #ORDER BY sim DESC, alerts.disposition_time DESC
-                #LIMIT 10
-                #""", (num_tags, self.id, self.id))
-            #results = c.fetchall()
-            #if results is None:
-                #return similarities
-
-            #for result in results:
-                #similarities.append(Similarity(result[0], result[1], result[2]))
-
-        return similarities
-
-    #@property
-    #def delayed(self):
-        #try:
-            #return len(self.delayed_analysis) > 0
-        #except DetachedInstanceError:
-            #with get_db_connection() as db:
-                #c = db.cursor()
-                #c.execute("SELECT COUNT(*) FROM delayed_analysis WHERE alert_id = %s", (self.id,))
-                #result = c.fetchone()
-                #if not result:
-                    #return
-
-                #return result[0]
-
-    #@delayed.setter
-    #def delayed(self, value):
-        #pass
-
-    ### HERE
-
 
     @property
     def node_location(self):
@@ -1538,9 +1300,6 @@ class Event(Base):
         return tags
 
 
-
-
-
 class Lock(Base):
 
     __tablename__ = 'locks'
@@ -1566,10 +1325,6 @@ class Lock(Base):
         String(512),
         nullable=True)
 
-    # the engine node that currently holds this lock (saq_node_id), used to
-    # route expired-lock recovery to the owning node's manager. nullable because
-    # non-engine components (web app, collectors) also acquire locks and may not
-    # have a node id set
     node_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         nullable=True,
@@ -1715,18 +1470,11 @@ class DetectionPoint(Base):
 
     __tablename__ = 'detection_points'
     __table_args__ = (
-        # idempotent-upsert key. ALSO serves the "by alert" query (alert_id is the
-        # leftmost column) and satisfies InnoDB's FK-index requirement on alert_id,
-        # so NO separate index on alert_id is needed.
         UniqueConstraint('alert_id', 'content_hash', name='uq_detection_points_alert_content'),
-        # serves BOTH "by signature_uuid" (leftmost-prefix) and
-        # "by signature_uuid + signature_version" (full key) with one index.
         Index('ix_detection_points_signature', 'signature_uuid', 'signature_version'),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # no standalone index= here: the unique constraint's leftmost prefix already
-    # indexes alert_id (covers the "by alert" query + the FK requirement).
     alert_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
@@ -1920,33 +1668,20 @@ class Observable(Base):
         BLOB,
         nullable=False)
 
-    # DEPRECATED: detection management moved to the `observable_detections` table. This column and
-    # the four others marked below (expires_on, enabled_by, detection_context, batch_id) are no
-    # longer read; they are retained only so the migration that created that table can be rolled
-    # back without data loss. A follow-up migration drops them.
+    #
+    # observable detection stuff moved to the `observable_detections` table
+    #
+
+    # DEPRECATED: detection management moved to the `observable_detections` table.
     for_detection: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
         default=False,
         server_default=text('0'))
 
-    # NOT deprecated: an analyst annotation on the observable itself, managed via aceapi_v2.observables.
-    is_interesting: Mapped[bool] = mapped_column(
-        BOOLEAN,
-        nullable=False,
-        default=False,
-        server_default=text('0'))
-
-    # DEPRECATED: see the note on for_detection above.
+    # DEPRECATED: detection management moved to the `observable_detections` table.
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
-        nullable=True)
-
-    # Frequency-analysis hit count for this observable. Nothing in this repository writes it; it is
-    # populated externally and read for display and for the v1 intel API filter. It describes the
-    # observable's prevalence, not a detection, so it stays here.
-    fa_hits: Mapped[Optional[int]] = mapped_column(
-        Integer,
         nullable=True)
 
     # DEPRECATED: see the note on for_detection above.
@@ -1965,6 +1700,21 @@ class Observable(Base):
         String(36),
         nullable=True,
         index=True)
+
+    #
+    # end deprecated columns
+    #
+
+    # an analyst annotation
+    is_interesting: Mapped[bool] = mapped_column(
+        BOOLEAN,
+        nullable=False,
+        default=False,
+        server_default=text('0'))
+
+    fa_hits: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True)
 
     @property
     def display_value(self):
@@ -1987,18 +1737,8 @@ class Observable(Base):
 class ObservableDetection(Base):
     """An observable that ACE should alert on.
 
-    This is deliberately a separate table from ``observables``. ``observables`` is an *index* of
-    everything that has ever appeared in an alert (hundreds of thousands of rows, grown by ingest);
-    this is a curated list a human manages (thousands of rows at most). Keeping them apart is what
-    makes the management UI's substring search cheap, and it is what allows a detection to exist for
-    an observable that has never been seen.
-
-    A row here *is* an active detection. Disabling one deletes the row.
-
-    There is no foreign key to ``observables``. A detection may legitimately have no corresponding
-    index row (it was added ahead of ever seeing the value), and the ingest path would never
-    back-fill such a key. Join on ``(type, value_sha256) == observables.(type, sha256)`` instead,
-    which is an index lookup against ``i_type_sha256``.
+    NOTE: There is no foreign key to ``observables``. A detection may legitimately have no corresponding
+    index row (it was added ahead of ever seeing the value).
 
     Note the deliberate asymmetry between uniqueness and search: uniqueness is on the *binary*
     ``value_sha256``, so ``evil.com`` and ``EVIL.com`` are two distinct detections (correct -- the
@@ -2020,11 +1760,6 @@ class ObservableDetection(Base):
         String(64),
         nullable=False)
 
-    # A collatable VARCHAR rather than observables' BLOB, which is what makes ORDER BY and a
-    # case-insensitive LIKE work with no generated sort column. Detection values are inherently
-    # str: the runtime redis key is f"{type}:{value}" built from a Python str, so a non-UTF-8
-    # detection value could never match anything anyway. Writers reject non-UTF-8 and over-length
-    # values rather than storing them lossily.
     value: Mapped[str] = mapped_column(
         String(MAX_DETECTION_VALUE_LENGTH, collation='utf8mb4_unicode_520_ci'),
         nullable=False)
@@ -2036,8 +1771,6 @@ class ObservableDetection(Base):
         VARBINARY(32),
         nullable=False)
 
-    # When this detection stops firing. Unlike observables.expires_on -- which ingest wrote for
-    # every observable it had ever seen -- this has exactly one meaning and exactly one writer.
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
@@ -2051,8 +1784,6 @@ class ObservableDetection(Base):
         String(36),
         nullable=True)
 
-    # No index=True on the two foreign keys: MySQL creates an implicit index named after the column
-    # for each, which is the only naming the model-drift check tolerates. See the migration.
     created_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL'),
@@ -2068,7 +1799,6 @@ class ObservableDetection(Base):
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
-    # Maintained by MySQL so it cannot drift across the several write paths.
     modified_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
@@ -2599,12 +2329,9 @@ class Tag(Base):
         else:
             return 'label-default'
 
-    #def __init__(self, *args, **kwargs):
-        #super(saq.database.Tag, self).__init__(*args, **kwargs)
-
     @reconstructor
     def init_on_load(self, *args, **kwargs):
-        super(Tag, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 class User(UserMixin, Base):
 
@@ -2649,8 +2376,8 @@ class User(UserMixin, Base):
         try:
             decrypted = decrypt_chunk(self.apikey_encrypted)
             return decrypted.decode()
-        except Exception:
-            logging.error("unable to decrypt api key: {e}")
+        except Exception as e:
+            logging.error(f"unable to decrypt api key: {e}")
 
         return None
 
@@ -2864,7 +2591,6 @@ class Comment(Base):
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # many to one
     user: Mapped["User"] = relationship(
         'User', primaryjoin='Comment.user_id == User.id',
         foreign_keys=[user_id], backref='comments')
@@ -2992,8 +2718,6 @@ class IncomingWorkload(Base):
         String(36),
         nullable=False)
 
-    # when this work item was handed to the collector, used to measure how long a
-    # submission waits before a RemoteNodeGroup picks it up (see saq/collectors/remote_node.py)
     insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
@@ -3065,12 +2789,7 @@ class WorkDistribution(Base):
     __tablename__ = 'work_distribution'
     __table_args__ = (
         Index('fk_work_status', 'work_id', 'status'),
-        # RemoteNodeGroup.execute() checks "do I already hold locks" on every pass
-        # (WHERE lock_uuid = ? AND status IN (...)) and then selects the locked batch by the
-        # same column - both were full table scans
         Index('idx_wd_lock_uuid_status', 'lock_uuid', 'status'),
-        # the dispatch and backlog queries filter on (group_id, status); group_id alone is only
-        # the leading half of the primary key, which does not help the status predicate
         Index('idx_wd_group_status', 'group_id', 'status'),
     )
 
@@ -3100,9 +2819,6 @@ class WorkDistribution(Base):
         nullable=True)
 
     # how many times delivery of this work item has failed with a retriable error.
-    # RemoteNodeGroup only claims a new batch when it holds no locks, so an item that retries
-    # forever stalls everything queued behind it - this bounds that and lets the item be
-    # dead-lettered to ERROR once the group's max_delivery_attempts is exceeded
     attempt_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -3158,8 +2874,7 @@ class AnalysisResultCache(CacheBase):
     Lives in the dedicated analysis-result-cache database (CacheBase metadata).
     The table is partitioned daily by created_at, which forces created_at into
     the primary key (MySQL requires the partitioning column in every unique
-    key). cache_key is therefore no longer unique on its own — the cache is
-    append-only and reads pick the freshest non-expired row.
+    key). the cache is append-only and reads pick the freshest non-expired row.
     """
 
     __tablename__ = 'analysis_result_cache'
@@ -3251,8 +2966,7 @@ class BlobRef(CacheBase):
 class BrocessConnErr(BrocessBase):
     """Failed connection counts by (source, destination, port).
 
-    Populated by an external bro/zeek feed, not by ACE. No code in this repo
-    reads this table.
+    Populated by an external bro/zeek feed, not by ACE. 
     """
 
     __tablename__ = 'connerr'
@@ -3317,8 +3031,7 @@ class BrocessConnLog(BrocessBase):
 class BrocessHttpLog(BrocessBase):
     """How often each http host has been seen.
 
-    Backs the "uncommon network" heuristic in saq/crawlphish_filter.py. Written
-    by saq/brocess.py::add_httplog, which upserts one row per fqdn part.
+    Backs the "uncommon network" heuristic in saq/crawlphish_filter.py.
     """
 
     __tablename__ = 'httplog'
@@ -3339,8 +3052,7 @@ class BrocessHttpLog(BrocessBase):
 class BrocessSmtpLog(BrocessBase):
     """How often each (sender, recipient) email conversation has been seen.
 
-    Backs the new_sender / frequent_conversation tags in
-    saq/modules/email/fa.py. source and destination are varbinary(255), a BYTE
+    source and destination are varbinary(255), a BYTE
     limit -- saq/modules/email/logging.py::export_to_brocess encodes to utf-8
     and truncates to 255 bytes before writing.
     """
@@ -3442,10 +3154,7 @@ class EmailThreadDomain(BrocessBase):
     per-thread uniqueness key fixed-width so domain/address can stay
     arbitrary-length TEXT.
 
-    Rows are per-MESSAGE: entry_hash covers (message_id, domain, address, role),
-    so a participant present on five messages of a thread produces five rows.
-    This is what lets the conversation timeline say which message a domain
-    appeared on.
+    Rows are per-MESSAGE: entry_hash covers (message_id, domain, address, role).
     """
 
     __tablename__ = 'email_thread_domain'

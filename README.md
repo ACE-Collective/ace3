@@ -43,7 +43,7 @@ ace --help
 - ☐ SSO support
 - ☐ monitoring API
 - ☐ kubernetes
-- ☐ credential management
+- ☑ credential management
 - ☐ direct support for regression testing
 - ☐ direct support for signatures
 - ☐ support ARM
@@ -51,7 +51,7 @@ ace --help
 
 ## beyond 3.0
 
-- ☐ modern web app (looking at vuejs)
+- ☐ modern web app
 
 ## Testing
 
