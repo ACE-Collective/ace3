@@ -301,13 +301,6 @@ class SplunkConfig(BaseModel):
     request_timeout: int = Field(default=60, description="socket timeout (seconds) for each splunk API request")
     auth_failure_grace_period: int = Field(default=60, description="how long (seconds) to keep tolerating 401s while polling an already-dispatched search before failing the query (rides out transient search head cluster proxy failures)")
 
-class SplunkExportConfig(BaseModel):
-    export_list: list[str] = Field(..., description="a comma separated list of for_detect observables types to export to splunk lookup table")
-    max_export: int = Field(..., description="the maximum number of observables to export in each request")
-    api: str = Field(..., description="the splunk config name to use for the API")
-    user_context: Optional[str] = Field(default=None, description="user context to use if not specified")
-    app: Optional[str] = Field(default=None, description="app context to use if not specified")
-
 class SIPConfig(BaseModel):
     enabled: bool = Field(..., description="enable SIP integration")
     remote_address: str = Field(..., description="SIP remote address")
@@ -574,7 +567,6 @@ class ACEConfig(BaseModel):
     email: Optional[EmailConfig] = None
     ldap: Optional[LDAPConfig] = None
     splunk_logging: Optional[SplunkLoggingConfig] = None
-    splunk_export: Optional[SplunkExportConfig] = None
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")

@@ -1163,3 +1163,96 @@ def test_queue_embed_time_false_prepends_search():
     assert query_arg.startswith("search ")
     assert "_index_earliest=01/01/2024:00:00:00" in query_arg
     assert "index=main" in query_arg
+
+
+#
+# kv store
+#
+
+def kvstore_client(mock_data) -> tuple:
+    """Returns (splunk, mock_client) with the named collection backed by mock_data."""
+    mock_client = Mock()
+    mock_client.kvstore = {"test_collection": Mock(data=mock_data)}
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
+
+    return splunk, mock_client
+
+
+@pytest.mark.unit
+def test_kvstore_query_returns_documents():
+    mock_data = Mock()
+    mock_data.query.return_value = [{"_key": "1", "value": "*evil*"}]
+
+    splunk, _ = kvstore_client(mock_data)
+
+    assert splunk.kvstore_query("test_collection") == [{"_key": "1", "value": "*evil*"}]
+    mock_data.query.assert_called_once_with()
+
+
+@pytest.mark.unit
+def test_kvstore_query_passes_the_query_through_as_json():
+    mock_data = Mock()
+    mock_data.query.return_value = []
+
+    splunk, _ = kvstore_client(mock_data)
+    splunk.kvstore_query("test_collection", {"type": "fqdn"})
+
+    mock_data.query.assert_called_once_with(query='{"type": "fqdn"}')
+
+
+@pytest.mark.unit
+def test_kvstore_batch_save_passes_documents_through():
+    mock_data = Mock()
+    splunk, _ = kvstore_client(mock_data)
+
+    documents = [{"_key": "1"}, {"_key": "2"}]
+    splunk.kvstore_batch_save("test_collection", documents)
+
+    mock_data.batch_save.assert_called_once_with({"_key": "1"}, {"_key": "2"})
+
+
+@pytest.mark.unit
+def test_kvstore_batch_save_skips_an_empty_list():
+    # splunklib raises on zero documents, so the wrapper must not call it
+    mock_data = Mock()
+    splunk, _ = kvstore_client(mock_data)
+
+    assert splunk.kvstore_batch_save("test_collection", []) is None
+    mock_data.batch_save.assert_not_called()
+
+
+@pytest.mark.unit
+def test_kvstore_delete_all_and_by_query():
+    mock_data = Mock()
+    splunk, _ = kvstore_client(mock_data)
+
+    splunk.kvstore_delete("test_collection")
+    mock_data.delete.assert_called_once_with()
+
+    mock_data.reset_mock()
+    splunk.kvstore_delete("test_collection", {"_key": {"$in": ["1"]}})
+    # splunklib does not encode the delete query itself, so the wrapper has to
+    mock_data.delete.assert_called_once_with(query='{"_key": {"$in": ["1"]}}')
+
+
+@pytest.mark.unit
+def test_kvstore_missing_collection_names_it():
+    splunk, _ = kvstore_client(Mock())
+
+    with pytest.raises(KeyError, match="does_not_exist"):
+        splunk.kvstore_query("does_not_exist")
+
+
+@pytest.mark.unit
+def test_kvstore_errors_propagate():
+    # the previous generation of these methods logged and returned False, which made a failed
+    # write indistinguishable from a successful one
+    mock_data = Mock()
+    mock_data.batch_save.side_effect = SplunkHTTPError(Mock(status=500, reason="boom", headers=[], body=Mock(read=lambda: b"")))
+
+    splunk, _ = kvstore_client(mock_data)
+
+    with pytest.raises(SplunkHTTPError):
+        splunk.kvstore_batch_save("test_collection", [{"_key": "1"}])

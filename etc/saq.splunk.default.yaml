@@ -31,14 +31,40 @@ splunk_config_default:
   user_context:
   app_context:
 
-# settings for exporting for_detect observables into splunk lookup
-# a comma separated list of for_detect observables types to export to splunk lookup table
-# NOTE: these map directly to observable type string representations!
-splunk_export:
-  export_list: [email_address, email_subject, email_x_mailer, file_name, fqdn, ipv4, uri_path, url, user_agent, md5, sha256]
+# exports the observables enabled for detection into a splunk kv store collection, so they can be
+# used as a lookup. 
+observable_export_splunk:
+  name: splunk
+  python_module: saq.observables.export.splunk_kvstore
+  python_class: SplunkKVStoreExport
+  description: Exports observables enabled for detection to a Splunk KV store collection.
+  # off by default: splunk_config_default points at localhost with no credentials, so a stock
+  # install has nothing to publish to. set `collection` and enable this where splunk is configured.
+  enabled: false
+  # the kv store collection to publish into
+  collection: ""
+  # the observable types to export
+  # NOTE: these map directly to observable type string representations!
+  export_list:
+    - email_address
+    - email_subject
+    - email_x_mailer
+    - file_name
+    - fqdn
+    - ip
+    # legacy: detections created before the migration to the generic `ip` type still carry `ipv4`
+    - ipv4
+    - uri_path
+    - url
+    - user_agent
+    - md5
+    - sha256
+  # how many documents to send per batch save request
   max_export: 500
+  # which splunk_config_<name> block to connect through
   api: default
-  user_context: 
+  # only used when the splunk config named above leaves them unset -- it wins when it sets them
+  user_context:
   app:
 
 service_network_semaphore:
