@@ -8,6 +8,7 @@ from saq.configuration.secret_ref import SecretRef
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
     from saq.modules.config import AnalysisModuleConfig
+    from saq.observables.export.config import ObservableExportConfig
 
 # how many times a collection group retries a failed delivery before giving up on the work item.
 # each attempt is one full submit (which itself retries at the HTTP layer) plus roughly a second
@@ -319,7 +320,7 @@ class ShodanConfig(BaseModel):
 
 class YaraExportConfig(BaseModel):
     export_list: list[str] = Field(..., description="list of for_detect observables types to export to yara rules")
-    export_template_dir: str = Field(..., description="directory of template files (relative to ANALYST_DATA_DIR)")
+    export_template_dir: str = Field(..., description="directory of template files (relative to SAQ_HOME, or an absolute path)")
     export_minimum_length: int = Field(..., description="minimum length of an indicator value that would go into a yara rule")
     max_strings_per_rule: int = Field(..., description="max number of strings to allow in a yara rule")
 
@@ -623,6 +624,7 @@ class ACEConfig(BaseModel):
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
+        self.__observable_exports: Optional[dict[str, "ObservableExportConfig"]] = None
         self.__module_config_by_python_module: dict[tuple, "AnalysisModuleConfig"] = {}
 
     def resolve_all_values(self):
@@ -666,6 +668,7 @@ class ACEConfig(BaseModel):
         self.load_remediator_configs()
         self.load_file_collector_configs()
         self.load_external_remediation_probe_configs()
+        self.load_observable_export_configs()
     #
     # integrations
     #
@@ -1231,3 +1234,51 @@ class ACEConfig(BaseModel):
             raise ValueError(f"external remediation probe config for {name} not found")
 
         return self.__external_remediation_probes[name]
+
+    #
+    # observable exports
+    #
+
+    @property
+    def observable_exports(self) -> list["ObservableExportConfig"]:
+        if self.__observable_exports is None:
+            self._raise_raw_data_error()
+
+        return self.__observable_exports.values()
+
+    def load_observable_export_configs(self):
+        from saq.observables.export.config import ObservableExportConfig
+        self.__observable_exports = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("observable_export_"):
+                continue
+
+            try:
+                export_config = ObservableExportConfig.model_validate(value)
+            except Exception as e:
+                sys.stderr.write(f"CONFIG ERROR: failed to validate observable export config for {key}\n")
+                raise e
+
+            # load the export class so we can figure out what config class to use
+            module = importlib.import_module(export_config.python_module)
+            class_definition = getattr(module, export_config.python_class)
+
+            try:
+                self.add_observable_export_config(
+                    export_config.name, class_definition.get_config_class().model_validate(value))
+            except Exception as e:
+                sys.stderr.write(f"CONFIG ERROR: failed to validate observable export config for {key}\n")
+                raise e
+
+    def add_observable_export_config(self, name: str, export_config: "ObservableExportConfig"):
+        self.__observable_exports[name] = export_config
+
+    def get_observable_export_config(self, name: str) -> "ObservableExportConfig":
+        if self.__observable_exports is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__observable_exports:
+            raise ValueError(f"observable export config for {name} not found")
+
+        return self.__observable_exports[name]

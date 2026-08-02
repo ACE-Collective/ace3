@@ -3341,6 +3341,7 @@ from saq.phishkit import phishkit_parser # noqa: F401
 from saq.storage.cli import storage_parser # noqa: F401
 from saq.llm.cli import llm_parser # noqa: F401
 from saq.nrd.cli import nrd_parser # noqa: F401
+from saq.observables.cli import observables_parser # noqa: F401
 
 if __name__ == '__main__':
     main()
