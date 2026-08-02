@@ -31,7 +31,7 @@ from saq.configuration import get_config
 from sqlalchemy import and_, or_
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE, REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1, ANALYSIS_MODULE_USER_TAGGER, F_FILE, F_SUSPECT_FILE
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.database.model import Observable, Persistence, PersistenceSource, Remediation
 from saq.database.pool import get_db
@@ -2248,41 +2248,6 @@ def update_organization(args):
 update_organization_parsers = get_cli_subparsers().add_parser('update-organization',
     help="Updates the files used by the UserTaggingAnalyzer module.")
 update_organization_parsers.set_defaults(func=update_organization)
-
-def update_for_detection_observable_cache(args):
-    # Get a connection to the Redis database for the observable cache.
-    # Database A holds the source of truth for which observables are enabled for detection.
-    # Database B is used to build the cache and uses swapdb to swap itself and Database A when finished.
-
-    from saq.redis_client import get_redis_connection
-
-    redis_connection_b = get_redis_connection(
-        database=REDIS_DB_FOR_DETECTION_B,
-        config_name="local"
-    )
-
-    # Get the for_detection observables and store their IDs in the Redis cache
-    # key = <observable_type>:<observable_value>
-    # value = <observable_id>
-    logging.info('Rebuilding for_detection observable cache in Redis')
-    start = time.time()
-    redis_connection_b.flushdb()
-
-    count = 0
-    for_detection_observables = _get_for_detect_observables_by_type()
-    for observable_type in for_detection_observables:
-        for observable in for_detection_observables[observable_type]:
-            key = f'{observable_type}:{observable["value"]}'
-            redis_connection_b.set(key, observable["id"])
-            count += 1
-
-    redis_connection_b.swapdb(REDIS_DB_FOR_DETECTION_A, REDIS_DB_FOR_DETECTION_B)
-    logging.info(f'Cached {count} for_detection observables in {"%.2f" % (time.time() - start)} seconds')
-
-update_for_detection_observable_cache_parser = get_cli_subparsers().add_parser('update-for-detection-observable-cache',
-    help="Updates the local Reids cache of the observables that are enabled for detection.")
-update_for_detection_observable_cache_parser.set_defaults(func=update_for_detection_observable_cache)
-
 
 def _get_for_detect_observables_by_type() -> dict:
     """The active observable detections, organized by type.

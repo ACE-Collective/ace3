@@ -773,6 +773,13 @@ sip:
 # observable detection export targets
 #
 
+observable_export_redis:
+  name: redis
+  python_module: saq.observables.export.redis_cache
+  python_class: RedisObservableExport
+  description: Updates the local redis cache the analysis engine matches observables against.
+  enabled: true
+
 observable_export_yara:
   name: yara
   python_module: saq.observables.export.yara

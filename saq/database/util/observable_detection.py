@@ -117,13 +117,7 @@ def default_detection_expiration(observable_type: str) -> Optional[datetime]:
 def get_active_detections_by_type() -> dict[str, list[dict]]:
     """The active detections, grouped by observable type.
 
-    This is the single source the whole detection pipeline reads: `ace
-    update-for-detection-observable-cache` turns it into the redis map the analysis engine matches
-    against, and `ace export-for-detect-observables` turns it into yara rules and Splunk KVStore
-    entries. A detection is active when it has not expired.
-
-    The `id` is load-bearing beyond the cache: the yara export embeds it into generated rules as
-    $obsd_<id>, which FileTypeAnalyzer parses back out.
+    
 
     Returns:
         {observable_type: [{'id': ..., 'value': ...}, ...]}

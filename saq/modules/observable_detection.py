@@ -1,12 +1,12 @@
 import logging
 from typing import override
-import redis
 
 from saq.analysis import Analysis
 from saq.signatures import OBSERVABLE_FLAGGED
-from saq.configuration.config import get_config
 from saq.constants import REDIS_DB_FOR_DETECTION_A, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.observables.export.redis_cache import REDIS_CONFIG_NAME
+from saq.redis_client import get_redis_connection
 
 KEY_FOR_DETECTION = "for_detection"
 
@@ -41,6 +41,10 @@ class ObservableDetectionAnalysis(Analysis):
 class ObservableDetectionAnalyzer(AnalysisModule):
     """Checks if any observable is enabled for detection and, if so, will add a detection point."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._redis_connection = None
+
     @property
     def generated_analysis_type(self):
         return ObservableDetectionAnalysis
@@ -50,22 +54,28 @@ class ObservableDetectionAnalyzer(AnalysisModule):
         # None here denotes that it will run on all observable types
         return None
 
+    @property
+    def redis_connection(self):
+        """The connection to the cache `ace observables export` maintains.
+
+        Built once per module instance rather than once per observable: this module runs against
+        every observable of every type, and each redis.Redis carries its own connection pool, so
+        constructing one per call meant a TCP connect plus AUTH and SELECT for every observable in
+        every alert. get_redis_connection sets health_check_interval, which handles reconnecting on
+        a long-lived worker.
+        """
+        if self._redis_connection is None:
+            self._redis_connection = get_redis_connection(
+                database=REDIS_DB_FOR_DETECTION_A, config_name=REDIS_CONFIG_NAME)
+
+        return self._redis_connection
+
     def execute_analysis(self, observable, **kwargs) -> AnalysisExecutionResult:
         analysis = self.create_analysis(observable)
         assert isinstance(analysis, ObservableDetectionAnalysis)
 
-        if "redis_connection" in kwargs:
-            redis_connection = kwargs["redis_connection"]
-        else:
-            redis_connection = redis.Redis(
-                host=get_config().redis_local.host,
-                port=get_config().redis_local.port,
-                username=get_config().redis_local.username,
-                password=get_config().redis_local.password,
-                db=REDIS_DB_FOR_DETECTION_A,
-                decode_responses=True,
-                encoding="utf-8"
-            )
+        # tests inject a fake connection through this
+        redis_connection = kwargs.get("redis_connection", None) or self.redis_connection
 
         if redis_connection.get(f"{observable.type}:{observable.value}"):
             logging.info(f"observable {observable.type}:{observable.value} is enabled for detection")

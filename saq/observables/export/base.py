@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import hashlib
 import json
 from collections.abc import Iterable
+from typing import Optional
 
 from saq.observables.export.config import ObservableExportConfig
+from saq.observables.export.state import read_fingerprint, write_fingerprint
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,17 @@ class ObservableExport(ABC):
     @property
     def enabled(self) -> bool:
         return self.config.enabled
+
+    def get_last_fingerprint(self) -> Optional[str]:
+        """The fingerprint this target last successfully published, or None if it never has.
+
+        Defaults to the node-local state file.
+        """
+        return read_fingerprint(self.name)
+
+    def record_fingerprint(self, fingerprint: str) -> None:
+        """Records a successful publish. Called only after publish() returns cleanly."""
+        write_fingerprint(self.name, fingerprint)
 
     @abstractmethod
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:

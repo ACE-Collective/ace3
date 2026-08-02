@@ -6,7 +6,6 @@ from typing import Optional
 from saq.configuration import get_config
 from saq.observables.export.base import ObservableExport
 from saq.observables.export.config import ObservableExportConfig
-from saq.observables.export.state import read_fingerprint, write_fingerprint
 
 
 def load_observable_export_from_config(config: ObservableExportConfig) -> ObservableExport:
@@ -68,7 +67,7 @@ def run_exports(names: Optional[list[str]] = None, force: bool = False) -> int:
             continue
 
         fingerprint = export_list.fingerprint()
-        if not force and fingerprint == read_fingerprint(export.name):
+        if not force and fingerprint == export.get_last_fingerprint():
             logging.info(f"no updates needed for observable export {export.name}")
             continue
 
@@ -80,7 +79,7 @@ def run_exports(names: Optional[list[str]] = None, force: bool = False) -> int:
             continue
 
         # only recorded after a successful publish, so a failure retries on the next run
-        write_fingerprint(export.name, fingerprint)
+        export.record_fingerprint(fingerprint)
         logging.info(f"exported {len(export_list)} observables to {export.name}")
 
     return result
