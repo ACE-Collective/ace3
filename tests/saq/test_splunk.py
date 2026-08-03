@@ -837,6 +837,30 @@ def test_proxy_handler_creates_tunnel_for_https():
 
 
 @pytest.mark.unit
+def test_proxy_handler_sends_sdk_version_user_agent():
+    """The User-Agent carries a real splunk-sdk version resolved from distribution metadata.
+
+    splunk-sdk 3.0.0 removed splunklib.__version__, which this header used to be built from.
+    """
+    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080)
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(
+        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
+    )
+
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn):
+        handler(
+            "https://splunk.example.com:8089/services/auth/login",
+            {"method": "GET", "headers": [], "body": ""},
+        )
+
+    headers = mock_conn.request.call_args[0][3]
+    assert headers["User-Agent"].startswith("splunk-sdk-python/")
+    assert "unknown" not in headers["User-Agent"]
+
+
+@pytest.mark.unit
 def test_proxy_handler_no_tunnel_for_http():
     """HTTP targets use HTTPConnection with no tunnel."""
     handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080)
