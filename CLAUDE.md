@@ -40,7 +40,7 @@ Tests run against the `*-unittest` databases (`ace`, `brocess`, `email-archive`,
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-`phishkit/tests/` is the exception to everything above: it holds two suites with different runtime environments, neither of which is the `dev` container, and `pytest phishkit/tests/` cannot pass anywhere. See the `phishkit` skill before running them.
+`phishkit/tests/` is the exception to everything above: it holds two suites with different runtime environments, neither of which is the `dev` container, so `pytest phishkit/tests/` cannot pass anywhere. `test_scanner.py` runs in the scanner image (it imports `mycdp`/`seleniumbase`, which are not in `/venv`); `test_phishkit.py` needs `celery` and currently fails to import at all. Get a baseline on a clean tree before reading either as a regression.
 
 There is no configured linter/formatter in the repo.
 
