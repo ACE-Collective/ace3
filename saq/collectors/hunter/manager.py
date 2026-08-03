@@ -564,6 +564,20 @@ class HuntManager:
            The hunt_filter paramter defines an optional lambda function that takes the Hunt object
            after it is loaded and returns True if the Hunt should be added, False otherwise.
            This is useful for unit testing."""
+
+        # A non-schedulable hunt type never loads hunts from disk. This is the single choke point
+        # for scheduling — both start_multi_threaded and start_single_threaded come through here,
+        # while load_hunt_from_config (singular, used by the validation API on a submitted hunt)
+        # deliberately does not.
+        #
+        # getattr rather than attribute access: the annotation says HuntTypeConfig, but callers
+        # pass whatever suits them (tests use a plain dict, the splunk hunt tests pass a splunk
+        # config), so absent means "schedulable", the pre-existing behavior.
+        if not getattr(self.config, "schedulable", True):
+            logging.debug(f"hunt type {self.hunt_type} is not schedulable, not loading hunts from config")
+            self.hunts_loaded_from_config = True
+            return
+
         for hunt_config_file_path in self._list_hunt_yaml():
             try:
                 logging.info(f"loading hunt from {hunt_config_file_path}")

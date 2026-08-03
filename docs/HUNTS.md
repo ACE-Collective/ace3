@@ -255,6 +255,17 @@ Defines which system to use when executing this hunt. The following values are c
 - `logscale`
 - `rapid7`
 
+Each type is registered by a `hunt_type_<name>` configuration section naming the Python class that
+executes it, the `rule_dirs` its hunts are loaded from, and a `schedulable` flag.
+
+**A hunt type may be configured as non-schedulable** (`schedulable: false`), in which case it has no
+`rule_dirs` and ACE never loads a hunt of that type from disk. Hunts of that type can still be
+submitted through the hunt validation API and executed on demand — validation and ad-hoc querying
+are the entire surface. This exists for backends whose query cost is governed by a quota that has to
+stay under human control, where a fleet of scheduled hunts could exhaust the budget that the rest of
+the system depends on. Writing such a hunt into a rules directory has no effect, so check the type's
+configuration before authoring one.
+
 ### `alert_type` (string)
 
 This is used to categorize alerts created by this hunt. The primary use of this field is for metrics. However, ACE can (optionally) use this to select an icon to display alongside the alert if one isn't specified in the hunt.

@@ -126,7 +126,10 @@ class HunterService(ACEServiceInterface):
 
         for hunt_type_config in get_config().hunt_types:
 
-            if not hunt_type_config.rule_dirs:
+            # A non-schedulable type legitimately has no rule_dirs — its manager exists only so the
+            # validation API can load a submitted hunt through it. HuntTypeConfig already rejects
+            # the other three combinations.
+            if hunt_type_config.schedulable and not hunt_type_config.rule_dirs:
                 logging.error(f"config section {hunt_type_config.name} does not define rule_dirs")
                 continue
 
