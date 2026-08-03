@@ -5197,6 +5197,29 @@ def test_hunt_rule_dirs_schema_accepts_dict_and_rejects_string():
 
 
 @pytest.mark.unit
+def test_hunt_type_schedulable_flag():
+    from pydantic import ValidationError
+
+    # schedulable is the default, and an empty rule_dirs stays legal there: the shipped
+    # defaults declare a hunt type with `rule_dirs: []` for each deployment to fill in
+    cfg = HuntTypeConfig(name="t", python_module="m", python_class="c",
+                         rule_dirs=[], update_frequency=60)
+    assert cfg.schedulable is True
+
+    # a non-schedulable type has nowhere to load hunts from, and needs no rule_dirs
+    cfg = HuntTypeConfig(name="t", python_module="m", python_class="c",
+                         update_frequency=60, schedulable=False)
+    assert cfg.schedulable is False
+    assert cfg.rule_dirs == []
+
+    # ...so declaring them anyway is a contradiction worth catching: those hunts would
+    # sit on disk looking live while never loading
+    with pytest.raises(ValidationError, match="never load"):
+        HuntTypeConfig(name="t", python_module="m", python_class="c",
+                       rule_dirs=[{"rule_dir": "x"}], update_frequency=60, schedulable=False)
+
+
+@pytest.mark.unit
 def test_hunt_create_root_analysis_emits_detection_point():
     hunt = default_hunt()
     hunt.signature_version = "abc123commit"

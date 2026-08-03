@@ -1,7 +1,7 @@
 import importlib
 import sys
 from typing import TYPE_CHECKING, Any, Optional
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from saq.configuration.secret_ref import SecretRef
 
@@ -392,9 +392,23 @@ class HuntTypeConfig(BaseModel):
     name: str = Field(..., description="The name of the hunt type.")
     python_module: str = Field(..., description="The module of the hunt type.")
     python_class: str = Field(..., description="The class of the hunt type.")
-    rule_dirs: list[HuntRuleDirConfig] = Field(..., description="The directories that contain the hunt rules. Each entry is a {rule_dir, git_dir?} mapping; bare strings are no longer accepted.")
+    rule_dirs: list[HuntRuleDirConfig] = Field(default_factory=list, description="The directories that contain the hunt rules. Each entry is a {rule_dir, git_dir?} mapping; bare strings are no longer accepted. Required unless schedulable is false.")
     update_frequency: int = Field(..., description="The frequency of the hunt type.")
     concurrency_limit: Optional[int] = Field(default=None, description="The concurrency limit for the hunt type.")
+    schedulable: bool = Field(default=True, description="Whether hunts of this type may run on a schedule. When false, rule_dirs is never scanned, so no hunt of this type is ever loaded for execution by the hunter service; the type exists only so hunts can be submitted through the validation API. Use for backends whose query cost has to stay under human control.")
+
+    @model_validator(mode='after')
+    def validate_rule_dirs_against_schedulable(self):
+        # An empty rule_dirs on a schedulable type is normal — the shipped defaults declare the
+        # type with `rule_dirs: []` and each deployment fills it in, and load_hunt_managers
+        # already skips a type that never gets any. Only the contradiction is worth rejecting:
+        # hunts under a non-schedulable type's rule_dirs would sit on disk looking live while
+        # never loading.
+        if not self.schedulable and self.rule_dirs:
+            raise ValueError(
+                f"hunt type {self.name} defines rule_dirs but is not schedulable; those hunts would "
+                "never load, so remove rule_dirs or set schedulable to true")
+        return self
 
 class APIQueryDefaultsConfig(BaseModel):
     name: str = Field(..., description="The name of the API query defaults.")

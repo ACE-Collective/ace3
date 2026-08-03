@@ -10,6 +10,7 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.configuration.config import get_config
+from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ExecutionMode
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.error.remote import RemoteApiError
@@ -238,6 +239,26 @@ def test_hunt_execution_multi_threaded(hunter_service_multi_threaded):
     wait_for_log_count('unit test execute marker: Hunt(unit_test_2[test])', 1)
     hunter_service_multi_threaded.stop()
     hunter_service_multi_threaded.wait()
+
+@pytest.mark.integration
+def test_non_schedulable_hunt_type_loads_nothing_from_rule_dirs(manager_kwargs, rules_dir):
+    """A non-schedulable type must not pick up hunts on disk, but must still load one on demand.
+
+    That split is what lets a backend with an expensive, tenant-wide query quota be reachable
+    through the validation API (which calls load_hunt_from_config on a submitted file) without
+    any hunt of that type ever running on the hunter service's schedule.
+    """
+    manager_kwargs["config"] = HuntTypeConfig(
+        name="test", python_module="m", python_class="c", update_frequency=60, schedulable=False)
+
+    hunter = HuntManager(**manager_kwargs)
+    hunter.load_hunts_from_config()
+    assert hunter.hunts == []
+
+    # the same yaml the scan skipped still loads when named explicitly
+    yaml_path = os.path.join(rules_dir, os.listdir(rules_dir)[0])
+    assert isinstance(hunter.load_hunt_from_config(yaml_path), TestHunt)
+
 
 @pytest.mark.integration
 def test_load_hunts(manager_kwargs):
