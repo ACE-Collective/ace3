@@ -1,5 +1,6 @@
 """Splunk API Library"""
 import csv
+import importlib.metadata
 import json
 import logging
 import os
@@ -18,7 +19,6 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from saq.configuration.schema import ProxyConfig
 
-from splunklib import __version__ as splunklib_version
 from splunklib.binding import _spliturl, handler as splunk_http_handler
 from splunklib.client import AuthenticationError, Job
 import splunklib.client as client
@@ -30,6 +30,11 @@ from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
 from saq.error import report_exception
 from saq.error.remote import RemoteApiError
+
+try:
+    SPLUNK_SDK_VERSION = importlib.metadata.version("splunk-sdk")
+except importlib.metadata.PackageNotFoundError:
+    SPLUNK_SDK_VERSION = "unknown"
 
 # socket timeout (seconds) applied to every splunk HTTP request. without this a stalled
 # connection blocks the calling thread forever.
@@ -93,7 +98,7 @@ def _proxy_handler(proxy_host, proxy_port, proxy_scheme="http", timeout=None):
         head = {
             "Content-Length": str(len(body)),
             "Host": host,
-            "User-Agent": f"splunk-sdk-python/{splunklib_version}",
+            "User-Agent": f"splunk-sdk-python/{SPLUNK_SDK_VERSION}",
             "Accept": "*/*",
             "Connection": "Close",
         }
