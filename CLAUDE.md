@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlation platform. Data comes in through *collectors*, is turned into a `RootAnalysis` tree, and the *engine* recursively runs *analysis modules* against *observables* until no module has anything left to do. Detections turn the analysis into an alert that analysts triage in the Flask GUI.
 
+## Repo layout
+
+A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
+
 ## Environment
 
 Development happens **inside the `dev` container** (this is where Claude Code normally runs — check with `ls /.dockerenv`). `SAQ_HOME=/opt/ace`, Python 3.14 in `/venv`, user `ace`.
@@ -20,6 +24,8 @@ GUI: https://localhost:5000/ace (analyst/analyst).
 
 ## Testing
 
+Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
+
 ```bash
 pytest                                    # default: -m "unit or integration" over tests/
 pytest tests/saq/modules/test_command_line.py::test_command_line_analyzer -v
@@ -33,6 +39,8 @@ Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`
 Tests run against the `*-unittest` databases (`ace`, `brocess`, `email-archive`, plus `-unittest-2` copies) and `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
+
+`phishkit/tests/` is the exception to everything above: it holds two suites with different runtime environments, neither of which is the `dev` container, and `pytest phishkit/tests/` cannot pass anywhere. See the `phishkit` skill before running them.
 
 There is no configured linter/formatter in the repo.
 
@@ -104,6 +112,8 @@ The configuration is loaded in three stages. Each YAML file is loaded with `yaml
 
 The final validated config is read via `get_config()` / `get_engine_config()` / `get_service_config(name)`. 
 
+`etc/saq.yaml` is a **dev-only** overlay: edits there are never part of a PR, and it is never evidence of what a deployment actually has enabled. `etc/saq.unittest.default.yaml` is likewise the test suite's, not production's.
+
 Key top-level conventions:
 
 - `analysis_module_<name>:` — one block per analysis module (`name`, `python_module`, `python_class`, `enabled`, `module_groups`, `dependencies`, plus module-specific fields).
@@ -166,5 +176,13 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 - Branches are `<initials>/<topic>` (e.g. `jd/add-missing-log-rotation`); releases are `r/X.Y.Z`. Everything merges to `main` via PR.
 - Config, module registration, and observable types are data, not code — prefer adding a YAML block over hardcoding.
-- The repo contains **live malware samples** in test data. Be aware of this on machines with antivirus.
+- **New API endpoints go in `aceapi_v2/` (FastAPI), not Flask** — `router.py` / `service.py` / `schemas.py` per module, with matching tests in `tests/aceapi_v2/`. Flask is the legacy GUI layer; it reaches the async services through `run_async_with_session()` in `aceapi_v2/sync.py`. There is a lot of Flask in the tree, so the surrounding code is *not* the pattern to copy here.
+- **Alembic + ORM, never raw SQL.** Write the SQLAlchemy model in `saq/database/model.py` first, then autogenerate the migration (see Databases and migrations above) — never hand-write a migration file. Prefer the ORM session (`get_db()`) over raw cursors.
+- **Integrations stay self-contained.** Everything for `integrations/<name>/` lives under that directory — never add integration-specific symbols to `saq/constants.py`, `saq/gui/`, or `saq/configuration/schema.py`. If the extension hook you need doesn't exist, extend the core mechanism generically (no vendor name in core) and register through it.
+- **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, heavy startup cost), leave it and add a short comment saying why — no comment, no excuse.
 - When possible, use the actual data types for type hints. For example, use `list` instead of the older `List`.
+
+### Test data
+
+- The repo contains **live malware samples** in test data. Be aware of this on machines with antivirus.
+- **This repo is public — no customer data in it.** Never copy `data/ace/**` alert content into `tests/`. Synthesize a minimal fixture that reproduces the structural trigger (MIME shape, BOM, header pattern) instead; redaction is easy to get wrong. Sanitize production GUIDs, Message-IDs, and alert/tenant UUIDs out of fixtures even when reproducing a real bug.
