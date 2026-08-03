@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-source bin/initialize-environment.sh && ace update-for-detection-observable-cache

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#
+# Export the observables enabled for detection to the systems that run detection rules.
+# Invoked by cron every minute; exits as a no-op unless the set of detections changed.
+#
+source /opt/ace/bin/initialize-environment.sh
+
+exec /opt/ace/ace observables export "$@"

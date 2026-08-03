@@ -1,5 +1,6 @@
 """Splunk API Library"""
 import csv
+import json
 import logging
 import os
 import os.path
@@ -12,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from http import client as http_client
 from io import BytesIO
 from requests.exceptions import HTTPError, Timeout, ProxyError, ConnectionError
-from typing import TYPE_CHECKING, Optional, Tuple, List
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from saq.configuration.schema import ProxyConfig
@@ -439,7 +440,7 @@ class SplunkQueryObject:
         end:Optional[datetime]=None,
         use_index_time:bool=False,
         timeout: Optional[timedelta]=None,
-        embed_time_in_query:bool=True) -> Tuple[Optional[Job], Optional[List[dict]]]:
+        embed_time_in_query:bool=True) -> tuple[Optional[Job], Optional[list[dict]]]:
         """Executes a query asynchronously.
 
         To properly use this method you must call it in a loop and pass the returned job into the next call until results are returned.
@@ -747,6 +748,41 @@ class SplunkQueryObject:
         except Exception as e:
             logging.error(f"unable to record splunk query performance: {e}")
             report_exception()
+
+    #
+    # kv store
+    #
+    # Thin wrappers over splunklib's KV store API. These deliberately let splunklib's exceptions
+    # propagate.
+    #
+
+    def kvstore_collection(self, collection: str) -> "client.KVStoreCollection":
+        """Returns the named KV store collection."""
+        try:
+            return self.client.kvstore[collection]
+        except KeyError as e:
+            raise KeyError(f"splunk kv store collection {collection} does not exist") from e
+
+    def kvstore_query(self, collection: str, query: Optional[dict] = None) -> list[dict]:
+        """Returns the documents in the collection, optionally filtered by a query."""
+        if query is None:
+            return self.kvstore_collection(collection).data.query()
+
+        return self.kvstore_collection(collection).data.query(query=json.dumps(query))
+
+    def kvstore_batch_save(self, collection: str, documents: list[dict]):
+        """Saves the given documents, replacing any that already exist under the same _key."""
+        if not documents:
+            return None
+
+        return self.kvstore_collection(collection).data.batch_save(*documents)
+
+    def kvstore_delete(self, collection: str, query: Optional[dict] = None):
+        """Deletes the documents matching the query, or every document if no query is given."""
+        if query is None:
+            return self.kvstore_collection(collection).data.delete()
+
+        return self.kvstore_collection(collection).data.delete(query=json.dumps(query))
 
 def SplunkClient(name: str = "default", **kwargs) -> SplunkQueryObject:
     """Convenience function for creating a SplunkClient from a config section

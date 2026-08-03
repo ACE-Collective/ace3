@@ -769,9 +769,27 @@ sip:
   api_key: ""
   cache_db_path: var/sip.db
 
-# settings for exporting for_detect observables into yara rules
+#
+# observable detection export targets
+#
+
+observable_export_redis:
+  name: redis
+  python_module: saq.observables.export.redis_cache
+  python_class: RedisObservableExport
+  description: Updates the local redis cache the analysis engine matches observables against.
+  enabled: true
+
+observable_export_yara:
+  name: yara
+  python_module: saq.observables.export.yara
+  python_class: YaraObservableExport
+  description: Exports observables enabled for detection as yara rules.
+  enabled: true
+
+# settings for exporting observables enabled for detection into yara rules
 yara_export:
-  # a comma separated list of for_detect observables types to export to yara rules
+  # the observable types to export to yara rules
   # NOTE: these map directly to observable type string representations!
   export_list:
     - email_address
@@ -781,14 +799,16 @@ yara_export:
     - file_name
     - file_path
     - fqdn
+    - ip
+    # legacy: detections created before the migration to the generic `ip` type still carry `ipv4`
     - ipv4
     - md5
     - sha256
     - uri_path
     - url
     - user_agent
-  # directory of template files (relative to ANALYST_DATA_DIR)
-  export_template_dir: yara_templates
+  # directory of template files (relative to SAQ_HOME, or an absolute path)
+  export_template_dir: etc/yara_templates
   # minimum length of an indicator value that would go into a yara rule
   export_minimum_length: 5
   # max number of strings to allow in a yara rule
