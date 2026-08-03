@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.87] - 2026-08-03
+
+- [Adds schedulable bool to hunt config](https://github.com/ACE-Collective/ace3/pull/436)
+- [Rebuild observable detection export as a pluggable subsystem (redis, yara, splunk)](https://github.com/ACE-Collective/ace3/pull/435)
+- [random cleanup](https://github.com/ACE-Collective/ace3/pull/434)
+- [refactored quick filters, fixed export issue](https://github.com/ACE-Collective/ace3/pull/433)
+- [Some improvements to new email thread analysis module](https://github.com/ACE-Collective/ace3/pull/432)
+- [moved remaining dbs to alembic](https://github.com/ACE-Collective/ace3/pull/431)
+- [Enhance alert disposition logs and remove structured logging duplication](https://github.com/ACE-Collective/ace3/pull/430)
+- [Adds alert observable expansion on event pages](https://github.com/ACE-Collective/ace3/pull/429)
+
 ## [3.0.86] - 2026-07-30
 
 - [Adds email thread analysis module](https://github.com/ACE-Collective/ace3/pull/421)
