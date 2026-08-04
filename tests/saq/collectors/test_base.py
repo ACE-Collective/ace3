@@ -12,7 +12,13 @@ import pytest
 import requests
 
 from saq.analysis.root import RootAnalysis, Submission
-from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
+from saq.collectors.base_collector import (
+    SUBMISSION_OUTCOME_DUPLICATE,
+    SUBMISSION_OUTCOME_SCHEDULED,
+    Collector,
+    CollectorExecutionMode,
+    CollectorService,
+)
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.collectors.submission_scheduler import SubmissionScheduler
@@ -1533,6 +1539,50 @@ def test_duplicate_submission_removed_from_staging():
 
 
 @pytest.mark.integration
+def test_repeated_duplicates_are_not_counted_as_scheduled_work():
+    """a source that keeps re-serving the same items must not starve the collector of its sleep
+
+    execute_collection_loop reports what it yielded and what it actually scheduled, and
+    collection_loop sleeps on the scheduled count. keying the sleep off the yielded count
+    instead lets a collector whose source re-serves the same items spin as fast as that source
+    can answer, since every pass yields a nonzero count that is then dropped as duplicate"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    class _RepeatingCollector(Collector):
+        """stands in for a source that hands back the same entry on every pass"""
+
+        def collect(self) -> Generator[Submission, None, None]:
+            create_staged_submission(file_manager, key="always-the-same")
+            yield from file_manager.iter_staged_submissions()
+
+    collector_service.collector = _RepeatingCollector()
+
+    # the first pass sees the key for the first time, so it becomes real work
+    assert collector_service.execute_collection_loop() == (1, 1)
+
+    # every pass after that yields just as much but schedules nothing, which is what lets
+    # collection_loop fall through to sleep(collection_frequency)
+    assert collector_service.execute_collection_loop() == (1, 0)
+    assert collector_service.execute_collection_loop() == (1, 0)
+
+
+@pytest.mark.integration
+def test_duplicate_submission_reports_duplicate_outcome():
+    """process_submission reports why it dropped a submission, not just that it did"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    create_staged_submission(file_manager, key="repeated-key")
+    first = next(iter(file_manager.iter_staged_submissions()))
+    assert collector_service.process_submission(first) == (False, SUBMISSION_OUTCOME_SCHEDULED)
+
+    create_staged_submission(file_manager, key="repeated-key")
+    duplicate = next(iter(file_manager.iter_staged_submissions()))
+    assert collector_service.process_submission(duplicate) == (False, SUBMISSION_OUTCOME_DUPLICATE)
+
+
+@pytest.mark.integration
 def test_failing_submission_is_quarantined_not_retried_forever():
     """a submission that fails to process is moved aside rather than blocking the queue
 
@@ -1555,7 +1605,7 @@ def test_failing_submission_is_quarantined_not_retried_forever():
             raise RuntimeError("nope")
 
         processed.append(submission.root.uuid)
-        return False
+        return False, SUBMISSION_OUTCOME_SCHEDULED
 
     collector_service.process_submission = _explode
     collector_service.execute_collection_loop()
