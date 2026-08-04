@@ -146,6 +146,8 @@ service_llm_embedding:
   python_class: EmbeddingService
   description: LLM Embedding - embeds alerts into a vector space
   enabled: true
+  # the number of worker processes to spawn (defaults to the cpu count when omitted)
+  #worker_count: 4
 
 # cron settings
 service_cron:

@@ -1,7 +1,10 @@
+import multiprocessing
+
 import pytest
+from pydantic import ValidationError
 from unittest.mock import Mock, patch, call
 
-from saq.llm.embedding.service import EmbeddingWorker, EmbeddingTask
+from saq.llm.embedding.service import EmbeddingManager, EmbeddingServiceConfig, EmbeddingWorker, EmbeddingTask
 
 
 @pytest.fixture
@@ -118,3 +121,44 @@ class TestExecuteTask:
             assert mock_acquire.call_count == 2
             lock_uuids = [c[0][1] for c in mock_acquire.call_args_list]
             assert lock_uuids[0] != lock_uuids[1]
+
+
+BASE_SERVICE_CONFIG = {
+    "name": "llm_embedding",
+    "python_module": "saq.llm.embedding.service",
+    "python_class": "EmbeddingService",
+    "description": "LLM Embedding - embeds alerts into a vector space",
+    "enabled": True,
+}
+
+
+@pytest.mark.unit
+class TestWorkerCount:
+    @pytest.mark.parametrize("worker_count", [None, 3])
+    def test_manager_worker_count(self, worker_count):
+        """Verify the manager defaults to the cpu count and honors an explicit count."""
+        manager = EmbeddingManager(worker_count=worker_count)
+        assert manager.worker_count == (multiprocessing.cpu_count() if worker_count is None else worker_count)
+
+    def test_manager_default_argument(self):
+        """Verify omitting the argument entirely is the same as passing None."""
+        assert EmbeddingManager().worker_count == multiprocessing.cpu_count()
+
+    def test_manager_starts_configured_number_of_workers(self):
+        manager = EmbeddingManager(worker_count=3)
+        with patch.object(EmbeddingWorker, "start") as mock_start:
+            manager.start()
+
+        assert mock_start.call_count == 3
+        assert len(manager.workers) == 3
+        assert [worker.name for worker in manager.workers] == ["worker-0", "worker-1", "worker-2"]
+
+    def test_config_worker_count_omitted(self):
+        assert EmbeddingServiceConfig.model_validate(BASE_SERVICE_CONFIG).worker_count is None
+
+    def test_config_worker_count_specified(self):
+        assert EmbeddingServiceConfig.model_validate(BASE_SERVICE_CONFIG | {"worker_count": 4}).worker_count == 4
+
+    def test_config_worker_count_invalid(self):
+        with pytest.raises(ValidationError):
+            EmbeddingServiceConfig.model_validate(BASE_SERVICE_CONFIG | {"worker_count": 0})
