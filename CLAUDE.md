@@ -40,8 +40,6 @@ Tests run against the `*-unittest` databases (`ace`, `brocess`, `email-archive`,
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-`phishkit/tests/` is the exception to everything above: it holds two suites with different runtime environments, neither of which is the `dev` container, so `pytest phishkit/tests/` cannot pass anywhere. `test_scanner.py` runs in the scanner image (it imports `mycdp`/`seleniumbase`, which are not in `/venv`); `test_phishkit.py` needs `celery` and currently fails to import at all. Get a baseline on a clean tree before reading either as a regression.
-
 There is no configured linter/formatter in the repo.
 
 IMPORTANT: Do **NOT** run multiple tests at the same time. The tests are designed to run serially.
@@ -171,6 +169,21 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 ### Site Configuration
 
 The `docker-compose.yml` configuration is the open source default configuration. 
+
+### Significant Subsystems
+
+
+#### Phishkit
+
+`phishkit/` is a browser-detonation service that lives outside the `saq` namespace and never imports it: a Celery worker (RabbitMQ broker, Redis backend) that detonates a URL or file in a throwaway Chrome/SeleniumBase container and leaves the artifacts (screenshot, DOM, captured requests and response bodies, metrics) on the shared `ace-phishkit` volume. Its behavior is configured by `etc/phishkit_config.yaml`, which is *not* part of the layered `saq.yaml` config. ACE reaches it only through `saq/phishkit.py`, a thin Celery client plus an `ace phishkit` CLI; the real consumer is `PhishkitAnalyzer` (`saq/modules/phishkit.py`, config block `analysis_module_phishkit_analyzer`), which dispatches asynchronously, polls via delayed analysis, and turns the returned artifacts and the URLs found in them into observables.
+
+Phishkit has it's own CLAUDE.md file available at `phishkit/CLAUDE.md` as needed.
+
+#### js_deobfuscator
+
+`js_deobfuscator/` is a JavaScript sandbox that reports what a sample *did* rather than what it says: it lives outside the `saq` namespace and never imports it, and it is a Celery worker that runs `harness.js` in a throwaway container per sample, exchanging payloads and results only through the shared `ace-js-deobfuscator` volume. The harness executes the sample in a `node:vm` context where browser/Acrobat globals are recording Proxies, and emits a pseudo-JS trace of everything the sample touched. ACE reaches it only through `saq/js_deobfuscator.py`, a thin Celery client; the consumer is `JavaScriptDeobfuscationAnalyzer` (`saq/modules/file_analysis/js.py`, config block `analysis_module_javascript_deobfuscation`), which calls **synchronously** rather than via delayed analysis, and re-emits the trace and any extracted payloads as file observables for URL extraction.
+
+js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.md` as needed.
 
 ## Conventions
 
