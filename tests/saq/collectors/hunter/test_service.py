@@ -39,6 +39,10 @@ def test_collect_stops_at_maximum(file_manager):
     # reaches a terminal outcome, which is what makes it survive a crash mid-processing
     assert len(file_manager.list_staged_submissions()) == MAX_SUBMISSIONS_PER_COLLECTION + 5
 
+    # and because a pass leaves work behind, the collection loop must run again immediately
+    # rather than waiting collection_frequency
+    assert collector.collect_until_empty
+
 
 @pytest.mark.unit
 def test_collect_empty_staging(file_manager):

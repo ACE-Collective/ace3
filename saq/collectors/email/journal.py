@@ -50,6 +50,11 @@ class JournalEmailCollector(Collector):
         self.service_config = get_service_config(SERVICE_JOURNAL_EMAIL_COLLECTOR)
         self.source = self.service_config.source
 
+        # only the s3 path is bounded: _collect_from_s3 consumes a single list_objects_v2 page and
+        # never follows the continuation token, so more objects may be waiting. the local path
+        # lists the whole directory in one pass
+        self.collect_until_empty = self.source == "s3"
+
         if self.source == "s3":
             from saq.storage.s3 import get_s3_client
             self.client = get_s3_client()

@@ -51,6 +51,8 @@ class TestJournalEmailCollectorS3:
         assert collector.yara_context is None
         assert collector.bucket_name == "journal-emails"
         assert collector.source == "s3"
+        # a single list_objects_v2 page may not be everything the bucket holds
+        assert collector.collect_until_empty
 
     def test_collect_empty_bucket(self, collector, mock_s3_client):
         """Test collect method with empty bucket."""
@@ -178,6 +180,8 @@ class TestJournalEmailCollectorLocal:
         assert collector.source == "local"
         assert collector.source_directory == mock_config
         assert not hasattr(collector, "client")
+        # the local path lists the whole directory, so there is nothing left to collect
+        assert not collector.collect_until_empty
 
     def test_collect_empty_directory(self, collector, mock_config):
         """Test collect with empty source directory."""

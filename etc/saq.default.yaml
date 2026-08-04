@@ -322,8 +322,6 @@ service_hunter:
   enabled: true
   delete_files: true
   workload_type: hunter
-  # how often do we check to see if the hunts have been modified/updated (in SECONDS)
-  update_frequency: 60
 
 query_hunter:
   # global defaults for query-based hunts (like splunk, elasticsearch, qradar, etc...)

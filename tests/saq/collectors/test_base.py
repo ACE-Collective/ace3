@@ -12,7 +12,13 @@ import pytest
 import requests
 
 from saq.analysis.root import RootAnalysis, Submission
-from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
+from saq.collectors.base_collector import (
+    SUBMISSION_OUTCOME_DUPLICATE,
+    SUBMISSION_OUTCOME_SCHEDULED,
+    Collector,
+    CollectorExecutionMode,
+    CollectorService,
+)
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.collectors.submission_scheduler import SubmissionScheduler
@@ -365,10 +371,9 @@ def test_threaded_remote_node_multi_submissions(mock_api_call, engine):
             self.available_work = [create_submission() for _ in range(2)]
 
         def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-
-            yield self.available_work.pop()
+            # hands back everything it has in one pass, like most collectors
+            while self.available_work:
+                yield self.available_work.pop()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
     tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace', batch_size=1, thread_count=2)
@@ -410,10 +415,11 @@ def test_threaded_remote_node_multi_submissions_with_large_batch(engine):
             self.available_work = [create_submission() for _ in range(2)]
 
         def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-
-            yield self.available_work.pop()
+            # both submissions have to come out of the same pass for them to be batched
+            # together - a collector that hands back one per pass would have them a
+            # collection_frequency apart
+            while self.available_work:
+                yield self.available_work.pop()
 
     # start an engine to get a node created
     #engine = Engine(config=EngineConfiguration(pool_size_limit=1))
@@ -1116,6 +1122,174 @@ def test_collector_update():
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SHOT)
     assert collector_service.collector.updated
 
+# collection cadence tests
+# ------------------------------------------------------------------------
+
+class _sleep_recorder:
+    """stands in for CollectorService.sleep - records what each loop slept on and stops the loop
+
+    returns True the way the real sleep does once the shutdown event is set, so the loops that
+    break on the return value still terminate"""
+
+    def __init__(self, collector_service: CollectorService, stop_after: int = 1):
+        self.collector_service = collector_service
+        self.stop_after = stop_after
+        self.calls = []
+
+    def __call__(self, seconds: float) -> bool:
+        self.calls.append(seconds)
+        if len(self.calls) >= self.stop_after:
+            self.collector_service.shutdown_event.set()
+
+        return self.collector_service.is_shutdown()
+
+
+def _ensure_node_running():
+    """collection_loop pauses on a draining node, and node status outlives the test that set it"""
+    from saq.database.util.node import clear_node_status_cache, set_node_status
+
+    set_node_status(get_global_runtime_settings().saq_node_id, NODE_STATUS_RUNNING)
+    clear_node_status_cache()
+
+
+class _paced_collector(TestCollector):
+    """yields one fresh submission per pass for the first passes_with_work passes"""
+
+    def __init__(self, passes_with_work: int = 1, **kwargs):
+        super().__init__(**kwargs)
+        self.passes_with_work = passes_with_work
+        self.collect_count = 0
+
+    @override
+    def collect(self) -> Generator[Submission, None, None]:
+        self.collect_count += 1
+        if self.collect_count <= self.passes_with_work:
+            yield create_submission()
+
+
+@pytest.mark.integration
+def test_collection_loop_sleeps_after_scheduling_work():
+    """a collector that drains its source waits collection_frequency even after a productive pass
+
+    there is nothing left for it to collect when collect() returns, so looping straight back
+    around would only re-hit the source"""
+    _ensure_node_running()
+    collector = _paced_collector(passes_with_work=1)
+    collector_service = CollectorService(collector=collector, config=get_service_config("test_collector"))
+    assert not collector_service.collect_until_empty
+
+    recorder = _sleep_recorder(collector_service)
+    collector_service.sleep = recorder
+    collector_service.collection_loop()
+
+    # the pass scheduled work and the loop still slept, so there was only ever one pass
+    assert collector.collect_count == 1
+    assert recorder.calls == [collector_service.config.collection_frequency]
+
+
+@pytest.mark.integration
+def test_collect_until_empty_skips_the_sleep_after_scheduling_work():
+    """a collector that returns a bounded batch runs again immediately while it keeps producing"""
+    _ensure_node_running()
+    collector = _paced_collector(passes_with_work=1)
+    collector.collect_until_empty = True
+    collector_service = CollectorService(collector=collector, config=get_service_config("test_collector"))
+    assert collector_service.collect_until_empty
+
+    recorder = _sleep_recorder(collector_service)
+    collector_service.sleep = recorder
+    collector_service.collection_loop()
+
+    # the productive pass was followed immediately by another, and only the empty one slept
+    assert collector.collect_count == 2
+    assert recorder.calls == [collector_service.config.collection_frequency]
+
+
+@pytest.mark.integration
+def test_collect_until_empty_still_sleeps_when_nothing_is_scheduled():
+    """opting in must not let a source that re-serves the same items spin the loop
+
+    the sleep keys off what was scheduled, not what was yielded, so a pass that yields plenty
+    and schedules nothing still waits"""
+    _ensure_node_running()
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    class _RepeatingCollector(Collector):
+        """stands in for a bounded source that hands back the same entry on every pass"""
+
+        collect_until_empty = True
+
+        def __init__(self):
+            super().__init__()
+            self.collect_count = 0
+
+        def collect(self) -> Generator[Submission, None, None]:
+            self.collect_count += 1
+            create_staged_submission(file_manager, key="always-the-same")
+            yield from file_manager.iter_staged_submissions()
+
+    collector = _RepeatingCollector()
+    collector_service.collector = collector
+
+    recorder = _sleep_recorder(collector_service)
+    collector_service.sleep = recorder
+    collector_service.collection_loop()
+
+    # the first pass schedules the key and runs again immediately, the second yields just as much
+    # but schedules nothing and falls through to the sleep
+    assert collector.collect_count == 2
+    assert recorder.calls == [collector_service.config.collection_frequency]
+
+
+@pytest.mark.integration
+def test_collect_until_empty_config_overrides_the_collector():
+    """the collector declares whether it returns a bounded batch, the config gets the last word"""
+    collector = TestCollector()
+    assert not collector.collect_until_empty
+
+    base_config = get_service_config("test_collector")
+
+    # nothing configured defers to the collector
+    assert not CollectorService(collector=collector, config=base_config).collect_until_empty
+
+    # either explicit setting wins over the collector
+    on = base_config.model_copy(update={"collect_until_empty": True})
+    assert CollectorService(collector=collector, config=on).collect_until_empty
+
+    collector.collect_until_empty = True
+    off = base_config.model_copy(update={"collect_until_empty": False})
+    assert not CollectorService(collector=collector, config=off).collect_until_empty
+
+
+@pytest.mark.integration
+def test_cleanup_loop_uses_cleanup_frequency():
+    """workload cleanup runs on its own schedule - a slow collector must not stall it"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    collector_service.config.collection_frequency = 3600
+    collector_service.config.cleanup_frequency = 7
+
+    recorder = _sleep_recorder(collector_service)
+    collector_service.sleep = recorder
+    collector_service.cleanup_loop()
+
+    assert recorder.calls == [7]
+
+
+@pytest.mark.integration
+def test_update_loop_uses_update_frequency():
+    """Collector.update() runs on its own schedule for the same reason"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    collector_service.config.collection_frequency = 3600
+    collector_service.config.update_frequency = 11
+
+    recorder = _sleep_recorder(collector_service)
+    collector_service.sleep = recorder
+    collector_service.update_loop()
+
+    assert recorder.calls == [11]
+
+
 # node drain tests
 # ------------------------------------------------------------------------
 
@@ -1533,6 +1707,53 @@ def test_duplicate_submission_removed_from_staging():
 
 
 @pytest.mark.integration
+def test_repeated_duplicates_are_not_counted_as_scheduled_work():
+    """a source that keeps re-serving the same items must not starve the collector of its sleep
+
+    execute_collection_loop reports what it yielded and what it actually scheduled, and
+    collection_loop sleeps on the scheduled count. keying the sleep off the yielded count
+    instead lets a collector whose source re-serves the same items spin as fast as that source
+    can answer, since every pass yields a nonzero count that is then dropped as duplicate.
+
+    this holds regardless of collect_until_empty - see
+    test_collect_until_empty_still_sleeps_when_nothing_is_scheduled"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    class _RepeatingCollector(Collector):
+        """stands in for a source that hands back the same entry on every pass"""
+
+        def collect(self) -> Generator[Submission, None, None]:
+            create_staged_submission(file_manager, key="always-the-same")
+            yield from file_manager.iter_staged_submissions()
+
+    collector_service.collector = _RepeatingCollector()
+
+    # the first pass sees the key for the first time, so it becomes real work
+    assert collector_service.execute_collection_loop() == (1, 1)
+
+    # every pass after that yields just as much but schedules nothing, which is what lets
+    # collection_loop fall through to sleep(collection_frequency)
+    assert collector_service.execute_collection_loop() == (1, 0)
+    assert collector_service.execute_collection_loop() == (1, 0)
+
+
+@pytest.mark.integration
+def test_duplicate_submission_reports_duplicate_outcome():
+    """process_submission reports why it dropped a submission, not just that it did"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    create_staged_submission(file_manager, key="repeated-key")
+    first = next(iter(file_manager.iter_staged_submissions()))
+    assert collector_service.process_submission(first) == (False, SUBMISSION_OUTCOME_SCHEDULED)
+
+    create_staged_submission(file_manager, key="repeated-key")
+    duplicate = next(iter(file_manager.iter_staged_submissions()))
+    assert collector_service.process_submission(duplicate) == (False, SUBMISSION_OUTCOME_DUPLICATE)
+
+
+@pytest.mark.integration
 def test_failing_submission_is_quarantined_not_retried_forever():
     """a submission that fails to process is moved aside rather than blocking the queue
 
@@ -1555,7 +1776,7 @@ def test_failing_submission_is_quarantined_not_retried_forever():
             raise RuntimeError("nope")
 
         processed.append(submission.root.uuid)
-        return False
+        return False, SUBMISSION_OUTCOME_SCHEDULED
 
     collector_service.process_submission = _explode
     collector_service.execute_collection_loop()

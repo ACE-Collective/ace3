@@ -35,6 +35,12 @@ from saq.submission_filter import SubmissionFilter
 # how often (in seconds) a collector service reports its status to the collector_status table
 COLLECTOR_STATUS_REPORT_FREQUENCY = 5
 
+# terminal outcomes of process_submission
+# only SCHEDULED means the submission became real work; the other two are drops
+SUBMISSION_OUTCOME_SCHEDULED = "scheduled"
+SUBMISSION_OUTCOME_TUNED_OUT = "tuned_out"
+SUBMISSION_OUTCOME_DUPLICATE = "duplicate"
+
 def get_collection_error_dir() -> str:
     return os.path.join(get_data_dir(), get_config().collection.error_dir)
 
@@ -51,7 +57,14 @@ class Collector(ABC):
     They should be focused solely on the collection logic and not concern themselves
     with service lifecycle, threading, database operations, or file management.
     """
-    
+
+    # set to True by collectors whose collect() returns a bounded batch rather than everything
+    # available, so a pass that produced work is immediately followed by another pass instead of
+    # waiting collection_frequency. a collector that drains its source in one call must leave this
+    # False -- there is nothing left to collect when collect() returns, so looping straight back
+    # around just re-hits the source
+    collect_until_empty: bool = False
+
     def __init__(self):
         """Initialize the collector."""
         self.fqdn = socket.getfqdn()
@@ -319,8 +332,8 @@ class CollectorService(ACEServiceInterface):
                 self.execute_workload_cleanup()
             except Exception as e:
                 logging.exception(f"unable to execute workload cleanup: {e}")
-            
-            if self.sleep(self.config.collection_frequency):
+
+            if self.sleep(self.config.cleanup_frequency):
                 break
         
         logging.info("exited cleanup loop")
@@ -364,7 +377,9 @@ class CollectorService(ACEServiceInterface):
                         self.collection_paused_logged = True
 
                     self.maybe_report_collector_status()
-                    self.sleep(self.config.collection_frequency)
+                    # a collector with a long collection_frequency would otherwise take that long
+                    # to report the status the engine uses to decide the node has fully drained
+                    self.sleep(min(self.config.collection_frequency, COLLECTOR_STATUS_REPORT_FREQUENCY))
                     continue
 
                 if self.collection_paused_logged:
@@ -372,7 +387,7 @@ class CollectorService(ACEServiceInterface):
                     self.collection_paused_logged = False
 
                 self.maybe_report_collector_status()
-                submission_count = self.execute_collection_loop()
+                submission_count, scheduled_count = self.execute_collection_loop()
 
                 if self.execution_mode == CollectorExecutionMode.SINGLE_SHOT:
                     self.shutdown_event.set()
@@ -382,8 +397,16 @@ class CollectorService(ACEServiceInterface):
                         self.shutdown_event.set()
                         break
 
-                # if we didn't process any submissions, wait before trying again
-                if submission_count == 0:
+                # a collector that hands back everything it has in one call has nothing left to
+                # collect the moment that call returns, so it always waits. only a collector that
+                # returns a bounded batch loops straight back around, and only when the pass
+                # actually produced work.
+                #
+                # this has to key off what was actually scheduled rather than what was yielded:
+                # a collector whose source keeps re-serving the same items yields a nonzero count
+                # every pass while every one of them is dropped as a duplicate, and keying off the
+                # yielded count would spin this loop as fast as the source can answer
+                if scheduled_count == 0 or not self.collect_until_empty:
                     self.sleep(self.config.collection_frequency)
 
             except Exception as e:
@@ -395,14 +418,15 @@ class CollectorService(ACEServiceInterface):
                 # this is a primary loop, so we need to release any database connections
                 remove_all_sessions()
     
-    def process_submission(self, submission: Submission) -> bool:
+    def process_submission(self, submission: Submission) -> tuple[bool, str]:
         """Applies the tuning and duplicate filters to a single submission and schedules
-        whatever survives. Returns True if the collector is shutting down and the caller
-        should stop collecting."""
+        whatever survives. Returns (shutdown, outcome) where shutdown is True if the collector
+        is shutting down and the caller should stop collecting, and outcome is one of the
+        SUBMISSION_OUTCOME_* constants."""
 
         start_time = time.monotonic()
         tuning_seconds = duplicate_seconds = schedule_seconds = 0.0
-        outcome = "scheduled"
+        outcome = SUBMISSION_OUTCOME_SCHEDULED
 
         try:
             # does this submission match any tuning rules we have?
@@ -411,20 +435,20 @@ class CollectorService(ACEServiceInterface):
             tuning_seconds = time.monotonic() - stage_time
             if tuning_matches:
                 self.submission_filter.log_tuning_matches(submission, tuning_matches)
-                outcome = "tuned_out"
+                outcome = SUBMISSION_OUTCOME_TUNED_OUT
                 # terminal outcome that never reaches prepare_submission_files, so nothing else
                 # would take this out of the staging dir and it would be collected forever
                 self.file_manager.discard_staged_submission(submission.root.uuid)
-                return False
+                return False, outcome
 
             stage_time = time.monotonic()
             if submission.key:
                 if self.duplicate_filter.is_duplicate(submission.key):
                     logging.info(f"skipping duplicate submission {submission.key}")
                     duplicate_seconds = time.monotonic() - stage_time
-                    outcome = "duplicate"
+                    outcome = SUBMISSION_OUTCOME_DUPLICATE
                     self.file_manager.discard_staged_submission(submission.root.uuid)
-                    return False
+                    return False, outcome
 
                 logging.debug(f"marking submission {submission.key} as processed")
                 self.duplicate_filter.mark_as_processed(submission.key)
@@ -452,10 +476,14 @@ class CollectorService(ACEServiceInterface):
                 total_seconds,
             )
 
-        return self.is_shutdown()
+        return self.is_shutdown(), outcome
 
-    def execute_collection_loop(self) -> int:
+    def execute_collection_loop(self) -> tuple[int, int]:
+        """Runs one full pass of the collector. Returns (submissions_processed,
+        submissions_scheduled) -- everything the collector yielded, and the subset of that which
+        actually became work. They differ whenever submissions are tuned out or deduplicated."""
         submissions_processed = 0
+        submissions_scheduled = 0
 
         try:
             # collect submissions from the collector
@@ -467,7 +495,11 @@ class CollectorService(ACEServiceInterface):
                 # this submission correlates back to that hunt run, email, etc
                 with transaction_id(submission.root.transaction_id or get_transaction_id()):
                     try:
-                        if self.process_submission(submission):
+                        shutdown, outcome = self.process_submission(submission)
+                        if outcome == SUBMISSION_OUTCOME_SCHEDULED:
+                            submissions_scheduled += 1
+
+                        if shutdown:
                             break
                     except Exception as e:
                         # a staged submission stays on disk until it reaches a terminal outcome,
@@ -484,7 +516,7 @@ class CollectorService(ACEServiceInterface):
 
         # clear expired persistent data periodically
         self.clear_expired_persistent_data()
-        return submissions_processed
+        return submissions_processed, submissions_scheduled
 
     # update routines
     # ------------------------------------------------------------------------
@@ -505,7 +537,7 @@ class CollectorService(ACEServiceInterface):
             if self.execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION]:
                 break
 
-            if self.sleep(self.config.collection_frequency):
+            if self.sleep(self.config.update_frequency):
                 break
         
         logging.info("exited update loop")
@@ -557,6 +589,19 @@ class CollectorService(ACEServiceInterface):
     def clear_expired_persistent_data(self):
         if self.duplicate_filter:
             self.duplicate_filter.clear_expired_data()
+
+    @property
+    def collect_until_empty(self) -> bool:
+        """True if a collection pass that scheduled work should immediately run another pass
+        instead of waiting collection_frequency. The collector class declares whether it returns
+        a bounded batch; the service config can override that either way.
+
+        Resolved on every access rather than cached at construction because the collector this
+        service hosts can be replaced after __init__ (see HunterService)."""
+        if self.config.collect_until_empty is not None:
+            return self.config.collect_until_empty
+
+        return self.collector.collect_until_empty
 
     def sleep(self, time: float) -> bool:
         """Waits for the specified time or until the shutdown event is set.
