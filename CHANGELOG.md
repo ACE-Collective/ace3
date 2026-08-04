@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.88] - 2026-08-04
+
+- [fix collector issues](https://github.com/ACE-Collective/ace3/pull/442)
+- [adds configuration option for number of embedding workers](https://github.com/ACE-Collective/ace3/pull/441)
+
 ## [3.0.87] - 2026-08-03
 
 - [Adds schedulable bool to hunt config](https://github.com/ACE-Collective/ace3/pull/436)
