@@ -57,7 +57,14 @@ class Collector(ABC):
     They should be focused solely on the collection logic and not concern themselves
     with service lifecycle, threading, database operations, or file management.
     """
-    
+
+    # set to True by collectors whose collect() returns a bounded batch rather than everything
+    # available, so a pass that produced work is immediately followed by another pass instead of
+    # waiting collection_frequency. a collector that drains its source in one call must leave this
+    # False -- there is nothing left to collect when collect() returns, so looping straight back
+    # around just re-hits the source
+    collect_until_empty: bool = False
+
     def __init__(self):
         """Initialize the collector."""
         self.fqdn = socket.getfqdn()
@@ -325,8 +332,8 @@ class CollectorService(ACEServiceInterface):
                 self.execute_workload_cleanup()
             except Exception as e:
                 logging.exception(f"unable to execute workload cleanup: {e}")
-            
-            if self.sleep(self.config.collection_frequency):
+
+            if self.sleep(self.config.cleanup_frequency):
                 break
         
         logging.info("exited cleanup loop")
@@ -370,7 +377,9 @@ class CollectorService(ACEServiceInterface):
                         self.collection_paused_logged = True
 
                     self.maybe_report_collector_status()
-                    self.sleep(self.config.collection_frequency)
+                    # a collector with a long collection_frequency would otherwise take that long
+                    # to report the status the engine uses to decide the node has fully drained
+                    self.sleep(min(self.config.collection_frequency, COLLECTOR_STATUS_REPORT_FREQUENCY))
                     continue
 
                 if self.collection_paused_logged:
@@ -388,12 +397,16 @@ class CollectorService(ACEServiceInterface):
                         self.shutdown_event.set()
                         break
 
-                # if we didn't schedule any submissions, wait before trying again.
+                # a collector that hands back everything it has in one call has nothing left to
+                # collect the moment that call returns, so it always waits. only a collector that
+                # returns a bounded batch loops straight back around, and only when the pass
+                # actually produced work.
+                #
                 # this has to key off what was actually scheduled rather than what was yielded:
                 # a collector whose source keeps re-serving the same items yields a nonzero count
                 # every pass while every one of them is dropped as a duplicate, and keying off the
                 # yielded count would spin this loop as fast as the source can answer
-                if scheduled_count == 0:
+                if scheduled_count == 0 or not self.collect_until_empty:
                     self.sleep(self.config.collection_frequency)
 
             except Exception as e:
@@ -524,7 +537,7 @@ class CollectorService(ACEServiceInterface):
             if self.execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION]:
                 break
 
-            if self.sleep(self.config.collection_frequency):
+            if self.sleep(self.config.update_frequency):
                 break
         
         logging.info("exited update loop")
@@ -576,6 +589,19 @@ class CollectorService(ACEServiceInterface):
     def clear_expired_persistent_data(self):
         if self.duplicate_filter:
             self.duplicate_filter.clear_expired_data()
+
+    @property
+    def collect_until_empty(self) -> bool:
+        """True if a collection pass that scheduled work should immediately run another pass
+        instead of waiting collection_frequency. The collector class declares whether it returns
+        a bounded batch; the service config can override that either way.
+
+        Resolved on every access rather than cached at construction because the collector this
+        service hosts can be replaced after __init__ (see HunterService)."""
+        if self.config.collect_until_empty is not None:
+            return self.config.collect_until_empty
+
+        return self.collector.collect_until_empty
 
     def sleep(self, time: float) -> bool:
         """Waits for the specified time or until the shutdown event is set.

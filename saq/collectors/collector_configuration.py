@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import Field
 
 from saq.configuration.schema import ServiceConfig
@@ -5,6 +7,8 @@ from saq.constants import QUEUE_DEFAULT
 
 DEFAULT_DELETE_FILES = False
 DEFAULT_COLLECTION_FREQUENCY = 1
+DEFAULT_CLEANUP_FREQUENCY = 1
+DEFAULT_UPDATE_FREQUENCY = 60
 DEFAULT_PERSISTENCE_DIR = "var/collection/persistence"
 DEFAULT_INCOMING_DIR = "var/collection/incoming"
 DEFAULT_ERROR_DIR = "var/collection/error"
@@ -19,7 +23,10 @@ class CollectorServiceConfiguration(ServiceConfig):
     workload_type: str = Field(..., description="the type of workload for this collector (e.g., 'email', 'smtp', 'hunter'), used to identify the collector type in the database")
     queue: str = Field(default=QUEUE_DEFAULT, description="the queue name to submit workloads to")
     delete_files: bool = Field(..., description="whether to delete files after processing them, some collectors delete files as they go while others keep them")
-    collection_frequency: int = Field(default=DEFAULT_COLLECTION_FREQUENCY, description="the frequency in seconds between collection attempts, used in sleep loops for collection, update, and cleanup threads")
+    collection_frequency: int = Field(default=DEFAULT_COLLECTION_FREQUENCY, description="the frequency in seconds the collection thread waits between collection passes")
+    cleanup_frequency: int = Field(default=DEFAULT_CLEANUP_FREQUENCY, description="the frequency in seconds between passes of the workload cleanup thread, independent of collection_frequency so a slow collector still reclaims completed work promptly")
+    update_frequency: int = Field(default=DEFAULT_UPDATE_FREQUENCY, description="the frequency in seconds between calls to Collector.update(), independent of collection_frequency")
+    collect_until_empty: Optional[bool] = Field(default=None, description="set to true if a collection pass that scheduled work should immediately run another pass instead of waiting collection_frequency, only meaningful for a collector whose collect() returns a bounded batch. None (the default) defers to the collector class")
     persistence_dir: str = Field(default=DEFAULT_PERSISTENCE_DIR, description="directory for persistence data storage, relative to DATA_DIR, contains various persistent information used by collectors")
     incoming_dir: str = Field(default=DEFAULT_INCOMING_DIR, description="directory where submission files are stored for processing, relative to DATA_DIR")
     error_dir: str = Field(default=DEFAULT_ERROR_DIR, description="directory containing failed submissions, relative to DATA_DIR")

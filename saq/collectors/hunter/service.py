@@ -3,9 +3,6 @@ import logging
 import os
 from typing import Generator, Optional, Type, override
 
-from pydantic import Field
-
-
 from saq.analysis.root import Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
@@ -33,6 +30,11 @@ class HunterCollector(Collector):
 
     The staging directory is the queue. Hunt managers serialize each submission and atomically
     rename it into place, so anything found here survived whatever killed the previous process."""
+
+    # collect() hands back at most MAX_SUBMISSIONS_PER_COLLECTION of what is staged, so a pass
+    # that scheduled work usually leaves more behind and should be followed immediately
+    collect_until_empty = True
+
     def __init__(self, file_manager: Optional[SubmissionFileManager] = None):
         super().__init__()
         # assigned by HunterService once the CollectorService that owns the staging
@@ -53,7 +55,8 @@ class HunterCollector(Collector):
         yield from self.file_manager.iter_staged_submissions(limit=MAX_SUBMISSIONS_PER_COLLECTION)
 
 class HunterServiceConfig(CollectorServiceConfiguration):
-    update_frequency: int = Field(..., description="The frequency in seconds between updates of the hunt managers.")
+    """Hunter adds nothing to the base collector service config. Note that how often each hunt type
+    reloads its rules comes from hunt_type_NAME.update_frequency, not from here."""
 
 class HunterService(ACEServiceInterface):
     """Service that hosts and manages detection hunts for ACE."""
