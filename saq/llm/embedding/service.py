@@ -3,7 +3,7 @@ import multiprocessing
 import uuid
 from typing import Optional, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
@@ -17,6 +17,9 @@ from saq.redis_client import get_redis_connection
 from saq.service import ACEServiceInterface
 
 TASK_KEY = "embedding_tasks"
+
+class EmbeddingServiceConfig(ServiceConfig):
+    worker_count: Optional[int] = Field(default=None, ge=1, description="Number of embedding worker processes to spawn. Defaults to the CPU count when omitted.")
 
 class EmbeddingTask(BaseModel):
     alert_uuid: str
@@ -122,12 +125,14 @@ class EmbeddingWorker:
             release_lock(task.alert_uuid, lock_uuid)
 
 class EmbeddingManager:
-    def __init__(self):
+    def __init__(self, worker_count: Optional[int] = None):
+        # defaults to the cpu count when not specified in the configuration
+        self.worker_count = multiprocessing.cpu_count() if worker_count is None else worker_count
         self.workers: list[EmbeddingWorker] = []
 
     def start(self):
-        for _ in range(multiprocessing.cpu_count()):
-            worker = EmbeddingWorker(name=f"worker-{_}")
+        for index in range(self.worker_count):
+            worker = EmbeddingWorker(name=f"worker-{index}")
             worker.start()
             self.workers.append(worker)
 
@@ -148,7 +153,7 @@ class EmbeddingManager:
 
 class EmbeddingService(ACEServiceInterface):
     def start(self):
-        self.manager = EmbeddingManager()
+        self.manager = EmbeddingManager(worker_count=get_service_config(SERVICE_LLM_EMBEDDING).worker_count)
         self.manager.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
@@ -166,4 +171,4 @@ class EmbeddingService(ACEServiceInterface):
 
     @classmethod
     def get_config_class(cls) -> Type[ServiceConfig]:
-        return ServiceConfig
+        return EmbeddingServiceConfig
