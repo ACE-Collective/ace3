@@ -18,6 +18,11 @@ jobs:
     command: /opt/ace/bin/nrd-refresh >> /opt/ace/data/logs/nrd-refresh-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
     schedule: "*/30 * * * *"
+  
+  #
+  # these three jobs should only run on the primary node
+  #
+
   - name: analysis cache partition maintenance
     command: /opt/ace/bin/manage-analysis-result-cache-partitions.sh >> /opt/ace/data/logs/analysis-cache-partitions-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
@@ -33,6 +38,11 @@ jobs:
     shell: /bin/bash
     schedule: "0 * * * *"
     concurrencyPolicy: Forbid
+
+  #
+  # this job needs to run on all nodes
+  #
+
   - name: analysis cache local maintenance
     command: /opt/ace/bin/analysis-cache-local-maintenance >> /opt/ace/data/logs/analysis-cache-local-maintenance-`date '+%Y-%m-%d'`.log 2>&1
     shell: /bin/bash
