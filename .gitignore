@@ -179,13 +179,13 @@ notes/
 # vscode
 .vscode/
 
-# ai
-CLAUDE.md
-.claude/
-.cursor/
-
 # integrations
 integrations/
+
+# claude
+.claude/settings.local.json
+.claude/skills/
+CLAUDE.local.md
 
 # local area for hosting local development/testing stuff
 workspace/
