@@ -160,7 +160,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 ### Site Configuration
 
-The `docker-compose.yml` configuration is the open source default configuration. Our site (production) configuration is in `integrations/bv_ace/docker-compose.yml`. Site configuration settings are in `integrations/bv_ace/etc`.
+The `docker-compose.yml` configuration is the open source default configuration. 
 
 ## Conventions
 
