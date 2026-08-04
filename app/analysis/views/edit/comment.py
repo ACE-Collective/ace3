@@ -80,7 +80,7 @@ def delete_comment():
         flash("invalid user for this comment")
         return redirect(url_for('analysis.index'))
 
-    logging.info(f"AUDIT: user {current_user} deleted comment {comment.comment}")
+    logging.info(f"AUDIT: user {current_user} deleted comment {comment.comment} from alert {comment.uuid}")
 
     alert_uuid = comment.uuid
 

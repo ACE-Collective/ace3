@@ -42,7 +42,8 @@ def set_disposition():
     logging.debug("user {} updating {} alerts to {}".format(current_user.username, len(alert_uuids), disposition))
     try:
         set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment)
-        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(alert_uuids)} to {disposition} with comment {user_comment}")
+        comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
+        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(alert_uuids)} to {disposition} {comment_clause}")
         flash("disposition set for {} alerts".format(len(alert_uuids)))
     except Exception as e:
         flash("unable to set disposition (review error logs)")
