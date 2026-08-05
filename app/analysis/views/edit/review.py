@@ -58,9 +58,10 @@ def review_disposition():
         set_disposition_reviews(
             alert_uuids, review_result, current_user.id,
             corrected_disposition=corrected_disposition, review_comment=review_comment)
+        comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
         logging.info(
-            "AUDIT: user %s reviewed disposition of alerts %s as %s (corrected disposition %s) with comment %s",
-            current_user, ','.join(alert_uuids), review_result, corrected_disposition, review_comment)
+            "AUDIT: user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",
+            current_user, ','.join(alert_uuids), review_result, corrected_disposition, comment_clause)
         flash("disposition review recorded for {} alerts".format(len(alert_uuids)))
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
