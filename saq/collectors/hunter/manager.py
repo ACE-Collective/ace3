@@ -33,6 +33,11 @@ def _normalize_rule_dir(entry) -> tuple[str, "str | None"]:
 CONCURRENCY_TYPE_NETWORK_SEMAPHORE = 'network_semaphore'
 CONCURRENCY_TYPE_LOCAL_SEMAPHORE = 'local_semaphore'
 
+# how long cancel_hunts() waits for a single cancelled hunt to stop before abandoning it.
+# generous enough that a hunt polling its cancel event on a normal interval finishes
+# cleanly, short enough that a wedged one cannot stall the manager thread for long.
+CANCEL_WAIT_TIMEOUT = 30
+
 class HuntManager:
     """Manages the hunting for a single hunt type."""
     def __init__(self,
@@ -492,13 +497,23 @@ class HuntManager:
                     )
 
     def cancel_hunts(self):
-        """Cancels all the currently executing hunts."""
+        """Cancels all the currently executing hunts.
+
+        A hunt that does not stop within CANCEL_WAIT_TIMEOUT is abandoned rather than waited
+        on. Cancellation is cooperative (see Hunt.cancel), so a hunt blocked somewhere that
+        never checks its cancel event would otherwise wait here forever -- and this runs on
+        the manager thread during a reload, which is the same thread that executes every hunt
+        for this backend. Blocking here stops the entire backend, not just the stuck hunt.
+        """
         for hunt in self._hunts: # order doesn't matter here
             try:
                 if hunt.running:
                     logging.info(f"cancelling {hunt}")
                     hunt.cancel()
-                    hunt.wait()
+                    if not hunt.wait(timeout=CANCEL_WAIT_TIMEOUT):
+                        logging.warning(
+                            "%s did not stop within %ss of being cancelled; "
+                            "continuing the reload without it", hunt, CANCEL_WAIT_TIMEOUT)
             except Exception as e:
                 logging.info(f"unable to cancel {hunt}: {e}")
 

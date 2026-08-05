@@ -29,6 +29,7 @@ import os.path
 import pickle
 import shutil
 import threading
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
@@ -50,6 +51,10 @@ from saq.util.time import is_timedelta_string
 
 if TYPE_CHECKING:
     from saq.collectors.hunter.manager import HuntManager
+
+# how long Hunt.wait() lets an execution thread unwind once the hunt has released its
+# execution lock, when the caller did not specify its own timeout.
+EXECUTION_THREAD_JOIN_GRACE = 5
 
 
 class HuntConfig(BaseModel):
@@ -580,22 +585,42 @@ class Hunt:
         """Called to execute the hunt. Returns a list of zero or more saq.collector.Submission objects."""
         raise NotImplementedError()
 
-    def wait(self, *args, **kwargs):
-        """Waits for the hunt to complete execution. If the hunt is not running then it returns right away.
-           Returns False if a timeout is set and the lock is not released during that timeout.
-           Additional parameters are passed to execution_lock.acquire()."""
-        result = self.execution_lock.acquire(*args, **kwargs)
-        if result:
-            self.execution_lock.release()
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """Waits for the hunt to finish executing. If the hunt is not running then it returns
+           right away. Returns True if the hunt is no longer executing, False if it was still
+           executing when the timeout expired.
+
+           timeout is the total budget shared between acquiring the execution lock and joining
+           the execution thread. Passing None waits indefinitely for the lock and then allows
+           the thread EXECUTION_THREAD_JOIN_GRACE seconds to unwind.
+
+           NOTE a caller that must not block indefinitely has to pass a timeout. A hunt that
+           does not honor cancellation (see cancel()) will otherwise hold this forever."""
+        if timeout is None:
+            acquired = self.execution_lock.acquire()
+            join_timeout = EXECUTION_THREAD_JOIN_GRACE
+        else:
+            deadline = time.monotonic() + timeout
+            acquired = self.execution_lock.acquire(timeout=timeout)
+            join_timeout = max(0.0, deadline - time.monotonic())
+
+        if not acquired:
+            logging.warning("timeout waiting for execution lock on %s after %ss", self, timeout)
+            return False
+
+        self.execution_lock.release()
 
         if self.execution_thread:
             logging.debug(f"waiting for {self} to complete execution")
-            if not self.execution_thread.join(5):
+            # NOTE Thread.join() always returns None, so its return value says nothing about
+            # whether the thread finished -- is_alive() is what actually answers that.
+            self.execution_thread.join(join_timeout)
+            if self.execution_thread.is_alive():
                 # NOTE this can also happen if the hunter is being shut down
                 logging.warning(f"timeout waiting for {self} to complete execution")
                 return False
 
-        return result
+        return True
 
     @property
     def running(self):

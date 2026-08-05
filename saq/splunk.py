@@ -50,6 +50,15 @@ DEFAULT_REQUEST_TIMEOUT = 60
 # real-world tolerance depending on how long the search had already been running.
 DEFAULT_AUTH_FAILURE_GRACE_PERIOD = 60
 
+# How long (seconds) a search may sit in splunk's dispatch queue before it is abandoned.
+#
+# NOTE The run-time budget enforced in query_async is measured from the moment a search
+# enters the RUNNING state, deliberately, so queue time behind other searches is not charged
+# against a query's own budget. The consequence is that a search which never reaches RUNNING
+# has no budget at all: query() polls it forever and blocks its caller indefinitely. This is
+# the bound for that case.
+DEFAULT_DISPATCH_TIMEOUT = 900
+
 # Polling schedule for an already-dispatched search. The first status check happens
 # after POLL_INTERVAL_INITIAL and the delay doubles up to POLL_INTERVAL_MAX.
 #
@@ -232,6 +241,7 @@ class SplunkQueryObject:
         performance_logging_directory: Optional[str]=None,
         request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
         auth_failure_grace_period: int = DEFAULT_AUTH_FAILURE_GRACE_PERIOD,
+        dispatch_timeout: int = DEFAULT_DISPATCH_TIMEOUT,
 
     ):
         """
@@ -249,6 +259,8 @@ class SplunkQueryObject:
             request_timeout (int, optional): socket timeout in seconds for each HTTP request
             auth_failure_grace_period (int, optional): how long (seconds) to keep tolerating 401s while
                 polling a running search before giving up (see query_async)
+            dispatch_timeout (int, optional): how long (seconds) a search may sit in the dispatch
+                queue without reaching the RUNNING state before it is abandoned (see query_async)
         """
 
         self.host = host
@@ -257,6 +269,7 @@ class SplunkQueryObject:
         self.user_context = user_context
         self.app = app
         self.auth_failure_grace_period = auth_failure_grace_period
+        self.dispatch_timeout = timedelta(seconds=dispatch_timeout)
 
         connect_kwargs = {
             "host": self.host,
@@ -474,6 +487,11 @@ class SplunkQueryObject:
                 if local_time() >= self.running_start_time + timeout:
                     self._abort_timed_out_search(job, query, timeout)
 
+            # a search that has not reached RUNNING has no running_start_time, so the budget
+            # above can never fire for it. bound the time it may spend queued instead.
+            elif job is not None and local_time() >= self.start_time + self.dispatch_timeout:
+                self._abort_timed_out_search(job, query, self.dispatch_timeout, phase="dispatch queue")
+
             # queue the query if we have not already
             # NOTE an auth failure here means the credentials really are bad, so it is not retried
             if job is None:
@@ -560,20 +578,23 @@ class SplunkQueryObject:
             self.record_splunk_query_performance(job, error=e)
             raise RemoteApiError(500, f"Splunk search failed: {e}")
 
-    def _abort_timed_out_search(self, job: Job, query: str, timeout: timedelta):
+    def _abort_timed_out_search(self, job: Job, query: str, timeout: timedelta, phase: str = "run"):
         """Cancels a search that exceeded its time budget and raises RemoteApiError(504).
+
+        phase names which budget was exceeded, so the log distinguishes a search that ran too
+        long from one that never left the dispatch queue.
 
         We deliberately raise rather than returning empty results: callers treat a result list as
         a successful search, and a query hunt would then record the time range as covered and
         never look at it again, silently losing detection coverage for that window.
         """
         logging.warning(
-            "splunk query timeout after %s (dispatch state %s) for search %s: %s",
-            timeout, self.dispatch_state, job.name, query)
+            "splunk %s timeout after %s (dispatch state %s) for search %s: %s",
+            phase, timeout, self.dispatch_state, job.name, query)
         self.cancel(job)
         self.end_time = local_time()
-        self.record_splunk_query_performance(job, error=f"query timeout after {timeout}")
-        raise RemoteApiError(504, f"Splunk search timed out after {timeout}")
+        self.record_splunk_query_performance(job, error=f"{phase} timeout after {timeout}")
+        raise RemoteApiError(504, f"Splunk search exceeded its {phase} budget of {timeout}")
 
     def queue(self, query:str, limit:int, start:Optional[datetime]=None, end:Optional[datetime]=None, use_index_time:bool=False, embed_time_in_query:bool=True) -> Optional[Job]:
         """Queue the query and return the job object.
@@ -808,6 +829,7 @@ def SplunkClient(name: str = "default", **kwargs) -> SplunkQueryObject:
 
     kwargs.setdefault("request_timeout", splunk_config.request_timeout)
     kwargs.setdefault("auth_failure_grace_period", splunk_config.auth_failure_grace_period)
+    kwargs.setdefault("dispatch_timeout", splunk_config.dispatch_timeout)
 
     if splunk_config.proxy is not None:
         kwargs["proxies"] = get_proxy_config(splunk_config.proxy)

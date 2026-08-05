@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 import logging
 import os
 import shutil
+import threading
+import time
 from uuid import uuid4
 import pytest
 from pydantic import ValidationError
@@ -1447,3 +1449,82 @@ def test_failed_full_coverage_hunt_does_not_advance_last_end_time(manager_kwargs
     assert hunt.ready is False
     # no coverage was recorded for a window we never actually searched
     assert read_persistence_data(hunt.type, hunt.name, 'last_end_time') is None
+
+
+class _UncancellableHunt(TestHunt):
+    """A hunt that ignores cancel() and does not return until released.
+
+    This is the shape that stalled a hunt manager for 12 hours: cancellation is cooperative,
+    so a hunt blocked somewhere that never checks its cancel event never stops on request.
+    """
+    __test__ = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def execute(self):
+        self.entered.set()
+        # bounded so a failing test cannot hang the suite
+        self.release.wait(30)
+        return []
+
+    def cancel(self):
+        pass  # deliberately ignores cancellation
+
+
+def _start_hunt_thread(hunt) -> threading.Thread:
+    hunt.execution_thread = threading.Thread(
+        target=hunt.execute_with_lock, args=(ExecutionMode.SINGLE_SHOT,))
+    hunt.execution_thread.start()
+    assert hunt.entered.wait(5)
+    return hunt.execution_thread
+
+
+@pytest.mark.unit
+def test_wait_returns_false_while_hunt_is_still_executing(manager_kwargs):
+    """wait() must report whether the hunt actually stopped. Thread.join() always returns None,
+    so the previous `if not join(5)` check could never distinguish the two outcomes."""
+    manager = HuntManager(**manager_kwargs)
+    hunt = _UncancellableHunt(manager=manager, config=default_hunt_config(name='stuck_hunt'))
+    hunt.semaphore = None
+    _start_hunt_thread(hunt)
+
+    try:
+        assert hunt.running is True
+        assert hunt.wait(timeout=1) is False
+    finally:
+        hunt.release.set()
+        hunt.execution_thread.join(10)
+
+    # once it finishes, wait() reports success
+    assert hunt.wait(timeout=5) is True
+
+
+@pytest.mark.unit
+def test_cancel_hunts_abandons_hunt_that_ignores_cancel(manager_kwargs, monkeypatch):
+    """A hunt that will not stop must not block the manager thread. cancel_hunts() runs on the
+    same thread that executes every hunt for the backend, so blocking there stops all of them.
+    """
+    monkeypatch.setattr("saq.collectors.hunter.manager.CANCEL_WAIT_TIMEOUT", 1)
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = _UncancellableHunt(manager=manager, config=default_hunt_config(name='stuck_hunt'))
+    hunt.semaphore = None
+    manager.add_hunt(hunt)
+    _start_hunt_thread(hunt)
+
+    try:
+        assert hunt.running is True
+
+        start = time.monotonic()
+        manager.cancel_hunts()
+        elapsed = time.monotonic() - start
+
+        # returned on its own rather than waiting out the hunt's 30s ceiling
+        assert elapsed < 15
+        assert hunt.running is True  # still going; we abandoned it rather than stopping it
+    finally:
+        hunt.release.set()
+        hunt.execution_thread.join(10)

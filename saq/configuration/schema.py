@@ -300,6 +300,7 @@ class SplunkConfig(BaseModel):
     proxy: Optional[str] = Field(default=None, description="optional proxy to use for splunk access")
     request_timeout: int = Field(default=60, description="socket timeout (seconds) for each splunk API request")
     auth_failure_grace_period: int = Field(default=60, description="how long (seconds) to keep tolerating 401s while polling an already-dispatched search before failing the query (rides out transient search head cluster proxy failures)")
+    dispatch_timeout: int = Field(default=900, description="how long (seconds) a search may sit in splunk's dispatch queue without reaching the RUNNING state before it is abandoned; the per-query timeout only starts counting once a search is RUNNING, so this is what bounds a search that never gets there")
 
 class SIPConfig(BaseModel):
     enabled: bool = Field(..., description="enable SIP integration")
