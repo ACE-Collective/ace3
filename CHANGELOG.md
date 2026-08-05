@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.89] - 2026-08-05
+
+- [Fixes hunter deadlock issue](https://github.com/ACE-Collective/ace3/pull/445)
+- [Small tweaks to comment/disposition logging- #444](https://github.com/ACE-Collective/ace3/pull/444)
+
 ## [3.0.88] - 2026-08-04
 
 - [fix collector issues](https://github.com/ACE-Collective/ace3/pull/442)
