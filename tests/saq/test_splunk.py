@@ -471,7 +471,8 @@ def test_query_async_error_204_requeue():
 @pytest.mark.unit
 def test_query_async_timeout_measured_from_running_not_submit():
     """The timeout is a run-time budget: time spent queued before the search starts running
-    must not count against it, so a search that has not reached RUNNING is never timed out."""
+    must not count against it. A search queued for longer than its run budget, but still
+    inside the dispatch bound, is not aborted."""
     class MockSplunk(SplunkQueryObject):
         cancelled = False
 
@@ -485,15 +486,47 @@ def test_query_async_timeout_measured_from_running_not_submit():
     mock_job.name = "123"
 
     with patch("saq.splunk.client.connect", return_value=Mock()):
-        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
+                            dispatch_timeout=900)
         assert splunk.is_running() is False
 
-        # even after a long time queued, a search that never started running is not aborted
-        splunk.start_time = splunk.start_time - timedelta(hours=1)
+        # queued well past the 1 minute run budget, but inside the 15 minute dispatch bound
+        splunk.start_time = splunk.start_time - timedelta(minutes=10)
 
-        job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
+        job, results = splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=1))
         assert results is None
         assert splunk.cancelled is False
+
+
+@pytest.mark.unit
+def test_query_async_aborts_search_stuck_in_dispatch_queue():
+    """A search that never reaches RUNNING never gets a running_start_time, so the run-time
+    budget can never fire for it. The dispatch bound is what stops it -- without that it is
+    polled forever and blocks its caller indefinitely."""
+    class MockSplunk(SplunkQueryObject):
+        cancelled = False
+
+        def complete(self, job):
+            return False  # never becomes ready, so running_start_time is never set
+
+        def cancel(self, job):
+            self.cancelled = True
+
+    mock_job = Mock()
+    mock_job.name = "123"
+
+    with patch("saq.splunk.client.connect", return_value=Mock()):
+        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test",
+                            dispatch_timeout=900)
+        assert splunk.is_running() is False
+
+        # queued past the dispatch bound, and still nowhere near the generous run budget
+        splunk.start_time = splunk.start_time - timedelta(minutes=20)
+
+        with pytest.raises(RemoteApiError) as exc_info:
+            splunk.query_async("whatever", job=mock_job, timeout=timedelta(minutes=30))
+        assert exc_info.value.status_code == 504
+        assert splunk.cancelled is True
 
 
 @pytest.mark.unit

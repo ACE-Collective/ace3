@@ -23,12 +23,14 @@
 #
 
 import datetime
+import hashlib
 import logging
 import os
 import os.path
 import pickle
 import shutil
 import threading
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
@@ -50,6 +52,15 @@ from saq.util.time import is_timedelta_string
 
 if TYPE_CHECKING:
     from saq.collectors.hunter.manager import HuntManager
+
+# how long Hunt.wait() lets an execution thread unwind once the hunt has released its
+# execution lock, when the caller did not specify its own timeout.
+EXECUTION_THREAD_JOIN_GRACE = 5
+
+# the most bytes of the hunt name we keep in its persistence directory name. the filesystem limit
+# is 255 bytes per component; the remainder leaves room for the digest suffix we append when a name
+# has to be truncated.
+MAX_HUNT_STATE_DIR_NAME_BYTES = 200
 
 
 class HuntConfig(BaseModel):
@@ -102,9 +113,37 @@ class HuntConfig(BaseModel):
 class InvalidHuntTypeError(ValueError):
     pass
 
+def hunt_state_dir_name(hunt_name: str) -> str:
+    """Returns the directory name used to store the persistence data for a hunt with this name.
+
+       A hunt name is analyst-facing text that ends up as a single path component: it can contain
+       path separators, and it can be a jinja template hundreds of characters long (query hunts
+       render the name per event to title their alerts). Both of those break the filesystem - a
+       component over 255 bytes raises OSError(ENAMETOOLONG) on the makedirs() in
+       write_persistence_data(), and a separator writes the state somewhere else entirely.
+
+       A name that is already short and separator free maps to itself, so hunts keep using the
+       directory they already have."""
+    result = hunt_name
+    for separator in (os.sep, os.altsep, "\0"):
+        if separator:
+            result = result.replace(separator, "_")
+
+    encoded = result.encode("utf-8")
+    if len(encoded) <= MAX_HUNT_STATE_DIR_NAME_BYTES:
+        return result
+
+    # truncate on a character boundary (errors="ignore" drops a partial character at the end)
+    # and disambiguate with a digest of the original name, since two long names can share a
+    # prefix and would otherwise collide on the same state directory
+    truncated = encoded[:MAX_HUNT_STATE_DIR_NAME_BYTES].decode("utf-8", errors="ignore")
+    digest = hashlib.sha256(hunt_name.encode("utf-8")).hexdigest()[:16]
+    return f"{truncated}.{digest}"
+
 def get_hunt_state_dir(hunt_type: str, hunt_name: str) -> str:
     "Returns the path to the directory that contains persitence information about this hunt."""
-    return os.path.join(get_data_dir(), get_config().collection.persistence_dir, 'hunt', hunt_type, hunt_name)
+    return os.path.join(get_data_dir(), get_config().collection.persistence_dir, 'hunt', hunt_type,
+                        hunt_state_dir_name(hunt_name))
 
 def write_persistence_data(hunt_type: str, hunt_name: str, value_name: str, value):
     """Writes the given persistence data for this hunt."""
@@ -293,7 +332,7 @@ class Hunt:
     @property
     def hunt_state_dir(self) -> str:
         "Returns the path to the directory that contains persitence information about this hunt."""
-        return os.path.join(get_data_dir(), get_config().collection.persistence_dir, 'hunt', self.type, self.name)
+        return get_hunt_state_dir(self.type, self.name)
 
     #@property
     #def type(self):
@@ -564,38 +603,62 @@ class Hunt:
                 report_exception()
                 self.record_hunt_exception(e)
             finally:
-                # NOTE we record this whether or not it succeeded. Otherwise ACE
-                # will repeatedly spam the request.
-                self.last_executed_time = local_time()
-                end_time = local_time()
-                logging.info(
-                    "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
-                    self.name, self.uuid, self.type, result_status, start_time, end_time,
-                    (end_time - start_time).total_seconds(),
-                )
-                self.startup_barrier.reset()
-                self.execution_lock.release()
+                try:
+                    self.last_executed_time = local_time()
+                    end_time = local_time()
+                    logging.info(
+                        "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
+                        self.name, self.uuid, self.type, result_status, start_time, end_time,
+                        (end_time - start_time).total_seconds(),
+                    )
+                    self.startup_barrier.reset()
+                except Exception as e:
+                    logging.error("unable to finalize hunt %s (uuid=%s, type=%s): %s",
+                                  self.name, self.uuid, self.type, e)
+                    report_exception()
+                finally:
+                    self.execution_lock.release()
 
     def execute(self):
         """Called to execute the hunt. Returns a list of zero or more saq.collector.Submission objects."""
         raise NotImplementedError()
 
-    def wait(self, *args, **kwargs):
-        """Waits for the hunt to complete execution. If the hunt is not running then it returns right away.
-           Returns False if a timeout is set and the lock is not released during that timeout.
-           Additional parameters are passed to execution_lock.acquire()."""
-        result = self.execution_lock.acquire(*args, **kwargs)
-        if result:
-            self.execution_lock.release()
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """Waits for the hunt to finish executing. If the hunt is not running then it returns
+           right away. Returns True if the hunt is no longer executing, False if it was still
+           executing when the timeout expired.
+
+           timeout is the total budget shared between acquiring the execution lock and joining
+           the execution thread. Passing None waits indefinitely for the lock and then allows
+           the thread EXECUTION_THREAD_JOIN_GRACE seconds to unwind.
+
+           NOTE a caller that must not block indefinitely has to pass a timeout. A hunt that
+           does not honor cancellation (see cancel()) will otherwise hold this forever."""
+        if timeout is None:
+            acquired = self.execution_lock.acquire()
+            join_timeout = EXECUTION_THREAD_JOIN_GRACE
+        else:
+            deadline = time.monotonic() + timeout
+            acquired = self.execution_lock.acquire(timeout=timeout)
+            join_timeout = max(0.0, deadline - time.monotonic())
+
+        if not acquired:
+            logging.warning("timeout waiting for execution lock on %s after %ss", self, timeout)
+            return False
+
+        self.execution_lock.release()
 
         if self.execution_thread:
             logging.debug(f"waiting for {self} to complete execution")
-            if not self.execution_thread.join(5):
+            # NOTE Thread.join() always returns None, so its return value says nothing about
+            # whether the thread finished -- is_alive() is what actually answers that.
+            self.execution_thread.join(join_timeout)
+            if self.execution_thread.is_alive():
                 # NOTE this can also happen if the hunter is being shut down
                 logging.warning(f"timeout waiting for {self} to complete execution")
                 return False
 
-        return result
+        return True
 
     @property
     def running(self):
