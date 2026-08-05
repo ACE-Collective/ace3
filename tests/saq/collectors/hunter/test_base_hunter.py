@@ -9,8 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from saq.analysis.root import RootAnalysis, Submission
-from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data
-from saq.collectors.hunter.base_hunter import HuntConfig
+from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data, write_persistence_data
+from saq.collectors.hunter.base_hunter import HuntConfig, hunt_state_dir_name
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ExecutionMode
@@ -1528,3 +1528,121 @@ def test_cancel_hunts_abandons_hunt_that_ignores_cancel(manager_kwargs, monkeypa
     finally:
         hunt.release.set()
         hunt.execution_thread.join(10)
+
+
+# a hunt name can be a jinja template that query hunts render per event to title their alerts,
+# so it is analyst-facing text of arbitrary length rather than an identifier
+LONG_HUNT_NAME = (
+    "Azure MS Graph Dump via Outlook Token Replay "
+    "{% set mySignIn = (correlate_stolen_token_signin or [])[0] if correlate_stolen_token_signin "
+    "else {} %}{% set myUpns = mySignIn.get('myUserPrincipalNames') if mySignIn else none %}"
+    "{% set myUpns = ([myUpns] if myUpns is string else myUpns) if myUpns else [] %}"
+    "{% if myUpns %} ({{ myUpns[0] }}){% endif %}"
+)
+
+
+@pytest.mark.unit
+def test_hunt_state_dir_name_preserves_ordinary_names():
+    """hunts that already work must keep the state directory they already have on disk"""
+    assert hunt_state_dir_name("Crowdstrike Alert") == "Crowdstrike Alert"
+
+
+@pytest.mark.unit
+def test_hunt_state_dir_name_flattens_path_separators():
+    """a name is a single path component - a separator in it would write state elsewhere"""
+    result = hunt_state_dir_name("suspicious/../../etc/hunt")
+    assert os.sep not in result
+    assert result == "suspicious_.._.._etc_hunt"
+
+
+@pytest.mark.unit
+def test_hunt_state_dir_name_bounds_long_names():
+    """a name over the 255 byte component limit is what raised ENAMETOOLONG in production,
+    taking down the hunt (and, through the reload, its entire backend)"""
+    assert len(LONG_HUNT_NAME) > 255
+    result = hunt_state_dir_name(LONG_HUNT_NAME)
+    assert len(result.encode("utf-8")) <= 255
+
+
+@pytest.mark.unit
+def test_hunt_state_dir_name_distinguishes_long_names_sharing_a_prefix():
+    """truncation alone would collide two hunts onto the same state directory"""
+    first = hunt_state_dir_name(LONG_HUNT_NAME + " variant one")
+    second = hunt_state_dir_name(LONG_HUNT_NAME + " variant two")
+    assert first != second
+
+
+@pytest.mark.integration
+def test_persistence_data_round_trips_for_long_hunt_name():
+    """the trigger, reproduced directly: writing state for a long-named hunt must not raise"""
+    value = local_time()
+    write_persistence_data("test", LONG_HUNT_NAME, "last_executed_time", value)
+    assert read_persistence_data("test", LONG_HUNT_NAME, "last_executed_time") == value
+
+
+def _run_hunt_on_its_own_thread(manager, hunt):
+    """Runs one hunt the way the manager does - on its own thread, which then exits."""
+    hunt.execution_thread = threading.Thread(target=manager.execute_threaded_hunt, args=(hunt,))
+    hunt.execution_thread.start()
+    hunt.execution_thread.join(30)
+    assert hunt.execution_thread.is_alive() is False
+
+
+@pytest.mark.integration
+def test_execution_lock_released_when_finalization_fails(manager_kwargs, monkeypatch):
+    """A hunt that cannot record its own completion must still stop being "running".
+
+    Recording the completion writes to disk (last_executed_time), and that write used to sit
+    ahead of execution_lock.release() in the same finally block. A hunt whose name was too long
+    for the filesystem therefore raised past the release and held its execution lock forever:
+    it was never scheduled again, and the next reload parked the manager thread on
+    cancel_hunts() waiting for a lock no live thread would ever release.
+    """
+    import saq.collectors.hunter.base_hunter as base_hunter_module
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    hunt.semaphore = None
+
+    def _boom(*args, **kwargs):
+        raise OSError(36, "File name too long")
+
+    monkeypatch.setattr(base_hunter_module, "write_persistence_data", _boom)
+
+    # on its own thread, like production: the execution lock is reentrant, so a hunt that leaks
+    # it still looks idle to the thread that leaked it and only looks stuck to the manager
+    _run_hunt_on_its_own_thread(manager, hunt)
+
+    assert hunt.running is False
+    assert log_count("unable to finalize hunt") == 1
+
+    # and it is still usable: the lock was released, not leaked
+    monkeypatch.undo()
+    hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
+    assert hunt.running is False
+
+
+@pytest.mark.integration
+def test_reload_completes_after_a_hunt_fails_to_finalize(manager_kwargs, monkeypatch):
+    """The outage itself: a reload must not have to wait out a hunt that failed this way."""
+    import saq.collectors.hunter.base_hunter as base_hunter_module
+
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    hunt.semaphore = None
+    manager.add_hunt(hunt)
+
+    def _boom(*args, **kwargs):
+        raise OSError(36, "File name too long")
+
+    monkeypatch.setattr(base_hunter_module, "write_persistence_data", _boom)
+    _run_hunt_on_its_own_thread(manager, hunt)
+    monkeypatch.undo()
+
+    start = time.monotonic()
+    manager.cancel_hunts()
+    elapsed = time.monotonic() - start
+
+    # nothing was left running, so there was nothing to cancel and nothing to abandon
+    assert elapsed < 5
+    assert log_count("did not stop within") == 0
