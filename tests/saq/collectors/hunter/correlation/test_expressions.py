@@ -24,22 +24,25 @@ class TestBuildJinjaContext:
         assert "_secrets" not in ctx
         assert "_config" not in ctx
 
-    def test_context_with_secrets(self):
-        secrets = {"api_key": "secret123"}
-        ctx = build_jinja_context({}, [], secrets=secrets)
-        assert ctx["_secrets"] is secrets
+    def test_context_never_binds_secrets(self):
+        """The credential store must not be reachable from a correlation template.
+
+        A template is rendered into query text, command arguments and command environment
+        variables that are handed to third parties, so a bound name is a value the hunt can
+        transmit off-box.
+        """
+        assert "_secrets" not in build_jinja_context({}, [], {"global": {"key": "value"}})
+        with pytest.raises(TypeError):
+            build_jinja_context({}, [], secrets={"api_key": "secret123"})
 
     def test_context_with_config(self):
         config = {"global": {"key": "value"}}
         ctx = build_jinja_context({}, [], config=config)
         assert ctx["_config"] is config
 
-    def test_context_with_secrets_and_config(self):
-        secrets = {"api_key": "secret123"}
-        config = {"global": {"key": "value"}}
-        ctx = build_jinja_context({}, [], secrets=secrets, config=config)
-        assert ctx["_secrets"] is secrets
-        assert ctx["_config"] is config
+    def test_context_keys_are_event_data_and_config_only(self):
+        ctx = build_jinja_context({}, [], {"global": {"key": "value"}})
+        assert set(ctx) == {"_event", "_events", "_config"}
 
 
 @pytest.mark.unit
@@ -148,9 +151,9 @@ class TestEvaluateExpression:
         assert evaluate_expression(expr, {"user": "admin", "status": "active"}, []) is True
         assert evaluate_expression(expr, {"user": "guest", "status": "active"}, []) is False
 
-    def test_jinja_accesses_secrets(self):
-        expr = ExpressionConfig(type="jinja", value="{{ _secrets.api_key }}")
-        assert evaluate_expression(expr, {}, [], secrets={"api_key": "secret123"}) is True
+    def test_jinja_cannot_access_secrets(self):
+        expr = ExpressionConfig(type="jinja", value="{{ _secrets is undefined }}")
+        assert evaluate_expression(expr, {}, []) is True
 
     def test_jinja_accesses_config(self):
         expr = ExpressionConfig(type="jinja", value="{{ _config.global.setting }}")
