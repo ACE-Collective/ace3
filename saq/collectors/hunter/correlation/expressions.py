@@ -13,13 +13,17 @@ _jinja_env = SandboxedEnvironment()
 def build_jinja_context(
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> dict:
-    """Build a Jinja template context from event data."""
+    """Build a Jinja template context from event data.
+
+    Credentials are deliberately not reachable from a correlation template. A hunt's YAML is
+    rendered into query text, command arguments and command environment variables that are then
+    handed to third parties, so anything bound here is a value the hunt can transmit off-box.
+    Correlation steps that need a credential must receive it explicitly rather than by reading a
+    shared namespace.
+    """
     context = {"_events": events, "_event": event}
-    if secrets is not None:
-        context["_secrets"] = secrets
     if config is not None:
         context["_config"] = config
     return context
@@ -29,7 +33,6 @@ def evaluate_expression(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> bool:
     """Evaluate an expression against an event and event stream.
@@ -37,7 +40,7 @@ def evaluate_expression(
     Returns True or False based on the expression type and value.
     """
     if expr.type == "jinja":
-        return _evaluate_jinja(expr, event, events, secrets, config)
+        return _evaluate_jinja(expr, event, events, config)
     elif expr.type == "equals":
         return _evaluate_equals(expr, event)
     elif expr.type == "glob":
@@ -45,11 +48,11 @@ def evaluate_expression(
     elif expr.type == "regex":
         return _evaluate_regex(expr, event)
     elif expr.type == "and":
-        return _evaluate_and(expr, event, events, secrets, config)
+        return _evaluate_and(expr, event, events, config)
     elif expr.type == "or":
-        return _evaluate_or(expr, event, events, secrets, config)
+        return _evaluate_or(expr, event, events, config)
     elif expr.type == "not":
-        return _evaluate_not(expr, event, events, secrets, config)
+        return _evaluate_not(expr, event, events, config)
     else:
         raise ValueError(f"unknown expression type: {expr.type!r}")
 
@@ -58,10 +61,9 @@ def _evaluate_jinja(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> bool:
-    context = build_jinja_context(event, events, secrets, config)
+    context = build_jinja_context(event, events, config)
     try:
         template = _jinja_env.from_string(str(expr.value))
         result = template.render(**context)
@@ -127,12 +129,11 @@ def _evaluate_and(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> bool:
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        if not evaluate_expression(sub_expr, event, events, secrets, config):
+        if not evaluate_expression(sub_expr, event, events, config):
             return False
     return True
 
@@ -141,12 +142,11 @@ def _evaluate_or(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> bool:
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        if evaluate_expression(sub_expr, event, events, secrets, config):
+        if evaluate_expression(sub_expr, event, events, config):
             return True
     return False
 
@@ -155,31 +155,29 @@ def _evaluate_not(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> bool:
     sub_expr = _parse_sub_expression(expr.value)
-    return not evaluate_expression(sub_expr, event, events, secrets, config)
+    return not evaluate_expression(sub_expr, event, events, config)
 
 
 def evaluate_expression_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
     """Evaluate an expression and return both the result and a trace of the evaluation."""
     if expr.type == "jinja":
-        return _evaluate_jinja_traced(expr, event, events, secrets, config)
+        return _evaluate_jinja_traced(expr, event, events, config)
     elif expr.type in ("equals", "glob", "regex"):
-        return _evaluate_comparison_traced(expr, event, events, secrets, config)
+        return _evaluate_comparison_traced(expr, event, events, config)
     elif expr.type == "and":
-        return _evaluate_and_traced(expr, event, events, secrets, config)
+        return _evaluate_and_traced(expr, event, events, config)
     elif expr.type == "or":
-        return _evaluate_or_traced(expr, event, events, secrets, config)
+        return _evaluate_or_traced(expr, event, events, config)
     elif expr.type == "not":
-        return _evaluate_not_traced(expr, event, events, secrets, config)
+        return _evaluate_not_traced(expr, event, events, config)
     else:
         raise ValueError(f"unknown expression type: {expr.type!r}")
 
@@ -188,10 +186,9 @@ def _evaluate_jinja_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
-    context = build_jinja_context(event, events, secrets, config)
+    context = build_jinja_context(event, events, config)
     try:
         template = _jinja_env.from_string(str(expr.value))
         rendered = template.render(**context)
@@ -214,12 +211,11 @@ def _evaluate_comparison_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
     prop_value = _get_property_value(expr, event)
     compare_value = _normalize_expr_value(expr)
-    result = evaluate_expression(expr, event, events, secrets, config)
+    result = evaluate_expression(expr, event, events, config)
     return result, ExpressionTrace(
         expression_type=expr.type,
         result=result,
@@ -233,14 +229,13 @@ def _evaluate_and_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
     sub_traces = []
     result = True
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, secrets, config)
+        sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, config)
         sub_traces.append(sub_trace)
         if not sub_result:
             result = False
@@ -256,14 +251,13 @@ def _evaluate_or_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
     sub_traces = []
     result = False
     for sub in expr.value:
         sub_expr = _parse_sub_expression(sub)
-        sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, secrets, config)
+        sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, config)
         sub_traces.append(sub_trace)
         if sub_result:
             result = True
@@ -279,11 +273,10 @@ def _evaluate_not_traced(
     expr: ExpressionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> tuple[bool, ExpressionTrace]:
     sub_expr = _parse_sub_expression(expr.value)
-    sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, secrets, config)
+    sub_result, sub_trace = evaluate_expression_traced(sub_expr, event, events, config)
     result = not sub_result
     return result, ExpressionTrace(
         expression_type="not",

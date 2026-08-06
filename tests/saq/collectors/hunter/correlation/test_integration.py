@@ -308,8 +308,12 @@ class TestCorrelationIntegration:
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_accessible_in_jinja_condition(self, mock_secrets, mock_config):
-        """Test that _secrets is accessible in jinja expressions during full pipeline."""
+    def test_secrets_not_bound_in_jinja_condition(self, mock_secrets, mock_config):
+        """_secrets must not be reachable from a correlation condition.
+
+        `is undefined` is asserted directly rather than asserting the condition is merely
+        false, which any evaluation error would also produce.
+        """
         mock_secrets.return_value = {"api_key": "secret_value"}
         mock_raw = MagicMock()
         mock_raw._data = {}
@@ -318,7 +322,7 @@ class TestCorrelationIntegration:
         config_data = {
             "logic": [
                 {
-                    "when": "{{ _secrets.api_key == 'secret_value' }}",
+                    "when": "{{ _secrets is undefined }}",
                     "execute": [{"action": "filter"}],
                 },
             ],
@@ -330,7 +334,7 @@ class TestCorrelationIntegration:
 
         events = [{"id": 1}]
         result = engine.execute(events)
-        assert len(result.events) == 0  # filtered because secret matched
+        assert len(result.events) == 0  # filtered because _secrets is undefined
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
@@ -360,8 +364,12 @@ class TestCorrelationIntegration:
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_in_executable_env(self, mock_secrets, mock_config):
-        """Test that _secrets can be used in executable env values."""
+    def test_secrets_not_bound_in_executable_env(self, mock_secrets, mock_config):
+        """_secrets must not render into an executable command's environment.
+
+        Command env values are the most direct route off-box, since the executable can do
+        anything with what it receives.
+        """
         mock_secrets.return_value = {"db_pass": "s3cret"}
         mock_raw = MagicMock()
         mock_raw._data = {}
@@ -377,8 +385,8 @@ class TestCorrelationIntegration:
                         "command": {
                             "type": "executable",
                             "path": PYTHON,
-                            "args": ["-c", "import os; print(os.environ['DB_PASS'])"],
-                            "env": {"DB_PASS": "{{ _secrets.db_pass }}"},
+                            "args": ["-c", "import os; print(os.environ['PROBE'])"],
+                            "env": {"PROBE": "{{ _secrets is undefined }}"},
                         },
                     },
                 },
@@ -391,7 +399,7 @@ class TestCorrelationIntegration:
 
         events = [{"id": 1}]
         result = engine.execute(events)
-        assert result.events[0]["result"] == "s3cret"
+        assert result.events[0]["result"] == "True"
 
     def test_splunk_hunt_omits_relative_time_field_uses_default(self):
         """End-to-end: a splunk hunt's correlate query omits relative_time_field/format

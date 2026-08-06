@@ -657,6 +657,10 @@ class TestEngineTrace:
 @pytest.mark.unit
 class TestSecretSanitizationInTrace:
 
+    # A correlation template cannot read the credential store (see build_jinja_context), so the
+    # remaining way a secret value reaches a rendered string is by arriving in the event data
+    # itself -- a queried log line that happens to carry a credential. These cover that route.
+
     def test_secrets_stripped_from_expression_trace(self):
         mock_raw = MagicMock()
         mock_raw._data = {}
@@ -664,12 +668,12 @@ class TestSecretSanitizationInTrace:
              patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
             config = _make_config([
                 {
-                    "when": "{{ _secrets.api_key }}",
+                    "when": "{{ _event.token }}",
                     "execute": [{"action": "filter"}],
                 },
             ])
             engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1}])
+            result = engine.execute([{"id": 1, "token": "supersecret"}])
 
             cond = result.trace.event_traces[0].steps[0].step
             assert "supersecret" not in (cond.expression.rendered_value or "")
@@ -681,10 +685,10 @@ class TestSecretSanitizationInTrace:
         with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"api_key": "supersecret"}), \
              patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
             config = _make_config([
-                {"action": {"type": "log", "log_message": "key={{ _secrets.api_key }}"}},
+                {"action": {"type": "log", "log_message": "key={{ _event.token }}"}},
             ])
             engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1}])
+            result = engine.execute([{"id": 1, "token": "supersecret"}])
 
             action = result.trace.event_traces[0].steps[0].step
             assert isinstance(action, ActionTrace)

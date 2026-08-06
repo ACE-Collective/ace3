@@ -33,7 +33,6 @@ def execute_action(
     action: ActionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None = None,
     config: dict | None = None,
 ) -> ActionResult:
     """Execute an action and return the result."""
@@ -54,7 +53,7 @@ def execute_action(
     else:
         raise ValueError(f"unknown action type: {action.type!r}")
 
-    _log_action(action, event, events, secrets, config, result)
+    _log_action(action, event, events, config, result)
     return result
 
 
@@ -62,12 +61,11 @@ def _log_action(
     action: ActionConfig,
     event: dict,
     events: list[dict],
-    secrets: dict | None,
     config: dict | None,
     result: ActionResult,
 ):
     """Log a message for any action execution."""
-    context = build_jinja_context(event, events, secrets, config)
+    context = build_jinja_context(event, events, config)
     level = getattr(logging, action.log_level.upper(), logging.INFO)
 
     if action.log_message:

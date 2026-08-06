@@ -127,12 +127,14 @@ class CorrelationEngine:
         # reset source tracking so a reused engine instance starts from the hunt's primary type
         self._current_source = self.hunt_source_type
 
-        # Fetch secrets and config once per execution
+        # Secrets are fetched solely so sanitize_value can scrub secret values out of the
+        # correlation trace and the cached-command descriptions. They are never exposed to a
+        # jinja context -- see build_jinja_context.
         try:
-            self._secrets = export_encrypted_passwords()
+            self._redaction_secrets = export_encrypted_passwords()
         except Exception:
-            logging.error("unable to load secrets for correlation context", exc_info=True)
-            self._secrets = {}
+            logging.error("unable to load secrets for trace redaction", exc_info=True)
+            self._redaction_secrets = {}
 
         try:
             self._config = get_config().raw._data
@@ -355,7 +357,7 @@ class CorrelationEngine:
 
             elif isinstance(step.step, ActionConfig):
                 try:
-                    action_result = execute_action(step.step, event, events, self._secrets, self._config)
+                    action_result = execute_action(step.step, event, events, self._config)
                 except Exception as e:
                     logging.error("error executing action: %s", e, exc_info=True)
                     action_trace = ActionTrace(
@@ -391,11 +393,11 @@ class CorrelationEngine:
         Raises _StepError if expression evaluation fails.
         """
         expr_result, expr_trace = evaluate_expression_traced(
-            condition.when, event, events, self._secrets, self._config,
+            condition.when, event, events, self._config,
         )
         # Sanitize any rendered values that may contain secrets
         if expr_trace.rendered_value is not None:
-            expr_trace.rendered_value = sanitize_value(expr_trace.rendered_value, self._secrets)
+            expr_trace.rendered_value = sanitize_value(expr_trace.rendered_value, self._redaction_secrets)
 
         condition_trace = ConditionTrace(expression=expr_trace, branch_taken="none")
         step_trace = StepTrace(description=description, step=condition_trace)
@@ -466,7 +468,7 @@ class CorrelationEngine:
         # Build a summary of the rendered command for the trace
         transform_trace.rendered_command = sanitize_value(
             self._render_command_summary(transform.command, event, events),
-            self._secrets,
+            self._redaction_secrets,
         )
 
         # Capture the resolved query window for tracing. _resolve_time_range will
@@ -503,7 +505,7 @@ class CorrelationEngine:
                     self.hunt_start_time,
                     temp_dir,
                     self.stream_query_cache,
-                    self._secrets,
+                    self._redaction_secrets,
                     self._config,
                     self._current_source,
                     hunt_end_time=self.hunt_end_time,
@@ -562,10 +564,10 @@ class CorrelationEngine:
         rendered_log_message = None
         if action.log_message:
             try:
-                context = build_jinja_context(event, events, self._secrets, self._config)
+                context = build_jinja_context(event, events, self._config)
                 rendered_log_message = sanitize_value(
                     _jinja_env.from_string(action.log_message).render(**context),
-                    self._secrets,
+                    self._redaction_secrets,
                 )
             except Exception:
                 pass
@@ -606,7 +608,7 @@ class CorrelationEngine:
         events: list[dict],
     ) -> Optional[str]:
         """Render a human-readable summary of the command for tracing."""
-        context = build_jinja_context(event, events, self._secrets, self._config)
+        context = build_jinja_context(event, events, self._config)
         try:
             if command.type == "query" and command.query:
                 return _jinja_env.from_string(command.query).render(**context)
@@ -625,7 +627,7 @@ class CorrelationEngine:
     def _render_debug(self, template: str, event: dict, events: list[dict]):
         """Render and log a debug message."""
         try:
-            context = build_jinja_context(event, events, self._secrets, self._config)
+            context = build_jinja_context(event, events, self._config)
             message = _jinja_env.from_string(template).render(**context)
             logging.debug("correlation debug: %s", message)
         except Exception:
