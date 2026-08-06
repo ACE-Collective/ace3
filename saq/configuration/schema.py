@@ -282,9 +282,6 @@ class LDAPConfig(BaseModel):
     ldap_base_dn: str = Field(..., description="the base DN for searching")
     top_user: str = Field(..., description="a user is tagged as executive if they are within 2 managers of this user")
 
-class SplunkLoggingConfig(BaseModel):
-    splunk_log_dir: str = Field(..., description="location of generated splunk logs (relative to DATA_DIR)")
-
 class SplunkConfig(BaseModel):
     name: str = Field(..., description="the name of the splunk server")
     enabled: bool = Field(..., description="are we using this splunk server?")
@@ -581,7 +578,6 @@ class ACEConfig(BaseModel):
     memcached: Optional[MemcachedConfig] = None
     email: Optional[EmailConfig] = None
     ldap: Optional[LDAPConfig] = None
-    splunk_logging: Optional[SplunkLoggingConfig] = None
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None
     nrd: Optional[NRDConfig] = Field(default_factory=NRDConfig, description="newly-registered-domains ingestion configuration")

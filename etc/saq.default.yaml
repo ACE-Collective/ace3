@@ -758,11 +758,6 @@ ldap:
   # a user is tagged as executive if they are within 2 managers of this user
   top_user: ""
 
-# general settings for logging intended for a splunk heavy forwarder
-splunk_logging:
-  # location of generated splunk logs (relative to DATA_DIR)
-  splunk_log_dir: splunk_logs
-
 sip:
   enabled: false
   remote_address: ""
@@ -1406,11 +1401,6 @@ analysis_module_email_logger:
   python_module: saq.modules.email.logging
   python_class: EmailLoggingAnalyzer
   enabled: true
-  # this enabled an older style of logging suitable for a splunk heavy forwarder
-  # if possible, use the JSON logger instead and send the logs to HEC
-  splunk_log_enabled: false
-  # the subdirectory inside of splunk_log_dir (see [splunk_logging]) that contains the logs
-  splunk_log_subdir: smtp
   # this enabled updating the smtplog table of the brocess database
   # which is used for various heuristic-based phishing detections
   brocess_logging_enabled: true
@@ -1420,8 +1410,6 @@ analysis_module_email_logger:
   # this enables computing look-a-like (BEC) domain similarity telemetry per email and emitting it to the
   # dedicated fluent-bit "lookalike" source (see fluent_bit_tags below)
   lookalike_telemetry_enabled: true
-  # this enables JSON logging to a file, suitable for any logging system that supports JSON
-  json_logging_enabled: false
 
   # enabled logging directly to fluent-bit
   fluent_bit_logging_enabled: true
@@ -1434,13 +1422,6 @@ analysis_module_email_logger:
     headers: phishfinder-headers
     # dedicated source for look-a-like domain telemetry (one record per email)
     lookalike: phishfinder-lookalike
-
-  # JSON logging file path relative to DATA_DIR
-  # the file name is passed through strftime
-  # https://docs.python.org/3/library/datetime.html#strftime-strptime-behavior
-  # {pid} (required) is replaced with the process ID of the current executing process
-  # NOTE if you change this, you need to update your fluent-bit configuration as well
-  json_log_path_format: logs/email/email-{pid}-%Y%m%d.log.json
 
 analysis_module_file_hash_analyzer:
   name: file_hash_analyzer

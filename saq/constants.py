@@ -973,9 +973,6 @@ CONFIG_ELK_RELATIVE_DURATION_AFTER = "relative_duration_after"
 CONFIG_ELK_USERNAME = "username"
 CONFIG_ELK_PASSWORD = "password"
 
-CONFIG_ELK_LOGGING = "elk_logging"
-CONFIG_ELK_LOGGING_DIR = "elk_log_dir"
-
 # hunter
 CONFIG_HUNTER = "service_hunter"
 
@@ -1024,9 +1021,6 @@ CONFIG_SPLUNK_URI = "uri"
 CONFIG_SPLUNK_TIMEZONE = "timezone"
 CONFIG_SPLUNK_USER_CONTEXT = "user_context"
 CONFIG_SPLUNK_APP_CONTEXT = "app_context"
-
-CONFIG_SPLUNK_LOGGING = "splunk_logging"
-CONFIG_SPLUNK_LOGGING_DIR = "splunk_log_dir"
 
 # query hunter
 CONFIG_QUERY_HUNTER = "query_hunter"
