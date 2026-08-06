@@ -12,8 +12,8 @@
             <button type="button" id="btn_remove_group" class="btn btn-outline-dark"><span class="bi bi-people-fill"></span> Remove Group</button>
             <button type="button" id="btn_add_permissions" class="btn btn-outline-dark"><span class="bi bi-key"></span> Add Permissions</button>
             <button type="button" id="btn_remove_permissions" class="btn btn-outline-dark"><span class="bi bi-key-fill"></span> Remove Permissions</button>
-            <button type="button" id="btn_generate_api_key" class="btn btn-outline-dark"><span class="bi bi-shield-lock"></span> Generate API Key</button>
-            <button type="button" id="btn_revoke_api_key" class="btn btn-outline-dark"><span class="bi bi-shield-slash"></span> Revoke API Key</button>
+            <button type="button" id="btn_new_api_key" class="btn btn-outline-dark"><span class="bi bi-shield-lock"></span> New API Key</button>
+            <button type="button" id="btn_manage_api_keys" class="btn btn-outline-dark"><span class="bi bi-shield-check"></span> Manage API Keys</button>
         </div>
     </div>
     <div class="row">
@@ -65,10 +65,10 @@
                         <td>{{ user.enabled }}</td>
                         <td>{{ user.timezone }}</td>
                         <td>
-                            {% if user.has_api_key %}
-                                <span class="badge text-bg-secondary">yes</span>
+                            {% if user.api_key_count %}
+                                <span class="badge text-bg-secondary">{{ user.api_key_count }}</span>
                             {% else %}
-                                <span class="text-muted">no</span>
+                                <span class="text-muted">none</span>
                             {% endif %}
                         </td>
                         <td>
@@ -237,7 +237,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="mb-2">A new API key was issued for <strong id="api_key_username"></strong>. Any previous key for this user no longer works.</p>
+                <p class="mb-2">A new API key was issued for <strong id="api_key_username"></strong>. Copy it now &mdash; it is shown only once and cannot be retrieved again.</p>
                 <div class="input-group">
                     <input type="text" class="form-control" id="api_key_value" readonly>
                     <button type="button" class="btn btn-outline-secondary" id="btn_copy_api_key">Copy</button>
@@ -289,9 +289,80 @@
                     </div>
                 </div>
                 <small class="text-muted">Pick a catalog entry to fill Major/Minor, or type your own (wildcards like <code>*</code> allowed).</small>
+            </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
                 <button type="submit" class="btn btn-outline-primary" id="btn_execute_add_permission">Add</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- new api key modal -->
+<div class="modal fade modal-lg" id="new_api_key_modal" tabindex="-1" role="dialog" aria-labelledby="new_api_key_modal_label" aria-hidden="true">
+    {# submitted via fetch to the v2 API; there is no Flask route behind this form #}
+    <form id="new_api_key_form" class="form-horizontal" role="form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="new_api_key_modal_label">New API Key</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="new_api_key_modal_body">
+                <p class="mb-2">Creating an API key for <strong id="new_api_key_username"></strong>.</p>
+                <div class="row">
+                    <div class="col">
+                        <label for="new_api_key_name">Name</label>
+                        <input type="text" class="form-control" id="new_api_key_name" placeholder="A name to identify this key">
+                    </div>
+                </div>
+                <div class="row mt-2">
+                    <div class="col">
+                        <label class="form-label d-block">Scope</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="new_api_key_mode" id="new_api_key_mode_restricted" value="restricted" checked>
+                            <label class="form-check-label" for="new_api_key_mode_restricted">Restricted to specific permissions</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="new_api_key_mode" id="new_api_key_mode_inherit" value="inherit">
+                            <label class="form-check-label" for="new_api_key_mode_inherit">Full account access (inherit)</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-2" id="new_api_key_scope_section">
+                    <div class="col">
+                        <button type="button" class="btn btn-xs btn-outline-dark" id="btn_new_api_key_add_scope">add permission</button>
+                        <ul style="padding-left: 0; margin-left: 0;" id="new_api_key_scope_list"></ul>
+                        <small class="text-muted">The key can do only what these permissions allow, intersected with the user's own permissions.</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary" id="btn_create_api_key">Create</button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
+<!-- manage api keys modal -->
+<div class="modal fade modal-lg" id="manage_api_keys_modal" tabindex="-1" role="dialog" aria-labelledby="manage_api_keys_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="manage_api_keys_modal_label">API Keys</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">API keys for <strong id="manage_api_keys_username"></strong>.</p>
+                <table class="table table-sm">
+                    <thead><tr><th>Name</th><th>Scope</th><th></th></tr></thead>
+                    <tbody id="manage_api_keys_list"></tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
     </div>

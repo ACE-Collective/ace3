@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
-from aceapi_v2.auth import create_access_token
 from saq.database import (
     Event,
     EventPreventionTool,
@@ -88,11 +87,8 @@ class TestOpenEvents:
         assert all(e["status"] == "OPEN" for e in data["data"])
 
     @pytest.mark.asyncio
-    async def test_forbidden_without_permission(self, unauth_client: AsyncClient):
-        token = create_access_token("noperm", 999999)
-        response = await unauth_client.get(
-            "/events/open", headers={"Authorization": f"Bearer {token}"}
-        )
+    async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
+        response = await noperm_client.get("/events/open")
         assert response.status_code == 403
 
 
@@ -130,13 +126,8 @@ class TestUpdateEventStatus:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_forbidden_without_permission(self, unauth_client: AsyncClient):
-        token = create_access_token("noperm", 999999)
-        response = await unauth_client.patch(
-            "/events/1",
-            json={"status": "CLOSED"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
+        response = await noperm_client.patch("/events/1", json={"status": "CLOSED"})
         assert response.status_code == 403
 
 
@@ -219,11 +210,6 @@ class TestExportEvents:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_forbidden_without_permission(self, unauth_client: AsyncClient):
-        token = create_access_token("noperm", 999999)
-        response = await unauth_client.get(
-            "/events/export",
-            params={"type": "csv"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
+        response = await noperm_client.get("/events/export", params={"type": "csv"})
         assert response.status_code == 403

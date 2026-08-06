@@ -17,11 +17,12 @@ from saq.permissions.catalog import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Files that reference require_permission but are NOT enforcement call sites:
+# Files that reference the permission decorators but are NOT enforcement call sites:
 # the decorator/dependency definitions themselves (whose docstrings contain example permissions).
 _GUARD_EXCLUDE = {
     REPO_ROOT / "app" / "auth" / "permissions.py",
     REPO_ROOT / "aceapi_v2" / "dependencies.py",
+    REPO_ROOT / "aceapi" / "auth.py",
 }
 
 # Matches @require_permission("major", "minor") and require_permission('major', 'minor').
@@ -29,9 +30,15 @@ _REQUIRE_PERMISSION_RE = re.compile(
     r"""require_permission\(\s*["'](?P<major>[^"']+)["']\s*,\s*["'](?P<minor>[^"']+)["']"""
 )
 
+# The legacy Flask API (aceapi/) enforces with @api_auth_check("major", "minor").
+_API_AUTH_CHECK_RE = re.compile(
+    r"""api_auth_check\(\s*["'](?P<major>[^"']+)["']\s*,\s*["'](?P<minor>[^"']+)["']"""
+)
+
 
 def _enforced_permission_pairs() -> set[tuple[str, str]]:
-    """Statically scan app/ and aceapi_v2/ for enforced (major, minor) permission pairs."""
+    """Statically scan app/, aceapi_v2/ (require_permission) and aceapi/ (api_auth_check) for the
+    enforced (major, minor) permission pairs."""
     pairs: set[tuple[str, str]] = set()
     for root in ("app", "aceapi_v2"):
         for path in (REPO_ROOT / root).rglob("*.py"):
@@ -39,9 +46,15 @@ def _enforced_permission_pairs() -> set[tuple[str, str]]:
                 continue
             for match in _REQUIRE_PERMISSION_RE.finditer(path.read_text()):
                 pairs.add((match.group("major"), match.group("minor")))
+    for path in (REPO_ROOT / "aceapi").rglob("*.py"):
+        if path in _GUARD_EXCLUDE:
+            continue
+        for match in _API_AUTH_CHECK_RE.finditer(path.read_text()):
+            pairs.add((match.group("major"), match.group("minor")))
     return pairs
 
 
+@pytest.mark.unit
 class TestCatalogGuard:
     """The catalog must contain every permission the code actually enforces (anti-drift)."""
 
@@ -60,6 +73,62 @@ class TestCatalogGuard:
         assert ("user", "edit") not in _enforced_permission_pairs()
 
 
+# Routes that legitimately require no permission gate: genuinely public (liveness, version, docs)
+# or self-service reads keyed off the caller's own auth identity (never another user's data).
+# Every OTHER FastAPI route must carry a require_permission dependency so that a scoped key (e.g.
+# an ai:read key) is denied -- the scope filter lives in require_permission, so an authenticated-
+# but-ungated route would be reachable by any authenticated key regardless of its scope.
+_FASTAPI_PUBLIC_PATHS = {
+    "/health/ping",
+    "/common/ping",
+    "/common/supported_api_version",
+    "/users/me/apikeys",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+}
+
+
+def _dependant_has_permission_dep(dependant) -> bool:
+    """True if any (transitive) sub-dependency is the require_permission-produced gate."""
+    for sub in dependant.dependencies:
+        if getattr(sub.call, "__name__", "") == "permission_dependency":
+            return True
+        if _dependant_has_permission_dep(sub):
+            return True
+    return False
+
+
+@pytest.mark.unit
+class TestRouteCoverage:
+    """Every FastAPI route is either permission-gated or on the reviewed public allowlist.
+
+    This is the enforceable form of the AI-container design's "checkable property": a scoped key
+    (ai:read) cannot reach any endpoint outside its scope, because every reachable endpoint runs
+    require_permission, which applies the key-scope intersection.
+    """
+
+    def test_every_fastapi_route_is_gated_or_allowlisted(self):
+        from fastapi.routing import APIRoute
+
+        from aceapi_v2.application import app as fastapi_app
+
+        ungated: list[tuple[list[str], str]] = []
+        for route in fastapi_app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            if route.path in _FASTAPI_PUBLIC_PATHS:
+                continue
+            if not _dependant_has_permission_dep(route.dependant):
+                ungated.append((sorted(route.methods), route.path))
+
+        assert not ungated, (
+            "these FastAPI routes have no require_permission gate and are not on the reviewed "
+            f"public allowlist: {sorted(ungated)}"
+        )
+
+
+@pytest.mark.unit
 class TestIsGrantable:
     def test_catalog_pairs_are_grantable(self):
         for entry in PERMISSION_CATALOG:

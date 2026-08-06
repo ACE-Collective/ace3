@@ -1,5 +1,7 @@
 """Schemas for the users/roles management API (ACE API v2)."""
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -27,13 +29,37 @@ class UserRead(BaseModel):
     queue: str | None = None
     enabled: bool
     timezone: str | None = None
-    has_api_key: bool = False
+    api_key_count: int = 0
 
 
 class ApiKeyCreated(BaseModel):
-    """The plaintext key is returned only at creation time."""
+    """The plaintext key is returned only at creation time and is never recoverable afterward."""
+    key_id: int
     user_id: int
     api_key: str
+
+
+class ApiKeyScope(BaseModel):
+    major: str
+    minor: str
+
+
+class ApiKeyRead(BaseModel):
+    """API key metadata for the management UI. Never carries the secret."""
+    id: int
+    name: str
+    inherit_user_scope: bool
+    scope: list[ApiKeyScope] = []
+    created_at: datetime | None = None
+    created_by: int | None = None
+
+
+class ApiKeyCreate(BaseModel):
+    """Request to mint a key. Exactly one of `inherit` or a non-empty `scope` must be set --
+    the server rejects both-or-neither, so a restricted key can never silently get full scope."""
+    name: str
+    inherit: bool = False
+    scope: list[ApiKeyScope] = []
 
 
 class GroupRead(BaseModel):

@@ -1,15 +1,15 @@
 """Observable type router for ACE API v2."""
 
-from fastapi import APIRouter, Response, Security
+from fastapi import APIRouter, Depends, Response
 
 from aceapi_v2.cache import TTLCache
-from aceapi_v2.dependencies import get_current_auth
+from aceapi_v2.dependencies import require_permission
 from aceapi_v2.observable_types import service
 from aceapi_v2.observable_types.schemas import ObservableTypeRead
 from aceapi_v2.schemas import ListResponse
 
-# All routes in this router require authentication
-router = APIRouter(dependencies=[Security(get_current_auth)])
+# All routes require observable:read (require_permission chains authentication)
+router = APIRouter(dependencies=[Depends(require_permission("observable", "read"))])
 
 # 60s aligns with the registry's mtime-based reload window
 # (observable_types.reload_check_interval_seconds in saq.default.yaml), so
@@ -24,7 +24,7 @@ async def list_observable_types(
 ) -> ListResponse[ObservableTypeRead]:
     """Return the list of valid observable types from the configured registry.
 
-    Requires authentication (API key or JWT token).
+    Requires observable:read.
     """
     cached = _cache.get("observable_types")
     if cached is not None:

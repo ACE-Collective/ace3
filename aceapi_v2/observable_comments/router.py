@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.database import get_async_session
-from aceapi_v2.dependencies import get_current_auth
+from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.observable_comments import service
 from aceapi_v2.observable_comments.schemas import (
     ObservableCommentCreate,
@@ -34,6 +34,7 @@ def _to_read(comment) -> ObservableCommentRead:
 async def list_comments(
     observable_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("observable", "read"))],
 ) -> ListResponse[ObservableCommentRead]:
     comments = await service.get_comments_for_observable(session, observable_id)
     return ListResponse(data=[_to_read(c) for c in comments])
@@ -43,7 +44,7 @@ async def list_comments(
 async def create_comment(
     body: ObservableCommentCreate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
 ) -> ObservableCommentRead:
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
@@ -58,7 +59,7 @@ async def update_comment(
     comment_id: int,
     body: ObservableCommentUpdate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
 ) -> ObservableCommentRead:
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
@@ -75,7 +76,7 @@ async def update_comment(
 async def delete_comment(
     comment_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
 ) -> None:
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")

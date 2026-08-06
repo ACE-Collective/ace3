@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth import API_AUTH_TYPE_USER, verify_api_key
-from saq.database.model import User
+from saq.database.model import AuthApiKey, User
 from saq.util import sha256_str
 
 pytestmark = pytest.mark.integration
@@ -18,8 +18,12 @@ async def _make_user_with_key(session: AsyncSession, username: str, api_key: str
         password="pw",
         enabled=enabled,
     )
-    user.apikey_hash = sha256_str(api_key)
     session.add(user)
+    await session.flush()
+    # an inherit-scoped key with a known hash so the test can present the plaintext value
+    session.add(AuthApiKey(
+        user_id=user.id, name="test", key_hash=sha256_str(api_key), inherit_user_scope=True
+    ))
     await session.flush()
     return user
 

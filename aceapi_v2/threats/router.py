@@ -5,18 +5,21 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Security
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.database import get_async_session
-from aceapi_v2.dependencies import get_current_auth
+from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.schemas import ListResponse
 from aceapi_v2.threats import service
 from aceapi_v2.threats.schemas import ThreatCreate, ThreatRead
 
+# malware-threat mappings are event/threat-intel metadata, gated with the event permissions
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
 
 @router.get("/", response_model=ListResponse[ThreatRead])
 async def list_threats(
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "read"))],
     malware_id: int | None = None,
 ) -> ListResponse[ThreatRead]:
     threats = await service.get_threats(session, malware_id=malware_id)
@@ -37,6 +40,7 @@ async def list_threats(
 async def create_threat(
     body: ThreatCreate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> ThreatRead:
     threat = await service.create_threat(session, body.malware_id, body.threat_type_id)
     return ThreatRead(
@@ -51,6 +55,7 @@ async def delete_threat(
     malware_id: int,
     threat_type_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> None:
     deleted = await service.delete_threat(session, malware_id, threat_type_id)
     if not deleted:

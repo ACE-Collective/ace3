@@ -78,10 +78,10 @@ def record_database_reset_information():
         cursor.execute("SELECT id, name, location, company_id, last_update, is_primary, any_mode FROM nodes")
         existing_nodes = cursor.fetchall()
 
-        cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted FROM users WHERE username = 'unittest'")
+        cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled FROM users WHERE username = 'unittest'")
         existing_unit_test_user = cursor.fetchone()
 
-        cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted FROM users WHERE username = 'ace'")
+        cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled FROM users WHERE username = 'ace'")
         existing_automation_user = cursor.fetchone()
 
         cursor.execute("SELECT `key`, `value` FROM `config`")
@@ -153,11 +153,13 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM auth_permission_catalog")
         cursor.execute("DELETE FROM auth_user_permission")
         cursor.execute("DELETE FROM auth_group_permission")
+        cursor.execute("DELETE FROM auth_api_key_permission")
+        cursor.execute("DELETE FROM auth_api_key")
 
         if database_reset_information is not None:
-            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_automation_user)
+            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_automation_user)
             cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (database_reset_information.existing_automation_user[0], "*", "*"))
-            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled, apikey_hash, apikey_encrypted) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_unit_test_user)
+            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_unit_test_user)
             cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (database_reset_information.existing_unit_test_user[0], "*", "*"))
             for row in database_reset_information.existing_db_config:
                 cursor.execute("INSERT INTO `config` (`key`, `value`) VALUES (%s, %s)", (row[0], row[1]))

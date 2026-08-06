@@ -1,6 +1,7 @@
 import importlib
+import logging
 import sys
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from saq.configuration.secret_ref import SecretRef
@@ -544,6 +545,18 @@ class NRDConfig(BaseModel):
     url_lists: list[NRDURLList] = Field(default_factory=list, description="lists of newly registered domains to ingest")
 
 
+class ConfigApiKey(BaseModel):
+    """A scoped configuration API key under the top-level ``apikeys:`` block.
+
+    ``key`` is the sha256 of the key value (what authentication compares against). ``scope`` limits
+    the key to the listed ``"major:minor"`` permission patterns. Config keys have no backing user,
+    so their scope decides access alone. The legacy bare-string form (``name: <sha256>``) is still
+    accepted for backward compatibility but carries no scope and bypasses permission checks; it is
+    deprecated (see the warning in ``ACEConfig``)."""
+    key: str = Field(..., description="sha256 hash of the API key value")
+    scope: list[str] = Field(default_factory=list, description='permission patterns ("major:minor") this key is limited to')
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
@@ -566,7 +579,21 @@ class ACEConfig(BaseModel):
     node_translation_gui: Optional[dict[str, str]] = None
     SSL: Optional[SSLConfig] = None
     api: Optional[APIConfig] = None
-    apikeys: Optional[dict[str, str]] = None
+    apikeys: Optional[dict[str, Union[ConfigApiKey, str]]] = None
+
+    @model_validator(mode="after")
+    def _warn_legacy_bare_apikeys(self):
+        # A bare-string apikeys entry carries no scope and bypasses permission checks entirely --
+        # the pre-refactor behavior. Structured entries ({key, scope}) are enforced. Warn loudly
+        # (once, at load) so deployment overlays get migrated; the bare form is honored until then.
+        for name, entry in (self.apikeys or {}).items():
+            if isinstance(entry, str):
+                logging.warning(
+                    "config apikeys.%s uses the deprecated bare-string form, which bypasses "
+                    "permission checks; migrate it to a scoped entry: {key: <sha256>, scope: [...]}",
+                    name,
+                )
+        return self
     gui: Optional[GUIConfig] = None
     gui_favicons: Optional[dict[str, str]] = None
     network_configuration: Optional[NetworkConfigurationConfig] = None

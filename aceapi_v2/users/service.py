@@ -9,11 +9,13 @@ the source of truth for the admin GUI + v2 API.
 import uuid
 
 import pytz
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from saq.crypto import encrypt_chunk
 from saq.database.model import (
+    AuthApiKey,
+    AuthApiKeyPermission,
     AuthGroup,
     AuthGroupPermission,
     AuthGroupUser,
@@ -23,6 +25,8 @@ from saq.database.model import (
 )
 from saq.util import sha256_str
 from aceapi_v2.users.schemas import (
+    ApiKeyRead,
+    ApiKeyScope,
     CatalogEntryRead,
     GroupPermissionRead,
     GroupRead,
@@ -35,7 +39,7 @@ from aceapi_v2.users.schemas import (
 )
 
 
-def _user_read(user: User) -> UserRead:
+def _user_read(user: User, api_key_count: int = 0) -> UserRead:
     return UserRead(
         id=user.id,
         username=user.username,
@@ -44,7 +48,7 @@ def _user_read(user: User) -> UserRead:
         queue=user.queue,
         enabled=user.enabled,
         timezone=user.timezone,
-        has_api_key=user.apikey_hash is not None,
+        api_key_count=api_key_count,
     )
 
 
@@ -126,8 +130,15 @@ async def get_management_view(session: AsyncSession, include_disabled: bool = Tr
     group_permissions = {g.id: await get_group_permissions_async(session, g.id) for g in groups}
     catalog = await list_permission_catalog(session)
 
+    # one grouped query for per-user key counts (avoids loading every key into the list view)
+    api_key_counts = dict(
+        (await session.execute(
+            select(AuthApiKey.user_id, func.count(AuthApiKey.id)).group_by(AuthApiKey.user_id)
+        )).all()
+    )
+
     return ManagementView(
-        users=[_user_read(u) for u in users],
+        users=[_user_read(u, api_key_counts.get(u.id, 0)) for u in users],
         permissions=permissions,
         groups=[GroupRead(id=g.id, name=g.name) for g in groups],
         group_permissions=group_permissions,
@@ -388,45 +399,82 @@ class UserNotFoundForApiKeyError(Exception):
         super().__init__(f"User {user_id} not found")
 
 
-async def generate_user_api_key(session: AsyncSession, user_id: int) -> str:
-    """Issue a new API key for the user, replacing any existing one. Returns the plaintext key.
+async def list_user_api_keys(session: AsyncSession, user_id: int) -> list[AuthApiKey]:
+    """Return a user's API keys with their scope (metadata only; the secret is never recoverable)."""
+    result = await session.execute(
+        select(AuthApiKey)
+        .options(selectinload(AuthApiKey.scope))
+        .where(AuthApiKey.user_id == user_id)
+        .order_by(AuthApiKey.created_at)
+    )
+    return list(result.scalars())
 
-    Mirrors aceapi.auth.set_user_api_key: the sha256 is what authentication matches on, and an
-    encrypted copy is kept so the key can be shown to its owner again later.
+
+async def create_user_api_key(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    name: str,
+    inherit: bool,
+    scope: list[ApiKeyScope],
+    created_by: int | None = None,
+) -> tuple[AuthApiKey, str]:
+    """Create a new API key for a user; return ``(key, plaintext)``. The plaintext is available
+    only here and is never recoverable afterward.
+
+    Exactly one of `inherit` (the key gets the owner's full permissions) or a non-empty `scope`
+    (ALLOW-only (major, minor) patterns) must be given -- there is no silent full-scope default.
+    Only the sha256 is stored.
     """
+    if inherit == bool(scope):
+        raise InvalidPermissionError("provide exactly one of inherit or a non-empty scope")
+
+    name = (name or "").strip()
+    if not name:
+        raise InvalidPermissionError("a key name is required")
+
     user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise UserNotFoundForApiKeyError(user_id)
 
     api_key = str(uuid.uuid4())
-    user.apikey_hash = sha256_str(api_key)
-    user.apikey_encrypted = encrypt_chunk(api_key.encode(errors="ignore"))
+    key = AuthApiKey(
+        user_id=user_id,
+        name=name,
+        key_hash=sha256_str(api_key),
+        inherit_user_scope=inherit,
+        created_by=created_by,
+    )
+    if not inherit:
+        for perm in scope:
+            major = (perm.major or "").strip()
+            minor = (perm.minor or "").strip()
+            if not major or not minor:
+                raise InvalidPermissionError("both a major and a minor are required for each scope entry")
+            key.scope.append(AuthApiKeyPermission(major=major, minor=minor, effect="ALLOW"))
+
+    session.add(key)
     await session.flush()
-    return api_key
+    return key, api_key
 
 
-async def get_own_api_key(session: AsyncSession, user_id: int) -> str | None:
-    """Decrypt and return a user's own API key, or None if they have none.
+def _api_key_read(key: AuthApiKey) -> ApiKeyRead:
+    return ApiKeyRead(
+        id=key.id,
+        name=key.name,
+        inherit_user_scope=key.inherit_user_scope,
+        scope=[ApiKeyScope(major=s.major, minor=s.minor) for s in key.scope if s.effect == "ALLOW"],
+        created_at=key.created_at,
+        created_by=key.created_by,
+    )
 
-    Callers MUST pass the authenticated user's own id -- this returns a credential in plaintext and
-    performs no permission check of its own.
-    """
-    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if user is None:
-        raise UserNotFoundForApiKeyError(user_id)
-    return user.apikey_decrypted
 
-
-async def revoke_user_api_key(session: AsyncSession, user_id: int) -> bool:
-    """Destroy the user's API key. Returns False if the user had no key. This is not reversible."""
-    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if user is None:
-        raise UserNotFoundForApiKeyError(user_id)
-
-    if user.apikey_hash is None and user.apikey_encrypted is None:
+async def revoke_user_api_key(session: AsyncSession, key_id: int) -> bool:
+    """Delete an API key by id. Returns False if no such key existed. This is not reversible."""
+    key = await session.get(AuthApiKey, key_id)
+    if key is None:
         return False
 
-    user.apikey_hash = None
-    user.apikey_encrypted = None
+    await session.delete(key)
     await session.flush()
     return True
