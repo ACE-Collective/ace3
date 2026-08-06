@@ -220,7 +220,7 @@
                                 <div class="radio" id="event_container_div_{{event.id}}"><label><input type="radio" name="event" value="{{event.id}}" id="option_{{event.id}}" onclick="toggleNewEventDialog();showEventSaveButton()"><span id="event_match_{{event.id}}"></span>{{event.creation_date}} - {{event.type.value}} - {{event.vector.value}} - {{event.name}}</label></div>
                             {% endfor %}
                             {% if not end_of_list %}
-                                <button type="button" class="btn btn-link" id="load-more-events-btn" onclick="loadMoreClosedEvents()">Show more...</button>
+                                <button type="button" class="btn btn-link" id="load-more-events-btn" data-url="{{ url_for('analysis.load_more_events') }}" onclick="loadMoreClosedEvents(this)">Show more...</button>
                             {% endif %}
                         {% else %}
                             No closed events.

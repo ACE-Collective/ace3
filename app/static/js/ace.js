@@ -306,22 +306,19 @@ function autofill_event_name() {
 
 // Load more closed events in 'Add to Event' modal
 // Calls to load_more_events endpoint, which returns next x number of closed events to display
-function loadMoreClosedEvents() {
-  var event_tab = document.getElementById("closed-events");
-  var count = event_tab.childElementCount
-  (function() {
-    const params = new URLSearchParams({ count: count - 1 });
-    fetch('load_more_events?' + params.toString(), { credentials: 'same-origin' })
-      .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } return resp.text(); })
-      .then(function(html){
-        $('#closed-events').append(html);
-        var load_button = document.getElementById('load-more-events-btn');
-        if (load_button && load_button.parentNode) {
-          load_button.parentNode.removeChild(load_button);
-        }
-      })
-      .catch(function(err){ alert('DOH: ' + err.message); });
-  })();
+function loadMoreClosedEvents(button) {
+  const event_tab = document.getElementById("closed-events");
+  // the container holds one div per event plus the "Show more..." button
+  const params = new URLSearchParams({ count: event_tab.childElementCount - 1 });
+  const url = button.dataset.url;
+
+  // drop the stale button first so the appended fragment's button is the only one
+  button.remove();
+
+  fetch(url + '?' + params.toString(), { credentials: 'same-origin' })
+    .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } return resp.text(); })
+    .then(function(html){ $('#closed-events').append(html); })
+    .catch(function(err){ alert('DOH: ' + err.message); });
 }
 
 /**
