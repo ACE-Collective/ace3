@@ -124,9 +124,6 @@ def initialize_data_dir():
         get_global_runtime_settings().module_stats_dir,
         os.path.join(get_global_runtime_settings().stats_dir, "brocess"),  # get rid of this
         os.path.join(get_global_runtime_settings().stats_dir, "metrics"),
-        # XXX this should be done by the splunk module?
-        os.path.join(get_data_dir(), get_config().splunk_logging.splunk_log_dir),
-        os.path.join(get_data_dir(), get_config().splunk_logging.splunk_log_dir, "smtp"),
         get_temp_dir(),
         os.path.join(
             data_dir,

@@ -74,11 +74,6 @@ if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
     find -L "$TEMP_DIR" -maxdepth 1 -mindepth 1 -mtime +1 -user ace -print0 | xargs -0 rm -rf
 fi
 
-# clear out splunk logs
-if [ -d "$DATA_DIR/splunk_logs" ]; then
-    find data/splunk_logs -type f -name '*.log' -mtime +1 -delete
-fi
-
 # get a summary of the current disk usage
 find "$DATA_DIR" -maxdepth 1 -mindepth 1 \! -name '*archive' -print0 | du -chs --files0-from=- > data/disk_usage.txt
 
