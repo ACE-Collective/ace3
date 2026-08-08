@@ -1103,6 +1103,41 @@ class TestGitCommitHelpers:
         assert get_commit_hash(None) is None
         assert get_commit_hash("/nonexistent/path/does/not/exist") is None
 
+    def test_get_repo_root_from_a_subdirectory(self, tmpdir):
+        _init_repo_with_commit(tmpdir)
+        from saq.git import get_repo_root
+        rule_dir = os.path.join(str(tmpdir), "hunts", "splunk")
+        os.makedirs(rule_dir)
+        # realpath: on macos tmpdir is under a symlinked /private/var
+        assert os.path.realpath(get_repo_root(rule_dir)) == os.path.realpath(str(tmpdir))
+
+    def test_get_repo_root_none_for_non_repo(self, tmpdir):
+        from saq.git import get_repo_root
+        assert get_repo_root(str(tmpdir)) is None
+        assert get_repo_root("") is None
+        assert get_repo_root("/nonexistent/path/does/not/exist") is None
+
+    def test_get_remote_url(self, tmpdir):
+        _init_repo_with_commit(tmpdir)
+        from saq.git import get_remote_url
+        # no remotes configured at all
+        assert get_remote_url(str(tmpdir)) is None
+
+        subprocess.run(["git", "-C", str(tmpdir), "remote", "add", "upstream", "git@example.com:a/b.git"],
+                       check=True, capture_output=True)
+        # origin doesn't exist, so we fall back to the only remote there is
+        assert get_remote_url(str(tmpdir)) == "git@example.com:a/b.git"
+
+        subprocess.run(["git", "-C", str(tmpdir), "remote", "add", "origin", "git@example.com:c/d.git"],
+                       check=True, capture_output=True)
+        assert get_remote_url(str(tmpdir)) == "git@example.com:c/d.git"
+        assert get_remote_url(str(tmpdir), remote="upstream") == "git@example.com:a/b.git"
+
+    def test_get_remote_url_none_for_non_repo(self, tmpdir):
+        from saq.git import get_remote_url
+        assert get_remote_url(str(tmpdir)) is None
+        assert get_remote_url("") is None
+
     def test_git_dir_contains(self, tmpdir):
         from saq.git import git_dir_contains
         git_dir = str(tmpdir)
