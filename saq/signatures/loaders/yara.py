@@ -9,14 +9,23 @@ them either.
 This is an inventory reader, not a validator: rules are parsed from source with
 plyara and never compiled. a single .yar file usually holds several rules, each
 of which is its own signature with its own content hash.
+
+Versions follow the same declaration the scanner uses: a rule directory named in
+git_repo_dirs is versioned by the commit of the repo it belongs to, and every
+other directory is versioned SIGNATURE_VERSION_UNKNOWN - which is exactly what a
+detection on its rules would record. Omitting git_repo_dirs falls back to
+resolving an enclosing repo for every rule directory, which is more informative
+but can report a version the detection path would not.
 """
 
 
 import logging
 import os
+from dataclasses import replace
 
 import plyara
 
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.git_context import GitContext
 from saq.signatures.loaders.util import content_hash, normalize_tags, sort_signatures
 from saq.signatures.model import Signature, SignatureType
@@ -113,15 +122,31 @@ def _parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
     return result
 
 
-def load_yara_signatures(signature_dir: str) -> list[Signature]:
+def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:
+    """Resolves git_repo_dirs entries - a subdirectory name, a relative path or an
+    absolute one - the same way YaraScanner._resolve_signature_subdir does."""
+    return {
+        os.path.realpath(entry if os.path.isabs(entry) else os.path.join(signature_dir, entry))
+        for entry in git_repo_dirs
+    }
+
+
+def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = None) -> list[Signature]:
     """Loads every yara signature under signature_dir, which is the directory
     ACE configures as service_yara.signature_dir: one subdirectory per set of
     rules, each holding .yar/.yara files.
 
-    Each rule directory resolves its own git provenance - the layout exists so
-    that independently cloned rule repos can sit side by side."""
+    git_repo_dirs is the matching service_yara.git_repo_dirs: only the rule
+    directories it names are versioned by their repo's commit, so the inventory
+    reports the same version a detection on those rules would. Omit it to resolve
+    an enclosing repo for every rule directory instead - the layout exists so that
+    independently cloned rule repos can sit side by side."""
     if not os.path.isdir(signature_dir):
         raise NotADirectoryError(f"yara signature_dir {signature_dir} is not a directory")
+
+    declared_repo_paths = None
+    if git_repo_dirs is not None:
+        declared_repo_paths = _declared_repo_paths(signature_dir, git_repo_dirs)
 
     result: list[Signature] = []
     for entry in sorted(os.listdir(signature_dir)):
@@ -136,6 +161,10 @@ def load_yara_signatures(signature_dir: str) -> list[Signature]:
             continue
 
         git_context = GitContext.resolve(rule_dir)
+        if declared_repo_paths is not None and os.path.realpath(rule_dir) not in declared_repo_paths:
+            # not declared a git repo, so the scanner reports no commit for its
+            # matches. the root is kept so source_path stays repo relative.
+            git_context = replace(git_context, git_remote=None, version=SIGNATURE_VERSION_UNKNOWN)
 
         for file_name in sorted(os.listdir(rule_dir)):
             if not file_name.lower().endswith(YARA_FILE_EXTENSIONS):

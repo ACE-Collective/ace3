@@ -7,7 +7,7 @@ import re
 import shutil
 import socket
 from subprocess import PIPE, Popen
-from typing import Type, override
+from typing import override
 
 import distorm3
 from pydantic import Field
@@ -26,6 +26,7 @@ from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.util.filesystem import abs_path
+from saq.yara_scanning_service import get_validated_git_repo_dirs
 
 import yara
 import yara_scanner
@@ -134,7 +135,7 @@ class YaraScannerConfig(AnalysisModuleConfig):
 
 class YaraScanner_v3_4(AnalysisModule):
     @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+    def get_config_class(cls) -> type[AnalysisModuleConfig]:
         return YaraScannerConfig
 
     @property
@@ -160,6 +161,12 @@ class YaraScanner_v3_4(AnalysisModule):
     def signature_dir(self):
         """Relative or absolute path to directory containing sub directories of yara rules."""
         return abs_path(get_service_config(SERVICE_YARA_SCANNER).signature_dir)
+
+    @property
+    def git_repo_dirs(self):
+        """The subdirectories of signature_dir that are part of a git repository, so
+        rules loaded from them report their repo's commit as signature_version."""
+        return get_validated_git_repo_dirs()
 
     @property
     def save_scan_failures(self):
@@ -206,7 +213,8 @@ class YaraScanner_v3_4(AnalysisModule):
     def initialize_local_scanner(self):
         logging.info("initializing local yara scanner")
         # initialize the scanner and compile the rules
-        self.scanner = yara_scanner.YaraScanner(signature_dir=self.signature_dir)
+        self.scanner = yara_scanner.YaraScanner(
+            signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs)
         self.scanner.load_rules()
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()

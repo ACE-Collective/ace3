@@ -1025,6 +1025,13 @@ service_yara:
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
   # each subdirectory in this directory has any yara rules loaded in the scanner
   signature_dir: signatures/yara
+  # which subdirectories of signature_dir are part of a git repository, as a
+  # subdirectory name or a path to one. rules in these directories report their
+  # repo's commit hash as the signature_version of anything they detect, and are
+  # reloaded when a new commit lands rather than when a file is modified.
+  # NOTE a directory listed here that is not actually in a git repository is not
+  # scanned at all, so ACE drops such an entry and logs an error.
+  git_repo_dirs: []
   # how often to check the yara rules for changes (in seconds)
   update_frequency: 60
   # parameter to the socket.listen() function (how many connections to backlog)

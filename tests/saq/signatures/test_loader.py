@@ -274,6 +274,49 @@ def test_yara_rule_directories_resolve_their_own_version(signature_repo, tmp_pat
 
 
 @pytest.mark.unit
+def test_yara_git_repo_dirs_declaration_is_mirrored(signature_repo):
+    """Given the service's git_repo_dirs, the inventory versions exactly the rule
+    directories the scanner does - so it reports what a detection would record."""
+    sibling = os.path.join(_yara_dir(signature_repo), "sibling")
+    _write(os.path.join(sibling, "rules.yar"),
+           _other_rule("sibling_rule", "55555555-5555-5555-5555-555555555555"))
+    _commit(signature_repo, "add sibling")
+
+    by_name = {s.name: s for s in load_yara_signatures(_yara_dir(signature_repo), ["bv"])}
+
+    declared = by_name["tracked_rule"]
+    assert declared.version == _git(signature_repo, "rev-parse", "HEAD")
+    assert declared.git_remote == TEST_GIT_REMOTE
+
+    undeclared = by_name["sibling_rule"]
+    assert undeclared.version == SIGNATURE_VERSION_UNKNOWN
+    assert undeclared.git_remote is None
+    # the path stays repo relative even without a version
+    assert undeclared.source_path == "yara/sibling/rules.yar"
+
+
+@pytest.mark.unit
+def test_yara_git_repo_dirs_entry_forms(signature_repo):
+    """An entry may be a subdirectory name, a relative path or an absolute one -
+    the same forms YaraScanner._resolve_signature_subdir accepts."""
+    yara_dir = _yara_dir(signature_repo)
+    versions = set()
+    for entry in ("bv", "./bv", os.path.join(yara_dir, "bv")):
+        versions.add(load_yara_signatures(yara_dir, [entry])[0].version)
+
+    assert versions == {_git(signature_repo, "rev-parse", "HEAD")}
+
+
+@pytest.mark.unit
+def test_yara_empty_git_repo_dirs_versions_nothing(signature_repo):
+    signatures = load_yara_signatures(_yara_dir(signature_repo), [])
+
+    assert signatures
+    assert all(s.version == SIGNATURE_VERSION_UNKNOWN for s in signatures)
+    assert all(s.git_remote is None for s in signatures)
+
+
+@pytest.mark.unit
 def test_yara_content_hash_is_per_rule(signature_repo):
     signatures = load_yara_signatures(_yara_dir(signature_repo))
     hashes = {s.content_hash for s in signatures}

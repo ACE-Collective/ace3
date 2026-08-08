@@ -198,7 +198,7 @@ RUN python3 -m virtualenv --python=python3 /venv && \
     pip config set global.cert /etc/ssl/certs/ca-certificates.crt && \
     pip install --no-cache-dir -U pip wheel setuptools && \
     pip install --no-cache-dir -r /venv/python-requirements.txt && \
-    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.3 && \
+    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.4 && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
     pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu
 
