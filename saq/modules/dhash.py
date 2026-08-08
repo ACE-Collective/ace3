@@ -4,7 +4,7 @@ import os.path
 from typing import Optional, override
 
 from saq.analysis import Analysis
-from saq.signatures import DHASH_IMAGE_MATCH
+from saq.signatures.builtin import DHASH_IMAGE_MATCH
 from saq.constants import F_FILE, DIRECTIVE_DHASH, AnalysisExecutionResult
 from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule

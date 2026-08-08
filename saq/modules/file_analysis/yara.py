@@ -24,7 +24,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.util.filesystem import abs_path
 
 import yara

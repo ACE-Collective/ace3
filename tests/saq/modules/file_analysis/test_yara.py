@@ -3,7 +3,7 @@ import pytest
 import yara_scanner
 
 from saq.modules.file_analysis.yara import _yara_detection_signature
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 
 
 @pytest.mark.unit

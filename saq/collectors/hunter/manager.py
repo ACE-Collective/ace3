@@ -12,7 +12,7 @@ from saq.error import report_exception
 from saq.git import get_commit_hash, git_dir_contains
 from saq.logging import get_transaction_id, transaction_id
 from saq.network_semaphore import NetworkSemaphoreClient
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util import local_time, abs_path
 from saq.util.hashing import sha256
 from saq.collectors.hunter.base_hunter import Hunt, InvalidHuntTypeError

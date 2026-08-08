@@ -17,7 +17,7 @@ def get_commit_hash(git_dir: str) -> Optional[str]:
     """returns the HEAD commit hash of the git repo at git_dir, or None if
     git_dir is falsy or the git command fails (logs a warning on failure).
     callers apply their own "unknown" fallback so this module stays decoupled
-    from saq.signatures."""
+    from saq.signatures.builtin."""
     if not git_dir:
         return None
     try:

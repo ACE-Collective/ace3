@@ -6,7 +6,7 @@ from subprocess import PIPE, Popen
 import tempfile
 from typing import override
 from saq.analysis.analysis import Analysis
-from saq.signatures import CVE_2021_30657_DMG_SCRIPT
+from saq.signatures.builtin import CVE_2021_30657_DMG_SCRIPT
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule

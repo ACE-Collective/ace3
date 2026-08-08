@@ -4,7 +4,7 @@ from subprocess import DEVNULL, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import OLE_EXTRACTED_SUSPECT_FILE
+from saq.signatures.builtin import OLE_EXTRACTED_SUSPECT_FILE
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig

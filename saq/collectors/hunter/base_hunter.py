@@ -46,7 +46,7 @@ from saq.error import report_exception
 from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
 from saq.query.config import SummaryDetailConfig
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util import create_timedelta, local_time
 from saq.util.time import is_timedelta_string
 
