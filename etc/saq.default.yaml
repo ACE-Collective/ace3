@@ -254,17 +254,6 @@ collection:
   staging_tmp_dir: var/collection/staging.tmp
   # contains failed submission (relative to DATA_DIR)
   error_dir: var/collection/error
-  # path (relative to SAQ_HOME) to directory that contains the yara rules used to tune collection
-  # directories are specified by using the prefix tuning_dir_NAME where NAME is a unique name
-  # see README.COLLECTION-TUNING
-  tuning_dirs:
-    - etc/collection/tuning
-  tuning_dir_default: etc/collection/tuning (use service-specific YAML if needed)
-  # path (relative to DATA_DIR) to use to store temporary file buffers for tuning
-  # this should be a fast drive; defaults to tmp_dir set in the [global] section
-  tuning_temp_dir: ""
-  # control how often the tuning rules are checked for updates in HH:MM:SS format
-  tuning_update_frequency: "00:01:00"
   # set to yes to force collection to use the API even if the target node is local
   force_api: false
 

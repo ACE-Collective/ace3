@@ -33,8 +33,8 @@ class SubmissionFileManager:
     The staging directory is a durable queue: a root present in staging_dir is exactly one that a
     collector has emitted but that has not yet reached a terminal outcome. Submissions are built
     in staging_tmp_dir and renamed into staging_dir, so a partially written submission is never
-    visible; they leave staging_dir when they are scheduled (moved to incoming_dir), tuned out,
-    found to be duplicates, or found to be unreadable. This is what makes queued work survive a
+    visible; they leave staging_dir when they are scheduled (moved to incoming_dir), found to be
+    duplicates, or found to be unreadable. This is what makes queued work survive a
     hard kill - the collector process is never shut down cleanly in practice.
     """
 
@@ -137,7 +137,7 @@ class SubmissionFileManager:
 
     def discard_staged_submission(self, root_uuid: str) -> bool:
         """Removes a staged submission that reached a terminal outcome without being scheduled
-        (tuned out or duplicate). Without this the submission is re-collected forever."""
+        (a duplicate). Without this the submission is re-collected forever."""
         target_dir = self.get_staging_path(root_uuid)
         try:
             shutil.rmtree(target_dir, ignore_errors=True)

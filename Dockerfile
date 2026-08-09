@@ -233,9 +233,6 @@ RUN cd /opt/tools && \
 
 # XXX shouldn't this all be done as part of the system startup script?
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/var && \
-    rm -rf /opt/ace/etc/collection/tuning && \
-    mkdir -p /opt/ace/etc/collection/tuning && \
-    touch /opt/ace/etc/collection/tuning/.empty && \
     find /opt/ace -type d -name __pycache__ -print0 | xargs -0 rm -rf
 
 # configure git for automation

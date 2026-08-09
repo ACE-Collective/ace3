@@ -3,7 +3,6 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import uuid
 from flask import url_for
 import pytest
@@ -550,131 +549,6 @@ def test_api_analysis_status_detection_count(test_client):
     assert result['alert'] is not None
     assert result['alert']['detection_count'] == 2
 
-@pytest.mark.integration
-def test_api_analysis_submission_tuning(test_client):
-
-    tuning_rule_dir = os.path.join(get_data_dir(), 'tuning_rules')
-    if os.path.isdir(tuning_rule_dir):
-        shutil.rmtree(tuning_rule_dir)
-
-    os.mkdir(tuning_rule_dir)
-    get_config().collection.tuning_dirs = [tuning_rule_dir]
-    get_config().collection.tuning_update_frequency = '00:00:00'
-
-    with open(os.path.join(tuning_rule_dir, 'filter.yar'), 'w') as fp:
-        fp.write("""
-rule test_filter {
-    meta:
-        targets = "submission"
-    strings:
-        $ = "description = testing"
-    condition:
-        all of them
-}
-""")
-
-    t = get_local_timezone().localize(datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
-    result = test_client.post(url_for('analysis.submit'), data={
-        'analysis': json.dumps({
-            'analysis_mode': 'analysis',
-            'tool': 'unittest',
-            'tool_instance': 'unittest_instance',
-            'type': 'unittest',
-            'description': 'testing',
-            'event_time': t,
-            'details': { 'hello': 'world' },
-            'observables': [
-                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
-                { 'type': F_USER, 'value': 'test_user', 'time': t },
-            ],
-            'tags': [ 'alert_tag_1', 'alert_tag_2' ],
-        }, cls=_JSONEncoder),
-        'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
-
-    result = result.get_json()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    assert 'tuning_matches' in result
-
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 400
-
-    # remove the tuning rule
-    os.remove(os.path.join(tuning_rule_dir, 'filter.yar'))
-
-    t = get_local_timezone().localize(datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
-    result = test_client.post(url_for('analysis.submit'), data={
-        'analysis': json.dumps({
-            'analysis_mode': 'analysis',
-            'tool': 'unittest',
-            'tool_instance': 'unittest_instance',
-            'type': 'unittest',
-            'description': 'testing',
-            'event_time': t,
-            'details': { 'hello': 'world' },
-            'observables': [
-                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
-                { 'type': F_USER, 'value': 'test_user', 'time': t },
-            ],
-            'tags': [ 'alert_tag_1', 'alert_tag_2' ],
-        }, cls=_JSONEncoder),
-        'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
-
-    result = result.get_json()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    assert 'tuning_matches' not in result
-
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-
-    # test tuning by file
-    with open(os.path.join(tuning_rule_dir, 'file_filter.yar'), 'w') as fp:
-        fp.write("""
-rule test_files {
-    meta:
-        targets = "files"
-    strings:
-        $ = "Hello, world!"
-    condition:
-        all of them
-}
-""")
-
-    t = get_local_timezone().localize(datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
-    result = test_client.post(url_for('analysis.submit'), data={
-        'analysis': json.dumps({
-            'analysis_mode': 'analysis',
-            'tool': 'unittest',
-            'tool_instance': 'unittest_instance',
-            'type': 'unittest',
-            'description': 'testing',
-            'event_time': t,
-            'details': { 'hello': 'world' },
-            'observables': [
-                { 'type': F_IP, 'value': '1.2.3.4', 'time': t, 'tags': [ 'tag_1', 'tag_2' ], 'directives': [ DIRECTIVE_NO_SCAN ], 'limited_analysis': ['basic_test'] },
-                { 'type': F_USER, 'value': 'test_user', 'time': t },
-            ],
-            'tags': [ 'alert_tag_1', 'alert_tag_2' ],
-        }, cls=_JSONEncoder),
-        'file': (io.BytesIO(b'Hello, world!'), 'sample.dat'),
-    }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
-
-    result = result.get_json()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    assert 'tuning_matches' in result
-
-    result = test_client.get(url_for('analysis.get_analysis', uuid=result['uuid']), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 400
 @pytest.mark.integration
 def test_api_analysis_submit_rejected_while_draining(test_client):
     from saq.constants import NODE_STATUS_DRAINING, NODE_STATUS_RUNNING
