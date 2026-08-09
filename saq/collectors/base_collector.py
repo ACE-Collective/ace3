@@ -30,15 +30,13 @@ from saq.error import report_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.persistence import Persistable
 from saq.service import ACEServiceInterface
-from saq.submission_filter import SubmissionFilter
 
 # how often (in seconds) a collector service reports its status to the collector_status table
 COLLECTOR_STATUS_REPORT_FREQUENCY = 5
 
 # terminal outcomes of process_submission
-# only SCHEDULED means the submission became real work; the other two are drops
+# only SCHEDULED means the submission became real work; DUPLICATE is a drop
 SUBMISSION_OUTCOME_SCHEDULED = "scheduled"
-SUBMISSION_OUTCOME_TUNED_OUT = "tuned_out"
 SUBMISSION_OUTCOME_DUPLICATE = "duplicate"
 
 def get_collection_error_dir() -> str:
@@ -137,9 +135,6 @@ class CollectorService(ACEServiceInterface):
         # persistence manager for this service
         self.persistence_manager = Persistable()
         
-        # this is used to filter out submissions according to yara rules
-        self.submission_filter = SubmissionFilter()
-        
         # repository for database operations
         self.workload_repository = WorkloadRepository()
         self.workload_type_id = self.workload_repository.get_workload_type_id(self.config.workload_type)
@@ -171,9 +166,6 @@ class CollectorService(ACEServiceInterface):
         # make sure at least one is loaded
         #if not self.remote_node_groups:
             #raise RuntimeError("no RemoteNodeGroup objects have been added to {}".format(self))
-        
-        # load tuning rules
-        self.submission_filter.load_tuning_rules()
         
         # initialize the submission scheduler
         self.submission_scheduler = SubmissionScheduler(
@@ -419,28 +411,16 @@ class CollectorService(ACEServiceInterface):
                 remove_all_sessions()
     
     def process_submission(self, submission: Submission) -> tuple[bool, str]:
-        """Applies the tuning and duplicate filters to a single submission and schedules
+        """Applies the duplicate filter to a single submission and schedules
         whatever survives. Returns (shutdown, outcome) where shutdown is True if the collector
         is shutting down and the caller should stop collecting, and outcome is one of the
         SUBMISSION_OUTCOME_* constants."""
 
         start_time = time.monotonic()
-        tuning_seconds = duplicate_seconds = schedule_seconds = 0.0
+        duplicate_seconds = schedule_seconds = 0.0
         outcome = SUBMISSION_OUTCOME_SCHEDULED
 
         try:
-            # does this submission match any tuning rules we have?
-            stage_time = time.monotonic()
-            tuning_matches = self.submission_filter.get_tuning_matches(submission)
-            tuning_seconds = time.monotonic() - stage_time
-            if tuning_matches:
-                self.submission_filter.log_tuning_matches(submission, tuning_matches)
-                outcome = SUBMISSION_OUTCOME_TUNED_OUT
-                # terminal outcome that never reaches prepare_submission_files, so nothing else
-                # would take this out of the staging dir and it would be collected forever
-                self.file_manager.discard_staged_submission(submission.root.uuid)
-                return False, outcome
-
             stage_time = time.monotonic()
             if submission.key:
                 if self.duplicate_filter.is_duplicate(submission.key):
@@ -465,12 +445,11 @@ class CollectorService(ACEServiceInterface):
             total_seconds = time.monotonic() - start_time
             queue_age = submission.queue_age
             logging.info(
-                "collected submission %s outcome=%s queue_age=%s tuning=%.3fs duplicate=%.3fs "
+                "collected submission %s outcome=%s queue_age=%s duplicate=%.3fs "
                 "schedule=%.3fs total=%.3fs",
                 submission.root.uuid,
                 outcome,
                 "unknown" if queue_age is None else "%.1fs" % queue_age,
-                tuning_seconds,
                 duplicate_seconds,
                 schedule_seconds,
                 total_seconds,
@@ -481,7 +460,7 @@ class CollectorService(ACEServiceInterface):
     def execute_collection_loop(self) -> tuple[int, int]:
         """Runs one full pass of the collector. Returns (submissions_processed,
         submissions_scheduled) -- everything the collector yielded, and the subset of that which
-        actually became work. They differ whenever submissions are tuned out or deduplicated."""
+        actually became work. They differ whenever submissions are deduplicated."""
         submissions_processed = 0
         submissions_scheduled = 0
 

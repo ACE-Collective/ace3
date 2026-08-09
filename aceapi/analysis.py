@@ -13,7 +13,6 @@ import shutil
 import uuid
 
 from aceapi.json import json_result
-from saq.analysis.root import Submission
 from saq.configuration import get_config
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, QUEUE_DEFAULT
@@ -23,11 +22,10 @@ from saq.analysis import RootAnalysis
 from saq.database import get_db_connection, ALERT
 from saq.error import report_exception
 from saq.observables.generator import create_observable_from_dict
-from saq.submission_filter import SubmissionFilter
 from saq.util import parse_event_time, storage_dir_from_uuid, validate_uuid, workload_storage_dir
 
 from flask import request, abort, Response
-from flask import g as g_flask, current_app
+from flask import current_app
 
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
@@ -213,29 +211,6 @@ def submit():
                 report_exception()
                 abort(400)
 
-        # is this submission tuned out?
-        try:
-            if not hasattr(g_flask, 'submission_filter'):
-                g_flask.submission_filter = SubmissionFilter()
-                g_flask.submission_filter.load_tuning_rules()
-
-            submission = Submission(root)
-            
-            # does this submission match any tuning rules we have?
-            tuning_matches = g_flask.submission_filter.get_tuning_matches(submission)
-            if tuning_matches:
-                g_flask.submission_filter.log_tuning_matches(submission, tuning_matches)
-                try:
-                    shutil.rmtree(root.storage_dir)
-                except Exception as e:
-                    logging.error(f"unable to delete {root.storage_dir}: {e}")
-
-                return json_result({'result': {'uuid': root.uuid, 
-                                               'tuning_matches': tuning_matches }})
-            
-        except Exception as e:
-            logging.error(f"tuning failed: {e}")
-        
         try:
             if not root.save():
                 logging.error("unable to save analysis")

@@ -4,7 +4,6 @@
 
 from datetime import datetime
 import os
-import shutil
 import threading
 from typing import Generator, override
 from uuid import uuid4
@@ -30,7 +29,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import initialize_node
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import get_global_runtime_settings
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import get_storage_dir
 from saq.collectors.hunter.service import HunterCollector
@@ -982,57 +981,6 @@ def test_node_invalid_assignment(engine):
         cursor.execute("""SELECT COUNT(*) FROM work_distribution JOIN work_distribution_groups ON work_distribution.group_id = work_distribution_groups.id
                         WHERE work_distribution_groups.name = %s""", ('test_group_2',))
         assert cursor.fetchone()[0] == 1
-
-@pytest.mark.integration
-def test_submission_filter(engine):
-
-    tuning_rule_dir = os.path.join(get_data_dir(), 'tuning_rules')
-    if os.path.isdir(tuning_rule_dir):
-        shutil.rmtree(tuning_rule_dir)
-
-    os.mkdir(tuning_rule_dir)
-    get_config().collection.tuning_dirs = [tuning_rule_dir]
-
-    with open(os.path.join(tuning_rule_dir, 'filter.yar'), 'w') as fp:
-        fp.write("""
-rule test_filter {
-meta:
-    targets = "submission"
-strings:
-    $ = "description = test_description"
-condition:
-    all of them
-}
-""")
-
-    class _custom_collector(TestCollector):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.available_work = [create_submission() for _ in range(1)]
-
-        def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-            
-            yield self.available_work.pop()
-
-    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, 'ace') # 100% coverage
-    collector_service.remote_node_groups.append(tg1)
-    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
-
-    # we should see 1 of these
-    assert log_count('submission test_description matched 1 tuning rules') == 1
-
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        # everything should be empty
-        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s", (tg1.group_id,))
-        assert cursor.fetchone()[0] == 0
-        cursor.execute("SELECT COUNT(*) FROM incoming_workload")
-        assert cursor.fetchone()[0] == 0
-        cursor.execute("SELECT COUNT(*) FROM workload ")
-        assert cursor.fetchone()[0] == 0
 
 @pytest.mark.integration
 def test_persistence_source_created():

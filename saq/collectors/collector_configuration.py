@@ -13,7 +13,6 @@ DEFAULT_PERSISTENCE_DIR = "var/collection/persistence"
 DEFAULT_INCOMING_DIR = "var/collection/incoming"
 DEFAULT_ERROR_DIR = "var/collection/error"
 DEFAULT_FORCE_API = False
-DEFAULT_TUNING_UPDATE_FREQUENCY = "00:01:00"
 DEFAULT_PERSISTENCE_CLEAR_SECONDS = 60
 DEFAULT_PERSISTENCE_EXPIRATION_SECONDS = 24*60*60
 DEFAULT_PERSISTENCE_UNMODIFIED_EXPIRATION_SECONDS = 4*60*60
@@ -31,7 +30,6 @@ class CollectorServiceConfiguration(ServiceConfig):
     incoming_dir: str = Field(default=DEFAULT_INCOMING_DIR, description="directory where submission files are stored for processing, relative to DATA_DIR")
     error_dir: str = Field(default=DEFAULT_ERROR_DIR, description="directory containing failed submissions, relative to DATA_DIR")
     force_api: bool = Field(default=DEFAULT_FORCE_API, description="set to True to force collection to use the API even if the target node is local")
-    tuning_update_frequency: str = Field(default=DEFAULT_TUNING_UPDATE_FREQUENCY, description="how often tuning rules are checked for updates, specified in HH:MM:SS format")
     persistence_clear_seconds: int = Field(default=DEFAULT_PERSISTENCE_CLEAR_SECONDS, description="interval in seconds for clearing expired persistent data from the duplicate filter")
     persistence_expiration_seconds: int = Field(default=DEFAULT_PERSISTENCE_EXPIRATION_SECONDS, description="expiration time in seconds for persistent data, default is 24 hours")
     persistence_unmodified_expiration_seconds: int = Field(default=DEFAULT_PERSISTENCE_UNMODIFIED_EXPIRATION_SECONDS, description="expiration time in seconds for unmodified persistent data, default is 4 hours")

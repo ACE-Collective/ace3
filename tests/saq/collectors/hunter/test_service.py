@@ -111,7 +111,7 @@ def test_unloadable_submission_is_quarantined(file_manager):
 def test_discard_removes_staged_submission(file_manager):
     """terminal outcomes that never reach the incoming dir must still leave staging
 
-    tuned_out and duplicate submissions are dropped by process_submission; without an explicit
+    duplicate submissions are dropped by process_submission; without an explicit
     discard they would be collected again on every pass"""
     root_uuid = create_staged_submission(file_manager)
     assert file_manager.list_staged_submissions() == [root_uuid]
