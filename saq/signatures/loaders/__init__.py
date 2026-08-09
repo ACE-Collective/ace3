@@ -18,7 +18,7 @@ from saq.signatures.loaders.builtin import load_builtin_signatures
 from saq.signatures.loaders.hunt import load_hunt_signatures
 from saq.signatures.loaders.observable_modifier import load_observable_modifier_signatures
 from saq.signatures.loaders.yara import load_yara_signatures
-from saq.signatures.model import Signature, SignatureType
+from saq.signatures.model import Signature, SignatureLocation, SignatureType
 
 # signature types loaded from a path, and the loader that reads each one. types
 # absent from this map take no parameters and are handled by load_signatures.
@@ -56,9 +56,29 @@ def load_signatures(signature_type: SignatureType, path: str | None = None) -> l
     return loader(path)
 
 
+def load_from_location(location: SignatureLocation) -> list[Signature]:
+    """Loads every signature at one of the locations the configuration declares
+    (see saq.signatures.locations).
+
+    Each loader is handed the declared checkouts in the form its own mechanism
+    uses, which is why this is a match rather than another entry in PATH_LOADERS:
+    yara matches rule directories by name against the signature_dir it is given,
+    while hunt and observable modifier match a single path by containment."""
+    match location.signature_type:
+        case SignatureType.YARA:
+            return load_yara_signatures(location.path, git_repo_dirs=list(location.git_dirs))
+        case SignatureType.HUNT:
+            return load_hunt_signatures(location.path, git_dirs=list(location.git_dirs))
+        case SignatureType.OBSERVABLE_MODIFIER:
+            return load_observable_modifier_signatures(location.path, git_dirs=list(location.git_dirs))
+
+    raise ValueError(f"{location.signature_type} signatures are not loaded from a location")
+
+
 __all__ = [
     "PATH_LOADERS",
     "load_builtin_signatures",
+    "load_from_location",
     "load_hunt_signatures",
     "load_observable_modifier_signatures",
     "load_signatures",

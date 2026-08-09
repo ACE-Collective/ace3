@@ -9,7 +9,13 @@ The include merging is delegated to the same pure function the hunter itself
 uses (saq.collectors.hunter.loader.load_merged_yaml) so a hunt whose name, uuid
 or tags come from an include is read correctly, but the result is read as a
 plain dict rather than validated against a HuntConfig subclass - that would
-require knowing the hunt type's Pydantic model and a running HuntManager."""
+require knowing the hunt type's Pydantic model and a running HuntManager.
+
+Versions follow the same declaration HuntManager._list_hunt_yaml uses: hunts are
+versioned by the commit of the git_dir configured alongside their rule_dir, and
+are SIGNATURE_VERSION_UNKNOWN when none is configured. Omitting git_dirs falls
+back to resolving an enclosing repo, which is more informative but can report a
+version the detection path would not."""
 
 import logging
 import os
@@ -65,14 +71,17 @@ def _parse_hunt_file(path: str, git_context: GitContext) -> list[Signature]:
     )]
 
 
-def load_hunt_signatures(rule_dir: str) -> list[Signature]:
+def load_hunt_signatures(rule_dir: str, git_dirs: list[str] | None = None) -> list[Signature]:
     """Loads every hunt in rule_dir, which is one of the directories ACE
     configures as hunt_type_<type>.rule_dirs. A hunt type with several rule
-    directories is several calls."""
+    directories is several calls.
+
+    git_dirs is the git_dir configured alongside rule_dir, if any. See
+    GitContext.resolve_declared for what an empty list means."""
     if not os.path.isdir(rule_dir):
         raise NotADirectoryError(f"hunt rule_dir {rule_dir} is not a directory")
 
-    git_context = GitContext.resolve(rule_dir)
+    git_context = GitContext.resolve_declared(rule_dir, git_dirs)
 
     result: list[Signature] = []
     for entry in sorted(os.scandir(rule_dir), key=lambda e: e.name):

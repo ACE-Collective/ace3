@@ -4,9 +4,9 @@ Resolved once per load rather than once per file."""
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from saq.git import get_commit_hash, get_remote_url, get_repo_root
+from saq.git import get_commit_hash, get_remote_url, get_repo_root, git_dir_contains
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 
 
@@ -37,6 +37,28 @@ class GitContext:
             git_remote=get_remote_url(root),
             version=get_commit_hash(root) or SIGNATURE_VERSION_UNKNOWN,
         )
+
+    @classmethod
+    def resolve_declared(cls, path: str, git_dirs: list[str] | None) -> "GitContext":
+        """Resolves the git provenance of path against the checkouts the
+        configuration declares for it, the way the detection path does.
+
+        git_dirs of None means nothing was declared, which falls back to
+        resolve(). A list - including an empty one - is a declaration: the first
+        entry that contains path versions it, and if none does the version is
+        SIGNATURE_VERSION_UNKNOWN, which is exactly what a detection on these
+        signatures would record. The repo root is still resolved in that case so
+        source_path stays repo relative."""
+        if git_dirs is None:
+            return cls.resolve(path)
+
+        for git_dir in git_dirs:
+            if git_dir_contains(git_dir, path):
+                return cls.resolve(git_dir)
+
+            logging.error("declared git_dir %s does not contain %s", git_dir, path)
+
+        return replace(cls.resolve(path), git_remote=None, version=SIGNATURE_VERSION_UNKNOWN)
 
     def relative_path(self, path: str) -> str:
         """Returns path relative to the repo root, with posix separators."""

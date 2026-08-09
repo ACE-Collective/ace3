@@ -10,7 +10,13 @@ such a rule: it is an ordinary rule whose actions include add_detection_points
 what we filter on.
 
 Rules live many-to-a-file, so the content hash is taken over the individual
-rule's yaml block rather than the file."""
+rule's yaml block rather than the file.
+
+Versions follow the same declaration ObservableModifierAnalyzer uses: the rules
+are versioned by the commit of the configured git_dir, and are
+SIGNATURE_VERSION_UNKNOWN when none is configured. Omitting git_dirs falls back
+to resolving an enclosing repo, which is more informative but can report a
+version the detection path would not."""
 
 import logging
 import os
@@ -44,13 +50,17 @@ def _raw_rule_blocks(source: str) -> list[str]:
     return []
 
 
-def load_observable_modifier_signatures(rules_config_path: str) -> list[Signature]:
+def load_observable_modifier_signatures(
+        rules_config_path: str, git_dirs: list[str] | None = None) -> list[Signature]:
     """Loads every detection-point-adding rule from the observable modifier
-    ruleset at rules_config_path."""
+    ruleset at rules_config_path.
+
+    git_dirs is the module's configured git_dir, if any. See
+    GitContext.resolve_declared for what an empty list means."""
     if not os.path.isfile(rules_config_path):
         raise FileNotFoundError(f"observable modifier rules file {rules_config_path} does not exist")
 
-    git_context = GitContext.resolve(rules_config_path)
+    git_context = GitContext.resolve_declared(rules_config_path, git_dirs)
     source_path = git_context.relative_path(rules_config_path)
 
     with open(rules_config_path, "r", encoding="utf-8", errors="surrogateescape") as fp:

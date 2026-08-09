@@ -5,6 +5,7 @@ that repo holds customer data and this one is public. the fixtures reproduce
 the layouts each loader has to mirror, nothing more."""
 
 import hashlib
+import logging
 import os
 import subprocess
 
@@ -380,6 +381,45 @@ def test_hunt_subdirectories_are_not_scanned(signature_repo):
 
 
 @pytest.mark.unit
+def test_hunt_git_dir_declaration_is_mirrored(signature_repo):
+    """HuntManager versions hunts by the git_dir configured alongside their
+    rule_dir, so the inventory has to do the same."""
+    hunt_dir = _hunt_dir(signature_repo)
+    head = _git(signature_repo, "rev-parse", "HEAD")
+
+    declared = load_hunt_signatures(hunt_dir, git_dirs=[signature_repo])[0]
+    assert declared.version == head
+    assert declared.git_remote == TEST_GIT_REMOTE
+
+    # a rule_dir with no git_dir configured is what a detection records as
+    # unknown, even though it is sitting in a repo
+    undeclared = load_hunt_signatures(hunt_dir, git_dirs=[])[0]
+    assert undeclared.version == SIGNATURE_VERSION_UNKNOWN
+    assert undeclared.git_remote is None
+    # the path stays repo relative even without a version
+    assert undeclared.source_path == "hunts/test_hunt.yaml"
+
+    # omitting the declaration entirely falls back to the enclosing repo
+    assert load_hunt_signatures(hunt_dir)[0].version == head
+
+
+@pytest.mark.unit
+def test_hunt_git_dir_that_does_not_contain_the_rules(signature_repo, tmp_path, caplog):
+    other_repo = str(tmp_path / "other")
+    os.makedirs(other_repo)
+    _git(other_repo, "init", "-b", "main")
+    _write(os.path.join(other_repo, "README"), "other\n")
+    _commit(other_repo)
+
+    with caplog.at_level(logging.ERROR):
+        signatures = load_hunt_signatures(_hunt_dir(signature_repo), git_dirs=[other_repo])
+
+    assert signatures[0].version == SIGNATURE_VERSION_UNKNOWN
+    assert signatures[0].git_remote is None
+    assert any("does not contain" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
 def test_hunt_requires_a_directory(signature_repo):
     with pytest.raises(NotADirectoryError):
         load_hunt_signatures(os.path.join(_hunt_dir(signature_repo), "test_hunt.yaml"))
@@ -419,6 +459,25 @@ def test_observable_modifier_hash_ignores_other_rules(signature_repo):
 
     after = load_observable_modifier_signatures(_rules_file(signature_repo))[0]
     assert after.content_hash == before.content_hash
+
+
+@pytest.mark.unit
+def test_observable_modifier_git_dir_declaration_is_mirrored(signature_repo):
+    """ObservableModifierAnalyzer versions its rules by the configured git_dir,
+    so the inventory has to do the same."""
+    rules_file = _rules_file(signature_repo)
+    head = _git(signature_repo, "rev-parse", "HEAD")
+
+    declared = load_observable_modifier_signatures(rules_file, git_dirs=[signature_repo])[0]
+    assert declared.version == head
+    assert declared.git_remote == TEST_GIT_REMOTE
+
+    undeclared = load_observable_modifier_signatures(rules_file, git_dirs=[])[0]
+    assert undeclared.version == SIGNATURE_VERSION_UNKNOWN
+    assert undeclared.git_remote is None
+    assert undeclared.source_path == "rules/observable_modifier_rules.yaml"
+
+    assert load_observable_modifier_signatures(rules_file)[0].version == head
 
 
 @pytest.mark.unit
