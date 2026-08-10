@@ -3,7 +3,7 @@ import uuid as uuidlib
 import pytest
 
 from saq.analysis.detection_point import DetectionPoint
-from saq.signatures import (
+from saq.signatures.builtin import (
     BUILTIN_SIGNATURE_UUID,
     BUILTIN_SIGNATURES,
     LEGACY_SIGNATURE_UUID,

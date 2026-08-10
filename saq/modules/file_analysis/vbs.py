@@ -5,7 +5,7 @@ from subprocess import Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import VBS_HEX_ENCODED_CONTENT
+from saq.signatures.builtin import VBS_HEX_ENCODED_CONTENT
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule

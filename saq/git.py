@@ -2,7 +2,7 @@ import logging
 import os
 import subprocess
 import threading
-from typing import Optional, Type
+from typing import Optional
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig, ServiceConfig
@@ -17,7 +17,7 @@ def get_commit_hash(git_dir: str) -> Optional[str]:
     """returns the HEAD commit hash of the git repo at git_dir, or None if
     git_dir is falsy or the git command fails (logs a warning on failure).
     callers apply their own "unknown" fallback so this module stays decoupled
-    from saq.signatures."""
+    from saq.signatures.builtin."""
     if not git_dir:
         return None
     try:
@@ -31,6 +31,57 @@ def get_commit_hash(git_dir: str) -> Optional[str]:
         logging.warning("failed to get commit hash for %s: %s", git_dir, p.stderr.strip())
         return None
     return p.stdout.strip() or None
+
+
+def get_repo_root(path: str) -> Optional[str]:
+    """returns the root directory of the git repo that contains path, or None
+    if path is falsy or is not inside a git repo (logs a warning on failure).
+    path can be any directory inside the repo, not just the root."""
+    if not path:
+        return None
+    try:
+        p = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT, check=False)
+    except Exception as e:
+        logging.warning("failed to get repo root for %s: %s", path, e)
+        return None
+    if p.returncode != 0:
+        logging.warning("failed to get repo root for %s: %s", path, p.stderr.strip())
+        return None
+    return p.stdout.strip() or None
+
+
+def get_remote_url(path: str, remote: str = "origin") -> Optional[str]:
+    """returns the fetch URL of the given remote of the git repo containing path.
+    falls back to the first configured remote when the requested one does not
+    exist, and returns None when path is not a git repo or the repo has no
+    remotes at all (a local-only checkout)."""
+    if not path:
+        return None
+
+    def _run(args: list[str]) -> Optional[str]:
+        try:
+            p = subprocess.run(
+                ["git", "-C", path] + args,
+                text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT, check=False)
+        except Exception as e:
+            logging.warning("failed to run git %s for %s: %s", " ".join(args), path, e)
+            return None
+        if p.returncode != 0:
+            return None
+        return p.stdout.strip() or None
+
+    url = _run(["remote", "get-url", remote])
+    if url:
+        return url
+
+    # the requested remote doesn't exist - use whatever the first one is
+    remotes = _run(["remote"])
+    if not remotes:
+        return None
+
+    return _run(["remote", "get-url", remotes.splitlines()[0].strip()])
 
 
 def git_dir_contains(git_dir: str, rule_dir: str) -> bool:
@@ -188,7 +239,7 @@ def get_configured_repos() -> list[GitRepo]:
 
 class GitManagerService(ACEServiceInterface):
     @classmethod
-    def get_config_class(cls) -> Type[ServiceConfig]:
+    def get_config_class(cls) -> type[ServiceConfig]:
         return ServiceConfig
 
     def __init__(self):

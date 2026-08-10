@@ -10,7 +10,7 @@ from typing import Optional, Type, Union
 from pydantic import Field, ConfigDict
 
 from saq.analysis import Analysis
-from saq.signatures import ALERTABLE_TAG, CORRELATED_TAG_MATCH
+from saq.signatures.builtin import ALERTABLE_TAG, CORRELATED_TAG_MATCH
 from saq.configuration.config import get_config
 from saq.constants import CONFIG_TAGS
 from saq.database.model import Observable

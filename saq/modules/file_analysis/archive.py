@@ -6,7 +6,7 @@ from typing import Type, override
 import zipfile
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import ARCHIVE_SINGLE_DANGEROUS_FILE
+from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule

@@ -12,7 +12,7 @@ from saq.database import db_DetectionPoint
 from saq.database.model import Alert, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.signatures import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
+from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
 from tests.saq.helpers import create_root_analysis, insert_alert
 
 

@@ -5194,7 +5194,7 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
 
 import subprocess as _subprocess
 from saq.configuration.schema import HuntRuleDirConfig
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 
 
 def _init_hunt_git_repo(path):

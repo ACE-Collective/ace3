@@ -5192,7 +5192,7 @@ def _init_git_repo_at(path):
 
 @pytest.mark.unit
 def test_observable_modifier_no_git_dir_yields_unknown():
-    from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+    from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
     root = create_root_analysis(analysis_mode="test_single")
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_URL, "https://evil.com/malware.exe")
@@ -5245,7 +5245,7 @@ def test_observable_modifier_git_dir_stamps_commit(tmpdir):
 
 @pytest.mark.unit
 def test_observable_modifier_git_dir_not_containing_rules_logs_error(tmpdir, caplog):
-    from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+    from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
     git_dir = str(tmpdir.mkdir("repo"))
     _init_git_repo_at(git_dir)
     # rules file lives OUTSIDE the git_dir -> validation fails -> unknown

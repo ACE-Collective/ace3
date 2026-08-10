@@ -151,7 +151,9 @@ sql/70-create-db-user.sql
 sql/71-create-db-super-user.sql
 
 # signatures (separate repo, mounted as named volume)
-signatures/
+# anchored to the repo root: unanchored, this also ignored saq/signatures/ and
+# tests/saq/signatures/, which are part of this repo
+/signatures/
 
 # compiled yara rules
 *.yarc
