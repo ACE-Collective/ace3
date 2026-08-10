@@ -245,12 +245,11 @@ collection:
   # all the files attached to the submission into this directory
   # (relative to DATA_DIR)
   incoming_dir: var/collection/incoming
-  # durable queue of submissions emitted by a collector but not yet collected (relative to DATA_DIR)
-  # a submission here has been fully serialized and is recoverable after a crash
-  # must be on the same filesystem as incoming_dir so the handoff is an atomic rename
+  # staging directories for each collector service (relative to DATA_DIR)
+  # NOTE each collector service gets its own queue underneath this, named after its workload_type
   staging_dir: var/collection/staging
-  # submissions are built here and atomically renamed into staging_dir when complete
-  # (relative to DATA_DIR); anything left behind is incomplete and is purged at startup
+  # submissions are built here and atomically renamed into staging_dir when complete (also relative to DATA_DIR)
+  # make sure this shares the same filesystem as staging_dir so the handoff is an atomic rename
   staging_tmp_dir: var/collection/staging.tmp
   # contains failed submission (relative to DATA_DIR)
   error_dir: var/collection/error
