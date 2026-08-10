@@ -446,6 +446,38 @@ class MockManager:
     def hunt_type(self):
         return "test"
 
+
+@pytest.mark.unit
+def test_hunt_builds_submissions_in_its_own_collectors_scratch_dir(tmpdir):
+    """a hunt builds submissions in the scratch dir of the service that will stage them
+
+    that directory is purged wholesale at service startup, so building in the shared default
+    means another collector service restarting deletes hunt submissions mid-construction"""
+    file_manager = create_submission_file_manager(tmpdir)
+
+    class ManagerWithFileManager(MockManager):
+        def __init__(self):
+            self.file_manager = file_manager
+
+    hunt = default_hunt(manager=ManagerWithFileManager(), name="test")
+    assert hunt.staging_tmp_dir == file_manager.staging_tmp_dir
+
+    root = hunt.create_root_analysis({})
+    assert root.storage_dir.startswith(file_manager.staging_tmp_dir)
+
+
+@pytest.mark.unit
+def test_hunt_without_a_file_manager_falls_back_to_the_configured_scratch_dir(monkeypatch, tmpdir):
+    """a hunt loaded outside a collector service (rule validation) still has somewhere to build"""
+    monkeypatch.setattr(query_hunter_module, "get_staging_tmp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(manager=MockManager(), name="test")
+    assert hunt.staging_tmp_dir == str(tmpdir)
+
+    hunt = default_hunt(manager=None, name="test")
+    assert hunt.staging_tmp_dir == str(tmpdir)
+
+
 @pytest.mark.unit
 def test_query_hunter_end_time(monkeypatch, tmpdir):
 

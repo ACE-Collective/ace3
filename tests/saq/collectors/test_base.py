@@ -29,7 +29,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import initialize_node
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
-from saq.environment import get_global_runtime_settings
+from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import get_storage_dir
 from saq.collectors.hunter.service import HunterCollector
@@ -1583,6 +1583,100 @@ def test_submission_without_transaction_id_keeps_current(engine, monkeypatch):
 # the collector process is always hard-killed rather than shut down cleanly, so work that has
 # been emitted but not yet collected has to survive on disk.
 #
+
+@pytest.mark.integration
+def test_staging_directories_are_per_service():
+    """two collector services never share a staging queue
+
+    the queue means "emitted by this collector and not yet collected", so a shared directory has
+    each service collecting the other's submissions - scheduling them under the wrong workload
+    type - and racing each other's deletes, which is what produced the
+    "No such file or directory" storm out of list_staged_submissions()"""
+    get_config().add_service_config("other_collector", CollectorServiceConfiguration(
+        name="other_collector",
+        python_module="tests.saq.collectors.test_base",
+        python_class="TestCollectorService",
+        description="Other Test Collector",
+        enabled=True,
+        workload_type="other_test",
+        delete_files=False))
+
+    service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    other_service = CollectorService(collector=TestCollector(), config=get_service_config("other_collector"))
+
+    assert service.staging_dir != other_service.staging_dir
+    assert service.staging_tmp_dir != other_service.staging_tmp_dir
+
+    staged_uuid = create_staged_submission(service.file_manager)
+
+    assert service.file_manager.list_staged_submissions() == [staged_uuid]
+    assert other_service.file_manager.list_staged_submissions() == []
+
+
+@pytest.mark.integration
+def test_purge_incomplete_staging_leaves_other_services_alone():
+    """startup cleanup wipes this service's scratch area and nobody else's
+
+    purge_incomplete_staging() removes everything it finds, so a shared scratch directory means
+    restarting one collector destroys another collector's submissions mid-construction"""
+    get_config().add_service_config("other_collector", CollectorServiceConfiguration(
+        name="other_collector",
+        python_module="tests.saq.collectors.test_base",
+        python_class="TestCollectorService",
+        description="Other Test Collector",
+        enabled=True,
+        workload_type="other_test",
+        delete_files=False))
+
+    service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    other_service = CollectorService(collector=TestCollector(), config=get_service_config("other_collector"))
+
+    in_flight = other_service.file_manager.get_staging_tmp_path("still-being-built")
+    os.makedirs(in_flight, exist_ok=True)
+
+    service.file_manager.purge_incomplete_staging()
+
+    assert os.path.exists(in_flight)
+
+
+@pytest.mark.integration
+def test_staging_directories_can_be_overridden():
+    """a service can name its own staging directories instead of taking the workload_type default"""
+    get_config().add_service_config("explicit_collector", CollectorServiceConfiguration(
+        name="explicit_collector",
+        python_module="tests.saq.collectors.test_base",
+        python_class="TestCollectorService",
+        description="Explicit Test Collector",
+        enabled=True,
+        workload_type="explicit_test",
+        delete_files=False,
+        staging_dir="var/collection/custom_staging",
+        staging_tmp_dir="var/collection/custom_staging.tmp"))
+
+    service = CollectorService(collector=TestCollector(), config=get_service_config("explicit_collector"))
+
+    assert service.staging_dir == os.path.join(get_data_dir(), "var/collection/custom_staging")
+    assert service.staging_tmp_dir == os.path.join(get_data_dir(), "var/collection/custom_staging.tmp")
+
+
+@pytest.mark.integration
+def test_legacy_shared_staging_is_reported():
+    """submissions left in the pre-per-service staging directory are called out at startup
+
+    they are invisible to every collector now, so silently leaving them there would lose work
+    without anyone noticing"""
+    service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+
+    legacy_dir = os.path.join(get_data_dir(), get_config().collection.staging_dir)
+    orphan_dir = os.path.join(legacy_dir, str(uuid4()))
+    os.makedirs(orphan_dir, exist_ok=True)
+    with open(os.path.join(orphan_dir, "data.json"), "w") as fp:
+        fp.write("{}")
+
+    service.recover_staging()
+
+    assert log_count("left in the shared staging directory") == 1
+
 
 @pytest.mark.integration
 def test_staged_submissions_survive_a_restart():
