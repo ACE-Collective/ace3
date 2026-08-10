@@ -28,6 +28,8 @@ class CollectorServiceConfiguration(ServiceConfig):
     collect_until_empty: Optional[bool] = Field(default=None, description="set to true if a collection pass that scheduled work should immediately run another pass instead of waiting collection_frequency, only meaningful for a collector whose collect() returns a bounded batch. None (the default) defers to the collector class")
     persistence_dir: str = Field(default=DEFAULT_PERSISTENCE_DIR, description="directory for persistence data storage, relative to DATA_DIR, contains various persistent information used by collectors")
     incoming_dir: str = Field(default=DEFAULT_INCOMING_DIR, description="directory where submission files are stored for processing, relative to DATA_DIR")
+    staging_dir: Optional[str] = Field(default=None, description="staging directory for this collector service, relative to DATA_DIR")
+    staging_tmp_dir: Optional[str] = Field(default=None, description="temporary directory for this collector service, relative to DATA_DIR")
     error_dir: str = Field(default=DEFAULT_ERROR_DIR, description="directory containing failed submissions, relative to DATA_DIR")
     force_api: bool = Field(default=DEFAULT_FORCE_API, description="set to True to force collection to use the API even if the target node is local")
     persistence_clear_seconds: int = Field(default=DEFAULT_PERSISTENCE_CLEAR_SECONDS, description="interval in seconds for clearing expired persistent data from the duplicate filter")

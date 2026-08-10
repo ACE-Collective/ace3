@@ -411,6 +411,15 @@ class QueryHunt(Hunt):
         By default this returns the event that is passed in."""
         return event
 
+    @property
+    def staging_tmp_dir(self) -> str:
+        """The scratch directory this hunt builds submissions in."""
+        file_manager = getattr(self.manager, "file_manager", None)
+        if file_manager is not None:
+            return file_manager.get_staging_tmp_dir()
+
+        return get_staging_tmp_dir()
+
     def _render_name(self, event: dict) -> str:
         """Renders self.name as a Jinja2 template against the given event.
 
@@ -456,7 +465,7 @@ class QueryHunt(Hunt):
 
         root = RootAnalysis(
             uuid=root_uuid,
-            storage_dir=os.path.join(get_staging_tmp_dir(), root_uuid),
+            storage_dir=os.path.join(self.staging_tmp_dir, root_uuid),
             desc=self._render_name(event),
             instructions=self.description,
             analysis_mode=self.analysis_mode,
@@ -990,7 +999,7 @@ class QueryHunt(Hunt):
                     submission.root.add_observable(observable)
 
                 for file_content in file_contents:
-                    fd, temp_file_path = mkstemp(dir=get_staging_tmp_dir())
+                    fd, temp_file_path = mkstemp(dir=self.staging_tmp_dir)
                     os.write(fd, file_content.content)
                     os.close(fd)
 
@@ -1038,7 +1047,7 @@ class QueryHunt(Hunt):
                             event_grouping[grouping_target].root.add_observable(observable)
 
                     for file_content in file_contents:
-                        fd, temp_file_path = mkstemp(dir=get_staging_tmp_dir())
+                        fd, temp_file_path = mkstemp(dir=self.staging_tmp_dir)
                         os.write(fd, file_content.content)
                         os.close(fd)
 

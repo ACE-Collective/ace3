@@ -1,11 +1,12 @@
-from datetime import datetime, timedelta
+from collections.abc import Generator
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import logging
 import os
 import socket
 import threading
 import time
-from typing import Generator, Optional
+from typing import Optional
 from abc import ABC, abstractmethod
 import uuid
 from saq.analysis.root import Submission
@@ -70,11 +71,9 @@ class Collector(ABC):
     def update(self) -> None:
         """Called periodically while the collector is running. Execute any
         update routines required for the collector."""
-        pass
 
     def cleanup(self) -> None:
         """Called after the collector has stopped."""
-        pass
     
     @abstractmethod
     def collect(self) -> Generator[Submission, None, None]:
@@ -115,8 +114,13 @@ class CollectorService(ACEServiceInterface):
         # durable queue of submissions a collector has emitted but that have not been collected
         # yet, plus the scratch area they are built in. both live alongside incoming_dir so the
         # handoffs between them are atomic renames
-        self.staging_dir = os.path.join(get_data_dir(), get_config().collection.staging_dir)
-        self.staging_tmp_dir = os.path.join(get_data_dir(), get_config().collection.staging_tmp_dir)
+        #
+        # these are per-service, named after the collector's workload_type
+
+        self.staging_dir = os.path.join(get_data_dir(), self.config.staging_dir or os.path.join(
+            get_config().collection.staging_dir, self.config.workload_type))
+        self.staging_tmp_dir = os.path.join(get_data_dir(), self.config.staging_tmp_dir or os.path.join(
+            get_config().collection.staging_tmp_dir, self.config.workload_type))
         
         # primary collection thread that pulls Submission objects from the collector
         self.collection_thread = None
@@ -197,6 +201,28 @@ class CollectorService(ACEServiceInterface):
         staged_count = len(self.file_manager.list_staged_submissions())
         if staged_count:
             logging.info("recovered %d staged submissions from a previous run", staged_count)
+
+        self.warn_about_legacy_staging()
+
+    def warn_about_legacy_staging(self):
+        """Reports submissions left behind by the version that shared one staging directory
+        across every collector service.
+
+        This is to support a smooth upgrade path from the version that shared one staging directory across every collector service.
+        """
+        legacy_dir = os.path.join(get_data_dir(), get_config().collection.staging_dir)
+        try:
+            orphans = [entry.name for entry in os.scandir(legacy_dir)
+                       if entry.is_dir() and os.path.exists(os.path.join(entry.path, "data.json"))]
+        except FileNotFoundError:
+            return
+
+        if orphans:
+            logging.warning(
+                "%d submissions are left in the shared staging directory %s from before "
+                "collectors had their own queues - they will not be collected until they are "
+                "moved into a per-collector staging directory",
+                len(orphans), legacy_dir)
 
     def start(self, single_threaded: bool = False, execution_mode: CollectorExecutionMode = CollectorExecutionMode.CONTINUOUS):
         self.load_groups()
@@ -323,7 +349,8 @@ class CollectorService(ACEServiceInterface):
             try:
                 self.execute_workload_cleanup()
             except Exception as e:
-                logging.exception(f"unable to execute workload cleanup: {e}")
+                logging.error(f"unable to execute workload cleanup: {e}")
+                report_exception()
 
             if self.sleep(self.config.cleanup_frequency):
                 break
@@ -510,7 +537,7 @@ class CollectorService(ACEServiceInterface):
             try:
                 self.collector.update()
             except Exception as e:
-                logging.exception(f"error during update: {e}")
+                logging.error(f"error during update: {e}")
                 report_exception()
 
             if self.execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION]:
@@ -555,7 +582,7 @@ class CollectorService(ACEServiceInterface):
     def maybe_report_collector_status(self):
         """Reports collector status if enough time has passed since the last report."""
         try:
-            now = datetime.now()
+            now = datetime.now(tz=timezone.utc)
             if self.next_collector_status_report is None or now >= self.next_collector_status_report:
                 self.report_collector_status()
                 self.next_collector_status_report = now + timedelta(seconds=COLLECTOR_STATUS_REPORT_FREQUENCY)
