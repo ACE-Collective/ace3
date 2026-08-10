@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.91] - 2026-08-10
+
+- [signature analysis prep work](https://github.com/ACE-Collective/ace3/pull/455)
+- [give each collector a dedicated staging directory](https://github.com/ACE-Collective/ace3/pull/454)
+- [removes submission filter](https://github.com/ACE-Collective/ace3/pull/453)
+
 ## [3.0.90] - 2026-08-06
 
 - [Removing some legacy configuration.](https://github.com/ACE-Collective/ace3/pull/450)
