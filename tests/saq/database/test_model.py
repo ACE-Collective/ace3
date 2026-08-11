@@ -2,15 +2,13 @@ import uuid
 
 import pytest
 
-from saq.constants import F_TEST
 from saq.database.model import Alert, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
 from tests.saq.helpers import create_root_analysis, insert_alert
 
-from saq.database import Observable
-from sqlalchemy import func, inspect
+from sqlalchemy import inspect
 
 @pytest.mark.integration
 def test_load_alert():
@@ -57,21 +55,6 @@ def test_insert_alert_name_too_long():
     assert alert is not None
 
     assert len(alert.description) == 1024
-
-@pytest.mark.integration
-def test_sync_observable_mapping():
-    root_analysis = create_root_analysis()
-    root_analysis.save()
-    ALERT(root_analysis)
-    alert = load_alert(root_analysis.uuid)
-    assert alert is not None
-
-    test_observable = alert.root_analysis.add_observable_by_spec(F_TEST, 'test_1')
-    assert test_observable
-    alert.sync_observable_mapping(test_observable)
-
-    observable = get_db().query(Observable).filter(Observable.type == test_observable.type, Observable.sha256 == func.UNHEX(test_observable.sha256_hash)).first()
-    assert observable
 
 @pytest.mark.integration
 def test_sync_icon_configuration_blueprint():

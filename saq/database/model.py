@@ -7,7 +7,6 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
 import bcrypt
-import pymysql
 from flask_login import UserMixin
 from sqlalchemy import (
     BINARY,
@@ -73,10 +72,9 @@ from saq.crypto import decrypt_chunk
 from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
-from saq.database.util.sync import sync_observable
+from saq.database.util.index import IndexSyncResult, sync_alert_index
 from saq.disposition import get_dispositions
 from saq.environment import get_global_runtime_settings
-from saq.performance import track_execution_time
 from saq.util import find_all_url_domains, validate_uuid
 from saq.util.ui import get_tag_score
 
@@ -117,12 +115,6 @@ class Alert(Base):
         )
 
     def _initialize(self):
-        # keep track of what Tag and Observable objects we add as we analyze
-        self._tracked_tags = [] # of saq.analysis.Tag
-        self._tracked_observables = [] # of saq.analysis.Observable
-        self._synced_tags = set() # of Tag.name
-        self._synced_observables = set() # of '{}:{}'.format(observable.type, observable.value)
-
         # when we lock the Alert this is the UUID we used to lock it with
         self.lock_uuid = str(uuid.uuid4())
 
@@ -611,58 +603,6 @@ class Alert(Base):
         if not self.incorrect_disposition_time and Alert.KEY_INCORRECT_DISPOSITION_TIME in value:
             self.incorrect_disposition_time = value[Alert.KEY_INCORRECT_DISPOSITION_TIME]
 
-    def sync_tag_mapping(self, tag):
-        tag_id = None
-
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            for _ in range(3): # make sure we don't enter an infinite loop here
-                cursor.execute("SELECT id FROM tags WHERE name = %s", ( tag.name, ))
-                result = cursor.fetchone()
-                if result:
-                    tag_id = result[0]
-                    break
-                else:
-                    try:
-                        execute_with_retry(db, cursor, "INSERT IGNORE INTO tags ( name ) VALUES ( %s )""", ( tag.name, ))
-                        db.commit()
-                        continue
-                    except pymysql.err.InternalError as e:
-                        if e.args[0] == 1062:
-
-                            # another process added it just before we did
-                            try:
-                                db.rollback()
-                            except Exception as e2:
-                                logging.warning(f"rollback failed: {e2}")
-
-                            break
-                        else:
-                            raise
-
-            if not tag_id:
-                logging.error("unable to find tag_id for tag {}".format(tag.name))
-                return
-
-            try:
-                execute_with_retry(db, cursor, "INSERT IGNORE INTO tag_mapping ( alert_id, tag_id ) VALUES ( %s, %s )", ( self.id, tag_id ))
-                db.commit()
-                logging.debug("mapped tag {} to {}".format(tag, self))
-            except pymysql.err.InternalError as e:
-                if e.args[0] == 1062: # already mapped
-                    return
-                else:
-                    raise
-
-    @retry
-    def sync_observable_mapping(self, observable):
-        assert isinstance(observable, _Observable)
-
-        existing_observable = sync_observable(observable)
-        assert existing_observable.id is not None
-        get_db().execute(ObservableMapping.__table__.insert().prefix_with('IGNORE').values(observable_id=existing_observable.id, alert_id=self.id))
-        get_db().commit()
-
     def apply_icon_configuration(self, icon_configuration: Optional["IconConfiguration"]):
         """Mirrors an IconConfiguration into the icon_* columns, writing only changed columns."""
         if icon_configuration and icon_configuration.blueprint_file_location:
@@ -717,162 +657,33 @@ class Alert(Base):
                      (self.uuid, get_global_runtime_settings().lock_timeout_seconds))
             return c.fetchone() is not None
 
-    def reset(self):
-        super().reset()
+    def build_index(self) -> IndexSyncResult:
+        """Reconciles this Alert's rows in the observables, tags, observable_mapping,
+        tag_mapping, observable_tag_index and detection_points tables."""
+        return self.rebuild_index()
 
-        if self.id:
-            # rebuild the index after we reset the Alert
-            self.rebuild_index()
+    def rebuild_index(self) -> IndexSyncResult:
+        """Reconciles this Alert's index rows with its analysis tree, writing only what
+        changed since the last call.
 
-    def build_index(self):
-        """Rebuilds the data for this Alert in the observables, tags, observable_mapping and tag_mapping tables."""
-        self.rebuild_index()
-
-    def rebuild_index(self):
-        """Rebuilds the data for this Alert in the observables, tags, observable_mapping and tag_mapping tables."""
+        The diff is computed against the database.
+        """
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             with get_db_connection() as db:
                 c = db.cursor()
-                execute_with_retry(db, c, self._rebuild_index)
+                return execute_with_retry(db, c, self._rebuild_index)
 
-    def _rebuild_index(self, db, c):
-        logging.info(f"rebuilding indexes for {self}")
-        c.execute("""DELETE FROM observable_mapping WHERE alert_id = %s""", ( self.id, ))
-        c.execute("""DELETE FROM tag_mapping WHERE alert_id = %s""", ( self.id, ))
-        c.execute("""DELETE FROM observable_tag_index WHERE alert_id = %s""", ( self.id, ))
-
-        tag_names = tuple(self.root_analysis.all_tags)
-        if tag_names:
-            sql = "INSERT IGNORE INTO tags ( name ) VALUES {}".format(','.join(['(%s)' for name in tag_names]))
-            c.execute(sql, tag_names)
-
-        all_observables = [o for o in self.root_analysis.all_observables if not o.ignored]
-
-        observables = []
-        for observable in all_observables:
-            observables.append(observable.type)
-            observables.append(observable.value)
-            observables.append(observable.sha256_hash)
-
-        observables = tuple(observables)
-
-        if all_observables:
-            sql = "INSERT IGNORE INTO observables ( type, value, sha256 ) VALUES {}".format(','.join('(%s, %s, UNHEX(%s))' for o in all_observables))
-            c.execute(sql, observables)
-
-        tag_mapping = {} # key = tag_name, value = tag_id
-        if tag_names:
-            sql = "SELECT id, name FROM tags WHERE name IN ( {} )".format(','.join(['%s' for name in tag_names]))
-            c.execute(sql, tag_names)
-
-            for row in c:
-                tag_id, tag_name = row
-                tag_mapping[tag_name] = tag_id
-
-            sql = "INSERT INTO tag_mapping ( alert_id, tag_id ) VALUES {}".format(','.join(['(%s, %s)' for name in tag_mapping.values()]))
-            parameters = []
-            for tag_id in tag_mapping.values():
-                parameters.append(self.id)
-                parameters.append(tag_id)
-
-            c.execute(sql, tuple(parameters))
-
-        observable_mapping = {} # key = observable_type+observable_sha256, value = observable_id
-        if all_observables:
-            and_pairs = []
-            params = []
-            for o in all_observables:
-                params.append(o.type)
-                params.append(o.sha256_hash)
-                and_pairs.append('(type=%s AND sha256=UNHEX(%s))')
-
-            or_string = ' OR '.join(and_pairs)
-
-            sql = f'SELECT id, type, HEX(sha256) FROM observables WHERE {or_string}'
-            c.execute(sql, tuple(params))
-
-            for row in c:
-                observable_id, observable_type, sha256_hex = row
-                observable_mapping[f'{observable_type}{sha256_hex.lower()}'] = observable_id
-
-            sql = "INSERT INTO observable_mapping ( alert_id, observable_id ) VALUES {}".format(','.join(['(%s, %s)' for o in observable_mapping]))
-            parameters = []
-            for observable_id in observable_mapping.values():
-                parameters.append(self.id)
-                parameters.append(observable_id)
-
-            c.execute(sql, tuple(parameters))
-
-        sql = "INSERT IGNORE INTO observable_tag_index ( alert_id, observable_id, tag_id ) VALUES "
-        parameters = []
-        sql_clause = []
-
-        for observable in all_observables:
-            for tag in observable.tags:
-                try:
-                    tag_id = tag_mapping[tag]
-                except KeyError:
-                    logging.debug(f"missing tag mapping for tag {tag} in observable {observable} alert {self.uuid}")
-                    continue
-
-                observable_id = observable_mapping[f'{observable.type}{observable.sha256_hash.lower()}']
-
-                parameters.append(self.id)
-                parameters.append(observable_id)
-                parameters.append(tag_id)
-                sql_clause.append('(%s, %s, %s)')
-
-        if sql_clause:
-            sql += ','.join(sql_clause)
-            c.execute(sql, tuple(parameters))
-
-        self._sync_detection_points(db, c)
-
+    def _rebuild_index(self, db, c) -> IndexSyncResult:
+        result = sync_alert_index(c, self.id, self.root_analysis)
         db.commit()
 
-    def _sync_detection_points(self, db, c):
-        """Syncs the detection points for this alert to the detection_points table."""
-        # all_detection_points already includes the root analysis's own detections
-        # (all_analysis includes the root), so do NOT also add root.detections here.
-        # de-dup by content_hash so a single INSERT never lists the same key twice.
-        detection_points = {}
-        for dp in self.root_analysis.all_detection_points:
-            detection_points[dp.content_hash] = dp
+        if result.changed:
+            logging.info("rebuilt index for %s: %s", self, result)
+        else:
+            logging.debug("index unchanged for %s", self)
 
-        # remove rows that no longer correspond to a detection in the tree
-        if not detection_points:
-            c.execute("""DELETE FROM detection_points WHERE alert_id = %s""", (self.id,))
-            return
-
-        placeholders = ','.join(['%s'] * len(detection_points))
-        c.execute(
-            f"""DELETE FROM detection_points WHERE alert_id = %s AND content_hash NOT IN ({placeholders})""",
-            (self.id, *detection_points.keys()))
-
-        sql = """INSERT INTO detection_points
-                    ( alert_id, description, details, queue, signature_uuid, signature_version, content_hash )
-                 VALUES {}
-                 ON DUPLICATE KEY UPDATE
-                    description = VALUES(description),
-                    details = VALUES(details),
-                    queue = VALUES(queue),
-                    signature_uuid = VALUES(signature_uuid),
-                    signature_version = VALUES(signature_version)""".format(
-                    ','.join(['(%s, %s, %s, %s, %s, %s, %s)' for dp in detection_points]))
-
-        parameters = []
-        for content_hash, dp in detection_points.items():
-            details = json.dumps(dp.details, sort_keys=True, default=str) if dp.details else None
-            parameters.append(self.id)
-            parameters.append(dp.description)
-            parameters.append(details)
-            parameters.append(dp.queue)
-            parameters.append(dp.signature_uuid)
-            parameters.append(dp.signature_version)
-            parameters.append(content_hash)
-
-        c.execute(sql, tuple(parameters))
+        return result
 
     @property
     def node_location(self):
