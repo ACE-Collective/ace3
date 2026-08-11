@@ -440,11 +440,35 @@ class TestSyncAlertToDatabaseBuildIndex:
         context.root.uuid = str(uuid.uuid4())
         context.root.delayed = delayed
         context.analysis_aborted = analysis_aborted
+        context.analysis_skipped = False
 
         with patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
             orchestrator._sync_alert_to_database(context)
 
         mock_alert.sync.assert_called_once_with(build_index=expected_build_index)
+
+    @pytest.mark.parametrize("analysis_aborted,expected_sync", [
+        # nothing ran because the alert was already dispositioned -- nothing to write
+        (False, False),
+        # belt and braces: an aborted pass syncs even if something also marked it skipped
+        (True, True),
+    ])
+    def test_skipped_analysis_does_not_sync(self, orchestrator, analysis_aborted, expected_sync):
+        mock_alert = Mock()
+        mock_session = Mock()
+        mock_session.query.return_value.filter.return_value.first.return_value = mock_alert
+
+        context = Mock(spec=EngineExecutionContext)
+        context.root = Mock()
+        context.root.uuid = str(uuid.uuid4())
+        context.root.delayed = False
+        context.analysis_aborted = analysis_aborted
+        context.analysis_skipped = True
+
+        with patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
+            orchestrator._sync_alert_to_database(context)
+
+        assert mock_alert.sync.called is expected_sync
 
 
 @pytest.mark.integration
@@ -482,6 +506,7 @@ class TestSyncAlertToDatabaseRebuildIndexIntegration:
 
         context = Mock(spec=EngineExecutionContext)
         context.root = root
+        context.analysis_skipped = False
 
         def indexed_values():
             # Observable.value comes back as bytes from the DB; normalize to str

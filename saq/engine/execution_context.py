@@ -23,6 +23,10 @@ class EngineExecutionContext:
         # follow-up pass will rebuild the observable index
         self.analysis_aborted: bool = False
 
+        # set True when no analysis ran at all for this work item because the alert was
+        # already dispositioned. Nothing in the tree changed, so there is nothing to sync.
+        self.analysis_skipped: bool = False
+
     @property
     def root(self) -> RootAnalysis:
         """Returns the RootAnalysis object the current process is analyzing."""
