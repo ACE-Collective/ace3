@@ -224,6 +224,10 @@ qdrant:
   api_key: file:/auth/passwords/qdrant
   # the collection name for ace3 alert data
   collection_alerts: ace3-alerts
+  # HTTP timeout (in seconds) for background qdrant operations
+  timeout: 30
+  # shorter timeout for the analyst-facing GUI search path, which should fail fast
+  search_timeout: 10
 
 # sqlite3 settings
 sqlite3:

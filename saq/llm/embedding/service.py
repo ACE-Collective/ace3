@@ -17,12 +17,30 @@ from saq.redis_client import get_redis_connection
 from saq.service import ACEServiceInterface
 
 TASK_KEY = "embedding_tasks"
+FAILED_TASK_KEY = "embedding_tasks_failed"
+
+# how many times a task may fail with an error before it is moved to the dead letter list
+MAX_TASK_ATTEMPTS = 3
+
+# how many times a task may find its alert locked before it is moved to the dead letter list.
+# this is much higher than MAX_TASK_ATTEMPTS because a deferral means "not ready yet" rather
+# than "broken": the engine submits the task while it still holds the root lock, so finding
+# the alert locked is expected. the cap only exists so a permanently stale lock cannot cause
+# a task to circulate forever.
+MAX_TASK_DEFERRALS = 60
+
+class AlertLockUnavailable(Exception):
+    """Raised when the alert for an embedding task is locked by another process."""
 
 class EmbeddingServiceConfig(ServiceConfig):
     worker_count: Optional[int] = Field(default=None, ge=1, description="Number of embedding worker processes to spawn. Defaults to the CPU count when omitted.")
 
 class EmbeddingTask(BaseModel):
     alert_uuid: str
+    # these default because tasks already sitting in the redis list when this change is
+    # deployed were serialized without them and must still validate
+    attempt: int = 0 # number of times execution of this task has failed
+    deferrals: int = 0 # number of times this task found the alert locked
 
 def submit_embedding_task(alert_uuid: str) -> bool:
     try:
@@ -101,18 +119,49 @@ class EmbeddingWorker:
         try:
             self.execute_task(task_data)
             logging.info(f"worker {self} executed task {task_data}")
+        except AlertLockUnavailable:
+            self.defer_task(task_data)
         except Exception as e:
             logging.error(f"error executing task {task_data}: {e}")
             report_exception()
+            self.requeue_task(task_data)
         finally:
             remove_all_sessions()
+
+    def requeue_task(self, task: EmbeddingTask):
+        """Puts a task that failed with an error back on the queue, up to MAX_TASK_ATTEMPTS."""
+        task.attempt += 1
+        redis_connection = get_redis_connection(REDIS_DB_BG_TASKS)
+
+        if task.attempt >= MAX_TASK_ATTEMPTS:
+            logging.error(f"embedding task for {task.alert_uuid} failed {task.attempt} times, moving to {FAILED_TASK_KEY}")
+            redis_connection.rpush(FAILED_TASK_KEY, task.model_dump_json())
+            return
+
+        logging.warning(f"requeuing embedding task for {task.alert_uuid} (attempt {task.attempt})")
+        # rpush rather than lpush: placing the retry at the tail of the queue is what keeps
+        # a persistent failure from turning into a hot retry loop
+        redis_connection.rpush(TASK_KEY, task.model_dump_json())
+
+    def defer_task(self, task: EmbeddingTask):
+        """Puts a task whose alert was locked back on the queue, up to MAX_TASK_DEFERRALS."""
+        task.deferrals += 1
+        redis_connection = get_redis_connection(REDIS_DB_BG_TASKS)
+
+        if task.deferrals >= MAX_TASK_DEFERRALS:
+            logging.error(f"embedding task for {task.alert_uuid} found the alert locked {task.deferrals} times, moving to {FAILED_TASK_KEY}")
+            redis_connection.rpush(FAILED_TASK_KEY, task.model_dump_json())
+            return
+
+        logging.info(f"deferring embedding task for {task.alert_uuid} (alert is locked, deferral {task.deferrals})")
+        redis_connection.rpush(TASK_KEY, task.model_dump_json())
 
     def execute_task(self, task: EmbeddingTask):
         lock_uuid = str(uuid.uuid4())
 
         if not acquire_lock(task.alert_uuid, lock_uuid, lock_owner=str(self)):
-            logging.warning(f"unable to acquire lock on {task.alert_uuid}, skipping embedding task")
-            return
+            logging.warning(f"unable to acquire lock on {task.alert_uuid}, deferring embedding task")
+            raise AlertLockUnavailable(task.alert_uuid)
 
         try:
             from saq.database.model import load_alert
