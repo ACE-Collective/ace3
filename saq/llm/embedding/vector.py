@@ -10,13 +10,19 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.analysis.search import recurse_tree
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue, UpdateStatus, VectorParams, Distance
+from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchValue, PayloadSchemaType, PointStruct, UpdateStatus, VectorParams, Distance
 
 from saq.configuration.config import get_config
 from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.llm.embedding.model import load_model
 from saq.qdrant_client import get_qdrant_client
+
+# the payload field every point carries identifying the root analysis it belongs to
+ROOT_UUID_FIELD = "root_uuid"
+
+class VectorizeError(Exception):
+    """Raised when a qdrant operation performed by vectorize() did not complete."""
 
 def _generate_point_id(root: RootAnalysis, context_document: str) -> str:
     key = f"{root.storage_dir}/{context_document}"
@@ -36,6 +42,26 @@ def clear_vectors():
     client = get_qdrant_client()
     if client.collection_exists(collection_name=get_alert_collection_name()):
         client.delete_collection(collection_name=get_alert_collection_name())
+
+def create_root_uuid_index(client, wait: bool = False):
+    """Creates the payload index on ROOT_UUID_FIELD for the alert collection.
+
+    Without this index every filtered delete or count against root_uuid is a full scan of
+    the collection, which grows without bound. This is idempotent: qdrant treats a repeat
+    request for an identical index as a no-op.
+
+    Args:
+        client: the qdrant client to use.
+        wait: when True, block until the index has finished building. On a collection that
+            already holds a large number of points the build can take a while, so callers
+            operating on an existing collection should leave this False and poll instead.
+    """
+    return client.create_payload_index(
+        collection_name=get_alert_collection_name(),
+        field_name=ROOT_UUID_FIELD,
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=wait,
+    )
 
 def get_context_records(target: Union[Alert, RootAnalysis]) -> list[str]:
     """Returns the list of context records for the root analysis."""
@@ -113,47 +139,51 @@ def vectorize(target: Union[Alert, RootAnalysis]) -> list[str]:
             collection_name=get_alert_collection_name(),
             vectors_config=VectorParams(size=model.get_sentence_embedding_dimension(), distance=Distance.COSINE),
         )
-
-    # remove all the existing points for this target
-    delete_result = client.delete(collection_name=get_alert_collection_name(), points_selector=FilterSelector(filter=Filter(must=[
-        FieldCondition(
-            key="root_uuid",
-            match=MatchValue(value=target.uuid)
-        ),
-    ])), wait=True)
-
-    assert delete_result.status == UpdateStatus.COMPLETED
-
-    # make sure all existing points for this target are deleted
-    count_result = client.count(collection_name=get_alert_collection_name(), count_filter=Filter(must=[
-        FieldCondition(
-            key="root_uuid",
-            match=MatchValue(value=target.uuid)
-        ),
-    ]))
-
-    assert count_result.count == 0, f"count_result is {count_result.count} for target {target.uuid}"
+        # a brand new collection is empty so this returns immediately
+        create_root_uuid_index(client, wait=True)
 
     points = []
     for i, context_record in enumerate(context_records):
-        from qdrant_client.models import PointStruct
         points.append(
             PointStruct(
                 id=_generate_point_id(target, context_record),
                 vector=vectors[i].tolist(),
                 payload={
-                    "root_uuid": target.uuid,
+                    ROOT_UUID_FIELD: target.uuid,
                     "text": context_record
                 }
             )
         )
 
+    # upload the current points BEFORE removing the stale ones. point ids are deterministic
+    # (see _generate_point_id) so this is an idempotent upsert, and doing it in this order
+    # means a failure part way through leaves the target with a mix of old and new points
+    # rather than with none at all. wait=True so that a failed batch is not swallowed and
+    # so the delete below runs against a known state.
     client.upload_points(
-        collection_name=get_config().qdrant.collection_alerts,
-        points=points
+        collection_name=get_alert_collection_name(),
+        points=points,
+        wait=True,
     )
 
+    # now remove any point still carrying this root_uuid that is not part of the current
+    # analysis: context records that have disappeared since the last time we ran
+    delete_result = client.delete(collection_name=get_alert_collection_name(), points_selector=FilterSelector(filter=Filter(
+        must=[
+            FieldCondition(
+                key=ROOT_UUID_FIELD,
+                match=MatchValue(value=target.uuid)
+            ),
+        ],
+        must_not=[
+            HasIdCondition(has_id=[point.id for point in points]),
+        ],
+    )), wait=True)
+
+    if delete_result.status != UpdateStatus.COMPLETED:
+        raise VectorizeError(f"stale point delete for {target.uuid} returned {delete_result.status}")
+
     end = time.time()
-    logging.info(f"vectorized {target.uuid} in {end - start} seconds")
+    logging.info(f"vectorized {target.uuid} ({len(points)} points) in {end - start} seconds")
 
     return context_records

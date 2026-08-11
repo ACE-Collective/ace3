@@ -32,6 +32,31 @@ cli_vectorize_parser.add_argument("--all", action="store_true", help="Vectorize 
 cli_vectorize_parser.add_argument("storage_dir", nargs="?", type=str, help="The path to the root analysis.")
 cli_vectorize_parser.set_defaults(func=cli_vectorize)
 
+def cli_create_index(args):
+    from saq.llm.embedding.vector import ROOT_UUID_FIELD, create_root_uuid_index, get_alert_collection_name
+    from saq.qdrant_client import get_qdrant_client
+
+    client = get_qdrant_client()
+    collection_name = get_alert_collection_name()
+
+    if not client.collection_exists(collection_name=collection_name):
+        print(f"collection {collection_name} does not exist - nothing to do")
+        return
+
+    if not args.status:
+        result = create_root_uuid_index(client, wait=args.wait)
+        print(f"create_payload_index: {result.status}")
+
+    payload_schema = client.get_collection(collection_name=collection_name).payload_schema
+    print(f"payload schema for {collection_name}: {payload_schema}")
+    if ROOT_UUID_FIELD not in (payload_schema or {}):
+        print(f"NOTE: {ROOT_UUID_FIELD} index is not present yet (it may still be building)")
+
+cli_create_index_parser = llm_sp.add_parser("create-index", help="Creates the root_uuid payload index on the alert collection.")
+cli_create_index_parser.add_argument("--wait", action="store_true", default=False, help="Block until the index has finished building.")
+cli_create_index_parser.add_argument("--status", action="store_true", default=False, help="Only report the current payload schema without creating the index.")
+cli_create_index_parser.set_defaults(func=cli_create_index)
+
 def cli_search(args):
     from saq.llm.embedding.search import search
     print(search(args.search_term))

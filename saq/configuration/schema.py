@@ -152,6 +152,8 @@ class QdrantConfig(BaseModel):
     ssl_ca_path: str = Field(..., description="path to SSL CA certificate")
     api_key: str = Field(..., description="qdrant API key")
     collection_alerts: str = Field(..., description="the collection name for ace3 alert data")
+    timeout: int = Field(default=30, ge=1, description="HTTP timeout (in seconds) for qdrant operations")
+    search_timeout: int = Field(default=10, ge=1, description="HTTP timeout (in seconds) for the user-facing GUI search path")
 
 class SQLite3Config(BaseModel):
     timeout: int = Field(..., description="how long (in seconds) to wait for sqlite3 to connect")
