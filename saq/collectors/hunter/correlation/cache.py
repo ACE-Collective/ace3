@@ -16,7 +16,12 @@ def _make_cache_key(command_args: dict) -> str:
 
 
 def _describe_command(command_args: dict) -> str:
-    """Render a compact, single-line summary of what a cache entry is for."""
+    """Render a compact, single-line summary of what a cache entry is for.
+
+    Deliberately omits `env` for executables: an env value can hold a credential (it is the one
+    template context bound to `_secrets`), and this description is written to the log. The
+    rendered env still participates in the cache key, but only as part of a sha256 digest.
+    """
     ctype = command_args.get("type", "?")
     if ctype == "query":
         query = " ".join((command_args.get("query") or "").split())

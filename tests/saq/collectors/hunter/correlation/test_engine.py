@@ -1,4 +1,5 @@
 import datetime
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,9 @@ from saq.collectors.hunter.correlation.registry import (
     register_query_source,
 )
 from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig, StepConfig
+
+
+PYTHON = sys.executable
 
 
 def _make_config(logic_data, timeout="15m"):
@@ -818,3 +822,37 @@ class TestTransformThenFilterAndTimeout:
         assert [s.step.trace_type for s in branch] == ["action", "transform"]
         # the transform's query did run once before the budget was exhausted
         assert len(slow.calls) == 1
+
+
+@pytest.mark.unit
+class TestSecretLoadFailure:
+    """A degraded secret store must fail the step, not export an empty credential."""
+
+    def test_secret_export_failure_fails_env_step_loudly(self):
+        mock_raw = MagicMock()
+        mock_raw._data = {}
+        with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords",
+                   side_effect=RuntimeError("no encryption key")), \
+             patch("saq.collectors.hunter.correlation.engine.get_config",
+                   return_value=MagicMock(raw=mock_raw)):
+            config = _make_config([
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "result",
+                        "command": {
+                            "type": "executable",
+                            "path": PYTHON,
+                            "args": ["-c", "import os; print(os.environ['API_KEY'])"],
+                            "env": {"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+                        },
+                    },
+                },
+            ])
+            engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+            result = engine.execute([{"id": 1}])
+
+        et = result.trace.event_traces[0]
+        assert et.outcome == "error"
+        assert "no secrets are loaded" in et.steps[0].step.error

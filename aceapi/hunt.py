@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import threading
-from typing import List, Optional
+from typing import Optional
 
 import pytz
 import yaml
@@ -17,6 +17,7 @@ from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
+from saq.collectors.hunter.correlation.validation import check_env_for_encrypted_markers
 from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
@@ -48,7 +49,7 @@ class ListLogHandler(logging.Handler):
     collected, so concurrent requests in the multi-threaded API process do not
     leak their log records into each other's collected list.
     """
-    def __init__(self, log_list: List[logging.LogRecord]):
+    def __init__(self, log_list: list[logging.LogRecord]):
         super().__init__()
         self.log_list = log_list
         self.thread_id = threading.get_ident()
@@ -116,6 +117,17 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     except ValidationError as e:
         return json_result({"valid": False, "error": f"invalid hunt config: {e}"}), 400
 
+    # catch a correlate command that tries to read an encrypted secret through _config, which
+    # renders the marker rather than the credential. the runtime guard in commands.py also
+    # covers this, but failing here means it never reaches production.
+    hunt_config = getattr(hunt, "config", None)
+    env_errors = check_env_for_encrypted_markers(
+        getattr(hunt_config, "correlate", None),
+        getattr(hunt_config, "_predefined_commands", None),
+    )
+    if env_errors:
+        return json_result({"valid": False, "error": "; ".join(env_errors)}), 400
+
     # are we executing the hunt?
     execution_arguments_dict = request_json.get("execution_arguments", {})
     if not execution_arguments_dict:
@@ -170,7 +182,7 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
             exec_kwargs['time_range_overrides'] = execution_arguments.time_range_overrides
 
     # Set up logging handler to collect all logs
-    collected_logs: List[logging.LogRecord] = []
+    collected_logs: list[logging.LogRecord] = []
     log_handler = ListLogHandler(collected_logs)
     root_logger = logging.getLogger()
     root_logger.addHandler(log_handler)

@@ -364,11 +364,11 @@ class TestCorrelationIntegration:
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_not_bound_in_executable_env(self, mock_secrets, mock_config):
-        """_secrets must not render into an executable command's environment.
+    def test_secrets_bound_in_executable_env(self, mock_secrets, mock_config):
+        """_secrets renders into an executable command's environment.
 
-        Command env values are the most direct route off-box, since the executable can do
-        anything with what it receives.
+        This is the one channel where handing a credential to a local helper process is the
+        point of the feature.
         """
         mock_secrets.return_value = {"db_pass": "s3cret"}
         mock_raw = MagicMock()
@@ -386,7 +386,7 @@ class TestCorrelationIntegration:
                             "type": "executable",
                             "path": PYTHON,
                             "args": ["-c", "import os; print(os.environ['PROBE'])"],
-                            "env": {"PROBE": "{{ _secrets is undefined }}"},
+                            "env": {"PROBE": "{{ _secrets['db_pass'] }}"},
                         },
                     },
                 },
@@ -399,7 +399,162 @@ class TestCorrelationIntegration:
 
         events = [{"id": 1}]
         result = engine.execute(events)
+        assert result.events[0]["result"] == "s3cret"
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_secrets_not_bound_in_executable_args(self, mock_secrets, mock_config):
+        """_secrets must not reach `args` -- argv is readable by other users via /proc."""
+        mock_secrets.return_value = {"db_pass": "s3cret"}
+        mock_raw = MagicMock()
+        mock_raw._data = {}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        config_data = {
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "result",
+                        "command": {
+                            "type": "executable",
+                            "path": PYTHON,
+                            "args": ["-c", "import sys; print(sys.argv[1])", "{{ _secrets is undefined }}"],
+                        },
+                    },
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        result = engine.execute([{"id": 1}])
         assert result.events[0]["result"] == "True"
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_secrets_not_bound_in_query_text(self, mock_secrets, mock_config):
+        """_secrets must not reach query text -- it is sent to a third-party data source."""
+        mock_secrets.return_value = {"db_pass": "s3cret"}
+        mock_raw = MagicMock()
+        mock_raw._data = {}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        class _RecordingSource(QuerySource):
+            def __init__(self):
+                self.queries = []
+
+            def execute_query(self, query, start_time, end_time, timeout, source_options=None):
+                self.queries.append(query)
+                return [{"matched": True}]
+
+        source = _RecordingSource()
+        register_query_source("mock", source)
+
+        config_data = {
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "result",
+                        "command": {
+                            "type": "query",
+                            "source": "mock",
+                            "query": "search probe={{ _secrets is undefined }}",
+                        },
+                    },
+                },
+            ],
+        }
+        config = CorrelateConfig.model_validate(config_data)
+        engine = CorrelationEngine(
+            config, [], datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        engine.execute([{"id": 1}])
+        assert source.queries == ["search probe=True"]
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_unresolved_encrypted_marker_in_env_is_an_error(self, mock_secrets, mock_config):
+        """An env value that renders to an `encrypted:` marker must fail the step.
+
+        Reproduces the rapid7 bug: `_config` is the pre-validation merged dict, so an
+        `encrypted:<name>` marker survives there unresolved. Rendering it into env hands
+        the literal marker to the helper script as its API key, and the only symptom is a
+        confusing auth failure against the vendor.
+        """
+        mock_secrets.return_value = {"rapid7.api_key": "REAL_KEY"}
+        mock_raw = MagicMock()
+        mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        predefined = [PredefinedCommandConfig.model_validate({
+            "name": "get_r7_comments",
+            "type": "executable",
+            "path": PYTHON,
+            "args": ["-c", "import os; print(os.environ['R7_API_KEY'])"],
+            "env": {"R7_API_KEY": "{{ _config['rapid7']['api_key'] }}"},
+        })]
+        config = CorrelateConfig.model_validate({
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "comments",
+                        "command": {"type": "defined", "name": "get_r7_comments"},
+                    },
+                },
+            ],
+        })
+        engine = CorrelationEngine(
+            config, predefined, datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        result = engine.execute([{"id": 1}])
+        event_trace = result.trace.event_traces[0]
+        assert event_trace.outcome == "error"
+        assert "R7_API_KEY" in event_trace.steps[0].step.error
+
+    @patch("saq.collectors.hunter.correlation.engine.get_config")
+    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
+    def test_secret_renders_into_env_via_secrets_namespace(self, mock_secrets, mock_config):
+        """`_secrets` is the supported way to get a credential into an env value."""
+        mock_secrets.return_value = {"rapid7.api_key": "REAL_KEY"}
+        mock_raw = MagicMock()
+        mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
+        mock_config.return_value = MagicMock(raw=mock_raw)
+
+        predefined = [PredefinedCommandConfig.model_validate({
+            "name": "get_r7_comments",
+            "type": "executable",
+            "path": PYTHON,
+            "args": ["-c", "import os; print(os.environ['R7_API_KEY'])"],
+            "env": {"R7_API_KEY": "{{ _secrets['rapid7.api_key'] }}"},
+        })]
+        config = CorrelateConfig.model_validate({
+            "logic": [
+                {
+                    "transform": {
+                        "type": "event",
+                        "method": "property",
+                        "property_name": "comments",
+                        "command": {"type": "defined", "name": "get_r7_comments"},
+                    },
+                },
+            ],
+        })
+        engine = CorrelationEngine(
+            config, predefined, datetime.datetime.now(datetime.timezone.utc),
+        )
+
+        result = engine.execute([{"id": 1}])
+        assert result.events[0]["comments"] == "REAL_KEY"
 
     def test_splunk_hunt_omits_relative_time_field_uses_default(self):
         """End-to-end: a splunk hunt's correlate query omits relative_time_field/format
