@@ -35,6 +35,7 @@ from saq.collectors.hunter.correlation.trace import (
     sanitize_value,
 )
 from saq.collectors.hunter.correlation.transforms import apply_transform
+from saq.error.reporting import report_exception
 
 _jinja_env = SandboxedEnvironment()
 
@@ -121,20 +122,25 @@ class CorrelationEngine:
         # default relative_time_field/format when the YAML omits them.
         self.hunt_source_type = hunt_source_type
         self._current_source: Optional[str] = hunt_source_type
+        # populated per-run by execute(); initialized here so redaction still works if a
+        # caller reaches a tracing helper before execute() has run.
+        self._secrets: dict = {}
 
     def execute(self, events: list[dict]) -> CorrelationResult:
         """Execute correlation logic on the event stream."""
         # reset source tracking so a reused engine instance starts from the hunt's primary type
         self._current_source = self.hunt_source_type
 
-        # Secrets are fetched solely so sanitize_value can scrub secret values out of the
-        # correlation trace and the cached-command descriptions. They are never exposed to a
-        # jinja context -- see build_jinja_context.
+        # Secrets serve two purposes: sanitize_value scrubs their values out of the correlation
+        # trace, log messages and cached-command descriptions, and they are bound as `_secrets`
+        # when rendering an executable command's `env:` block.
+        # See build_jinja_context.
         try:
-            self._redaction_secrets = export_encrypted_passwords()
-        except Exception:
-            logging.error("unable to load secrets for trace redaction", exc_info=True)
-            self._redaction_secrets = {}
+            self._secrets = export_encrypted_passwords()
+        except Exception as e:
+            logging.error(f"unable to load secrets: {e}")
+            report_exception() 
+            self._secrets = {}
 
         try:
             self._config = get_config().raw._data
@@ -397,7 +403,7 @@ class CorrelationEngine:
         )
         # Sanitize any rendered values that may contain secrets
         if expr_trace.rendered_value is not None:
-            expr_trace.rendered_value = sanitize_value(expr_trace.rendered_value, self._redaction_secrets)
+            expr_trace.rendered_value = sanitize_value(expr_trace.rendered_value, self._secrets)
 
         condition_trace = ConditionTrace(expression=expr_trace, branch_taken="none")
         step_trace = StepTrace(description=description, step=condition_trace)
@@ -468,7 +474,7 @@ class CorrelationEngine:
         # Build a summary of the rendered command for the trace
         transform_trace.rendered_command = sanitize_value(
             self._render_command_summary(transform.command, event, events),
-            self._redaction_secrets,
+            self._secrets,
         )
 
         # Capture the resolved query window for tracing. _resolve_time_range will
@@ -505,7 +511,7 @@ class CorrelationEngine:
                     self.hunt_start_time,
                     temp_dir,
                     self.stream_query_cache,
-                    self._redaction_secrets,
+                    self._secrets,
                     self._config,
                     self._current_source,
                     hunt_end_time=self.hunt_end_time,
@@ -548,9 +554,13 @@ class CorrelationEngine:
         except _StreamReset:
             raise  # Re-raise stream reset signals (step_trace already appended above)
         except Exception as e:
-            logging.error("error executing transform command: %s", e, exc_info=True)
-            transform_trace.error = str(e)
-            raise _StepError(str(e), step_trace) from e
+            # transform_trace.error is persisted into alert details and shown to analysts, and a
+            # failing executable can echo its credential to stderr, so sanitize before it lands
+            # anywhere.
+            message = sanitize_value(str(e), self._secrets)
+            logging.error("error executing transform command: %s", message)
+            transform_trace.error = message
+            raise _StepError(message, step_trace) from e
 
     def _trace_action(
         self,
@@ -567,7 +577,7 @@ class CorrelationEngine:
                 context = build_jinja_context(event, events, self._config)
                 rendered_log_message = sanitize_value(
                     _jinja_env.from_string(action.log_message).render(**context),
-                    self._redaction_secrets,
+                    self._secrets,
                 )
             except Exception:
                 pass
@@ -607,7 +617,12 @@ class CorrelationEngine:
         event: dict,
         events: list[dict],
     ) -> Optional[str]:
-        """Render a human-readable summary of the command for tracing."""
+        """Render a human-readable summary of the command for tracing.
+
+        Renders `query` or `path + args` only -- never `env`. That omission is deliberate: env
+        is the one template context bound to `_secrets`, and this summary is persisted into the
+        correlation trace.
+        """
         context = build_jinja_context(event, events, self._config)
         try:
             if command.type == "query" and command.query:

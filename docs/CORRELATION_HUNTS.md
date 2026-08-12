@@ -197,9 +197,11 @@ In either case, if no time range can be determined — an `event transformation`
 
 Executes a local binary or script.
 
-In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
+In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event), `_events` (full stream) and `_config` (the merged configuration) available.
 
 In the case of a `stream transformation`, the script is called once and passed all events in as JSONL to stdin.
+
+`env` values are interpolated too, and are the *only* templates that additionally get `_secrets` — see [Credentials in hunts](#credentials-in-hunts).
 
 ```yaml
 command:
@@ -209,12 +211,24 @@ command:
     args: # list of arguments to pass to the command line (optional)
       - arg1
       - arg2
-    # NOTE arguments are interpolated using jinja
+    # NOTE arguments are interpolated using jinja with _event, _events and _config
     env:
-        key_1: value
-        key_2: value
-    # environment values are also interpolated using jinja
+        SOME_SETTING: "{{ _config['vendor']['base_url'] }}"
+        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
+    # environment values are also interpolated using jinja, and are the only templates
+    # that can read _secrets
 ```
+
+#### Credentials in hunts
+
+A command that needs a credential reads it from `_secrets`, in an `env:` value:
+
+```yaml
+env:
+    VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
+```
+
+Note that the `env` block is the only place that `_secrets` can be used. Credentials are not available from `_config`, and any attempt to use a credential from it results in a validation error.
 
 #### defined
 
@@ -346,7 +360,8 @@ commands:
       path: "scripts/external_lookup.py"
       cache: 1d
       args: []
-      env: {}
+      env:
+        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
 ```
 
 These are referenced using the `defined` command type.
@@ -434,7 +449,14 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
 - The process of "registering query commands" should work in a similar way that analysis modules are registered.
     - There should be an internal API for registering query commands with the hunting system.
     - There should be a way to define, through configuration, a python module and class to register.
-- All jinja templates have access to two variables: `_event` (the current event dict) and `_events` (the full event stream list). Event properties are accessed via `_event.property_name` or `_event['key.with.dots']` for keys that contain special characters.
+- Jinja templates have access to these variables. Event properties are accessed via `_event.property_name` or `_event['key.with.dots']` for keys that contain special characters.
+
+    | Variable | What it is | Where it is bound |
+    |---|---|---|
+    | `_event` | the current event dict | every template |
+    | `_events` | the full event stream list | every template |
+    | `_config` | the merged configuration, as a raw dict | every template |
+    | `_secrets` | the decrypted credential store, keyed on store key name | an executable command's `env:` values only |
 - When merging by time
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.

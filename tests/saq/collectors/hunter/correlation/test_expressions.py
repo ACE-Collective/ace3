@@ -1,6 +1,8 @@
 import pytest
 
 from saq.collectors.hunter.correlation.expressions import (
+    SecretLookupError,
+    _jinja_env,
     build_jinja_context,
     evaluate_expression,
 )
@@ -24,25 +26,87 @@ class TestBuildJinjaContext:
         assert "_secrets" not in ctx
         assert "_config" not in ctx
 
-    def test_context_never_binds_secrets(self):
-        """The credential store must not be reachable from a correlation template.
+    def test_context_binds_secrets_only_when_requested(self):
+        """The credential store is reachable only when the caller opts in.
 
         A template is rendered into query text, command arguments and command environment
         variables that are handed to third parties, so a bound name is a value the hunt can
-        transmit off-box.
+        transmit off-box. Only the `env:` rendering loop opts in.
         """
         assert "_secrets" not in build_jinja_context({}, [], {"global": {"key": "value"}})
+        assert "_secrets" in build_jinja_context({}, [], secrets={"api_key": "secret123"})
+
+    def test_secrets_cannot_be_passed_positionally(self):
+        """Keyword-only, so a refactor cannot slide a credential in behind `config`."""
         with pytest.raises(TypeError):
-            build_jinja_context({}, [], secrets={"api_key": "secret123"})
+            build_jinja_context({}, [], {}, {"api_key": "secret123"})
 
     def test_context_with_config(self):
         config = {"global": {"key": "value"}}
         ctx = build_jinja_context({}, [], config=config)
         assert ctx["_config"] is config
 
-    def test_context_keys_are_event_data_and_config_only(self):
+    def test_context_keys_are_event_data_and_config_when_no_secrets_requested(self):
         ctx = build_jinja_context({}, [], {"global": {"key": "value"}})
         assert set(ctx) == {"_event", "_events", "_config"}
+
+    def test_context_keys_include_secrets_when_requested(self):
+        ctx = build_jinja_context({}, [], {"global": {"key": "value"}}, secrets={"a": "b"})
+        assert set(ctx) == {"_event", "_events", "_config", "_secrets"}
+
+
+@pytest.mark.unit
+class TestSecretNamespace:
+    """`_secrets` is a dict whose subscript refuses to produce a non-credential.
+
+    A miss renders as "" and a None value as the literal "None" under plain dict semantics, and
+    either would be exported to the subprocess as its API key.
+    """
+
+    SECRETS = {"rapid7.api_key": "REAL_KEY", "broken": None}
+
+    def _render(self, template: str) -> str:
+        context = build_jinja_context({}, [], secrets=self.SECRETS)
+        return _jinja_env.from_string(template).render(**context)
+
+    def test_lookup_by_key(self):
+        assert self._render("{{ _secrets['rapid7.api_key'] }}") == "REAL_KEY"
+
+    def test_unknown_key_raises_rather_than_rendering_empty(self):
+        # a KeyError here would be swallowed by jinja's getitem into Undefined -> ""
+        with pytest.raises(SecretLookupError, match="unknown secret 'nope'"):
+            self._render("{{ _secrets['nope'] }}")
+
+    def test_undecryptable_secret_raises_rather_than_rendering_none(self):
+        with pytest.raises(SecretLookupError, match="could not be decrypted"):
+            self._render("{{ _secrets['broken'] }}")
+
+    def test_empty_store_reports_itself(self):
+        context = build_jinja_context({}, [], secrets={})
+        with pytest.raises(SecretLookupError, match="no secrets are loaded"):
+            _jinja_env.from_string("{{ _secrets['rapid7.api_key'] }}").render(**context)
+
+    def test_namespace_behaves_as_a_mapping(self):
+        """Everything except subscript is plain dict behavior, deliberately.
+
+        Hunt authors are trusted, so the namespace is not hardened against enumeration -- only
+        against silently yielding something that is not a credential.
+        """
+        assert self._render("{{ _secrets.keys()|sort|join(',') }}") == "broken,rapid7.api_key"
+        assert self._render("{% for k in _secrets %}{{ k }};{% endfor %}").startswith("rapid7.api_key;")
+        assert self._render("{{ _secrets|length }}") == "2"
+
+    def test_get_keeps_plain_dict_semantics(self):
+        """`.get()` is the opt-in optional form and bypasses the raising subscript."""
+        assert self._render("{{ _secrets.get('rapid7.api_key') }}") == "REAL_KEY"
+        assert self._render("{{ _secrets.get('nope', 'fallback') }}") == "fallback"
+
+    def test_membership_test_does_not_raise(self):
+        assert self._render("{% if 'rapid7.api_key' in _secrets %}Y{% else %}N{% endif %}") == "Y"
+        assert self._render("{% if 'nope' in _secrets %}Y{% else %}N{% endif %}") == "N"
+        # present but undecryptable: membership is plain dict semantics, the subscript is what
+        # refuses to hand the value over
+        assert self._render("{% if 'broken' in _secrets %}Y{% else %}N{% endif %}") == "Y"
 
 
 @pytest.mark.unit

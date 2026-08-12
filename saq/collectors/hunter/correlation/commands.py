@@ -12,6 +12,8 @@ from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.timespec import parse_timespec
+from saq.collectors.hunter.correlation.trace import sanitize_value
+from saq.configuration.yaml_parser import ENCRYPTED_PREFIX
 
 _jinja_env = SandboxedEnvironment()
 
@@ -25,7 +27,7 @@ def execute_command(
     hunt_start_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict] = None,
-    redaction_secrets: dict | None = None,
+    secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
     hunt_end_time: Optional[datetime.datetime] = None,
@@ -44,9 +46,10 @@ def execute_command(
             relative `before` to this.
         temp_dir: Temporary directory for command execution.
         stream_query_cache: Cache for stream query results (memoization within a correlation run).
-        redaction_secrets: Decrypted secrets, used ONLY to scrub secret values out of the cache
-            descriptions written to logs. Never placed in a jinja context -- see
-            build_jinja_context.
+        secrets: Decrypted secrets from the encrypted-password store. Used to scrub secret
+            values out of the cache descriptions and error messages written to logs, and
+            bound as `_secrets` when rendering an executable's `env:` block
+            See build_jinja_context.
         config: Configuration dict for jinja context.
         current_source: Name of the source that produced the current event stream;
             used to supply default `relative_time_field`/`relative_time_format` when
@@ -62,11 +65,11 @@ def execute_command(
     if hunt_end_time is None:
         hunt_end_time = hunt_start_time
     if command.type == "defined":
-        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, redaction_secrets, config, current_source, query_recorder)
+        return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, secrets, config, current_source, query_recorder)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, redaction_secrets, config, current_source, query_recorder)
+        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, config, current_source, query_recorder)
     elif command.type == "executable":
-        return _execute_executable(command, event, events, transform_type, temp_dir, redaction_secrets, config)
+        return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
         raise ValueError(f"unknown command type: {command.type!r}")
 
@@ -81,7 +84,7 @@ def _execute_defined(
     hunt_end_time: datetime.datetime,
     temp_dir: str,
     stream_query_cache: Optional[dict],
-    redaction_secrets: dict | None = None,
+    secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
     query_recorder: Optional[CorrelateQueryRecorder] = None,
@@ -97,7 +100,7 @@ def _execute_defined(
         raise ValueError(f"predefined command not found: {command.name!r}")
 
     resolved = predef.to_command_config(command.arguments)
-    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_start_time, temp_dir, stream_query_cache, redaction_secrets, config, current_source, hunt_end_time=hunt_end_time, query_recorder=query_recorder)
+    return execute_command(resolved, event, events, transform_type, predefined_commands, hunt_start_time, temp_dir, stream_query_cache, secrets, config, current_source, hunt_end_time=hunt_end_time, query_recorder=query_recorder)
 
 
 def _execute_query(
@@ -108,7 +111,7 @@ def _execute_query(
     hunt_start_time: datetime.datetime,
     hunt_end_time: datetime.datetime,
     stream_query_cache: Optional[dict],
-    redaction_secrets: dict | None = None,
+    secrets: dict | None = None,
     config: dict | None = None,
     current_source: Optional[str] = None,
     query_recorder: Optional[CorrelateQueryRecorder] = None,
@@ -119,6 +122,8 @@ def _execute_query(
     # per-event queries that differ only after interpolation collapse to one cache
     # key and the first event's result is served to every later event. Rendering is
     # cheap (in-memory, no I/O) so doing it before the cache lookups is fine.
+    #
+    # `secrets` is deliberately not passed: query text is sent to a third-party data source.
     context = build_jinja_context(event, events, config)
     query_str = _jinja_env.from_string(command.query).render(**context)
 
@@ -131,7 +136,7 @@ def _execute_query(
     # Check persistent cache
     if command.cache:
         cache_args = {"type": "query", "source": command.source, "query": query_str}
-        cached = get_cached_result(cache_args, redaction_secrets)
+        cached = get_cached_result(cache_args, secrets)
         if cached is not None:
             return cached
 
@@ -161,7 +166,7 @@ def _execute_query(
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
         cache_args = {"type": "query", "source": command.source, "query": query_str}
-        set_cached_result(cache_args, output, ttl, redaction_secrets)
+        set_cached_result(cache_args, output, ttl, secrets)
 
     # Store in stream query cache
     if transform_type == "stream" and stream_query_cache is not None:
@@ -262,7 +267,7 @@ def _execute_executable(
     events: list[dict],
     transform_type: str,
     temp_dir: str,
-    redaction_secrets: dict | None = None,
+    secrets: dict | None = None,
     config: dict | None = None,
 ) -> str:
     """Execute an executable command."""
@@ -283,14 +288,26 @@ def _execute_executable(
     if command.env:
         rendered_env = {}
         env_vars = dict(os.environ)
+        env_context = build_jinja_context(event, events, config, secrets=secrets or {})
         for key, value in command.env.items():
-            rendered_env[key] = _jinja_env.from_string(value).render(**context)
-            env_vars[key] = rendered_env[key]
+            rendered = _jinja_env.from_string(value).render(**env_context)
+            if ENCRYPTED_PREFIX in rendered:
+                # an `encrypted:<name>` marker survives unresolved in the raw config dict bound
+                # as `_config`, so reading a secret that way yields the marker instead of the
+                # credential.
+                raise ValueError(sanitize_value(
+                    f"env {key} of {command.path} rendered an unresolved {ENCRYPTED_PREFIX!r} "
+                    f"marker: {rendered!r}. read the secret with _secrets['<name>'] instead of "
+                    "_config.",
+                    secrets or {},
+                ))
+            rendered_env[key] = rendered
+            env_vars[key] = rendered
 
     # Check persistent cache
     if command.cache:
         cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
-        cached = get_cached_result(cache_args, redaction_secrets)
+        cached = get_cached_result(cache_args, secrets)
         if cached is not None:
             return cached
 
@@ -314,7 +331,12 @@ def _execute_executable(
             env=env_vars,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"command exited with code {result.returncode}: {result.stderr}")
+            # stderr is sanitized because it reaches the correlation trace, which is persisted
+            # into alert details and shown to analysts
+            raise RuntimeError(sanitize_value(
+                f"command exited with code {result.returncode}: {result.stderr}",
+                secrets or {},
+            ))
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"command timed out after {timeout}")
 
@@ -322,6 +344,6 @@ def _execute_executable(
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
         cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
-        set_cached_result(cache_args, result.stdout, ttl, redaction_secrets)
+        set_cached_result(cache_args, result.stdout, ttl, secrets)
 
     return result.stdout

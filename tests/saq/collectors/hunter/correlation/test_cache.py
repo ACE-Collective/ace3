@@ -51,6 +51,18 @@ class TestDescribeCommand:
         desc = _describe_command({"type": "executable", "path": "/bin/foo", "args": ["-c", "x"]})
         assert desc == "type=executable path=/bin/foo args=['-c', 'x']"
 
+    def test_executable_summary_omits_env(self):
+        """env can hold a credential (it is the one context bound to _secrets) and this
+        description is written to the log, so it must never appear here."""
+        desc = _describe_command({
+            "type": "executable",
+            "path": "/bin/foo",
+            "args": ["-c", "x"],
+            "env": {"API_KEY": "REAL_KEY"},
+        })
+        assert "REAL_KEY" not in desc
+        assert "API_KEY" not in desc
+
     def test_unknown_type(self):
         assert _describe_command({}) == "type=?"
 
