@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.93] - 2026-08-12
+
+- [Enhance correlation command validation and secret handling](https://github.com/ACE-Collective/ace3/pull/460)
+
 ## [3.0.92] - 2026-08-11
 
 - [Add qdrant timeout configurations and enhance client functionality](https://github.com/ACE-Collective/ace3/pull/458)
