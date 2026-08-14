@@ -15,7 +15,7 @@ from saq.constants import DIRECTIVE_EXCLUDE_ALL, DIRECTIVE_YARA_META_PREFIX, F_S
 from saq.environment import get_base_dir
 from saq.git import get_commit_hash, git_dir_contains
 from saq.modules import AnalysisModule
-from saq.signatures import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.type_hierarchy import get_type_hierarchy
 

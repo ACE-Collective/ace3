@@ -4,7 +4,7 @@ from subprocess import PIPE, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import RTF_EXTRACTED_SUSPECT_FILE
+from saq.signatures.builtin import RTF_EXTRACTED_SUSPECT_FILE
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule

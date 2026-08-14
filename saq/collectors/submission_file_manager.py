@@ -33,9 +33,8 @@ class SubmissionFileManager:
     The staging directory is a durable queue: a root present in staging_dir is exactly one that a
     collector has emitted but that has not yet reached a terminal outcome. Submissions are built
     in staging_tmp_dir and renamed into staging_dir, so a partially written submission is never
-    visible; they leave staging_dir when they are scheduled (moved to incoming_dir), tuned out,
-    found to be duplicates, or found to be unreadable. This is what makes queued work survive a
-    hard kill - the collector process is never shut down cleanly in practice.
+    visible; they leave staging_dir when they are scheduled (moved to incoming_dir), found to be
+    duplicates, or found to be unreadable.
     """
 
     def __init__(self, incoming_dir: str, persistence_dir: str, staging_dir: Optional[str] = None,
@@ -66,6 +65,15 @@ class SubmissionFileManager:
     #
     # staging (the durable queue)
     #
+
+    def get_staging_tmp_dir(self) -> str:
+        """Returns this collector's scratch directory, creating it if needed.
+
+        Prefer this over the module-level get_staging_tmp_dir(), which resolves to the shared
+        default rather than to the directory this collector actually stages out of.
+        """
+        create_directory(self.staging_tmp_dir)
+        return self.staging_tmp_dir
 
     def get_staging_tmp_path(self, root_uuid: str) -> str:
         """Returns the path a submission should be built at before it is staged."""
@@ -112,6 +120,14 @@ class SubmissionFileManager:
                 root = RootAnalysis(storage_dir=storage_dir)
                 root.load()
             except Exception as e:
+                if not os.path.isdir(storage_dir):
+                    # the whole submission reached a terminal outcome between being listed and
+                    # being read, so there is nothing to collect and nothing to quarantine. only
+                    # reachable when something outside this collector removes it -- an operator
+                    # clearing the queue, or another process that should not be sharing it
+                    logging.warning("staged submission %s is gone, skipping", root_uuid)
+                    continue
+
                 logging.error("unable to load staged submission %s: %s", root_uuid, e)
                 self.quarantine_staged_submission(root_uuid)
                 continue
@@ -124,20 +140,29 @@ class SubmissionFileManager:
         Ordering is by mtime and is only approximate; the authoritative FIFO ordering is applied
         downstream by incoming_workload.id.
         """
+        entries = []
         try:
-            entries = [_ for _ in os.scandir(self.staging_dir) if _.is_dir()]
+            for entry in os.scandir(self.staging_dir):
+                try:
+                    if entry.is_dir():
+                        entries.append((entry.stat().st_mtime, entry.name))
+                except FileNotFoundError:
+                    # stat() is a second syscall, so a submission that reached a terminal outcome
+                    # since the scan is simply one we do not have to collect. sorting on the
+                    # stat directly turned that into an exception that killed the whole listing
+                    continue
         except FileNotFoundError:
             return []
 
-        entries.sort(key=lambda entry: entry.stat().st_mtime)
+        entries.sort()
         if limit is not None:
             entries = entries[:limit]
 
-        return [entry.name for entry in entries]
+        return [name for _, name in entries]
 
     def discard_staged_submission(self, root_uuid: str) -> bool:
         """Removes a staged submission that reached a terminal outcome without being scheduled
-        (tuned out or duplicate). Without this the submission is re-collected forever."""
+        (a duplicate). Without this the submission is re-collected forever."""
         target_dir = self.get_staging_path(root_uuid)
         try:
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -150,6 +175,11 @@ class SubmissionFileManager:
         """Moves an unreadable staged submission into the error directory for review."""
         source_dir = self.get_staging_path(root_uuid)
         target_dir = os.path.join(self.error_dir, root_uuid)
+
+        if not os.path.exists(source_dir):
+            # already gone, so there is nothing to review and nothing left to wedge the loop
+            logging.warning("staged submission %s is already gone, nothing to quarantine", root_uuid)
+            return True
 
         try:
             if os.path.exists(target_dir):

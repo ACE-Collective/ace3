@@ -12,7 +12,7 @@ from saq.modules.clicker_detection import (
     SplunkClickerDetectionAnalyzer,
     SplunkClickerDetectionAnalyzerConfig,
 )
-from saq.signatures import URL_CLICKER
+from saq.signatures.builtin import URL_CLICKER
 from tests.saq.modules.test_splunk import MockSplunk
 
 NOW = datetime.datetime.now(datetime.timezone.utc)

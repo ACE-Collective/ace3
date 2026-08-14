@@ -3,7 +3,7 @@ import pytest
 import uuid
 from unittest.mock import Mock, patch
 
-from qdrant_client.models import UpdateStatus, VectorParams, Distance, PointStruct
+from qdrant_client.models import PayloadSchemaType, UpdateStatus, VectorParams, Distance, PointStruct
 
 from saq.configuration import get_config
 from saq.configuration.config import get_service_config
@@ -22,6 +22,7 @@ def mock_qdrant_client(monkeypatch):
     mock_client.delete.return_value = Mock(status=UpdateStatus.COMPLETED)
     mock_client.count.return_value = Mock(count=0)
     mock_client.upload_points = Mock()
+    mock_client.create_payload_index = Mock()
 
     mock_get_client_func = Mock(return_value=mock_client)
     monkeypatch.setattr("saq.llm.embedding.vector.get_qdrant_client", mock_get_client_func)
@@ -237,20 +238,29 @@ class TestVectorize:
             collection_name="test-collection",
             vectors_config=VectorParams(size=3, distance=Distance.COSINE)
         )
-        
-        # Verify point deletion
+
+        # a newly created collection also gets the root_uuid payload index
+        mock_client.create_payload_index.assert_called_once_with(
+            collection_name="test-collection",
+            field_name="root_uuid",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
+
+        # Verify stale point deletion
         mock_client.delete.assert_called_once()
         delete_call_args = mock_client.delete.call_args
         assert delete_call_args.kwargs['collection_name'] == "test-collection"
         assert delete_call_args.kwargs['wait'] is True
-        
-        # Verify count check
-        mock_client.count.assert_called_once()
-        
+
+        # the redundant exact count() was a second full collection scan and is gone
+        mock_client.count.assert_not_called()
+
         # Verify point upload
         mock_client.upload_points.assert_called_once()
         upload_call_args = mock_client.upload_points.call_args
         assert upload_call_args.kwargs['collection_name'] == "test-collection"
+        assert upload_call_args.kwargs['wait'] is True
         points = upload_call_args.kwargs['points']
         assert len(points) >= 1  # Should have at least 1 point for the root analysis summary
         
@@ -296,24 +306,60 @@ class TestVectorize:
         mock_client.create_collection.assert_not_called()
 
     @pytest.mark.unit
-    def test_vectorize_count_assertion_failure(self, sample_root_analysis, mock_config, mock_qdrant_client,
+    def test_vectorize_upload_precedes_delete(self, sample_root_analysis, mock_config, mock_qdrant_client,
                                               mock_load_model, mock_get_db):
-        """test vectorize fails when count check fails."""
+        """test the current points are uploaded before the stale ones are deleted.
+
+        Point ids are deterministic, so uploading first makes the operation an idempotent
+        upsert and guarantees a failure part way through can never leave the target with
+        zero vectors. Reversing this order silently reintroduces that data loss."""
         mock_get_client_func, mock_client = mock_qdrant_client
-        mock_client.count.return_value = Mock(count=5)  # Non-zero count
-        
-        with pytest.raises(AssertionError, match="count_result is 5"):
+
+        parent = Mock()
+        parent.attach_mock(mock_client.upload_points, "upload_points")
+        parent.attach_mock(mock_client.delete, "delete")
+
+        vector_module.vectorize(sample_root_analysis)
+
+        called = [name for name, _, _ in parent.mock_calls]
+        assert called.index("upload_points") < called.index("delete")
+
+    @pytest.mark.unit
+    def test_vectorize_delete_excludes_current_points(self, sample_root_analysis, mock_config, mock_qdrant_client,
+                                                      mock_load_model, mock_get_db):
+        """test the stale delete filters to this root and excludes the points just uploaded."""
+        mock_get_client_func, mock_client = mock_qdrant_client
+
+        vector_module.vectorize(sample_root_analysis)
+
+        uploaded = mock_client.upload_points.call_args.kwargs['points']
+        delete_filter = mock_client.delete.call_args.kwargs['points_selector'].filter
+
+        assert delete_filter.must[0].key == "root_uuid"
+        assert delete_filter.must[0].match.value == sample_root_analysis.uuid
+        assert set(delete_filter.must_not[0].has_id) == {point.id for point in uploaded}
+
+    @pytest.mark.unit
+    def test_vectorize_delete_status_failure(self, sample_root_analysis, mock_config, mock_qdrant_client,
+                                             mock_load_model, mock_get_db):
+        """test vectorize raises when the stale delete doesn't complete."""
+        mock_get_client_func, mock_client = mock_qdrant_client
+        mock_client.delete.return_value = Mock(status="FAILED")
+
+        with pytest.raises(vector_module.VectorizeError):
             vector_module.vectorize(sample_root_analysis)
 
     @pytest.mark.unit
-    def test_vectorize_delete_status_assertion_failure(self, sample_root_analysis, mock_config, mock_qdrant_client,
-                                                       mock_load_model, mock_get_db):
-        """test vectorize fails when delete operation doesn't complete."""
+    def test_vectorize_existing_collection_does_not_create_index(self, sample_root_analysis, mock_config,
+                                                                 mock_qdrant_client, mock_load_model, mock_get_db):
+        """test an existing collection is left alone: the index is backfilled by ace llm create-index."""
         mock_get_client_func, mock_client = mock_qdrant_client
-        mock_client.delete.return_value = Mock(status="FAILED")
-        
-        with pytest.raises(AssertionError):
-            vector_module.vectorize(sample_root_analysis)
+        mock_client.collection_exists.return_value = True
+
+        vector_module.vectorize(sample_root_analysis)
+
+        mock_client.create_collection.assert_not_called()
+        mock_client.create_payload_index.assert_not_called()
 
     @pytest.mark.unit
     def test_vectorize_returns_context_records(self, sample_root_analysis, mock_config, mock_qdrant_client,

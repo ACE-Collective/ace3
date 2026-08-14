@@ -1,5 +1,5 @@
-ARG DOCKER_IN_DOCKER_IMAGE=docker:dind
-FROM ${DOCKER_IN_DOCKER_IMAGE}
+ARG DOCKER_IMAGE_PREFIX=docker.io
+FROM ${DOCKER_IMAGE_PREFIX}/library/docker:dind
 
 # The manager is a long-running Celery worker that spawns throwaway
 # scanner containers (built from Dockerfile.js_deobfuscator) on demand.

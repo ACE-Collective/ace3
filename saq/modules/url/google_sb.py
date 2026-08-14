@@ -2,7 +2,7 @@ import logging
 from typing import Any, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import URL_GOOGLE_SAFE_BROWSING
+from saq.signatures.builtin import URL_GOOGLE_SAFE_BROWSING
 from saq.constants import F_URL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig

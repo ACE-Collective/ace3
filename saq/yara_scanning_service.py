@@ -5,7 +5,6 @@
 
 import os
 import os.path
-from typing import Type
 
 from pydantic import Field
 from yara_scanner import YaraScannerServer
@@ -17,6 +16,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import CONFIG_YARA_SCANNER, SERVICE_YARA_SCANNER
 from saq.environment import get_base_dir, get_data_dir
+from saq.git import get_commit_hash
 from saq.service import ACEServiceInterface
 from saq.util import abs_path, create_directory
 
@@ -30,6 +30,38 @@ class YaraScannerServiceConfig(ServiceConfig):
     blacklist_path: str = Field(..., description="the blacklist contains a list of rule names (one per line) to exclude from the results")
     scan_failure_dir: str = Field(..., description="a directory that contains all the files that fail to scan (relative to DATA_DIR)")
     default_timeout: int = Field(..., description="how long (in seconds) a single scan is allowed to take")
+    git_repo_dirs: list[str] = Field(default_factory=list, description="subdirectories of signature_dir that are part of a git repository. matches on their rules report the repo's commit as signature_version, and only new commits (rather than file modifications) trigger a rule reload. entries are a subdirectory name or a path to one. a directory listed here that is not in a git repository is not scanned at all")
+
+
+def get_validated_git_repo_dirs() -> list[str]:
+    """Returns the configured git_repo_dirs, minus any entry that is not a
+    directory inside a git repo."""
+    config = get_service_config(SERVICE_YARA_SCANNER)
+    signature_dir = abs_path(config.signature_dir)
+
+    result = []
+    for entry in config.git_repo_dirs:
+        # entries may be a subdirectory name, a relative path or an absolute one
+        # (matching YaraScanner._resolve_signature_subdir)
+        resolved = entry if os.path.isabs(entry) else os.path.join(signature_dir, entry)
+
+        if not os.path.isdir(resolved):
+            logging.error(
+                "%s git_repo_dirs entry %s (%s) is not a directory - ignoring it so its rules are still scanned",
+                SERVICE_YARA_SCANNER, entry, resolved)
+            continue
+
+        if get_commit_hash(resolved) is None:
+            logging.error(
+                "%s git_repo_dirs entry %s (%s) is not part of a git repository - ignoring it so its rules are "
+                "still scanned, but matches on them will have no signature version",
+                SERVICE_YARA_SCANNER, entry, resolved)
+            continue
+
+        result.append(entry)
+
+    return result
+
 
 class YSSService(ACEServiceInterface):
 
@@ -45,6 +77,7 @@ class YSSService(ACEServiceInterface):
             update_frequency=get_service_config(SERVICE_YARA_SCANNER).update_frequency,
             backlog=get_service_config(SERVICE_YARA_SCANNER).backlog,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout,
+            git_repo_dirs=self.git_repo_dirs,
         )
 
     def start(self):
@@ -61,6 +94,7 @@ class YSSService(ACEServiceInterface):
             update_frequency=self.service_config.getint('update_frequency'),
             backlog=self.service_config.getint('backlog'),
             default_timeout=self.service_config.getint('default_timeout', fallback=5),
+            git_repo_dirs=self.git_repo_dirs,
         )
 
         try:
@@ -79,7 +113,7 @@ class YSSService(ACEServiceInterface):
         self.yss_server.wait()
 
     @classmethod
-    def get_config_class(cls) -> Type[ServiceConfig]:
+    def get_config_class(cls) -> type[ServiceConfig]:
         return YaraScannerServiceConfig
 
     @property
@@ -89,3 +123,7 @@ class YSSService(ACEServiceInterface):
     @property
     def signature_dir(self):
         return abs_path(get_service_config(SERVICE_YARA_SCANNER).signature_dir)
+
+    @property
+    def git_repo_dirs(self):
+        return get_validated_git_repo_dirs()

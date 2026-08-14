@@ -1,9 +1,10 @@
 import os
+import shutil
 
 import pytest
 
 from saq.collectors.hunter.service import MAX_SUBMISSIONS_PER_COLLECTION, HunterCollector
-from tests.saq.helpers import create_staged_submission, create_submission_file_manager
+from tests.saq.helpers import create_staged_submission, create_submission_file_manager, log_count
 
 
 @pytest.fixture
@@ -108,10 +109,65 @@ def test_unloadable_submission_is_quarantined(file_manager):
 
 
 @pytest.mark.unit
+def test_listing_survives_a_submission_disappearing_mid_scan(file_manager, monkeypatch):
+    """a submission removed between scandir() and stat() drops out of the listing
+
+    the stat() is a second syscall, so it can always lose a race with whatever removes the
+    submission. sorting on the stat directly turned that into a FileNotFoundError that escaped
+    the generator and aborted the entire collection pass, not just the one submission"""
+    survivor = create_staged_submission(file_manager)
+
+    class VanishedEntry:
+        """a submission that is still in the scan result but gone by the time it is stat()ed"""
+        name = "00000000-0000-0000-0000-000000000000"
+
+        def is_dir(self):
+            return True
+
+        def stat(self):
+            raise FileNotFoundError(2, "No such file or directory")
+
+    real_scandir = os.scandir
+    monkeypatch.setattr(os, "scandir", lambda path: [*real_scandir(path), VanishedEntry()])
+
+    assert file_manager.list_staged_submissions() == [survivor]
+
+
+@pytest.mark.unit
+def test_vanished_submission_is_skipped_not_quarantined(file_manager):
+    """a submission that disappears after being listed is nothing to review
+
+    unlike a corrupt submission there is no evidence left to move aside, and treating it as one
+    produced a pair of ERRORs per occurrence - "unable to load staged submission" immediately
+    followed by "unable to quarantine staged submission" for the same uuid"""
+    survivor = create_staged_submission(file_manager)
+    doomed = create_staged_submission(file_manager)
+
+    listed = file_manager.list_staged_submissions()
+    assert sorted(listed) == sorted([survivor, doomed])
+
+    real_list = file_manager.list_staged_submissions
+
+    def list_then_remove(*args, **kwargs):
+        result = real_list(*args, **kwargs)
+        shutil.rmtree(file_manager.get_staging_path(doomed))
+        return result
+
+    file_manager.list_staged_submissions = list_then_remove
+
+    collected = list(file_manager.iter_staged_submissions())
+
+    assert [_.root.uuid for _ in collected] == [survivor]
+    assert os.listdir(file_manager.error_dir) == []
+    assert log_count("unable to load staged submission") == 0
+    assert log_count("unable to quarantine staged submission") == 0
+
+
+@pytest.mark.unit
 def test_discard_removes_staged_submission(file_manager):
     """terminal outcomes that never reach the incoming dir must still leave staging
 
-    tuned_out and duplicate submissions are dropped by process_submission; without an explicit
+    duplicate submissions are dropped by process_submission; without an explicit
     discard they would be collected again on every pass"""
     root_uuid = create_staged_submission(file_manager)
     assert file_manager.list_staged_submissions() == [root_uuid]

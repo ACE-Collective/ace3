@@ -2,7 +2,7 @@ import logging
 from typing import override
 
 from saq.analysis import Analysis
-from saq.signatures import OBSERVABLE_FLAGGED
+from saq.signatures.builtin import OBSERVABLE_FLAGGED
 from saq.constants import REDIS_DB_FOR_DETECTION_A, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.observables.export.redis_cache import REDIS_CONFIG_NAME

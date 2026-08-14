@@ -7,7 +7,7 @@ from pydantic import Field
 from urllib.parse import urlparse
 
 from saq.analysis.analysis import Analysis
-from saq.signatures import OFFICE_EXTERNAL_OLEOBJECT
+from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 from saq.constants import DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, AnalysisExecutionResult
 from saq.crypto import encrypt
 from saq.environment import get_data_dir

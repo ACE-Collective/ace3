@@ -209,11 +209,13 @@ class AnalysisOrchestrator:
                 logging.info(
                     f"skipping analysis on dispositioned alert {execution_context.root} disposition {disposition}"
                 )
+                execution_context.analysis_skipped = True
                 return True
             elif disposition in stop_analysis_on_dispositions:
                 logging.info(
                     f"skipping analysis on {disposition} dispositioned alert {execution_context.root}"
                 )
+                execution_context.analysis_skipped = True
                 return True
             elif disposition:
                 logging.debug(
@@ -474,7 +476,14 @@ class AnalysisOrchestrator:
 
     def _sync_alert_to_database(self, execution_context: EngineExecutionContext):
         """Sync the alert to the database."""
-        
+
+        # _check_disposition bailed before any module ran, so the tree is byte-for-byte
+        # what is already on disk and in the index. Syncing would re-serialize the entire
+        # RootAnalysis and re-read the index for nothing.
+        if execution_context.analysis_skipped and not execution_context.analysis_aborted:
+            logging.debug(f"skipping alert sync for {execution_context.root} (no analysis ran)")
+            return
+
         session = None
         try:
             session = get_db()
