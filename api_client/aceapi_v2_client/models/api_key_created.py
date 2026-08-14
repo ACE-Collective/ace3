@@ -5,64 +5,62 @@ from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="Token")
+T = TypeVar("T", bound="ApiKeyCreated")
 
 
 @_attrs_define
-class Token:
-    """Response model for token endpoints.
+class ApiKeyCreated:
+    """The plaintext key is returned only at creation time and is never recoverable afterward.
 
     Attributes:
-        access_token (str):
-        refresh_token (str):
-        token_type (str | Unset):  Default: 'bearer'.
+        key_id (int):
+        user_id (int):
+        api_key (str):
     """
 
-    access_token: str
-    refresh_token: str
-    token_type: str | Unset = "bearer"
+    key_id: int
+    user_id: int
+    api_key: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        access_token = self.access_token
+        key_id = self.key_id
 
-        refresh_token = self.refresh_token
+        user_id = self.user_id
 
-        token_type = self.token_type
+        api_key = self.api_key
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
+                "key_id": key_id,
+                "user_id": user_id,
+                "api_key": api_key,
             }
         )
-        if token_type is not UNSET:
-            field_dict["token_type"] = token_type
 
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        access_token = d.pop("access_token")
+        key_id = d.pop("key_id")
 
-        refresh_token = d.pop("refresh_token")
+        user_id = d.pop("user_id")
 
-        token_type = d.pop("token_type", UNSET)
+        api_key = d.pop("api_key")
 
-        token = cls(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type=token_type,
+        api_key_created = cls(
+            key_id=key_id,
+            user_id=user_id,
+            api_key=api_key,
         )
 
-        token.additional_properties = d
-        return token
+        api_key_created.additional_properties = d
+        return api_key_created
 
     @property
     def additional_keys(self) -> list[str]:

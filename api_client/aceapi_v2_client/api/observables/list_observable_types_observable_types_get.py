@@ -50,9 +50,9 @@ def sync_detailed(
 ) -> Response[ListResponseObservableTypeRead]:
     """List Observable Types
 
-     Return a list of unique observable types from the database.
+     Return the list of valid observable types from the configured registry.
 
-    Requires authentication (API key or JWT token).
+    Requires observable:read.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -77,9 +77,9 @@ def sync(
 ) -> ListResponseObservableTypeRead | None:
     """List Observable Types
 
-     Return a list of unique observable types from the database.
+     Return the list of valid observable types from the configured registry.
 
-    Requires authentication (API key or JWT token).
+    Requires observable:read.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -100,9 +100,9 @@ async def asyncio_detailed(
 ) -> Response[ListResponseObservableTypeRead]:
     """List Observable Types
 
-     Return a list of unique observable types from the database.
+     Return the list of valid observable types from the configured registry.
 
-    Requires authentication (API key or JWT token).
+    Requires observable:read.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -125,9 +125,9 @@ async def asyncio(
 ) -> ListResponseObservableTypeRead | None:
     """List Observable Types
 
-     Return a list of unique observable types from the database.
+     Return the list of valid observable types from the configured registry.
 
-    Requires authentication (API key or JWT token).
+    Requires observable:read.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
