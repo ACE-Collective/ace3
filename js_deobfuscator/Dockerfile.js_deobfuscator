@@ -1,5 +1,5 @@
-ARG NODE_DOCKER_IMAGE=node:26-alpine
-FROM ${NODE_DOCKER_IMAGE}
+ARG DOCKER_IMAGE_PREFIX=docker.io
+FROM ${DOCKER_IMAGE_PREFIX}/library/node:26-alpine
 
 # The container runs one harness invocation per scan and then exits (--rm).
 # No network, no persistent state, no package installs at runtime.
