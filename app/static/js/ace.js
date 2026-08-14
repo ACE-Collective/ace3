@@ -144,6 +144,112 @@ $(document).ready(function() {
     });
 });
 
+// Puts a small yellow dot on the browser tab's favicon when the current user has alerts
+// waiting in their default queue -- the same open-or-mine-in-my-queue alerts the "Reset"
+// filter on the alert management page shows. This runs on every page (the favicon link
+// carries the poll URL, see base.html) so the indicator works no matter where an analyst
+// is in the GUI, not just while the alert list is open.
+$(document).ready(function() {
+    var POLL_INTERVAL_MS = 60000;
+
+    var favicon = document.getElementById("favicon");
+    var count_url = favicon ? favicon.getAttribute("data-reset-filter-count-url") : null;
+    if (!favicon || !count_url) {
+        return;
+    }
+
+    var plain_href = favicon.getAttribute("href");
+    var plain_type = favicon.getAttribute("type");
+    var dot_href = null;
+    var dot_shown = false; // whether the dot is actually applied to the favicon right now
+    var dot_wanted = false; // the most recently polled desired state
+
+    function apply_dot_favicon(data_url) {
+        dot_href = data_url;
+        favicon.setAttribute("type", "image/png");
+        favicon.setAttribute("href", dot_href);
+    }
+
+    // Draws the plain favicon onto a canvas, adds a dot in the corner, and hands the
+    // resulting PNG data URL to callback. The SVG favicon can't have a dot appended to its
+    // markup here since it's loaded from a separate static file, so this rasterizes it.
+    function build_dot_favicon(callback) {
+        var img = new Image();
+        img.onload = function() {
+            var size = 64;
+            var canvas = document.createElement("canvas");
+            canvas.width = size;
+            canvas.height = size;
+            var ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, size, size);
+            ctx.beginPath();
+            ctx.arc(size - 11, 11, 11, 0, 2 * Math.PI);
+            ctx.fillStyle = "#ffc107";
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "#ffffff";
+            ctx.stroke();
+            callback(canvas.toDataURL("image/png"));
+        };
+        img.onerror = function() { callback(null); };
+        img.src = plain_href;
+    }
+
+    function show_dot(show) {
+        dot_wanted = show;
+        if (show === dot_shown) {
+            return;
+        }
+
+        if (!show) {
+            dot_shown = false;
+            favicon.setAttribute("type", plain_type);
+            favicon.setAttribute("href", plain_href);
+            return;
+        }
+
+        if (dot_href) {
+            dot_shown = true;
+            apply_dot_favicon(dot_href);
+            return;
+        }
+
+        build_dot_favicon(function(data_url) {
+            // dot_shown is only flipped once the dot is actually applied, so a failed
+            // rasterization (data_url null) leaves it false and the next poll retries
+            // instead of assuming the dot is already showing
+            if (data_url && dot_wanted && !dot_shown) {
+                dot_shown = true;
+                apply_dot_favicon(data_url);
+            }
+        });
+    }
+
+    function poll() {
+        // redirect: "manual" turns a login-page redirect (session expired/logged out) into
+        // a non-ok opaque response instead of silently handing back HTML for resp.json() to
+        // choke on, so the dot actually clears instead of going stale
+        fetch(count_url, { credentials: "same-origin", redirect: "manual" })
+            .then(function(resp) {
+                if (!resp.ok) {
+                    show_dot(false);
+                    return null;
+                }
+                return resp.json();
+            })
+            .then(function(data) {
+                if (data) {
+                    show_dot(data.count > 0);
+                }
+            })
+            .catch(function() { show_dot(false); });
+    }
+
+    poll();
+    setInterval(poll, POLL_INTERVAL_MS);
+});
+
+
 function hideSaveToEventButton() {
   document.getElementById("btn-save-to-event").style.display = 'none';
 }
