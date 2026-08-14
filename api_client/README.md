@@ -78,22 +78,41 @@ async def main():
 asyncio.run(main())
 ```
 
-## Authentication with a JWT token
+## API keys are scoped
 
-ACE also supports user login via OAuth2 password flow. Obtain a token from the
-`/auth/token` endpoint, then use the `token_client` helper:
+An API key carries its own permission scope. A key's **effective permission is
+the intersection of that scope with its owner's permissions** — a key can never
+do more than its owner, and a restricted key does strictly less. A key created
+with "inherit" scope simply gets whatever its owner has.
 
-```python
-from aceapi_v2_client.auth import token_client
+The practical consequence for client code: a call can fail with
+`403 {"detail": "Permission denied"}` even though the key is valid and the owner
+is privileged, because the *key* is scoped too narrowly. Most read/write
+endpoints are permission-gated — including `/observable-types/`, the
+`observable-*` and `threat*` endpoints, and `/common/valid_*`. Only
+`/health/ping`, `/common/ping`, `/common/supported_api_version`, and
+`/users/me/apikeys` are reachable with any valid key.
 
-client = token_client(
-    base_url="https://localhost:8443/api/v2",
-    access_token="eyJhbGci...",   # from POST /auth/token
-    verify_ssl=False,
-)
+Keys are **display-once**: the plaintext is returned only by the create call and
+is never recoverable afterward. Mint one with `POST /users/{user_id}/apikeys`
+(requires `user:write`) or from the CLI:
+
+```bash
+ace user add-api-key    # also: list-api-keys, revoke-api-key
 ```
 
-`token_client` sends the token as `Authorization: Bearer <token>`.
+To see your own keys — metadata only, never the secret:
+
+```python
+from aceapi_v2_client.api.users import list_my_api_keys_users_me_apikeys_get
+
+for key in list_my_api_keys_users_me_apikeys_get.sync(client=client):
+    print(key.id, key.name, key.inherit_user_scope, key.scope)
+```
+
+> JWT/OAuth2 login (`POST /auth/token`, `POST /auth/refresh`) and the
+> `token_client` helper were removed. The API key above is the only mechanism
+> available to a machine client.
 
 ## Base URL and TLS notes
 

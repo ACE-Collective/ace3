@@ -498,22 +498,88 @@ $(document).ready(function() {
         return $("input[name='user_id_" + user_id + "']").closest("tr").find("td:first").text().trim();
     }
 
-    $("#btn_generate_api_key").on('click', function() {
-        // one user at a time: generating returns a secret that we display once
+    // ---- New API key: name + inherit-or-scope, revealed exactly once ----
+    // The scope picker reuses build_permission_select (the same catalog-driven widget as the
+    // user-permission editor), so there is no second catalog fetch and no bespoke editor.
+    function add_api_key_scope_row(key) {
+        var li = $("<li class='mb-1 d-flex align-items-center'></li>").css("list-style-type", "none");
+        var deleteButton = $("<button type='button' class='btn btn-xs btn-outline-danger ms-1'>delete</button>");
+        var permSelect = build_permission_select(key || "");
+        // no d-inline-block: it is display:inline-block !important and would defeat .hide()
+        var customInput = $("<input type='text' class='form-control form-control-sm perm-custom' " +
+            "style='width:auto; margin-left:8px;' placeholder='major:minor'>").hide();
+        permSelect.on("change", function() {
+            if ($(this).val() === CUSTOM_PERMISSION) { customInput.show().trigger("focus"); }
+            else { customInput.val("").hide(); }
+        });
+        li.append(deleteButton).append(permSelect).append(customInput);
+        $("#new_api_key_scope_list").append(li);
+        deleteButton.on('click', function() { $(this).closest("li").remove(); });
+    }
+
+    function collect_api_key_scope() {
+        var scope = [];
+        $("#new_api_key_scope_list").children().each(function() {
+            var row = $(this);
+            var selected = row.find(".perm-select").val();
+            var value = (selected === CUSTOM_PERMISSION) ? row.find(".perm-custom").val().trim() : selected;
+            if (!value || value.indexOf(":") === -1) { return; } // skip incomplete rows
+            var parts = value.split(":");
+            scope.push({ major: parts[0], minor: parts.slice(1).join(":") });
+        });
+        return scope;
+    }
+
+    function set_api_key_mode(mode) {
+        if (mode === "inherit") { $("#new_api_key_scope_section").hide(); }
+        else { $("#new_api_key_scope_section").show(); }
+    }
+
+    $("input[name='new_api_key_mode']").on("change", function() {
+        set_api_key_mode($("input[name='new_api_key_mode']:checked").val());
+    });
+
+    $("#btn_new_api_key_add_scope").on('click', function() { add_api_key_scope_row(""); });
+
+    var new_api_key_user_id = null;
+
+    $("#btn_new_api_key").on('click', function() {
         var selected_user_ids = get_selected_user_ids();
         if (selected_user_ids.length != 1) {
-            alert("Select exactly one user to generate an API key for.");
+            alert("Select exactly one user to create an API key for.");
             return;
         }
-        var user_id = selected_user_ids[0];
-        var name = username_for(user_id);
-        if (!confirm("Generate a new API key for " + name + "?\n\nAny existing key for this user will stop working immediately.")) {
-            return;
-        }
+        new_api_key_user_id = selected_user_ids[0];
+        $("#new_api_key_username").text(username_for(new_api_key_user_id));
+        $("#new_api_key_name").val("");
+        $("#new_api_key_scope_list").children().remove();
+        $("#new_api_key_mode_restricted").prop("checked", true);
+        set_api_key_mode("restricted");
+        add_api_key_scope_row("");
+        $("#new_api_key_modal").modal("show");
+    });
 
-        api_request("POST", USERS_API + "/" + user_id + "/apikey")
+    $("#new_api_key_form").on('submit', function(e) {
+        e.preventDefault();
+        if (new_api_key_user_id === null) { return; }
+        var mode = $("input[name='new_api_key_mode']:checked").val();
+        var body = { name: $("#new_api_key_name").val().trim() };
+        if (mode === "inherit") {
+            body.inherit = true;
+            body.scope = [];
+        } else {
+            body.inherit = false;
+            body.scope = collect_api_key_scope();
+            if (body.scope.length === 0) {
+                alert("Add at least one permission, or choose Full account access (inherit).");
+                return;
+            }
+        }
+        var name = $("#new_api_key_username").text();
+        api_request("POST", USERS_API + "/" + new_api_key_user_id + "/apikeys", body)
             .then(response => response.json())
             .then(data => {
+                $("#new_api_key_modal").modal("hide");
                 $("#api_key_username").text(name);
                 $("#api_key_value").val(data.api_key);
                 $("#api_key_modal").modal("show");
@@ -537,24 +603,54 @@ $(document).ready(function() {
         });
     });
 
-    $("#btn_revoke_api_key").on('click', function() {
-        var selected_user_ids = get_selected_user_ids();
-        if (selected_user_ids.length == 0) {
-            alert("Select one or more users to revoke API keys for.");
+    // ---- Manage keys: list a user's keys and revoke them individually ----
+    function render_api_keys(user_id, keys) {
+        var tbody = $("#manage_api_keys_list");
+        tbody.empty();
+        if (!keys.length) {
+            tbody.append("<tr><td colspan='3' class='text-muted'>No API keys.</td></tr>");
             return;
         }
-        if (!confirm("Revoke the API key for " + selected_user_ids.length + " user(s)?\n\nThis cannot be undone; a new key must be generated to restore API access.")) {
-            return;
-        }
-
-        // the API revokes one key per call; fan out and reload once they all succeed
-        Promise.all(selected_user_ids.map(function(user_id) {
-            return api_request("DELETE", USERS_API + "/" + user_id + "/apikey");
-        })).then(function() {
-            window.location.reload();
-        }).catch(function(error) {
-            alert(error.message);
+        keys.forEach(function(k) {
+            var scope = k.inherit_user_scope ? "inherit (full account)" :
+                (k.scope.map(function(s){ return s.major + ":" + s.minor; }).join(", ") || "(no scope — denies all)");
+            var tr = $("<tr></tr>");
+            tr.append($("<td></td>").text(k.name));
+            tr.append($("<td></td>").text(scope));
+            var revoke = $("<button type='button' class='btn btn-xs btn-outline-danger'>revoke</button>");
+            revoke.on('click', function() {
+                if (!confirm("Revoke key '" + k.name + "'? This cannot be undone.")) { return; }
+                api_request("DELETE", USERS_API + "/apikeys/" + k.id)
+                    .then(function() { load_api_keys(user_id); })
+                    .catch(function(error) { alert(error.message); });
+            });
+            tr.append($("<td></td>").append(revoke));
+            tbody.append(tr);
         });
+    }
+
+    function load_api_keys(user_id) {
+        api_request("GET", USERS_API + "/" + user_id + "/apikeys")
+            .then(response => response.json())
+            .then(keys => render_api_keys(user_id, keys))
+            .catch(error => alert(error.message));
+    }
+
+    $("#btn_manage_api_keys").on('click', function() {
+        var selected_user_ids = get_selected_user_ids();
+        if (selected_user_ids.length != 1) {
+            alert("Select exactly one user to manage API keys for.");
+            return;
+        }
+        var user_id = selected_user_ids[0];
+        $("#manage_api_keys_username").text(username_for(user_id));
+        load_api_keys(user_id);
+        $("#manage_api_keys_modal").modal("show");
+    });
+
+    // reload when the manage modal closes so the table's key counts reflect any revokes
+    $("#manage_api_keys_modal").on("hidden.bs.modal", function() {
+        window.location.reload();
     });
 
     $("#master_user_checkbox").on('change', function(e) {

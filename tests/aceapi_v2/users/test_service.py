@@ -278,72 +278,78 @@ class TestGroupsAndPermissions:
 
 class TestApiKeys:
     @pytest.mark.asyncio
-    async def test_generate_sets_hash_and_encrypted_copy(self, session: AsyncSession):
-        from saq.util import is_uuid, sha256_str
+    async def test_create_inherit_key(self, session: AsyncSession):
+        from saq.util import is_uuid
 
         user = await _make_user(session, "svc_apikey_gen")
-        assert user.apikey_hash is None
+        assert await service.list_user_api_keys(session, user.id) == []
 
-        api_key = await service.generate_user_api_key(session, user.id)
-        assert is_uuid(api_key)
-        assert user.apikey_hash == sha256_str(api_key)
-        assert user.apikey_encrypted is not None
-        # the encrypted copy round-trips back to the same key
-        assert user.apikey_decrypted == api_key
-
-    @pytest.mark.asyncio
-    async def test_generate_replaces_existing_key(self, session: AsyncSession):
-        user = await _make_user(session, "svc_apikey_replace")
-        first = await service.generate_user_api_key(session, user.id)
-        second = await service.generate_user_api_key(session, user.id)
-        assert first != second
-        assert user.apikey_decrypted == second
+        key, plaintext = await service.create_user_api_key(
+            session, user.id, name="k", inherit=True, scope=[]
+        )
+        assert is_uuid(plaintext)
+        assert key.inherit_user_scope is True
+        keys = await service.list_user_api_keys(session, user.id)
+        assert len(keys) == 1 and keys[0].name == "k"
 
     @pytest.mark.asyncio
-    async def test_revoke_clears_both_columns(self, session: AsyncSession):
+    async def test_create_scoped_key(self, session: AsyncSession):
+        from aceapi_v2.users.schemas import ApiKeyScope
+
+        user = await _make_user(session, "svc_apikey_scope")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="ai", inherit=False, scope=[ApiKeyScope(major="ai", minor="read")]
+        )
+        assert key.inherit_user_scope is False
+        assert [(s.major, s.minor) for s in key.scope] == [("ai", "read")]
+
+    @pytest.mark.asyncio
+    async def test_multiple_keys_per_user(self, session: AsyncSession):
+        user = await _make_user(session, "svc_apikey_multi")
+        await service.create_user_api_key(session, user.id, name="a", inherit=True, scope=[])
+        await service.create_user_api_key(session, user.id, name="b", inherit=True, scope=[])
+        assert len(await service.list_user_api_keys(session, user.id)) == 2
+
+    @pytest.mark.asyncio
+    async def test_create_requires_exactly_one_of_inherit_or_scope(self, session: AsyncSession):
+        from aceapi_v2.users.schemas import ApiKeyScope
+
+        user = await _make_user(session, "svc_apikey_bad")
+        with pytest.raises(service.InvalidPermissionError):
+            await service.create_user_api_key(session, user.id, name="x", inherit=False, scope=[])
+        with pytest.raises(service.InvalidPermissionError):
+            await service.create_user_api_key(
+                session, user.id, name="x", inherit=True, scope=[ApiKeyScope(major="ai", minor="read")]
+            )
+
+    @pytest.mark.asyncio
+    async def test_revoke_by_id(self, session: AsyncSession):
         user = await _make_user(session, "svc_apikey_revoke")
-        await service.generate_user_api_key(session, user.id)
+        key, _ = await service.create_user_api_key(session, user.id, name="k", inherit=True, scope=[])
 
-        assert await service.revoke_user_api_key(session, user.id) is True
-        assert user.apikey_hash is None
-        assert user.apikey_encrypted is None
+        assert await service.revoke_user_api_key(session, key.id) is True
+        assert await service.list_user_api_keys(session, user.id) == []
 
     @pytest.mark.asyncio
     async def test_revoke_is_false_when_no_key(self, session: AsyncSession):
-        user = await _make_user(session, "svc_apikey_none")
-        assert await service.revoke_user_api_key(session, user.id) is False
+        assert await service.revoke_user_api_key(session, -1) is False
 
     @pytest.mark.asyncio
-    async def test_unknown_user_raises(self, session: AsyncSession):
+    async def test_create_unknown_user_raises(self, session: AsyncSession):
         with pytest.raises(service.UserNotFoundForApiKeyError):
-            await service.generate_user_api_key(session, 999999)
-        with pytest.raises(service.UserNotFoundForApiKeyError):
-            await service.revoke_user_api_key(session, 999999)
-        with pytest.raises(service.UserNotFoundForApiKeyError):
-            await service.get_own_api_key(session, 999999)
+            await service.create_user_api_key(session, 999999, name="k", inherit=True, scope=[])
 
     @pytest.mark.asyncio
-    async def test_get_own_api_key_round_trips(self, session: AsyncSession):
-        user = await _make_user(session, "svc_apikey_own")
-        assert await service.get_own_api_key(session, user.id) is None
-
-        api_key = await service.generate_user_api_key(session, user.id)
-        assert await service.get_own_api_key(session, user.id) == api_key
-
-        await service.revoke_user_api_key(session, user.id)
-        assert await service.get_own_api_key(session, user.id) is None
-
-    @pytest.mark.asyncio
-    async def test_has_api_key_reflected_in_management_view(self, session: AsyncSession):
+    async def test_api_key_count_reflected_in_management_view(self, session: AsyncSession):
         user = await _make_user(session, "svc_apikey_view")
         await session.flush()
 
         view = await service.get_management_view(session)
-        assert next(u for u in view.users if u.id == user.id).has_api_key is False
+        assert next(u for u in view.users if u.id == user.id).api_key_count == 0
 
-        await service.generate_user_api_key(session, user.id)
+        await service.create_user_api_key(session, user.id, name="k", inherit=True, scope=[])
         view = await service.get_management_view(session)
-        assert next(u for u in view.users if u.id == user.id).has_api_key is True
+        assert next(u for u in view.users if u.id == user.id).api_key_count == 1
 
 
 class TestManagementViewAndCatalog:

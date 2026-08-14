@@ -557,7 +557,7 @@ class TestUnhandledException:
         side_effect=RuntimeError("boom"),
     )
     async def test_unhandled_exception_logged_and_returns_500(
-        self, mock_create_zip, _override_db_session, valid_access_token: str, caplog
+        self, mock_create_zip, _override_db_session, valid_api_key: str, caplog
     ):
         # starlette's ServerErrorMiddleware re-raises after building the response so
         # the server can still log it; disable raise_app_exceptions so we can observe
@@ -566,7 +566,7 @@ class TestUnhandledException:
         async with AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"Authorization": f"Bearer {valid_access_token}"},
+            headers={"x-ace-auth": valid_api_key},
         ) as client:
             with caplog.at_level(logging.ERROR, logger="aceapi_v2.application"):
                 response = await client.get(f"/alerts/{VALID_UUID}/download")

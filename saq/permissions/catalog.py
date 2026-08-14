@@ -33,6 +33,7 @@ class CatalogEntry:
 # decorator, so it too has no decorator call site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
+    CatalogEntry("ai", "read", "Run read-only AI investigation queries against data sources via the AI API."),
     CatalogEntry("alert", "create", "Create new alerts or upload alert data via API/GUI."),
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "review", "Review and correct alert dispositions."),
@@ -43,6 +44,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
+    CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),
     CatalogEntry("lock", "delete", "Clear processing locks on alerts or resources."),
     CatalogEntry("node", "manage", "Drain and resume nodes via API."),
     CatalogEntry("node", "read", "Read node status and outstanding work counts via API."),

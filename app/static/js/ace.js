@@ -101,48 +101,8 @@ function add_observable_filter(observable_type, observable_value, filter_url, ma
     });
 }
 
-// "Copy API Key" in the nav bar. The key is not rendered into the page; it is fetched on demand
-// from the v2 API (GET /api/v2/users/me/apikey), which is served at the same origin and accepts the
-// Flask session cookie. The URL comes from the link's data-api-key-url attribute.
-$(document).ready(function() {
-    var link = document.getElementById("copy_api_key_link");
-    if (!link) {
-        return;
-    }
-
-    var in_flight = false;
-
-    // The key is requested only when the link is clicked -- never on merely opening the menu, and
-    // it is not cached in memory afterward. Each click fetches it, copies it, and drops it.
-    link.addEventListener("click", function(event) {
-        event.preventDefault();
-        if (in_flight) {
-            return;
-        }
-        in_flight = true;
-
-        var original_text = link.textContent;
-
-        fetch(link.dataset.apiKeyUrl, { credentials: "same-origin" })
-            .then(function(response) {
-                if (!response.ok) { throw new Error("unable to retrieve api key"); }
-                return response.json();
-            })
-            .then(function(data) {
-                return copy_to_clipboard(data.api_key);
-            })
-            .then(function() {
-                link.textContent = "Copied!";
-                setTimeout(function() { link.textContent = original_text; }, 1500);
-            })
-            .catch(function() {
-                alert("Unable to copy your API key to the clipboard.");
-            })
-            .then(function() {
-                in_flight = false;
-            });
-    });
-});
+// API keys are display-once (revealed at creation, never recoverable), so there is no nav-bar
+// "Copy API Key" action any more. Keys are managed by an admin on the user management page.
 
 function hideSaveToEventButton() {
   document.getElementById("btn-save-to-event").style.display = 'none';

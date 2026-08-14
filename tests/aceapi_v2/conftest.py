@@ -1,5 +1,4 @@
 from collections.abc import AsyncGenerator
-from datetime import timedelta
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -12,9 +11,36 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from aceapi_v2.application import app
-from aceapi_v2.auth import create_access_token
 from aceapi_v2.database import build_database_url, get_async_session
+from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import User
+
+
+async def make_api_key(session: AsyncSession, user_id: int, *, inherit: bool = True, scope=None) -> str:
+    """Mint an API key for a user in a test and return the plaintext.
+
+    An inherit key authenticates as the user with the user's full permissions -- the direct
+    replacement for the retired JWT test auth. Pass inherit=False + a scope list of (major, minor)
+    ApiKeyScope-like objects to test scoped keys. Flushed onto the shared test connection so the
+    app's auth session sees it.
+    """
+    from aceapi_v2.users.schemas import ApiKeyScope
+
+    scope_objs = [ApiKeyScope(major=m, minor=n) for (m, n) in (scope or [])]
+    _, plaintext = await create_user_api_key(
+        session, user_id, name="test", inherit=inherit, scope=scope_objs
+    )
+    await session.flush()
+    return plaintext
+
+
+def api_key_client(api_key: str) -> AsyncClient:
+    """An AsyncClient that authenticates with the given API key via the x-ace-auth header."""
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"x-ace-auth": api_key},
+    )
 
 
 @pytest_asyncio.fixture
@@ -97,14 +123,10 @@ async def unauth_client(_override_db_session) -> AsyncGenerator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def client(
-    _override_db_session, valid_access_token: str
+    _override_db_session, valid_api_key: str
 ) -> AsyncGenerator[AsyncClient]:
-    """HTTP client with a valid Bearer token pre-set."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {valid_access_token}"},
-    ) as client:
+    """HTTP client authenticated with an inherit-scoped API key for the test user."""
+    async with api_key_client(valid_api_key) as client:
         yield client
 
 
@@ -119,16 +141,25 @@ async def test_user(session: AsyncSession) -> User:
 
 
 @pytest_asyncio.fixture
-async def expired_access_token(test_user: User) -> str:
-    """Expired access token for the test user."""
-    return create_access_token(
-        test_user.username,
-        test_user.id,
-        expires_delta=-timedelta(minutes=1),
-    )
+async def valid_api_key(session: AsyncSession, test_user: User) -> str:
+    """An inherit-scoped API key for the test user (full user permissions)."""
+    return await make_api_key(session, test_user.id, inherit=True)
 
 
 @pytest_asyncio.fixture
-async def valid_access_token(test_user: User) -> str:
-    """Valid access token for the test user."""
-    return create_access_token(test_user.username, test_user.id)
+async def invalid_api_key() -> str:
+    """A well-formed key value that matches no stored key (authentication must fail)."""
+    return "00000000-0000-0000-0000-000000000000"
+
+
+@pytest_asyncio.fixture
+async def noperm_client(_override_db_session, session: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    """Authenticated as a user with NO permissions, via an inherit key. Because the intersection's
+    user half denies, every permission-gated route returns 403 (the successor to the old
+    'token for a phantom user id' pattern)."""
+    user = User(username="noperm_test", email="noperm_test@e.com", display_name="noperm", password="pw")
+    session.add(user)
+    await session.flush()
+    key = await make_api_key(session, user.id, inherit=True)
+    async with api_key_client(key) as client:
+        yield client

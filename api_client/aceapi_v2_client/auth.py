@@ -3,13 +3,13 @@
 this module is hand-maintained and is NOT overwritten when the rest of the
 package is regenerated from the openapi schema (see ../scripts/regenerate.sh).
 
-the generated ``AuthenticatedClient`` only knows how to send ``Authorization:
-Bearer <token>``. the ACE API v2 primary auth is an api key sent in the custom
-``x-ace-auth`` header, so the helpers below build a plain ``Client`` with that
-header pre-populated.
+the ACE API v2 authenticates machine clients with an api key sent in the custom
+``x-ace-auth`` header. the generated ``AuthenticatedClient`` only knows how to
+send ``Authorization: Bearer <token>``, so the helper below builds a plain
+``Client`` with the api key header pre-populated instead.
 """
 
-from .client import AuthenticatedClient, Client
+from .client import Client
 
 # header name the ACE API v2 expects for machine-to-machine api key auth
 API_KEY_HEADER = "x-ace-auth"
@@ -17,6 +17,11 @@ API_KEY_HEADER = "x-ace-auth"
 
 def authenticated_client(base_url, api_key, *, verify_ssl=True, **kwargs):
     """build a ``Client`` that authenticates with an ACE api key
+
+    api keys are scoped: the effective permission of a key is the intersection of
+    the key's own scope with its owner's permissions. a narrowly scoped key can
+    therefore get ``403 {"detail": "Permission denied"}`` on endpoints its owner
+    can otherwise reach.
 
     args:
         base_url: full base url including the ``/api/v2`` prefix, e.g.
@@ -34,23 +39,3 @@ def authenticated_client(base_url, api_key, *, verify_ssl=True, **kwargs):
     """
     headers = {API_KEY_HEADER: api_key, **kwargs.pop("headers", {})}
     return Client(base_url=base_url, headers=headers, verify_ssl=verify_ssl, **kwargs)
-
-
-def token_client(base_url, access_token, *, verify_ssl=True, **kwargs):
-    """build an ``AuthenticatedClient`` that authenticates with a jwt access token
-
-    use this after obtaining a token from the ``/auth/token`` endpoint. the token
-    is sent as ``Authorization: Bearer <access_token>``.
-
-    args:
-        base_url: full base url including the ``/api/v2`` prefix
-        access_token: a jwt access token issued by the api
-        verify_ssl: verify the server tls certificate (``False`` for dev)
-        **kwargs: any other keyword argument accepted by ``AuthenticatedClient``
-
-    returns:
-        a configured ``AuthenticatedClient``.
-    """
-    return AuthenticatedClient(
-        base_url=base_url, token=access_token, verify_ssl=verify_ssl, **kwargs
-    )

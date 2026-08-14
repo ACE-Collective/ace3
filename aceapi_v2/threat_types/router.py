@@ -5,9 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, Security
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.cache import TTLCache
 from aceapi_v2.database import get_async_session
-from aceapi_v2.dependencies import get_current_auth
+from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.schemas import ListResponse
 from aceapi_v2.threat_types import service
 from aceapi_v2.threat_types.schemas import ThreatTypeCreate, ThreatTypeRead, ThreatTypeUpdate
@@ -21,6 +22,7 @@ _cache = TTLCache()
 async def list_threat_types(
     response: Response,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "read"))],
 ) -> ListResponse[ThreatTypeRead]:
     cached = _cache.get("threat_types")
     if cached is not None:
@@ -38,6 +40,7 @@ async def list_threat_types(
 async def create_threat_type(
     body: ThreatTypeCreate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> ThreatTypeRead:
     threat_type = await service.create_threat_type(session, body.name)
     _cache.clear()
@@ -48,6 +51,7 @@ async def create_threat_type(
 async def get_threat_type(
     threat_type_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "read"))],
 ) -> ThreatTypeRead:
     threat_type = await service.get_threat_type(session, threat_type_id)
     if threat_type is None:
@@ -60,6 +64,7 @@ async def update_threat_type(
     threat_type_id: int,
     body: ThreatTypeUpdate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> ThreatTypeRead:
     threat_type = await service.update_threat_type(session, threat_type_id, name=body.name)
     if threat_type is None:
@@ -72,6 +77,7 @@ async def update_threat_type(
 async def delete_threat_type(
     threat_type_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("event", "write"))],
 ) -> None:
     deleted = await service.delete_threat_type(session, threat_type_id)
     if not deleted:

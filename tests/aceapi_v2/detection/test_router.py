@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
-from aceapi_v2.auth import create_access_token
+from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import AuthUserPermission, ObservableDetection, User
 
 pytestmark = pytest.mark.integration
@@ -32,15 +32,16 @@ async def _make_user(session: AsyncSession, username: str, perms: list[tuple[str
     for major, minor in perms:
         session.add(AuthUserPermission(user_id=user.id, major=major, minor=minor, effect="ALLOW"))
     await session.flush()
+    _, user.test_api_key = await create_user_api_key(session, user.id, name="test", inherit=True, scope=[])
+    await session.flush()
     return user
 
 
 def _client_for(user: User) -> AsyncClient:
-    token = create_access_token(user.username, user.id)
     return AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"x-ace-auth": user.test_api_key},
     )
 
 

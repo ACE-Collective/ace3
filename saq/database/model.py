@@ -68,7 +68,6 @@ from saq.constants import (
     MAX_DETECTION_VALUE_LENGTH,
     QUEUE_DEFAULT,
 )
-from saq.crypto import decrypt_chunk
 from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
@@ -2161,8 +2160,14 @@ class User(UserMixin, Base):
         default=QUEUE_DEFAULT,
         server_default=text("'default'"))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, unique=False, default=True, server_default=text('1'))
-    apikey_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True, default=None)
-    apikey_encrypted: Mapped[Optional[bytes]] = mapped_column(BLOB, nullable=True, default=None)
+
+    # AuthApiKey has two FKs to users (user_id, created_by); disambiguate on user_id.
+    api_keys: Mapped[list["AuthApiKey"]] = relationship(
+        'AuthApiKey',
+        foreign_keys='AuthApiKey.user_id',
+        back_populates='user',
+        passive_deletes=True,
+        cascade='all, delete-orphan')
 
     def __str__(self):
         return self.username
@@ -2178,19 +2183,6 @@ class User(UserMixin, Base):
             "default_queue": self.queue,
             "enabled": self.enabled == 1,
         }
-
-    @property
-    def apikey_decrypted(self):
-        if self.apikey_encrypted is None:
-            return None
-
-        try:
-            decrypted = decrypt_chunk(self.apikey_encrypted)
-            return decrypted.decode()
-        except Exception as e:
-            logging.error(f"unable to decrypt api key: {e}")
-
-        return None
 
     @property
     def gui_display(self):
@@ -2226,10 +2218,6 @@ class User(UserMixin, Base):
                 logging.info(f"migrated werkzeug hash to bcrypt for user {self.username}")
             return True
         return False
-
-Owner = aliased(User)
-DispositionBy = aliased(User)
-RemediatedBy = aliased(User)
 
 class AuthGroup(Base):
 
@@ -2375,6 +2363,97 @@ class AuthGroupPermission(Base):
 
     group: Mapped["AuthGroup"] = relationship('AuthGroup', back_populates='permissions')
     created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
+
+class AuthApiKey(Base):
+
+    __tablename__ = 'auth_api_key'
+    __table_args__ = (
+        Index('i_api_key_user', 'user_id'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False)
+
+    # sha256 of the plaintext key -- the only stored representation. A key is revealed once at
+    # creation and never again; there is no recoverable/encrypted copy.
+    key_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True)
+
+    # True: the key inherits its owner's full permissions (the pre-refactor single-key behavior).
+    # False: the key is restricted to its own scope rows, intersected with the owner's permissions.
+    inherit_user_scope: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text('0'))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+
+    user: Mapped["User"] = relationship('User', foreign_keys=[user_id], back_populates='api_keys')
+    created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
+    scope: Mapped[list["AuthApiKeyPermission"]] = relationship(
+        'AuthApiKeyPermission', passive_deletes=True, cascade='all, delete-orphan', back_populates='api_key')
+
+class AuthApiKeyPermission(Base):
+
+    __tablename__ = 'auth_api_key_permission'
+    __table_args__ = (
+        UniqueConstraint('api_key_id', 'major', 'minor', 'effect', name='u_api_key_perm'),
+        Index('i_api_key_major_minor', 'api_key_id', 'major', 'minor'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    api_key_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey('auth_api_key.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    major: Mapped[str] = mapped_column(
+        String(512, collation='ascii_general_ci'),
+        nullable=False)
+
+    minor: Mapped[str] = mapped_column(
+        String(512, collation='ascii_general_ci'),
+        nullable=False)
+
+    # v1 mints ALLOW-only (a positive allowlist); the column mirrors the user/group permission
+    # tables so a future per-key DENY capability needs no schema change.
+    effect: Mapped[str] = mapped_column(
+        Enum('ALLOW', 'DENY'),
+        nullable=False,
+        default='ALLOW',
+        server_default=text("'ALLOW'"))
+
+    api_key: Mapped["AuthApiKey"] = relationship('AuthApiKey', back_populates='scope')
+
+# aliased(User) forces User's mapper to configure, which resolves User.api_keys -> AuthApiKey. These
+# must therefore come AFTER every model User has a relationship to is defined.
+Owner = aliased(User)
+DispositionBy = aliased(User)
+RemediatedBy = aliased(User)
 
 class Comment(Base):
 

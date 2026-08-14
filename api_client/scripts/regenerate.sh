@@ -41,6 +41,13 @@ TMP_DIR="$(mktemp -d -p "${REGEN_TMPDIR}")"
 cleanup() { rm -rf "${TMP_DIR}"; }
 trap cleanup EXIT
 
+# ruff discovers its settings by walking up from the files it formats. because
+# the staging dir lives inside the repo by default, any ruff.toml further up the
+# tree would silently change the generated output. drop an empty config beside
+# the staging dir so discovery stops here and the generator always formats with
+# ruff's defaults.
+: > "${TMP_DIR}/ruff.toml"
+
 echo ">> fetching schema from ${SCHEMA_URL}"
 # shellcheck disable=SC2086
 curl ${CURL_OPTS} --fail -o "${SCHEMA_FILE}" "${SCHEMA_URL}"
@@ -54,6 +61,12 @@ python3 -m venv "${TMP_DIR}/venv"
 "${TMP_DIR}/venv/bin/pip" install --quiet "openapi-python-client>=0.29.0,<0.30.0"
 
 echo ">> generating client into a staging directory"
+# the generator shells out to `ruff` (installed as one of its dependencies) to
+# lint and format its output. it looks for it on PATH, so the venv's bin dir has
+# to be there -- calling the generator by absolute path alone is not enough, and
+# silently yields unformatted, unsorted-import output.
+PATH="${TMP_DIR}/venv/bin:${PATH}"
+export PATH
 "${TMP_DIR}/venv/bin/openapi-python-client" generate \
     --path "${SCHEMA_FILE}" \
     --meta none \

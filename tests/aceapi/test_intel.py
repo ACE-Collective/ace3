@@ -4,7 +4,7 @@ import base64
 import json
 import uuid
 
-from aceapi.auth import set_user_api_key
+from aceapi.auth import create_api_key
 from aceapi.intel import (
     KEY_ERROR,
     KEY_IDS,
@@ -325,7 +325,7 @@ def test_set_observable_for_detection_string_zero_disables(test_client, api_clie
 @pytest.mark.integration
 def test_set_observable_as_user(test_client):
     user = get_db().query(User).first()
-    client_kwargs = {"headers": {'x-ace-auth': set_user_api_key(user.id)}}
+    client_kwargs = {"headers": {'x-ace-auth': create_api_key(user.id, "test", inherit=True)}}
     user_id = user.id
     get_db().close()
 

@@ -1,8 +1,8 @@
 """FastAPI dependencies for authentication and authorization.
 
 Supports dual authentication:
-- API Key (x-ace-auth header) - for M2M / service authentication
-- JWT Bearer Token (OAuth2 password flow) - for user GUI authentication
+- API Key (x-ace-auth header) - for M2M / service / agent authentication
+- Flask session cookie - for the browser GUI (temporary, until the Flask GUI is retired)
 """
 
 import logging
@@ -10,31 +10,25 @@ from typing import Annotated, Callable, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request, Security, status
-from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth import (
+    API_AUTH_TYPE_CONFIG,
     API_AUTH_TYPE_USER,
     API_HEADER_NAME,
     ApiAuthResult,
     verify_api_key,
     verify_flask_session,
-    verify_token,
 )
 from aceapi_v2.database import get_async_session
-from saq.permissions.logic import user_has_permission_async
+from saq.permissions.logic import key_scope_allows, user_has_permission_async
 
-# Security schemes - both will appear in Swagger UI "Authorize" dialog
+# Security scheme - appears in the Swagger UI "Authorize" dialog
 api_key_header = APIKeyHeader(
     name=API_HEADER_NAME,
     scheme_name="API Key",
     description="API key for machine-to-machine authentication",
-    auto_error=False,
-)
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/api/v2/auth/token",
-    scheme_name="JWT Token",
-    description="Username/password login for users",
     auto_error=False,
 )
 
@@ -97,11 +91,10 @@ async def get_current_auth(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     api_key: Annotated[Optional[str], Security(api_key_header)] = None,
-    token: Annotated[Optional[str], Security(oauth2_scheme)] = None,
 ) -> ApiAuthResult:
-    """Combined auth dependency - accepts API key, JWT token, or Flask session cookie.
+    """Combined auth dependency - accepts an API key or a Flask session cookie.
 
-    Tries API key first, then JWT token, then Flask session cookie.
+    Tries the API key first, then the Flask session cookie.
 
     Returns:
         ApiAuthResult with authentication details
@@ -109,21 +102,11 @@ async def get_current_auth(
     Raises:
         HTTPException: 401 if no authentication method succeeds
     """
-    # Try API key first (M2M authentication)
+    # Try API key first (M2M / agent authentication)
     if api_key:
         result = await verify_api_key(api_key, session)
         if result:
             return result
-
-    # Try JWT token (user authentication)
-    if token:
-        token_data = verify_token(token, expected_type="access")
-        if token_data:
-            return ApiAuthResult(
-                auth_type=API_AUTH_TYPE_USER,
-                auth_name=token_data.username,
-                auth_user_id=token_data.user_id,
-            )
 
     # Try Flask session cookie
     # TODO: temporary, remove when Flask GUI is retired)
@@ -157,10 +140,21 @@ def require_permission(major: str, minor: str) -> Callable:
         auth: Annotated[ApiAuthResult, Security(get_current_auth)],
         session: Annotated[AsyncSession, Depends(get_async_session)],
     ) -> ApiAuthResult:
+        # Effective permission is the intersection of the user's permissions and the key's scope.
+        # user_has_permission_async is unchanged, so group/user DENY is fully preserved; the key
+        # scope is a pure AND-narrowing on top. Config keys have no user to intersect with, so
+        # their scope decides alone (a None scope is the deprecated legacy bypass).
         if auth.auth_type == API_AUTH_TYPE_USER:
             if not await user_has_permission_async(session, auth.auth_user_id, major, minor):
                 logging.warning(
                     f"user {auth.auth_user_id} does not have permission {major}.{minor}"
+                )
+                raise HTTPException(status_code=403, detail="Permission denied")
+
+        if auth.auth_type in (API_AUTH_TYPE_USER, API_AUTH_TYPE_CONFIG):
+            if auth.key_scope is not None and not key_scope_allows(auth.key_scope, major, minor):
+                logging.warning(
+                    f"api key '{auth.auth_name}' ({auth.auth_type}) scope does not permit {major}.{minor}"
                 )
                 raise HTTPException(status_code=403, detail="Permission denied")
 

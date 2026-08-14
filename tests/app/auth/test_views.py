@@ -397,25 +397,20 @@ class TestChangePassword:
             assert b'8' in response.data  # PASS_MIN_LENGTH
 
 class TestOwnApiKey:
-    """The user's own API key is fetched on demand from the v2 API, never rendered into page HTML."""
+    """API keys are display-once and never recoverable, so there is no nav-bar action to re-copy
+    one and no key is ever rendered into page HTML."""
 
-    def test_key_is_not_embedded_in_page_html(self, app, test_user):
-        """Regression: the key used to be interpolated into the nav bar of every page."""
-        from aceapi_v2.sync import run_async_with_session
-        from aceapi_v2.users import service as users_service
-
-        api_key = run_async_with_session(users_service.generate_user_api_key, test_user.id)
-
+    def test_no_copy_api_key_nav_item(self, app, test_user):
+        """Regression: the retired 'Copy API Key' nav item fetched a recoverable key, which no
+        longer exists."""
         with app.test_client() as client:
             client.post(url_for('auth.login'), data={
                 'username': 'testuser', 'password': 'TestPass123!'
             })
             page = client.get(url_for('auth.change_password'))
             assert page.status_code == 200
-            assert api_key.encode() not in page.data
-            # the menu item is present, pointing at the v2 endpoint rather than carrying the key
-            assert b'copy_api_key_link' in page.data
-            assert b'/api/v2/users/me/apikey' in page.data
+            assert b'copy_api_key_link' not in page.data
+            assert b'/api/v2/users/me/apikey' not in page.data
 
     def test_no_flask_apikey_route_exists(self, app):
         """New endpoints belong in aceapi_v2; nothing in the auth blueprint serves the key."""

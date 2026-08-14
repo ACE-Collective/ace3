@@ -5,45 +5,53 @@ from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
-T = TypeVar("T", bound="RefreshRequest")
+T = TypeVar("T", bound="ApiKeyScope")
 
 
 @_attrs_define
-class RefreshRequest:
-    """Request model for token refresh endpoint.
-
+class ApiKeyScope:
+    """
     Attributes:
-        refresh_token (str):
+        major (str):
+        minor (str):
     """
 
-    refresh_token: str
+    major: str
+    minor: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        refresh_token = self.refresh_token
+        major = self.major
+
+        minor = self.minor
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "refresh_token": refresh_token,
+                "major": major,
+                "minor": minor,
             }
         )
 
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        refresh_token = d.pop("refresh_token")
+        major = d.pop("major")
 
-        refresh_request = cls(
-            refresh_token=refresh_token,
+        minor = d.pop("minor")
+
+        api_key_scope = cls(
+            major=major,
+            minor=minor,
         )
 
-        refresh_request.additional_properties = d
-        return refresh_request
+        api_key_scope.additional_properties = d
+        return api_key_scope
 
     @property
     def additional_keys(self) -> list[str]:

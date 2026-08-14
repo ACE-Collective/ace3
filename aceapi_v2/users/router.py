@@ -10,7 +10,9 @@ from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.users import service
 from aceapi_v2.users.schemas import (
+    ApiKeyCreate,
     ApiKeyCreated,
+    ApiKeyRead,
     CatalogEntryRead,
     GroupCreate,
     GroupDelete,
@@ -133,50 +135,67 @@ async def add_permission(
     return {"success": "Permission added successfully"}
 
 
-@router.get("/me/apikey", response_model=ApiKeyCreated)
-async def get_my_api_key(
-    response: Response,
+@router.get("/me/apikeys", response_model=list[ApiKeyRead])
+async def list_my_api_keys(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Security(get_current_auth)],
-) -> ApiKeyCreated:
-    """Return the *caller's own* API key. Never another user's -- the id comes from the auth result,
-    not the request, so there is no id to tamper with."""
+) -> list[ApiKeyRead]:
+    """List the *caller's own* API keys (metadata + scope only; no secret). The user id comes from
+    the auth result, not the request, so there is no id to tamper with. Read-only: minting and
+    revoking keys require ``user:write`` and go through the admin endpoints below."""
     if auth.auth_user_id is None:
         raise HTTPException(status_code=404, detail="not authenticated as a user")
 
-    api_key = await service.get_own_api_key(session, auth.auth_user_id)
-    if not api_key:
-        raise HTTPException(status_code=404, detail="no api key")
+    keys = await service.list_user_api_keys(session, auth.auth_user_id)
+    return [service._api_key_read(k) for k in keys]
+
+
+@router.get("/{user_id}/apikeys", response_model=list[ApiKeyRead])
+async def list_user_api_keys(
+    user_id: int,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("user", "read"))],
+) -> list[ApiKeyRead]:
+    keys = await service.list_user_api_keys(session, user_id)
+    return [service._api_key_read(k) for k in keys]
+
+
+@router.post("/{user_id}/apikeys", response_model=ApiKeyCreated, status_code=201)
+async def create_api_key(
+    user_id: int,
+    body: ApiKeyCreate,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+) -> ApiKeyCreated:
+    """Mint a new API key for a user. The plaintext is returned exactly once and is never
+    recoverable afterward. Exactly one of ``inherit`` or a non-empty ``scope`` must be provided."""
+    try:
+        key, api_key = await service.create_user_api_key(
+            session,
+            user_id,
+            name=body.name,
+            inherit=body.inherit,
+            scope=body.scope,
+            created_by=auth.auth_user_id,
+        )
+    except service.UserNotFoundForApiKeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except service.InvalidPermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # a credential must not be cached by the browser or any intermediary
     response.headers["Cache-Control"] = "no-store"
-    return ApiKeyCreated(user_id=auth.auth_user_id, api_key=api_key)
+    return ApiKeyCreated(key_id=key.id, user_id=user_id, api_key=api_key)
 
 
-@router.post("/{user_id}/apikey", response_model=ApiKeyCreated, status_code=201)
-async def generate_api_key(
-    user_id: int,
-    session: Annotated[AsyncSession, Depends(get_async_session)],
-    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
-) -> ApiKeyCreated:
-    """Issue a new API key, replacing any existing one. The plaintext key is returned once."""
-    try:
-        api_key = await service.generate_user_api_key(session, user_id)
-    except service.UserNotFoundForApiKeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return ApiKeyCreated(user_id=user_id, api_key=api_key)
-
-
-@router.delete("/{user_id}/apikey", status_code=200)
+@router.delete("/apikeys/{key_id}", status_code=200)
 async def revoke_api_key(
-    user_id: int,
+    key_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> dict:
-    try:
-        revoked = await service.revoke_user_api_key(session, user_id)
-    except service.UserNotFoundForApiKeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    revoked = await service.revoke_user_api_key(session, key_id)
     return {"revoked": revoked}
 
 
