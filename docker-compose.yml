@@ -8,18 +8,21 @@
 # ACE3_IMAGE_URL
 # ACE3_PHISHKIT_MANAGER_IMAGE_URL
 # ACE3_PHISHKIT_IMAGE_URL
+# ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL
+# ACE3_JS_DEOBFUSCATOR_IMAGE_URL
 #
-# these allow you to override the default docker images
+# this allows you to pull every third party base image from somewhere other than docker hub
 # useful if you are using some kind of a pass through docker image registry
 #
-# PYTHON_DOCKER_IMAGE
-# MYSQL_DOCKER_IMAGE
-# NGINX_DOCKER_IMAGE
-# RABBITMQ_DOCKER_IMAGE
-# QDRANT_DOCKER_IMAGE
-# DOCKER_IN_DOCKER_IMAGE
-# UBUNTU_DOCKER_IMAGE
-# FLUENT_BIT_DOCKER_IMAGE
+# DOCKER_IMAGE_PREFIX (default: docker.io)
+#
+# it is the registry prefix only, with no trailing slash -- everything up to but not
+# including the repository path. the image name and version tag stay in this file and in
+# the Dockerfiles so that upstream controls them, e.g.
+#
+#   DOCKER_IMAGE_PREFIX=123456789012.dkr.ecr.us-east-2.amazonaws.com/dockerhub
+#
+# yields 123456789012.dkr.ecr.us-east-2.amazonaws.com/dockerhub/library/mysql:9.7
 #
 # password and configuration settings
 # NOTE if these are not set they are auto-generated
@@ -95,7 +98,7 @@ services:
     build:
       context: .
       args:
-        PYTHON_DOCKER_IMAGE: ${PYTHON_DOCKER_IMAGE:-python:3.14-trixie}
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
         SAQ_USER_ID: ${SAQ_USER_ID:-1000}
         SAQ_GROUP_ID: ${SAQ_GROUP_ID:-1000}
         BUILD_TYPE: ${BUILD_TYPE:-development}
@@ -119,7 +122,7 @@ services:
   fluent-bit:
     platform: linux/amd64
     environment: *common-env
-    image: ${FLUENT_BIT_DOCKER_IMAGE:-fluent/fluent-bit:latest}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/fluent/fluent-bit:latest
     ports:
       - "24224:24224"
     restart: unless-stopped
@@ -153,7 +156,7 @@ services:
 
   ace-db:
     platform: linux/amd64
-    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.7}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/mysql:9.7
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
       driver: fluentd
@@ -189,7 +192,7 @@ services:
 
   ace-db-readonly:
     platform: linux/amd64
-    image: ${MYSQL_DOCKER_IMAGE:-mysql:9.7}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/mysql:9.7
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
       driver: fluentd
@@ -229,7 +232,7 @@ services:
       QDRANT__SERVICE__ENABLE_TLS: 1
       QDRANT__TLS__CERT: /ssl/ace.cert.pem
       QDRANT__TLS__KEY: /ssl/ace.key.pem
-    image: ${QDRANT_DOCKER_IMAGE:-qdrant/qdrant}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/qdrant/qdrant
     hostname: ${QDRANT_HOSTNAME:-qdrant}
     entrypoint: >
       /bin/sh -c "
@@ -275,7 +278,7 @@ services:
 
   ace-http-external:
     platform: linux/amd64
-    image: ${NGINX_DOCKER_IMAGE:-nginx:latest}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
     logging:
       driver: fluentd
@@ -300,7 +303,7 @@ services:
 
   ace-http:
     platform: linux/amd64
-    image: ${NGINX_DOCKER_IMAGE:-nginx:latest}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
     logging:
       driver: fluentd
@@ -385,7 +388,7 @@ services:
 
   redis:
     platform: linux/amd64
-    image: ${REDIS_DOCKER_IMAGE:-redis:latest}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/redis:latest
     ports:
       - "6379:6379"
     restart: always
@@ -638,7 +641,7 @@ services:
     platform: linux/amd64
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
-    image: ${RABBITMQ_DOCKER_IMAGE:-rabbitmq}
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq
     ports:
       - "5672:5672"
     restart: always
@@ -678,7 +681,7 @@ services:
       context: .
       dockerfile: phishkit/Dockerfile.phishkit
       args:
-        UBUNTU_DOCKER_IMAGE: ${UBUNTU_DOCKER_IMAGE:-ubuntu:22.04}
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
     # this is here just to build the image
     entrypoint: /bin/true
@@ -692,7 +695,7 @@ services:
       context: .
       dockerfile: phishkit/Dockerfile
       args:
-        DOCKER_IN_DOCKER_IMAGE: ${DOCKER_IN_DOCKER_IMAGE:-docker:dind}
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_PHISHKIT_MANAGER_IMAGE_URL:-phishkit-manager:latest}
     logging:
       driver: fluentd
@@ -728,7 +731,7 @@ services:
       context: .
       dockerfile: js_deobfuscator/Dockerfile.js_deobfuscator
       args:
-        NODE_DOCKER_IMAGE: ${NODE_DOCKER_IMAGE:-node:26-alpine}
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
     # this is here just to build the scanner image
     entrypoint: /bin/true
@@ -742,7 +745,7 @@ services:
       context: .
       dockerfile: js_deobfuscator/Dockerfile
       args:
-        DOCKER_IN_DOCKER_IMAGE: ${DOCKER_IN_DOCKER_IMAGE:-docker:dind}
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL:-js-deobfuscator-manager:latest}
     logging:
       driver: fluentd
