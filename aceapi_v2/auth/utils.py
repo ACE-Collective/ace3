@@ -33,7 +33,7 @@ def _get_config_api_key_match(auth_sha256: str) -> ApiAuthResult:
 
     name, scope = match
     logging.info(f"valid config API key for {name}")
-    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope)
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope, key_name=name)
 
 
 async def _get_user_api_key_match(
@@ -64,6 +64,8 @@ async def _get_user_api_key_match(
         auth_name=api_key.user.username,
         auth_user_id=api_key.user_id,
         key_scope=scope,
+        key_id=api_key.id,
+        key_name=api_key.name,
     )
 
 

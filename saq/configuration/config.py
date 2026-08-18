@@ -1,5 +1,5 @@
 import sys
-from typing import TYPE_CHECKING, Optional, Type
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -8,20 +8,26 @@ from saq.configuration.schema import ACEConfig
 from saq.constants import DB_ACE, SERVICE_ENGINE
 
 if TYPE_CHECKING:
+    from saq.configuration.schema import (
+        AIQueryBackendConfig,
+        DatabaseConfig,
+        ProxyConfig,
+        ServiceConfig,
+        SplunkConfig,
+    )
     from saq.engine.core import EngineServiceConfig
     from saq.modules.config import AnalysisModuleConfig
-    from saq.configuration.schema import ServiceConfig, SplunkConfig, ProxyConfig, DatabaseConfig
 
 # parsed and validated configuration
-CONFIG: Optional[ACEConfig] = None
+CONFIG: ACEConfig | None = None
 
 # registered integration configurations
-REGISTERED_INTEGRATION_CONFIGURATIONS: dict[str, Type[BaseModel]] = {}
+REGISTERED_INTEGRATION_CONFIGURATIONS: dict[str, type[BaseModel]] = {}
 
 # integration configurations
 INTEGRATION_CONFIGURATIONS: dict[str, BaseModel] = {}
 
-def get_config(name: Optional[str] = None) -> ACEConfig:
+def get_config(name: str | None = None) -> ACEConfig:
     """Returns the global configuration object (YAMLConfig)."""
     if name is None:
         return CONFIG
@@ -46,8 +52,11 @@ def get_service_config(name: str) -> "ServiceConfig":
 def get_splunk_config(name: str = "default") -> "SplunkConfig":
     return get_config().get_splunk_config(name)
 
-def get_proxy_config(name: Optional[str] = None) -> "ProxyConfig":
+def get_proxy_config(name: str | None = None) -> "ProxyConfig":
     return get_config().get_proxy_config(name)
+
+def get_ai_query_backend_config(name: str) -> "AIQueryBackendConfig":
+    return get_config().get_ai_query_backend_config(name)
 
 def set_config(config):
     global CONFIG
@@ -100,13 +109,13 @@ def _assert_no_unresolved_encrypted_markers(model: BaseModel, context: str = "co
             f"(saq.configuration.secret_ref) so the secret is resolved lazily"
         )
 
-def register_integration_configuration(integration_name: str, integration_class: Type[BaseModel]):
+def register_integration_configuration(integration_name: str, integration_class: type[BaseModel]):
     if integration_name in REGISTERED_INTEGRATION_CONFIGURATIONS:
         raise ValueError(f"integration configuration for {integration_name} already registered")
 
     REGISTERED_INTEGRATION_CONFIGURATIONS[integration_name] = integration_class
 
-def initialize_configuration(config_paths: Optional[list[str]]=None):
+def initialize_configuration(config_paths: list[str] | None=None):
     global CONFIG
 
     # load configuration files

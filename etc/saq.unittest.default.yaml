@@ -801,3 +801,18 @@ splunk_config_test_api:
   token:
   timezone: UTC
   performance_logging_dir: splunk_perf
+
+# canned-response backend so the aceapi_ai app can be built and tested without a vendor client
+ai_query_backend_fake:
+  name: fake
+  enabled: true
+  python_module: saq.ai_query.backends.testing
+  python_class: FakeAIQueryBackend
+
+# the core splunk backend against the test splunk config; execute() is always mocked in tests
+ai_query_backend_splunk:
+  name: splunk
+  enabled: true
+  python_module: saq.ai_query.backends.splunk
+  python_class: SplunkAIQueryBackend
+  splunk_config: test_api

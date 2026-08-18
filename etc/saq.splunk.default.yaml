@@ -78,5 +78,38 @@ hunt_type_splunk:
   rule_dirs: []
   update_frequency: 60
 
+# read-only Splunk credentials for the AI investigation API (aceapi_ai). A separate config from
+# splunk_config_default deliberately: the AI container uses ONLY this entry, with a credential a
+# deployment supplies via a file:/env: marker in the AI container's overlay (etc/saq.ai.yaml).
+splunk_config_ai_readonly:
+  name: ai_readonly
+  enabled: true
+  host: localhost
+  port: 443
+  username:
+  password:
+  token:
+  timezone: UTC
+  performance_logging_dir: splunk_perf
+
+# the Splunk query backend of the AI investigation API. Declared here (disabled) so every ACE
+# process knows the backend exists -- the ai:splunk permission in the catalog is derived from this
+# section -- and enabled only in the AI container's overlay, the sole process that serves it.
+ai_query_backend_splunk:
+  name: splunk
+  enabled: false
+  python_module: saq.ai_query.backends.splunk
+  python_class: SplunkAIQueryBackend
+  splunk_config: ai_readonly
+  limits:
+    max_concurrency: 2
+    requests_per_minute: 10
+    hourly_budget: 120
+    default_limit: 1000
+    max_limit: 5000
+    max_window: "90:00:00:00"
+    default_query_timeout: 300
+    max_query_timeout: 600
+
 config:
   splunk_modules: etc/saq.splunk_modules.yaml

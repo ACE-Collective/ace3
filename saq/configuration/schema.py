@@ -403,6 +403,37 @@ class HuntTypeConfig(BaseModel):
                 "never load, so remove rule_dirs or set schedulable to true")
         return self
 
+class AIQueryBackendLimits(BaseModel):
+    max_concurrency: int = Field(default=2, description="maximum number of in-flight queries against this backend across all API workers")
+    requests_per_minute: int = Field(default=10, description="maximum accepted queries per minute against this backend")
+    hourly_budget: int = Field(default=120, description="maximum accepted queries per hour against this backend")
+    default_limit: int = Field(default=1000, description="result row limit applied when the request does not specify one")
+    max_limit: int = Field(default=5000, description="largest result row limit a request may ask for")
+    max_window: str = Field(default="90:00:00:00", description="widest allowed query time window (DD:HH:MM:SS)")
+    default_query_timeout: int = Field(default=300, description="query timeout in seconds applied when the request does not specify one")
+    max_query_timeout: int = Field(default=600, description="largest query timeout in seconds a request may ask for")
+
+class AIQueryBackendConfig(BaseModel):
+    """Base configuration for an ai_query_backend_<name> section.
+
+    Backend-specific fields are permitted (extra="allow") because the registry re-validates the raw
+    section against the backend class's own get_config_class() at the point the class is imported.
+    The prefix scan below validates only this base model and deliberately does NOT import
+    python_module -- every ACE process parses the config, and only the AI API app should ever
+    import vendor query clients.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(..., description="The name of the AI query backend (also the route name and the ai:<name> permission).")
+    enabled: bool = Field(default=False, description="Whether the AI API serves this backend.")
+    python_module: str = Field(..., description="The module containing the backend class.")
+    python_class: str = Field(..., description="The AIQueryBackend subclass.")
+    limits: AIQueryBackendLimits = Field(default_factory=AIQueryBackendLimits, description="per-backend rate/size/time limits enforced by the AI API")
+
+class AIApiConfig(BaseModel):
+    """Settings for the AI investigation API app (aceapi_ai)."""
+    rate_limit_fail_open: bool = Field(default=False, description="when redis is unreachable, serve queries without rate limiting (true) or refuse them with 503 (false); the limiter protects vendor quotas shared with production analysis, so failing closed is the default")
+
 class APIQueryDefaultsConfig(BaseModel):
     name: str = Field(..., description="The name of the API query defaults.")
     wide_duration_before: str = Field(..., description="The wide duration before the analysis.")
@@ -579,6 +610,7 @@ class ACEConfig(BaseModel):
     node_translation_gui: Optional[dict[str, str]] = None
     SSL: Optional[SSLConfig] = None
     api: Optional[APIConfig] = None
+    ai_api: AIApiConfig = Field(default_factory=AIApiConfig, description="AI investigation API configuration")
     apikeys: Optional[dict[str, Union[ConfigApiKey, str]]] = None
 
     @model_validator(mode="after")
@@ -650,6 +682,7 @@ class ACEConfig(BaseModel):
         self.__splunk_configs: Optional[dict[str, SplunkConfig]] = None
         self.__api_query_defaults: Optional[dict[str, APIQueryDefaultsConfig]] = None
         self.__hunt_types: Optional[dict[str, HuntTypeConfig]] = None
+        self.__ai_query_backends: Optional[dict[str, AIQueryBackendConfig]] = None
         self.__git_repos: Optional[dict[str, GitRepoConfig]] = None
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
@@ -693,6 +726,7 @@ class ACEConfig(BaseModel):
         self.load_proxy_configs()
         self.load_splunk_configs()
         self.load_hunt_type_configs()
+        self.load_ai_query_backend_configs()
         self.load_api_query_defaults_config()
         self.load_git_repo_configs()
         self.load_remediator_configs()
@@ -1124,6 +1158,45 @@ class ACEConfig(BaseModel):
             raise ValueError(f"hunt type config for {name} not found")
 
         return self.__hunt_types[name]
+
+    #
+    # ai query backends
+    #
+
+    @property
+    def ai_query_backends(self) -> list[AIQueryBackendConfig]:
+        if self.__ai_query_backends is None:
+            self._raise_raw_data_error()
+
+        return self.__ai_query_backends.values()
+
+    def load_ai_query_backend_configs(self):
+        self.__ai_query_backends = {}
+
+        for key, value in self.raw._data.items():
+            if not key.startswith("ai_query_backend_"):
+                continue
+
+            backend_name = key[len("ai_query_backend_"):]
+            backend_config = AIQueryBackendConfig.model_validate(value)
+            self.__ai_query_backends[backend_name] = backend_config
+
+    def get_ai_query_backend_config(self, name: str) -> AIQueryBackendConfig:
+        if self.__ai_query_backends is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__ai_query_backends:
+            raise ValueError(f"ai query backend config for {name} not found")
+
+        return self.__ai_query_backends[name]
+
+    def get_ai_query_backend_raw(self, name: str) -> dict:
+        """The raw ai_query_backend_<name> section, for re-validation against a backend class's own config model."""
+        key = f"ai_query_backend_{name}"
+        if key not in self.raw._data:
+            raise ValueError(f"ai query backend config for {name} not found")
+
+        return self.raw._data[key]
 
     #
     # git repos
