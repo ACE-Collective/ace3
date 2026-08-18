@@ -1,42 +1,35 @@
 from http import HTTPStatus
-from typing import Any
+from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.http_validation_error import HTTPValidationError
-from ...models.refresh_request import RefreshRequest
-from ...models.token import Token
 from ...types import Response
 
 
 def _get_kwargs(
-    *,
-    body: RefreshRequest,
+    detection_id: int,
 ) -> dict[str, Any]:
-    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "post",
-        "url": "/auth/refresh",
+        "method": "delete",
+        "url": "/detection/{detection_id}".format(
+            detection_id=quote(str(detection_id), safe=""),
+        ),
     }
 
-    _kwargs["json"] = body.to_dict()
-
-    headers["Content-Type"] = "application/json"
-
-    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> HTTPValidationError | Token | None:
-    if response.status_code == 200:
-        response_200 = Token.from_dict(response.json())
-
-        return response_200
+) -> Any | HTTPValidationError | None:
+    if response.status_code == 204:
+        response_204 = cast(Any, None)
+        return response_204
 
     if response.status_code == 422:
         response_422 = HTTPValidationError.from_dict(response.json())
@@ -51,7 +44,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[HTTPValidationError | Token]:
+) -> Response[Any | HTTPValidationError]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,29 +54,25 @@ def _build_response(
 
 
 def sync_detailed(
+    detection_id: int,
     *,
-    client: AuthenticatedClient | Client,
-    body: RefreshRequest,
-) -> Response[HTTPValidationError | Token]:
-    """Refresh Access Token
-
-     Use refresh token to get new access + refresh tokens.
-
-    TODO: Invalidate the old refresh token once new tokens are issued.
+    client: AuthenticatedClient,
+) -> Response[Any | HTTPValidationError]:
+    """Delete Detection
 
     Args:
-        body (RefreshRequest): Request model for token refresh endpoint.
+        detection_id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | Token]
+        Response[Any | HTTPValidationError]
     """
 
     kwargs = _get_kwargs(
-        body=body,
+        detection_id=detection_id,
     )
 
     response = client.get_httpx_client().request(
@@ -94,57 +83,49 @@ def sync_detailed(
 
 
 def sync(
+    detection_id: int,
     *,
-    client: AuthenticatedClient | Client,
-    body: RefreshRequest,
-) -> HTTPValidationError | Token | None:
-    """Refresh Access Token
-
-     Use refresh token to get new access + refresh tokens.
-
-    TODO: Invalidate the old refresh token once new tokens are issued.
+    client: AuthenticatedClient,
+) -> Any | HTTPValidationError | None:
+    """Delete Detection
 
     Args:
-        body (RefreshRequest): Request model for token refresh endpoint.
+        detection_id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | Token
+        Any | HTTPValidationError
     """
 
     return sync_detailed(
+        detection_id=detection_id,
         client=client,
-        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
+    detection_id: int,
     *,
-    client: AuthenticatedClient | Client,
-    body: RefreshRequest,
-) -> Response[HTTPValidationError | Token]:
-    """Refresh Access Token
-
-     Use refresh token to get new access + refresh tokens.
-
-    TODO: Invalidate the old refresh token once new tokens are issued.
+    client: AuthenticatedClient,
+) -> Response[Any | HTTPValidationError]:
+    """Delete Detection
 
     Args:
-        body (RefreshRequest): Request model for token refresh endpoint.
+        detection_id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | Token]
+        Response[Any | HTTPValidationError]
     """
 
     kwargs = _get_kwargs(
-        body=body,
+        detection_id=detection_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -153,30 +134,26 @@ async def asyncio_detailed(
 
 
 async def asyncio(
+    detection_id: int,
     *,
-    client: AuthenticatedClient | Client,
-    body: RefreshRequest,
-) -> HTTPValidationError | Token | None:
-    """Refresh Access Token
-
-     Use refresh token to get new access + refresh tokens.
-
-    TODO: Invalidate the old refresh token once new tokens are issued.
+    client: AuthenticatedClient,
+) -> Any | HTTPValidationError | None:
+    """Delete Detection
 
     Args:
-        body (RefreshRequest): Request model for token refresh endpoint.
+        detection_id (int):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | Token
+        Any | HTTPValidationError
     """
 
     return (
         await asyncio_detailed(
+            detection_id=detection_id,
             client=client,
-            body=body,
         )
     ).parsed

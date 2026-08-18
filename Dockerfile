@@ -1,5 +1,5 @@
-ARG PYTHON_DOCKER_IMAGE=python:3.14-trixie
-FROM ${PYTHON_DOCKER_IMAGE}
+ARG DOCKER_IMAGE_PREFIX=docker.io
+FROM ${DOCKER_IMAGE_PREFIX}/library/python:3.14-trixie
 
 ARG USE_UNPINNED_REQUIREMENTS=false
 
@@ -198,7 +198,7 @@ RUN python3 -m virtualenv --python=python3 /venv && \
     pip config set global.cert /etc/ssl/certs/ca-certificates.crt && \
     pip install --no-cache-dir -U pip wheel setuptools && \
     pip install --no-cache-dir -r /venv/python-requirements.txt && \
-    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.3 && \
+    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.4 && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
     pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu
 
@@ -233,9 +233,6 @@ RUN cd /opt/tools && \
 
 # XXX shouldn't this all be done as part of the system startup script?
 RUN mkdir -p /opt/ace/data/logs /opt/ace/data/error_reports /opt/ace/data/var && \
-    rm -rf /opt/ace/etc/collection/tuning && \
-    mkdir -p /opt/ace/etc/collection/tuning && \
-    touch /opt/ace/etc/collection/tuning/.empty && \
     find /opt/ace -type d -name __pycache__ -print0 | xargs -0 rm -rf
 
 # configure git for automation
@@ -277,7 +274,7 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
 
 USER root
 
-ARG ACE_VERSION=3.0.89
+ARG ACE_VERSION=3.0.94
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 

@@ -224,6 +224,10 @@ qdrant:
   api_key: file:/auth/passwords/qdrant
   # the collection name for ace3 alert data
   collection_alerts: ace3-alerts
+  # HTTP timeout (in seconds) for background qdrant operations
+  timeout: 30
+  # shorter timeout for the analyst-facing GUI search path, which should fail fast
+  search_timeout: 10
 
 # sqlite3 settings
 sqlite3:
@@ -245,26 +249,14 @@ collection:
   # all the files attached to the submission into this directory
   # (relative to DATA_DIR)
   incoming_dir: var/collection/incoming
-  # durable queue of submissions emitted by a collector but not yet collected (relative to DATA_DIR)
-  # a submission here has been fully serialized and is recoverable after a crash
-  # must be on the same filesystem as incoming_dir so the handoff is an atomic rename
+  # staging directories for each collector service (relative to DATA_DIR)
+  # NOTE each collector service gets its own queue underneath this, named after its workload_type
   staging_dir: var/collection/staging
-  # submissions are built here and atomically renamed into staging_dir when complete
-  # (relative to DATA_DIR); anything left behind is incomplete and is purged at startup
+  # submissions are built here and atomically renamed into staging_dir when complete (also relative to DATA_DIR)
+  # make sure this shares the same filesystem as staging_dir so the handoff is an atomic rename
   staging_tmp_dir: var/collection/staging.tmp
   # contains failed submission (relative to DATA_DIR)
   error_dir: var/collection/error
-  # path (relative to SAQ_HOME) to directory that contains the yara rules used to tune collection
-  # directories are specified by using the prefix tuning_dir_NAME where NAME is a unique name
-  # see README.COLLECTION-TUNING
-  tuning_dirs:
-    - etc/collection/tuning
-  tuning_dir_default: etc/collection/tuning (use service-specific YAML if needed)
-  # path (relative to DATA_DIR) to use to store temporary file buffers for tuning
-  # this should be a fast drive; defaults to tmp_dir set in the [global] section
-  tuning_temp_dir: ""
-  # control how often the tuning rules are checked for updates in HH:MM:SS format
-  tuning_update_frequency: "00:01:00"
   # set to yes to force collection to use the API even if the target node is local
   force_api: false
 
@@ -1031,6 +1023,13 @@ service_yara:
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
   # each subdirectory in this directory has any yara rules loaded in the scanner
   signature_dir: signatures/yara
+  # which subdirectories of signature_dir are part of a git repository, as a
+  # subdirectory name or a path to one. rules in these directories report their
+  # repo's commit hash as the signature_version of anything they detect, and are
+  # reloaded when a new commit lands rather than when a file is modified.
+  # NOTE a directory listed here that is not actually in a git repository is not
+  # scanned at all, so ACE drops such an entry and logs an error.
+  git_repo_dirs: []
   # how often to check the yara rules for changes (in seconds)
   update_frequency: 60
   # parameter to the socket.listen() function (how many connections to backlog)

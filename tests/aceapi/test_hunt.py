@@ -1459,3 +1459,85 @@ def test_validate_hunt_query_results_override_without_times(test_client, auth_he
         data = result.get_json()
         assert data["valid"] is True
         mock_hunt.process_query_results.assert_called_once()
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - credentials in correlate env
+# =============================================================================
+
+def _hunt_with_predefined_env(env_value):
+    """A mocked hunt whose config carries one predefined command with the given env value."""
+    from types import SimpleNamespace
+
+    from saq.collectors.hunter.correlation.schema import PredefinedCommandConfig
+
+    hunt = Mock()
+    hunt.config = SimpleNamespace(
+        correlate=None,
+        _predefined_commands=[PredefinedCommandConfig.model_validate({
+            "name": "get_r7_investigation_comments",
+            "type": "executable",
+            "path": "/x/r7_get_comments.py",
+            "env": {"R7_API_KEY": env_value},
+        })],
+    )
+    return hunt
+
+
+@pytest.mark.integration
+def test_validate_hunt_rejects_env_reading_encrypted_secret_via_config(test_client, auth_headers):
+    """An `encrypted:` marker survives unresolved in the raw config dict bound as `_config`, so
+    reading a credential that way hands the marker to the helper script. Reject at authoring
+    time rather than letting it fail against the vendor in production."""
+    mock_raw = Mock()
+    mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service, \
+         patch("saq.collectors.hunter.correlation.validation.get_config",
+               return_value=Mock(raw=mock_raw)):
+        mock_manager = Mock()
+        mock_manager.load_hunt_from_config.return_value = _hunt_with_predefined_env(
+            "{{ _config['rapid7']['api_key'] }}"
+        )
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json=_make_compiled_payload(VALID_HUNT_YAML),
+            headers=auth_headers
+        )
+
+    assert result.status_code == 400
+    data = result.get_json()
+    assert data["valid"] is False
+    assert "R7_API_KEY" in data["error"]
+    assert "_secrets" in data["error"]
+
+
+@pytest.mark.integration
+def test_validate_hunt_accepts_env_reading_secret_via_secrets(test_client, auth_headers):
+    """The supported form passes validation."""
+    mock_raw = Mock()
+    mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
+
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service, \
+         patch("saq.collectors.hunter.correlation.validation.get_config",
+               return_value=Mock(raw=mock_raw)):
+        mock_manager = Mock()
+        mock_manager.load_hunt_from_config.return_value = _hunt_with_predefined_env(
+            "{{ _secrets['rapid7.api_key'] }}"
+        )
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        result = test_client.post(
+            HUNT_VALIDATE_URL,
+            json=_make_compiled_payload(VALID_HUNT_YAML),
+            headers=auth_headers
+        )
+
+    assert result.status_code == 200
+    assert result.get_json()["valid"] is True

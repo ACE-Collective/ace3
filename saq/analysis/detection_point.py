@@ -1,6 +1,6 @@
 import json
 
-from saq.signatures import (
+from saq.signatures.builtin import (
     BUILTIN_SIGNATURE_UUID,
     LEGACY_SIGNATURE_UUID,
     LEGACY_SIGNATURE_VERSION,

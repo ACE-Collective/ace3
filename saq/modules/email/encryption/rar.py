@@ -6,7 +6,7 @@ from typing import Type, override
 from pydantic import Field
 from html2text import html2text
 from saq.analysis.analysis import Analysis
-from saq.signatures import EMAIL_ENCRYPTED_DECRYPTED
+from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
 from saq.analysis.search import search_down
 from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResult
 from saq.cracking import crack_password, generate_wordlist

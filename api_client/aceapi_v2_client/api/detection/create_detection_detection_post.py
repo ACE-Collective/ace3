@@ -5,27 +5,26 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.body_login_for_access_token_auth_token_post import (
-    BodyLoginForAccessTokenAuthTokenPost,
-)
+from ...models.detection_create import DetectionCreate
 from ...models.http_validation_error import HTTPValidationError
-from ...models.token import Token
+from ...models.observable_detection_read import ObservableDetectionRead
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: BodyLoginForAccessTokenAuthTokenPost,
+    body: DetectionCreate,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/auth/token",
+        "url": "/detection/",
     }
 
-    _kwargs["data"] = body.to_dict()
-    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
 
     _kwargs["headers"] = headers
     return _kwargs
@@ -33,11 +32,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> HTTPValidationError | Token | None:
-    if response.status_code == 200:
-        response_200 = Token.from_dict(response.json())
+) -> HTTPValidationError | ObservableDetectionRead | None:
+    if response.status_code == 201:
+        response_201 = ObservableDetectionRead.from_dict(response.json())
 
-        return response_200
+        return response_201
 
     if response.status_code == 422:
         response_422 = HTTPValidationError.from_dict(response.json())
@@ -52,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[HTTPValidationError | Token]:
+) -> Response[HTTPValidationError | ObservableDetectionRead]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,25 +62,20 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
-    body: BodyLoginForAccessTokenAuthTokenPost,
-) -> Response[HTTPValidationError | Token]:
-    """Login For Access Token
-
-     Authenticate user and return access + refresh tokens.
-
-    Use OAuth2 password flow: POST with form data containing
-    'username' and 'password' fields.
+    client: AuthenticatedClient,
+    body: DetectionCreate,
+) -> Response[HTTPValidationError | ObservableDetectionRead]:
+    """Create Detection
 
     Args:
-        body (BodyLoginForAccessTokenAuthTokenPost):
+        body (DetectionCreate): Add a detection. The observable need not have ever been seen.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | Token]
+        Response[HTTPValidationError | ObservableDetectionRead]
     """
 
     kwargs = _get_kwargs(
@@ -97,25 +91,20 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
-    body: BodyLoginForAccessTokenAuthTokenPost,
-) -> HTTPValidationError | Token | None:
-    """Login For Access Token
-
-     Authenticate user and return access + refresh tokens.
-
-    Use OAuth2 password flow: POST with form data containing
-    'username' and 'password' fields.
+    client: AuthenticatedClient,
+    body: DetectionCreate,
+) -> HTTPValidationError | ObservableDetectionRead | None:
+    """Create Detection
 
     Args:
-        body (BodyLoginForAccessTokenAuthTokenPost):
+        body (DetectionCreate): Add a detection. The observable need not have ever been seen.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | Token
+        HTTPValidationError | ObservableDetectionRead
     """
 
     return sync_detailed(
@@ -126,25 +115,20 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
-    body: BodyLoginForAccessTokenAuthTokenPost,
-) -> Response[HTTPValidationError | Token]:
-    """Login For Access Token
-
-     Authenticate user and return access + refresh tokens.
-
-    Use OAuth2 password flow: POST with form data containing
-    'username' and 'password' fields.
+    client: AuthenticatedClient,
+    body: DetectionCreate,
+) -> Response[HTTPValidationError | ObservableDetectionRead]:
+    """Create Detection
 
     Args:
-        body (BodyLoginForAccessTokenAuthTokenPost):
+        body (DetectionCreate): Add a detection. The observable need not have ever been seen.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | Token]
+        Response[HTTPValidationError | ObservableDetectionRead]
     """
 
     kwargs = _get_kwargs(
@@ -158,25 +142,20 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
-    body: BodyLoginForAccessTokenAuthTokenPost,
-) -> HTTPValidationError | Token | None:
-    """Login For Access Token
-
-     Authenticate user and return access + refresh tokens.
-
-    Use OAuth2 password flow: POST with form data containing
-    'username' and 'password' fields.
+    client: AuthenticatedClient,
+    body: DetectionCreate,
+) -> HTTPValidationError | ObservableDetectionRead | None:
+    """Create Detection
 
     Args:
-        body (BodyLoginForAccessTokenAuthTokenPost):
+        body (DetectionCreate): Add a detection. The observable need not have ever been seen.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | Token
+        HTTPValidationError | ObservableDetectionRead
     """
 
     return (

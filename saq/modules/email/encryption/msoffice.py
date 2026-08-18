@@ -6,7 +6,7 @@ from typing import Type, override
 import msoffcrypto
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import EMAIL_ENCRYPTED_DECRYPTED
+from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
 from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.cracking import crack_password, generate_wordlist

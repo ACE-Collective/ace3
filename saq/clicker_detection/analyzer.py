@@ -37,7 +37,7 @@ from saq.error.reporting import report_exception
 from saq.modules.api_analysis import AnalysisDelay
 from saq.observables.mapping import ObservableMapping
 from saq.query.extraction import extract_observables_from_event
-from saq.signatures import URL_CLICKER
+from saq.signatures.builtin import URL_CLICKER
 from saq.util import create_timedelta, parse_event_time
 
 

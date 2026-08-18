@@ -5,7 +5,7 @@ from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.signatures import XLM_MACRO_URL
+from saq.signatures.builtin import XLM_MACRO_URL
 from saq.analysis.observable import Observable
 from saq.analysis.search import recurse_tree
 from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, F_FILE, F_URL, AnalysisExecutionResult

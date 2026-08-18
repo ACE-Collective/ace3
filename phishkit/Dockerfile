@@ -1,5 +1,5 @@
-ARG DOCKER_IN_DOCKER_IMAGE=docker:dind
-FROM ${DOCKER_IN_DOCKER_IMAGE}
+ARG DOCKER_IMAGE_PREFIX=docker.io
+FROM ${DOCKER_IMAGE_PREFIX}/library/docker:dind
 
 RUN apk update && apk add --no-cache python3 libmagic
 

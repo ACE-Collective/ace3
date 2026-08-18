@@ -3,7 +3,7 @@ import re
 from typing import Type
 from pydantic import Field, ConfigDict
 from saq.analysis.analysis import Analysis
-from saq.signatures import EMAIL_MACRO_NEW_SENDER, EMAIL_SUSPECT_URL_NEW_SENDER
+from saq.signatures.builtin import EMAIL_MACRO_NEW_SENDER, EMAIL_SUSPECT_URL_NEW_SENDER
 from saq.analysis.observable import Observable
 from saq.analysis.search import search_down
 from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_source_email

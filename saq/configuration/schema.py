@@ -153,6 +153,8 @@ class QdrantConfig(BaseModel):
     ssl_ca_path: str = Field(..., description="path to SSL CA certificate")
     api_key: str = Field(..., description="qdrant API key")
     collection_alerts: str = Field(..., description="the collection name for ace3 alert data")
+    timeout: int = Field(default=30, ge=1, description="HTTP timeout (in seconds) for qdrant operations")
+    search_timeout: int = Field(default=10, ge=1, description="HTTP timeout (in seconds) for the user-facing GUI search path")
 
 class SQLite3Config(BaseModel):
     timeout: int = Field(..., description="how long (in seconds) to wait for sqlite3 to connect")
@@ -167,11 +169,7 @@ class CollectionConfig(BaseModel):
     staging_dir: str = Field(default="var/collection/staging", description="durable queue of submissions that have been emitted by a collector but not yet collected (relative to DATA_DIR). must be on the same filesystem as incoming_dir so the handoff is an atomic rename")
     staging_tmp_dir: str = Field(default="var/collection/staging.tmp", description="where submissions are built before being atomically renamed into staging_dir (relative to DATA_DIR). anything left here is incomplete by definition and is purged at startup")
     error_dir: str = Field(..., description="contains failed submission (relative to DATA_DIR)")
-    #tuning_dir_default: str = Field(..., description="path (relative to SAQ_HOME) to directory that contains the yara rules used to tune collection")
-    tuning_temp_dir: str = Field(..., description="path (relative to DATA_DIR) to use to store temporary file buffers for tuning")
-    tuning_update_frequency: str = Field(..., description="control how often the tuning rules are checked for updates in HH:MM:SS format")
     force_api: bool = Field(..., description="set to yes to force collection to use the API even if the target node is local")
-    tuning_dirs: list[str] = Field(..., description="list of directories that contain the yara rules used to tune collection")
 
 class QueryHunterConfig(BaseModel):
     max_result_count: int = Field(..., description="maximum number of results queries should return")

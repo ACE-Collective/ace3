@@ -12,8 +12,9 @@ from saq.database import db_DetectionPoint
 from saq.database.model import Alert, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.signatures import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
+from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID, get_builtin_signature_version
 from tests.saq.helpers import create_root_analysis, insert_alert
+from tests.saq.test_database import capture_dml
 
 
 class ProviderAnalysis(Analysis):
@@ -180,6 +181,43 @@ def test_sync_is_idempotent():
 
     second = {r.content_hash: (r.id, r.insert_date) for r in _rows_for(alert.id)}
     assert second == first
+
+
+@pytest.mark.integration
+def test_sync_writes_nothing_when_detections_unchanged():
+    alert = _alert_with_detections()
+
+    with capture_dml() as dml:
+        result = alert.rebuild_index()
+
+    assert dml == []
+    assert result.detection_points_written == 0
+    assert result.detection_points_removed == 0
+
+
+@pytest.mark.integration
+def test_sync_detection_point_queue_change_updates_row():
+    # content_hash folds in signature_uuid, description and details -- but NOT queue or
+    # signature_version. Those are the only columns that can drift under a stable hash,
+    # so they are the one case the "compare only queue + signature_version" read could
+    # get wrong.
+    alert = _alert_with_detections()
+
+    yara_dp = next(dp for dp in alert.root_analysis.all_detection_points
+                   if dp.queue == "experimental")
+    before = {r.content_hash: r.id for r in _rows_for(alert.id)}
+
+    yara_dp.queue = "internal"
+    result = alert.rebuild_index()
+
+    assert result.detection_points_written == 1
+    assert result.detection_points_removed == 0
+
+    get_db().expire_all()
+    rows = {r.content_hash: r for r in _rows_for(alert.id)}
+    assert rows[yara_dp.content_hash].queue == "internal"
+    # updated in place -- the row was not deleted and re-created
+    assert {h: r.id for h, r in rows.items()} == before
 
 
 @pytest.mark.integration
