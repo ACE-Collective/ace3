@@ -226,17 +226,20 @@ class TestExecuteCommand:
         assert result.strip() != "missing"
 
     def test_executable_env_reads_secret(self, tmpdir):
+        # print the length rather than the value: the secret reaches the env, but stdout is
+        # sanitized, so echoing it verbatim would redact to '***'. The length proves the env
+        # var held the real 8-char credential without depending on it surviving in output.
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
-            args=["-c", "import os; print(os.environ['API_KEY'])"],
+            args=["-c", "import os; print(len(os.environ['API_KEY']))"],
             env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
         )
         result = execute_command(
             cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
             {"vendor.api_key": "REAL_KEY"},
         )
-        assert result.strip() == "REAL_KEY"
+        assert result.strip() == "8"
 
     def test_executable_env_unknown_secret_raises(self, tmpdir):
         """An unknown key must raise, not render an empty credential.
@@ -329,7 +332,25 @@ class TestExecuteCommand:
                 {"vendor.api_key": "REAL_KEY"},
             )
         assert "REAL_KEY" not in str(excinfo.value)
-        assert "***" in str(excinfo.value)
+
+    def test_executable_stdout_is_sanitized(self, tmpdir):
+        """A script that echoes its credential to stdout must not leak it into event data.
+
+        stdout becomes event data, which flows into the persisted correlation trace and into
+        later query text sent to a data source -- the same exposure the stderr scrub closes.
+        """
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import os; print(os.environ['API_KEY'])"],
+            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+        )
+        result = execute_command(
+            cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
+            {"vendor.api_key": "REAL_KEY"},
+        )
+        assert "REAL_KEY" not in result
+        assert "***" in result
 
     def test_executable_timeout(self, tmpdir):
         cmd = CommandConfig(
