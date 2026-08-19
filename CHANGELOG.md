@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.95] - 2026-08-19
+
+- [Sanitizes stdout](https://github.com/ACE-Collective/ace3/pull/465)
+- [Add favicon indicator dot for pending Reset-filter alerts](https://github.com/ACE-Collective/ace3/pull/464)
+- [Major authz refactor to add API key-scoped permissions](https://github.com/ACE-Collective/ace3/pull/451)
+
 ## [3.0.94] - 2026-08-14
 
 - [Update Docker configuration to use a unified DOCKER_IMAGE_PREFIX](https://github.com/ACE-Collective/ace3/pull/462)
