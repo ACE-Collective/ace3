@@ -1,10 +1,10 @@
 import logging
-from flask import render_template, session
+from flask import jsonify, render_template, session
 from flask_login import current_user
 import pytz
 from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
-from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_quick_filter_display_data, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
+from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_quick_filter_display_data, get_reset_filter_alert_count, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
@@ -196,3 +196,14 @@ def manage():
         observable_types=run_async(get_observable_types()),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
     )
+
+@analysis.route('/reset_filter_alert_count')
+@require_permission('alert', 'read')
+def reset_filter_alert_count():
+    """Returns the number of alerts matching the "Reset" filter for the current user, as
+    JSON. Polled by the browser tab to drive the favicon notification dot -- see
+    static/js/ace.js."""
+    response = jsonify({"count": get_reset_filter_alert_count()})
+    # per-user data -- must not be handed out by the blueprint's default public cache policy
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
