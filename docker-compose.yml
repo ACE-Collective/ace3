@@ -299,7 +299,6 @@ services:
     hostname: ace-http-external
     ports:
       - "9443:443"
-      - "9444:444"
     networks:
       - ace
 
@@ -326,7 +325,6 @@ services:
     hostname: ace-http
     ports:
       - "8443:443"
-      - "8444:444"
     networks:
       - ace
 
