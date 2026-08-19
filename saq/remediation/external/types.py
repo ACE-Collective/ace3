@@ -19,9 +19,10 @@ class CheckResult(Enum):
     """
     CONFIRMED = "CONFIRMED"       # probe found events — store them and stop
     NOT_FOUND = "NOT_FOUND"       # probe says the target does not exist
-    EXPIRED = "EXPIRED"           # deadline reached without confirmation
+    EXPIRED = "EXPIRED"           # deadline or retries exhausted without confirmation
     ERROR = "ERROR"               # ran out of retries on transient errors
     CANCELLED = "CANCELLED"       # manually cancelled (e.g. disposition sweep)
+    SUPERSEDED = "SUPERSEDED"     # another probe (or ACE itself) confirmed remediation first
 
 
 class ProbeOutcomeKind(Enum):

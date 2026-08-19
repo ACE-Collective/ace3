@@ -75,10 +75,11 @@ class ExternalRemediationCheckCollector:
     def __init__(
         self,
         lock_timeout_seconds: int = 300,
+        # Fallback backoff for listeners that don't expose per-probe delays;
+        # workers report their probe's initial_delay_seconds/max_delay_seconds
+        # through CheckListener.get_backoff_delays.
         initial_retry_delay_seconds: int = 60,
         max_retry_delay_seconds: int = 3600,
-        # Per-probe overrides live on the probe config; this is the global
-        # safety net so a missing per-row deadline can't run forever.
         loop_interval_seconds: int = 1,
     ):
         self.lock_timeout_seconds = lock_timeout_seconds
@@ -124,6 +125,20 @@ class ExternalRemediationCheckCollector:
             )
         self.listeners[work_item.probe_name].handle_external_check_request(work_item)
 
+    def _backoff_delays(self, probe_name: str) -> tuple[int, int]:
+        """The (initial, max) retry delay for a probe's rows.
+
+        Sourced from the registered listener's probe configuration so the
+        per-probe initial_delay_seconds/max_delay_seconds settings actually
+        govern the schedule; the collector-level values are only the fallback
+        for listeners that don't expose delays (e.g. test doubles).
+        """
+        listener = self.listeners.get(probe_name)
+        get_delays = getattr(listener, "get_backoff_delays", None)
+        if callable(get_delays):
+            return get_delays()
+        return (self.initial_retry_delay_seconds, self.max_retry_delay_seconds)
+
     def collect_work_items(self) -> list[CheckWorkItem]:
         """Find rows that are:
         - owned by a registered probe,
@@ -168,11 +183,7 @@ class ExternalRemediationCheckCollector:
                 ready.append(c)
                 continue
 
-            required_delay = calculate_backoff_delay(
-                c.retry_count,
-                self.initial_retry_delay_seconds,
-                self.max_retry_delay_seconds,
-            )
+            required_delay = calculate_backoff_delay(c.retry_count, *self._backoff_delays(c.probe_name))
             if c.update_time is None:
                 ready.append(c)
                 continue

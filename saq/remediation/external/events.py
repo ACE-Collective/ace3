@@ -107,6 +107,7 @@ class ProbeFooterEntry:
     expired: int
     errored: int
     cancelled: int
+    superseded: int        # COMPLETED + SUPERSEDED (another probe/ACE confirmed first)
     last_attempt_at: Optional[datetime]    # max(update_time) across this probe's rows for the alert
     next_attempt_at: Optional[datetime]    # min(update_time + backoff) for in-flight rows; None if none pending
 
@@ -145,6 +146,7 @@ def summarize_alert_checks(
         expired = sum(1 for c in group if c.result == CheckResult.EXPIRED.value)
         errored = sum(1 for c in group if c.result == CheckResult.ERROR.value)
         cancelled = sum(1 for c in group if c.result == CheckResult.CANCELLED.value)
+        superseded = sum(1 for c in group if c.result == CheckResult.SUPERSEDED.value)
 
         last_attempts = [c.update_time for c in group if c.update_time is not None]
         last_attempt_at = max(last_attempts) if last_attempts else None
@@ -177,6 +179,7 @@ def summarize_alert_checks(
             expired=expired,
             errored=errored,
             cancelled=cancelled,
+            superseded=superseded,
             last_attempt_at=last_attempt_at,
             next_attempt_at=next_attempt_at,
         ))

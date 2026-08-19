@@ -273,6 +273,7 @@
                                 {%- if entry.confirmed %}{% set _ = complete_parts.append(entry.confirmed ~ ' confirmed') %}{% endif -%}
                                 {%- if entry.not_found %}{% set _ = complete_parts.append(entry.not_found ~ ' not found') %}{% endif -%}
                                 {%- if entry.expired %}{% set _ = complete_parts.append(entry.expired ~ ' expired') %}{% endif -%}
+                                {%- if entry.superseded %}{% set _ = complete_parts.append(entry.superseded ~ ' superseded') %}{% endif -%}
                                 {%- if entry.errored %}{% set _ = complete_parts.append(entry.errored ~ ' errored') %}{% endif -%}
                                 {%- if entry.cancelled %}{% set _ = complete_parts.append(entry.cancelled ~ ' cancelled') %}{% endif -%}
                                 {%- if complete_parts %} ({{ complete_parts|join(', ') }}){% endif -%}

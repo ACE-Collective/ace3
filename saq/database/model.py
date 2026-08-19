@@ -2050,7 +2050,7 @@ class ExternalRemediationCheck(Base):
 
     # NULL while still polling. Set when the row transitions to COMPLETED.
     result: Mapped[Optional[str]] = mapped_column(
-        Enum('CONFIRMED', 'NOT_FOUND', 'EXPIRED', 'ERROR', 'CANCELLED'),
+        Enum('CONFIRMED', 'NOT_FOUND', 'EXPIRED', 'ERROR', 'CANCELLED', 'SUPERSEDED'),
         nullable=True)
 
     result_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
