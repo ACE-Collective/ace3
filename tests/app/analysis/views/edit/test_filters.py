@@ -681,3 +681,76 @@ def test_quick_filter_indicator_rendered_only_when_configured(web_client, quick_
     # 'mine' does not opt in, so no dot regardless of what it would match
     assert 'title="0 Mine alert(s)"' not in html
     assert html.count('quick-filter-dot') == 1
+
+
+@pytest.mark.integration
+def test_reset_filter_alert_count(web_client, analyst):
+    """The reset_filter_alert_count JSON endpoint must count exactly what the "Reset"
+    quick action shows: open alerts, unowned or owned by the current user, in the current
+    user's queue."""
+    from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN, QUEUE_DEFAULT
+    from saq.database.model import User
+    from saq.database.pool import get_db
+    from saq.database.util.user_management import add_user, delete_user
+    from saq.environment import get_global_runtime_settings
+    from saq.gui.alert import GUIAlert
+
+    db = get_db()
+    location = get_global_runtime_settings().saq_node
+    john = db.query(User).filter(User.username == 'john').one()
+    other_user = add_user(
+        username="james", email="jamesbond@localhost", display_name="James Bond",
+        password="password", queue=QUEUE_DEFAULT, timezone="UTC",
+    )
+
+    def insert(uuid, disposition, owner_id, queue):
+        alert = GUIAlert()
+        alert.uuid = uuid
+        alert.storage_dir = f'/tmp/{uuid}'
+        alert.tool = 'test'
+        alert.tool_instance = 'test'
+        alert.alert_type = 'test'
+        alert.description = 'reset filter count test alert'
+        alert.priority = 1
+        alert.disposition = disposition
+        alert.owner_id = owner_id
+        alert.queue = queue
+        alert.location = location
+        alert.insert_date = '2023-01-01 00:00:00'
+        db.add(alert)
+        db.flush()
+        return alert
+
+    try:
+        # matches: open, unowned, in john's queue
+        insert('reset-open-unowned', DISPOSITION_OPEN, None, QUEUE_DEFAULT)
+        # matches: open, owned by john, in john's queue
+        insert('reset-open-mine', DISPOSITION_OPEN, john.id, QUEUE_DEFAULT)
+        # doesn't match: closed
+        insert('reset-closed', DISPOSITION_FALSE_POSITIVE, None, QUEUE_DEFAULT)
+        # doesn't match: owned by someone else
+        insert('reset-owned-by-other', DISPOSITION_OPEN, other_user.id, QUEUE_DEFAULT)
+        # doesn't match: different queue
+        insert('reset-other-queue', DISPOSITION_OPEN, None, 'some_other_queue')
+        db.commit()
+
+        response = web_client.get(url_for("analysis.reset_filter_alert_count"))
+        assert response.status_code == 200
+        assert response.get_json() == {"count": 2}
+        # per-user data must never be handed to a shared/proxy cache
+        assert response.headers.get('Cache-Control') == 'private, no-store'
+
+        # the count must be computed without ever writing session['filters'] --
+        # get_reset_filter_alert_count() must stay a pure read against _default_filters()
+        with web_client.session_transaction() as sess:
+            assert 'filters' not in sess
+    finally:
+        delete_user("james")
+
+
+@pytest.mark.integration
+def test_reset_filter_alert_count_requires_login(app):
+    """Unauthenticated requests must not get alert counts."""
+    with app.test_client() as client:
+        response = client.get(url_for("analysis.reset_filter_alert_count"), follow_redirects=False)
+        assert response.status_code in (302, 401, 403)

@@ -3,7 +3,8 @@
 {% block head %}
 {{ super() }}
 
-<link rel="shortcut icon" href="{{ url_for('static', filename='images/ace3.svg') }}" type="image/svg+xml">
+<link id="favicon" rel="shortcut icon" href="{{ url_for('static', filename='images/ace3.svg') }}" type="image/svg+xml"
+      {% if current_user.is_authenticated %}data-reset-filter-count-url="{{ url_for('analysis.reset_filter_alert_count') }}"{% endif %}>
 <!-- Google Fonts - Inter -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

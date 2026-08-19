@@ -1,7 +1,7 @@
 """The AI investigation query backend contract.
 
-An AI query backend wraps exactly one data source's search API (Splunk, Logscale, Defender, ...)
-behind a uniform read-only query interface served by the AI investigation API (aceapi_ai).
+An AI query backend wraps exactly one data source's search API behind a uniform read-only query
+interface served by the AI investigation API (aceapi_ai).
 Backends are registered through ai_query_backend_<name> configuration sections and resolved by
 saq.ai_query.registry -- never imported directly by the API app, so integrations can contribute
 backends without any core code change.

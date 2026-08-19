@@ -20,13 +20,26 @@ from saq.gui.alert import GUIAlert
 from saq.util.time import local_time
 
 
-def _reset_filters():
-    session["filters"] = [
+def _default_filters() -> list:
+    """The filter list the "Reset" action applies: open (or unowned) alerts, owned by no
+    one or by the current user, in the current user's default queue. Factored out so the
+    reset-alert notification dot (get_reset_filter_alert_count()) can count against the
+    exact same criteria without touching session state."""
+    return [
         { "name": "Disposition", "inverted": False, "values": [ "OPEN" ] },
         { "name": "Owner", "inverted": False, "values": [ "None", current_user.display_name ] },
         { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
     ]
+
+def _reset_filters():
+    session["filters"] = _default_filters()
     session["search"] = None
+
+def get_reset_filter_alert_count() -> int:
+    """Returns the number of alerts matching the "Reset" filter for the current user. Used
+    to drive the browser-tab notification dot -- see reset_filter_alert_count() in
+    app/analysis/views/manage.py."""
+    return count_alerts(_default_filters())
 
 def _reset_filters_special(hours: int):
     start = (local_time() - timedelta(hours=hours)).strftime("%m-%d-%Y %H:%M")

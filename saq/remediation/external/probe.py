@@ -46,6 +46,11 @@ class ExternalRemediationProbe(ABC):
         return self.config.deadline_seconds
 
     @property
+    def supersede_grace_seconds(self) -> int:
+        # getattr so minimal test-double configs don't have to declare it
+        return getattr(self.config, "supersede_grace_seconds", 43200)
+
+    @property
     def thread_count(self) -> int:
         return self.config.thread_count
 

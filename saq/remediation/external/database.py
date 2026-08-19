@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func
 
-from saq.database.model import ExternalRemediationCheck
+from saq.database.model import ExternalRemediationCheck, Remediation
 from saq.database.pool import get_db
 from saq.remediation.external.types import CheckResult, CheckStatus
 
@@ -115,6 +115,65 @@ def get_pending_external_check_by_observable(
         .order_by(ExternalRemediationCheck.id.desc())
         .first()
     )
+
+
+def find_superseding_confirmation(
+    observable_type: str,
+    observable_value: str,
+    exclude_probe_name: str,
+    confirmed_before: Optional[datetime] = None,
+) -> Optional[str]:
+    """A human-readable reason if this target's remediation is already confirmed
+    by someone else, or None.
+
+    Two sources supersede a still-pending probe: a sibling probe's CONFIRMED
+    check row for the same target (any alert — the target identifies the email,
+    not the alert), and a successful ACE-side remediation of the same target in
+    the ``remediation`` table. Once either exists the email is gone and further
+    polling is pure spend.
+
+    ``confirmed_before`` is the supersession grace cutoff: a confirmation newer
+    than it does not (yet) supersede. This matters because a vendor's own events
+    can surface hours after a sibling's confirmation (vendor event pipelines
+    ingest late, and vendors act on their own schedules), so an immediate
+    supersede can erase real timeline entries the probe was about to find.
+    """
+    sibling_query = (
+        get_db()
+        .query(ExternalRemediationCheck)
+        .filter(
+            ExternalRemediationCheck.probe_name != exclude_probe_name,
+            ExternalRemediationCheck.observable_type == observable_type,
+            ExternalRemediationCheck.observable_value == observable_value,
+            ExternalRemediationCheck.result == CheckResult.CONFIRMED.value,
+        )
+    )
+    if confirmed_before is not None:
+        sibling_query = sibling_query.filter(ExternalRemediationCheck.update_time <= confirmed_before)
+    sibling = sibling_query.order_by(ExternalRemediationCheck.id.desc()).first()
+    if sibling is not None:
+        return f"probe {sibling.probe_name} confirmed remediation at {sibling.update_time}"
+
+    # the latest completed+successful action decides: a successful remove means the target is
+    # gone; a successful restore after it means the target is back and polling should continue
+    latest_query = (
+        get_db()
+        .query(Remediation)
+        .filter(
+            Remediation.type == observable_type,
+            Remediation.key == observable_value,
+            Remediation.status == "COMPLETED",
+            Remediation.result == "SUCCESS",
+        )
+    )
+    if confirmed_before is not None:
+        latest_query = latest_query.filter(
+            func.coalesce(Remediation.update_time, Remediation.insert_date) <= confirmed_before)
+    latest = latest_query.order_by(Remediation.id.desc()).first()
+    if latest is not None and latest.action == "remove":
+        return f"ACE remediation id={latest.id} (remove) succeeded at {latest.update_time}"
+
+    return None
 
 
 def get_external_checks_for_alert(alert_uuid: str) -> list[ExternalRemediationCheck]:

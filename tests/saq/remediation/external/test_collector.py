@@ -104,6 +104,55 @@ def test_collect_respects_backoff(make_check, collector_with_listener):
 
 
 @pytest.mark.integration
+def test_collect_uses_listener_backoff_delays(make_check):
+    """The eligibility window comes from the registered listener's probe config
+    (worker.get_backoff_delays), not the collector's fallback defaults."""
+    from saq.remediation.external.worker import ExternalRemediationCheckWorker
+    from tests.saq.remediation.external.conftest import FakeProbe, FakeProbeConfig
+
+    collector = ExternalRemediationCheckCollector(
+        lock_timeout_seconds=300,
+        initial_retry_delay_seconds=60,
+        max_retry_delay_seconds=3600,
+    )
+    worker = ExternalRemediationCheckWorker(
+        FakeProbe(config=FakeProbeConfig(initial_delay_seconds=5, max_delay_seconds=60)))
+    collector.register_listener("fake_probe", worker)
+
+    # retry_count=1 -> probe-configured delay = 5 * 2^1 = 10s. The collector
+    # default (60 * 2^1 = 120s) would skip this row; the probe's delay admits it.
+    check = make_check(
+        retry_count=1,
+        update_time=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+    items = collector.collect_work_items()
+    assert [w.id for w in items] == [check.id]
+
+
+@pytest.mark.integration
+def test_collect_listener_delays_can_be_slower_than_defaults(make_check):
+    from saq.remediation.external.worker import ExternalRemediationCheckWorker
+    from tests.saq.remediation.external.conftest import FakeProbe, FakeProbeConfig
+
+    collector = ExternalRemediationCheckCollector(
+        lock_timeout_seconds=300,
+        initial_retry_delay_seconds=60,
+        max_retry_delay_seconds=3600,
+    )
+    worker = ExternalRemediationCheckWorker(
+        FakeProbe(config=FakeProbeConfig(initial_delay_seconds=600, max_delay_seconds=7200)))
+    collector.register_listener("fake_probe", worker)
+
+    # retry_count=1 -> probe-configured delay = 600 * 2^1 = 1200s. The collector
+    # default (120s) would admit a row updated 130s ago; the probe's delay must not.
+    make_check(
+        retry_count=1,
+        update_time=datetime.now(timezone.utc) - timedelta(seconds=130),
+    )
+    assert collector.collect_work_items() == []
+
+
+@pytest.mark.integration
 def test_collect_includes_past_deadline_for_finalization(make_check, collector_with_listener):
     """Past-deadline rows must come through the collector so the worker can
     mark them EXPIRED — they can't be hidden from the loop."""

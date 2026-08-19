@@ -13,7 +13,7 @@ Only the catalog read-model is touched -- never the grant tables -- so no one's 
 No key was ever scoped to ai:read (the permission gated nothing), so no scope rewrite is needed.
 
 Revision ID: ba6dccb596ce
-Revises: e306fdfac658
+Revises: 3c0e5d7a54f1
 Create Date: 2026-08-07 12:29:32.860422
 
 """
@@ -25,7 +25,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'ba6dccb596ce'
-down_revision: str | None = 'e306fdfac658'
+down_revision: str | None = '3c0e5d7a54f1'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -340,10 +340,16 @@ def _execute_executable(
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"command timed out after {timeout}")
 
+    # stdout is sanitized for the same reason stderr is: it becomes event data, which flows into
+    # the persisted correlation trace and into later query text sent to a data source. `env` is
+    # the one template context bound to `_secrets`, so a helper that echoes a credential it was
+    # handed -- even a badly written one -- would otherwise leak it through both channels.
+    stdout = sanitize_value(result.stdout, secrets or {})
+
     # Store in persistent cache
     if command.cache:
         ttl = int(parse_timespec(command.cache).total_seconds())
         cache_args = {"type": "executable", "path": command.path, "args": rendered_args, "env": rendered_env}
-        set_cached_result(cache_args, result.stdout, ttl, secrets)
+        set_cached_result(cache_args, stdout, ttl, secrets)
 
-    return result.stdout
+    return stdout

@@ -399,7 +399,10 @@ class TestCorrelationIntegration:
 
         events = [{"id": 1}]
         result = engine.execute(events)
-        assert result.events[0]["result"] == "s3cret"
+        # the secret binds into env (the redaction only fires because "s3cret" was present in the
+        # output), but stdout becomes event data and is sanitized on the way out, so the raw
+        # credential never lands in the event stream / persisted trace.
+        assert result.events[0]["result"] == "***"
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
@@ -554,7 +557,9 @@ class TestCorrelationIntegration:
         )
 
         result = engine.execute([{"id": 1}])
-        assert result.events[0]["comments"] == "REAL_KEY"
+        # env binding works (redaction fired on "REAL_KEY"), but stdout is sanitized before it
+        # becomes event data, so the credential does not leak into the stream or the trace.
+        assert result.events[0]["comments"] == "***"
 
     def test_splunk_hunt_omits_relative_time_field_uses_default(self):
         """End-to-end: a splunk hunt's correlate query omits relative_time_field/format
