@@ -24,6 +24,7 @@ class FakeProbeConfig:
         max_delay_seconds=60,
         max_retries=3,
         deadline_seconds=3600,
+        supersede_grace_seconds=1800,
     ):
         self.name = name
         self.observable_type = observable_type
@@ -32,6 +33,7 @@ class FakeProbeConfig:
         self.max_delay_seconds = max_delay_seconds
         self.max_retries = max_retries
         self.deadline_seconds = deadline_seconds
+        self.supersede_grace_seconds = supersede_grace_seconds
         self.enabled = True
         self.python_module = "tests.saq.remediation.external.conftest"
         self.python_class = "FakeProbe"

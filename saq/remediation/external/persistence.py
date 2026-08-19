@@ -54,8 +54,15 @@ def persist_probe_outcome(
         new_status = CheckStatus.COMPLETED.value
         new_result = CheckResult.NOT_FOUND.value
     elif kind is ProbeOutcomeKind.PENDING:
-        new_status = CheckStatus.NEW.value
-        new_result = None
+        if next_retry_count >= max_retries:
+            # retries exhausted while still pending: terminal, same result as a
+            # deadline expiry -- we gave up waiting, the events never appeared
+            new_status = CheckStatus.COMPLETED.value
+            new_result = CheckResult.EXPIRED.value
+            result_message = f"retries exhausted after {next_retry_count} attempts"
+        else:
+            new_status = CheckStatus.NEW.value
+            new_result = None
     elif kind is ProbeOutcomeKind.PERMANENT_ERROR:
         last_error = outcome.permanent_error
         new_status = CheckStatus.COMPLETED.value
@@ -89,6 +96,32 @@ def persist_probe_outcome(
         .where(ExternalRemediationCheck.id == check_id)
     )
     get_db().commit()
+
+
+def finalize_superseded(check_id: int, reason: str, *, now: Optional[datetime] = None) -> None:
+    """Mark a check COMPLETED+SUPERSEDED without invoking the probe.
+
+    Called by the worker when another probe (or ACE itself) has already
+    confirmed remediation of the same target -- the email is gone, so this
+    probe's vendor can never act on it and further polling is pure spend.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+
+    get_db().execute(
+        ExternalRemediationCheck.__table__.update()
+        .values(
+            lock=None,
+            lock_time=None,
+            status=CheckStatus.COMPLETED.value,
+            result=CheckResult.SUPERSEDED.value,
+            result_message=reason,
+            update_time=now,
+        )
+        .where(ExternalRemediationCheck.id == check_id)
+    )
+    get_db().commit()
+    logging.info("SUPERSEDED external_remediation_check.id=%d: %s", check_id, reason)
 
 
 def finalize_expired(check_id: int, *, now: Optional[datetime] = None) -> None:

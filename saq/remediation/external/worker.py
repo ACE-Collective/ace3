@@ -6,15 +6,20 @@ Mirrors :mod:`saq.file_collection.worker`. The decision rules
 persistence helper so that synchronous-first-probe callers (analysis modules)
 make identical writes.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Optional
 
 from saq.error.reporting import report_exception
+from saq.remediation.external.database import find_superseding_confirmation
 from saq.remediation.external.interface import CheckListener
-from saq.remediation.external.persistence import finalize_expired, persist_probe_outcome
+from saq.remediation.external.persistence import (
+    finalize_expired,
+    finalize_superseded,
+    persist_probe_outcome,
+)
 from saq.remediation.external.probe import ExternalRemediationProbe
 from saq.remediation.external.types import (
     CheckWorkItem,
@@ -34,6 +39,11 @@ class ExternalRemediationCheckWorker(CheckListener):
         self.startup_events: list[Event] = []
         self.shutdown_event = Event()
         self.queue_wait_timeout = 1
+
+    def get_backoff_delays(self) -> tuple[int, int]:
+        """The probe's configured retry backoff, consumed by the collector's
+        eligibility check."""
+        return (self.probe.initial_delay_seconds, self.probe.max_delay_seconds)
 
     def handle_external_check_request(self, work_item: CheckWorkItem):
         if work_item.probe_name != self.probe.name:
@@ -109,6 +119,19 @@ class ExternalRemediationCheckWorker(CheckListener):
             deadline = deadline.replace(tzinfo=UTC)
         if deadline <= now:
             finalize_expired(work.id, now=now)
+            return
+
+        # Supersession guard: if another probe (or an ACE remediation) confirmed this target's
+        # remediation long enough ago (the grace window covers the vendor's own late-surfacing
+        # events), the email is gone -- finalize without spending a vendor API call.
+        superseded_reason = find_superseding_confirmation(
+            observable_type=work.observable_type,
+            observable_value=work.observable_value,
+            exclude_probe_name=work.probe_name,
+            confirmed_before=now - timedelta(seconds=self.probe.supersede_grace_seconds),
+        )
+        if superseded_reason is not None:
+            finalize_superseded(work.id, superseded_reason, now=now)
             return
 
         target = ProbeTarget(

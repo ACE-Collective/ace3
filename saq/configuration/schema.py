@@ -482,6 +482,14 @@ class ExternalRemediationProbeConfig(BaseModel):
         default=604800,
         description="Absolute cutoff per row (7 days default). After this, the row goes EXPIRED.",
     )
+    supersede_grace_seconds: int = Field(
+        default=43200,
+        description="How old another probe's (or ACE's) confirmed remediation of the same target "
+                    "must be before this probe's pending rows are finalized SUPERSEDED. A vendor's "
+                    "own events can surface hours after a sibling's confirmation (event pipelines "
+                    "ingest late, and vendors act on their own schedules), so superseding "
+                    "immediately can erase real timeline entries. 0 supersedes immediately.",
+    )
 
 
 class NRDURLList(BaseModel):
