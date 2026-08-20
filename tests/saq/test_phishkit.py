@@ -48,7 +48,7 @@ def test_get_async_scan_result_returns_none_without_calling_get(monkeypatch):
     is a plain read of the stored result key.
     """
     fake = FakeAsyncResult(ready=False)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id: fake)
+    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
 
     assert get_async_scan_result("job-1", "/tmp/does-not-matter") is None
     assert not fake.get_called, "must not block on get() for an unfinished job"
@@ -65,7 +65,7 @@ def test_get_async_scan_result_copies_files_when_ready(tmpdir, monkeypatch):
         fp.write("png")
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id: fake)
+    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
 
     output_dir = str(tmpdir / "collected")
     results = get_async_scan_result("job-1", output_dir)
@@ -87,7 +87,35 @@ def test_get_async_scan_result_honors_timeout_argument(tmpdir, monkeypatch):
     os.makedirs(source_dir)
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id: fake)
+    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
 
     get_async_scan_result("job-1", str(tmpdir / "collected"), timeout=7)
     assert fake.get_timeout == 7
+
+
+@pytest.mark.unit
+def test_get_async_scan_result_binds_the_phishkit_app(monkeypatch):
+    """AsyncResult must be bound to the phishkit app explicitly.
+
+    A bare AsyncResult resolves its backend through celery's current app --
+    whichever Celery() the process constructed most recently. In an engine
+    worker that has also run the js_deobfuscator client, that is the
+    js_deobfuscator app, whose backend is a different redis db where phishkit
+    job ids never appear: ready() stays False and every scan on that worker
+    times out with no error.
+    """
+    # constructing the js_deobfuscator app second makes it celery's current
+    # app -- the exact state in which a bare AsyncResult reads the wrong db
+    from phishkit.phishkit import app as phishkit_app
+    from js_deobfuscator.js_deobfuscator import app as js_app  # noqa: F401
+
+    captured = {}
+
+    def fake_async_result(result_id, app=None):
+        captured["app"] = app
+        return FakeAsyncResult(ready=False)
+
+    monkeypatch.setattr("saq.phishkit.AsyncResult", fake_async_result)
+
+    get_async_scan_result("job-1", "/tmp/does-not-matter")
+    assert captured["app"] is phishkit_app
