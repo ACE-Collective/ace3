@@ -376,14 +376,19 @@ api:
   prefix: AUTO
 
 apikeys:
-  # automatically generated api key used for node-to-node communication. Scoped to alert:create,
-  # which is the entire runtime surface of node-to-node calls (POST /api/analysis/submit and
-  # POST /api/engine/upload/{uuid}). The bare-string form (name: <sha256>) is still accepted but
-  # deprecated: it carries no scope and bypasses permission checks.
+  # Automatically generated api key used for node-to-node communication. The scope must cover every
+  # endpoint the engine calls on a peer node:
+  #   alert:create -> POST /api/analysis/submit
+  #   engine:*     -> GET  /api/engine/download/{uuid}
+  #                   POST /api/engine/upload/{uuid}
+  #                   GET  /api/engine/clear/{uuid}/{lock_uuid}
+  # The bare-string form (name: <sha256>) is still accepted but deprecated: it carries no scope and
+  # bypasses permission checks.
   automation:
     key: file:/auth/passwords/ace-api-key-sha256
     scope:
       - alert:create
+      - engine:*
 
 # GUI configuration
 gui:

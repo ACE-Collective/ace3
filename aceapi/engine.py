@@ -31,7 +31,7 @@ KEY_UUID = 'uuid'
 KEY_LOCK_UUID = 'lock_uuid'
 
 @engine_bp.route('/download/<uuid>', methods=['GET'])
-@api_auth_check("alert", "read")
+@api_auth_check("engine", "download")
 def download(uuid):
 
     validate_uuid(uuid)
@@ -75,7 +75,7 @@ KEY_MOVE = 'move'
 KEY_IS_ALERT = 'is_alert'
 
 @engine_bp.route('/upload/<uuid>', methods=['POST'])
-@api_auth_check("alert", "create")
+@api_auth_check("engine", "upload")
 def upload(uuid):
     
     validate_uuid(uuid)
@@ -191,7 +191,7 @@ def upload(uuid):
             logging.error("unable to remove {}: {}".format(tar_path,e ))
 
 @engine_bp.route('/clear/<uuid>/<lock_uuid>', methods=['GET'])
-@api_auth_check("lock", "delete")
+@api_auth_check("engine", "clear")
 def clear(uuid, lock_uuid):
     validate_uuid(uuid)
     validate_uuid(lock_uuid)

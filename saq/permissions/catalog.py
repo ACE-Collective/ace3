@@ -27,10 +27,10 @@ class CatalogEntry:
 # decorators / dependencies across `app/` and `aceapi_v2/` -- the guard test in
 # tests/saq/test_permission_catalog.py asserts every enforced pair appears here.
 #
-# `system:read` and `lock:delete` are reserved/aspirational (present for API completeness) and are
-# allowed to exist without a matching decorator. `admin:read` is the umbrella gate for the /admin GUI
-# area; it is enforced by the admin blueprint's before_request guard rather than a require_permission
-# decorator, so it too has no decorator call site.
+# `admin:read` is the umbrella gate for the /admin GUI area; it is enforced by the admin blueprint's
+# before_request guard (app/admin/views/access.py:24) rather than a require_permission decorator, so
+# it has no decorator call site. `ai:read` is enforced by the out-of-repo AI container. Every other
+# entry has at least one in-repo enforcement site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     CatalogEntry("ai", "read", "Run read-only AI investigation queries against data sources via the AI API."),
@@ -41,11 +41,13 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("detection", "read", "View observable-detection settings."),
     CatalogEntry("detection", "write", "Modify observable-detection settings."),
     CatalogEntry("email", "read", "Read archived email content via API/GUI."),
+    CatalogEntry("engine", "clear", "Clear a transferred work item's stale copy on a remote node (node-to-node)."),
+    CatalogEntry("engine", "download", "Download a work item's storage directory from a node (node-to-node)."),
+    CatalogEntry("engine", "upload", "Upload a work item's storage directory to a node (node-to-node)."),
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
     CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),
-    CatalogEntry("lock", "delete", "Clear processing locks on alerts or resources."),
     CatalogEntry("node", "manage", "Drain and resume nodes via API."),
     CatalogEntry("node", "read", "Read node status and outstanding work counts via API."),
     CatalogEntry("observable", "read", "Query observables via the API."),
