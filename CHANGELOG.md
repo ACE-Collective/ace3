@@ -10,6 +10,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 - [Sanitizes stdout](https://github.com/ACE-Collective/ace3/pull/465)
 - [Add favicon indicator dot for pending Reset-filter alerts](https://github.com/ACE-Collective/ace3/pull/464)
 - [Major authz refactor to add API key-scoped permissions](https://github.com/ACE-Collective/ace3/pull/451)
+- [Fixes Celery AsyncResult app binding and related bugs](https://github.com/ACE-Collective/ace3/pull/470)
 
 ## [3.0.94] - 2026-08-14
 
