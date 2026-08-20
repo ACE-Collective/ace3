@@ -1,7 +1,7 @@
 import json
-import pytest
 from datetime import datetime, timezone
 
+import pytest
 from whois.exceptions import PywhoisError
 from whoisit.errors import (
     BootstrapError,
@@ -20,7 +20,6 @@ from saq.constants import (
 from saq.json_encoding import _JSONEncoder
 from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _registrable_domain
 from tests.saq.helpers import create_root_analysis
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1088,3 +1087,165 @@ def test_rdap_analyzer_whois_fallback_uses_registrable_domain(test_context, monk
 
     assert queried == ["example.de"]
     assert analysis.lookup_protocol == "whois"
+
+
+# ---------------------------------------------------------------------------
+# lookup_domain_creation_date (standalone helper)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_creation_date_memo():
+    from saq.modules.rdap import _reset_creation_date_memo_for_tests
+
+    _reset_creation_date_memo_for_tests()
+    yield
+    _reset_creation_date_memo_for_tests()
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_rdap_success(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    _patch_rdap(monkeypatch, lambda _domain, **_kw: _make_rdap_result())
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    result = lookup_domain_creation_date("example.com")
+    assert result.created == datetime(1995, 8, 14, 4, 0, tzinfo=timezone.utc)
+    assert result.protocol == "rdap"
+    assert result.error is None
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_unsupported_falls_back_to_whois(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    def _rdap(_domain, **_kw):
+        raise UnsupportedError("No RDAP service for TLD 'de'")
+
+    created = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    _patch_rdap(monkeypatch, _rdap)
+    # list-form creation_date: first entry wins (python-whois quirk)
+    _patch_whois(
+        monkeypatch,
+        lambda _domain: _MockWhoisResult(
+            {"creation_date": [created, datetime(2026, 7, 2, tzinfo=timezone.utc)]}
+        ),
+    )
+
+    result = lookup_domain_creation_date("example.de")
+    assert result.created == created
+    assert result.protocol == "whois"
+    assert result.error is None
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_nxdomain_skips_whois(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    def _rdap(_domain, **_kw):
+        raise ResourceDoesNotExist("domain does not exist")
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    result = lookup_domain_creation_date("no-such-domain.example")
+    assert result.created is None
+    assert result.protocol is None
+    assert "domain not found" in result.error
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_both_fail(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    def _rdap(_domain, **_kw):
+        raise QueryError("rdap server error")
+
+    def _whois(_domain):
+        raise PywhoisError("no match for domain")
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois(monkeypatch, _whois)
+
+    result = lookup_domain_creation_date("example.com")
+    assert result.created is None
+    assert result.protocol is None
+    assert "rdap: rdap server error" in result.error
+    assert "whois: no match for domain" in result.error
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_bootstrap_failure_goes_to_whois(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    def _bootstrap():
+        raise BootstrapError("bootstrap data unavailable")
+
+    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: False)
+    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", _bootstrap)
+
+    def _rdap_must_not_be_called(_domain, **_kw):
+        raise AssertionError("whoisit.domain must not be called when bootstrap fails")
+
+    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", _rdap_must_not_be_called)
+
+    created = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    _patch_whois(monkeypatch, lambda _domain: _MockWhoisResult({"creation_date": created}))
+
+    result = lookup_domain_creation_date("example.com")
+    assert result.created == created
+    assert result.protocol == "whois"
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_rdap_missing_date_falls_back(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    _patch_rdap(monkeypatch, lambda _domain, **_kw: _make_rdap_result(registration_date=None))
+    created = datetime(2026, 5, 20, tzinfo=timezone.utc)
+    _patch_whois(monkeypatch, lambda _domain: _MockWhoisResult({"creation_date": created}))
+
+    result = lookup_domain_creation_date("example.com")
+    assert result.created == created
+    assert result.protocol == "whois"
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_memoizes_success(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    calls = []
+
+    def _rdap(domain, **_kw):
+        calls.append(domain)
+        return _make_rdap_result()
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    first = lookup_domain_creation_date("example.com")
+    second = lookup_domain_creation_date("example.com")
+    assert first == second
+    assert calls == ["example.com"]
+
+
+@pytest.mark.unit
+def test_lookup_creation_date_does_not_memoize_failure(monkeypatch):
+    from saq.modules.rdap import lookup_domain_creation_date
+
+    calls = []
+
+    def _rdap(domain, **_kw):
+        calls.append(domain)
+        raise QueryError("transient")
+
+    def _whois(_domain):
+        raise PywhoisError("no match")
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois(monkeypatch, _whois)
+
+    lookup_domain_creation_date("example.com")
+    lookup_domain_creation_date("example.com")
+    assert calls == ["example.com", "example.com"]

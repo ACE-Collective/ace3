@@ -24,8 +24,9 @@ Two-layer enforcement:
    sha256 value, captured relative path, backing file present, and
    under the size cap.
 """
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 import pytest
 import yaml
@@ -33,24 +34,22 @@ import yaml
 from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
+    ANALYSIS_MODULE_NRD_ANALYZER,
     ANALYSIS_MODULE_OCR,
     ANALYSIS_MODULE_PHISHKIT_ANALYZER,
     ANALYSIS_MODULE_QRCODE,
-    ANALYSIS_MODULE_SITE_TAGGER,
-    ANALYSIS_MODULE_NRD_ANALYZER,
     ANALYSIS_MODULE_RDAP_ANALYZER,
-    AnalysisExecutionResult,
+    ANALYSIS_MODULE_SITE_TAGGER,
     DIRECTIVE_CRAWL,
     DIRECTIVE_OCR,
-    F_FILE,
     F_FQDN,
     F_IP,
     F_URL,
     FILE_SUBDIR,
+    AnalysisExecutionResult,
 )
 from saq.util.hashing import is_sha256_hex
 from tests.saq.helpers import create_root_analysis
-
 
 # ----------------------------------------------------------------------
 # Per-module contract runners
@@ -111,11 +110,21 @@ def _check_nrd_analyzer(test_context, monkeypatch):
     """
     import sqlite3
     import tempfile
+    from datetime import datetime, timedelta, timezone
     from pathlib import Path
 
     from saq.modules.nrd import NRDAnalyzer
+    from saq.modules.rdap import DomainCreationLookup
     from saq.nrd import util as nrd_util
     from saq.nrd.util import _reset_connection_for_tests
+
+    # Keep the contract run offline: the analyzer verifies hits via RDAP.
+    monkeypatch.setattr(
+        "saq.modules.nrd.lookup_domain_creation_date",
+        lambda _domain: DomainCreationLookup(
+            datetime.now(timezone.utc) - timedelta(days=3), "rdap", None
+        ),
+    )
 
     tmp_dir = Path(tempfile.mkdtemp())
     db_path = tmp_dir / "nrd_index.db"
@@ -291,7 +300,7 @@ def _check_phishkit(test_context, monkeypatch):
     import tempfile
 
     from saq.analysis.module_execution_delta import merge_module_execution_deltas
-    from saq.modules.phishkit import PhishkitAnalyzer, PhishkitAnalysis
+    from saq.modules.phishkit import PhishkitAnalysis, PhishkitAnalyzer
 
     out_dir = tempfile.mkdtemp()
     # dom.html is a non-special output file → becomes a file observable, and its

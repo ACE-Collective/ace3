@@ -1322,6 +1322,15 @@ analysis_module_nrd_analyzer:
   python_module: saq.modules.nrd
   python_class: NRDAnalyzer
   enabled: true
+  # On an NRD database hit, verify the domain's actual registration date via
+  # RDAP (WHOIS fallback) and treat the hit as a miss (no analysis, no tag)
+  # when the domain was registered more than this many days ago. NRD feeds
+  # include recently *updated* domains as well as recently registered ones;
+  # without this check a decades-old domain can fire NRD detections after a
+  # routine update. Lookups happen only on DB hits (rare). Lookup failures
+  # fail open (the hit is kept). Set to 0 or null to disable verification.
+  max_registration_age_days: 90
+  cache_ttl: 86400
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer

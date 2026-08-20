@@ -12,6 +12,7 @@ from saq.nrd.util import (
     _normalize,
     _reset_connection_for_tests,
     is_newly_registered,
+    registrable_domain,
 )
 
 
@@ -340,3 +341,27 @@ def test_atomic_swap_picked_up_via_mtime(nrd_db, monkeypatch):
 
     assert is_newly_registered("new-domain.example") is True
     assert is_newly_registered("old-domain.example") is False
+
+
+# ---------------------------------------------------------------------------
+# registrable_domain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("example.com", "example.com"),
+        ("login.example.com", "example.com"),
+        ("deep.login.example.co.uk", "example.co.uk"),
+        ("https://login.example.com:8080/path?q=1", "example.com"),
+        ("Example.COM.", "example.com"),
+        ("café.example", "xn--caf-dma.example"),
+        # no identifiable public suffix: fall back to the normalized input
+        ("localhost", "localhost"),
+        ("", ""),
+    ],
+)
+def test_registrable_domain(value, expected):
+    assert registrable_domain(value) == expected
