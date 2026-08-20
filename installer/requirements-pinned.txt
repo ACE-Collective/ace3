@@ -79,7 +79,7 @@ tabulate==0.10.0
 tld==0.13.2
 tldextract==5.3.1
 tzlocal==5.4.4
-urlfinderlib==0.24.0
+urlfinderlib==0.25.0
 uWSGI==2.0.31
 validators==0.35.0
 Werkzeug==3.1.8

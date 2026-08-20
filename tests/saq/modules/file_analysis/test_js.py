@@ -24,12 +24,12 @@ import pytest
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_JAVASCRIPT_DEOBFUSCATION,
-    AnalysisExecutionResult,
     DIRECTIVE_CRAWL_EXTRACTED_URLS,
     DIRECTIVE_EXTRACT_URLS,
     DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
     R_EXTRACTED_FROM,
+    AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.js import (
@@ -845,3 +845,228 @@ def test_webcrack_failure_is_reported_in_summary(tmpdir, monkeypatch, patched_de
     summary = analysis.generate_summary()
     assert "webcrack failed" in summary
     assert "extracted" in summary
+
+
+# ---------------------------------------------------------------------------
+# DOM snapshot sidecar -- resolving document lookups against real element data.
+#
+# html_js_extraction writes a `<script>.dom.json` snapshot beside each extracted
+# script; the harness discovers it at `INPUT_PATH + '.dom.json'`. Because the
+# node shim above runs the harness on the observable's full_path, these tests
+# just drop the sidecar next to it and let the convention resolve.
+# ---------------------------------------------------------------------------
+
+def _charcode_snapshot(url, token):
+    """A snapshot modeling the SVG phish: a <metadata> element whose data-*
+    attributes encode the URL (comma-separated char codes) and an appended
+    base64 token, plus the button the click handler is registered on."""
+    codes = ",".join(str(ord(c)) for c in url)
+    return {
+        "version": 1,
+        "truncated": False,
+        "elements": [
+            {"tag": "metadata", "attrs": {"id": "cb0705c", "data-u7fb": codes, "data-token": token}},
+            {"tag": "button", "attrs": {"id": "b47c467", "type": "button"}, "text": "View Document"},
+        ],
+    }
+
+
+def _write_sidecar(observable, snapshot):
+    with open(observable.full_path + ".dom.json", "w", encoding="utf-8") as fp:
+        json.dump(snapshot, fp, separators=(",", ":"))
+
+
+@pytest.mark.unit
+def test_dom_snapshot_recovers_charcode_click_url(datadir, monkeypatch, patched_deobfuscate):
+    """With the snapshot present, the click-gated redirect built from data-*
+    attributes must decode to the real URL in the trace -- the whole point of
+    the fix. Without it (next test) the URL is structurally unreachable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "svg_charcode_click.js")
+    observable.add_directive(YARA_META_JS)
+    _write_sidecar(observable, _charcode_snapshot("https://example.com", "dG9rZW4="))
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error_type is None
+    assert analysis.dom_snapshot is True
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    # the decoded URL with the appended token, in clear text for URL extraction
+    assert "https://example.com/dG9rZW4=" in body
+    # and NOT the recorder placeholder that proves the lookup returned a stub
+    assert "[document.getElementById" not in body
+
+
+@pytest.mark.unit
+def test_charcode_click_without_snapshot_loses_url(datadir, tmpdir, monkeypatch, patched_deobfuscate):
+    """The same script with no snapshot: the run must not crash, but the URL is
+    unreachable. This pins that the snapshot is load-bearing, not incidental."""
+    # Uniquely-named copy: every test shares one root storage dir, so reusing the
+    # recovery test's fixture name would collide on the deobfuscated- output path
+    # (see the note on test_webcrack_status_is_surfaced).
+    with open(datadir / "svg_charcode_click.js", "r", encoding="utf-8") as fp:
+        source = fp.read()
+    sample_path = tmpdir / "svg_charcode_noshot.js"
+    sample_path.write(source)
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+    # deliberately no sidecar
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error_type is None  # no crash
+    assert analysis.dom_snapshot is False
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://example.com" not in body
+
+
+@pytest.mark.unit
+def test_dom_snapshot_onclick_property_assignment_fires(tmpdir, monkeypatch, patched_deobfuscate):
+    """`el.onclick = fn` handler assignment (no addEventListener) must also fire
+    against the snapshot-backed element."""
+    sample_path = tmpdir / "onclick_assign.js"
+    sample_path.write(
+        'var el = document.getElementById("cta");\n'
+        'el.onclick = function () { top.location = el.getAttribute("data-dest"); };\n'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+    _write_sidecar(observable, {
+        "version": 1, "truncated": False,
+        "elements": [{"tag": "a", "attrs": {"id": "cta", "data-dest": "https://example.com/onclick"}}],
+    })
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://example.com/onclick" in body
+
+
+@pytest.mark.unit
+def test_dom_snapshot_dataset_and_queryselector(tmpdir, monkeypatch, patched_deobfuscate):
+    """dataset access and querySelector('#id') must both resolve to real values
+    from the snapshot."""
+    sample_path = tmpdir / "dataset_qs.js"
+    sample_path.write(
+        'var el = document.querySelector("#host");\n'
+        'top.location = "https://" + el.dataset.host + "/p";\n'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+    _write_sidecar(observable, {
+        "version": 1, "truncated": False,
+        "elements": [{"tag": "span", "attrs": {"id": "host", "data-host": "example.com"}}],
+    })
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://example.com/p" in body
+
+
+@pytest.mark.unit
+def test_malformed_dom_snapshot_is_ignored(tmpdir, monkeypatch, patched_deobfuscate):
+    """A corrupt sidecar must not fail the run; the harness falls back to
+    recorder behavior (dom_snapshot False)."""
+    sample_path = tmpdir / "malformed_sidecar.js"
+    sample_path.write('window.location.href = "https://example.com/ok";\n')
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+    with open(observable.full_path + ".dom.json", "w", encoding="utf-8") as fp:
+        fp.write("{ this is not json")
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error_type is None
+    assert analysis.dom_snapshot is False
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://example.com/ok" in body
+
+
+@pytest.mark.unit
+def test_html_extraction_to_deobfuscation_chain(tmpdir, monkeypatch, patched_deobfuscate):
+    """End-to-end: the extractor writes the sidecar and the deobfuscator consumes
+    it, with no manual sidecar placement. Proves the two halves agree on the
+    `<script>.dom.json` convention."""
+    from saq.configuration.config import get_analysis_module_config as _gc
+    from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION
+    from saq.modules.file_analysis.html_js_extraction import (
+        HTMLJavaScriptExtractionAnalysis,
+        HTMLJavaScriptExtractor,
+    )
+
+    codes = ",".join(str(ord(c)) for c in "https://example.com")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        '<button id="b47c467" type="button">Open</button>'
+        f'<metadata id="cb0705c" data-u7fb="{codes}" data-token="dG9rZW4="></metadata>'
+        '<script type="text/javascript"><![CDATA['
+        'function go(){var el=document.getElementById("cb0705c");'
+        'var raw=el.getAttribute("data-u7fb").split(","),o="",i;'
+        'for(i=0;i<raw.length;i++)o+=String.fromCharCode(+raw[i]);'
+        'top.location=o.replace(/\\/$/,"")+"/"+el.getAttribute("data-token");}'
+        'var b=document.getElementById("b47c467");b.addEventListener("click",go);'
+        ']]></script></svg>'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    svg_path = root.create_file_path("chain.svg")
+    with open(svg_path, "w") as fp:
+        fp.write(svg)
+    svg_obs = root.add_file_observable(svg_path)
+
+    extractor = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=create_test_context(root=root),
+        config=_gc(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    extractor.root = root
+    assert extractor.execute_analysis(svg_obs) == AnalysisExecutionResult.COMPLETED
+
+    ext_analysis = svg_obs.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    extracted_js = [o for o in ext_analysis.observables if o.type == F_FILE]
+    assert len(extracted_js) == 1
+    js_obs = extracted_js[0]
+    assert os.path.exists(js_obs.full_path + ".dom.json")
+
+    deob = _build_analyzer(root)
+    assert deob.execute_analysis(js_obs) == AnalysisExecutionResult.COMPLETED
+    deob_analysis = js_obs.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert deob_analysis.dom_snapshot is True
+
+    emitted = [o for o in deob_analysis.observables if o.type == F_FILE]
+    with open(emitted[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert "https://example.com/dG9rZW4=" in body
