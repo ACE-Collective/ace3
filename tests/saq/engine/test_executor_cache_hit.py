@@ -258,6 +258,8 @@ def _make_cacheable_module(name="rdap_analyzer", ttl=timedelta(hours=1)):
         cache_ttl=ttl,
         version=1,
         extended_version={},
+        generated_analysis_type=RdapAnalysis,
+        instance=None,
     )
 
 
@@ -369,6 +371,103 @@ class TestMaybeWriteCacheDelta:
         assert written.analysis["details"] == {"done": True}
         # The recorded (final) delta itself is not mutated by the merge.
         assert final.target_observable_diff.added_tags == ["post-delay"]
+
+    @pytest.mark.unit
+    def test_delay_timeout_blocks_cache_write(self, tmp_path, monkeypatch):
+        """A delayed-analysis deadline expiry returns COMPLETED with the
+        analysis closed out empty — the module never received its result.
+        The delta still shows a delayed→completed transition, so without
+        this gate the empty result gets cached and replays "nothing" into
+        every root analyzing the same observable for the TTL."""
+        put_mock = MagicMock()
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis = obs.add_analysis(RdapAnalysis())
+        analysis.delay_analysis_timed_out = True
+        module = _make_cacheable_module()
+        delta = self._delta(obs)
+
+        executor._maybe_write_cache_delta(
+            context, root, obs, module, delta,
+            AnalysisExecutionResult.COMPLETED, [],
+        )
+        put_mock.assert_not_called()
+
+    @pytest.mark.unit
+    def test_completed_analysis_without_timeout_marker_writes(self, tmp_path, monkeypatch):
+        """Control for the timeout gate: an attached analysis WITHOUT the
+        marker (a genuine post-delay completion) still gets cached."""
+        put_mock = MagicMock(return_value=None)
+        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        context = _make_context(root)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        obs.add_analysis(RdapAnalysis())
+        module = _make_cacheable_module()
+        delta = self._delta(obs)
+
+        executor._maybe_write_cache_delta(
+            context, root, obs, module, delta,
+            AnalysisExecutionResult.COMPLETED, [],
+        )
+        put_mock.assert_called_once()
+
+
+class TestDelayAnalysisTimeoutMarker:
+    """base_module.delay_analysis marks the analysis when the engine
+    refuses the delay (deadline expired), so the executor's cache write
+    can tell that COMPLETED apart from a genuine post-delay completion."""
+
+    def _make_module(self, delay_accepted: bool, root):
+        from saq.analysis.adapter import RootAnalysisAdapter
+        from saq.modules.base_module import AnalysisModule
+        from saq.modules.config import AnalysisModuleConfig
+        from saq.modules.context import AnalysisModuleContext
+
+        interface = MagicMock()
+        interface.delay_analysis.return_value = delay_accepted
+        context = AnalysisModuleContext(
+            delayed_analysis_interface=interface,
+            root=RootAnalysisAdapter(root),
+        )
+        config = AnalysisModuleConfig(
+            name="test_module",
+            python_module="saq.modules.base_module",
+            python_class="AnalysisModule",
+            enabled=True,
+        )
+        return AnalysisModule(config, context=context)
+
+    @pytest.mark.unit
+    def test_refused_delay_sets_marker(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis = obs.add_analysis(RdapAnalysis())
+        module = self._make_module(delay_accepted=False, root=root)
+
+        result = module.delay_analysis(obs, analysis, seconds=3, timeout_seconds=10)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert analysis.completed is True
+        assert analysis.delayed is False
+        assert analysis.delay_analysis_timed_out is True
+
+    @pytest.mark.unit
+    def test_accepted_delay_does_not_set_marker(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis = obs.add_analysis(RdapAnalysis())
+        module = self._make_module(delay_accepted=True, root=root)
+
+        result = module.delay_analysis(obs, analysis, seconds=3, timeout_seconds=10)
+
+        assert result == AnalysisExecutionResult.INCOMPLETE
+        assert analysis.delayed is True
+        assert not getattr(analysis, "delay_analysis_timed_out", False)
 
 
 class TestModuleExecutionDeltaCacheHitMetadata:

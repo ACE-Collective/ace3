@@ -12,7 +12,6 @@ and skip the async/delay_analysis dance that phishkit needs.
 import os
 import shutil
 import uuid
-from typing import Optional, Union
 
 from celery.exceptions import TimeoutError
 from celery.result import AsyncResult
@@ -61,7 +60,7 @@ def deobfuscate_file(
     is_async: bool = False,
     timeout: float = 60,
     scanner_timeout: int = 30,
-) -> Union[str, list[str]]:
+) -> str | list[str]:
     """Run the sandbox harness against ``file_path`` in the manager service.
 
     If ``is_async=True`` returns the celery job id so the caller can poll
@@ -90,9 +89,11 @@ def get_async_deobfuscate_result(
     result_id: str,
     output_dir: str,
     timeout: float = 1,
-) -> Optional[list[str]]:
+) -> list[str] | None:
     """Peek at a pending deobfuscation job. Returns None if not ready."""
-    result = AsyncResult(result_id)
+    from js_deobfuscator.js_deobfuscator import app
+
+    result = AsyncResult(result_id, app=app)
     try:
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
