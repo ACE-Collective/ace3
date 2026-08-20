@@ -2,16 +2,46 @@
 
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_NRD_ANALYZER, F_FQDN, F_URL, AnalysisExecutionResult
-from saq.modules.nrd import NRDAnalysis, NRDAnalyzer, TAG_NRD
+from saq.constants import (
+    ANALYSIS_MODULE_NRD_ANALYZER,
+    F_FQDN,
+    F_URL,
+    AnalysisExecutionResult,
+)
+from saq.modules.nrd import TAG_NRD, NRDAnalysis, NRDAnalyzer, NRDAnalyzerConfig
+from saq.modules.rdap import DomainCreationLookup
 from saq.nrd import util as nrd_util
 from saq.nrd.util import _reset_connection_for_tests
 from tests.saq.helpers import create_root_analysis
+
+
+class _LookupStub:
+    """Stands in for ``lookup_domain_creation_date``; records calls and
+    returns a settable result (default: registered 3 days ago via RDAP)."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+        self.result = DomainCreationLookup(
+            datetime.now(timezone.utc) - timedelta(days=3), "rdap", None
+        )
+
+    def __call__(self, domain: str) -> DomainCreationLookup:
+        self.calls.append(domain)
+        return self.result
+
+
+@pytest.fixture(autouse=True)
+def creation_lookup(monkeypatch):
+    """Keep every test offline: NRD hits verify against this stub, never RDAP."""
+    stub = _LookupStub()
+    monkeypatch.setattr("saq.modules.nrd.lookup_domain_creation_date", stub)
+    return stub
 
 
 def _build_test_db(path: Path, domains: list[str]) -> None:
@@ -101,11 +131,16 @@ def test_analyzer_tags_match(nrd_db, test_context):
     assert analysis is not None
     assert analysis.is_nrd is True
     assert analysis.matched_at is not None
+    assert analysis.age_created_in_days == "3"
+    assert analysis.datetime_created is not None
+    assert analysis.lookup_protocol == "rdap"
+    assert analysis.lookup_error is None
+    assert "registered 3 day(s) ago" in analysis.generate_summary()
     assert observable.has_tag(TAG_NRD)
 
 
 @pytest.mark.unit
-def test_analyzer_no_match_produces_no_analysis(nrd_db, test_context):
+def test_analyzer_no_match_produces_no_analysis(nrd_db, test_context, creation_lookup):
     nrd_db(["other-domain.example"])
 
     root = create_root_analysis()
@@ -124,6 +159,8 @@ def test_analyzer_no_match_produces_no_analysis(nrd_db, test_context):
     analysis = observable.get_analysis(NRDAnalysis)
     assert analysis is None
     assert not observable.has_tag(TAG_NRD)
+    # a miss must never cost a registration lookup
+    assert creation_lookup.calls == []
 
 
 @pytest.mark.unit
@@ -152,7 +189,7 @@ def test_analyzer_handles_missing_database(tmp_path, monkeypatch, test_context):
 
 
 @pytest.mark.unit
-def test_analyzer_tags_url_observable_on_match(nrd_db, test_context):
+def test_analyzer_tags_url_observable_on_match(nrd_db, test_context, creation_lookup):
     """In email mode where parse_url isn't enabled, the analyzer must run on URL observables."""
     nrd_db(["phish-test.com"])
 
@@ -174,6 +211,8 @@ def test_analyzer_tags_url_observable_on_match(nrd_db, test_context):
     assert analysis is not None
     assert analysis.is_nrd is True
     assert observable.has_tag(TAG_NRD)
+    # the registration lookup gets the registrable domain of the URL host
+    assert creation_lookup.calls == ["phish-test.com"]
 
 
 @pytest.mark.unit
@@ -197,7 +236,7 @@ def test_analyzer_url_observable_no_match(nrd_db, test_context):
 
 
 @pytest.mark.unit
-def test_analyzer_idn_input_matches_punycode_row(nrd_db, test_context):
+def test_analyzer_idn_input_matches_punycode_row(nrd_db, test_context, creation_lookup):
     """IDN input should match the punycode-form row stored in the database."""
     nrd_db(["xn--caf-dma.example"])
 
@@ -215,6 +254,123 @@ def test_analyzer_idn_input_matches_punycode_row(nrd_db, test_context):
     analysis = observable.get_analysis(NRDAnalysis)
     assert analysis is not None
     assert analysis.is_nrd is True
+    # the registration lookup gets the punycode (A-label) form
+    assert creation_lookup.calls == ["xn--caf-dma.example"]
+
+
+# ---------------------------------------------------------------------------
+# Registration-age verification (RDAP/WHOIS)
+# ---------------------------------------------------------------------------
+
+
+def _make_analyzer(test_context, max_age_days="unset"):
+    config = get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER).model_copy()
+    if max_age_days != "unset":
+        config.max_registration_age_days = max_age_days
+    return NRDAnalyzer(context=test_context, config=config)
+
+
+@pytest.mark.unit
+def test_analyzer_suppresses_old_registration(nrd_db, test_context, creation_lookup):
+    """A feed hit whose RDAP registration age exceeds the threshold is treated
+    like a miss — no analysis, no tag."""
+    nrd_db(["old-domain.example"])
+    creation_lookup.result = DomainCreationLookup(
+        datetime.now(timezone.utc) - timedelta(days=10000), "rdap", None
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "old-domain.example")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_analysis(NRDAnalysis) is None
+    assert not observable.has_tag(TAG_NRD)
+    assert creation_lookup.calls == ["old-domain.example"]
+
+
+@pytest.mark.unit
+def test_analyzer_age_equal_to_threshold_still_counts(nrd_db, test_context, creation_lookup):
+    nrd_db(["boundary.example"])
+    creation_lookup.result = DomainCreationLookup(
+        datetime.now(timezone.utc) - timedelta(days=90), "rdap", None
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "boundary.example")
+
+    analyzer = _make_analyzer(test_context, max_age_days=90)
+    analyzer.root = root
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_analysis(NRDAnalysis)
+    assert analysis is not None
+    assert analysis.age_created_in_days == "90"
+    assert observable.has_tag(TAG_NRD)
+
+
+@pytest.mark.unit
+def test_analyzer_fails_open_on_lookup_failure(nrd_db, test_context, creation_lookup):
+    """When neither RDAP nor WHOIS can produce a creation date, the hit is
+    kept (tagged) and the analysis records why it could not be verified."""
+    nrd_db(["unverifiable.example"])
+    creation_lookup.result = DomainCreationLookup(
+        None, None, "rdap: no RDAP service for TLD: example; whois: query failed"
+    )
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "unverifiable.example")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_analysis(NRDAnalysis)
+    assert analysis is not None
+    assert analysis.is_nrd is True
+    assert analysis.age_created_in_days is None
+    assert analysis.datetime_created is None
+    assert analysis.lookup_protocol is None
+    assert analysis.lookup_error.startswith("rdap:")
+    assert "unverified" in analysis.generate_summary()
+    assert observable.has_tag(TAG_NRD)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("disabled_value", [None, 0])
+def test_analyzer_verification_disabled(nrd_db, test_context, creation_lookup, disabled_value):
+    """max_registration_age_days of None/0 restores the pre-verification
+    behavior: every hit is tagged and no lookup is performed."""
+    nrd_db(["hit.example"])
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "hit.example")
+
+    analyzer = _make_analyzer(test_context, max_age_days=disabled_value)
+    analyzer.root = root
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_analysis(NRDAnalysis)
+    assert analysis is not None
+    assert analysis.is_nrd is True
+    assert analysis.age_created_in_days is None
+    assert analysis.lookup_error is None
+    assert analysis.generate_summary() == "Newly Registered Domain: present in local NRD list"
+    assert observable.has_tag(TAG_NRD)
+    assert creation_lookup.calls == []
+
+
+@pytest.mark.unit
+def test_analyzer_config_class_wiring():
+    config = get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER)
+    assert isinstance(config, NRDAnalyzerConfig)
+    assert config.max_registration_age_days == 90
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +434,7 @@ def test_extended_version_changes_when_db_rotated(nrd_db, test_context):
 def test_extended_version_feeds_cache_key(nrd_db, test_context):
     """End-to-end: two DB snapshots must produce different cache keys for the same observable."""
     from datetime import timedelta
+
     from saq.analysis.cache import generate_cache_key
     from saq.observables.network.dns import FQDNObservable
 

@@ -15,7 +15,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import idna
@@ -24,12 +24,11 @@ import tldextract
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir
 
-
 # Module-level cached read-only SQLite connection. Lazily opened on first
 # successful lookup; reopened automatically when the database file's mtime
 # changes (i.e. when the refresh script atomically replaces it).
-_conn: Optional[sqlite3.Connection] = None
-_conn_mtime: Optional[float] = None
+_conn: sqlite3.Connection | None = None
+_conn_mtime: float | None = None
 
 
 def get_database_path() -> Path:
@@ -105,7 +104,7 @@ def _normalize(value: Any) -> str:
         return ""
 
 
-def _get_connection() -> Optional[sqlite3.Connection]:
+def _get_connection() -> sqlite3.Connection | None:
     """Return a cached read-only SQLite connection to the NRD database.
 
     Returns ``None`` (without raising) if the database file does not exist
@@ -162,6 +161,22 @@ def _candidate_domains(normalized: str) -> list[str]:
         if not current:
             break
     return candidates
+
+
+def registrable_domain(value: str) -> str:
+    """Return the normalized registrable domain (eTLD+1) for an FQDN or URL.
+
+    Accepts the same inputs as ``is_newly_registered`` (bare FQDN or full
+    URL) and applies the same normalization (URL-host extraction, lowercase,
+    trailing-dot strip, IDN→punycode). Falls back to the normalized input
+    when no public suffix is identifiable (bare hostnames, internal names),
+    matching ``_candidate_domains``. Returns an empty string for empty or
+    IDNA-invalid input.
+    """
+    normalized = _normalize(value)
+    if not normalized:
+        return ""
+    return tldextract.extract(normalized).top_domain_under_public_suffix or normalized
 
 
 def is_newly_registered(value: str) -> bool:
