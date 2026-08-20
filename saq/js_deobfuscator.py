@@ -93,9 +93,6 @@ def get_async_deobfuscate_result(
     """Peek at a pending deobfuscation job. Returns None if not ready."""
     from js_deobfuscator.js_deobfuscator import app
 
-    # A bare AsyncResult resolves its backend through celery's current app,
-    # which may be the phishkit app (whichever this process constructed last)
-    # whose backend is a different redis db -- bind our own app explicitly.
     result = AsyncResult(result_id, app=app)
     try:
         result_dir = result.get(timeout=timeout)

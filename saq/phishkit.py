@@ -90,12 +90,6 @@ def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -
     """Gets the result of a scan asynchronously. Returns the list of files if the scan is complete, otherwise None."""
     from phishkit.phishkit import app
 
-    # A bare AsyncResult resolves its backend through celery's current app,
-    # which is whichever Celery() this process constructed most recently -- the
-    # js_deobfuscator app, if this process has ever deobfuscated a sample. That
-    # app's backend is a different redis db where this job id never appears, so
-    # ready() stays False until the scan times out. Bind the phishkit app
-    # explicitly.
     result = AsyncResult(result_id, app=app)
 
     # Ask whether the result is stored before asking for it. ready() is a plain
