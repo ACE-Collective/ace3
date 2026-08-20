@@ -1135,6 +1135,11 @@ analysis_module_html_js_extraction:
   max_event_handler_size: 8192
   # skip extraction of duplicate scripts (by SHA256 hash)
   deduplicate: true
+  # write a DOM snapshot sidecar next to each extracted script so the JS
+  # deobfuscator can resolve document lookups against real element attributes
+  emit_dom_snapshot: true
+  # maximum serialized size (bytes) of a DOM snapshot sidecar before truncation
+  dom_snapshot_max_bytes: 524288
 
 analysis_module_onenote_extraction:
   name: onenote_extraction

@@ -1,16 +1,38 @@
 import email.parser
 import hashlib
+import json
 import logging
 import os
 import re
-from typing import Type, override
+from typing import override
+
 from pydantic import Field
 from urlfinderlib.url import URL
+
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_PREVIEW, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import (
+    DIRECTIVE_CRAWL,
+    DIRECTIVE_CRAWL_EXTRACTED_URLS,
+    DIRECTIVE_PREVIEW,
+    F_FILE,
+    F_URI_PATH,
+    F_URL,
+    R_EXTRACTED_FROM,
+    AnalysisExecutionResult,
+)
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
+
+# DOM snapshot sidecar caps. The overall serialized size is bounded by the
+# module's dom_snapshot_max_bytes config; these bound individual pieces so a
+# single huge attribute or text node can't consume the whole budget.
+DOM_SNAPSHOT_MAX_ELEMENTS = 2000
+DOM_SNAPSHOT_MAX_ATTR_LEN = 16384
+DOM_SNAPSHOT_MAX_TEXT_LEN = 4096
+# Tags whose content is script/style, not document structure the deobfuscator
+# needs to resolve element lookups against.
+DOM_SNAPSHOT_SKIP_TAGS = frozenset({'script', 'style'})
 
 
 # Event attributes that can contain JavaScript code
@@ -32,6 +54,7 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
     KEY_INLINE_HANDLERS = "inline_handlers"
     KEY_SCRIPT_COUNT = "script_count"
     KEY_DUPLICATE_COUNT = "duplicate_count"
+    KEY_DOM_SNAPSHOT_FILES = "dom_snapshot_files"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -42,6 +65,7 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
             self.KEY_INLINE_HANDLERS: [],
             self.KEY_SCRIPT_COUNT: 0,
             self.KEY_DUPLICATE_COUNT: 0,
+            self.KEY_DOM_SNAPSHOT_FILES: [],
         }
 
     @override
@@ -80,6 +104,10 @@ class HTMLJavaScriptExtractionAnalysis(Analysis):
     @duplicate_count.setter
     def duplicate_count(self, value):
         self.details[self.KEY_DUPLICATE_COUNT] = value
+
+    @property
+    def dom_snapshot_files(self):
+        return self.details[self.KEY_DOM_SNAPSHOT_FILES]
 
     def generate_summary(self) -> str:
         if self.script_count == 0:
@@ -124,6 +152,17 @@ class HTMLJavaScriptExtractionConfig(AnalysisModuleConfig):
         description="Skip extraction of duplicate scripts"
     )
 
+    emit_dom_snapshot: bool = Field(
+        default=True,
+        description="Write a DOM snapshot sidecar next to each extracted script so the "
+                    "JS deobfuscator can resolve document lookups against real element attributes"
+    )
+
+    dom_snapshot_max_bytes: int = Field(
+        default=524288,
+        description="Maximum serialized size in bytes of a DOM snapshot sidecar before it is truncated"
+    )
+
 
 class HTMLJavaScriptExtractor(AnalysisModule):
     """Extracts JavaScript code from HTML, MHTML, and SVG files."""
@@ -139,7 +178,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
     RE_HEADER = re.compile(b'^[a-zA-Z0-9-_]+:')
 
     @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+    def get_config_class(cls) -> type[AnalysisModuleConfig]:
         return HTMLJavaScriptExtractionConfig
 
     @property
@@ -165,6 +204,14 @@ class HTMLJavaScriptExtractor(AnalysisModule):
     @property
     def deduplicate(self):
         return self.config.deduplicate
+
+    @property
+    def emit_dom_snapshot(self):
+        return self.config.emit_dom_snapshot
+
+    @property
+    def dom_snapshot_max_bytes(self):
+        return self.config.dom_snapshot_max_bytes
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -322,12 +369,13 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         seen_hashes: set
     ):
         """Extract JavaScript from HTML content using BeautifulSoup."""
+        import warnings
+
         import bs4
 
         # NOTE this also extracts JS from SVG files, which uses bs4 as an XML parser
         # they emit a warning for that that we ignore here
         from bs4 import XMLParsedAsHTMLWarning
-        import warnings
 
         warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -337,22 +385,82 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             logging.warning(f"failed to parse HTML with BeautifulSoup: {e}")
             return
 
+        # Snapshot the document's elements/attributes once per parsed soup. The
+        # extracted script often reads its real redirect target out of a data-*
+        # attribute of a sibling element; shipping this alongside the script lets
+        # the JS deobfuscator resolve document.getElementById(...).getAttribute(...)
+        # to the true value instead of a placeholder.
+        dom_snapshot = self._build_dom_snapshot(soup)
+
         # Extract inline scripts
-        self._extract_inline_scripts(soup, _file, analysis, seen_hashes)
+        self._extract_inline_scripts(soup, _file, analysis, seen_hashes, dom_snapshot)
 
         # Extract external script URLs
         self._extract_external_scripts(soup, _file, analysis)
 
         # Extract event handlers if enabled
         if self.extract_event_handlers:
-            self._extract_event_handlers(soup, _file, analysis, seen_hashes)
+            self._extract_event_handlers(soup, _file, analysis, seen_hashes, dom_snapshot)
+
+    def _build_dom_snapshot(self, soup) -> dict | None:
+        """Serialize the parsed document's elements and attributes into a compact
+        dict the JS deobfuscator harness can use to back document lookups with
+        real values. Returns None when disabled or when nothing survives."""
+        if not self.emit_dom_snapshot:
+            return None
+
+        elements = []
+        truncated = False
+        total = 0
+        for tag in soup.find_all(True):
+            if tag.name in DOM_SNAPSHOT_SKIP_TAGS:
+                continue
+            if len(elements) >= DOM_SNAPSHOT_MAX_ELEMENTS:
+                truncated = True
+                break
+
+            attrs = {}
+            for name, value in tag.attrs.items():
+                # bs4 returns multi-valued attributes (e.g. class) as a list.
+                if isinstance(value, (list, tuple)):
+                    value = " ".join(str(v) for v in value)
+                else:
+                    value = str(value)
+                if len(value) > DOM_SNAPSHOT_MAX_ATTR_LEN:
+                    value = value[:DOM_SNAPSHOT_MAX_ATTR_LEN]
+                    truncated = True
+                attrs[str(name)] = value
+
+            element = {"tag": str(tag.name), "attrs": attrs}
+            own_text = tag.find(string=True, recursive=False)
+            if own_text:
+                text = str(own_text).strip()
+                if text:
+                    if len(text) > DOM_SNAPSHOT_MAX_TEXT_LEN:
+                        text = text[:DOM_SNAPSHOT_MAX_TEXT_LEN]
+                        truncated = True
+                    element["text"] = text
+
+            # Enforce the overall size budget as elements accumulate so a
+            # document with many small elements can't blow past the cap.
+            total += len(json.dumps(element, separators=(",", ":")))
+            if total > self.dom_snapshot_max_bytes:
+                truncated = True
+                break
+            elements.append(element)
+
+        if not elements:
+            return None
+
+        return {"version": 1, "truncated": truncated, "elements": elements}
 
     def _extract_inline_scripts(
         self,
         soup,
         _file: FileObservable,
         analysis: HTMLJavaScriptExtractionAnalysis,
-        seen_hashes: set
+        seen_hashes: set,
+        dom_snapshot: dict | None = None
     ):
         """Extract inline <script> tags."""
         for script in soup.find_all('script'):
@@ -398,7 +506,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                 'inline',
                 _file,
                 analysis,
-                analysis.extracted_files
+                analysis.extracted_files,
+                dom_snapshot
             )
 
     def _extract_external_scripts(
@@ -439,7 +548,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         soup,
         _file: FileObservable,
         analysis: HTMLJavaScriptExtractionAnalysis,
-        seen_hashes: set
+        seen_hashes: set,
+        dom_snapshot: dict | None = None
     ):
         """Extract inline event handlers from HTML elements."""
         for tag in soup.find_all():
@@ -473,7 +583,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                     f'event_{attr}',
                     _file,
                     analysis,
-                    analysis.inline_handlers
+                    analysis.inline_handlers,
+                    dom_snapshot
                 )
 
     def _save_and_register_script(
@@ -482,7 +593,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         script_type: str,
         _file: FileObservable,
         analysis: HTMLJavaScriptExtractionAnalysis,
-        tracking_list: list
+        tracking_list: list,
+        dom_snapshot: dict | None = None
     ):
         """Save JavaScript content to file and register as observable."""
         # Compute hash for filename
@@ -516,6 +628,28 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             file_observable.remove_directive(DIRECTIVE_PREVIEW)
             tracking_list.append(file_observable.file_path)
             logging.debug(f"extracted {script_type} JavaScript to {filename}")
+
+            # Write the DOM snapshot beside the script (not registered as an
+            # observable — it is context for the deobfuscator, discovered by the
+            # harness at `<script>.dom.json`). A plain file in the storage dir
+            # survives node transfer (the whole dir is tarred) and is cleaned up
+            # with the alert. Failure here must never fail extraction.
+            #
+            # NOTE: neither this module nor the deobfuscator is cacheable today.
+            # If deob results are ever cached keyed on the .js content hash, the
+            # result would then also depend on this sidecar's content.
+            #
+            # Known limitation: seen_hashes dedup keys on script text only, so an
+            # identical script extracted from two different documents keeps only
+            # the first document's snapshot.
+            if dom_snapshot is not None:
+                sidecar_path = target_path + ".dom.json"
+                try:
+                    with open(sidecar_path, 'w', encoding='utf-8') as fp:
+                        json.dump(dom_snapshot, fp, separators=(",", ":"))
+                    analysis.dom_snapshot_files.append(os.path.basename(sidecar_path))
+                except Exception as e:
+                    logging.warning(f"failed to write DOM snapshot sidecar {sidecar_path}: {e}")
 
 
     def _compute_hash(self, content: str) -> str:

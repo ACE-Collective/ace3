@@ -1,13 +1,22 @@
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, DIRECTIVE_PREVIEW, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URI_PATH, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.modules.file_analysis.file_type import FileTypeAnalysis
-from saq.modules.file_analysis.html_js_extraction import (
-    HTMLJavaScriptExtractor,
-    HTMLJavaScriptExtractionAnalysis,
+from saq.constants import (
+    ANALYSIS_MODULE_HTML_JS_EXTRACTION,
+    DIRECTIVE_PREVIEW,
+    DIRECTIVE_YARA_META_PREFIX,
+    F_FILE,
+    F_URI_PATH,
+    F_URL,
+    R_EXTRACTED_FROM,
+    AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis.file_type import FileTypeAnalysis
+from saq.modules.file_analysis.html_js_extraction import (
+    HTMLJavaScriptExtractionAnalysis,
+    HTMLJavaScriptExtractor,
+)
 from tests.saq.helpers import create_root_analysis
 
 
@@ -831,3 +840,117 @@ def test_html_extension_wins_over_javascript_yara_meta(tmpdir, test_context):
     assert isinstance(analysis, HTMLJavaScriptExtractionAnalysis)
     assert analysis.extracted_urls == ["https://ajax.googleapis.com/ajax/libs/jquery/2.2.4/jquery.min.js"]
     assert analysis.extracted_uri_paths == []
+
+
+# ---------------------------------------------------------------------------
+# DOM snapshot sidecar
+#
+# The SVG phishing pattern keeps the redirect URL out of the script entirely and
+# in a sibling element's data-* attributes. The extractor writes a snapshot of
+# the document's elements/attributes beside each extracted script so the JS
+# deobfuscator can resolve document lookups against real values.
+# ---------------------------------------------------------------------------
+
+import json
+import os
+
+SVG_WITH_METADATA = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <button id="b47c467" type="button">View Document</button>
+  <metadata id="cb0705c" data-u7fb="104,116,116,112,115" data-token="dG9rZW4="></metadata>
+  <script type="text/javascript"><![CDATA[
+    var el = document.getElementById("cb0705c");
+    top.location = el.getAttribute("data-u7fb");
+  ]]></script>
+</svg>"""
+
+
+def _run_extractor(root, observable, test_context, config=None):
+    analyzer = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=test_context,
+        config=config or get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    analyzer.root = root
+    return analyzer.execute_analysis(observable)
+
+
+@pytest.mark.unit
+def test_dom_snapshot_sidecar_written_for_svg(tmpdir, test_context):
+    """An SVG with a <metadata> element carrying data-* attributes must produce a
+    <script>.dom.json sidecar holding those attributes -- and NOT register it as
+    an observable."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("metadata.svg")
+    with open(target_path, "w") as fp:
+        fp.write(SVG_WITH_METADATA)
+    observable = root.add_file_observable(target_path)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+
+    extracted = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(extracted) == 1
+    sidecar_path = extracted[0].full_path + ".dom.json"
+    assert os.path.exists(sidecar_path)
+    assert analysis.dom_snapshot_files == [os.path.basename(sidecar_path)]
+
+    with open(sidecar_path, "r", encoding="utf-8") as fp:
+        snapshot = json.load(fp)
+    assert snapshot["version"] == 1
+    by_id = {e["attrs"].get("id"): e for e in snapshot["elements"]}
+    assert by_id["cb0705c"]["tag"] == "metadata"
+    assert by_id["cb0705c"]["attrs"]["data-u7fb"] == "104,116,116,112,115"
+    assert by_id["cb0705c"]["attrs"]["data-token"] == "dG9rZW4="
+    # the <script> itself is not document structure and must be excluded
+    assert all(e["tag"] != "script" for e in snapshot["elements"])
+
+    # the sidecar is context for the deobfuscator, never its own observable
+    assert not any(o.type == F_FILE and o.full_path == sidecar_path for o in analysis.observables)
+
+
+@pytest.mark.unit
+def test_dom_snapshot_disabled_by_config(tmpdir, test_context):
+    """emit_dom_snapshot: false suppresses the sidecar entirely."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("metadata_off.svg")
+    with open(target_path, "w") as fp:
+        fp.write(SVG_WITH_METADATA)
+    observable = root.add_file_observable(target_path)
+
+    config = get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION).model_copy(
+        update={"emit_dom_snapshot": False})
+    assert _run_extractor(root, observable, test_context, config) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert len(analysis.extracted_files) == 1
+    assert analysis.dom_snapshot_files == []
+    extracted = [o for o in analysis.observables if o.type == F_FILE]
+    assert not os.path.exists(extracted[0].full_path + ".dom.json")
+
+
+@pytest.mark.unit
+def test_dom_snapshot_truncation(tmpdir, test_context):
+    """An oversized attribute value is truncated and flags the snapshot."""
+    big = "A" * 40000
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg">'
+        f'<metadata id="m" data-blob="{big}"></metadata>'
+        '<script type="text/javascript">var x = document.getElementById("m");</script>'
+        '</svg>'
+    )
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("truncate.svg")
+    with open(target_path, "w") as fp:
+        fp.write(svg)
+    observable = root.add_file_observable(target_path)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    extracted = [o for o in analysis.observables if o.type == F_FILE]
+    with open(extracted[0].full_path + ".dom.json", "r", encoding="utf-8") as fp:
+        snapshot = json.load(fp)
+    assert snapshot["truncated"] is True
+    meta = next(e for e in snapshot["elements"] if e["attrs"].get("id") == "m")
+    assert len(meta["attrs"]["data-blob"]) == 16384

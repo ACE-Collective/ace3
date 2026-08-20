@@ -2,17 +2,16 @@ import json
 import logging
 import os
 import shutil
-from typing import Type
 
 from pydantic import Field
 
 from saq.analysis.analysis import Analysis
 from saq.constants import (
-    AnalysisExecutionResult,
     DIRECTIVE_EXTRACT_URLS,
     DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
     R_EXTRACTED_FROM,
+    AnalysisExecutionResult,
 )
 from saq.js_deobfuscator import deobfuscate_file
 from saq.modules import AnalysisModule
@@ -38,6 +37,10 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     KEY_ERROR_TYPE = "error_type"
     KEY_WEBCRACK_STATUS = "webcrack_status"
     KEY_WEBCRACK_ERROR = "webcrack_error"
+    # True when a DOM snapshot sidecar was present and used to back document
+    # lookups during the run (see html_js_extraction). Useful when triaging why
+    # a data-* attribute payload did or did not decode.
+    KEY_DOM_SNAPSHOT = "dom_snapshot"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -52,6 +55,7 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR: None,
+            JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT: False,
         }
 
     @property
@@ -133,6 +137,14 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
         self.details[JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR] = value
 
     @property
+    def dom_snapshot(self):
+        return False if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT, False)
+
+    @dom_snapshot.setter
+    def dom_snapshot(self, value):
+        self.details[JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT] = value
+
+    @property
     def webcrack_failed(self) -> bool:
         """True when the static pre-pass errored out. The dynamic sandbox still
         runs and does the real work, so this degrades the result rather than
@@ -180,7 +192,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
     """
 
     @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+    def get_config_class(cls) -> type[AnalysisModuleConfig]:
         return JavaScriptDeobfuscationAnalyzerConfig
 
     @property
@@ -265,6 +277,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     analysis.error_type = report.get("error_type")
                     analysis.webcrack_status = report.get("webcrack_status")
                     analysis.webcrack_error = report.get("webcrack_error")
+                    analysis.dom_snapshot = bool(report.get("dom_snapshot", False))
                     if analysis.webcrack_failed:
                         logging.info(
                             f"js deobfuscator webcrack static pass failed for "
