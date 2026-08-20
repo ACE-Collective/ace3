@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.96] - 2026-08-20
+
+- [Update engine permissions and migration for node-to-node API endpoints](https://github.com/ACE-Collective/ace3/pull/474)
+- [Enhances JS extraction from SVG and similar files](https://github.com/ACE-Collective/ace3/pull/473)
+- [Validate actual domain registration age on NRD hit](https://github.com/ACE-Collective/ace3/pull/472)
+
 ## [3.0.95] - 2026-08-19
 
 - [Sanitizes stdout](https://github.com/ACE-Collective/ace3/pull/465)
