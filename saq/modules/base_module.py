@@ -730,6 +730,11 @@ class AnalysisModule(FileWatcherMixin):
             analysis.delayed = True
             return AnalysisExecutionResult.INCOMPLETE
 
+        # the delay was refused (deadline expired): the analysis is closed out
+        # WITHOUT the module ever receiving its result. Transient attribute
+        # (never serialized) -- the executor's cache write checks it in this
+        # same pass to keep the empty result out of the analysis cache.
+        analysis.delay_analysis_timed_out = True
         analysis.completed = True
         analysis.delayed = False
         return AnalysisExecutionResult.COMPLETED

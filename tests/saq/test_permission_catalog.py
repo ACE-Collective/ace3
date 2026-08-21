@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from saq.configuration.config import get_config
 from saq.database.model import AuthGroupPermission, AuthPermissionCatalog, AuthUserPermission
 from saq.database.pool import get_db
 from saq.permissions.catalog import (
@@ -15,6 +16,7 @@ from saq.permissions.catalog import (
     is_grantable,
     sync_permission_catalog,
 )
+from saq.permissions.logic import key_scope_allows, parse_permission_pattern
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,21 +39,26 @@ _API_AUTH_CHECK_RE = re.compile(
 )
 
 
+def _enforced_permission_pairs_in(path: Path) -> set[tuple[str, str]]:
+    """Statically scan a single file for the (major, minor) pairs it enforces, via either
+    require_permission(...) (app/, aceapi_v2/) or api_auth_check(...) (aceapi/)."""
+    text = path.read_text()
+    return {
+        (match.group("major"), match.group("minor"))
+        for regex in (_REQUIRE_PERMISSION_RE, _API_AUTH_CHECK_RE)
+        for match in regex.finditer(text)
+    }
+
+
 def _enforced_permission_pairs() -> set[tuple[str, str]]:
     """Statically scan app/, aceapi_v2/ (require_permission) and aceapi/ (api_auth_check) for the
     enforced (major, minor) permission pairs."""
     pairs: set[tuple[str, str]] = set()
-    for root in ("app", "aceapi_v2", "aceapi_ai"):
+    for root in ("app", "aceapi_v2", "aceapi", "aceapi_ai"):
         for path in (REPO_ROOT / root).rglob("*.py"):
             if path in _GUARD_EXCLUDE:
                 continue
-            for match in _REQUIRE_PERMISSION_RE.finditer(path.read_text()):
-                pairs.add((match.group("major"), match.group("minor")))
-    for path in (REPO_ROOT / "aceapi").rglob("*.py"):
-        if path in _GUARD_EXCLUDE:
-            continue
-        for match in _API_AUTH_CHECK_RE.finditer(path.read_text()):
-            pairs.add((match.group("major"), match.group("minor")))
+            pairs |= _enforced_permission_pairs_in(path)
     return pairs
 
 
@@ -72,6 +79,62 @@ class TestCatalogGuard:
     def test_user_edit_is_not_enforced_anymore(self):
         # The normalization dropped user:edit; nothing should still enforce it.
         assert ("user", "edit") not in _enforced_permission_pairs()
+
+
+# The legacy Flask blueprint carrying ACE's node-to-node surface. engine_bp is declared in
+# aceapi/blueprints.py and every one of its routes is defined in aceapi/engine.py -- nothing else
+# registers a route on it, so scanning that one file yields the whole surface.
+_ENGINE_MODULE = REPO_ROOT / "aceapi" / "engine.py"
+
+# The one node-to-node call that is NOT an engine_bp route: ace_api.submit() posts to
+# /api/analysis/submit (aceapi/analysis.py:80), used by saq/collectors/remote_node.py and the GUI's
+# manual alert entry.
+_SUBMIT_PERMISSION = ("alert", "create")
+
+
+@pytest.mark.unit
+class TestNodeToNodeScope:
+    """The automation API key's scope must cover everything ACE's engine calls on a peer node.
+
+    Regression guard for PR #451, which narrowed etc/saq.default.yaml's `automation` key to
+    alert:create on the strength of a hand-written comment claiming that was "the entire runtime
+    surface of node-to-node calls". It was not: transfer_work_target() also calls ace_api.download()
+    and ace_api.clear(). Every cross-node work transfer 403'd in production until this was fixed.
+
+    Both tests derive the required permission set by scanning the endpoints, so neither can drift
+    into the hand-maintained list that caused the outage.
+    """
+
+    def test_every_engine_route_is_gated_on_the_engine_major(self):
+        # /api/engine/ is machine-to-machine only. Keeping every route under one major is what
+        # lets the scope be a single `engine:*` entry and makes the coverage test below total.
+        enforced = _enforced_permission_pairs_in(_ENGINE_MODULE)
+        assert enforced, "no api_auth_check() call sites found in aceapi/engine.py — scanner broken"
+
+        foreign = sorted(pair for pair in enforced if pair[0] != "engine")
+        assert not foreign, (
+            f"these aceapi/engine.py routes are gated on a non-engine major: {foreign}. "
+            f"Node-to-node endpoints must use engine:* so the automation key's scope covers them."
+        )
+
+    def test_automation_key_scope_covers_node_to_node_surface(self):
+        # apikeys.automation comes from etc/saq.default.yaml and survives into the unit-test config
+        # via deepmerge, so this asserts against the scope production actually ships.
+        entry = get_config().apikeys["automation"]
+        assert not isinstance(entry, str), (
+            "apikeys.automation uses the deprecated bare-string form, which bypasses permission "
+            "checks entirely. Never resolve a scope failure by reverting to it."
+        )
+        scope = [parse_permission_pattern(s) for s in entry.scope]
+
+        required = _enforced_permission_pairs_in(_ENGINE_MODULE) | {_SUBMIT_PERMISSION}
+        unpermitted = sorted(
+            pair for pair in required if not key_scope_allows(scope, *pair)
+        )
+        assert not unpermitted, (
+            f"etc/saq.default.yaml apikeys.automation.scope does not permit {unpermitted} — "
+            f"node-to-node calls will 403 in production"
+        )
 
 
 # Routes that legitimately require no permission gate: genuinely public (liveness, version, docs)

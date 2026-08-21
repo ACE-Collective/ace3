@@ -12,7 +12,6 @@ and skip the async/delay_analysis dance that phishkit needs.
 import os
 import shutil
 import uuid
-from typing import Optional, Union
 
 from celery.exceptions import TimeoutError
 from celery.result import AsyncResult
@@ -61,7 +60,7 @@ def deobfuscate_file(
     is_async: bool = False,
     timeout: float = 60,
     scanner_timeout: int = 30,
-) -> Union[str, list[str]]:
+) -> str | list[str]:
     """Run the sandbox harness against ``file_path`` in the manager service.
 
     If ``is_async=True`` returns the celery job id so the caller can poll
@@ -77,6 +76,17 @@ def deobfuscate_file(
     shared_file_path = os.path.join(shared_dir, os.path.basename(file_path))
     shutil.copy2(file_path, shared_file_path)
 
+    # If html_js_extraction wrote a DOM snapshot beside the script, ship it too.
+    # The harness discovers it by the `<input>.dom.json` convention rather than
+    # via the celery signature, so no task-signature change is needed. It lets
+    # the sandbox resolve document lookups against the source document's real
+    # element attributes. (If deob results are ever cached, note the cache key
+    # would then need to account for this sidecar's content — neither the
+    # extractor nor the deobfuscator is cacheable today.)
+    sidecar_path = file_path + ".dom.json"
+    if os.path.exists(sidecar_path):
+        shutil.copy2(sidecar_path, shared_file_path + ".dom.json")
+
     result = pk_deobfuscate.delay(shared_file_path, timeout=scanner_timeout)
 
     if is_async:
@@ -90,9 +100,11 @@ def get_async_deobfuscate_result(
     result_id: str,
     output_dir: str,
     timeout: float = 1,
-) -> Optional[list[str]]:
+) -> list[str] | None:
     """Peek at a pending deobfuscation job. Returns None if not ready."""
-    result = AsyncResult(result_id)
+    from js_deobfuscator.js_deobfuscator import app
+
+    result = AsyncResult(result_id, app=app)
     try:
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)

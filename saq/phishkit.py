@@ -1,14 +1,14 @@
 import logging
 import os
 import shutil
-from typing import Optional, Union
 import uuid
 
-from celery.result import AsyncResult
 from celery.exceptions import TimeoutError
+from celery.result import AsyncResult
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.configuration.config import get_config
+
 
 def initialize_phishkit():
     from phishkit.phishkit import app
@@ -56,7 +56,7 @@ def _copy_files(source_dir: str, output_dir: str) -> list[str]:
 
     return files
 
-def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> Union[str, list[str]]:
+def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str | list[str]:
     from phishkit.phishkit import scan_file as pk_scan_file
 
     # copy the file to the shared volume so the celery worker can access it
@@ -75,7 +75,7 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
 
-def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> Union[str, list[str]]:
+def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str | list[str]:
     from phishkit.phishkit import scan_url as pk_scan_url
     result = pk_scan_url.delay(url, timeout=scanner_timeout, proxy=proxy, proxy_fallback_to_direct=proxy_fallback_to_direct, config_path=config_path)
 
@@ -86,9 +86,11 @@ def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float =
         result_dir = result.get(timeout=timeout)
         return _copy_files(result_dir, output_dir)
 
-def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -> Optional[list[str]]:
+def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -> list[str] | None:
     """Gets the result of a scan asynchronously. Returns the list of files if the scan is complete, otherwise None."""
-    result = AsyncResult(result_id)
+    from phishkit.phishkit import app
+
+    result = AsyncResult(result_id, app=app)
 
     # Ask whether the result is stored before asking for it. ready() is a plain
     # read of the backend's result key; get() instead waits on the backend's

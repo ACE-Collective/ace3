@@ -1219,6 +1219,9 @@ class AnalysisExecutor:
           (the slot already existed, no delayed→completed transition)
           slips past ``put_cached_delta``'s still-delayed check — which
           inspects the analysis dict — and a partial result gets cached.
+        - the analysis was not closed out by a delayed-analysis deadline
+          expiry (``delay_analysis_timed_out``) — that path returns
+          COMPLETED with an empty result the module never received.
 
         ``prior_deltas`` are the earlier delayed-cycle deltas recorded for
         this (module_path, observable); their tree mutations are merged
@@ -1232,6 +1235,28 @@ class AnalysisExecutor:
         if analysis_result != AnalysisExecutionResult.COMPLETED:
             return
         if not get_config().analysis_cache.enabled:
+            return
+
+        # A delayed-analysis deadline expiry also returns COMPLETED, with the
+        # analysis closed out empty -- the module never received its result.
+        # Caching that would replay "nothing" into every root that analyzes
+        # the same observable for the TTL. Tool-side partial timeouts are
+        # different: those flow back through the module with real output and
+        # stay cacheable.
+        target_analysis = None
+        if analysis_module.generated_analysis_type is not None:
+            target_analysis = observable.get_analysis(
+                analysis_module.generated_analysis_type, instance=analysis_module.instance
+            )
+        if getattr(target_analysis, "delay_analysis_timed_out", False):
+            logging.info(
+                "skipping cache write",
+                extra={
+                    "module_name": analysis_module.name,
+                    "observable_type": observable.type,
+                    "skip_reason": "delay_analysis_timed_out",
+                },
+            )
             return
 
         try:
@@ -1450,16 +1475,31 @@ class AnalysisExecutor:
                     "analysis module failed in previous execution"
                 )
 
-            # Phase 3: cache-hit short-circuit. By the time we reach this
-            # branch, accepts() has already returned True, which means the
-            # observable has no analysis at this module_path. Cache replay
-            # therefore does not conflict with a pre-existing slot. The
-            # inner try/except deliberately does NOT re-raise — replay
-            # failure must fall through to the live path so the outer
-            # except Exception below doesn't treat it as a module failure
-            # (which would call report_exception() spuriously).
+            # delayed_analysis=True must only be passed to the module that is actually
+            # being resumed from its prior delay_analysis() call -- not to every module
+            # invoked during a DelayedAnalysisRequest resumption. context.is_delayed_analysis
+            # is context-wide and would otherwise route unrelated modules with persisted
+            # incomplete analyses (e.g. two-phase modules like ObservableModifierAnalyzer)
+            # into continue_analysis(), which they do not implement.
+            is_resuming_delayed_module = (
+                context.delayed_analysis_request is not None
+                and work_item.analysis_module is context.delayed_analysis_request.analysis_module
+            )
+
+            # Phase 3: cache-hit short-circuit. Skipped when resuming a
+            # delayed module: the observable then already holds this module's
+            # in-flight analysis (accepts() passed because it is not yet
+            # completed), so replay would collide with that slot -- marking it
+            # complete without its own result and abandoning the work the
+            # module has in flight. Outside a resume, accepts() returning True
+            # means the observable has no analysis at this module_path, so
+            # replay does not conflict. The inner try/except deliberately does
+            # NOT re-raise — replay failure must fall through to the live path
+            # so the outer except Exception below doesn't treat it as a module
+            # failure (which would call report_exception() spuriously).
             if (
-                analysis_module.cache_ttl is not None
+                not is_resuming_delayed_module
+                and analysis_module.cache_ttl is not None
                 and get_config().analysis_cache.enabled
             ):
                 try:
@@ -1502,17 +1542,6 @@ class AnalysisExecutor:
                         },
                     )
                     # Intentional: do not return, do not re-raise.
-
-            # delayed_analysis=True must only be passed to the module that is actually
-            # being resumed from its prior delay_analysis() call -- not to every module
-            # invoked during a DelayedAnalysisRequest resumption. context.is_delayed_analysis
-            # is context-wide and would otherwise route unrelated modules with persisted
-            # incomplete analyses (e.g. two-phase modules like ObservableModifierAnalyzer)
-            # into continue_analysis(), which they do not implement.
-            is_resuming_delayed_module = (
-                context.delayed_analysis_request is not None
-                and work_item.analysis_module is context.delayed_analysis_request.analysis_module
-            )
 
             logging.debug(
                 "analyzing {} with {} (final analysis={}) (delayed analysis={})".format(

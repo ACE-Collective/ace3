@@ -376,14 +376,19 @@ api:
   prefix: AUTO
 
 apikeys:
-  # automatically generated api key used for node-to-node communication. Scoped to alert:create,
-  # which is the entire runtime surface of node-to-node calls (POST /api/analysis/submit and
-  # POST /api/engine/upload/{uuid}). The bare-string form (name: <sha256>) is still accepted but
-  # deprecated: it carries no scope and bypasses permission checks.
+  # Automatically generated api key used for node-to-node communication. The scope must cover every
+  # endpoint the engine calls on a peer node:
+  #   alert:create -> POST /api/analysis/submit
+  #   engine:*     -> GET  /api/engine/download/{uuid}
+  #                   POST /api/engine/upload/{uuid}
+  #                   GET  /api/engine/clear/{uuid}/{lock_uuid}
+  # The bare-string form (name: <sha256>) is still accepted but deprecated: it carries no scope and
+  # bypasses permission checks.
   automation:
     key: file:/auth/passwords/ace-api-key-sha256
     scope:
       - alert:create
+      - engine:*
 
 # GUI configuration
 gui:
@@ -1130,6 +1135,11 @@ analysis_module_html_js_extraction:
   max_event_handler_size: 8192
   # skip extraction of duplicate scripts (by SHA256 hash)
   deduplicate: true
+  # write a DOM snapshot sidecar next to each extracted script so the JS
+  # deobfuscator can resolve document lookups against real element attributes
+  emit_dom_snapshot: true
+  # maximum serialized size (bytes) of a DOM snapshot sidecar before truncation
+  dom_snapshot_max_bytes: 524288
 
 analysis_module_onenote_extraction:
   name: onenote_extraction
@@ -1322,6 +1332,15 @@ analysis_module_nrd_analyzer:
   python_module: saq.modules.nrd
   python_class: NRDAnalyzer
   enabled: true
+  # On an NRD database hit, verify the domain's actual registration date via
+  # RDAP (WHOIS fallback) and treat the hit as a miss (no analysis, no tag)
+  # when the domain was registered more than this many days ago. NRD feeds
+  # include recently *updated* domains as well as recently registered ones;
+  # without this check a decades-old domain can fire NRD detections after a
+  # routine update. Lookups happen only on DB hits (rare). Lookup failures
+  # fail open (the hit is kept). Set to 0 or null to disable verification.
+  max_registration_age_days: 90
+  cache_ttl: 86400
 
 analysis_module_active_directory_analyzer:
   name: active_directory_analyzer

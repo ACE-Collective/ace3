@@ -101,6 +101,30 @@ if (webcrack) {
 const events = [];
 const secondaryScripts = [];
 
+// Optional DOM snapshot sidecar (consumed by the DOM snapshot layer below).
+// html_js_extraction writes it next to each extracted script as
+// `<script>.dom.json` and the celery client copies it into the input dir beside
+// the sample; the harness discovers it by the `INPUT_PATH + '.dom.json'`
+// convention rather than taking it as an argument. It carries the source
+// document's elements and attributes so that a script reading a URL out of a
+// `data-*` attribute (`document.getElementById(id).getAttribute('data-x')`)
+// sees the real value instead of a placeholder. Absent for every sample that
+// did not come from HTML/SVG extraction, in which case the harness behaves
+// exactly as it did before.
+let DOM_SNAPSHOT = null;
+try {
+  const snapshotPath = INPUT_PATH + '.dom.json';
+  if (fs.existsSync(snapshotPath)) {
+    const parsed = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+    if (parsed && Array.isArray(parsed.elements)) {
+      DOM_SNAPSHOT = parsed;
+    }
+  }
+} catch (e) {
+  events.push({ kind: 'dom.snapshot.error', error: e && (e.message || String(e)) });
+  DOM_SNAPSHOT = null;
+}
+
 // Phishing-kit payloads are routinely staged inside an async handler —
 // `$(document).ready(async () => { ...; await ...; payload })` is the dominant
 // shape. Such a handler runs its synchronous portion, hits an `await`, and
@@ -125,6 +149,16 @@ process.on('unhandledRejection', (reason) => {
 // reason setTimeout runs its callback immediately.
 const DOM_READY_EVENTS = new Set(['DOMContentLoaded', 'load', 'readystatechange', 'pageshow']);
 const domReadyListeners = [];
+
+// Listeners the sample registers on individual elements (e.g. a button's
+// "click" handler that performs the redirect). Like DOM-ready listeners these
+// never fire on their own; they are queued during the run and drained after the
+// main script (and again after the async-continuation drain, because the
+// dominant shape registers the click handler from inside a DOMContentLoaded
+// handler). Only populated when a DOM snapshot is present — see the DOM
+// snapshot layer below.
+const elementListeners = [];
+const MAX_ELEMENT_LISTENER_FIRINGS = 100;
 
 // Side-channel: when the sample constructs a Blob with a recognized text
 // MIME type (e.g. `new Blob([decoded_html], {type:'text/html'})` — the
@@ -233,7 +267,15 @@ function safeStringify(value) {
   }
 }
 
-function recorder(label) {
+// `overrides` (optional): a plain object of property name → real value that the
+// get trap returns in place of a child recorder, so a recorder can expose a few
+// real values (an element's real getAttribute/dataset, document.getElementById)
+// while everything else it touches still records. Sample-assigned values in
+// `stored` always win over overrides, preserving the memoization invariant.
+// `onSet` (optional): called after every set with (prop, value), used to fire
+// `element.onclick = fn` style handler assignments. Both are undefined for the
+// ordinary recorders built by the bulk loop, which keep byte-identical behavior.
+function recorder(label, overrides, onSet) {
   const target = function () {};
   // Per-recorder maps: values assigned by the sample, and memoized child
   // recorders so chained access (`window.a.b.c = ...` then a later read of
@@ -257,6 +299,7 @@ function recorder(label) {
       if (prop === 'then') return undefined; // don't look like a thenable
       events.push({ kind: 'get', label, prop: String(prop) });
       if (prop in stored) return stored[prop];
+      if (overrides && prop in overrides) return overrides[prop];
       if (!(prop in children)) {
         children[prop] = recorder(`${label}.${String(prop)}`);
       }
@@ -268,6 +311,11 @@ function recorder(label) {
       // If the script already read this prop before writing it, drop the
       // now-stale sub-recorder so the next read resolves the stored value.
       delete children[prop];
+      if (onSet) {
+        try { onSet(prop, value); } catch (e) {
+          events.push({ kind: 'set.hook.error', label, error: e && (e.message || String(e)) });
+        }
+      }
       return true;
     },
     apply(_t, _thisArg, args) {
@@ -370,6 +418,145 @@ const jqueryGlobal = new Proxy(function () {}, {
   has() { return true; },
 });
 
+// ---------------------------------------------------------------------------
+// DOM snapshot layer
+// ---------------------------------------------------------------------------
+// Backs `document` element lookups and element attribute reads with real values
+// from the sidecar snapshot. The canonical target is the SVG/HTML phishing
+// pattern where the redirect URL is not in the script at all but split across
+// `data-*` attributes of a sibling element, which the script reads by id and
+// decodes. Without real attribute values, `getElementById(id).getAttribute(...)`
+// returns a recorder that stringifies to `[label]`, so the decoded URL is
+// structurally unreachable and lost with no error. Only active when a snapshot
+// was shipped; `buildDomDocument` returns null otherwise.
+function queueElementListener(type, handler, wrapper, label) {
+  if (typeof handler !== 'function') return;
+  // A DOM-ready-family listener registered on an element still belongs in the
+  // ready queue so ordering with document-level ready handlers is preserved.
+  if (DOM_READY_EVENTS.has(type)) {
+    domReadyListeners.push({ type, handler });
+    return;
+  }
+  elementListeners.push({ type, handler, wrapper, label });
+}
+
+function buildDomDocument(snapshot) {
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
+  const byId = new Map();
+  const byTag = new Map();
+  const byClass = new Map();
+  for (const el of elements) {
+    if (!el || typeof el !== 'object') continue;
+    const attrs = (el.attrs && typeof el.attrs === 'object') ? el.attrs : {};
+    if (typeof attrs.id === 'string' && !byId.has(attrs.id)) byId.set(attrs.id, el);
+    const tag = (typeof el.tag === 'string') ? el.tag.toLowerCase() : '';
+    if (tag) {
+      if (!byTag.has(tag)) byTag.set(tag, []);
+      byTag.get(tag).push(el);
+    }
+    if (typeof attrs.class === 'string') {
+      for (const cls of attrs.class.split(/\s+/)) {
+        if (!cls) continue;
+        if (!byClass.has(cls)) byClass.set(cls, []);
+        byClass.get(cls).push(el);
+      }
+    }
+  }
+
+  // One wrapper per snapshot element so a handler registered on the wrapper from
+  // one lookup fires against the same object a later lookup returns, and any
+  // value the sample writes to it persists (same reason recorders memoize).
+  const wrapperCache = new Map();
+  function wrapperFor(el, label) {
+    if (wrapperCache.has(el)) return wrapperCache.get(el);
+    const w = makeElementWrapper(el, label);
+    wrapperCache.set(el, w);
+    return w;
+  }
+
+  function makeElementWrapper(el, label) {
+    const attrs = (el.attrs && typeof el.attrs === 'object') ? el.attrs : {};
+    const dataset = Object.create(null);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k.startsWith('data-')) {
+        const camel = k.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        dataset[camel] = String(v);
+      }
+    }
+    // `wrapper` is referenced by the listener closures below; it is assigned
+    // once recorder() has built it, which is before any handler can run.
+    let wrapper;
+    const overrides = Object.create(null);
+    overrides.getAttribute = (name) => ((String(name) in attrs) ? String(attrs[String(name)]) : null);
+    overrides.hasAttribute = (name) => (String(name) in attrs);
+    overrides.dataset = dataset;
+    overrides.id = (typeof attrs.id === 'string') ? attrs.id : '';
+    overrides.className = (typeof attrs.class === 'string') ? attrs.class : '';
+    overrides.tagName = (typeof el.tag === 'string') ? el.tag.toUpperCase() : '';
+    overrides.nodeName = overrides.tagName;
+    const ownText = (typeof el.text === 'string') ? el.text : '';
+    overrides.textContent = ownText;
+    overrides.innerText = ownText;
+    if ('value' in attrs) overrides.value = String(attrs.value);
+    // A real function, so the call does not pass through the apply trap — it
+    // must therefore record the call itself to keep the registration visible in
+    // the trace, then queue the handler to fire after the main script.
+    overrides.addEventListener = function (type, handler, ...rest) {
+      events.push({ kind: 'call', label: `${label}.addEventListener`, args: [type, handler, ...rest].map(safeStringify) });
+      queueElementListener(String(type), handler, wrapper, label);
+    };
+    // `el.onclick = fn` etc. — fire the assigned handler like a listener.
+    const onSet = (prop, value) => {
+      if (typeof prop === 'string' && /^on[a-z]+$/.test(prop) && typeof value === 'function') {
+        queueElementListener(prop.slice(2), value, wrapper, label);
+      }
+    };
+    wrapper = recorder(label, overrides, onSet);
+    return wrapper;
+  }
+
+  // Selector support is deliberately the minimal subset real phishing kits use:
+  // `#id`, `.class`, bare tag. Anything more complex degrades to a recorder
+  // (visible as such in the trace) rather than pretending to match.
+  function matchSelector(sel) {
+    const s = String(sel).trim();
+    if (/^#[\w-]+$/.test(s)) { const el = byId.get(s.slice(1)); return el ? [el] : []; }
+    if (/^\.[\w-]+$/.test(s)) return (byClass.get(s.slice(1)) || []).slice();
+    if (/^[a-zA-Z][\w-]*$/.test(s)) return (byTag.get(s.toLowerCase()) || []).slice();
+    return null;  // unsupported selector
+  }
+
+  const docOverrides = Object.create(null);
+  // On a miss, return a recorder rather than null: a sample that dereferences
+  // the result (`.getAttribute`, `.addEventListener`) would otherwise throw a
+  // TypeError mid-trace and lose everything after it — the exact failure class
+  // recorders exist to prevent. The cost is that a `=== null` branch takes the
+  // wrong path, which is the accepted trade.
+  docOverrides.getElementById = (id) => {
+    const el = byId.get(String(id));
+    if (el) return wrapperFor(el, `#${String(id)}`);
+    return recorder(`document.getElementById(${JSON.stringify(String(id))})`);
+  };
+  docOverrides.querySelector = (sel) => {
+    const matched = matchSelector(sel);
+    if (matched === null) return recorder(`document.querySelector(${JSON.stringify(String(sel))})`);
+    if (!matched.length) return recorder(`document.querySelector(${JSON.stringify(String(sel))}):null`);
+    return wrapperFor(matched[0], `querySelector(${JSON.stringify(String(sel))})`);
+  };
+  docOverrides.querySelectorAll = (sel) => {
+    const matched = matchSelector(sel);
+    if (matched === null) return recorder(`document.querySelectorAll(${JSON.stringify(String(sel))})`);
+    return matched.map((el, i) => wrapperFor(el, `querySelectorAll(${JSON.stringify(String(sel))})[${i}]`));
+  };
+  docOverrides.getElementsByTagName = (tag) => (byTag.get(String(tag).toLowerCase()) || []).map((el, i) => wrapperFor(el, `getElementsByTagName(${JSON.stringify(String(tag))})[${i}]`));
+  docOverrides.getElementsByClassName = (cls) => (byClass.get(String(cls)) || []).map((el, i) => wrapperFor(el, `getElementsByClassName(${JSON.stringify(String(cls))})[${i}]`));
+  docOverrides.readyState = 'complete';
+
+  return recorder('document', docOverrides);
+}
+
+const domDocument = DOM_SNAPSHOT ? buildDomDocument(DOM_SNAPSHOT) : null;
+
 const sandbox = {
   $: jqueryGlobal,
   jQuery: jqueryGlobal,
@@ -416,6 +603,20 @@ const sandbox = {
   clearInterval: () => {},
   queueMicrotask: (fn) => { try { fn(); } catch (_) {} },
 };
+
+// When a DOM snapshot was shipped, install the snapshot-backed `document`
+// (and window/top/self/parent, which the sample may reach it through as
+// `window.document`) before the bulk loop. The `Object.hasOwn` guard at the
+// bottom of the loop then skips these names, so they keep the real document
+// instead of being overwritten by a plain recorder.
+if (domDocument) {
+  sandbox.document = domDocument;
+  const winOverride = Object.create(null);
+  winOverride.document = domDocument;
+  for (const name of ['window', 'top', 'self', 'parent']) {
+    sandbox[name] = recorder(name, winOverride);
+  }
+}
 
 // Browser globals — each one is its own recorder so events are labeled
 // clearly (e.g. "document.createElement.src = ...").
@@ -511,6 +712,34 @@ for (const { type, handler } of domReadyListeners) {
   }
 }
 
+// Fire element-level listeners (click, etc.) the sample registered — commonly
+// from inside the DOM-ready handlers just drained, which is why this runs after
+// them. Each handler is called with the wrapper as `this` and a synthetic event
+// whose target is that wrapper, so a click-gated redirect executes and its URL
+// is recorded. Bounded so a handler that re-registers itself can't wedge the
+// harness. Called again after the async-continuation drain below for listeners
+// registered from a post-`await` continuation.
+function fireElementListeners() {
+  let fired = 0;
+  while (elementListeners.length && fired < MAX_ELEMENT_LISTENER_FIRINGS) {
+    const { type, handler, wrapper, label } = elementListeners.shift();
+    fired++;
+    events.push({ kind: 'element.listener.start', source: `${label} ${type}` });
+    const evtOverride = Object.create(null);
+    evtOverride.target = wrapper;
+    evtOverride.currentTarget = wrapper;
+    evtOverride.type = type;
+    evtOverride.preventDefault = () => {};
+    evtOverride.stopPropagation = () => {};
+    try {
+      handler.call(wrapper, recorder(`${type}Event`, evtOverride));
+    } catch (e) {
+      events.push({ kind: 'element.listener.error', error: e && (e.message || String(e)) });
+    }
+  }
+}
+fireElementListeners();
+
 // A ready handler may be async: its synchronous portion has run, but anything
 // after an `await` is still queued. Yield to the event loop a bounded number
 // of times so those continuations (and any timers they scheduled) execute and
@@ -522,6 +751,10 @@ for (const { type, handler } of domReadyListeners) {
 for (let i = 0; i < 20; i++) {
   await new Promise((resolve) => setImmediate(resolve));
 }
+
+// Catch element listeners registered from a post-`await` continuation (e.g. a
+// handler wired up only after an async fetch resolves).
+fireElementListeners();
 
 // Re-run any secondary scripts the sample revealed so their global writes get
 // recorded too. Today that means setTimeout handlers passed as strings — the
@@ -566,6 +799,12 @@ for (const ev of events) {
     lines.push(`// --- deferred payload (${ev.source} listener) ---`);
   } else if (ev.kind === 'domready.error') {
     lines.push(`// deferred payload error: ${ev.error}`);
+  } else if (ev.kind === 'element.listener.start') {
+    lines.push(`// --- deferred payload (${ev.source} listener) ---`);
+  } else if (ev.kind === 'element.listener.error') {
+    lines.push(`// deferred payload error: ${ev.error}`);
+  } else if (ev.kind === 'dom.snapshot.error') {
+    lines.push(`// dom snapshot error: ${ev.error}`);
   }
 }
 if (secondaryScripts.length) {
@@ -610,4 +849,5 @@ process.stdout.write(JSON.stringify({
   webcrack_status: webcrackStatus,
   webcrack_error: webcrackError,
   blob_files: blobFiles,
+  dom_snapshot: !!DOM_SNAPSHOT,
 }));

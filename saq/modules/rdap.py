@@ -45,7 +45,7 @@ import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple
 
 import tldextract
 import whois
@@ -119,7 +119,7 @@ def _age_in_days_as_string(past: datetime, present: datetime) -> str:
     return str(delta.days)
 
 
-def _extract_rdap_registrar(rdap_dict: dict) -> Optional[str]:
+def _extract_rdap_registrar(rdap_dict: dict) -> str | None:
     entities = rdap_dict.get("entities") or {}
     for entity in entities.get("registrar") or []:
         if isinstance(entity, dict):
@@ -156,6 +156,118 @@ def _registrable_domain(value: str) -> str:
         return value
     registrable = tldextract.extract(normalized).top_domain_under_public_suffix
     return registrable or normalized
+
+
+def _ensure_rdap_bootstrap() -> str | None:
+    """Best-effort lazy bootstrap of the IANA RDAP registry. Returns
+    ``None`` on success, or an error string on failure (callers treat
+    that as a reason to skip RDAP and go straight to WHOIS). Repeated
+    bootstrap attempts are cheap because ``whoisit`` caches state in
+    module-level globals.
+    """
+    try:
+        if not whoisit.is_bootstrapped():
+            whoisit.bootstrap()
+        return None
+    except BootstrapError as e:
+        return f"bootstrap failed: {e}".split("\n", 1)[0].strip()
+
+
+class DomainCreationLookup(NamedTuple):
+    """Result of a standalone creation-date lookup for a registrable domain."""
+
+    created: datetime | None  # tz-aware creation date, or None
+    protocol: str | None      # "rdap" | "whois" | None
+    error: str | None         # set when created is None
+
+
+# Per-process memo of *successful* creation-date lookups, keyed on the
+# registrable domain. The analysis result cache does not store empty deltas,
+# so a module that looks up a domain and then produces no analysis (e.g.
+# NRDAnalyzer suppressing a stale feed hit) would otherwise re-query the
+# registry for every tree the domain appears in. Failures are not memoized
+# so transient registry errors get retried.
+_creation_date_memo: dict[str, DomainCreationLookup] = {}
+_CREATION_DATE_MEMO_MAX = 4096
+
+
+def lookup_domain_creation_date(domain: str) -> DomainCreationLookup:
+    """Return the creation (registration) date for a registrable domain.
+
+    Standalone counterpart to ``RdapAnalyzer`` for callers that only need
+    the creation date: tries RDAP first, falls back to legacy WHOIS when
+    RDAP cannot answer. ``domain`` must already be a normalized registrable
+    domain (eTLD+1, A-label form) — no reduction is performed here.
+
+    An authoritative RDAP "domain not found" is terminal (no WHOIS attempt),
+    matching ``RdapAnalyzer``'s handling.
+    """
+    memoized = _creation_date_memo.get(domain)
+    if memoized is not None:
+        return memoized
+
+    rdap_error = _ensure_rdap_bootstrap()
+    if rdap_error is None:
+        try:
+            result = whoisit.domain(domain)
+        except ResourceDoesNotExist as e:
+            error = f"rdap: domain not found: {e}".split("\n", 1)[0].strip()[:200]
+            return DomainCreationLookup(None, None, error)
+        except UnsupportedError as e:
+            rdap_error = f"no RDAP service for TLD: {e}".split("\n", 1)[0].strip()
+        except QueryError as e:
+            rdap_error = str(e).split("\n", 1)[0].strip() or "query failed"
+        except Exception as e:  # noqa: BLE001 — defensive against lib changes
+            rdap_error = f"rdap client error: {type(e).__name__}: {e}".split(
+                "\n", 1
+            )[0].strip()
+        else:
+            created = result.get("registration_date")
+            if isinstance(created, datetime):
+                lookup = DomainCreationLookup(created, "rdap", None)
+                _memoize_creation_date(domain, lookup)
+                return lookup
+            # Query succeeded but the registry omitted the registration
+            # event — WHOIS may still know the creation date.
+            rdap_error = "rdap result has no registration date"
+
+    # ---- WHOIS fallback ----------------------------------------------------
+    try:
+        whois_result = whois.whois(domain)
+    except PywhoisError as e:
+        whois_error = str(e).split("\n", 1)[0].strip()[:200] or "query failed"
+        return DomainCreationLookup(None, None, f"rdap: {rdap_error}; whois: {whois_error}")
+    except Exception as e:  # noqa: BLE001
+        whois_error = f"whois client error: {type(e).__name__}: {e}".split(
+            "\n", 1
+        )[0].strip()
+        return DomainCreationLookup(None, None, f"rdap: {rdap_error}; whois: {whois_error}")
+
+    created = whois_result.get("creation_date")
+    if isinstance(created, list) and created:
+        created = created[0]
+    if isinstance(created, datetime):
+        lookup = DomainCreationLookup(created, "whois", None)
+        _memoize_creation_date(domain, lookup)
+        return lookup
+
+    return DomainCreationLookup(
+        None, None, f"rdap: {rdap_error}; whois: no creation date in result"
+    )
+
+
+def _memoize_creation_date(domain: str, lookup: DomainCreationLookup) -> None:
+    # Crude size cap: drop the oldest entry once full. Insertion order is
+    # good enough — the memo only exists to collapse repeated lookups of the
+    # same handful of popular domains within one worker process.
+    if len(_creation_date_memo) >= _CREATION_DATE_MEMO_MAX:
+        _creation_date_memo.pop(next(iter(_creation_date_memo)))
+    _creation_date_memo[domain] = lookup
+
+
+def _reset_creation_date_memo_for_tests() -> None:
+    """Clear the per-process creation-date memo between test cases."""
+    _creation_date_memo.clear()
 
 
 class RdapAnalysis(Analysis):
@@ -453,19 +565,8 @@ class RdapAnalyzer(AnalysisModule):
             # the lookup error as before
             return True
 
-    def _ensure_rdap_bootstrap(self) -> Optional[str]:
-        """Best-effort lazy bootstrap of the IANA RDAP registry. Returns
-        ``None`` on success, or an error string on failure (caller
-        treats that as a reason to skip RDAP and go straight to WHOIS).
-        Repeated bootstrap attempts are cheap because ``whoisit``
-        caches state in module-level globals.
-        """
-        try:
-            if not whoisit.is_bootstrapped():
-                whoisit.bootstrap()
-            return None
-        except BootstrapError as e:
-            return f"bootstrap failed: {e}".split("\n", 1)[0].strip()
+    def _ensure_rdap_bootstrap(self) -> str | None:
+        return _ensure_rdap_bootstrap()
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         analysis = self.create_analysis(observable)
@@ -485,7 +586,7 @@ class RdapAnalyzer(AnalysisModule):
         # ---- RDAP attempt --------------------------------------------------
         bootstrap_error = self._ensure_rdap_bootstrap()
         if bootstrap_error is not None:
-            rdap_error: Optional[str] = bootstrap_error
+            rdap_error: str | None = bootstrap_error
         else:
             rdap_error = self._try_rdap(observable, query_target, analysis, now, is_ip)
             if rdap_error is None:
@@ -512,7 +613,7 @@ class RdapAnalyzer(AnalysisModule):
         analysis: RdapAnalysis,
         now: datetime,
         is_ip: bool,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Populate ``analysis`` from an RDAP query for ``query_target``
         (the registrable domain reduced from ``observable``, or the raw
         IP when ``is_ip``).
@@ -603,7 +704,7 @@ class RdapAnalyzer(AnalysisModule):
         query_domain: str,
         analysis: RdapAnalysis,
         now: datetime,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Populate ``analysis`` from a legacy WHOIS query for
         ``query_domain`` (the registrable domain reduced from
         ``observable``). Returns ``None`` on success or an error string

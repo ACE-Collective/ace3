@@ -32,6 +32,11 @@ def test_download(test_client):
     # ask for a download
     result = test_client.get(url_for('engine.download', uuid=root.uuid), headers = { 'x-ace-auth': get_config().api.api_key })
 
+    # assert the status explicitly: without this a 403 surfaces only as a confusing
+    # tarfile.ReadError below. This endpoint 403'd in production when the automation key's scope
+    # stopped covering it -- see tests/saq/test_permission_catalog.py::TestNodeToNodeScope.
+    assert result.status_code == 200
+
     # we should get back a tar file
     tar_path = os.path.join(get_temp_dir(), 'download.tar')
     output_dir = os.path.join(get_temp_dir(), 'download')

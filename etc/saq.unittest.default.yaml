@@ -709,8 +709,20 @@ shodan:
   api_key: test
 
 apikeys:
-  # value is dcef0db0-556f-44b3-9e1b-3d97b435d264
-  test: 46db99d06ab943eca3213089137fd6265b74df1e17bc201327db8b547be1c2b9
+  # value is dcef0db0-556f-44b3-9e1b-3d97b435d264 (matches api.api_key above)
+  #
+  # Deliberately "*:*" -- the suite's shared key must reach every gated endpoint the tests exercise.
+  # The structured form is not about restricting it: a bare-string entry yields scope=None, which
+  # makes api_auth_check skip key_scope_allows() entirely. Do not revert to the bare-string form.
+  #
+  # A "*:*" scope passes any permission, so this does NOT guard the production automation scope.
+  # That is the job of tests/saq/test_permission_catalog.py::TestNodeToNodeScope (against the
+  # shipped etc/saq.default.yaml) and tests/aceapi/test_engine_node_to_node.py (which authenticates
+  # with a key carrying the real shipped automation scope).
+  test:
+    key: 46db99d06ab943eca3213089137fd6265b74df1e17bc201327db8b547be1c2b9
+    scope:
+      - "*:*"
 
 service_remediation:
   unchecked_types: []
