@@ -151,7 +151,14 @@ def create_app(testing: Optional[bool]=False):
 
     @flask_app.context_processor
     def inject():
-        return { "ACE_VERSION": os.environ.get("ACE_VERSION", "") }
+        # the favicon notification-dot poll follows the alert management page's
+        # auto-refresh cadence, but 0 there only disables the in-page refresh -- the
+        # favicon indicator must keep working, so fall back to 30 seconds
+        auto_refresh_seconds = get_config().gui.manage_auto_refresh_seconds
+        return {
+            "ACE_VERSION": os.environ.get("ACE_VERSION", ""),
+            "FAVICON_POLL_SECONDS": auto_refresh_seconds if auto_refresh_seconds > 0 else 30,
+        }
 
     @flask_app.context_processor
     def inject_permission_helpers():

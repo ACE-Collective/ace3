@@ -4,7 +4,7 @@
 {{ super() }}
 
 <link id="favicon" rel="shortcut icon" href="{{ url_for('static', filename='images/ace3.svg') }}" type="image/svg+xml"
-      {% if current_user.is_authenticated %}data-reset-filter-count-url="{{ url_for('analysis.reset_filter_alert_count') }}"{% endif %}>
+      {% if current_user.is_authenticated %}data-reset-filter-count-url="{{ url_for('analysis.reset_filter_alert_count') }}" data-poll-seconds="{{ FAVICON_POLL_SECONDS }}"{% endif %}>
 <!-- Google Fonts - Inter -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -55,6 +55,9 @@
 <script src="{{ url_for('static', filename='js/ace.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/remediation.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/shortcuts.js') }}?version={{ ACE_VERSION }}"></script>
+
+<!-- Datastar (https://data-star.dev) -- declarative reactive attributes, incrementally replacing custom jQuery; see docs/GUI_DATASTAR.md -->
+<script type="module" src="{{ url_for('static', filename='js/datastar-1.0.2.js') }}?version={{ ACE_VERSION }}"></script>
 
 <!-- core css -->
 <!-- this needs to come last so we can do our CSS overrides -->

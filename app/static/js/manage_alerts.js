@@ -64,6 +64,57 @@ function search_alerts() {
     })();
 }
 
+// Shows the "Show more" button under each comment block whose content overflows the
+// collapsed height. Layout measurement only -- the click handling and expanded state
+// live in Datastar attributes on the elements themselves ($_openComments signal).
+// Idempotent: runs at page load and again after every Datastar morph brings in new rows.
+function init_comment_toggles() {
+    $(".comments-collapsible").each(function() {
+        if (this.scrollHeight > this.clientHeight + 1 || $(this).hasClass("expanded")) {
+            $(this).nextAll(".comments-toggle").first().show();
+        }
+    });
+}
+
+// Re-injects the expanded observable rows after a Datastar morph: they are
+// client-injected, so the morph removes them (the server response does not contain
+// them). Content comes from the expanded_alert_observables registry maintained by
+// toggle_alert_observables() in ace.js; entries whose alert left the list are dropped.
+function restore_alert_observables() {
+    expanded_alert_observables.forEach(function(html, alert_uuid) {
+        var row = $("#alert_row_" + alert_uuid);
+        if (row.length == 0) {
+            expanded_alert_observables.delete(alert_uuid);
+            return;
+        }
+        if (row.next(".alert-observables-row").length == 0) {
+            row.after('<tr class="alert-observables-row" data-ignore><td colspan="' + row.children("td").length + '">' + html + '</td></tr>');
+        }
+        // the morphed-in expand button renders collapsed -- point it back up
+        row.find("span.bi-chevron-down").removeClass("bi-chevron-down").addClass("bi-chevron-up");
+    });
+}
+
+// re-apply the client-side row state after a Datastar request morphs in fresh rows
+document.addEventListener("datastar-fetch", function(evt) {
+    if (evt.detail && evt.detail.type === "finished") {
+        init_comment_toggles();
+        restore_alert_observables();
+    }
+});
+
+// the auto-refresh interval on #manage_page skips polling while the tab is hidden, so
+// trigger an immediate catch-up refresh when the tab becomes visible again (the modal
+// gate lives in the data-on:ace-refresh expression)
+document.addEventListener("visibilitychange", function() {
+    if (!document.hidden) {
+        var manage_page = document.getElementById("manage_page");
+        if (manage_page) {
+            manage_page.dispatchEvent(new CustomEvent("ace-refresh"));
+        }
+    }
+});
+
 $(document).ready(function() {
 
     document.getElementById("event_time").value = moment().utc().format("YYYY-MM-DD HH:mm:ss");
@@ -73,20 +124,7 @@ $(document).ready(function() {
     document.getElementById("contain_time").value = moment().utc().format("YYYY-MM-DD HH:mm:ss");
     document.getElementById("remediation_time").value = moment().utc().format("YYYY-MM-DD HH:mm:ss");
 
-    $("#master_checkbox").change(function(e) {
-        $("input[name^='detail_']").prop('checked', $("#master_checkbox").prop('checked'));
-    });
-
-    $(".comments-collapsible").each(function() {
-        var $block = $(this);
-        if (this.scrollHeight > this.clientHeight + 1) {
-            var $btn = $block.next(".comments-toggle");
-            $btn.show().on("click", function() {
-                var expanded = $block.toggleClass("expanded").hasClass("expanded");
-                $btn.text(expanded ? "Show less" : "Show more");
-            });
-        }
-    });
+    init_comment_toggles();
 
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {

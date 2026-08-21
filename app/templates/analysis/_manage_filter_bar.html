@@ -1,0 +1,23 @@
+{# The filter bar of the alert management page: quick-filter badges (with indicator
+   dots) and the active-filter display. One of the two morph fragments returned by
+   analysis.manage_refresh -- the top-level id is what Datastar matches on, so keep it
+   stable. See docs/GUI_DATASTAR.md. #}
+<div class="col" id="manage_filter_bar">
+    Filters |
+    <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
+    <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
+    <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
+    <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()'>Last 7d</span>
+    {% for quick_filter in quick_filters %}
+    <span class="badge label-special" style="cursor:pointer" data-quick-filter-id="{{ quick_filter.id }}" onclick='set_quick_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
+    {% endfor %} |
+    {% for _filter in session['filters'] %}
+        {% set name = _filter['name'] %}
+        {% set inverted = _filter['inverted'] %}
+        {% set values = _filter['values'] %}
+        {% if values|length > 0 %}
+        <span>{% if inverted %}NOT {% endif %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter_category("{{name}}")'>{{name}}</span>: {% for index in range(values|length) %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter("{{name}}", {{index}})'>{% if values[index] is none or values[index] is string %}{{values[index]}}{% else %}{{values[index]|join(':')}}{% endif %}</span>{% if index < (values|length) - 1 %} | {% endif %}{% endfor %}</span>
+        {% endif %}
+    {% endfor %}
+    <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" onclick="copy_filter_link('{{ url_for('analysis.set_filters') }}')"><span class="bi bi-copy"></span></button>
+</div>
