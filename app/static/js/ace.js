@@ -106,9 +106,9 @@ function add_observable_filter(observable_type, observable_value, filter_url, ma
 
 // Puts a small yellow dot on the browser tab's favicon when the current user has alerts
 // waiting in their default queue -- the same open-or-mine-in-my-queue alerts the "Reset"
-// filter on the alert management page shows. This runs on every page (the favicon link
-// carries the poll URL, see base.html) so the indicator works no matter where an analyst
-// is in the GUI, not just while the alert list is open.
+// filter on the alert management page shows. Only that page's favicon link carries the
+// poll URL (see base.html), so this is a no-op everywhere else in the GUI -- an analyst
+// investigating an alert or looking at events won't trigger any polling.
 $(document).ready(function() {
     var POLL_INTERVAL_MS = 60000;
 
