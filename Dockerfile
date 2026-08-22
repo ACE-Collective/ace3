@@ -287,8 +287,9 @@ RUN /opt/ace/bin/install_integrations.sh
 
 # NOTE that COPY app /opt/ace does not create /opt/ace/app, it actually copies everything inside of app into /opt/ace
 # so we copy each individual thing we need
-COPY --chown=ace:ace ace ace_api.py ace_uwsgi.py analyst_on_ace.png ansistrm.py api_uwsgi.py api_uvicorn.py flask_config.py pytest.ini /opt/ace/
+COPY --chown=ace:ace ace ace_api.py ace_uwsgi.py analyst_on_ace.png ansistrm.py api_uwsgi.py api_uvicorn.py api_ai_uvicorn.py flask_config.py pytest.ini /opt/ace/
 COPY --chown=ace:ace aceapi /opt/ace/aceapi
+COPY --chown=ace:ace aceapi_ai /opt/ace/aceapi_ai
 COPY --chown=ace:ace aceapi_v2 /opt/ace/aceapi_v2
 COPY --chown=ace:ace alembic /opt/ace/alembic
 COPY --chown=ace:ace app /opt/ace/app

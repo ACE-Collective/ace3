@@ -1,21 +1,24 @@
 """Authentication schemas for ACE API v2."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class ApiAuthResult:
     """Result of API authentication (API key or session cookie)."""
 
-    auth_type: Optional[str] = None
-    auth_name: Optional[str] = None
-    auth_user_id: Optional[int] = None
+    auth_type: str | None = None
+    auth_name: str | None = None
+    auth_user_id: int | None = None
+    # identity of the specific credential used, for audit attribution; key_id is None for config
+    # keys (no table row) and session cookies, key_name is None for session cookies
+    key_id: int | None = None
+    key_name: str | None = None
     # None => unrestricted: a user key that inherits its owner's full permissions, a config key in
     # the deprecated no-scope form, or a session cookie. A list is a positive ALLOW-only allowlist
     # of (major, minor) patterns the request must also match, intersected with the owner's
     # permissions for a user key and evaluated alone for a config key.
-    key_scope: Optional[list[tuple[str, str]]] = None
+    key_scope: list[tuple[str, str]] | None = None
 
     def __bool__(self) -> bool:
         # Empty sentinel (returned for unmatched credentials) must be falsy so

@@ -1,0 +1,37 @@
+# Configuration overlay for the AI investigation API container (http-api-ai).
+#
+# This is the ONLY file in the AI container's SAQ_CONFIG_PATHS (the etc/saq.yaml dev overlay is
+# excluded via SAQ_SKIP_LOCAL_SAQ_YAML). Together with the startup custody checks
+# (aceapi_ai/startup_checks.py) it defines what that process may hold:
+#
+#   * no SAQ_ENC and no encryption capability -- encrypted: references resolve to nothing here,
+#     so every credential a backend needs must arrive as a plaintext/file:/env: value in THIS file
+#     (or a deployment overlay appended after it), and is declared by the backend's
+#     validate_startup(). Any other plaintext secret in the process fails the boot.
+#   * the GUI signing key and the node-to-node API key are overridden to an inert sentinel below;
+#     the values the shared /auth volume carries never reach this process.
+#
+# The backend definitions themselves (ai_query_backend_*) live in the shared defaults so every ACE
+# process derives the ai:<backend> permission catalog from them; this overlay only enables them
+# for this container and supplies their credentials.
+
+api:
+  # not used by the AI app (it serves no node-to-node traffic); the sentinel keeps the real
+  # node-to-node key out of this process, and the startup check asserts it
+  secret_key: ai-container-unused
+  api_key: ai-container-unused
+
+gui:
+  # the AI app authenticates API keys only -- never Flask session cookies -- so it must not hold
+  # the cookie signing key; the startup check asserts the sentinel
+  secret_key: ai-container-unused
+
+ai_query_backend_splunk:
+  enabled: true
+
+# Deployments override host and token (file:/env: marker) with a Splunk account whose role strips
+# the write-capable search commands (| delete, | outputlookup, | collect, ...) -- that role, not
+# ACE, is the control that makes "read-only Splunk" true. The dev placeholder below passes the
+# custody checks but queries fail at Splunk until a real credential is provided.
+splunk_config_ai_readonly:
+  token: dev-placeholder-token

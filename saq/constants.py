@@ -661,6 +661,8 @@ REDIS_DB_FOR_DETECTION_A = 4
 REDIS_DB_FOR_DETECTION_B = 5
 REDIS_DB_BG_TASKS = 6
 REDIS_DB_CELERY = 7
+# REDIS_DB_HUNT_CACHE = 8 is declared with the hunt constants above
+REDIS_DB_AI_RATE_LIMIT = 9
 
 # valid summary detail formats
 SUMMARY_DETAIL_FORMAT_PRE = 'pre' # preformatted

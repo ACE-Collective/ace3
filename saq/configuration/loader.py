@@ -1,13 +1,11 @@
 import os
 import sys
-from typing import Optional
 
-
-from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.configuration.yaml_parser import YAMLConfig
+from saq.environment import get_base_dir, get_global_runtime_settings
 
 
-def load_configuration(config_paths: Optional[list[str]] = None):
+def load_configuration(config_paths: list[str] | None = None):
     """Unified configuration loader using YAML.
 
     Args:
@@ -71,6 +69,10 @@ def load_configuration(config_paths: Optional[list[str]] = None):
     _load_optional(db_auto_yaml)
     if get_global_runtime_settings().unit_testing:
         _load_optional(s3_test_yaml)
+    elif "SAQ_SKIP_LOCAL_SAQ_YAML" in os.environ:
+        # a container with a curated SAQ_CONFIG_PATHS overlay (the AI API) must not have the
+        # local dev overlay -- which may hold live credentials -- merged over it
+        sys.stderr.write(f"NOTICE: skipping {local_yaml} because SAQ_SKIP_LOCAL_SAQ_YAML is set\n")
     else:
         _load_optional(local_yaml)
 

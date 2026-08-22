@@ -33,7 +33,11 @@ class CatalogEntry:
 # entry has at least one in-repo enforcement site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
-    CatalogEntry("ai", "read", "Run read-only AI investigation queries against data sources via the AI API."),
+    # The ai: major gates the AI investigation API (aceapi_ai). ai:alert (alert download) is the
+    # only static entry; the per-backend ai:<name> entries are DERIVED from the deployment's
+    # ai_query_backend_<name> config sections (see dynamic_backend_entries), so integration-provided
+    # backends surface their permission without their vendor name appearing in this open-source file.
+    CatalogEntry("ai", "alert", "Download alert packages via the AI investigation API."),
     CatalogEntry("alert", "create", "Create new alerts or upload alert data via API/GUI."),
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "review", "Review and correct alert dispositions."),
@@ -61,9 +65,46 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("whitelist", "write", "Whitelist observables."),
 )
 
-# Convenience lookups for validation and guard tests.
+# Convenience lookups for validation and guard tests. These cover the STATIC entries only; use
+# get_catalog_pairs() where the config-derived ai:<backend> entries must be included.
 CATALOG_PAIRS: frozenset[tuple[str, str]] = frozenset((e.major, e.minor) for e in PERMISSION_CATALOG)
 CATALOG_MAJORS: frozenset[str] = frozenset(e.major for e in PERMISSION_CATALOG)
+
+
+def dynamic_backend_entries() -> tuple[CatalogEntry, ...]:
+    """One ai:<name> entry per ai_query_backend_<name> config section in the loaded configuration.
+
+    The AI API's query routes are config-driven, and so are their permissions: a deployment that
+    configures a backend (its own or an integration's) gets the matching catalog entry here, with
+    no code change in this file. Disabled backends are included -- their permission being grantable
+    is harmless while the route does not exist, and it keeps the catalog stable across toggles.
+
+    Returns () when the configuration is not loaded (import-time use of the static constants stays
+    valid); callers that need the full catalog go through get_permission_catalog().
+    """
+    # imported lazily: this module must stay importable before configuration load
+    from saq.configuration.config import get_config
+
+    try:
+        backends = get_config().ai_query_backends
+    except Exception:
+        return ()
+
+    return tuple(
+        CatalogEntry("ai", backend.name,
+                     f"Run read-only {backend.name} queries via the AI investigation API.")
+        for backend in sorted(backends, key=lambda b: b.name)
+        if ("ai", backend.name) not in CATALOG_PAIRS
+    )
+
+
+def get_permission_catalog() -> tuple[CatalogEntry, ...]:
+    """The full catalog: the static constant plus the config-derived ai:<backend> entries."""
+    return PERMISSION_CATALOG + dynamic_backend_entries()
+
+
+def get_catalog_pairs() -> frozenset[tuple[str, str]]:
+    return frozenset((e.major, e.minor) for e in get_permission_catalog())
 
 # Characters that make a grant a wildcard pattern (fnmatch semantics, matching
 # saq.permissions.logic._evaluate_permission).
@@ -77,7 +118,7 @@ def is_grantable(major: str, minor: str) -> bool:
     ``*:*``, ``observable:*``, ``*:read`` remain grantable even though they are not catalog rows).
     Used to *warn* (not block) on likely typos when granting permissions.
     """
-    if (major, minor) in CATALOG_PAIRS:
+    if (major, minor) in get_catalog_pairs():
         return True
     return any(c in major or c in minor for c in _WILDCARD_CHARS)
 
@@ -102,6 +143,9 @@ def sync_permission_catalog(session, *, prune: bool = True) -> tuple[int, int, i
     # Imported here so this module stays import-light for the constant/lookups.
     from saq.database.model import AuthPermissionCatalog
 
+    catalog = get_permission_catalog()
+    catalog_pairs = frozenset((e.major, e.minor) for e in catalog)
+
     existing = {
         (row.major, row.minor): row
         for row in session.query(AuthPermissionCatalog).all()
@@ -109,7 +153,7 @@ def sync_permission_catalog(session, *, prune: bool = True) -> tuple[int, int, i
 
     inserted = updated = pruned = 0
 
-    for entry in PERMISSION_CATALOG:
+    for entry in catalog:
         row = existing.get((entry.major, entry.minor))
         if row is None:
             session.add(
@@ -126,7 +170,7 @@ def sync_permission_catalog(session, *, prune: bool = True) -> tuple[int, int, i
 
     if prune:
         for (major, minor), row in existing.items():
-            if (major, minor) not in CATALOG_PAIRS:
+            if (major, minor) not in catalog_pairs:
                 session.delete(row)
                 pruned += 1
 

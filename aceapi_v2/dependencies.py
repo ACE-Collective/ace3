@@ -6,7 +6,8 @@ Supports dual authentication:
 """
 
 import logging
-from typing import Annotated, Callable, Optional
+from collections.abc import Callable
+from typing import Annotated, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request, Security, status
@@ -125,19 +126,24 @@ async def get_current_auth(
     )
 
 
-def require_permission(major: str, minor: str) -> Callable:
+def require_permission(major: str, minor: str, auth_dependency: Callable | None = None) -> Callable:
     """Factory function that creates a dependency requiring a specific permission.
 
     Args:
         major: The major permission category (e.g., "analysis")
         minor: The minor permission (e.g., "read")
+        auth_dependency: The authentication dependency supplying the ApiAuthResult; defaults to
+            this app's combined API-key/session get_current_auth. Other apps (aceapi_ai) pass
+            their own so the same enforcement logic runs behind a different auth surface.
 
     Returns:
         A FastAPI dependency function that validates the permission.
     """
+    if auth_dependency is None:
+        auth_dependency = get_current_auth
 
     async def permission_dependency(
-        auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+        auth: Annotated[ApiAuthResult, Security(auth_dependency)],
         session: Annotated[AsyncSession, Depends(get_async_session)],
     ) -> ApiAuthResult:
         # Effective permission is the intersection of the user's permissions and the key's scope.
