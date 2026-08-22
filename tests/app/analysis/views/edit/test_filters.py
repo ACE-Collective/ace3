@@ -754,3 +754,22 @@ def test_reset_filter_alert_count_requires_login(app):
     with app.test_client() as client:
         response = client.get(url_for("analysis.reset_filter_alert_count"), follow_redirects=False)
         assert response.status_code in (302, 401, 403)
+
+
+@pytest.mark.integration
+def test_reset_filter_indicator_only_on_manage_page(web_client, root_analysis):
+    """The favicon polling attribute must only render on the alert management page --
+    not on the alert detail page (or anywhere else in the GUI), so the indicator can't
+    trigger polling from pages an analyst isn't using to triage the queue."""
+    from saq.database.util.alert import ALERT
+
+    manage_response = web_client.get(url_for("analysis.manage"))
+    assert manage_response.status_code == 200
+    assert b'data-reset-filter-count-url' in manage_response.data
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    index_response = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert index_response.status_code == 200
+    assert b'data-reset-filter-count-url' not in index_response.data
