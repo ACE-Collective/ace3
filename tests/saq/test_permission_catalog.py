@@ -10,8 +10,9 @@ from saq.configuration.config import get_config
 from saq.database.model import AuthGroupPermission, AuthPermissionCatalog, AuthUserPermission
 from saq.database.pool import get_db
 from saq.permissions.catalog import (
-    CATALOG_PAIRS,
     PERMISSION_CATALOG,
+    get_catalog_pairs,
+    get_permission_catalog,
     is_grantable,
     sync_permission_catalog,
 )
@@ -53,7 +54,7 @@ def _enforced_permission_pairs() -> set[tuple[str, str]]:
     """Statically scan app/, aceapi_v2/ (require_permission) and aceapi/ (api_auth_check) for the
     enforced (major, minor) permission pairs."""
     pairs: set[tuple[str, str]] = set()
-    for root in ("app", "aceapi_v2", "aceapi"):
+    for root in ("app", "aceapi_v2", "aceapi", "aceapi_ai"):
         for path in (REPO_ROOT / root).rglob("*.py"):
             if path in _GUARD_EXCLUDE:
                 continue
@@ -70,9 +71,9 @@ class TestCatalogGuard:
         # sanity: we found some pairs at all
         assert enforced, "no require_permission() call sites were discovered — check the scanner"
 
-        missing = {pair for pair in enforced if pair not in CATALOG_PAIRS}
+        missing = {pair for pair in enforced if pair not in get_catalog_pairs()}
         assert not missing, (
-            f"these enforced permissions are missing from PERMISSION_CATALOG: {sorted(missing)}"
+            f"these enforced permissions are missing from the permission catalog: {sorted(missing)}"
         )
 
     def test_user_edit_is_not_enforced_anymore(self):
@@ -152,6 +153,24 @@ _FASTAPI_PUBLIC_PATHS = {
 }
 
 
+def _iter_effective_routes(app):
+    """Yield (path, methods, dependant) for every API operation on a FastAPI app.
+
+    FastAPI's lazy router inclusion leaves _IncludedRouter wrappers (not APIRoute objects) on
+    app.routes, so a plain isinstance(route, APIRoute) walk silently sees zero routes; expanding
+    the effective route contexts is what actually enumerates the API surface. The effective
+    dependant includes router-level dependencies merged with the route's own.
+    """
+    from fastapi.routing import APIRoute
+
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            yield route.path, route.methods, route.dependant
+        elif hasattr(route, "effective_route_contexts"):
+            for context in route.effective_route_contexts():
+                yield context.path, context.original_route.methods, context.dependant
+
+
 def _dependant_has_permission_dep(dependant) -> bool:
     """True if any (transitive) sub-dependency is the require_permission-produced gate."""
     for sub in dependant.dependencies:
@@ -162,33 +181,96 @@ def _dependant_has_permission_dep(dependant) -> bool:
     return False
 
 
+def _dependant_permission_pairs(dependant) -> set[tuple[str, str]]:
+    """The (major, minor) pairs of every require_permission gate reachable from the dependant."""
+    pairs: set[tuple[str, str]] = set()
+    for sub in dependant.dependencies:
+        fn = sub.call
+        if getattr(fn, "__name__", "") == "permission_dependency":
+            closure = dict(zip(fn.__code__.co_freevars, fn.__closure__))
+            pairs.add((closure["major"].cell_contents, closure["minor"].cell_contents))
+        pairs.update(_dependant_permission_pairs(sub))
+    return pairs
+
+
+# The AI app's reviewed public (permission-less but authenticated where noted) allowlist:
+# /health/ping is liveness; /backends is authenticated metadata-only discovery that itself reports
+# per-backend authorization; the docs routes carry no data.
+_AI_PUBLIC_PATHS = {
+    "/health/ping",
+    "/backends",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+}
+
+
+def _fastapi_apps():
+    from aceapi_v2.application import app as v2_app
+
+    # imported lazily: the AI app builds its backend registry from the loaded configuration
+    import aceapi_ai.application
+
+    return [
+        ("aceapi_v2", v2_app, _FASTAPI_PUBLIC_PATHS),
+        ("aceapi_ai", aceapi_ai.application.app, _AI_PUBLIC_PATHS),
+    ]
+
+
 @pytest.mark.unit
 class TestRouteCoverage:
-    """Every FastAPI route is either permission-gated or on the reviewed public allowlist.
+    """Every FastAPI route in every app is either permission-gated or on its reviewed public
+    allowlist.
 
     This is the enforceable form of the AI-container design's "checkable property": a scoped key
-    (ai:read) cannot reach any endpoint outside its scope, because every reachable endpoint runs
+    cannot reach any endpoint outside its scope, because every reachable endpoint runs
     require_permission, which applies the key-scope intersection.
     """
 
     def test_every_fastapi_route_is_gated_or_allowlisted(self):
-        from fastapi.routing import APIRoute
+        ungated: list[tuple[str, list[str], str]] = []
+        route_count = 0
+        for app_name, fastapi_app, public_paths in _fastapi_apps():
+            for path, methods, dependant in _iter_effective_routes(fastapi_app):
+                route_count += 1
+                if path in public_paths:
+                    continue
+                if not _dependant_has_permission_dep(dependant):
+                    ungated.append((app_name, sorted(methods), path))
 
-        from aceapi_v2.application import app as fastapi_app
-
-        ungated: list[tuple[list[str], str]] = []
-        for route in fastapi_app.routes:
-            if not isinstance(route, APIRoute):
-                continue
-            if route.path in _FASTAPI_PUBLIC_PATHS:
-                continue
-            if not _dependant_has_permission_dep(route.dependant):
-                ungated.append((sorted(route.methods), route.path))
+        # guard against the walk going vacuous again (see _iter_effective_routes)
+        assert route_count > 40, f"route enumeration only found {route_count} routes"
 
         assert not ungated, (
-            "these FastAPI routes have no require_permission gate and are not on the reviewed "
-            f"public allowlist: {sorted(ungated)}"
+            "these FastAPI routes have no require_permission gate and are not on their app's "
+            f"reviewed public allowlist: {sorted(ungated)}"
         )
+
+    def test_ai_query_routes_gate_exactly_their_backend(self):
+        """POST /query/<name> must require exactly ai:<name> -- for every enabled backend."""
+        import aceapi_ai.application
+        from saq.configuration.config import get_config
+
+        routes_by_path = {
+            path: dependant
+            for path, _, dependant in _iter_effective_routes(aceapi_ai.application.app)
+        }
+
+        enabled = [b.name for b in get_config().ai_query_backends if b.enabled]
+        assert enabled, "no enabled ai query backends in the test configuration"
+
+        for name in enabled:
+            dependant = routes_by_path.get(f"/query/{name}")
+            assert dependant is not None, f"enabled backend {name} has no /query/{name} route"
+            assert _dependant_permission_pairs(dependant) == {("ai", name)}
+
+    def test_ai_alert_download_gates_ai_alert(self):
+        import aceapi_ai.application
+
+        dependant = next(
+            dependant for path, _, dependant in _iter_effective_routes(aceapi_ai.application.app)
+            if path == "/alerts/{alert_uuid}/download")
+        assert _dependant_permission_pairs(dependant) == {("ai", "alert")}
 
 
 @pytest.mark.unit
@@ -196,6 +278,13 @@ class TestIsGrantable:
     def test_catalog_pairs_are_grantable(self):
         for entry in PERMISSION_CATALOG:
             assert is_grantable(entry.major, entry.minor) is True
+
+    def test_config_derived_backend_permissions_are_grantable(self):
+        # the ai:<backend> entries come from the ai_query_backend_* config sections, so
+        # integration-provided backends are grantable without appearing in the static constant
+        assert is_grantable("ai", "fake") is True
+        assert is_grantable("ai", "splunk") is True
+        assert is_grantable("ai", "read") is False  # replaced by ai:alert + per-backend entries
 
     def test_wildcards_are_grantable(self):
         assert is_grantable("*", "*") is True
@@ -215,19 +304,20 @@ class TestSyncPermissionCatalog:
 
         inserted, updated, pruned = sync_permission_catalog(session)
         session.commit()
-        assert inserted == len(PERMISSION_CATALOG)
+        assert inserted == len(get_permission_catalog())
         assert updated == 0
         assert pruned == 0
 
-        # The table now exactly mirrors the constant.
+        # The table now exactly mirrors the catalog (static + config-derived backend entries).
         rows = {(r.major, r.minor) for r in session.query(AuthPermissionCatalog).all()}
-        assert rows == CATALOG_PAIRS
+        assert rows == get_catalog_pairs()
+        assert ("ai", "fake") in rows  # config-derived entry made it into the read-model
 
         # Second run is a no-op.
         inserted, updated, pruned = sync_permission_catalog(session)
         session.commit()
         assert (inserted, updated, pruned) == (0, 0, 0)
-        assert session.query(AuthPermissionCatalog).count() == len(PERMISSION_CATALOG)
+        assert session.query(AuthPermissionCatalog).count() == len(get_permission_catalog())
 
     def test_sync_updates_changed_description(self):
         session = get_db()
@@ -271,7 +361,7 @@ class TestSyncPermissionCatalog:
             AuthPermissionCatalog.major == "bogus"
         ).count() == 0
         rows = {(r.major, r.minor) for r in session.query(AuthPermissionCatalog).all()}
-        assert rows == CATALOG_PAIRS
+        assert rows == get_catalog_pairs()
 
 
 # The exact rewrite statements from the seed_permission_catalog migration, exercised directly so a

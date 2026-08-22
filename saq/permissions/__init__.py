@@ -27,6 +27,8 @@ from .catalog import (
     PERMISSION_CATALOG,
     CATALOG_PAIRS,
     CATALOG_MAJORS,
+    get_catalog_pairs,
+    get_permission_catalog,
     is_grantable,
     sync_permission_catalog,
 )
@@ -54,6 +56,8 @@ __all__ = [
     "PERMISSION_CATALOG",
     "CATALOG_PAIRS",
     "CATALOG_MAJORS",
+    "get_catalog_pairs",
+    "get_permission_catalog",
     "is_grantable",
     "sync_permission_catalog",
 ]
