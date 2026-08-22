@@ -1,7 +1,0 @@
-# configuration for openapi-python-client (https://github.com/openapi-generators/openapi-python-client)
-# controls how the aceapi_v2_client package is generated from the vendored openapi.json
-# see scripts/regenerate.sh for how this is invoked
-package_name_override: aceapi_v2_client
-project_name_override: aceapi-v2-client
-# keep generated package metadata in sync with the hand-authored pyproject.toml
-package_version_override: 2.1.0

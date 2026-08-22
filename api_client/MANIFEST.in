@@ -1,9 +1,0 @@
-include LICENSE
-include README.md
-include requirements.txt
-include requirements-dev.txt
-include openapi.json
-include openapi-python-client-config.yaml
-include aceapi_v2_client/py.typed
-recursive-include scripts *.sh
-recursive-include tests *.py
