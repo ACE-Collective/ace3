@@ -32,7 +32,6 @@ RUN groupadd ace -g $SAQ_GROUP_ID && \
     useradd -g ace -m -s /bin/bash -u $SAQ_USER_ID ace
 
 # update sources to include contrib, non-free, and backports
-# Note: de4dot uses mono-runtime from Debian - dotnet runtime not needed.
 RUN sed -i -e '/^Components: main$/ s/$/ contrib non-free/' /etc/apt/sources.list.d/debian.sources && \
     sed -i -e '/^Suites: trixie trixie-updates$/ s/$/ trixie-backports/' /etc/apt/sources.list.d/debian.sources
 
@@ -128,16 +127,6 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 	&& apt update \
 	&& apt install gh -y
 
-# install de4dot separately - Mono's GAC assembly registration crashes under
-# Rosetta/QEMU emulation, so we handle the post-install failure gracefully.
-# This does not have an impact on native amd64 systems.
-RUN apt-get update && \
-    (apt-get install -y --no-install-recommends de4dot || true) && \
-    rm -f /var/lib/dpkg/info/libdnlib2.1-cil.postinst && \
-    (dpkg --configure libdnlib2.1-cil de4dot || true) && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
 # install microsoft's official package signing key
 RUN curl -fsSLk https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb && \
     dpkg -i /tmp/packages-microsoft-prod.deb && \
@@ -149,6 +138,19 @@ RUN apt-get update && \
 
 # install ilspycmd
 RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 9.1.0.7988
+
+# build and install de4dotEx, the maintained fork of de4dot, on .NET 8
+# (the Debian de4dot package runs on Mono, whose JIT crashes under Rosetta/QEMU
+# emulation; de4dotEx keeps the original de4dot command line interface)
+# builds the latest upstream by default; set DE4DOTEX_REF to pin a tag or commit
+ARG DE4DOTEX_REF=HEAD
+RUN git clone https://github.com/GDATAAdvancedAnalytics/de4dotEx.git /usr/src/de4dotEx && \
+    git -C /usr/src/de4dotEx checkout ${DE4DOTEX_REF} && \
+    dotnet publish /usr/src/de4dotEx/de4dot/de4dot.csproj -c Release -f net8.0 -o /opt/de4dotEx && \
+    chmod +x /opt/de4dotEx/de4dot && \
+    printf '#!/bin/sh\nexec /opt/de4dotEx/de4dot "$@"\n' > /usr/local/bin/de4dot && \
+    chmod +x /usr/local/bin/de4dot && \
+    rm -rf /usr/src/de4dotEx /root/.nuget
 
 # create necessary directories
 RUN mkdir -p /opt/ace /venv /opt/tools && \
