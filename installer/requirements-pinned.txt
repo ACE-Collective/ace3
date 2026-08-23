@@ -1,4 +1,4 @@
-alembic==1.18.5
+alembic==1.19.1
 beautifulsoup4==4.15.0
 black==26.5.1
 celery[redis]==5.6.3
@@ -7,12 +7,12 @@ confusable-homoglyphs==3.3.1
 construct==2.10.70
 croniter==6.2.4
 cryptography==50.0.0
-dateparser==1.4.1
-deepmerge==2.1.0
+dateparser==1.4.2
+deepmerge==3.0
 dhash==1.4
 distorm3==3.5.2
 dnspython==2.8.0
-fakeredis==2.37.0
+fakeredis==2.37.1
 Flask==3.1.3
 flask-executor==1.0.0
 Flask-Login==0.6.3
@@ -24,22 +24,22 @@ gglsbl-rest-client==1.0.1
 glom==25.12.0
 hexdump==3.3
 html2text==2025.4.15
-idna==3.18
+idna==3.19
 iptools==0.7.0
 jellyfish==1.2.1
 Jinja2==3.1.6
 ldap3==2.9.1
 LnkParse3==1.6.0
-lxml==6.1.1
+lxml==6.1.2
 markdown==3.10.3
 msoffcrypto-tool==6.0.0
-numpy==2.5.1
+numpy==2.5.2
 olefile==0.47
 oletools==0.60.2
 opencv-python==5.0.0.93
 pcodedmp==1.2.6
 pefile==2024.8.26
-pikepdf==10.11.0
+pikepdf==10.12.0
 Pillow==12.3.0
 plyara==2.2.8
 progress==1.6.1
@@ -48,7 +48,7 @@ pyasn1==0.6.4
 pydantic==2.13.4
 pyenchant==3.3.0
 PyExifTool==0.5.6
-pylint==4.0.6
+pylint==4.0.7
 PyMySQL==1.2.0
 pysimdjson==7.0.2
 pysip==1.1.0
@@ -74,10 +74,10 @@ requests-ntlm
 requests-oauthlib==2.0.0
 shodan==1.31.0
 splunk-sdk==3.0.0
-SQLAlchemy==2.0.51
+SQLAlchemy==2.0.52
 tabulate==0.10.0
 tld==0.13.2
-tldextract==5.3.1
+tldextract==5.3.2
 tzlocal==5.4.4
 urlfinderlib==0.25.1
 uWSGI==2.0.31
@@ -90,14 +90,14 @@ yara-python==4.5.4
 zstandard==0.25.0
 
 # LLM stuff
-numpy==2.5.1
+numpy==2.5.2
 pandas==3.0.5
 tqdm==4.70.0
-qdrant-client==1.18.0
+qdrant-client==1.19.0
 
 # FastAPI
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.4
 python-multipart==0.0.32
 pyjwt==2.13.0
 aiomysql==0.3.2
