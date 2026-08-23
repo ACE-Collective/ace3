@@ -1,5 +1,5 @@
-from functools import wraps
 import logging
+from functools import wraps
 
 from flask import abort, request
 from flask_login import current_user, login_required
@@ -36,5 +36,19 @@ def require_permission(major: str, minor: str):
         return _wrapped_view
 
     return decorator
+
+
+def reject_unauthenticated_datastar(view_func):
+    """Returns 401 instead of the login-page redirect when an unauthenticated Datastar
+    request arrives: fetch() follows redirects transparently, so a Datastar poller would
+    otherwise receive the login page and try to morph it into the open page. On a 401
+    Datastar patches nothing and the poll degrades harmlessly. Place above the
+    @require_permission decorator so it runs first."""
+    @wraps(view_func)
+    def _wrapped_view(*args, **kwargs):
+        if request.headers.get("Datastar-Request") and not current_user.is_authenticated:
+            return "", 401
+        return view_func(*args, **kwargs)
+    return _wrapped_view
 
 

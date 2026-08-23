@@ -55,6 +55,12 @@ function copy_to_clipboard(str) {
         : Promise.reject(new Error("unable to copy to clipboard"));
 }
 
+// Expanded observable content keyed by alert uuid. Pages that morph the alert table
+// (the manage alerts page) re-inject the expansion rows from this after each refresh,
+// because the morph removes client-injected rows that are not in the server response --
+// see restore_alert_observables() in manage_alerts.js.
+const expanded_alert_observables = new Map();
+
 // Expands or collapses the observable list under an alert row. Shared by every page that renders a
 // table of alerts: the manage alerts page, the event page, and the event list expandable row.
 //
@@ -67,6 +73,7 @@ function toggle_alert_observables(button, alert_uuid, observables_url) {
 
     if (existing.length != 0) {
         existing.remove();
+        expanded_alert_observables.delete(alert_uuid);
         icon.removeClass("bi-chevron-up").addClass("bi-chevron-down");
         return;
     }
@@ -78,7 +85,9 @@ function toggle_alert_observables(button, alert_uuid, observables_url) {
         return resp.text();
     })
     .then(function(data){
-        row.after('<tr class="alert-observables-row"><td colspan="' + row.children("td").length + '">' + data + '</td></tr>');
+        // data-ignore stops Datastar from processing the fetched observable HTML
+        row.after('<tr class="alert-observables-row" data-ignore><td colspan="' + row.children("td").length + '">' + data + '</td></tr>');
+        expanded_alert_observables.set(alert_uuid, data);
         icon.removeClass("bi-chevron-down").addClass("bi-chevron-up");
     })
     .catch(function(err){
@@ -110,13 +119,15 @@ function add_observable_filter(observable_type, observable_value, filter_url, ma
 // poll URL (see base.html), so this is a no-op everywhere else in the GUI -- an analyst
 // investigating an alert or looking at events won't trigger any polling.
 $(document).ready(function() {
-    var POLL_INTERVAL_MS = 60000;
-
     var favicon = document.getElementById("favicon");
     var count_url = favicon ? favicon.getAttribute("data-reset-filter-count-url") : null;
     if (!favicon || !count_url) {
         return;
     }
+
+    // follows the alert management page's auto-refresh cadence; the server substitutes
+    // 30s when that refresh is disabled (see the FAVICON_POLL_SECONDS context processor)
+    var POLL_INTERVAL_MS = (parseInt(favicon.getAttribute("data-poll-seconds"), 10) || 30) * 1000;
 
     var plain_href = favicon.getAttribute("href");
     var plain_type = favicon.getAttribute("type");
@@ -210,12 +221,20 @@ $(document).ready(function() {
 });
 
 
+// the button is currently commented out of the disposition modal, but the disposition
+// radio onclick handlers still call these
 function hideSaveToEventButton() {
-  document.getElementById("btn-save-to-event").style.display = 'none';
+  const button = document.getElementById("btn-save-to-event");
+  if (button) {
+    button.style.display = 'none';
+  }
 }
 
 function showSaveToEventButton() {
-  document.getElementById("btn-save-to-event").style.display = 'inline';
+  const button = document.getElementById("btn-save-to-event");
+  if (button) {
+    button.style.display = 'inline';
+  }
 }
 
 // shows or hides the corrected-disposition section of the review modal based on the review result

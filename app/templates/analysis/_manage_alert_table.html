@@ -1,0 +1,126 @@
+{# The alert table of the alert management page: rows, total count, and pagination.
+   One of the two morph fragments returned by analysis.manage_refresh -- the top-level
+   id is what Datastar matches on, so keep it stable. Checkbox selection and comment
+   expansion live in the $_sel / $_openComments signals declared on #manage_page in
+   manage.html so they survive the morph. Do not bind jQuery handlers directly to
+   elements in here -- use inline attributes, data-on:*, or delegated handlers.
+   See docs/GUI_DATASTAR.md. #}
+<div id="manage_alert_table">
+<div class="container-fluid">
+    <div class="row">
+        <div class="col">
+            <table class="table table-hover table-condensed">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>
+                            <div class="form-check">
+                                {# selecting all rows goes through the $_sel signal: the jQuery version set
+                                   the checked property directly, which fires no input event and would
+                                   desync the signal #}
+                                <input class="form-check-input" type="checkbox" id="master_checkbox"
+                                       data-uuids='{{ alerts|map(attribute="uuid")|list|tojson }}'
+                                       data-on:change="$_sel = el.checked ? JSON.parse(el.dataset.uuids) : []"/>
+                            </div>
+                        </th>
+                        <th><span onmousedown='set_sort_filter("Alert Date")' style="cursor:pointer;white-space: nowrap;">Date{% if session['sort_filter'] == 'Alert Date' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
+                        <th class="w-100"><span onmousedown='set_sort_filter("Description")' style="cursor:pointer">Alert{% if session['sort_filter'] == 'Description' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}{% if ace_config.gui.show_total_alert_count %} ({{total_alerts}}){% endif %}</span></th>
+                        <th><span onmousedown='set_sort_filter("Owner")' style="cursor:pointer">Owner{% if session['sort_filter'] == 'Owner' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
+                        {% if display_disposition %}
+                            <th><span onmousedown='set_sort_filter("Disposition")' style="cursor:pointer">Disposition{% if session['sort_filter'] == 'Disposition' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
+                        {% endif %}
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for alert in alerts %}
+                    {# we can use this ID to modify an alert row #}
+                    <tr id="alert_row_{{alert.uuid}}" >
+                        <td>
+                            {% include "analysis/_observable_expand_button.html" %}
+                        </td>
+                        <td>
+                            <div class="form-check">
+                                {# checked state comes from the $_sel array signal (seeded from
+                                   session['checked']) via data-bind, which re-applies the checked
+                                   property after every morph #}
+                                <input class="form-check-input" type="checkbox" id="cb_{{alert.uuid}}" name="detail_{{alert.uuid}}" disposition="{{ alert.disposition }}" value="{{alert.uuid}}" data-bind:_sel></input>
+                            </div>
+                        </td>
+                        <td style="white-space: nowrap;" title="{{alert.insert_date}}" id="alert_date_{{ alert.uuid }}">{{alert.display_insert_date}}</td>
+                        <td class="alert-description-cell">
+                            <img src="{{alert.icon}}" width="24" height="24">
+                            <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
+                            {% if alert.event_mapping %}
+                                {% for em in alert.event_mapping %}
+                                <a class="btn btn-outline-primary btn-xs" target="_blank" href="{{ url_for('events.index', direct=em.event.id) }}">
+                                    <span class="bi bi-lightning"></span> {{ em.event.name }}
+                                </a>
+                                {% endfor %}
+                            {% endif %}
+                            {% if alert_tags[alert.uuid]|length != 0 %}
+                                {% for tag in alert_tags[alert.uuid] %}
+                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="add_filter('Tag', ['{{tag.name}}'])">{{tag.name}}</span>
+                                {% endfor %}
+                            {% endif %}
+                            {% if alert.remediation_status == 'success' %}
+                                <span class="badge text-bg-success" style="cursor:pointer" >remediated</span>
+                            {% elif alert.remediation_status == 'failed' %}
+                                <span class="badge text-bg-danger" style="cursor:pointer" >remediation failed</span>
+                            {% elif alert.remediation_status == 'processing' %}
+                                <span class="badge text-bg-warning" style="cursor:pointer" >remediating</span>
+                            {% endif %}
+                            {% if comments[alert.uuid]|length != 0 %}
+                                <div class="comments-collapsible" id="comments_{{alert.uuid}}" data-class:expanded="$_openComments.includes('{{alert.uuid}}')">
+                                    {% for comment in comments[alert.uuid] %}
+                                        <br />
+                                        <span style="font-size: x-small;">
+                                            ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
+                                        </span>
+                                    {% endfor %}
+                                </div>
+                                {# hidden until init_comment_toggles() in manage_alerts.js measures that the
+                                   comment block overflows its collapsed height #}
+                                <button type="button" class="btn btn-link btn-sm p-0 comments-toggle" style="display: none; font-size: x-small;"
+                                        data-on:click="$_openComments = $_openComments.includes('{{alert.uuid}}') ? $_openComments.filter(u => u !== '{{alert.uuid}}') : [...$_openComments, '{{alert.uuid}}']"
+                                        data-text="$_openComments.includes('{{alert.uuid}}') ? 'Show less' : 'Show more'">Show more</button>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span style="cursor:pointer" onmousedown='add_filter("Owner", ["{{alert.owner.gui_display}}"])'>{{alert.owner.gui_display}}</span>
+                        </td>
+                        <td>
+                            <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='add_filter("Disposition", ["{{alert.disposition}}"])'>{{alert.disposition}}</span>
+                        </td>
+                        <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
+                    </tr>
+                    {% if alert.uuid in search_result_mapping %}
+                        <tr>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td colspan="4">
+                                {% for search_result in search_result_mapping[alert.uuid] %}
+                                <span class="badge bg-white border border-black" style="color: black; border-width: 1px;">{{ "%.2f"|format(search_result.score * 100.0) }}%</span> {{search_result.payload.get("text", "")}}<br />
+                                {% endfor %}
+                            </td>
+                        </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div> <!-- end column -->
+    </div> <!-- end row -->
+</div> <!-- end container -->
+
+<!-- display pagination options if not all alerts are shown -->
+{% if total_alerts > session['page_size'] %}
+<div style="white-space: nowrap;text-align: center;margin-bottom:20px;">
+    <button onclick="set_page_offset(0)" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-start"></span></button>
+    <button onclick="set_page_offset({{page_offset - session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-backward"></span></button>
+    <button onclick="set_page_size({{session['page_size']}})">{{page_offset + 1}} to {% if page_offset + session['page_size'] > total_alerts %}{{total_alerts}}{% else %}{{page_offset + session['page_size']}}{% endif %} of {{total_alerts}}</button>
+    <button onclick="set_page_offset({{page_offset + session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-forward"></span></button>
+    <button onclick="set_page_offset({{(total_alerts // session['page_size']) * session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-end"></span></button>
+</div>
+{% endif %}
+</div>

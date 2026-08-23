@@ -1,26 +1,47 @@
 import logging
-from flask import jsonify, render_template, session
-from flask_login import current_user
+
 import pytz
+from flask import jsonify, make_response, render_template, session
+from flask_login import current_user
 from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
-from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_quick_filter_display_data, get_reset_filter_alert_count, getFilters, reset_checked_alerts, reset_pagination, reset_sort_filter
-from app.auth.permissions import require_permission
-from app.blueprints import analysis
-from saq.configuration.config import get_config
+from sqlalchemy.orm import selectinload
+
 from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
+from app.analysis.views.session.filters import (
+    _reset_filters,
+    build_alert_query,
+    get_quick_filter_display_data,
+    get_reset_filter_alert_count,
+    getFilters,
+    reset_checked_alerts,
+    reset_pagination,
+    reset_sort_filter,
+)
+from app.auth.permissions import reject_unauthenticated_datastar, require_permission
+from app.blueprints import analysis
+from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, GUI_DIRECTIVES
-from saq.database.model import Campaign, Observable, ObservableMapping, ObservableRemediationMapping, Owner, Tag, TagMapping, Comment, Event, User
+from saq.database.model import (
+    Campaign,
+    Comment,
+    Event,
+    Observable,
+    ObservableMapping,
+    ObservableRemediationMapping,
+    Owner,
+    Tag,
+    TagMapping,
+    User,
+)
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
-from sqlalchemy.orm import selectinload
 
-@analysis.route('/manage', methods=['GET', 'POST'])
-@require_permission('alert', 'read')
-def manage():
-    # use default page settings if first visit
+
+def _ensure_manage_session_defaults():
+    """Seeds the session with the default alert management view settings on first visit."""
     if 'filters' not in session:
         _reset_filters()
     if 'checked' not in session:
@@ -30,6 +51,12 @@ def manage():
     if 'sort_filter' not in session or 'sort_filter_desc' not in session:
         reset_sort_filter()
 
+def build_manage_list_context() -> dict:
+    """Builds the template context for the alert list and filter bar of the alert
+    management page: the filtered/sorted/paginated alerts with their comments and tags,
+    the total count, and the filter display data. Shared by manage() and
+    manage_refresh(). Never writes to the session -- the clamped page offset is returned
+    in the context as page_offset."""
     # create alert view by joining required tables, applying the session filters and
     # scoping to the alerts visible from this node
     query = build_alert_query(session["filters"])
@@ -101,12 +128,15 @@ def manage():
         query = query.order_by(sort_filters[session['sort_filter']].asc(), GUIAlert.id.asc())
 
     # apply pagination
+    # the offset is clamped into a local rather than back into the session: this also
+    # runs from the polled refresh endpoint, where a Set-Cookie could race a pagination
+    # click in another request
     query = query.limit(session['page_size'])
-    if session['page_offset'] >= total_alerts:
-        session['page_offset'] = (total_alerts // session['page_size']) * session['page_size']
-    if session['page_offset'] < 0:
-        session['page_offset'] = 0
-    query = query.offset(session['page_offset'])
+    page_offset = session['page_offset']
+    if page_offset >= total_alerts:
+        page_offset = (total_alerts // session['page_size']) * session['page_size']
+    page_offset = max(page_offset, 0)
+    query = query.offset(page_offset)
 
     # execute query to get all alerts
     alerts = query.all()
@@ -130,7 +160,7 @@ def manage():
     if alerts:
         tag_query = get_db().query(Tag, GUIAlert.uuid).join(TagMapping, Tag.id == TagMapping.tag_id).join(GUIAlert, GUIAlert.id == TagMapping.alert_id)
         tag_query = tag_query.filter(GUIAlert.id.in_([a.id for a in alerts]))
-        ignore_tags = [tag for tag in get_config().tags.keys() if get_config().tags[tag] in ['special', 'hidden' ]]
+        ignore_tags = [tag for tag in get_config().tags if get_config().tags[tag] in ['special', 'hidden' ]]
         tag_query = tag_query.filter(Tag.name.notin_(ignore_tags))
         tag_query = tag_query.order_by(Tag.name.asc())
         for tag, alert_uuid in tag_query:
@@ -142,6 +172,43 @@ def manage():
     if current_user.timezone and pytz.timezone(current_user.timezone) != pytz.utc:
         for alert in alerts:
             alert.display_timezone = pytz.timezone(current_user.timezone)
+
+    # if we did a vector search then we need to order by the scores
+    if search_result_uuids:
+        alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
+
+    return {
+        # settings
+        'ace_config': get_config(),
+        'session': session,
+        'dispositions': get_dispositions(),
+
+        # filter
+        'filters': getFilters(),
+        'search_query': search_query,
+        'quick_filters': get_quick_filter_display_data(),
+
+        # alert data
+        'alerts': alerts,
+        'comments': comments,
+        'alert_tags': alert_tags,
+        'display_disposition': not ('Disposition' in session['filters'] and len(session['filters']['Disposition']) == 1 and session['filters']['Disposition'][0] is None),
+        'total_alerts': total_alerts,
+        'page_offset': page_offset,
+
+        # search data
+        'search_result_mapping': search_result_mapping,
+    }
+
+@analysis.route('/manage', methods=['GET', 'POST'])
+@require_permission('alert', 'read')
+def manage():
+    _ensure_manage_session_defaults()
+
+    ctx = build_manage_list_context()
+
+    # persist the clamped page offset (the polled refresh endpoint intentionally does not)
+    session['page_offset'] = ctx['page_offset']
 
     open_events = []
     event_query_results = get_db().query(Event).filter(Event.status.has(value='OPEN')).order_by(Event.creation_date.desc()).all()
@@ -157,28 +224,9 @@ def manage():
             end_of_closed_events_list = False
         closed_events = event_query_results
 
-    # if we did a vector search then we need to order by the scores
-    if search_result_uuids:
-        alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
-
     return render_template(
         'analysis/manage.html',
-        # settings
-        ace_config=get_config(),
-        session=session,
-        dispositions=get_dispositions(),
-
-        # filter
-        filters=getFilters(),
-        search_query=search_query,
-        quick_filters=get_quick_filter_display_data(),
-
-        # alert data
-        alerts=alerts,
-        comments=comments,
-        alert_tags=alert_tags,
-        display_disposition=not ('Disposition' in session['filters'] and len(session['filters']['Disposition']) == 1 and session['filters']['Disposition'][0] is None),
-        total_alerts=total_alerts,
+        **ctx,
 
         # event data
         open_events=open_events,
@@ -189,13 +237,23 @@ def manage():
         # user data
         all_users=get_db().query(User).all(),
 
-        # search data
-        search_result_mapping=search_result_mapping,
-
         # observable modal data
         observable_types=run_async(get_observable_types()),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
     )
+
+@analysis.route('/manage/refresh')
+@reject_unauthenticated_datastar
+@require_permission('alert', 'read')
+def manage_refresh():
+    """Returns the morphable fragments of the alert management page (filter bar + alert
+    table) as plain HTML. Polled by Datastar to keep the page current -- see
+    analysis/manage.html and docs/GUI_DATASTAR.md."""
+    _ensure_manage_session_defaults()
+    response = make_response(render_template('analysis/_manage_refresh.html', **build_manage_list_context()))
+    # per-user data -- must not be handed out by the blueprint's default public cache policy
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 @analysis.route('/reset_filter_alert_count')
 @require_permission('alert', 'read')

@@ -33,135 +33,30 @@
 
 <div class="container-fluid" style="margin-top:5px;margin-bottom:7px;">
     <div class="row">
-        <div class="col">
-            Filters | 
-            <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
-            <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()'>Last 7d</span>
-            {% for quick_filter in quick_filters %}
-            <span class="badge label-special" style="cursor:pointer" data-quick-filter-id="{{ quick_filter.id }}" onclick='set_quick_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
-            {% endfor %} |
-            {% for _filter in session['filters'] %}
-                {% set name = _filter['name'] %}
-                {% set inverted = _filter['inverted'] %}
-                {% set values = _filter['values'] %}
-                {% if values|length > 0 %}
-                <span>{% if inverted %}NOT {% endif %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter_category("{{name}}")'>{{name}}</span>: {% for index in range(values|length) %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter("{{name}}", {{index}})'>{% if values[index] is none or values[index] is string %}{{values[index]}}{% else %}{{values[index]|join(':')}}{% endif %}</span>{% if index < (values|length) - 1 %} | {% endif %}{% endfor %}</span>
-                {% endif %}
-            {% endfor %}
-            <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" onclick="copy_filter_link('{{ url_for('analysis.set_filters') }}')"><span class="bi bi-copy"></span></button>
-        </div>
+        {% include "analysis/_manage_filter_bar.html" %}
     </div>
 </div>
 {% endblock %}
 
 {% block page_content %}
-<div class="container-fluid">
-    <div class="row">
-        <div class="col">
-            <table class="table table-hover table-condensed">
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th>
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="master_checkbox"/>
-                            </div>
-                        </th>
-                        <th><span onmousedown='set_sort_filter("Alert Date")' style="cursor:pointer;white-space: nowrap;">Date{% if session['sort_filter'] == 'Alert Date' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        <th class="w-100"><span onmousedown='set_sort_filter("Description")' style="cursor:pointer">Alert{% if session['sort_filter'] == 'Description' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}{% if ace_config.gui.show_total_alert_count %} ({{total_alerts}}){% endif %}</span></th>
-                        <th><span onmousedown='set_sort_filter("Owner")' style="cursor:pointer">Owner{% if session['sort_filter'] == 'Owner' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        {% if display_disposition %}
-                            <th><span onmousedown='set_sort_filter("Disposition")' style="cursor:pointer">Disposition{% if session['sort_filter'] == 'Disposition' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        {% endif %}
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for alert in alerts %}
-                    {# we can use this ID to modify an alert row #}
-                    <tr id="alert_row_{{alert.uuid}}" >
-                        <td>
-                            {% include "analysis/_observable_expand_button.html" %}
-                        </td>
-                        <td>
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="detail_{{alert.uuid}}" disposition="{{ alert.disposition }}" {% if alert.uuid in session['checked'] %}checked{% endif %}></input>
-                            </div>
-                        </td>
-                        <td style="white-space: nowrap;" title="{{alert.insert_date}}" id="alert_date_{{ alert.uuid }}">{{alert.display_insert_date}}</td>
-                        <td class="alert-description-cell">
-                            <img src="{{alert.icon}}" width="24" height="24">
-                            <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
-                            {% if alert.event_mapping %}
-                                {% for em in alert.event_mapping %}
-                                <a class="btn btn-outline-primary btn-xs" target="_blank" href="{{ url_for('events.index', direct=em.event.id) }}">
-                                    <span class="bi bi-lightning"></span> {{ em.event.name }}
-                                </a>
-                                {% endfor %}
-                            {% endif %}
-                            {% if alert_tags[alert.uuid]|length != 0 %}
-                                {% for tag in alert_tags[alert.uuid] %}
-                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="add_filter('Tag', ['{{tag.name}}'])">{{tag.name}}</span>
-                                {% endfor %}
-                            {% endif %}
-                            {% if alert.remediation_status == 'success' %}
-                                <span class="badge text-bg-success" style="cursor:pointer" >remediated</span>
-                            {% elif alert.remediation_status == 'failed' %}
-                                <span class="badge text-bg-danger" style="cursor:pointer" >remediation failed</span>
-                            {% elif alert.remediation_status == 'processing' %}
-                                <span class="badge text-bg-warning" style="cursor:pointer" >remediating</span>
-                            {% endif %}
-                            {% if comments[alert.uuid]|length != 0 %}
-                                <div class="comments-collapsible">
-                                    {% for comment in comments[alert.uuid] %}
-                                        <br />
-                                        <span style="font-size: x-small;">
-                                            ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
-                                        </span>
-                                    {% endfor %}
-                                </div>
-                                <button type="button" class="btn btn-link btn-sm p-0 comments-toggle" style="display: none; font-size: x-small;">Show more</button>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <span style="cursor:pointer" onmousedown='add_filter("Owner", ["{{alert.owner.gui_display}}"])'>{{alert.owner.gui_display}}</span>
-                        </td>
-                        <td>
-                            <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='add_filter("Disposition", ["{{alert.disposition}}"])'>{{alert.disposition}}</span>
-                        </td>
-                        <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
-                    </tr>
-                    {% if alert.uuid in search_result_mapping %}
-                        <tr>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td colspan="4">
-                                {% for search_result in search_result_mapping[alert.uuid] %}
-                                <span class="badge bg-white border border-black" style="color: black; border-width: 1px;">{{ "%.2f"|format(search_result.score * 100.0) }}%</span> {{search_result.payload.get("text", "")}}<br />
-                                {% endfor %}
-                            </td>
-                        </tr>
-                    {% endif %}
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div> <!-- end column -->
-    </div> <!-- end row -->
-</div> <!-- end container -->
-
-<!-- display pagination options if not all alerts are shown -->
-{% if total_alerts > session['page_size'] %}
-<div style="white-space: nowrap;text-align: center;margin-bottom:20px;">
-    <button onclick="set_page_offset(0)" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-start"></span></button>
-    <button onclick="set_page_offset({{session['page_offset'] - session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-backward"></span></button>
-    <button onclick="set_page_size({{session['page_size']}})">{{session['page_offset'] + 1}} to {% if session['page_offset'] + session['page_size'] > total_alerts %}{{total_alerts}}{% else %}{{session['page_offset'] + session['page_size']}}{% endif %} of {{total_alerts}}</button>
-    <button onclick="set_page_offset({{session['page_offset'] + session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-forward"></span></button>
-    <button onclick="set_page_offset({{(total_alerts // session['page_size']) * session['page_size']}})" type="button" class="btn btn-primary btn-xs"><span class="bi bi-skip-end"></span></button>
+{# Owns the Datastar state and polling for the alert list. This wrapper is NOT part of
+   the morph region -- declaring the signals inside it would reset them to the
+   server-rendered values on every refresh. $_sel (checkbox selection) and
+   $_openComments (expanded comment blocks) are underscore-prefixed so they stay
+   client-side and are not sent with requests. The interval polls the refresh endpoint
+   only while the tab is visible and no modal is open; the ace-refresh custom event
+   (dispatched from manage_alerts.js when the tab becomes visible again) triggers an
+   immediate catch-up. Auto-refresh is disabled during a vector search -- re-running the
+   embedding search every poll is expensive and the results are a snapshot. #}
+<div id="manage_page"
+     data-signals:_sel='{{ session["checked"] | tojson }}'
+     data-signals:_open-comments='[]'
+     {% if not search_query and ace_config.gui.manage_auto_refresh_seconds > 0 %}
+     data-on:ace-refresh="!document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
+     data-on-interval__duration.{{ ace_config.gui.manage_auto_refresh_seconds }}s="!document.hidden && !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
+     {% endif %}>
+    {% include "analysis/_manage_alert_table.html" %}
 </div>
-{% endif %}
 
 <!-- filter dialog -->
 <div class="modal fade modal-lg" id="filter_modal" tabindex="-1" role="dialog" aria-labelledby="filter_modal_label" aria-hidden="true">

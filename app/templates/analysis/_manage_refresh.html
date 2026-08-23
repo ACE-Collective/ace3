@@ -1,0 +1,7 @@
+{# Response body for analysis.manage_refresh: the morphable fragments of the alert
+   management page. Datastar matches each top-level element by id and morphs it into
+   the open page. Never add the polling attribute (data-on-interval) to anything in
+   here -- it lives on the non-morphed #manage_page wrapper in manage.html.
+   See docs/GUI_DATASTAR.md. #}
+{% include "analysis/_manage_filter_bar.html" %}
+{% include "analysis/_manage_alert_table.html" %}
