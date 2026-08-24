@@ -89,8 +89,11 @@ async def execute_query(
         reject(e.reason)
 
     def run():
-        rate_limiter.check_request(backend.name, limits)
+        # concurrency slot first: a request refused for concurrency must not consume a
+        # rate/budget token, or clients retrying on the short concurrency Retry-After would
+        # burn through the minute window and escalate a transient collision into a longer wait
         with rate_limiter.concurrency_slot(backend.name, limits):
+            rate_limiter.check_request(backend.name, limits)
             return backend.execute(ai_request)
 
     try:
