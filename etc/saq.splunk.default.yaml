@@ -102,9 +102,11 @@ ai_query_backend_splunk:
   python_class: SplunkAIQueryBackend
   splunk_config: ai_readonly
   limits:
-    max_concurrency: 2
-    requests_per_minute: 10
-    hourly_budget: 120
+    # sized for several concurrent analyst investigations; these are global per backend, not
+    # per analyst, and a query holds a concurrency slot only while it executes
+    max_concurrency: 4
+    requests_per_minute: 30
+    hourly_budget: 400
     default_limit: 1000
     max_limit: 5000
     max_window: "90:00:00:00"

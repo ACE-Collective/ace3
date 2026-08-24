@@ -152,3 +152,33 @@ async def test_rate_limited_query_is_429_with_retry_after(client, monkeypatch):
     assert response.status_code == 429
     assert response.headers["retry-after"] == "17"
     assert "simulated exhaustion" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_concurrency_rejection_does_not_consume_rate_token(client, monkeypatch):
+    """The concurrency slot is taken before the rate/budget counters are touched, so a request
+    refused for concurrency leaves the minute/hour windows untouched."""
+    import contextlib
+    from unittest.mock import MagicMock
+
+    import aceapi_ai.query.service as service_module
+
+    @contextlib.contextmanager
+    def refuse_slot(backend_name, limits):
+        raise RateLimitExceeded("concurrency", "simulated slot exhaustion", retry_after_seconds=10)
+        yield  # pragma: no cover
+
+    check_request = MagicMock()
+    monkeypatch.setattr(service_module.rate_limiter, "concurrency_slot", refuse_slot)
+    monkeypatch.setattr(service_module.rate_limiter, "check_request", check_request)
+
+    from datetime import datetime, timedelta, timezone
+    end = datetime.now(timezone.utc)
+    response = await client.post("/query/fake", json={
+        "query": "search x",
+        "start_time": (end - timedelta(hours=1)).isoformat(),
+        "end_time": end.isoformat(),
+    })
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "10"
+    check_request.assert_not_called()
