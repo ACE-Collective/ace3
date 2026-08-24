@@ -1,8 +1,9 @@
 """tests for the ace signatures CLI
 
 the handlers are called directly with a Namespace rather than through the ace
-script, which has heavy import time side effects. importing saq.signatures.cli
-registers its parser on the shared subparser, which happens once per session."""
+script, which has heavy import time side effects. importing
+saq.cli.commands.signatures registers its parser on the shared subparser, which
+happens once per session."""
 
 import argparse
 import json
@@ -13,7 +14,7 @@ import pytest
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.signatures.builtin import BUILTIN_SIGNATURES, GENERIC
-from saq.signatures.cli import cli_list_locations, cli_list_signatures
+from saq.cli.commands.signatures import cli_list_locations, cli_list_signatures
 from saq.signatures.model import SignatureType
 
 

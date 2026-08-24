@@ -23,13 +23,11 @@ from saq.cli.commands import ( # noqa: F401
     company,
     config_cmd,
     misc,
+    permissions,
+    phishkit,
+    storage,
+    llm,
+    nrd,
+    observables,
+    signatures,
 )
-
-# pull in all the other CLI parsers from outside this package
-from saq.permissions.cli import permissions_parser # noqa: F401
-from saq.phishkit import phishkit_parser # noqa: F401
-from saq.storage.cli import storage_parser # noqa: F401
-from saq.llm.cli import llm_parser # noqa: F401
-from saq.nrd.cli import nrd_parser # noqa: F401
-from saq.observables.cli import observables_parser # noqa: F401
-from saq.signatures.cli import signatures_parser # noqa: F401

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-# ACE CLI entrypoint. All command implementations live in saq/cli/commands/
-# (and in other modules that register parsers, e.g. saq.permissions.cli).
+# ACE CLI entrypoint. All command implementations live in saq/cli/commands/.
 # Importing saq.cli.commands registers every built-in subcommand.
 
 from saq.cli.cli_main import main
