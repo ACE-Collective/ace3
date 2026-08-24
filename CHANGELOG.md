@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.97] - 2026-08-24
+
+- [Fix for AI endpoint concurrency ordering](https://github.com/ACE-Collective/ace3/pull/482)
+- [python dependency updates](https://github.com/ACE-Collective/ace3/pull/481)
+- [Uses de4dotEx instead of archived de4dot project](https://github.com/ACE-Collective/ace3/pull/480)
+- [Bumps urlfinderlib to 0.25.1](https://github.com/ACE-Collective/ace3/pull/479)
+- [moved apiv2 client to https://github.com/ACE-Collective/ace3apiv2_client](https://github.com/ACE-Collective/ace3/pull/478)
+- [Adds initial Datastar functionality](https://github.com/ACE-Collective/ace3/pull/477)
+- [Only show the reset-filter favicon indicator on the "Alerts" manage page](https://github.com/ACE-Collective/ace3/pull/476)
+
 ## [3.0.96] - 2026-08-20
 
 - [Update engine permissions and migration for node-to-node API endpoints](https://github.com/ACE-Collective/ace3/pull/474)
