@@ -5,7 +5,7 @@
         {% for o in data[type_] %}
             <li><span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';"
                       onmouseleave="this.style.textDecoration='';"
-                      onmousedown="add_observable_filter('{{type_}}', decodeURIComponent(atob('{{o.value.decode(errors='ignore') | b64escape}}')), '{{ url_for('analysis.add_filter') }}', '{{ url_for('analysis.manage') }}')">{{ o.value.decode(errors='ignore') }} ({{ o.count }})</span>
+                      onmousedown="add_observable_filter('{{type_}}', decodeURIComponent(atob('{{o.value.decode(errors='ignore') | b64escape}}')), '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{ o.value.decode(errors='ignore') }} ({{ o.count }})</span>
             </li>
         {% endfor %}
     </ul>

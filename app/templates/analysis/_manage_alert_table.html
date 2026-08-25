@@ -60,7 +60,7 @@
                             {% endif %}
                             {% if alert_tags[alert.uuid]|length != 0 %}
                                 {% for tag in alert_tags[alert.uuid] %}
-                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="add_filter('Tag', ['{{tag.name}}'])">{{tag.name}}</span>
+                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name':'Tag','inverted':false,'values':['{{tag.name}}']}], 'Tag: {{tag.name}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{tag.name}}</span>
                                 {% endfor %}
                             {% endif %}
                             {% if alert.remediation_status == 'success' %}
@@ -87,10 +87,10 @@
                             {% endif %}
                         </td>
                         <td>
-                            <span style="cursor:pointer" onmousedown='add_filter("Owner", ["{{alert.owner.gui_display}}"])'>{{alert.owner.gui_display}}</span>
+                            <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Owner","inverted":false,"values":["{{alert.owner.gui_display}}"]}], "Owner: {{alert.owner.gui_display}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.owner.gui_display}}</span>
                         </td>
                         <td>
-                            <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='add_filter("Disposition", ["{{alert.disposition}}"])'>{{alert.disposition}}</span>
+                            <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.disposition}}</span>
                         </td>
                         <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
                     </tr>

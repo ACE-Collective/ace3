@@ -799,17 +799,6 @@ function edit_observable_comment(commentId, element) {
     modal.show();
 }
 
-// sets all filters
-function set_filters(filters) {
-    (function() {
-        const params = new URLSearchParams({ filters: JSON.stringify(filters) });
-        fetch('set_filters?' + params.toString(), { credentials: 'same-origin' })
-        .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
-        .then(function(){ window.location = '/ace/manage'; })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
 // This is kind of gross, but it does the job until we have proper searching/filtering routes.
 function filter_events_by_observable_and_status(o_type, o_value, event_status) {
     $(document).ready(function(){

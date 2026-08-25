@@ -130,7 +130,7 @@
         <td class="col-md-2">Tags</td>
         <td class="col-md-10">
             {% for tag in alert.root_analysis.all_tags %}
-            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{tag}}</span>
+            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}], 'Tag: {{tag}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{tag}}</span>
             {% endfor %}
         </td>
     </tr>
@@ -487,7 +487,7 @@
                     {# add tags #}
                     {% for tag in node.obj.tags %}
                         {% if tag | get_tag_level != 'hidden' %}
-                            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters({'Tag':['{{tag}}']})">{{ tag }}</span>
+                            <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}], 'Tag: {{tag}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{ tag }}</span>
                         {% endif %}
                     {% endfor %}
                 {% else %}

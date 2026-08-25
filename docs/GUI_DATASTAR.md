@@ -151,9 +151,19 @@ instead of adding one isolated endpoint.
 
 What actually has to be built for the stream endpoint:
 
-- **Session access.** The current refresh reads the analyst's filter set from the Flask
-  session cookie. The stream endpoint must either decode that cookie (it is a signed
-  payload under the same `gui.secret_key`) or the filter state must move server-side.
+- **Session access.** ~~The current refresh reads the analyst's filter set from the Flask
+  session cookie.~~ **Done.** Filter contents live in the `saved_filters` table; the session
+  carries only UUIDs (`filter_uuid`, `filter_base_uuid`, `filter_state`,
+  `filter_restore_uuid`). A stream endpoint still needs the analyst's identity, but the
+  filter payload itself is already server-side.
+
+  One consequence is worth knowing: **two tabs still share one session, and therefore one
+  effective filter.** A pivot in one tab changes what the other tab's next poll renders.
+  That is no longer destructive -- a pivot is a temporary filter with a labeled banner and a
+  one-click Revert -- but it is not isolation. Now that every filter is addressable by UUID,
+  per-tab isolation is a small follow-up (`/manage?view=<uuid>`, reading the identifier from
+  the URL instead of the session) rather than the redesign it would have been while the
+  payload lived in a cookie.
 - **Template access.** Jinja is framework-independent — the endpoint renders the same
   `_manage_*.html` partials from the `app/templates` tree; do not fork them.
 - **Change notification (the real new engineering).** Something must tell the stream

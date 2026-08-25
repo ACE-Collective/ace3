@@ -1,7 +1,7 @@
 import logging
 
 import pytz
-from flask import jsonify, make_response, render_template, session
+from flask import flash, jsonify, make_response, redirect, render_template, request, session, url_for
 from flask_login import current_user
 from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
@@ -11,13 +11,27 @@ from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
 from app.analysis.views.session.filters import (
     _reset_filters,
+    apply_temporary_filter,
     build_alert_query,
+    get_current_filter,
+    get_effective_filters,
     get_quick_filter_display_data,
     get_reset_filter_alert_count,
+    get_saved_filter_list,
+    seed_default_saved_filters,
+    get_temp_filter,
     getFilters,
+    migrate_legacy_session_filters,
     reset_checked_alerts,
     reset_pagination,
     reset_sort_filter,
+)
+from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES
+from saq.gui.filter_url import (
+    FilterQueryError,
+    decode_filter_query,
+    decode_legacy_filter_json,
+    encode_filter_query,
 )
 from app.auth.permissions import reject_unauthenticated_datastar, require_permission
 from app.blueprints import analysis
@@ -40,9 +54,29 @@ from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
 
 
-def _ensure_manage_session_defaults():
-    """Seeds the session with the default alert management view settings on first visit."""
-    if 'filters' not in session:
+def _is_single_disposition_filter(filters: list) -> bool:
+    """True when the analyst has narrowed to exactly one disposition, so showing the
+    disposition column would repeat the same value on every row."""
+    for entry in filters or []:
+        if entry["name"] == "Disposition" and not entry.get("inverted") and len(entry["values"]) == 1:
+            return True
+
+    return False
+
+
+def _ensure_manage_session_defaults(seed_saved_filters: bool = False):
+    """Seeds the session with the default alert management view settings on first visit.
+
+    `seed_saved_filters` WRITES to the database, so only manage() passes it. manage_refresh()
+    calls this same function every 30 seconds and a polled endpoint must not write."""
+    # carry a pre-upgrade cookie's filter list over to a scratch row before anything reads
+    # the new UUID-shaped state
+    migrate_legacy_session_filters()
+    # Must come BEFORE the working row is created below: the seed guard is "this user has
+    # no filter rows at all", which is what stops deleted defaults from being resurrected.
+    if seed_saved_filters:
+        seed_default_saved_filters()
+    if 'filter_uuid' not in session:
         _reset_filters()
     if 'checked' not in session:
         reset_checked_alerts()
@@ -59,7 +93,8 @@ def build_manage_list_context() -> dict:
     in the context as page_offset."""
     # create alert view by joining required tables, applying the session filters and
     # scoping to the alerts visible from this node
-    query = build_alert_query(session["filters"])
+    effective_filters = get_effective_filters()
+    query = build_alert_query(effective_filters)
 
     #query = query.options(selectinload('workload'))
     query = query.options(selectinload(GUIAlert.workload))
@@ -82,6 +117,8 @@ def build_manage_list_context() -> dict:
     # eager-load detection points so the detection_count hybrid property does not
     # issue a separate query per alert when the template renders the count
     query = query.options(selectinload(GUIAlert.detection_points))
+
+    saved_filters = get_saved_filter_list()
 
     # if we have a search query then apply it
     search_query = session.get("search", None)
@@ -185,14 +222,25 @@ def build_manage_list_context() -> dict:
 
         # filter
         'filters': getFilters(),
+        'effective_filters': effective_filters,
+        # lets the filter bar show what a relative token like -24h currently resolves to
+        'date_range_filter_names': DATE_RANGE_FILTER_NAMES,
         'search_query': search_query,
-        'quick_filters': get_quick_filter_display_data(),
+        'saved_filters': saved_filters,
+        'quick_filters': get_quick_filter_display_data(saved_filters),
+        'current_filter': get_current_filter(),
+        'temp_filter': get_temp_filter(),
+        # the share link is a pure string build -- no DB write, no round trip
+        'share_url': url_for('analysis.manage', f=encode_filter_query(effective_filters), _external=True),
 
         # alert data
         'alerts': alerts,
         'comments': comments,
         'alert_tags': alert_tags,
-        'display_disposition': not ('Disposition' in session['filters'] and len(session['filters']['Disposition']) == 1 and session['filters']['Disposition'][0] is None),
+        # hide the disposition column when the analyst has narrowed to a single disposition
+        # (it would be the same value on every row). The old form indexed the filter LIST
+        # as if it were a dict, so this was always True.
+        'display_disposition': not _is_single_disposition_filter(effective_filters),
         'total_alerts': total_alerts,
         'page_offset': page_offset,
 
@@ -203,7 +251,42 @@ def build_manage_list_context() -> dict:
 @analysis.route('/manage', methods=['GET', 'POST'])
 @require_permission('alert', 'read')
 def manage():
-    _ensure_manage_session_defaults()
+    # A share link carries the filter itself, so it keeps working after the filter it was
+    # copied from is edited or deleted. Applied as a TEMPORARY filter: opening someone
+    # else's link must never clobber the filter you were already using.
+    if 'filters' in request.args:
+        # legacy ?filters=<json>, permanently supported -- translate and bounce to the
+        # canonical URL so what the analyst copies onward is the new format
+        try:
+            return redirect(url_for(
+                'analysis.manage',
+                f=encode_filter_query(decode_legacy_filter_json(request.args['filters']))))
+        except FilterQueryError as e:
+            flash(f"That filter link could not be read: {e}", "error")
+            return redirect(url_for('analysis.manage'))
+
+    if 'f' in request.args:
+        # seed here too: this is a real page render, and seeding must happen before any
+        # working row exists for this user (see _ensure_manage_session_defaults)
+        _ensure_manage_session_defaults(seed_saved_filters=True)
+        try:
+            filters, warnings = decode_filter_query(request.args.getlist('f'))
+        except FilterQueryError as e:
+            flash(f"That filter link could not be read: {e}", "error")
+            return redirect(url_for('analysis.manage'))
+
+        apply_temporary_filter(filters, "Shared link")
+        reset_pagination()
+        reset_checked_alerts()
+        for warning in warnings:
+            flash(warning, "warning")
+
+        # NOTE: deliberately no redirect. The canonical URL stays in the address bar so it
+        # can be copied, bookmarked, and reached with the back button -- that is the whole
+        # point of a durable link. Revert navigates to a bare /manage instead, which is
+        # where the "don't re-apply on F5" concern actually belongs.
+
+    _ensure_manage_session_defaults(seed_saved_filters=True)
 
     ctx = build_manage_list_context()
 

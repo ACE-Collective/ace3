@@ -6,6 +6,7 @@ import pytz
 from sqlalchemy import and_, or_, not_, exists
 
 from saq.database import get_db
+from saq.util.relative_time import parse_date_range
 
 # exact match, provides text input
 class Filter:
@@ -61,15 +62,21 @@ class TextFilter(Filter):
 
 # range match, provides a date range picker
 class DateRangeFilter(Filter):
+    """Filters on a time window. Each value is either the absolute wire format
+    "MM-DD-YYYY HH:mm - MM-DD-YYYY HH:mm" that the daterangepicker writes, or a
+    Splunk-style relative range like "-7d - now" or the shorthand "-24h"."""
+
+    # Relative values are resolved HERE, on every query, and never normalized to absolute
+    # anywhere upstream -- that is what keeps a saved "Last 24h" filter meaning the last 24
+    # hours. See saq/util/relative_time.py.
+
     def apply(self, query, values):
         timezone = pytz.timezone(current_user.timezone) if current_user.timezone else pytz.utc
-        timezone = datetime.datetime.now(timezone).strftime("%z")
+        now = datetime.datetime.now(pytz.utc)
 
         conditions = []
         for value in values:
-            start, end = value.split(' - ')
-            start = datetime.datetime.strptime(f"{start} {timezone}", '%m-%d-%Y %H:%M %z').astimezone(pytz.utc)
-            end = datetime.datetime.strptime(f"{end} {timezone}", '%m-%d-%Y %H:%M %z').astimezone(pytz.utc)
+            start, end = parse_date_range(value, now=now, tz=timezone)
             conditions.append(and_(self.column >= start, self.column <= end))
         if self.inverted:
             return query.filter(not_(or_(*conditions)))

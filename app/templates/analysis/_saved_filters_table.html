@@ -1,0 +1,44 @@
+{# Body of the Manage Filters modal. Fetched from analysis.saved_filters_modal_body and
+   refetched after every change, so the modal updates without a page reload. #}
+{% if not saved_filters %}
+<p class="text-muted mb-0">You have no saved filters yet. Build a filter, then use
+   <strong>Edit &rarr; Save as&hellip;</strong> to keep it.</p>
+{% else %}
+<form id="quick_filter_order_form" onsubmit="return save_quick_filter_order();">
+<table class="table table-sm align-middle" id="saved_filters_table">
+    <thead>
+        <tr>
+            <th style="width:60px" title="Show this filter as a badge on the filter bar">Badge</th>
+            <th style="width:70px">Order</th>
+            <th>Name</th>
+            <th>Description</th>
+            <th style="width:150px"></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for saved_filter in saved_filters %}
+        <tr data-filter-uuid="{{ saved_filter.uuid }}">
+            <td><input type="checkbox" class="form-check-input quick-filter-pin" {% if saved_filter.quick_filter_order is not none %}checked{% endif %}></td>
+            <td>
+                <button type="button" class="btn btn-outline-dark btn-xs" title="Move up" onclick="move_saved_filter(this, -1)"><span class="bi bi-arrow-up"></span></button>
+                <button type="button" class="btn btn-outline-dark btn-xs" title="Move down" onclick="move_saved_filter(this, 1)"><span class="bi bi-arrow-down"></span></button>
+            </td>
+            <td>{{ saved_filter.name }}</td>
+            <td class="text-muted small">{{ saved_filter.description or '' }}</td>
+            <td>
+                <button type="button" class="btn btn-outline-primary btn-xs" onclick="select_filter_by_uuid('{{ saved_filter.uuid }}')">Open</button>
+                <button type="button" class="btn btn-outline-dark btn-xs" title="Copy a link to this filter" onclick="copy_saved_filter_link('{{ saved_filter.uuid }}')"><span class="bi bi-copy"></span></button>
+                <button type="button" class="btn btn-outline-danger btn-xs" onclick="delete_saved_filter('{{ saved_filter.uuid }}', '{{ saved_filter.name }}')"><span class="bi bi-trash3"></span></button>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<div class="text-muted small mb-2">
+    Checked filters appear as badges on the filter bar, in the order shown here.
+    Tip: use <code>$USER_QUEUE</code> or <code>$USER</code> as a value to make a shared link
+    adapt to whoever opens it.
+</div>
+<button type="submit" class="btn btn-outline-primary btn-sm">Save badges &amp; order</button>
+</form>
+{% endif %}
