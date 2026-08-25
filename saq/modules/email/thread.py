@@ -52,6 +52,7 @@ KEY_TRUNCATED = "truncated"
 KEY_MESSAGES = "messages"
 KEY_LOOKALIKES = "lookalikes"
 KEY_UNATTRIBUTED = "unattributed_participants"
+KEY_MISSING_PARENTS = "missing_parent_message_ids"
 
 
 class EmailThreadAnalysis(Analysis):
@@ -70,6 +71,7 @@ class EmailThreadAnalysis(Analysis):
             KEY_MESSAGES: [],
             KEY_LOOKALIKES: [],
             KEY_UNATTRIBUTED: [],
+            KEY_MISSING_PARENTS: [],
         }
 
     @property
@@ -112,6 +114,16 @@ class EmailThreadAnalysis(Analysis):
     @property
     def unattributed_participants(self):
         return self.details[KEY_UNATTRIBUTED]
+
+    @property
+    def missing_parent_message_ids(self):
+        """Message ids this conversation's reply headers reference but the record does not hold.
+
+        Exact lookup keys for the unrecorded side of the exchange - enrichment modules can recover
+        those messages from an external source (e.g. mail-provider telemetry) using these ids.
+        """
+        # .get: analyses persisted before this key existed must still render
+        return self.details.get(KEY_MISSING_PARENTS, [])
 
     def generate_summary(self):
         if not self.messages:
@@ -210,6 +222,7 @@ class EmailThreadAnalyzer(AnalysisModule):
             self.config.max_recipients_displayed)
         analysis.details[KEY_UNATTRIBUTED] = sorted(
             {p.address for p in conversation.unattributed_participants})
+        analysis.details[KEY_MISSING_PARENTS] = conversation.missing_parent_ids
 
         # the full timeline lives on the drill-down page, but the findings that actually decide the
         # alert go inline in the tree - summary details on an Analysis render there directly
@@ -260,12 +273,21 @@ def _build_findings(analysis: EmailThreadAnalysis) -> Optional[str]:
                          f"one side of the pair only - replies leave this conversation for the "
                          f"look-a-like domain. This is not the shared-operator pattern.")
 
-        presence = f"- Present on {entry['message_count']} of {entry['total_messages']} messages"
+        # "first recorded appearance", not "introduced by": the record only holds the messages that
+        # were scanned, so the first recorded sighting is a fact and the introduction is a claim the
+        # record cannot always support - see the inherited caveat below for when it provably cannot.
+        presence = f"- Present on {entry['message_count']} of {entry['total_messages']} recorded messages"
         if entry["introduced_on"]:
-            presence += f", introduced {entry['introduced_on']}"
+            presence += f"; first recorded appearance {entry['introduced_on']}"
             if entry["introduced_by_address"]:
-                presence += f" by {entry['introduced_by_address']}"
+                presence += f" on a message from {entry['introduced_by_address']}"
         lines.append(presence + ".")
+
+        if entry["likely_inherited"]:
+            lines.append("- That message is a reply to a message that was never recorded, and this "
+                         "domain appears only in its recipient list - the address was likely carried "
+                         "over from the unrecorded message's recipients rather than added by this "
+                         "sender.")
 
         # a floor, not the answer - and it has to be said, because the roles above DO count the
         # records this leaves out, so an unqualified count contradicts them
@@ -285,6 +307,14 @@ def _build_findings(analysis: EmailThreadAnalysis) -> Optional[str]:
                          f"{item['impersonates']}.")
 
         lines.append("")
+
+    missing_count = len(analysis.missing_parent_message_ids)
+    if missing_count:
+        plural = "messages" if missing_count != 1 else "message"
+        verb = "were" if missing_count != 1 else "was"
+        lines.append(f"_{missing_count} {plural} referenced by reply headers in this conversation "
+                     f"{verb} never recorded - the timeline shows only the messages that were "
+                     "scanned._")
 
     return "\n".join(lines).strip()
 
@@ -338,6 +368,7 @@ def _build_timeline(conversation: Conversation, anchor_message_id: str, lookalik
             "recipients_omitted": max(0, len(recipients) - max_recipients),
             "lookalike_domains_present": present,
             "is_anchor": message.message_id == anchor_message_id,
+            "replies_to_unrecorded": conversation.replies_to_unrecorded(message),
         })
 
     return timeline
@@ -447,6 +478,20 @@ def _describe_lookalike(conversation: Conversation, domain: str, counterpart: st
     containing = conversation.messages_containing_domain(domain)
     introduced_by = containing[0] if containing else None
 
+    # when the first recorded sighting is a reply to an unrecorded message, "who introduced this
+    # domain" cannot be answered from the record: the address may simply have been carried over from
+    # the unrecorded message's recipient list. that is exactly the reply-all shape - if this domain
+    # was only ever a recipient on that message and did not send it, say so rather than let the
+    # display attribute an internal typo to the external correspondent who happened to reply first.
+    first_seen_replies_to_unrecorded = bool(
+        introduced_by and conversation.replies_to_unrecorded(introduced_by))
+    roles_on_first_seen = ({p.role for p in conversation.participants(introduced_by)
+                            if p.domain == domain} if introduced_by else set())
+    likely_inherited = (first_seen_replies_to_unrecorded
+                        and introduced_by.from_domain != domain
+                        and bool(roles_on_first_seen)
+                        and roles_on_first_seen <= {"to", "cc"})
+
     # uncapped: an impersonating address that only appears in a trimmed thread must still be found
     addresses = sorted(conversation.addresses_for_domain(domain))
     counterpart_addresses = sorted(conversation.addresses_for_domain(counterpart))
@@ -492,6 +537,8 @@ def _describe_lookalike(conversation: Conversation, domain: str, counterpart: st
         "introduced_by_address": introduced_by.from_address if introduced_by else None,
         "introduced_on": _format_date(
             (introduced_by.message_date or introduced_by.insert_date) if introduced_by else None),
+        "first_seen_replies_to_unrecorded": first_seen_replies_to_unrecorded,
+        "likely_inherited": likely_inherited,
         "present_in_anchor_message": domain in anchor_domains,
         "impersonations": impersonations,
     }
