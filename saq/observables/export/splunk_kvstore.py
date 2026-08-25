@@ -12,7 +12,12 @@ from typing import Optional
 
 from pydantic import Field
 
-from saq.observables.export.base import ExportEntry, ObservableExport, ObservableExportList
+from saq.observables.export.base import (
+    ExportEntry,
+    ObservableExport,
+    ObservableExportList,
+    select_detections,
+)
 from saq.observables.export.config import ObservableExportConfig
 
 
@@ -34,13 +39,11 @@ class SplunkKVStoreExport(ObservableExport):
         return SplunkKVStoreExportConfig
 
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
-        """The detections of a configured type.
-        """
+        """The detections of a configured type."""
         entries = []
-        for observable_type in [_.strip() for _ in self.config.export_list]:
-            for detection in detections.get(observable_type, []):
-                entries.append(
-                    ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
+        for observable_type, detection in select_detections(detections, self.config.export_list):
+            entries.append(
+                ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
 
         return ObservableExportList(entries)
 

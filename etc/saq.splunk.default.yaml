@@ -44,7 +44,9 @@ observable_export_splunk:
   # the kv store collection to publish into
   collection: ""
   # the observable types to export
-  # NOTE: these map directly to observable type string representations!
+  # NOTE: an entry also covers every observable type that `extends` it (see
+  # docs/OBSERVABLE_TYPE_INHERITANCE.md), so `email_address` here picks up email_from,
+  # email_reply_to, and so on. Those detections are exported under the type named here.
   export_list:
     - email_address
     - email_subject

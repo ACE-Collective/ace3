@@ -3,12 +3,21 @@ import os
 import pytest
 
 from saq.configuration.config import get_config, get_service_config
-from saq.constants import SERVICE_YARA_SCANNER
+from saq.constants import (
+    F_EMAIL_ADDRESS,
+    F_EMAIL_DKIM_SIGNING_DOMAIN,
+    F_EMAIL_FROM,
+    F_EMAIL_REPLY_TO,
+    F_FQDN,
+    SERVICE_YARA_SCANNER,
+)
 from saq.database.util.observable_detection import create_observable_detection, delete_observable_detection
 from saq.observables.export.base import ExportEntry, ObservableExportList
 from saq.observables.export.config import ObservableExportConfig
 from saq.observables.export.manager import get_observable_exports, run_exports
+from saq.observables.export.base import select_detections
 from saq.observables.export.state import read_fingerprint, write_fingerprint
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.observables.export.yara import (
     OBSERVABLE_EXPORT_DIR,
     YaraObservableExport,
@@ -57,6 +66,25 @@ def detections():
 def read_rule(export_dir: str, observable_type: str) -> str:
     with open(os.path.join(export_dir, f"{observable_type}.yar"), "r") as fp:
         return fp.read()
+
+
+@pytest.fixture
+def email_type_hierarchy():
+    """Pins the email subtype -> email_address edges the subtype tests rely on.
+
+    etc/observable_types.yaml already declares these in dev and CI, but snapshotting the in-memory
+    parent map keeps the tests from depending on which YAML the run happened to load."""
+    hierarchy = get_type_hierarchy()
+    parent_snapshot = dict(hierarchy._parent)
+    hierarchy._parent[F_EMAIL_REPLY_TO] = F_EMAIL_ADDRESS
+    hierarchy._parent[F_EMAIL_FROM] = F_EMAIL_ADDRESS
+    hierarchy._parent[F_EMAIL_DKIM_SIGNING_DOMAIN] = F_FQDN
+    hierarchy._ancestors_cache.clear()
+    try:
+        yield hierarchy
+    finally:
+        hierarchy._parent = parent_snapshot
+        hierarchy._ancestors_cache.clear()
 
 
 #
@@ -176,6 +204,86 @@ def test_build_export_list_filters_by_type_and_length(monkeypatch):
 
     # ::1 is under the minimum length, url is not a configured type
     assert {(entry.type, entry.id) for entry in export_list} == {("fqdn", 1), ("ip", 2)}
+
+
+#
+# subtype selection: an export_list entry covers the types that extend it
+#
+
+@pytest.mark.unit
+def test_select_detections_includes_subtypes(email_type_hierarchy):
+    selected = list(select_detections(
+        {
+            F_EMAIL_REPLY_TO: [{"id": 1, "value": "a@example.com"}],
+            F_EMAIL_FROM: [{"id": 2, "value": "b@example.com"}],
+            F_EMAIL_ADDRESS: [{"id": 3, "value": "c@example.com"}],
+        },
+        [F_EMAIL_ADDRESS]))
+
+    # every one is covered, and every one is reported under the configured type
+    assert sorted((export_type, detection["id"]) for export_type, detection in selected) == [
+        (F_EMAIL_ADDRESS, 1), (F_EMAIL_ADDRESS, 2), (F_EMAIL_ADDRESS, 3)]
+
+
+@pytest.mark.unit
+def test_select_detections_most_specific_configured_type_wins(email_type_hierarchy):
+    selected = list(select_detections(
+        {F_EMAIL_REPLY_TO: [{"id": 1, "value": "a@example.com"}]},
+        [F_EMAIL_ADDRESS, F_EMAIL_REPLY_TO]))
+
+    # exported once, under the more specific of the two configured types
+    assert selected == [(F_EMAIL_REPLY_TO, {"id": 1, "value": "a@example.com"})]
+
+
+@pytest.mark.unit
+def test_select_detections_ignores_unrelated_types(email_type_hierarchy):
+    assert list(select_detections(
+        {"url": [{"id": 1, "value": "http://example.com"}]}, [F_EMAIL_ADDRESS, F_FQDN])) == []
+
+
+@pytest.mark.unit
+def test_select_detections_ignores_blank_configured_entries(email_type_hierarchy):
+    assert list(select_detections({"": [{"id": 1, "value": "x"}]}, ["", "   "])) == []
+
+
+@pytest.mark.unit
+def test_build_export_list_includes_subtypes(monkeypatch, email_type_hierarchy):
+    monkeypatch.setattr(get_config().yara_export, "export_list", [F_EMAIL_ADDRESS])
+    monkeypatch.setattr(get_config().yara_export, "export_minimum_length", 5)
+
+    export_list = yara_export().build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
+        F_EMAIL_FROM: [{"id": 2, "value": "from@example.com"}],
+        F_EMAIL_ADDRESS: [{"id": 3, "value": "plain@example.com"}],
+    })
+
+    assert {(entry.type, entry.id) for entry in export_list} == {
+        (F_EMAIL_ADDRESS, 1), (F_EMAIL_ADDRESS, 2), (F_EMAIL_ADDRESS, 3)}
+
+
+@pytest.mark.unit
+def test_build_export_list_most_specific_configured_type_wins(monkeypatch, email_type_hierarchy):
+    monkeypatch.setattr(
+        get_config().yara_export, "export_list", [F_EMAIL_ADDRESS, F_EMAIL_REPLY_TO])
+    monkeypatch.setattr(get_config().yara_export, "export_minimum_length", 5)
+
+    export_list = yara_export().build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
+    })
+
+    assert [(entry.type, entry.id) for entry in export_list] == [(F_EMAIL_REPLY_TO, 1)]
+
+
+@pytest.mark.unit
+def test_build_export_list_applies_minimum_length_to_subtypes(monkeypatch, email_type_hierarchy):
+    monkeypatch.setattr(get_config().yara_export, "export_list", [F_EMAIL_ADDRESS])
+    monkeypatch.setattr(get_config().yara_export, "export_minimum_length", 5)
+
+    export_list = yara_export().build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 1, "value": "a@b"}, {"id": 2, "value": "reply@example.com"}],
+    })
+
+    assert [(entry.type, entry.id) for entry in export_list] == [(F_EMAIL_ADDRESS, 2)]
 
 
 @pytest.mark.unit
@@ -312,6 +420,41 @@ def test_export_handles_ipv4_ipv6_and_the_legacy_type(export_dir, state_dir, det
     legacy_rule = read_rule(export_dir, "ipv4")
     yara.compile(source=legacy_rule)
     assert f"$obsd_{legacy_id}" in legacy_rule
+
+
+@pytest.mark.integration
+def test_export_writes_subtype_detections_into_the_parent_rule_file(
+        export_dir, state_dir, detections, email_type_hierarchy):
+    import yara
+
+    reply_to_id = detections(F_EMAIL_REPLY_TO, "reply@example.com")
+    plain_id = detections(F_EMAIL_ADDRESS, "plain@example.com")
+
+    assert run_exports() == os.EX_OK
+
+    # email_reply_to is not in the export_list -- email_address is, and it covers it
+    rule = read_rule(export_dir, F_EMAIL_ADDRESS)
+    assert f"$obsd_{reply_to_id}" in rule
+    assert "reply@example.com" in rule
+    assert f"$obsd_{plain_id}" in rule
+    yara.compile(source=rule)
+
+    # the subtype must not get a rule file of its own: it has no template and no configured search
+    assert not os.path.exists(os.path.join(export_dir, f"{F_EMAIL_REPLY_TO}.yar"))
+
+
+@pytest.mark.integration
+def test_export_applies_parent_string_modifiers_to_subtypes(
+        export_dir, state_dir, detections, email_type_hierarchy):
+    detections(F_EMAIL_DKIM_SIGNING_DOMAIN, "evil.example.com")
+
+    assert run_exports() == os.EX_OK
+
+    # exported under fqdn, so it picks up the fullword modifier configured for that type
+    rule = read_rule(export_dir, F_FQDN)
+    assert "evil.example.com" in rule
+    assert "fullword" in rule
+    assert not os.path.exists(os.path.join(export_dir, f"{F_EMAIL_DKIM_SIGNING_DOMAIN}.yar"))
 
 
 @pytest.mark.integration

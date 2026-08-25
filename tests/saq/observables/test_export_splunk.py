@@ -4,13 +4,14 @@ from unittest.mock import Mock, patch
 import pytest
 
 from saq.configuration.config import get_config
-from saq.constants import F_TEST
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_FROM, F_EMAIL_REPLY_TO, F_TEST
 from saq.database.model import ObservableDetection
 from saq.database.pool import get_db
 from saq.database.util.observable_detection import create_observable_detection
 from saq.observables.export.config import ObservableExportConfig
 from saq.observables.export.manager import get_observable_exports, run_exports
 from saq.observables.export.splunk_kvstore import SplunkKVStoreExport, SplunkKVStoreExportConfig
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 
 def splunk_export(**overrides) -> SplunkKVStoreExport:
@@ -18,6 +19,24 @@ def splunk_export(**overrides) -> SplunkKVStoreExport:
     config = get_config().get_observable_export_config("splunk").model_copy(
         update={"collection": "test_collection", **overrides})
     return SplunkKVStoreExport(config)
+
+
+@pytest.fixture
+def email_type_hierarchy():
+    """Pins the email subtype -> email_address edges the subtype tests rely on.
+
+    etc/observable_types.yaml already declares these in dev and CI, but snapshotting the in-memory
+    parent map keeps the tests from depending on which YAML the run happened to load."""
+    hierarchy = get_type_hierarchy()
+    parent_snapshot = dict(hierarchy._parent)
+    hierarchy._parent[F_EMAIL_REPLY_TO] = F_EMAIL_ADDRESS
+    hierarchy._parent[F_EMAIL_FROM] = F_EMAIL_ADDRESS
+    hierarchy._ancestors_cache.clear()
+    try:
+        yield hierarchy
+    finally:
+        hierarchy._parent = parent_snapshot
+        hierarchy._ancestors_cache.clear()
 
 
 @pytest.fixture
@@ -94,6 +113,50 @@ def test_build_export_list_filters_by_type_only():
     })
 
     assert {(entry.type, entry.id) for entry in export_list} == {("fqdn", 1), ("ip", 2)}
+
+
+@pytest.mark.unit
+def test_build_export_list_includes_subtypes(email_type_hierarchy):
+    export = splunk_export(export_list=[F_EMAIL_ADDRESS])
+
+    export_list = export.build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
+        F_EMAIL_FROM: [{"id": 2, "value": "from@example.com"}],
+        F_EMAIL_ADDRESS: [{"id": 3, "value": "plain@example.com"}],
+    })
+
+    assert {(entry.type, entry.id) for entry in export_list} == {
+        (F_EMAIL_ADDRESS, 1), (F_EMAIL_ADDRESS, 2), (F_EMAIL_ADDRESS, 3)}
+
+
+@pytest.mark.unit
+def test_build_export_list_most_specific_configured_type_wins(email_type_hierarchy):
+    export = splunk_export(export_list=[F_EMAIL_ADDRESS, F_EMAIL_REPLY_TO])
+
+    export_list = export.build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
+    })
+
+    # exported once, under the more specific of the two configured types -- a duplicate would
+    # collide on _key in the kv store
+    documents = export.build_documents(export_list)
+    assert [document["_key"] for document in documents] == ["1"]
+    assert documents[0]["type"] == F_EMAIL_REPLY_TO
+
+
+@pytest.mark.unit
+def test_document_reports_the_configured_type_for_a_subtype(email_type_hierarchy):
+    export = splunk_export(export_list=[F_EMAIL_ADDRESS])
+    export_list = export.build_export_list({
+        F_EMAIL_REPLY_TO: [{"id": 7, "value": "Reply@example.com"}]})
+
+    # a search filtering the lookup on type="email_address" has to find it
+    assert export.build_documents(export_list) == [{
+        "_key": "7",
+        "id": 7,
+        "type": F_EMAIL_ADDRESS,
+        "value": "*reply@example.com*",
+    }]
 
 
 @pytest.mark.unit

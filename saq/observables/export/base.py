@@ -2,11 +2,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Optional
 
 from saq.observables.export.config import ObservableExportConfig
 from saq.observables.export.state import read_fingerprint, write_fingerprint
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,31 @@ class ExportEntry:
     id: int
     type: str
     value: str
+
+
+# a configured type covers its own detections and those of every subtype (see
+# docs/OBSERVABLE_TYPE_INHERITANCE.md). detections are reported under the configured type so
+# subtypes join the parent's export rather than inventing unconfigured ones. when both a parent
+# and a child are configured, the most specific wins so each detection is exported once
+def select_detections(
+        detections: dict[str, list[dict]],
+        export_list: Iterable[str]) -> Iterator[tuple[str, dict]]:
+    """Yields ``(export_type, detection)`` for every detection a configured type covers."""
+    hierarchy = get_type_hierarchy()
+    configured = {entry.strip() for entry in export_list if entry.strip()}
+
+    for observable_type, type_detections in detections.items():
+        # own type first, then ancestors nearest-first: the first configured hit is the most
+        # specific one. The parent map is single-parent, so this chain is linear.
+        export_type = next(
+            (candidate for candidate in (observable_type, *hierarchy.ancestors(observable_type))
+             if candidate in configured), None)
+
+        if export_type is None:
+            continue
+
+        for detection in type_detections:
+            yield export_type, detection
 
 
 class ObservableExportList:
