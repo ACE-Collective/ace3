@@ -224,6 +224,16 @@ displays as `Mail Return Path (email_return_path)` unless code explicitly
 overrides `display_type`. Explicit setters still win — the YAML default is
 only consulted when no setter has run.
 
+## Observable Detections
+
+ACE has the ability to mark observables for detection such that ACE will add a detection point whenever the observable is seen. It's worth noting the difference in how that detection works between ACE itself and the external systems that ACE exports these observables to.
+
+ACE will add a detection point when the observable **and the type** match exactly.
+
+When ACE exports observable detection information into external systems, it **collapses the type to the parent type**. For example, observables with the type `email_reply_to` that are enabled for detection are exported as the `email_address` observable type.
+
+ACE often understands the context of observations because it did the analysis/parsing. In the case of external systems, this isn't always the case. For example, yara rules scan entire blobs of data, so the context of an email address being used as the reply-to is not available.
+
 ## The email subtype tree
 
 All 11 new email subtypes extend `email_address`. The display labels listed
@@ -260,4 +270,5 @@ email addresses.
 | Module dispatch (subtype-aware)          | `saq/modules/base_module.py` (`AnalysisModule.accepts`, `valid_observable_subtypes`)            |
 | Display-label fallback                   | `saq/analysis/observable.py` (`Observable.display_type`)                                        |
 | `observable_modifier` rule matching      | `saq/modules/util/observable_modifier.py` (`RuleConditions.evaluate`, `evaluate_early`)         |
+| Detection export type selection          | `saq/observables/export/base.py` (`select_detections`), used by the yara and splunk targets      |
 | Bootstrap at startup                     | `saq/environment.py` (`initialize_environment` calls `bootstrap_type_hierarchy`)                |

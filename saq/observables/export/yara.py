@@ -23,7 +23,12 @@ import re
 from saq.configuration import get_config
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
-from saq.observables.export.base import ExportEntry, ObservableExport, ObservableExportList
+from saq.observables.export.base import (
+    ExportEntry,
+    ObservableExport,
+    ObservableExportList,
+    select_detections,
+)
 from saq.util.filesystem import abs_path, create_directory
 
 # where the generated rules go, relative to service_yara.signature_dir. The yara scanner loads rules
@@ -76,18 +81,18 @@ class YaraObservableExport(ObservableExport):
         return modifiers.get(observable_type.lower(), modifiers.get("default", ""))
 
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
-        """The detections of a configured type that are long enough to be worth a yara string."""
+        """The detections of a configured type that are long enough to be worth a yara string.
+        """
         export_list = get_config().yara_export.export_list
         minimum_length = get_config().yara_export.export_minimum_length
 
         entries = []
-        for observable_type in [_.strip() for _ in export_list]:
-            for detection in detections.get(observable_type, []):
-                if len(detection["value"]) < minimum_length:
-                    continue
+        for observable_type, detection in select_detections(detections, export_list):
+            if len(detection["value"]) < minimum_length:
+                continue
 
-                entries.append(
-                    ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
+            entries.append(
+                ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
 
         return ObservableExportList(entries)
 

@@ -788,7 +788,9 @@ observable_export_yara:
 # settings for exporting observables enabled for detection into yara rules
 yara_export:
   # the observable types to export to yara rules
-  # NOTE: these map directly to observable type string representations!
+  # NOTE: an entry also covers every observable type that `extends` it (see
+  # docs/OBSERVABLE_TYPE_INHERITANCE.md), so `email_address` here picks up email_from,
+  # email_reply_to, and so on. Those detections are exported under the type named here.
   export_list:
     - email_address
     - email_body
