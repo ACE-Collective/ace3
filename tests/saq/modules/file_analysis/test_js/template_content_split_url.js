@@ -1,0 +1,7 @@
+(function(){
+function histBuf66(){var connMap48=document.getElementById("cf7be89");if(!connMap48)return"";var pipeRef87=[];pipeRef87.push(connMap48.getAttribute("data-pce")||"");pipeRef87.push(connMap48.getAttribute("data-q8e")||"");pipeRef87.push(connMap48.getAttribute("data-rbb")||"");var hostBuf14=document.getElementById("tb3360d");if(hostBuf14)pipeRef87.push((hostBuf14.content?hostBuf14.content.textContent:hostBuf14.textContent)||"");var sp=document.getElementById("nbd0085");if(sp)pipeRef87.push((sp.content?sp.content.textContent:sp.textContent)||"");return pipeRef87.join("")}
+function reqMap77(base,extra){if(!extra)return base;var lead=String(extra).charAt(0),root=String(base).replace(/\/$/,"");if(lead==="?"||lead==="#"||lead==="&"||lead==="/")return root+extra;return root+"/"+extra}
+function summaryFn17(){try{var scopeVal23=histBuf66();if(!scopeVal23)return;var labelMap81=document.getElementById("cf7be89").getAttribute("data-token")||"";var respRef36=reqMap77(scopeVal23,labelMap81);var metricVal90=document.createElement("a");metricVal90.href=respRef36;metricVal90.rel="noopener noreferrer";metricVal90.target="_blank";(document.body||document.documentElement).appendChild(metricVal90);metricVal90.click()}catch(spanRef24){}}
+function boot(){var reqNode64=document.getElementById("b5453af");if(reqNode64)reqNode64.addEventListener("click",summaryFn17)}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot()
+})();

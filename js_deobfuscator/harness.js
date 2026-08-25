@@ -498,6 +498,28 @@ function buildDomDocument(snapshot) {
     overrides.textContent = ownText;
     overrides.innerText = ownText;
     if ('value' in attrs) overrides.value = String(attrs.value);
+    // `.content` must mirror the browser rather than fall through to a child
+    // recorder: a DocumentFragment on <template>, the reflected `content`
+    // attribute on <meta>, and undefined on every other element. Kits stash one
+    // piece of the URL in a <template> and read it through
+    // `el.content ? el.content.textContent : el.textContent`. A recorder is
+    // truthy, so that ternary takes the fragment branch and a
+    // `[#id.content.textContent]` placeholder lands in the middle of the URL —
+    // the run reports ok and the URL is lost. The same ternary applied to a
+    // plain element needs `.content` to be falsy to take the textContent branch.
+    const tag = (typeof el.tag === 'string') ? el.tag.toLowerCase() : '';
+    if (tag === 'template') {
+      const textNode = recorder(`${label}.content.firstChild`, {
+        textContent: ownText, nodeValue: ownText, data: ownText, wholeText: ownText,
+      });
+      overrides.content = recorder(`${label}.content`, {
+        textContent: ownText, firstChild: textNode, childNodes: [textNode],
+      });
+    } else if ('content' in attrs) {
+      overrides.content = String(attrs.content);
+    } else {
+      overrides.content = undefined;
+    }
     // A real function, so the call does not pass through the apply trap — it
     // must therefore record the call itself to keep the registration visible in
     // the trace, then queue the handler to fire after the main script.

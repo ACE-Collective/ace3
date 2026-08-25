@@ -993,6 +993,42 @@ def test_dom_snapshot_dataset_and_queryselector(tmpdir, monkeypatch, patched_deo
 
 
 @pytest.mark.unit
+def test_dom_snapshot_template_content_split_url(datadir, monkeypatch, patched_deobfuscate):
+    """The HTML-attachment variant of the split-URL phish: scheme and host
+    prefix in a hidden div's data-* attributes, one piece of the host inside a
+    <template>, the rest in a hidden <span>, joined on click. The script reads
+    each text piece through `el.content ? el.content.textContent : el.textContent`,
+    so `.content` must be a real fragment on the <template> and falsy on the
+    <span> -- a recorder for either leaves a `[#id.content.textContent]`
+    placeholder in the middle of the URL."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "template_content_split_url.js")
+    observable.add_directive(YARA_META_JS)
+    _write_sidecar(observable, {
+        "version": 1, "truncated": False,
+        "elements": [
+            {"tag": "div", "attrs": {"id": "cf7be89", "hidden": "", "data-pce": "http", "data-q8e": "s:",
+                                     "data-rbb": "//exam", "data-token": "#dG9rZW4="}},
+            {"tag": "template", "attrs": {"id": "tb3360d"}, "text": "ple"},
+            {"tag": "span", "attrs": {"id": "nbd0085", "hidden": ""}, "text": ".com"},
+            {"tag": "button", "attrs": {"id": "b5453af", "type": "button"}, "text": "Open File"},
+        ],
+    })
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis.error_type is None
+    assert analysis.dom_snapshot is True
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert 'href = "https://example.com#dG9rZW4="' in body
+    assert ".content.textContent]" not in body
+
+
+@pytest.mark.unit
 def test_malformed_dom_snapshot_is_ignored(tmpdir, monkeypatch, patched_deobfuscate):
     """A corrupt sidecar must not fail the run; the harness falls back to
     recorder behavior (dom_snapshot False)."""
