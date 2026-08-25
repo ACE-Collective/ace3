@@ -15,16 +15,18 @@ from saq.util.uuid import get_storage_dir
 LOOKALIKE_DOMAIN = "exarnple.com"
 
 
-def _context(thread_id, message_id, participants, message_date, normalized_subject="quarterly review"):
+def _context(thread_id, message_id, participants, message_date, normalized_subject="quarterly review",
+             in_reply_to=None):
     senders = [p for p in participants if p.role in ("from", "reply_to", "return_path")]
     from_participant = next((p for p in participants if p.role == "from"), None)
     return ThreadContext(
         thread_id=thread_id,
-        # no In-Reply-To / References, so each message threads to itself - the conversation is only
-        # recoverable through normalized subject plus a shared participant domain
-        thread_method="self",
+        # default: no In-Reply-To / References, so each message threads to itself - the conversation
+        # is only recoverable through normalized subject plus a shared participant domain. passing
+        # in_reply_to (with a shared thread_id) models a header-threaded reply chain instead.
+        thread_method="self" if in_reply_to is None else "in_reply_to",
         message_id=message_id,
-        in_reply_to=None,
+        in_reply_to=in_reply_to,
         references=None,
         normalized_subject=normalized_subject,
         message_date=message_date,
@@ -139,6 +141,11 @@ def test_thread_analysis_reports_recipient_only_lookalike(root_analysis):
     assert entry["introduced_on"] == "2026-03-02 09:00:00"
     assert entry["introduced_by_address"] == "bob@company.com"
     assert entry["present_in_anchor_message"] is False
+
+    # a fully-recorded conversation carries no attribution caveats
+    assert entry["first_seen_replies_to_unrecorded"] is False
+    assert entry["likely_inherited"] is False
+    assert analysis.missing_parent_message_ids == []
 
     # the look-a-like address clones a real participant's local part verbatim
     assert entry["impersonations"] == [{
@@ -342,7 +349,7 @@ def test_thread_analysis_reports_partial_attribution(root_analysis):
     assert entry["presence_is_partial"] is True
 
     content = analysis.summary_details[0].content
-    assert "Present on 2 of 5 messages" in content
+    assert "Present on 2 of 5 recorded messages" in content
     assert "That count is a floor" in content
     # the contradiction this replaces
     assert "Present on 0 of 5" not in content
@@ -370,6 +377,119 @@ def test_thread_analysis_names_the_side_on_fewer_messages(root_analysis):
     assert entry["domain"] == LOOKALIKE_DOMAIN
     assert entry["counterpart"] == "example.com"
     assert LOOKALIKE_DOMAIN in analysis.summary_details[0].content.split("(looks like")[0]
+
+
+def _record_one_sided_reply_chain():
+    """One side of a header-threaded exchange, with every reply pointing at unrecorded mail.
+
+    Reduced from a production alert. Only inbound mail is recorded (the journal feed drops the
+    outbound direction), so the conversation is the external sender's messages only, and each one
+    replies to an internal message that is not in the record. The look-a-like address first appears
+    in the recipient list of the final reply - put there by the UNRECORDED internal message it
+    replies to (an internal typo), not by the external sender, who merely replied-all.
+    """
+    root = "<gap-root@example.com>"
+
+    record_thread(_context(
+        root, "<gap-1@example.com>",
+        [Participant("jane.doe@example.com", "example.com", "from"),
+         Participant("bob@company.com", "company.com", "to")],
+        datetime(2026, 8, 1, 9, 0, 0),
+        normalized_subject="service contract for signature",
+        in_reply_to=root))
+
+    record_thread(_context(
+        root, "<gap-2@example.com>",
+        [Participant("jane.doe@example.com", "example.com", "from"),
+         Participant("bob@company.com", "company.com", "to")],
+        datetime(2026, 8, 10, 9, 0, 0),
+        normalized_subject="service contract for signature",
+        in_reply_to="<gap-unrecorded-1@company.com>"))
+
+    # the anchor: a reply-all to an unrecorded internal message whose recipient list carried the
+    # look-a-like address; the external sender inherits it into To
+    record_thread(_context(
+        root, "<gap-3@example.com>",
+        [Participant("jane.doe@example.com", "example.com", "from"),
+         Participant("bob@company.com", "company.com", "to"),
+         Participant("tom@" + LOOKALIKE_DOMAIN, LOOKALIKE_DOMAIN, "to")],
+        datetime(2026, 8, 21, 9, 0, 0),
+        normalized_subject="service contract for signature",
+        in_reply_to="<gap-unrecorded-2@company.com>"))
+
+
+@pytest.mark.integration
+def test_thread_analysis_does_not_blame_the_replier_for_an_inherited_address(root_analysis):
+    """A first recorded sighting on a reply to unrecorded mail is not an introduction.
+
+    Regression: the module reported the look-a-like address as "introduced by" the external sender
+    of the alerting message, when the message it replied to - outbound internal mail the journal
+    feed never records - had already carried the address (an internal typo). The analyst read that
+    as the external party injecting a look-a-like address and started investigating the wrong side.
+    """
+    _record_one_sided_reply_chain()
+
+    analysis, _ = _analyze(root_analysis, "<gap-3@example.com>")
+    assert analysis is not None
+    assert analysis.thread_method == "headers"
+
+    # the record provably has holes, and they are surfaced as lookup keys for enrichment - the
+    # thread root itself counts, since the exchange opened with a message that was never recorded
+    assert analysis.missing_parent_message_ids == [
+        "<gap-root@example.com>", "<gap-unrecorded-1@company.com>", "<gap-unrecorded-2@company.com>"]
+    assert [m["replies_to_unrecorded"] for m in analysis.messages] == [True, True, True]
+
+    entry = analysis.lookalikes[0]
+    assert entry["domain"] == LOOKALIKE_DOMAIN
+    assert entry["counterpart"] == "example.com"
+
+    # first recorded appearance is stated, with both caveats attached
+    assert entry["introduced_on"] == "2026-08-21 09:00:00"
+    assert entry["introduced_by_address"] == "jane.doe@example.com"
+    assert entry["first_seen_replies_to_unrecorded"] is True
+    assert entry["likely_inherited"] is True
+
+    content = analysis.summary_details[0].content
+    assert "Present on 1 of 3 recorded messages" in content
+    assert "first recorded appearance 2026-08-21 09:00:00 on a message from jane.doe@example.com" in content
+    # the old wording asserted an introduction the record cannot support
+    assert "introduced" not in content
+    assert "likely carried over" in content
+    assert "never recorded" in content
+
+
+@pytest.mark.integration
+def test_thread_analysis_sender_of_a_gapped_reply_is_not_inherited(root_analysis):
+    """A domain that SENT the first message it appears on was not carried over from anyone.
+
+    The inherited caveat is only for recipient-role sightings: when the look-a-like's first recorded
+    appearance is a reply it sent itself, uncertainty about earlier presence remains (the parent is
+    unrecorded), but "this sender likely did not add the address" would be false - it wrote the
+    message. The dangerous shape must not be softened by the benign caveat.
+    """
+    _record_one_sided_reply_chain()
+
+    # the look-a-like sends into the conversation BEFORE the reply-all that carries it as a
+    # recipient, so its first recorded appearance is its own message
+    record_thread(_context(
+        "<gap-root@example.com>", "<gap-4@" + LOOKALIKE_DOMAIN + ">",
+        [Participant("tom@" + LOOKALIKE_DOMAIN, LOOKALIKE_DOMAIN, "from"),
+         Participant("bob@company.com", "company.com", "to")],
+        datetime(2026, 8, 15, 9, 0, 0),
+        normalized_subject="service contract for signature",
+        in_reply_to="<gap-unrecorded-3@company.com>"))
+
+    analysis, _ = _analyze(root_analysis, "<gap-4@" + LOOKALIKE_DOMAIN + ">")
+    entry = analysis.lookalikes[0]
+    assert entry["domain"] == LOOKALIKE_DOMAIN
+
+    assert entry["ever_sent"] is True
+    assert entry["introduced_on"] == "2026-08-15 09:00:00"
+    assert entry["introduced_by_address"] == "tom@" + LOOKALIKE_DOMAIN
+    # the gap is still acknowledged, but the sighting is not called inherited
+    assert entry["first_seen_replies_to_unrecorded"] is True
+    assert entry["likely_inherited"] is False
+    assert "likely carried over" not in analysis.summary_details[0].content
 
 
 @pytest.mark.integration

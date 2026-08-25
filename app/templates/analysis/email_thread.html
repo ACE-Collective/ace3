@@ -128,10 +128,25 @@
     <tr>
         <td class="col-md-2">Presence</td>
         <td class="col-md-10">
-            on {{ entry.message_count }} of {{ entry.total_messages }} messages
+            on {{ entry.message_count }} of {{ entry.total_messages }} recorded messages
             {% if entry.introduced_on %}
-                &mdash; introduced {{ entry.introduced_on }}
-                {% if entry.introduced_by_address %}by <tt>{{ entry.introduced_by_address }}</tt>{% endif %}
+                &mdash; first recorded appearance {{ entry.introduced_on }}
+                {% if entry.introduced_by_address %}on a message from <tt>{{ entry.introduced_by_address }}</tt>{% endif %}
+            {% endif %}
+            {% if entry.likely_inherited %}
+                <span class="badge text-bg-warning">likely inherited</span>
+                <br>
+                <span class="text-muted">
+                    That message is a reply to a message that was never recorded, and this domain
+                    appears only in its recipient list &mdash; the address was likely carried over
+                    from the unrecorded message's recipients rather than added by this sender.
+                </span>
+            {% elif entry.first_seen_replies_to_unrecorded %}
+                <br>
+                <span class="text-muted">
+                    The first recorded appearance is a reply to a message that was never recorded,
+                    so the domain may have entered the conversation earlier than shown here.
+                </span>
             {% endif %}
             {% if entry.presence_is_partial %}
                 <span class="badge text-bg-secondary">at least</span>
@@ -198,6 +213,10 @@
                 {% if message.date_is_estimated %}
                     <small class="text-muted" title="No Date header was recorded; showing when ACE processed the message">(processed)</small>
                 {% endif %}
+                {% if message.replies_to_unrecorded %}
+                    <br>
+                    <small class="text-muted" title="This message's In-Reply-To names a message that is not in the record">&#8617; replies to an unrecorded message</small>
+                {% endif %}
             </td>
             <td>{{ message.direction }}</td>
             <td>
@@ -248,6 +267,20 @@
         the "sent mail?" verdict are computed across the whole conversation, so they do not change
         depending on where the cap fell. Only the per-message counts and "introduced by" refer to the
         visible timeline.
+    </small>
+</p>
+{% endif %}
+
+{% if analysis.missing_parent_message_ids %}
+<p class="text-muted">
+    <small>
+        This conversation's reply headers reference
+        {{ analysis.missing_parent_message_ids | length }}
+        message{% if analysis.missing_parent_message_ids | length != 1 %}s{% endif %} that
+        {% if analysis.missing_parent_message_ids | length != 1 %}were{% else %}was{% endif %} never
+        recorded &mdash; the timeline shows only the messages that were scanned, so one side of the
+        exchange may be missing entirely:
+        {% for message_id in analysis.missing_parent_message_ids %}<tt>{{ message_id }}</tt>{% if not loop.last %}, {% endif %}{% endfor %}
     </small>
 </p>
 {% endif %}

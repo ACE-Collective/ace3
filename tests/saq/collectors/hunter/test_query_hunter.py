@@ -627,6 +627,23 @@ def test_process_query_results(monkeypatch):
         assert not observable.tags
         assert not observable.directives
 
+    # two mappings extracting the same observable merge directives/tags instead of dropping the
+    # duplicate's. an include commonly maps a field plainly and a hunt re-maps the same field
+    # purely to attach a directive that gates an analysis module - discarding the duplicate's
+    # metadata makes that pattern fail invisibly (the gated module just never runs)
+    hunt.config.observable_mapping = [
+        ObservableMapping(fields=["src"], type="ip"),
+        ObservableMapping(fields=["src"], type="ip",
+                          directives=["test_directive"], tags=["mapped_tag"]),
+    ]
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
+    assert submissions
+    submission = submissions[0]
+    ip_observables = [o for o in submission.root.observables if o.type == F_IP]
+    assert len(ip_observables) == 1
+    assert ip_observables[0].directives == ["test_directive"]
+    assert "mapped_tag" in ip_observables[0].tags
+
     # test volatile observable
     hunt.config.observable_mapping = [
         ObservableMapping(fields=["src"], type="ip", volatile=True)

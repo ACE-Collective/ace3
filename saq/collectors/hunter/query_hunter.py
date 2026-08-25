@@ -957,11 +957,23 @@ class QueryHunt(Hunt):
                         (ext.observable.type, ext.observable.value), set()
                     ).add(step_index)
 
-            # deduplicate observables (shared extraction may return duplicates across mappings)
+            # deduplicate observables (shared extraction may return duplicates across mappings).
+            # a duplicate's directives and tags are merged onto the kept observable rather than
+            # dropped, so a hunt can re-map a field an include already maps purely to attach a
+            # directive to it - silently discarding them would make that pattern fail in a way
+            # that is invisible until the gated analysis module never runs
             observables: list[Observable] = []
             for ext in extracted:
-                if ext.observable not in observables:
+                try:
+                    existing = observables[observables.index(ext.observable)]
+                except ValueError:
                     observables.append(ext.observable)
+                    continue
+
+                for directive in ext.observable.directives:
+                    existing.add_directive(directive)
+                for tag in ext.observable.tags:
+                    existing.add_tag(tag)
 
             per_event_observables[event_index] = observables
 

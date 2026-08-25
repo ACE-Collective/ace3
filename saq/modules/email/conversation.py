@@ -201,6 +201,44 @@ class Conversation:
                 if m.from_domain == domain
                 or any(p.domain == domain for p in self.participants(m))]
 
+    def replies_to_unrecorded(self, message: ConversationMessage) -> bool:
+        """Does this message reply to a message the conversation has no record of?
+
+        An In-Reply-To naming an unrecorded message id is direct evidence that part of the exchange
+        is missing from the record - mail sent in a direction that is not scanned, or history that
+        predates recording. Callers use this to avoid stating "who introduced X" as fact when the
+        record provably cannot answer it.
+
+        Membership is tested against the visible messages. That is exact for an untruncated
+        conversation; under truncation a parent is always older than its reply and the caps keep
+        the oldest messages, so a recorded parent stays visible to this check.
+        """
+        parent = (parse_message_id_list(message.in_reply_to) or [None])[0]
+        if not parent:
+            return False
+
+        return normalize_message_id(parent) not in {m.message_id for m in self.messages}
+
+    @property
+    def missing_parent_ids(self) -> list:
+        """Message ids named by In-Reply-To headers but absent from the record, in timeline order.
+
+        These are exact lookup keys for the unrecorded messages, so downstream enrichment (e.g. a
+        mail-provider telemetry module) can recover the missing side of the conversation from them.
+        """
+        recorded = {m.message_id for m in self.messages}
+        result = []
+        for message in self.messages:
+            parent = (parse_message_id_list(message.in_reply_to) or [None])[0]
+            if not parent:
+                continue
+
+            parent = normalize_message_id(parent)
+            if parent not in recorded and parent not in result:
+                result.append(parent)
+
+        return result
+
     def has_unattributed_domain(self, domain: str) -> bool:
         """Does this domain have participant rows that predate per-message recording?
 
