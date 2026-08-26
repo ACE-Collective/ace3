@@ -146,7 +146,7 @@ def add_to_event():
 
     return redirect(url_for('analysis.manage'))
 
-@analysis.route('/load_more_events', methods=['POST', 'GET'])
+@analysis.route('/load_more_events', methods=['GET'])
 @require_permission('event', 'read')
 def load_more_events():
     cur_closed_event_count = int(request.args['count'])

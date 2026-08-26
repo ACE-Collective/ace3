@@ -10,14 +10,10 @@ from saq.database.util.alert import get_alert_by_uuid
 class TestRedirectTo:
     """Test the redirect_to function in navigation.py."""
     
-    def test_redirect_to_missing_alert(self, web_client):
-        """Test redirect_to when no current alert is available."""
-        # Call redirect_to without setting up a current alert
+    def test_redirect_to_post_method_rejected(self, web_client):
+        """redirect_to is read-only (it redirects to an external tool), so it is GET-only."""
         result = web_client.post(url_for('analysis.redirect_to'))
-        
-        # Should redirect to analysis.index with flash message
-        assert result.status_code == 302
-        assert result.location == url_for('analysis.index')
+        assert result.status_code == 405
     
     def test_redirect_to_missing_file_uuid(self, web_client):
         """Test redirect_to when file_uuid parameter is missing."""
@@ -38,8 +34,7 @@ class TestRedirectTo:
         alert_uuid = query_params['direct'][0]
         
         # Call redirect_to without file_uuid but with the alert context
-        redirect_data = {'direct': alert_uuid, 'target': 'vt'}
-        result = web_client.post(url_for('analysis.redirect_to'), data=redirect_data)
+        result = web_client.get(url_for('analysis.redirect_to', direct=alert_uuid, target='vt'))
         
         # Should return 500 error for missing file_uuid
         assert result.status_code == 500
@@ -71,8 +66,7 @@ class TestRedirectTo:
         file_id = file_observables[0].uuid
         
         # Call redirect_to without target parameter
-        redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id}
-        result = web_client.post(url_for('analysis.redirect_to'), data=redirect_data)
+        result = web_client.get(url_for('analysis.redirect_to', alert_uuid=alert_uuid, file_uuid=file_id))
         
         # Should return 500 error for missing target
         assert result.status_code == 500
@@ -104,8 +98,7 @@ class TestRedirectTo:
         file_id = file_observables[0].uuid
         
         # Call redirect_to with invalid target
-        redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id, 'target': 'invalid_target'}
-        result = web_client.post(url_for('analysis.redirect_to'), data=redirect_data)
+        result = web_client.get(url_for('analysis.redirect_to', alert_uuid=alert_uuid, file_uuid=file_id, target='invalid_target'))
         
         # Should redirect to analysis.index with flash message about invalid target
         assert result.status_code == 302
@@ -138,8 +131,7 @@ class TestRedirectTo:
         file_id = file_observable.uuid
         
         # Call redirect_to with valid VirusTotal target
-        redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': file_id, 'target': 'vt'}
-        result = web_client.post(url_for('analysis.redirect_to'), data=redirect_data)
+        result = web_client.get(url_for('analysis.redirect_to', alert_uuid=alert_uuid, file_uuid=file_id, target='vt'))
         
         # Should redirect to VirusTotal with the file's SHA256 hash
         assert result.status_code == 302
@@ -165,8 +157,7 @@ class TestRedirectTo:
         alert_uuid = query_params['direct'][0]
         
         # Call redirect_to with non-existent file ID
-        redirect_data = {'alert_uuid': alert_uuid, 'file_uuid': 'nonexistent-id', 'target': 'vt'}
-        result = web_client.post(url_for('analysis.redirect_to'), data=redirect_data)
+        result = web_client.get(url_for('analysis.redirect_to', alert_uuid=alert_uuid, file_uuid='nonexistent-id', target='vt'))
         
         # Should redirect to analysis.index with flash message about missing file observable
         assert result.status_code == 302
@@ -212,22 +203,16 @@ class TestRedirectTo:
 class TestSetPageOffset:
     """Test the set_page_offset function in navigation.py."""
     
-    def test_set_page_offset_get_method(self, web_client):
-        """Test set_page_offset with GET method."""
-        # Clear any existing page_offset first
+    def test_set_page_offset_get_method_rejected(self, web_client):
+        """set_page_offset mutates session state, so it is POST-only: a GET must change nothing."""
         with web_client.session_transaction() as sess:
             sess.pop('page_offset', None)
-        
-        # Call set_page_offset with GET method
+
         result = web_client.get(url_for('analysis.set_page_offset', offset=100))
-        
-        # Should return empty response with 204 status
-        assert result.status_code == 204
-        assert result.data == b''
-        
-        # Check that session was updated
+        assert result.status_code == 405
+
         with web_client.session_transaction() as sess:
-            assert sess.get('page_offset') == 100
+            assert 'page_offset' not in sess
 
     def test_set_page_offset_post_method(self, web_client):
         """Test set_page_offset with POST method."""
@@ -290,7 +275,7 @@ class TestSetPageOffset:
             sess.pop('page_offset', None)
         
         # Call with zero offset
-        result = web_client.get(url_for('analysis.set_page_offset', offset=0))
+        result = web_client.post(url_for('analysis.set_page_offset'), data={'offset': '0'})
         
         # Should handle zero value correctly
         assert result.status_code == 204
@@ -305,22 +290,16 @@ class TestSetPageOffset:
 class TestSetPageSize:
     """Test the set_page_size function in navigation.py."""
     
-    def test_set_page_size_get_method(self, web_client):
-        """Test set_page_size with GET method."""
-        # Clear any existing page_size first
+    def test_set_page_size_get_method_rejected(self, web_client):
+        """set_page_size mutates session state, so it is POST-only: a GET must change nothing."""
         with web_client.session_transaction() as sess:
             sess.pop('page_size', None)
-        
-        # Call set_page_size with GET method
+
         result = web_client.get(url_for('analysis.set_page_size', size=50))
-        
-        # Should return empty response with 204 status
-        assert result.status_code == 204
-        assert result.data == b''
-        
-        # Check that session was updated
+        assert result.status_code == 405
+
         with web_client.session_transaction() as sess:
-            assert sess.get('page_size') == 50
+            assert 'page_size' not in sess
     
     def test_set_page_size_post_method(self, web_client):
         """Test set_page_size with POST method."""
@@ -383,7 +362,7 @@ class TestSetPageSize:
             sess.pop('page_size', None)
         
         # Call with large page size
-        result = web_client.get(url_for('analysis.set_page_size', size=1000))
+        result = web_client.post(url_for('analysis.set_page_size'), data={'size': '1000'})
         
         # Should handle large value correctly
         assert result.status_code == 204
@@ -399,25 +378,16 @@ def test_navigation_routes_require_login(app):
     """Test that navigation routes require authentication."""
     # Create a client without auto-login
     with app.test_client() as client:
-        # Test redirect_to requires login
-        result = client.post(url_for('analysis.redirect_to'))
-        assert result.status_code == 302  # Redirect to login
-        
+        # Test redirect_to requires login (GET-only endpoint)
         result = client.get(url_for('analysis.redirect_to'))
         assert result.status_code == 302  # Redirect to login
         
-        # Test set_page_offset requires login
+        # Test set_page_offset requires login (POST-only endpoint)
         result = client.post(url_for('analysis.set_page_offset'))
         assert result.status_code == 302  # Redirect to login
         
-        result = client.get(url_for('analysis.set_page_offset', offset=100))
-        assert result.status_code == 302  # Redirect to login
-        
-        # Test set_page_size requires login
+        # Test set_page_size requires login (POST-only endpoint)
         result = client.post(url_for('analysis.set_page_size'))
-        assert result.status_code == 302  # Redirect to login
-        
-        result = client.get(url_for('analysis.set_page_size', size=50))
         assert result.status_code == 302  # Redirect to login
 
 

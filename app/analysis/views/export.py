@@ -177,7 +177,7 @@ def export_alerts_to_csv():
     output.headers["Content-type"] = "text/csv"
     return output
 
-@analysis.route('/download_file', methods=['GET', "POST"])
+@analysis.route('/download_file', methods=['GET'])
 @require_permission('alert', 'read')
 def download_file():
     alert = get_current_alert()

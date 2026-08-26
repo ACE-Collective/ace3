@@ -240,16 +240,32 @@ class TestLogout:
                 'password': 'TestPass123!'
             })
             
-            # Then logout
-            response = client.get(url_for('auth.logout'))
+            # Then logout (POST-only: GET must not be able to destroy a session)
+            response = client.post(url_for('auth.logout'))
             
             assert response.status_code == 302
             assert response.location.endswith(url_for('main.index'))
     
+    def test_logout_get_request_rejected(self, app, test_user):
+        """GET on logout must not log anyone out -- it is not safe to expose a
+        session-destroying action to prefetchers, link scanners, or <img> tags."""
+        with app.test_client() as client:
+            client.post(url_for('auth.login'), data={
+                'username': 'testuser',
+                'password': 'TestPass123!'
+            })
+
+            response = client.get(url_for('auth.logout'))
+            assert response.status_code == 405
+
+            # still logged in: a protected page renders instead of redirecting to login
+            response = client.get(url_for('auth.change_password'))
+            assert response.status_code == 200
+
     def test_logout_unauthenticated_user(self, app):
         """Test logout redirect for unauthenticated user."""
         with app.test_client() as client:
-            response = client.get(url_for('auth.logout'))
+            response = client.post(url_for('auth.logout'))
             
             # Should redirect to login page due to @login_required
             assert response.status_code == 302
@@ -269,7 +285,7 @@ class TestLogout:
                 sess['cid'] = 'some_correlation_id'
             
             # Logout
-            response = client.get(url_for('auth.logout'))
+            response = client.post(url_for('auth.logout'))
             
             assert response.status_code == 302
             
@@ -321,9 +337,9 @@ class TestChangePassword:
                 'confirm': 'NewPass456@'
             })
             
-            # Should redirect to logout after successful change
+            # Should redirect to login after successful change (session invalidated)
             assert response.status_code == 302
-            assert response.location.endswith(url_for('auth.logout'))
+            assert response.location.endswith(url_for('auth.login'))
     
     def test_change_password_wrong_current(self, app, test_user):
         """Test change password with incorrect current password."""
