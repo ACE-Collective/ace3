@@ -1,23 +1,40 @@
-{# The filter bar of the alert management page: quick-filter badges (with indicator
-   dots) and the active-filter display. One of the two morph fragments returned by
-   analysis.manage_refresh -- the top-level id is what Datastar matches on, so keep it
-   stable. See docs/GUI_DATASTAR.md. #}
+{# The filter bar of the alert management page: the temporary-filter banner, quick-filter
+   badges, the current filter's name, and the active-filter chips. One of the two morph
+   fragments returned by analysis.manage_refresh -- the top-level id is what Datastar
+   matches on, so keep it stable. See docs/GUI_DATASTAR.md.
+
+   Everything here uses inline handlers on purpose: this markup is re-rendered by the 30s
+   poll, so jQuery bindings attached to it would not survive the morph. #}
 <div class="col" id="manage_filter_bar">
+    {% if temp_filter %}
+    {# A pivot or a shared link is showing. The analyst's own filter is untouched and one
+       click away -- this banner is what makes an accidental pivot recoverable instead of
+       destructive. #}
+    <div class="alert alert-warning py-1 px-2 mb-1 d-flex align-items-center" id="temp_filter_banner">
+        <span class="bi bi-clock-history me-1"></span>
+        Temporary filter: <strong class="mx-1">{{ temp_filter.label }}</strong>
+        <button type="button" class="btn btn-outline-dark btn-xs ms-2" onmousedown="revert_temp_filter()">Revert</button>
+        <button type="button" class="btn btn-outline-primary btn-xs ms-1" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save a copy</button>
+    </div>
+    {% endif %}
     Filters |
     <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
+    <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#manage_filters_modal" onmousedown="load_saved_filters_modal()">Manage&hellip;</span>
     <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
-    <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_24_hours()'>Last 24h</span>
-    <span class="badge label-special" style="cursor:pointer" onmousedown='set_special_filter_7_days()'>Last 7d</span>
+    {% if current_filter.name %}<span class="ms-1">{{ current_filter.name }}{% if current_filter.state == 'dirty' %}<span title="unsaved changes">&nbsp;*</span>{% endif %}</span>{% endif %}
+    |
     {% for quick_filter in quick_filters %}
-    <span class="badge label-special" style="cursor:pointer" data-quick-filter-id="{{ quick_filter.id }}" onclick='set_quick_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
+    <span class="badge label-special{% if quick_filter.uuid == current_filter.uuid %} border border-dark{% endif %}" style="cursor:pointer" data-filter-uuid="{{ quick_filter.uuid }}" onclick='select_filter(this)'>{{ quick_filter.label }}{% if quick_filter.indicator_count %}<span class="quick-filter-dot" title="{{ quick_filter.indicator_count }} {{ quick_filter.label }} alert(s)"></span>{% endif %}</span>
     {% endfor %} |
-    {% for _filter in session['filters'] %}
+    {% for _filter in effective_filters %}
         {% set name = _filter['name'] %}
         {% set inverted = _filter['inverted'] %}
         {% set values = _filter['values'] %}
         {% if values|length > 0 %}
-        <span>{% if inverted %}NOT {% endif %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter_category("{{name}}")'>{{name}}</span>: {% for index in range(values|length) %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter("{{name}}", {{index}})'>{% if values[index] is none or values[index] is string %}{{values[index]}}{% else %}{{values[index]|join(':')}}{% endif %}</span>{% if index < (values|length) - 1 %} | {% endif %}{% endfor %}</span>
+        <span>{% if inverted %}NOT {% endif %}<span style="cursor:pointer" onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter_category("{{name}}")'>{{name}}</span>: {% for index in range(values|length) %}<span style="cursor:pointer"{% if name in date_range_filter_names %} title="{{ values[index] | resolve_date_range }}"{% endif %} onmouseover="this.style.textDecoration='underline';" onmouseleave="this.style.textDecoration='';" onmousedown='remove_filter("{{name}}", {{index}})'>{% if values[index] is none or values[index] is string %}{{values[index]}}{% else %}{{values[index]|join(':')}}{% endif %}</span>{% if index < (values|length) - 1 %} | {% endif %}{% endfor %}</span>
         {% endif %}
     {% endfor %}
-    <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" onclick="copy_filter_link('{{ url_for('analysis.set_filters') }}')"><span class="bi bi-copy"></span></button>
+    {# The share link is self-describing, so copying it is a pure string build with no
+       round trip. It keeps working after this filter is edited or deleted. #}
+    <button id="btn-copy-filter" type="button" class="btn btn-outline-dark btn-xs" data-share-url="{{ share_url }}" title="Copy a link to this filter" onclick="copy_filter_link(this)"><span class="bi bi-copy"></span></button>
 </div>

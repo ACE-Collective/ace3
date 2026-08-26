@@ -2449,6 +2449,99 @@ class AuthApiKeyPermission(Base):
 
     api_key: Mapped["AuthApiKey"] = relationship('AuthApiKey', back_populates='scope')
 
+class SavedFilter(Base):
+    """One alert-management filter belonging to one analyst.
+
+    Every filter state is a row here -- named filters, the analyst's unsaved working set,
+    and an active pivot -- which is what lets the Flask session carry nothing but UUIDs
+    instead of the multi-KB filter payload it used to hold in a cookie.
+
+    Note this table is NEVER a share target. Share links are self-describing URLs (see
+    saq/gui/filter_url.py), so a link keeps working after its filter is edited or deleted
+    and nothing here has to outlive its owner's intent."""
+
+    __tablename__ = 'saved_filters'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'name', name='uq_saved_filter_user_name'),
+        Index('i_saved_filter_user_kind', 'user_id', 'kind'),
+        Index('i_saved_filter_user_quick', 'user_id', 'quick_filter_order'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    # the handle the session holds. Opaque on purpose: it keeps the cookie from leaking row
+    # ids, and matches the String(36) business-key convention used throughout this schema.
+    uuid: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True)
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    # named   -- an analyst's saved filter; the only kind that is listed in the GUI
+    # working -- this user's unsaved edits; a per-user singleton, overwritten in place
+    # temp    -- this user's active pivot or opened share link; a per-user singleton
+    #
+    # The scratch kinds being singletons is what bounds this table's growth: at most two
+    # rows per user beyond the ones they deliberately created.
+    kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default='named',
+        server_default=text("'named'"))
+
+    # NULL for the scratch kinds. InnoDB treats NULLs as distinct in a UNIQUE index, so any
+    # number of scratch rows coexist with the per-user unique name constraint.
+    name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True)
+
+    # doubles as the banner label for temp rows ("Tag: needs_research", "Shared link")
+    description: Mapped[Optional[str]] = mapped_column(
+        String(1024),
+        nullable=True)
+
+    # the [{name, inverted, values}] list, JSON-serialized. No native JSON column type is
+    # used anywhere in this schema -- see ExternalRemediationCheck.context_json.
+    #
+    # Relative date tokens ("-24h") are stored VERBATIM and resolved on every query by
+    # DateRangeFilter.apply. Never normalize one to an absolute range on the way in, or a
+    # saved "Last 24h" silently freezes to whenever it was saved.
+    filters_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    # NULL: not a quick filter. Otherwise the badge's position in this user's filter bar,
+    # ascending. Deliberately NOT unique so a multi-row reorder has no intermediate state
+    # that violates a constraint.
+    quick_filter_order: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True)
+
+    # show a dot with the number of alerts this badge would match
+    quick_filter_indicator: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text('0'))
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+
+    user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
+
 # aliased(User) forces User's mapper to configure, which resolves User.api_keys -> AuthApiKey. These
 # must therefore come AFTER every model User has a relationship to is defined.
 Owner = aliased(User)

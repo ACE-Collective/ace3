@@ -13,7 +13,7 @@ import zipfile
 from flask import flash, make_response, redirect, request, send_from_directory, session, url_for
 from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert, load_current_alert
-from app.analysis.views.session.filters import _reset_filters, build_alert_query
+from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_effective_filters
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
@@ -113,13 +113,15 @@ def download_json():
 @analysis.route('/export_alerts_to_csv', methods=['GET'])
 @require_permission('alert', 'read')
 def export_alerts_to_csv():
-    # use default page settings if first visit
-    if 'filters' not in session:
+    # use default page settings if first visit. 
+    if 'filter_uuid' not in session:
         _reset_filters()
 
     # create alert view by joining required tables, applying the session filters and
     # scoping to the alerts visible from this node 
-    query = build_alert_query(session["filters"])
+    # honors an active temporary filter on purpose: the CSV should match the list the
+    # analyst is looking at
+    query = build_alert_query(get_effective_filters())
 
     # group by id to prevent duplicates
     query = query.group_by(GUIAlert.id)

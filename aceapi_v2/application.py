@@ -13,6 +13,7 @@ from aceapi_v2.health.router import router as health_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
+from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.secrets.router import router as secrets_router
 from aceapi_v2.threat_types.router import router as threat_types_router
 from aceapi_v2.observable_comments.router import router as observable_comments_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(observable_comments_router, prefix="/observable-comments", tags=["observables"])
     app.include_router(observable_types_router, prefix="/observable-types", tags=["observables"])
     app.include_router(observables_router, prefix="/observables", tags=["observables"])
+    app.include_router(saved_filters_router, prefix="/saved-filters", tags=["saved-filters"])
     app.include_router(secrets_router, prefix="/secrets", tags=["secrets"])
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])

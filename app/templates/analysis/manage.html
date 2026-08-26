@@ -68,7 +68,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body" id="filter_modal_body">
-                {% with filters=filters, session_filters=session['filters'] %}
+                {% with filters=filters, session_filters=effective_filters %}
                     {% include "analysis/alert_filter_input.html" %}
                 {% endwith %}
             </div>
@@ -76,11 +76,70 @@
                 <button type="button" class="btn btn-outline-primary" onmousedown='new_filter_option()'><span class="bi bi-plus"></span> Add</button>
                 <button type="button" class="btn btn-outline-primary" onmousedown='removeElements("filter_row_")'><span class="bi bi-x"></span> Clear</button>
                 <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                {# Apply changes what you are LOOKING at; it never writes to a saved filter.
+                   Persisting is always an explicit Save or Save as. #}
                 <button type="submit" class="btn btn-outline-primary">Apply</button>
+                {% if current_filter.uuid %}<button type="button" class="btn btn-outline-primary" onclick="save_current_filter('{{ current_filter.uuid }}')">Save</button>{% endif %}
+                <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save as&hellip;</button>
             </div>
         </div>
     </div>
     </form>
+</div>
+
+
+{# Save the current filter under a name. Also serves "Save a copy" from the temporary
+   filter banner. Kept OUTSIDE #manage_page so the 30s poll cannot morph away an open
+   modal mid-edit -- see docs/GUI_DATASTAR.md. #}
+<div class="modal fade" id="save_filter_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <form onsubmit="return save_filter_as();">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Save Filter</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <label class="form-label" for="save_filter_name">Name</label>
+                    <input type="text" class="form-control" id="save_filter_name" name="name" required maxlength="255">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label" for="save_filter_description">Description <span class="text-muted">(optional)</span></label>
+                    <input type="text" class="form-control" id="save_filter_description" name="description" maxlength="1024">
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="save_filter_quick" name="quick_filter">
+                    <label class="form-check-label" for="save_filter_quick">Show as a quick filter badge</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="save_filter_indicator" name="quick_filter_indicator">
+                    <label class="form-check-label" for="save_filter_indicator">Show an alert count on the badge</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary">Save</button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
+{# Manage saved filters: rename, delete, and choose which appear as badges and in what
+   order. Body is fetched from analysis.saved_filters_modal_body. #}
+<div class="modal fade modal-lg" id="manage_filters_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Manage Filters</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="manage_filters_modal_body">
+                <p class="text-muted mb-0">Loading&hellip;</p>
+            </div>
+        </div>
+    </div>
 </div>
 
 {% include "analysis/_add_observable_modal.html" %}

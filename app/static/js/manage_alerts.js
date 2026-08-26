@@ -24,7 +24,9 @@ function get_all_checked_alerts_dispositions() {
 }
 
 function setup_daterange_pickers() {
-    $('.daterange').each(function(index) {
+    // :not([data-relative]) keeps the picker off inputs in relative mode -- attaching it
+    // there would overwrite the analyst's token with a concrete date range.
+    $('.daterange:not([data-relative])').each(function(index) {
         if ($(this).val() == '') {
             $(this).val(
                 moment().subtract(6, "days").startOf('day').format("MM-DD-YYYY HH:mm") + ' - ' +
@@ -32,7 +34,7 @@ function setup_daterange_pickers() {
         }
     });
 
-    $('.daterange').daterangepicker({
+    $('.daterange:not([data-relative])').daterangepicker({
         timePicker: true,
         format: 'MM-DD-YYYY HH:mm',
         startDate:  moment().subtract(6, 'days').startOf('day'),
@@ -599,12 +601,14 @@ function reset_filters() {
     })();
 }
 
-// special filtering capabilities per Mandy's request
+// Applies one of the analyst's own saved filters as their persistent selection.
+function select_filter(badge) {
+    select_filter_by_uuid(badge.dataset.filterUuid);
+}
 
-function set_special_filter_24_hours() {
+function select_filter_by_uuid(filter_uuid) {
     (function() {
-        const params = new URLSearchParams({ hours: 24 });
-        fetch('reset_filters_special?' + params.toString(), { credentials: 'same-origin' })
+        fetch('select_filter/' + encodeURIComponent(filter_uuid), { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -615,39 +619,11 @@ function set_special_filter_24_hours() {
     })();
 }
 
-function set_special_filter_7_days() {
+// Discards a temporary filter and restores what the analyst was using before it. Navigates
+// to a BARE /manage so a refresh cannot re-apply a share link they just dismissed.
+function revert_temp_filter() {
     (function() {
-        const params = new URLSearchParams({ hours: 7 * 24 });
-        fetch('reset_filters_special?' + params.toString(), { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){
-            alert('DOH: ' + err.message);
-        });
-    })();
-}
-
-// applies the quick filter identified by the clicked badge's data-quick-filter-id
-function set_quick_filter(badge) {
-    (function() {
-        fetch('reset_filters_quick/' + encodeURIComponent(badge.dataset.quickFilterId), { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){
-            alert('DOH: ' + err.message);
-        });
-    })();
-}
-
-// adds a filter
-function add_filter(name, values) {
-    (function() {
-        const params = new URLSearchParams({ filter: JSON.stringify({ name: name, values: values }) });
-        fetch('add_filter?' + params.toString(), { credentials: 'same-origin' })
+        fetch('revert_temp_filter', { credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -702,18 +678,24 @@ function compute_filter_settings() {
     return filter_settings;
 }
 
-// adds selected filter from filter modal
+// Applies the filter modal's contents to what the analyst is LOOKING at. It never writes
+// to a saved filter -- persisting is always an explicit Save or Save as.
 function apply_filter() {
     filter_settings = compute_filter_settings();
     (function() {
-        const params = new URLSearchParams({ filters: JSON.stringify(filter_settings) });
-        fetch('set_filters?' + params.toString(), { credentials: 'same-origin' })
+        // POST, not GET: a mutating GET with a JSON payload let any prefetch or link
+        // scanner rewrite the analyst's filters.
+        const body = new URLSearchParams({ filters: JSON.stringify(filter_settings) });
+        fetch('set_filters', { method: 'POST', credentials: 'same-origin', body: body })
         .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
+            // Surface a bad value instead of reloading into a broken page. An unparseable
+            // date used to reach the session and then 500 /manage on every load until
+            // someone reset the filters by hand.
+            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
             window.location.replace('/ace/manage');
         })
         .catch(function(err){
-            alert('DOH: ' + err.message);
+            alert(err.message);
         });
     })();
 
@@ -860,6 +842,42 @@ function new_filter_option() {
   })();
 }
 
+
+// Switches one date filter row between the daterangepicker and a free-text relative token.
+// The input's name and value shape are identical either way, so the DOM->JSON serializer
+// (compute_filter_settings) needs no special case.
+function toggle_date_mode(select) {
+    var input = $(select).closest('.input-group').find('input');
+    var hint = $(select).closest('.input-group').next('.relative-date-hint');
+
+    if (select.value === 'relative') {
+        if (input.data('daterangepicker')) { input.data('daterangepicker').remove(); }
+        input.attr('data-relative', '1').removeClass('daterange').val('-24h');
+        update_relative_date_hint(input[0]);
+    } else {
+        input.removeAttr('data-relative').addClass('daterange').val('');
+        hint.text('');
+        setup_daterange_pickers();
+    }
+}
+
+// Shows what a relative token currently resolves to, so "-24h" is never opaque. Purely
+// advisory -- the server is what actually parses the token.
+function update_relative_date_hint(input) {
+    var el = $(input);
+    if (!el.attr('data-relative')) { return; }
+
+    var hint = el.closest('.input-group').next('.relative-date-hint');
+    var value = el.val().trim();
+    if (value === '') { hint.text(''); return; }
+
+    const params = new URLSearchParams({ value: value });
+    fetch('resolve_date_range?' + params.toString(), { credentials: 'same-origin' })
+    .then(function(resp){ return resp.ok ? resp.json() : { text: '' }; })
+    .then(function(data){ hint.text(data.text || 'not a valid time range'); })
+    .catch(function(){ hint.text(''); });
+}
+
 function toggle_include_exclude(filter_row_unique_id) {
     var button = $("#filter_include_" + filter_row_unique_id);
     var span = button.children()[0];
@@ -872,7 +890,111 @@ function toggle_include_exclude(filter_row_unique_id) {
     }
 }
 
-function copy_filter_link(url) {
-    var filter_settings = compute_filter_settings();
-    copy_to_clipboard("https://" + window.location.host + url + "?redirect=1&filters=" + encodeURIComponent(JSON.stringify(filter_settings)));
+// The share URL is self-describing and rendered server-side, so copying it needs no round
+// trip. The link keeps working after this filter is edited or deleted.
+function copy_filter_link(button) {
+    copy_to_clipboard(button.dataset.shareUrl);
+}
+
+function copy_saved_filter_link(filter_uuid) {
+    (function() {
+        fetch('saved_filter_link/' + encodeURIComponent(filter_uuid), { credentials: 'same-origin' })
+        .then(function(resp){
+            if (!resp.ok) { throw new Error(resp.statusText); }
+            return resp.json();
+        })
+        .then(function(data){ copy_to_clipboard(data.url); })
+        .catch(function(err){ alert('DOH: ' + err.message); });
+    })();
+}
+
+//
+// saved filter management
+//
+
+function load_saved_filters_modal() {
+    (function() {
+        fetch('saved_filters_modal_body', { credentials: 'same-origin' })
+        .then(function(resp){
+            if (!resp.ok) { throw new Error(resp.statusText); }
+            return resp.text();
+        })
+        .then(function(html){ document.getElementById('manage_filters_modal_body').innerHTML = html; })
+        .catch(function(err){ alert('DOH: ' + err.message); });
+    })();
+}
+
+function save_filter_as() {
+    const body = new URLSearchParams();
+    body.append('name', document.getElementById('save_filter_name').value);
+    body.append('description', document.getElementById('save_filter_description').value);
+    if (document.getElementById('save_filter_quick').checked) { body.append('quick_filter', 'on'); }
+    if (document.getElementById('save_filter_indicator').checked) { body.append('quick_filter_indicator', 'on'); }
+
+    (function() {
+        fetch('saved_filters', { method: 'POST', credentials: 'same-origin', body: body })
+        .then(function(resp){
+            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err){ alert(err.message); });
+    })();
+
+    return false; // prevents form from submitting
+}
+
+// Overwrites the named filter currently selected with what is on screen.
+function save_current_filter(filter_uuid) {
+    const body = new URLSearchParams({ save_current: 'on' });
+    (function() {
+        fetch('saved_filters/' + encodeURIComponent(filter_uuid), { method: 'POST', credentials: 'same-origin', body: body })
+        .then(function(resp){
+            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err){ alert(err.message); });
+    })();
+}
+
+function delete_saved_filter(filter_uuid, name) {
+    if (!confirm('Delete the saved filter "' + name + '"?')) { return; }
+    (function() {
+        fetch('saved_filters/' + encodeURIComponent(filter_uuid) + '/delete',
+              { method: 'POST', credentials: 'same-origin' })
+        .then(function(resp){
+            if (!resp.ok) { throw new Error(resp.statusText); }
+            load_saved_filters_modal();
+        })
+        .catch(function(err){ alert('DOH: ' + err.message); });
+    })();
+}
+
+// Reorder with up/down buttons rather than drag-and-drop: no library, and it is reachable
+// from the keyboard.
+function move_saved_filter(button, direction) {
+    var row = button.closest('tr');
+    var sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) { return; }
+    if (direction < 0) { row.parentNode.insertBefore(row, sibling); }
+    else { row.parentNode.insertBefore(sibling, row); }
+}
+
+function save_quick_filter_order() {
+    const body = new URLSearchParams();
+    document.querySelectorAll('#saved_filters_table tbody tr').forEach(function(row){
+        if (row.querySelector('.quick-filter-pin').checked) {
+            body.append('filter_uuids', row.dataset.filterUuid);
+        }
+    });
+
+    (function() {
+        fetch('saved_filters/quick', { method: 'POST', credentials: 'same-origin', body: body })
+        .then(function(resp){
+            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
+            window.location.replace('/ace/manage');
+        })
+        .catch(function(err){ alert(err.message); });
+    })();
+
+    return false; // prevents form from submitting
 }

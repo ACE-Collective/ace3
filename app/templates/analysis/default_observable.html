@@ -17,7 +17,7 @@
 </span>
 <script type="text/javascript">
     $('#o_filter_{{unique_reference}}').on('click', function() {
-        set_filters([{'name': 'Observable', 'inverted': false, 'values': [['{{_observable.type}}',decodeURIComponent(atob('{{_observable.value | b64escape}}'))]]}]);
+        apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [['{{_observable.type}}',decodeURIComponent(atob('{{_observable.value | b64escape}}'))]]}], 'Observable {{_observable.type}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}');
     });
 </script>
 {% endblock %}
@@ -76,7 +76,7 @@
 {# add tags #}
 {% for tag in _observable.tags %}
     {% if tag | get_tag_level != 'hidden' %}
-        <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
+        <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}], 'Tag: {{tag}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{ tag }}</span>
     {% endif %}
 {% endfor %}
 
@@ -93,7 +93,7 @@
         {% if count != 1 or disposition != alert.disposition %}
         <span 
             style="transition: text-decoration 0.1s; cursor: pointer;"
-            onmousedown="set_filters([{'name': 'Observable', 'inverted': false, 'values': [ ['{{_observable.type}}', decodeURIComponent(atob('{{_observable.value | b64escape}}'))] ]}, {'name': 'Disposition', 'inverted': false, 'values': ['{{disposition}}']}])" 
+            onmousedown="apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [ ['{{_observable.type}}', decodeURIComponent(atob('{{_observable.value | b64escape}}'))] ]}, {'name': 'Disposition', 'inverted': false, 'values': ['{{disposition}}']}], 'Observable {{_observable.type}} / {{disposition}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')" 
             class="badge border border-dark text-bg-{{dispositions[disposition]['css']}}"
             onmouseover="this.style.textDecoration='underline';"
             onmouseleave="this.style.textDecoration='';"
@@ -106,7 +106,7 @@
 
 {# add tags mapped in database #}
 {% for tag in _observable.mapped_tags %}
-    <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="set_filters([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}])">{{ tag }}</span>
+    <span class="badge text-bg-{{tag | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name': 'Tag', 'inverted': false, 'values': ['{{tag}}']}], 'Tag: {{tag}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{ tag }}</span>
 {% endfor %}
 
 {# add yara meta tag badges #}

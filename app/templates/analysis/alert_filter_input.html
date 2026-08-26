@@ -37,7 +37,25 @@
                         {% endfor %}
                         </select>
                     {% elif filters[name].__class__.__name__ == 'DateRangeFilter' %}
-                        <input type="text" class="form-control daterange" name="filter_{{unique_reference}}_value_{{name}}" value="{% if name == filter_name %}{{value}}{% endif %}"/>
+                        {# Absolute mode is the existing daterangepicker; relative mode is the
+                           same input with the picker detached, holding a Splunk-style token.
+                           The input's name and value shape never change, so
+                           compute_filter_settings() needs no special case at all. #}
+                        {% set is_relative = (name == filter_name) and (value | is_relative_date) %}
+                        <div class="input-group">
+                            <select class="form-control flex-grow-0 w-auto" onchange="toggle_date_mode(this)">
+                                <option value="absolute" {% if not is_relative %}SELECTED{% endif %}>Absolute</option>
+                                <option value="relative" {% if is_relative %}SELECTED{% endif %}>Relative</option>
+                            </select>
+                            <input type="text" class="form-control{% if not is_relative %} daterange{% endif %}"
+                                   {% if is_relative %}data-relative="1"{% endif %}
+                                   list="relative_date_presets"
+                                   placeholder="-7d - now"
+                                   oninput="update_relative_date_hint(this)"
+                                   name="filter_{{unique_reference}}_value_{{name}}"
+                                   value="{% if name == filter_name %}{{value}}{% endif %}"/>
+                        </div>
+                        <div class="form-text relative-date-hint">{% if is_relative %}{{ value | resolve_date_range }}{% endif %}</div>
                     {% elif filters[name].__class__.__name__ == 'TypeValueFilter' %}
                         <div style="float:left;width:50%;padding-right:3px;">
                             <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
@@ -63,3 +81,10 @@
         {% endif %}
     {% endfor %}
 {% endfor %}
+
+{# Shared by every relative date input on the page. Splunk-style: -<n><unit>[@<snap>]. #}
+<datalist id="relative_date_presets">
+    <option value="-15m"><option value="-1h"><option value="-24h"><option value="-24h@h">
+    <option value="-7d"><option value="-7d@d"><option value="-30d"><option value="-1y">
+    <option value="now"><option value="@d">
+</datalist>

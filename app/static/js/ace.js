@@ -95,19 +95,30 @@ function toggle_alert_observables(button, alert_uuid, observables_url) {
     });
 }
 
-// Pivots the alert list to a single observable. Used by analysis/load_observables.html, which renders
-// on pages served by different blueprints, so the urls are passed in from the template.
-function add_observable_filter(observable_type, observable_value, filter_url, manage_url) {
-    const filter = { name: "Observable", values: [[observable_type, observable_value]] };
-    const params = new URLSearchParams({ filter: JSON.stringify(filter) });
-    fetch(filter_url + "?" + params.toString(), { credentials: "same-origin" })
+// Pivots the alert list to a TEMPORARY filter, leaving whatever filter the analyst was
+// already using untouched and one click away. This is the whole point of the temporary
+// filter: clicking an observable from an alert used to overwrite their filter set outright,
+// losing however long they had spent building it.
+//
+// Lives in ace.js because the templates that call it render under more than one blueprint,
+// so the urls have to be passed in.
+function apply_temp_filter(filters, label, apply_url, manage_url) {
+    const body = new URLSearchParams({ filters: JSON.stringify(filters), label: label });
+    fetch(apply_url, { method: "POST", credentials: "same-origin", body: body })
     .then(function(resp){
-        if (!resp.ok) { throw new Error(resp.statusText); }
+        if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
         window.location.replace(manage_url);
     })
     .catch(function(err){
-        alert('DOH: ' + err.message);
+        alert(err.message);
     });
+}
+
+function add_observable_filter(observable_type, observable_value, apply_url, manage_url) {
+    apply_temp_filter(
+        [{ name: "Observable", inverted: false, values: [[observable_type, observable_value]] }],
+        "Observable " + observable_type + ":" + observable_value,
+        apply_url, manage_url);
 }
 
 // API keys are display-once (revealed at creation, never recoverable), so there is no nav-bar

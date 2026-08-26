@@ -1,23 +1,20 @@
-from datetime import timedelta
 import logging
-import os
-from typing import Union
-import yaml
-from flask import session
+from flask import g, session
 from flask_login import current_user
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import distinct, func
 
-from app.filters import AutoTextFilter, BoolFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
+from app.filters import AutoTextFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
-from saq.environment import get_base_dir, get_global_runtime_settings
-from aceapi_v2.sync import run_async
+from saq.environment import get_global_runtime_settings
+from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
-from saq.constants import REMEDIATION_STATUS_GUI, VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
+from aceapi_v2.saved_filters import service as saved_filters_service
+from aceapi_v2.saved_filters.schemas import FilterEntry, ScratchFilterWrite
+from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
+from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
-from saq.util.time import local_time
 
 
 def _default_filters() -> list:
@@ -32,23 +29,15 @@ def _default_filters() -> list:
     ]
 
 def _reset_filters():
-    session["filters"] = _default_filters()
-    session["search"] = None
+    """The "Reset" action. Delegates to clear_filter_state() so there is exactly one place
+    that knows how to put the session back to the built-in default."""
+    clear_filter_state()
 
 def get_reset_filter_alert_count() -> int:
     """Returns the number of alerts matching the "Reset" filter for the current user. Used
     to drive the browser-tab notification dot -- see reset_filter_alert_count() in
     app/analysis/views/manage.py."""
     return count_alerts(_default_filters())
-
-def _reset_filters_special(hours: int):
-    start = (local_time() - timedelta(hours=hours)).strftime("%m-%d-%Y %H:%M")
-    end = local_time().strftime("%m-%d-%Y %H:%M")
-    session["filters"] = [
-        { "name": "Queue", "inverted": False, "values": [ current_user.queue ] },
-        { "name": "Alert Date", "inverted": False, "values": [ f"{start} - {end}" ] },
-    ]
-    session["search"] = None
 
 def reset_checked_alerts():
     session['checked'] = []
@@ -63,31 +52,16 @@ def reset_pagination():
         session['page_size'] = 50
 
 def has_filter(filters: list, name: str) -> bool:
-    """Returns True if `filters` (a session['filters']-shaped list) contains a filter
-    with this name."""
+    """Returns True if `filters` (a filter list) contains a filter with this name."""
     return any(_filter["name"] == name for _filter in filters or [])
 
 def hasFilter(name):
     return has_filter(session.get('filters', []), name)
 
-# the filter names create_filter() and getFilters() support. Quick filter config is
-# validated against this so a typo'd name can never reach session['filters'], where it
-# would make create_filter() raise KeyError on every subsequent /manage load. Kept in
-# sync with the two dicts below by test_filter_names_match_get_filters.
-FILTER_NAMES = frozenset([
-    'Alert Date',
-    'Alert Type',
-    'Description',
-    'Disposition',
-    'Disposition By',
-    'Disposition Date',
-    'Event Date',
-    'Observable',
-    'Owner',
-    'Queue',
-    'Reviewed',
-    'Tag',
-])
+# The set of valid filter names lives in saq/gui/filter_names.py (FILTER_NAMES) so that
+# aceapi_v2 can validate stored and URL-supplied filters against it without importing app
+# (which would pull in flask_login). It is kept in sync with the two dicts below by
+# test_filter_names_match_get_filters.
 
 def create_filter(filter_name: str, inverted: bool):
     return {
@@ -128,7 +102,7 @@ def getFilters():
     }
 
 def build_alert_query(filters: list):
-    """Builds the GUIAlert query for a session['filters']-shaped list: the joins those
+    """Builds the GUIAlert query for a filter list: the joins those
     filters require, the filter conditions themselves, and this node's alert visibility
     scoping.
 
@@ -166,7 +140,7 @@ def build_alert_query(filters: list):
     return query
 
 def count_alerts(filters: list) -> int:
-    """Returns the number of alerts matching a session['filters']-shaped list. Counts
+    """Returns the number of alerts matching a filter list. Counts
     distinct alert ids because the Tag and Observable joins can produce more than one row
     per alert."""
     count_query = build_alert_query(filters).statement.with_only_columns(func.count(distinct(GUIAlert.id)))
@@ -189,121 +163,20 @@ def get_existing_filter(filter_name: str, inverted: bool):
     return None
 
 #
-# quick filters
+# filter sentinels
 #
-# The badges on the alert management page filter bar. Each one is just a named set of
-# session filters that gets loaded into session['filters'] when clicked, optionally with
-# a dot showing how many alerts it would show. See etc/gui_quick_filters.yaml.
+# $USER / $USER_QUEUE are resolved against whoever is logged in, at READ time, never at
+# write time -- so the sentinel survives round-tripping through both the database and a
+# share URL. That is what makes a link portable: a runbook link written as
+# `queue:$USER_QUEUE` shows each reader their OWN queue rather than the author's.
 #
 
-# resolved against the logged in user when a quick filter is applied
 QUICK_FILTER_USER_QUEUE = "$USER_QUEUE"
 QUICK_FILTER_USER = "$USER"
 
-class QuickFilterEntry(BaseModel):
-    """One entry of a quick filter's `filters` list -- the same {name, inverted, values}
-    shape the GUI's own filter editor writes into session['filters']."""
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    name: str = Field(description="a filter name supported by create_filter()")
-    inverted: bool = Field(default=False, description="negate this filter")
-    # str for every filter except Observable, whose values are [type, value] pairs
-    values: list[Union[str, list[str]]] = Field(min_length=1, description="the values to filter on")
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        if value not in FILTER_NAMES:
-            raise ValueError(f"unknown filter name {value!r} (expected one of {', '.join(sorted(FILTER_NAMES))})")
-
-        return value
-
-class QuickFilter(BaseModel):
-    """A quick-filter badge definition."""
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    # the id goes into a URL path and a DOM attribute, so keep it to safe characters
-    id: str = Field(pattern=r"^[A-Za-z0-9_-]+$", description="unique identifier for this quick filter")
-    label: str = Field(min_length=1, description="the text shown on the badge")
-    filters: list[QuickFilterEntry] = Field(min_length=1, description="the filters applied when the badge is clicked")
-    indicator: bool = Field(default=False, description="show a dot with the number of alerts this badge would show")
-
-# cache for get_quick_filters(): the parsed quick-filter list, the mtime of the file it
-# was parsed from, and the path it was loaded from. The file is only re-read when its
-# mtime changes (or the configured path changes), mirroring ACE's
-# store-mtime/compare-on-next-access reload idiom (see saq/whitelist.py). This is what
-# lets an analyst edit the file and see the change on the next page load.
-_quick_filters_cache: list = []
-_quick_filters_mtime: float | None = None
-_quick_filters_path: str | None = None
-
-def parse_quick_filters(data, path: str) -> list[QuickFilter]:
-    """Validates the parsed contents of a quick filters config file. Invalid entries are
-    logged and dropped rather than raising."""
-    if not isinstance(data, dict):
-        logging.error(f"quick filters config {path} is not a mapping")
-        return []
-
-    result = []
-    seen_ids = set()
-    for index, entry in enumerate(data.get("quick_filters") or []):
-        try:
-            quick_filter = QuickFilter.model_validate(entry)
-        except ValidationError as e:
-            logging.error(f"ignoring invalid quick filter at index {index} of {path}: {e}")
-            continue
-
-        if quick_filter.id in seen_ids:
-            logging.warning(f"ignoring duplicate quick filter id {quick_filter.id} in {path}")
-            continue
-
-        seen_ids.add(quick_filter.id)
-        result.append(quick_filter)
-
-    return result
-
-def get_quick_filters() -> list[QuickFilter]:
-    """Loads the GUI quick-filter badge definitions (see etc/gui_quick_filters.yaml for
-    the schema). Deployments point gui.quick_filters_config_path at a site-specific file
-    to add or edit badges without an ACE code change. The file is re-read whenever its
-    mtime changes, so those edits take effect on the next page load with no GUI restart,
-    but an unchanged file is not re-parsed on every call."""
-    global _quick_filters_cache, _quick_filters_mtime, _quick_filters_path
-
-    path = os.path.join(get_base_dir(), get_config().gui.quick_filters_config_path)
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError as e:
-        # missing or unreadable file -- no quick filters. only complain when this is news,
-        # otherwise we log on every page load.
-        if path != _quick_filters_path or _quick_filters_mtime is not None:
-            logging.error(f"unable to read quick filters config {path}: {e}")
-
-        _quick_filters_cache = []
-        _quick_filters_mtime = None
-        _quick_filters_path = path
-        return []
-
-    # cache hit: same file, same mtime -- don't touch disk
-    if path == _quick_filters_path and mtime == _quick_filters_mtime:
-        return _quick_filters_cache
-
-    try:
-        with open(path, 'r') as fp:
-            data = yaml.safe_load(fp) or {}
-    except Exception as e:
-        logging.error(f"failed to load quick filters config {path}: {e}")
-        # leave the previously cached good copy in place on a transient parse error rather
-        # than poisoning it
-        return _quick_filters_cache
-
-    _quick_filters_cache = parse_quick_filters(data, path)
-    _quick_filters_mtime = mtime
-    _quick_filters_path = path
-    return _quick_filters_cache
-
-def resolve_quick_filter_value(value):
-    """Resolves the sentinels a quick filter can use to refer to the logged in user."""
+def resolve_filter_sentinels(value):
+    """Resolve the sentinels a stored or shared filter can use to refer to the viewer."""
     if value == QUICK_FILTER_USER_QUEUE:
         return current_user.queue
 
@@ -311,58 +184,286 @@ def resolve_quick_filter_value(value):
         return current_user.display_name
 
     if isinstance(value, list):
-        return [resolve_quick_filter_value(_) for _ in value]
+        return [resolve_filter_sentinels(_) for _ in value]
 
     return value
 
-def resolve_quick_filter_filters(quick_filter: QuickFilter) -> list:
-    """Turns a quick filter into the session['filters'] shape: sentinels resolved against
-    the logged in user, and entries sharing a name+inverted merged into one.
 
-    The merge matters: session filters are ANDed together (see build_alert_query), so two
-    separate Queue entries would match nothing. The GUI's own add_filter route merges them
-    the same way via get_existing_filter()."""
+def resolve_saved_filter(filters: list) -> list:
+    """Prepare a stored filter list for querying: sentinels resolved against the logged in
+    user, and entries sharing a name+inverted merged into one.
+
+    The merge matters. Filter entries are ANDed together (see build_alert_query), so two
+    separate Queue entries would match nothing at all rather than either queue."""
     result = []
     merged_by_key = {}
-    for entry in quick_filter.filters:
-        key = (entry.name, entry.inverted)
-        values = [resolve_quick_filter_value(_) for _ in entry.values]
+    for entry in filters or []:
+        key = (entry["name"], entry.get("inverted", False))
+        values = [resolve_filter_sentinels(_) for _ in entry["values"]]
         if key in merged_by_key:
             merged_by_key[key]["values"].extend(values)
             continue
 
-        merged = {"name": entry.name, "inverted": entry.inverted, "values": values}
+        merged = {"name": entry["name"], "inverted": entry.get("inverted", False), "values": values}
         merged_by_key[key] = merged
         result.append(merged)
 
     return result
 
-def _reset_filters_quick(filter_id: str) -> bool:
-    """Applies the named quick filter to the session. Returns False if no quick filter
-    with that id is configured."""
-    for quick_filter in get_quick_filters():
-        if quick_filter.id == filter_id:
-            session["filters"] = resolve_quick_filter_filters(quick_filter)
-            session["search"] = None
-            return True
 
-    return False
+#
+# filter state
+#
+# The session holds UUIDs ONLY Filter contents live in the saved_filters table and are resolved per
+# request. 
+#
+#   filter_uuid          the EFFECTIVE filter row driving the alert list (any kind)
+#   filter_base_uuid     the named filter the analyst considers current; None = default
+#   filter_state         'clean' | 'dirty' | 'temp'
+#   filter_restore_uuid  what Revert returns to; set only while temp
+#
 
-def get_quick_filter_indicator_count(quick_filter: QuickFilter) -> int:
-    """Returns the number of alerts a quick filter's badge would show. This runs the
-    badge's own filters through the same build_alert_query() the alert management page
-    uses, so the indicator dot cannot disagree with the list you get when you click it."""
-    return count_alerts(resolve_quick_filter_filters(quick_filter))
+FILTER_STATE_CLEAN = "clean"
+FILTER_STATE_DIRTY = "dirty"
+FILTER_STATE_TEMP = "temp"
 
-def get_quick_filter_display_data() -> list:
-    """Returns the quick-filter badge data for the alert management page. Builds fresh
-    dicts rather than annotating the cached QuickFilter objects, since indicator_count is
-    per-user and per-request."""
+# only these keys are filter state; used by tests to assert nothing else creeps in
+FILTER_SESSION_KEYS = ("filter_uuid", "filter_base_uuid", "filter_state", "filter_restore_uuid")
+
+
+def _write_scratch(kind: str, filters: list, label: str | None = None):
+    """Persist a scratch row for the current user and return its uuid."""
+    result = run_async_with_session(
+        saved_filters_service.upsert_scratch_filter,
+        current_user.id,
+        kind,
+        ScratchFilterWrite(filters=filters, label=label),
+    )
+    return result.uuid
+
+
+def _read_filters(filter_uuid: str) -> list | None:
+    """Return the filter list for a uuid, or None if it is gone or not ours."""
+    if not filter_uuid:
+        return None
+
+    result = run_async_with_session(
+        saved_filters_service.get_saved_filter, filter_uuid, current_user.id)
+    if result is None:
+        return None
+
+    return [entry.model_dump() for entry in result.filters]
+
+
+def get_current_filter() -> dict:
+    """Display data for the filter bar: which named filter is in play and how it stands."""
+    base_uuid = session.get("filter_base_uuid")
+    name = None
+    if base_uuid:
+        result = run_async_with_session(
+            saved_filters_service.get_saved_filter, base_uuid, current_user.id)
+        # the base filter can be deleted out from under us; fall back rather than lie
+        name = result.name if result else None
+        if result is None:
+            session["filter_base_uuid"] = None
+            base_uuid = None
+
+    return {
+        "uuid": base_uuid,
+        "name": name,
+        "state": session.get("filter_state", FILTER_STATE_CLEAN),
+    }
+
+
+def get_temp_filter() -> dict | None:
+    """The temporary-filter banner data, or None when no temp is active."""
+    if session.get("filter_state") != FILTER_STATE_TEMP:
+        return None
+
+    result = run_async_with_session(
+        saved_filters_service.get_saved_filter, session.get("filter_uuid"), current_user.id)
+    return {"label": (result.description if result else None) or "Modified filter"}
+
+
+def get_effective_filters() -> list:
+    """The filter list currently driving the alert list."""
+
+    # Resolves session['filter_uuid'] against the database, resolving $USER sentinels against
+    # whoever is logged in. Memoized per request: build_manage_list_context() and the CSV
+    # export both call this, and it must not issue the same query twice.
+
+    # A missing row is NOT an error. The analyst can delete the filter they had selected, and
+    # a cookie can outlive a database reset. Either way we fall back to the default working
+    # set rather than 500 on a page they cannot escape from without clearing cookies.
+
+    if "ace_effective_filters" in g.__dict__:
+        return g.ace_effective_filters
+
+    filters = _read_filters(session.get("filter_uuid"))
+    if filters is None:
+        filters = _default_filters()
+        _select_working(filters)
+        session["filter_base_uuid"] = None
+        session["filter_state"] = FILTER_STATE_CLEAN
+        session.pop("filter_restore_uuid", None)
+
+    resolved = resolve_saved_filter(filters)
+    g.ace_effective_filters = resolved
+    return resolved
+
+
+def _invalidate_effective_filters():
+    g.__dict__.pop("ace_effective_filters", None)
+
+
+def _select_working(filters: list):
+    session["filter_uuid"] = _write_scratch(KIND_WORKING, filters)
+    # keep the state keys consistently present so callers never have to guess whether a
+    # missing key means "no named filter" or "never initialised"
+    session.setdefault("filter_base_uuid", None)
+    session.setdefault("filter_restore_uuid", None)
+    session.setdefault("filter_state", FILTER_STATE_CLEAN)
+    _invalidate_effective_filters()
+
+
+def select_saved_filter(filter_uuid: str) -> bool:
+    """Apply a named saved filter as the analyst's persistent selection."""
+    if _read_filters(filter_uuid) is None:
+        return False
+
+    session["filter_uuid"] = filter_uuid
+    session["filter_base_uuid"] = filter_uuid
+    session["filter_state"] = FILTER_STATE_CLEAN
+    session["filter_restore_uuid"] = None
+    session.pop("filter_restore_state", None)
+    _invalidate_effective_filters()
+    return True
+
+
+def write_working_filters(filters: list):
+    """Apply an explicit edit. Writes the scratch row, never a named one -- persisting to a
+    named filter only ever happens through Save or Save as."""
+    if is_temporary_filter_active():
+        # editing while a temp is active refines the temp, leaving the analyst's real
+        # filter untouched and still restorable
+        session["filter_uuid"] = _write_scratch(KIND_TEMP, filters, _temp_label())
+        _invalidate_effective_filters()
+        return
+
+    _select_working(filters)
+    session["filter_state"] = FILTER_STATE_DIRTY
+
+
+def apply_temporary_filter(filters: list, label: str):
+    """Apply a filter WITHOUT touching the analyst's persistent selection."""
+
+    # This is what a pivot (clicking an observable, tag, owner, disposition) and an opened
+    # share link do. filter_base_uuid is deliberately not touched, so Revert restores the
+    # analyst's named filter exactly as it was.
+
+    if not is_temporary_filter_active():
+        # first temp only: preserve what to go back to. A second pivot must NOT overwrite
+        # this, or Revert would land on the first pivot instead of the real filter.
+        session["filter_restore_uuid"] = session.get("filter_uuid")
+        session["filter_restore_state"] = session.get("filter_state", FILTER_STATE_CLEAN)
+
+    session["filter_uuid"] = _write_scratch(KIND_TEMP, filters, label)
+    session["filter_state"] = FILTER_STATE_TEMP
+    _invalidate_effective_filters()
+
+
+def is_temporary_filter_active() -> bool:
+    return session.get("filter_state") == FILTER_STATE_TEMP
+
+
+def _temp_label() -> str | None:
+    temp = get_temp_filter()
+    return temp["label"] if temp else None
+
+
+def revert_temporary_filter() -> bool:
+    """Discard the temporary filter and restore what the analyst was using."""
+    if not is_temporary_filter_active():
+        return False
+
+    session["filter_uuid"] = session.get("filter_restore_uuid")
+    session["filter_restore_uuid"] = None
+    session["filter_state"] = session.pop("filter_restore_state", FILTER_STATE_CLEAN)
+    _invalidate_effective_filters()
+
+    # the restored row can itself have been deleted meanwhile; get_effective_filters()
+    # repairs that on the next read
+    return True
+
+
+def clear_filter_state():
+    """Reset to the built-in default set."""
+    session["filter_base_uuid"] = None
+    session["filter_restore_uuid"] = None
+    session.pop("filter_restore_state", None)
+    session["filter_state"] = FILTER_STATE_CLEAN
+    session["search"] = None
+    _select_working(_default_filters())
+
+
+def migrate_legacy_session_filters():
+    """Carry an in-flight pre-upgrade cookie over to a scratch row.
+
+    Analysts will be mid-triage when this ships, holding a cookie with the old
+    session['filters'] list. Without this their carefully built filter silently resets on
+    the first page load after deploy. Removable a release later."""
+    legacy = session.pop("filters", None)
+    if session.get("filter_uuid") or not legacy:
+        return
+
+    try:
+        _select_working([FilterEntry.model_validate(entry).model_dump() for entry in legacy])
+        session["filter_state"] = FILTER_STATE_CLEAN
+        logging.info("migrated legacy session filters for user %s", current_user.id)
+    except Exception as e:
+        # a malformed legacy cookie must not lock the analyst out of /manage
+        logging.warning("could not migrate legacy session filters: %s", e)
+
+
+#
+# quick filters
+#
+# The badges on the alert management page filter bar. Each one is a saved filter the
+# analyst chose to pin, in the order they chose. This replaced a global YAML config file
+# that analysts could not edit.
+#
+
+def get_saved_filter_list() -> list:
+    """The current user's named saved filters, pinned ones first in badge order."""
+    return run_async_with_session(
+        saved_filters_service.get_saved_filters_for_user, current_user.id)
+
+
+def seed_default_saved_filters():
+    """Give a brand-new analyst their Last 24h / Last 7d filters.
+
+    This WRITES, so it must only be called from a real page render -- never from the polled
+    refresh endpoint (docs/GUI_DATASTAR.md). It must also run BEFORE the working row is
+    created, because the guard is "this user has no filter rows at all"."""
+    run_async_with_session(saved_filters_service.ensure_default_saved_filters, current_user.id)
+
+
+def get_quick_filter_display_data(saved_filters: list) -> list:
+    """Badge data for the filter bar, built from the caller's pinned saved filters.
+
+    The indicator count runs the badge's own filters through the same build_alert_query()
+    the alert list uses, so the dot cannot disagree with what you get when you click it.
+    Each count is a full joined query, so this is only ever called from a real page render
+    -- see the note in build_manage_list_context()."""
     return [
         {
-            "id": quick_filter.id,
-            "label": quick_filter.label,
-            "indicator_count": get_quick_filter_indicator_count(quick_filter) if quick_filter.indicator else 0,
+            "uuid": saved_filter.uuid,
+            "label": saved_filter.name,
+            "indicator_count": (
+                count_alerts(resolve_saved_filter([e.model_dump() for e in saved_filter.filters]))
+                if saved_filter.quick_filter_indicator else 0
+            ),
         }
-        for quick_filter in get_quick_filters()
+        for saved_filter in saved_filters
+        if saved_filter.quick_filter_order is not None
     ]

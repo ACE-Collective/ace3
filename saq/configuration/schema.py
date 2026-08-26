@@ -241,7 +241,6 @@ class GUIConfig(BaseModel):
     show_root_observables: bool = Field(..., description="enabling this option forces all observables in the root analysis to be visible in the critical analysis view")
     navigation_tabs: str = Field(..., description="a comma separated list of navigation tables visible from this node")
     display_node_list: Optional[list[str]] = Field(default=None, description="a comma separated list of nodes to display alerts for")
-    quick_filters_config_path: str = Field(default="etc/gui_quick_filters.yaml", description="path (relative to SAQ_HOME) to a YAML file defining the GUI quick-filter badges shown on the alert management page")
     manage_auto_refresh_seconds: int = Field(default=30, description="how often (in seconds) the alert management page refreshes its alert list in place (0 disables auto-refresh); the favicon notification-dot poll follows the same cadence, falling back to 30 seconds when this is 0")
 
 class NetworkConfigurationConfig(BaseModel):

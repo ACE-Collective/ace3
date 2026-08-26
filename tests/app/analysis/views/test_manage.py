@@ -42,10 +42,24 @@ def _insert_alert(uuid, description):
     return alert
 
 
-def _seed_manage_session(sess, **overrides):
+def _seed_manage_session(sess, analyst_id, **overrides):
     """Seeds every session key the manage view reads, so _ensure_manage_session_defaults()
-    has nothing to add and session mutation checks are meaningful."""
-    sess['filters'] = overrides.get('filters', [])
+    has nothing to add and session mutation checks are meaningful.
+
+    Filter contents live in the database now and the session only carries UUIDs, so this
+    has to create a real working row: pointing filter_uuid at a row that does not exist
+    would make get_effective_filters() repair the session, which is itself a write."""
+    from aceapi_v2.saved_filters import service as saved_filters_service
+    from aceapi_v2.saved_filters.schemas import ScratchFilterWrite
+    from aceapi_v2.sync import run_async_with_session
+
+    row = run_async_with_session(
+        saved_filters_service.upsert_scratch_filter, analyst_id, 'working',
+        ScratchFilterWrite(filters=overrides.get('filters', [])))
+
+    sess['filter_uuid'] = row.uuid
+    sess['filter_base_uuid'] = None
+    sess['filter_state'] = 'clean'
     sess['checked'] = overrides.get('checked', [])
     sess['page_offset'] = overrides.get('page_offset', 0)
     sess['page_size'] = overrides.get('page_size', 50)
@@ -83,7 +97,7 @@ def test_manage_refresh_honors_session_filters(web_client, analyst):
     _insert_alert('manage-refresh-nomatch', 'beta other alert')
 
     with web_client.session_transaction() as sess:
-        _seed_manage_session(sess, filters=[{"name": "Description", "inverted": False, "values": ["alpha"]}])
+        _seed_manage_session(sess, analyst, filters=[{"name": "Description", "inverted": False, "values": ["alpha"]}])
 
     response = web_client.get(url_for("analysis.manage_refresh"))
     assert response.status_code == 200
@@ -102,7 +116,7 @@ def test_manage_refresh_does_not_mutate_session(web_client, analyst):
 
     with web_client.session_transaction() as sess:
         # an offset far past the total exercises the render-time clamp
-        _seed_manage_session(sess, page_offset=5000)
+        _seed_manage_session(sess, analyst, page_offset=5000)
         before = dict(sess)
 
     response = web_client.get(url_for("analysis.manage_refresh"))
@@ -134,7 +148,7 @@ def test_manage_page_wires_datastar(web_client, analyst):
     alert = _insert_alert('manage-datastar-1', 'datastar wiring test alert')
 
     with web_client.session_transaction() as sess:
-        _seed_manage_session(sess, checked=[alert.uuid])
+        _seed_manage_session(sess, analyst, checked=[alert.uuid])
 
     response = web_client.get(url_for("analysis.manage"))
     assert response.status_code == 200
@@ -162,7 +176,7 @@ def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypa
     _insert_alert('manage-search-1', 'search suppression test alert')
 
     with web_client.session_transaction() as sess:
-        _seed_manage_session(sess)
+        _seed_manage_session(sess, analyst)
         sess['search'] = 'some search query'
 
     response = web_client.get(url_for("analysis.manage"))
@@ -171,3 +185,61 @@ def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypa
 
     assert 'data-on-interval' not in html
     assert 'data-on:ace-refresh' not in html
+
+
+@pytest.mark.integration
+def test_display_disposition_hidden_when_narrowed_to_one_disposition(web_client, analyst):
+    """Regression: this condition indexed the filter LIST as if it were a dict
+    ('Disposition' in session['filters'] ... ['Disposition']), so it was always False and
+    the column was always shown -- dead logic left over from an older filter format."""
+    from app.analysis.views.manage import _ensure_manage_session_defaults, build_manage_list_context
+    from app.analysis.views.session.filters import write_working_filters
+
+    _ensure_manage_session_defaults()
+    write_working_filters([{"name": "Disposition", "inverted": False, "values": ["OPEN"]}])
+    assert build_manage_list_context()["display_disposition"] is False
+
+
+@pytest.mark.integration
+def test_display_disposition_shown_when_several_dispositions_match(web_client, analyst):
+    from app.analysis.views.manage import _ensure_manage_session_defaults, build_manage_list_context
+    from app.analysis.views.session.filters import write_working_filters
+
+    _ensure_manage_session_defaults()
+    write_working_filters([{"name": "Disposition", "inverted": False, "values": ["OPEN", "IGNORE"]}])
+    assert build_manage_list_context()["display_disposition"] is True
+
+
+@pytest.mark.integration
+def test_csv_export_honors_an_active_temporary_filter(web_client, analyst):
+    """The export should match the list on screen, pivot included -- otherwise an analyst
+    exports something different from what they are looking at. export.py used to read the
+    filter payload straight out of the session cookie."""
+    import json
+
+    _insert_alert('export-temp-filter', 'temp filter export test alert')
+
+    # go through the client so the filter lands in the same session the export request sees
+    web_client.post(url_for("analysis.apply_temp_filter"), data={
+        "filters": json.dumps([{"name": "Description", "inverted": False,
+                                "values": ["no-such-description-xyz"]}]),
+        "label": "test"})
+
+    response = web_client.get(url_for("analysis.export_alerts_to_csv"))
+    assert response.status_code == 200
+    assert 'temp filter export test alert' not in response.data.decode()
+
+
+@pytest.mark.integration
+def test_filter_editor_renders_a_stored_relative_token_in_relative_mode(web_client, analyst):
+    """The editor picks its initial mode from the stored value, so a saved "-24h" comes back
+    as an editable token rather than being clobbered by the date picker."""
+    import json
+
+    web_client.post(url_for("analysis.set_filters"), data={
+        "filters": json.dumps([{"name": "Alert Date", "inverted": False, "values": ["-24h"]}])})
+
+    body = web_client.get(url_for("analysis.manage")).data.decode()
+
+    assert 'data-relative="1"' in body
+    assert 'value="-24h"' in body
