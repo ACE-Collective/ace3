@@ -82,7 +82,7 @@ def display_remediation_requests(args):
 
     sys.exit(0)
 
-display_remediation_parser = get_cli_subparsers().add_parser('display-remediation-requests', 
+display_remediation_parser = remediation_sp.add_parser('display', 
     help="Displays the remediation requests currently in the queue or in processing.")
 display_remediation_parser.set_defaults(func=display_remediation_requests)
 
@@ -110,7 +110,7 @@ def clear_remediation_request(args):
     get_db().commit()
     sys.exit(0)
 
-clear_remediation_request_parser = get_cli_subparsers().add_parser('clear-remediation-requests',
+clear_remediation_request_parser = remediation_sp.add_parser('clear',
     help="Clears one or more remediation requests.")
 clear_remediation_request_parser.add_argument('-a', '--all', action='store_true', default=False,
     help="Clears all remediation requests that are not locked or have expired locks.")

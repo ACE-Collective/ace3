@@ -1,6 +1,4 @@
-import argparse
 import fnmatch
-import logging
 import os
 import sys
 from typing import Optional
@@ -24,7 +22,11 @@ def list_available_modules(args):
 
     sys.exit(0)
 
-list_available_modules_parser = get_cli_subparsers().add_parser('list-available-modules',
+modules_parser = get_cli_subparsers().add_parser('modules',
+    help="Analysis module operations.")
+modules_sp = modules_parser.add_subparsers(dest='modules_cmd')
+
+list_available_modules_parser = modules_sp.add_parser('list',
     help="Lists the modules available in ACE.")
 list_available_modules_parser.set_defaults(func=list_available_modules)
 
@@ -128,17 +130,10 @@ def display_workload(args):
 
     sys.exit(0)
 
-display_workload_parser = get_cli_subparsers().add_parser('display-workload',
+workload_parser = get_cli_subparsers().add_parser('workload',
+    help="Workload operations.")
+workload_sp = workload_parser.add_subparsers(dest='workload_cmd')
+
+display_workload_parser = workload_sp.add_parser('display',
     help="Displays the current ACE workload.")
 display_workload_parser.set_defaults(func=display_workload)
-
-def generate_api_key(args):
-    import uuid
-    from saq.util import sha256_str
-    api_key = str(uuid.uuid4())
-    print(f"api_key = {api_key}")
-    print(f"api_key_sha256 = {sha256_str(api_key)}")
-    sys.exit(0)
-
-generate_api_key_parser = get_cli_subparsers().add_parser('generate-api-key')
-generate_api_key_parser.set_defaults(func=generate_api_key)

@@ -10,7 +10,7 @@ source bin/initialize-environment.sh
 echo -n "waiting for database..."
 while :
 do
-    if ace --skip-initialize-automation-user test-database-connections
+    if ace --skip-initialize-automation-user test database-connections
     then
         echo
         break

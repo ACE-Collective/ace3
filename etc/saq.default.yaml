@@ -2015,7 +2015,7 @@ analysis_module_user_tagger:
   python_module: saq.modules.user
   python_class: UserTaggingAnalyzer
   enabled: true
-  # location of the cache (use saq update-organization to build this file)
+  # location of the cache (use ace user update-organization to build this file)
   json_path: data/etc/organization.json
   # FORMAT: group_GROUPNAME = BOSS,LEVELS_DEEP,TAG
   # GROUPNAME = some unique name to give the group
