@@ -44,6 +44,32 @@ def _validate(filters: list) -> list:
     return [FilterEntry.model_validate(entry).model_dump() for entry in filters]
 
 
+def _posted_filters_or_effective() -> list:
+    """Returns the filter list a save should persist."""
+
+    # The editor posts what is on screen, so Save and Save as are WYSIWYG -- they used to read
+    # the session instead, which meant building a filter and saving it without pressing Apply
+    # first silently saved the PREVIOUS filter.
+
+    # An ABSENT field still means "whatever is currently in effect". That is the "Save a copy"
+    # path on the temporary-filter banner, which must never read the editor's DOM, and it is
+    # also what a browser holding pre-upgrade JS posts during a rolling deploy -- so the
+    # fallback is not dead code.
+
+    # An empty list is NOT the same as an absent field: clearing every row and saving is a
+    # mistake, not a request to save "match everything".
+
+    raw = request.form.get('filters')
+    if raw is None:
+        return _validate(get_effective_filters())
+
+    filters = _validate(json.loads(raw))
+    if not filters:
+        raise ValueError("a saved filter needs at least one filter row")
+
+    return filters
+
+
 @analysis.route('/set_sort_filter', methods=['GET', 'POST'])
 @login_required
 def set_sort_filter():
@@ -209,7 +235,7 @@ def create_saved_filter():
         body = SavedFilterCreate(
             name=request.form['name'],
             description=request.form.get('description') or None,
-            filters=_validate(get_effective_filters()),
+            filters=_posted_filters_or_effective(),
             quick_filter=request.form.get('quick_filter') == 'on',
             quick_filter_indicator=request.form.get('quick_filter_indicator') == 'on',
         )
@@ -235,14 +261,16 @@ def update_saved_filter(filter_uuid):
         fields['name'] = request.form['name']
     if 'description' in request.form:
         fields['description'] = request.form.get('description') or None
-    if request.form.get('save_current') == 'on':
-        fields['filters'] = _validate(get_effective_filters())
     if 'quick_filter_indicator' in request.form:
         fields['quick_filter_indicator'] = request.form.get('quick_filter_indicator') == 'on'
 
+    # save_current, not the presence of `filters`, is what means "overwrite the contents" --
+    # a rename or a badge toggle has to be able to run without touching them.
     try:
+        if request.form.get('save_current') == 'on':
+            fields['filters'] = _posted_filters_or_effective()
         body = SavedFilterUpdate(**fields)
-    except ValidationError as e:
+    except (ValidationError, ValueError) as e:
         return (f"That filter could not be saved: {e}", 400)
 
     try:
