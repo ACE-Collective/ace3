@@ -142,6 +142,15 @@ $(document).ready(function() {
         });
     }
 
+    // A fresh open is a fresh filter. Nothing else clears this form -- Bootstrap only hides
+    // the div, and a successful save is the only path that reloads the page -- so without
+    // this the name from a save that 409'd is still sitting in the box, focused, next time
+    // it opens. reset() rather than clearing by id so a field added here later cannot be
+    // forgotten, which is the very bug this fixes.
+    $('#save_filter_modal').on('show.bs.modal', function () {
+        document.getElementById('save_filter_form').reset();
+    });
+
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {
         // Get all of the checked alerts dispositions and see if they are the same.

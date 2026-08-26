@@ -92,7 +92,7 @@
    filter banner. Kept OUTSIDE #manage_page so the 30s poll cannot morph away an open
    modal mid-edit -- see docs/GUI_DATASTAR.md. #}
 <div class="modal fade" id="save_filter_modal" tabindex="-1" role="dialog" aria-hidden="true">
-    <form onsubmit="return save_filter_as();">
+    <form id="save_filter_form" onsubmit="return save_filter_as();">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
