@@ -14,7 +14,7 @@
         <span class="bi bi-clock-history me-1"></span>
         Temporary filter: <strong class="mx-1">{{ temp_filter.label }}</strong>
         <button type="button" class="btn btn-outline-dark btn-xs ms-2" onmousedown="revert_temp_filter()">Revert</button>
-        <button type="button" class="btn btn-outline-primary btn-xs ms-1" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save a copy</button>
+        <button type="button" class="btn btn-outline-primary btn-xs ms-1" onclick="prepare_save('effective')" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save a copy</button>
     </div>
     {% endif %}
     Filters |

@@ -128,6 +128,29 @@ $(document).ready(function() {
 
     init_comment_toggles();
 
+    // Snapshot the editor before anything can touch it, then restore it whenever the modal
+    // is dismissed without applying.
+    if (document.getElementById('filter_modal_body')) {
+        filter_editor_html = document.getElementById('filter_modal_body').innerHTML;
+
+        $('#filter_modal').on('hidden.bs.modal', function() {
+            // A "Save as..." handoff must NOT reset: if that save comes back 400 these rows
+            // are the only copy of the analyst's work, and reopening Edit is how they get
+            // it back.
+            if (editor_handoff) { editor_handoff = false; return; }
+            reset_filter_editor();
+        });
+    }
+
+    // A fresh open is a fresh filter. Nothing else clears this form -- Bootstrap only hides
+    // the div, and a successful save is the only path that reloads the page -- so without
+    // this the name from a save that 409'd is still sitting in the box, focused, next time
+    // it opens. reset() rather than clearing by id so a field added here later cannot be
+    // forgotten, which is the very bug this fixes.
+    $('#save_filter_modal').on('show.bs.modal', function () {
+        document.getElementById('save_filter_form').reset();
+    });
+
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {
         // Get all of the checked alerts dispositions and see if they are the same.
@@ -924,12 +947,53 @@ function load_saved_filters_modal() {
     })();
 }
 
+// What the pending save will persist. null means "save whatever is in effect" -- the
+// temp-banner "Save a copy" path, which must never read the editor's DOM, since that DOM
+// can still hold rows the analyst abandoned with Cancel.
+var save_filter_payload = null;
+
+// True while #filter_modal is being dismissed to hand off to #save_filter_modal, as opposed
+// to being cancelled.
+var editor_handoff = false;
+
+// The server-rendered editor body, kept so Cancel can put it back. #filter_modal_body is
+// rendered from effective_filters and only ever grows (new_filter_option appends), and the
+// page reloads after every apply -- so this snapshot is always the applied filter.
+var filter_editor_html = null;
+
+// Called inline by every trigger that opens #save_filter_modal. It has to run on the
+// trigger's own click rather than on the modal's show event: Bootstrap's dismiss/toggle
+// chaining fires hidden.bs.modal on #filter_modal BEFORE show.bs.modal on
+// #save_filter_modal, so a show-time snapshot would race the editor reset below.
+function prepare_save(source) {
+    editor_handoff = (source === 'editor');
+    save_filter_payload = editor_handoff ? JSON.stringify(compute_filter_settings()) : null;
+}
+
+// Puts the editor back to the filter that is actually in effect, discarding rows the
+// analyst built but never applied.
+function reset_filter_editor() {
+    if (filter_editor_html === null) { return; }
+
+    // tear the pickers down before dropping their inputs, or they leak their popup divs
+    // onto the body -- the same teardown toggle_date_mode() does
+    $('#filter_modal_body .daterange').each(function() {
+        if ($(this).data('daterangepicker')) { $(this).data('daterangepicker').remove(); }
+    });
+
+    document.getElementById('filter_modal_body').innerHTML = filter_editor_html;
+    setup_daterange_pickers();
+}
+
 function save_filter_as() {
     const body = new URLSearchParams();
     body.append('name', document.getElementById('save_filter_name').value);
     body.append('description', document.getElementById('save_filter_description').value);
     if (document.getElementById('save_filter_quick').checked) { body.append('quick_filter', 'on'); }
     if (document.getElementById('save_filter_indicator').checked) { body.append('quick_filter_indicator', 'on'); }
+    // Omitting the field is meaningful: it tells the server to save whatever is in effect,
+    // which is the "Save a copy" path. See prepare_save().
+    if (save_filter_payload !== null) { body.append('filters', save_filter_payload); }
 
     (function() {
         fetch('saved_filters', { method: 'POST', credentials: 'same-origin', body: body })
@@ -943,9 +1007,12 @@ function save_filter_as() {
     return false; // prevents form from submitting
 }
 
-// Overwrites the named filter currently selected with what is on screen.
+// Overwrites the named filter currently selected with what is on screen. Reachable only
+// from the Edit modal's footer, and it never dismisses that modal -- so it reads the editor
+// unconditionally and needs no handoff snapshot.
 function save_current_filter(filter_uuid) {
-    const body = new URLSearchParams({ save_current: 'on' });
+    const body = new URLSearchParams({ save_current: 'on',
+                                       filters: JSON.stringify(compute_filter_settings()) });
     (function() {
         fetch('saved_filters/' + encodeURIComponent(filter_uuid), { method: 'POST', credentials: 'same-origin', body: body })
         .then(function(resp){

@@ -80,7 +80,7 @@
                    Persisting is always an explicit Save or Save as. #}
                 <button type="submit" class="btn btn-outline-primary">Apply</button>
                 {% if current_filter.uuid %}<button type="button" class="btn btn-outline-primary" onclick="save_current_filter('{{ current_filter.uuid }}')">Save</button>{% endif %}
-                <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save as&hellip;</button>
+                <button type="button" class="btn btn-outline-primary" onclick="prepare_save('editor')" data-bs-dismiss="modal" data-bs-toggle="modal" data-bs-target="#save_filter_modal">Save as&hellip;</button>
             </div>
         </div>
     </div>
@@ -92,7 +92,7 @@
    filter banner. Kept OUTSIDE #manage_page so the 30s poll cannot morph away an open
    modal mid-edit -- see docs/GUI_DATASTAR.md. #}
 <div class="modal fade" id="save_filter_modal" tabindex="-1" role="dialog" aria-hidden="true">
-    <form onsubmit="return save_filter_as();">
+    <form id="save_filter_form" onsubmit="return save_filter_as();">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
