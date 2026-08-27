@@ -31,8 +31,11 @@ splunk_config_default:
   user_context:
   app_context:
 
-# exports the observables enabled for detection into a splunk kv store collection, so they can be
-# used as a lookup. 
+# exports the observables enabled for detection into a splunk kv store collection, so hunts can
+# search for them. each document carries the detection as `value` (exactly as ACE stores it, for
+# building search terms and for reporting back as the observable) and as `pattern` (lowercased and
+# wrapped in wildcards, for a lookup definition using match_type = WILDCARD(pattern)). see
+# docs/OBSERVABLE_DETECTIONS.md for the collection and lookup definitions splunk needs.
 observable_export_splunk:
   name: splunk
   python_module: saq.observables.export.splunk_kvstore
@@ -61,6 +64,8 @@ observable_export_splunk:
     - user_agent
     - md5
     - sha256
+    - user
+    - hostname
   # how many documents to send per batch save request
   max_export: 500
   # which splunk_config_<name> block to connect through
