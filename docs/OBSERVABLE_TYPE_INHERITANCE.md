@@ -234,6 +234,8 @@ When ACE exports observable detection information into external systems, it **co
 
 ACE often understands the context of observations because it did the analysis/parsing. In the case of external systems, this isn't always the case. For example, yara rules scan entire blobs of data, so the context of an email address being used as the reply-to is not available.
 
+How detections are stored, matched, and exported (including the Splunk KV store collection hunts search) is covered in [OBSERVABLE_DETECTIONS.md](OBSERVABLE_DETECTIONS.md).
+
 ## The email subtype tree
 
 All 11 new email subtypes extend `email_address`. The display labels listed

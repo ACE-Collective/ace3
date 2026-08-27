@@ -10,7 +10,11 @@ from saq.database.pool import get_db
 from saq.database.util.observable_detection import create_observable_detection
 from saq.observables.export.config import ObservableExportConfig
 from saq.observables.export.manager import get_observable_exports, run_exports
-from saq.observables.export.splunk_kvstore import SplunkKVStoreExport, SplunkKVStoreExportConfig
+from saq.observables.export.splunk_kvstore import (
+    SplunkKVStoreExport,
+    SplunkKVStoreExportConfig,
+    build_pattern,
+)
 from saq.observables.type_hierarchy import get_type_hierarchy
 
 
@@ -83,6 +87,9 @@ def test_configured_settings_are_loaded():
     # both the generic type and the legacy one detections may still carry
     assert "ip" in config.export_list
     assert "ipv4" in config.export_list
+    # identities a hunt can match in sign-in and endpoint logs
+    assert "user" in config.export_list
+    assert "hostname" in config.export_list
 
 
 @pytest.mark.unit
@@ -155,7 +162,8 @@ def test_document_reports_the_configured_type_for_a_subtype(email_type_hierarchy
         "_key": "7",
         "id": 7,
         "type": F_EMAIL_ADDRESS,
-        "value": "*reply@example.com*",
+        "value": "Reply@example.com",
+        "pattern": "*reply@example.com*",
     }]
 
 
@@ -168,18 +176,41 @@ def test_document_shape():
         "_key": "7",
         "id": 7,
         "type": "fqdn",
-        # lowercased and wrapped in wildcards so the collection works as a lookup
-        "value": "*evil.example.com*",
+        # the value as stored: what a hunt searches for and reports back as the observable
+        "value": "EVIL.example.com",
+        # lowercased and wrapped in wildcards: what a WILDCARD lookup matches against
+        "pattern": "*evil.example.com*",
     }]
 
 
 @pytest.mark.unit
-def test_document_escapes_a_literal_asterisk():
-    export = splunk_export(export_list=["url"])
-    export_list = export.build_export_list({"url": [{"id": 1, "value": "http://x.com/a*b"}]})
+def test_pattern_keeps_a_literal_asterisk():
+    # a WILDCARD lookup has no documented escape, so the * stays a wildcard: matching too much beats
+    # a pattern that silently never matches
+    assert build_pattern("url", "http://x.com/a*b") == "*x.com/a*b*"
 
-    # the * in the value has to stay literal rather than becoming a wildcard
-    assert export.build_documents(export_list)[0]["value"] == "*http://x.com/a\\*b*"
+
+@pytest.mark.unit
+def test_url_pattern_drops_scheme_and_trailing_slash():
+    # logs disagree on both: a proxy stores host/path, a firewall host/path/, others keep a scheme
+    # that may differ from the one the analyst typed
+    assert build_pattern("url", "HTTP://Evil.com/Path/") == "*evil.com/path*"
+    assert build_pattern("url", "https://evil.com") == "*evil.com*"
+    assert build_pattern("url", "hxxp+s://evil.com/x") == "*evil.com/x*"
+
+
+@pytest.mark.unit
+def test_uri_path_pattern_is_lowercased_only():
+    # a path has no scheme; the leading slash is part of what gets matched
+    assert build_pattern("uri_path", "/Foo/Bar/") == "*/foo/bar*"
+
+
+@pytest.mark.unit
+def test_pattern_for_an_atomic_type_is_plain():
+    # scheme handling is only for the substring-matched types
+    assert build_pattern("fqdn", "Evil.com/") == "*evil.com/*"
+    assert build_pattern("ip", "1.2.3.4") == "*1.2.3.4*"
+    assert build_pattern("email_address", "Bad@Evil.com") == "*bad@evil.com*"
 
 
 #
