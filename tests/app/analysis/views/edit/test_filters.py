@@ -94,15 +94,10 @@ def test_set_sort_filter_same_field_flips_direction(web_client):
 
 
 @pytest.mark.integration
-def test_set_sort_filter_get_method(web_client):
-    """Test setting sort filter via GET method."""
+def test_set_sort_filter_get_method_rejected(web_client):
+    """Setting the sort mutates session state, so the endpoint is POST-only."""
     response = web_client.get(url_for("analysis.set_sort_filter", name="description"))
-    
-    assert response.status_code == 204
-    
-    with web_client.session_transaction() as sess:
-        assert sess['sort_filter'] == 'description'
-        assert sess['sort_filter_desc'] == False
+    assert response.status_code == 405
 
 
 @pytest.mark.integration
@@ -115,11 +110,10 @@ def test_new_filter_option(web_client):
 
 
 @pytest.mark.integration
-def test_new_filter_option_post(web_client):
-    """Test new filter option via POST method."""
+def test_new_filter_option_post_rejected(web_client):
+    """new_filter_option is read-only, so it is GET-only."""
     response = web_client.post(url_for("analysis.new_filter_option"))
-    
-    assert response.status_code == 200
+    assert response.status_code == 405
 
 
 @pytest.mark.integration
@@ -204,7 +198,7 @@ def test_revert_restores_the_previous_filter_exactly(web_client):
 
     web_client.post(url_for("analysis.apply_temp_filter"),
                     data={"filters": json.dumps(TAG), "label": "Tag"})
-    assert web_client.get(url_for("analysis.revert_temp_filter")).status_code == 204
+    assert web_client.post(url_for("analysis.revert_temp_filter")).status_code == 204
 
     after = _state(web_client)
     assert after["filter_uuid"] == before_uuid
@@ -225,14 +219,14 @@ def test_a_second_pivot_does_not_overwrite_the_restore_point(web_client):
 
     assert _state(web_client)["filter_restore_uuid"] == original_uuid
 
-    web_client.get(url_for("analysis.revert_temp_filter"))
+    web_client.post(url_for("analysis.revert_temp_filter"))
     assert [f["name"] for f in _effective(web_client)] == ["Queue"]
 
 
 @pytest.mark.integration
 def test_revert_without_a_temp_is_a_404(web_client):
     _apply(web_client, QUEUE)
-    assert web_client.get(url_for("analysis.revert_temp_filter")).status_code == 404
+    assert web_client.post(url_for("analysis.revert_temp_filter")).status_code == 404
 
 
 @pytest.mark.integration
@@ -266,7 +260,7 @@ def test_save_as_then_select(web_client):
     assert state["filter_state"] == "clean"
 
     _apply(web_client, QUEUE)
-    assert web_client.get(url_for("analysis.select_filter", filter_uuid=filter_uuid)).status_code == 204
+    assert web_client.post(url_for("analysis.select_filter", filter_uuid=filter_uuid)).status_code == 204
     assert [f["name"] for f in _effective(web_client)] == ["Tag"]
 
 
@@ -294,7 +288,7 @@ def test_deleting_the_selected_filter_leaves_a_usable_page(web_client):
 
 @pytest.mark.integration
 def test_select_unknown_filter_is_a_404(web_client):
-    assert web_client.get(url_for("analysis.select_filter", filter_uuid="nope")).status_code == 404
+    assert web_client.post(url_for("analysis.select_filter", filter_uuid="nope")).status_code == 404
 
 
 #
@@ -579,7 +573,7 @@ def test_reset_clears_all_filter_state(web_client, analyst):
     web_client.post(url_for("analysis.apply_temp_filter"),
                     data={"filters": json.dumps(QUEUE), "label": "x"})
 
-    assert web_client.get(url_for("analysis.reset_filters")).status_code == 204
+    assert web_client.post(url_for("analysis.reset_filters")).status_code == 204
 
     state = _state(web_client)
     assert state["filter_state"] == "clean"
@@ -591,7 +585,7 @@ def test_reset_clears_all_filter_state(web_client, analyst):
 @pytest.mark.integration
 def test_removing_a_filter_category(web_client):
     _apply(web_client, QUEUE + TAG)
-    web_client.get(url_for("analysis.remove_filter_category", name="Tag"))
+    web_client.post(url_for("analysis.remove_filter_category"), data={"name": "Tag"})
 
     assert [f["name"] for f in _effective(web_client)] == ["Queue"]
 
@@ -599,6 +593,6 @@ def test_removing_a_filter_category(web_client):
 @pytest.mark.integration
 def test_removing_a_single_value_drops_the_empty_filter(web_client):
     _apply(web_client, TAG)
-    web_client.get(url_for("analysis.remove_filter", name="Tag", index=0))
+    web_client.post(url_for("analysis.remove_filter"), data={"name": "Tag", "index": 0})
 
     assert _effective(web_client) == []

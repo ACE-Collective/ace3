@@ -7,19 +7,6 @@ from saq.constants import DEFAULT_PRUNE_VOLATILE
 @pytest.mark.integration
 def test_toggle_prune_always_forces_false(web_client):
     """Test toggle_prune always forces prune to False (Critical Analysis disabled)."""
-    result = web_client.get(url_for("analysis.toggle_prune"))
-
-    assert result.status_code == 302  # redirect
-    assert result.location.endswith(url_for("analysis.index"))
-
-    # Check that prune is always forced to False
-    with web_client.session_transaction() as sess:
-        assert sess['prune'] is False
-
-
-@pytest.mark.integration
-def test_toggle_prune_post_always_forces_false(web_client):
-    """Test toggle_prune POST always forces prune to False (Critical Analysis disabled)."""
     result = web_client.post(url_for("analysis.toggle_prune"))
 
     assert result.status_code == 302  # redirect
@@ -31,13 +18,23 @@ def test_toggle_prune_post_always_forces_false(web_client):
 
 
 @pytest.mark.integration
+def test_toggle_prune_get_request_rejected(web_client):
+    """toggle_prune mutates session state, so it is POST-only: a GET must not change anything."""
+    result = web_client.get(url_for("analysis.toggle_prune"))
+    assert result.status_code == 405
+
+    with web_client.session_transaction() as sess:
+        assert 'prune' not in sess
+
+
+@pytest.mark.integration
 def test_toggle_prune_overrides_existing_session_true(web_client):
     """Test toggle_prune forces prune to False even when session has prune=True."""
     # Set initial session state
     with web_client.session_transaction() as sess:
         sess['prune'] = True
 
-    result = web_client.get(url_for("analysis.toggle_prune"))
+    result = web_client.post(url_for("analysis.toggle_prune"))
 
     assert result.status_code == 302
     assert result.location.endswith(url_for("analysis.index"))
@@ -54,7 +51,7 @@ def test_toggle_prune_with_existing_session_false(web_client):
     with web_client.session_transaction() as sess:
         sess['prune'] = False
 
-    result = web_client.get(url_for("analysis.toggle_prune"))
+    result = web_client.post(url_for("analysis.toggle_prune"))
 
     assert result.status_code == 302
     assert result.location.endswith(url_for("analysis.index"))
@@ -69,7 +66,7 @@ def test_toggle_prune_with_alert_uuid(web_client):
     """Test toggle_prune with alert_uuid parameter."""
     test_uuid = "12345-67890-abcdef"
 
-    result = web_client.get(url_for("analysis.toggle_prune", alert_uuid=test_uuid))
+    result = web_client.post(url_for("analysis.toggle_prune"), data={"alert_uuid": test_uuid})
 
     assert result.status_code == 302
     # Check that redirect includes the alert_uuid
@@ -80,16 +77,13 @@ def test_toggle_prune_with_alert_uuid(web_client):
 
 
 @pytest.mark.integration
-def test_toggle_prune_volatile_get_request_no_session(web_client):
-    """Test toggle_prune_volatile GET request when prune_volatile not in session."""
+def test_toggle_prune_volatile_get_request_rejected(web_client):
+    """toggle_prune_volatile mutates session state, so it is POST-only."""
     result = web_client.get(url_for("analysis.toggle_prune_volatile"))
-    
-    assert result.status_code == 302  # redirect
-    assert result.location.endswith(url_for("analysis.index"))
-    
-    # Check that session was initialized with default and then toggled
+    assert result.status_code == 405
+
     with web_client.session_transaction() as sess:
-        assert sess['prune_volatile'] is (not DEFAULT_PRUNE_VOLATILE)
+        assert 'prune_volatile' not in sess
 
 
 @pytest.mark.integration
@@ -112,7 +106,7 @@ def test_toggle_prune_volatile_with_existing_session_true(web_client):
     with web_client.session_transaction() as sess:
         sess['prune_volatile'] = True
     
-    result = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result = web_client.post(url_for("analysis.toggle_prune_volatile"))
     
     assert result.status_code == 302
     assert result.location.endswith(url_for("analysis.index"))
@@ -129,7 +123,7 @@ def test_toggle_prune_volatile_with_existing_session_false(web_client):
     with web_client.session_transaction() as sess:
         sess['prune_volatile'] = False
     
-    result = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result = web_client.post(url_for("analysis.toggle_prune_volatile"))
     
     assert result.status_code == 302
     assert result.location.endswith(url_for("analysis.index"))
@@ -146,7 +140,7 @@ def test_toggle_prune_volatile_with_non_bool_session_value(web_client):
     with web_client.session_transaction() as sess:
         sess['prune_volatile'] = "some_string"
     
-    result = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result = web_client.post(url_for("analysis.toggle_prune_volatile"))
     
     assert result.status_code == 302
     assert result.location.endswith(url_for("analysis.index"))
@@ -161,7 +155,7 @@ def test_toggle_prune_volatile_with_alert_uuid(web_client):
     """Test toggle_prune_volatile with alert_uuid parameter."""
     test_uuid = "12345-67890-abcdef"
     
-    result = web_client.get(url_for("analysis.toggle_prune_volatile", alert_uuid=test_uuid))
+    result = web_client.post(url_for("analysis.toggle_prune_volatile"), data={"alert_uuid": test_uuid})
     
     assert result.status_code == 302
     # Check that redirect includes the alert_uuid
@@ -175,7 +169,7 @@ def test_toggle_prune_volatile_with_alert_uuid(web_client):
 def test_toggle_prune_multiple_calls_always_false(web_client):
     """Test multiple successive calls to toggle_prune always result in False."""
     # First call
-    result1 = web_client.get(url_for("analysis.toggle_prune"))
+    result1 = web_client.post(url_for("analysis.toggle_prune"))
     assert result1.status_code == 302
 
     with web_client.session_transaction() as sess:
@@ -183,7 +177,7 @@ def test_toggle_prune_multiple_calls_always_false(web_client):
         assert first_state is False
 
     # Second call
-    result2 = web_client.get(url_for("analysis.toggle_prune"))
+    result2 = web_client.post(url_for("analysis.toggle_prune"))
     assert result2.status_code == 302
 
     with web_client.session_transaction() as sess:
@@ -191,7 +185,7 @@ def test_toggle_prune_multiple_calls_always_false(web_client):
         assert second_state is False
 
     # Third call
-    result3 = web_client.get(url_for("analysis.toggle_prune"))
+    result3 = web_client.post(url_for("analysis.toggle_prune"))
     assert result3.status_code == 302
 
     with web_client.session_transaction() as sess:
@@ -207,14 +201,14 @@ def test_toggle_prune_multiple_calls_always_false(web_client):
 def test_toggle_prune_volatile_multiple_toggles(web_client):
     """Test multiple successive calls to toggle_prune_volatile."""
     # First toggle
-    result1 = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result1 = web_client.post(url_for("analysis.toggle_prune_volatile"))
     assert result1.status_code == 302
     
     with web_client.session_transaction() as sess:
         first_state = sess['prune_volatile']
     
     # Second toggle
-    result2 = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result2 = web_client.post(url_for("analysis.toggle_prune_volatile"))
     assert result2.status_code == 302
     
     with web_client.session_transaction() as sess:
@@ -224,7 +218,7 @@ def test_toggle_prune_volatile_multiple_toggles(web_client):
     assert first_state != second_state
     
     # Third toggle should return to first state
-    result3 = web_client.get(url_for("analysis.toggle_prune_volatile"))
+    result3 = web_client.post(url_for("analysis.toggle_prune_volatile"))
     assert result3.status_code == 302
     
     with web_client.session_transaction() as sess:
@@ -237,14 +231,14 @@ def test_toggle_prune_volatile_multiple_toggles(web_client):
 def test_both_prune_functions_independent(web_client):
     """Test that toggle_prune and toggle_prune_volatile work independently."""
     # Call toggle_prune (always sets to False)
-    web_client.get(url_for("analysis.toggle_prune"))
+    web_client.post(url_for("analysis.toggle_prune"))
 
     with web_client.session_transaction() as sess:
         prune_state = sess['prune']
         assert prune_state is False
 
     # Toggle prune_volatile
-    web_client.get(url_for("analysis.toggle_prune_volatile"))
+    web_client.post(url_for("analysis.toggle_prune_volatile"))
 
     with web_client.session_transaction() as sess:
         prune_volatile_state = sess['prune_volatile']
@@ -252,7 +246,7 @@ def test_both_prune_functions_independent(web_client):
         assert sess['prune'] is False
 
     # Toggle prune_volatile again
-    web_client.get(url_for("analysis.toggle_prune_volatile"))
+    web_client.post(url_for("analysis.toggle_prune_volatile"))
 
     with web_client.session_transaction() as sess:
         # prune_volatile state should be toggled

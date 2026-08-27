@@ -7,7 +7,7 @@ from saq.database.pool import get_db
 from saq.database.model import Comment
 from saq.util.ui import create_histogram_string
 
-@events.route('/analysis', methods=['GET', 'POST'])
+@events.route('/analysis', methods=['GET'])
 @require_permission('event', 'read')
 def index():
     # the "direct" parameter is used to specify a specific event to load

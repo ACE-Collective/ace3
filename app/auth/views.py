@@ -105,7 +105,7 @@ def login():
     return render_template('auth/login.html', form=form)
 
 
-@auth.route('/logout')
+@auth.route('/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
@@ -160,7 +160,11 @@ def change_password():
         else:
             logging.info(f"user {current_user.username} successfully changed password")
             flash('Password changed successfully. Please login with new password.', 'success')
-            # Invalidate session from old password and force a login
-            return redirect(url_for('auth.logout'))
+            # Invalidate session from old password and force a login.
+            # (auth.logout is POST-only -- a GET redirect can no longer log anyone out.)
+            logout_user()
+            if 'cid' in session:
+                del session['cid']
+            return redirect(url_for('auth.login'))
 
     return render_template('auth/change-password.html', **template_kwargs)

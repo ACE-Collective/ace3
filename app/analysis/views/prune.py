@@ -4,7 +4,7 @@ from flask_login import current_user, login_required
 from app.blueprints import analysis
 from saq.constants import DEFAULT_PRUNE, DEFAULT_PRUNE_VOLATILE
 
-@analysis.route('/toggle_prune', methods=['POST', 'GET'])
+@analysis.route('/toggle_prune', methods=['POST'])
 @login_required
 def toggle_prune():
     # Critical Analysis view is disabled - always force Detailed Analysis
@@ -17,7 +17,7 @@ def toggle_prune():
 
     return redirect(url_for('analysis.index', alert_uuid=alert_uuid))
 
-@analysis.route('/toggle_prune_volatile', methods=['POST', 'GET'])
+@analysis.route('/toggle_prune_volatile', methods=['POST'])
 @login_required
 def toggle_prune_volatile():
     if 'prune_volatile' not in session:

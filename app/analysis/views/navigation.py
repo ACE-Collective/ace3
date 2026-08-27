@@ -5,7 +5,7 @@ from app.analysis.views.session.alert import get_current_alert
 from app.analysis.views.session.filters import reset_checked_alerts
 from app.blueprints import analysis
 
-@analysis.route('/redirect_to', methods=['GET', "POST"])
+@analysis.route('/redirect_to', methods=['GET'])
 @login_required
 def redirect_to():
 
@@ -46,26 +46,26 @@ def redirect_to():
     flash("invalid target {}".format(target))
     return redirect(url_for('analysis.index'))
 
-@analysis.route('/set_page_offset', methods=['GET', 'POST'])
+@analysis.route('/set_page_offset', methods=['POST'])
 @login_required
 def set_page_offset():
     # reset page options
     reset_checked_alerts()
 
     # set page offset
-    session['page_offset'] = int(request.args['offset']) if request.method == 'GET' else int(request.form['offset'])
+    session['page_offset'] = int(request.form['offset'])
 
     # return empy page
     return ('', 204)
 
-@analysis.route('/set_page_size', methods=['GET', 'POST'])
+@analysis.route('/set_page_size', methods=['POST'])
 @login_required
 def set_page_size():
     # reset page options
     reset_checked_alerts()
 
     # set page size
-    session['page_size'] = int(request.args['size']) if request.method == 'GET' else int(request.form['size'])
+    session['page_size'] = int(request.form['size'])
 
     # return empy page
     return ('', 204)

@@ -62,10 +62,12 @@ def assign_ownership():
 
     return redirect(url_for('analysis.manage'))
 
-@analysis.route('/set_owner', methods=['GET', 'POST'])
+@analysis.route('/set_owner', methods=['POST'])
 @require_permission('alert', 'write')
 def set_owner():
-    session['checked'] = request.args.getlist('alert_uuids') if request.method == 'GET' else request.form.getlist('alert_uuids')
+    # POST-only: this endpoint writes to the database. As a GET it let any prefetcher or
+    # link scanner assign alert ownership by merely visiting a URL.
+    session['checked'] = request.form.getlist('alert_uuids')
     get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(session['checked'])).values(owner_id=current_user.id,owner_time=datetime.now()))
     get_db().commit()
     return ('', 204)

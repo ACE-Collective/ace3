@@ -197,20 +197,17 @@ class TestSetOwner:
     """Tests for set_owner function."""
 
     @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_get_request(self, mock_get_db, web_client, mock_db):
-        """Test set_owner with GET request using query parameters."""
+    def test_set_owner_get_request_rejected(self, mock_get_db, web_client, mock_db):
+        """set_owner writes to the database, so it is POST-only: a GET must change nothing."""
         mock_get_db.return_value = mock_db
-        
+
         response = web_client.get(url_for('analysis.set_owner'), query_string={
             'alert_uuids': ['uuid1', 'uuid2', 'uuid3']
         })
-        
-        assert response.status_code == 204
-        assert response.data == b''
-        
-        # Should call execute to update alerts
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+
+        assert response.status_code == 405
+        mock_db.execute.assert_not_called()
+        mock_db.commit.assert_not_called()
 
     @patch('app.analysis.views.edit.ownership.get_db')
     def test_set_owner_post_request(self, mock_get_db, web_client, mock_db):
@@ -237,7 +234,7 @@ class TestSetOwner:
             # Ensure session is clean
             sess.pop('checked', None)
         
-        web_client.get(url_for('analysis.set_owner'), query_string={
+        web_client.post(url_for('analysis.set_owner'), data={
             'alert_uuids': ['uuid1', 'uuid2']
         })
         
@@ -250,7 +247,7 @@ class TestSetOwner:
         """Test set_owner with empty alert_uuids list."""
         mock_get_db.return_value = mock_db
         
-        response = web_client.get(url_for('analysis.set_owner'), query_string={
+        response = web_client.post(url_for('analysis.set_owner'), data={
             'alert_uuids': []
         })
         
@@ -268,7 +265,7 @@ class TestSetOwner:
         mock_now = datetime(2024, 1, 15, 10, 30, 45)
         mock_datetime.now.return_value = mock_now
         
-        response = web_client.get(url_for('analysis.set_owner'), query_string={
+        response = web_client.post(url_for('analysis.set_owner'), data={
             'alert_uuids': ['uuid1']
         })
         
@@ -284,7 +281,7 @@ class TestSetOwner:
         with patch('app.analysis.views.edit.ownership.current_user') as mock_current_user:
             mock_current_user.id = 456
             
-            response = web_client.get(url_for('analysis.set_owner'), query_string={
+            response = web_client.post(url_for('analysis.set_owner'), data={
                 'alert_uuids': ['uuid1', 'uuid2']
             })
             
@@ -299,7 +296,7 @@ class TestSetOwner:
         """Test set_owner when alert_uuids parameter is not provided."""
         mock_get_db.return_value = mock_db
         
-        response = web_client.get(url_for('analysis.set_owner'))
+        response = web_client.post(url_for('analysis.set_owner'))
         
         assert response.status_code == 204
         
@@ -314,7 +311,7 @@ class TestSetOwner:
         mock_db.execute.side_effect = Exception("Database error")
         
         with pytest.raises(Exception, match="Database error"):
-            web_client.get(url_for('analysis.set_owner'), query_string={
+            web_client.post(url_for('analysis.set_owner'), data={
                 'alert_uuids': ['uuid1']
             })
 
@@ -325,6 +322,6 @@ class TestSetOwner:
         mock_db.commit.side_effect = Exception("Commit error")
         
         with pytest.raises(Exception, match="Commit error"):
-            web_client.get(url_for('analysis.set_owner'), query_string={
+            web_client.post(url_for('analysis.set_owner'), data={
                 'alert_uuids': ['uuid1']
             })

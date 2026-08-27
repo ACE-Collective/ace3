@@ -53,7 +53,7 @@ def manage():
         key = 'campaign_{}'.format(campaign.id)
         filters[key] = SearchFilter(key, FILTER_TYPE_CHECKBOX, False)
 
-    reset_filter = ('reset-filters' in request.form) or ('reset-filters' in request.args)
+    reset_filter = ('reset-filters' in request.form)
     if reset_filter:
         for filter_item in filters.values():
             filter_item.reset()
