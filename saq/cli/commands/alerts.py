@@ -38,11 +38,6 @@ alert_parser = get_cli_subparsers().add_parser('alert',
     help="Alert management commands.")
 alert_sp = alert_parser.add_subparsers(dest='alert_cmd')
 
-create_alert_parser = get_cli_subparsers().add_parser('create-alert',
-    help="Create a blank alert in the given directory.")
-create_alert_parser.add_argument('dir', help="The directory to store the alert in.")
-create_alert_parser.set_defaults(func=create_alert)
-
 create_alert_parser = alert_sp.add_parser('create', aliases=['new'],
     help="Create a blank alert in the given directory.")
 create_alert_parser.add_argument('dir', help="The directory to store the alert in.")
@@ -87,13 +82,6 @@ def rebuild_index(args):
             get_db().commit()
 
     sys.exit(0)
-
-rebuild_index_parser = get_cli_subparsers().add_parser('rebuild-index',
-    help="Rebuilds the indexes for the given alerts.")
-rebuild_index_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
-    help="Resyncs all alerts that belong to this node. This can take a long time.")
-rebuild_index_parser.add_argument('dirs', nargs='*', default=[], help="One ore more alert directories to resync.")
-rebuild_index_parser.set_defaults(func=rebuild_index)
 
 rebuild_index_parser = alert_sp.add_parser('rebuild',
     help="Rebuilds the indexes for the given alerts.")
@@ -199,13 +187,6 @@ def import_alerts(args):
 
         logging.info("imported alert {}".format(alert))
 
-import_alert_parser = get_cli_subparsers().add_parser('import-alerts',
-    help="Import one or more alert directories.")
-import_alert_parser.add_argument('-r', '--reset', action='store_true', default=False, dest='reset',
-    help="Reset imported alerts.")
-import_alert_parser.add_argument('dirs', nargs='+', default=[], help="One ore more alert directories to import.")
-import_alert_parser.set_defaults(func=import_alerts)
-
 import_alert_parser = alert_sp.add_parser('import',
     help="Import one or more alert directories.")
 import_alert_parser.add_argument('-r', '--reset', action='store_true', default=False, dest='reset',
@@ -240,11 +221,6 @@ def delete_alerts(args):
             logging.error("unable to delete storage directory {0}: {1}".format(storage_dir, str(e)))
 
     sys.exit(0)
-
-delete_alert_parser = get_cli_subparsers().add_parser('delete-alerts',
-    help="Delete one or more alerts by UUID.")
-delete_alert_parser.add_argument('uuids', nargs='+', default=[], help="One ore more alert UUIDs to delete.")
-delete_alert_parser.set_defaults(func=delete_alerts)
 
 delete_alert_parser = alert_sp.add_parser('delete',
     help="Delete one or more alerts by UUID.")
@@ -285,11 +261,6 @@ def reset_alerts(args):
         root.save()
 
 # reset-alerts
-reset_alert_parser = get_cli_subparsers().add_parser('reset-alerts',
-    help="Reset the given alerts allowing for re-analysis.")
-reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to reset.")
-reset_alert_parser.set_defaults(func=reset_alerts)
-
 reset_alert_parser = alert_sp.add_parser('reset',
     help="Reset the given alerts allowing for re-analysis.")
 reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to reset.")
@@ -313,7 +284,7 @@ def archive_alerts(args):
         alert.root_analysis.save()
 
 # archive-alerts
-archive_alert_parser = get_cli_subparsers().add_parser('archive-alerts',
+archive_alert_parser = alert_sp.add_parser('archive',
     help="Archives a given alert by deleting analysis details and external files but keeping observations and tags.")
 archive_alert_parser.add_argument('dirs', nargs='+', help="One or more alert directories to archive.")
 archive_alert_parser.set_defaults(func=archive_alerts)
@@ -357,16 +328,6 @@ def add_observable(args):
     finally:
         alert.unlock()
 
-# add-observable
-add_observable_parser = get_cli_subparsers().add_parser('add-observable',
-    help="Add an observable to an existing alert and re-analyze.")
-add_observable_parser.add_argument('dir', help="The path to the alert to modify.")
-add_observable_parser.add_argument('observable_type', help="The type of the observable to add.")
-add_observable_parser.add_argument('observable_value', help="The value of the observable.")
-add_observable_parser.add_argument('-t', '--reference-time', required=False, dest='reference_time', default=None,
-    help="Specify a datetime in YYYY-MM-DD HH:MM:SS format the observable should be referenced from.")
-add_observable_parser.set_defaults(func=add_observable)
-
 add_observable_parser = alert_sp.add_parser('add-observable',
     help="Add an observable to an existing alert and re-analyze.")
 add_observable_parser.add_argument('dir', help="The path to the alert to modify.")
@@ -387,12 +348,6 @@ def reload_alerts(args):
         alert.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.schedule()
 
-reload_alert_parser = get_cli_subparsers().add_parser('reload-alerts',
-    help="Force analysis (again) on one or more existing alert(s).")
-reload_alert_parser.add_argument('uuids', nargs='+',
-    help="One or more alert UUIDs to analyze.")
-reload_alert_parser.set_defaults(func=reload_alerts)
-
 reload_alert_parser = alert_sp.add_parser('analyze', aliases=['reload'],
     help="Force analysis (again) on one or more existing alert(s).")
 reload_alert_parser.add_argument('uuids', nargs='+',
@@ -407,18 +362,6 @@ def cleanup_alerts(args):
                    dry_run=args.dry_run)
     sys.exit(0)
 
-cleanup_alerts_parsers = get_cli_subparsers().add_parser('cleanup-alerts',
-    help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
-cleanup_alerts_parsers.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
-    help="Just report how many would be deleted and archived.")
-cleanup_alerts_parsers.add_argument('--fp-days-old', type=int, required=False, dest='fp_days_old', default=None, action='store',
-    help='Specify how many days old an alert dispositioned as FALSE_POSITIVE should be for it to be archived.')
-cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=False, dest='ignore_days_old', default=None, action='store',
-    help='Specify how many days old an alert dispositioned as IGNORE should be for it to be deleted.')
-#cleanup_alerts_parsers.add_argument('--force-delete', required=False, dest='force_delete', default=None, action='store_true',
-    #help='force delete fp alerts instead of archiving them')
-cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)
-
 cleanup_alerts_parsers = alert_sp.add_parser('cleanup',
     help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
 cleanup_alerts_parsers.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
@@ -431,39 +374,6 @@ cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=Fals
     #help='force delete fp alerts instead of archiving them')
 cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)
 
-def analysis_cache_stats(args):
-    """Emits an analysis result cache health heartbeat for Splunk (primary node only). Meant to be called from cron."""
-    from saq.util.maintenance import emit_cache_stats
-    emit_cache_stats()
-    sys.exit(0)
-
-def analysis_cache_gc(args):
-    """Garbage-collects the durable analysis cache blob store tier (primary node only). Meant to be called from cron."""
-    from saq.util.maintenance import gc_durable_blobs
-    gc_durable_blobs(dry_run=args.dry_run)
-    sys.exit(0)
-
-def analysis_cache_local_maintenance(args):
-    """Evicts stale/excess blobs from this node's local blob cache tier. Meant to be called from cron on every node."""
-    from saq.util.maintenance import maintain_local_cache
-    maintain_local_cache(dry_run=args.dry_run)
-    sys.exit(0)
-
-analysis_cache_stats_parser = get_cli_subparsers().add_parser('analysis-cache-stats',
-    help="Emits an analysis result cache health heartbeat for Splunk (primary node only).")
-analysis_cache_stats_parser.set_defaults(func=analysis_cache_stats)
-
-analysis_cache_gc_parser = get_cli_subparsers().add_parser('analysis-cache-gc',
-    help="Garbage-collects the durable analysis cache blob store tier (primary node only).")
-analysis_cache_gc_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
-    help="Just report what would be garbage-collected.")
-analysis_cache_gc_parser.set_defaults(func=analysis_cache_gc)
-
-analysis_cache_local_maintenance_parser = get_cli_subparsers().add_parser('analysis-cache-local-maintenance',
-    help="Evicts stale/excess blobs from this node's local blob cache tier.")
-analysis_cache_local_maintenance_parser.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
-    help="Just report what would be evicted.")
-analysis_cache_local_maintenance_parser.set_defaults(func=analysis_cache_local_maintenance)
 
 def distribute_alerts(args):
     from saq.util.maintenance import distribute_old_alerts
@@ -476,7 +386,8 @@ def distribute_alerts(args):
 
     distribute_old_alerts(days, args.dry_run, target, args.max)
 
-distribute_alerts_parsers = get_cli_subparsers().add_parser('distribute-alerts',
+# distribute-alerts
+distribute_alerts_parsers = alert_sp.add_parser('distribute',
     help="Moves old alerts not associated to events to another node.")
 distribute_alerts_parsers.add_argument('--dry-run', required=False, default=False, action='store_true',
     help="Just report how many would be distributed.")
@@ -502,16 +413,10 @@ def display_alert(args):
     display_analysis(alert, include_context=args.context)
     sys.exit(0)
 
-display_alert_parser = get_cli_subparsers().add_parser('display-alert',
+display_alert_parser = alert_sp.add_parser('display',
     help="Displays the results of the analysis for a given alert.")
 display_alert_parser.add_argument('dir', 
     help="The directory of the alert to display")
 display_alert_parser.add_argument('-c', '--context', action='store_true', default=False,
     help="Include LLM context records in the output")
-display_alert_parser.set_defaults(func=display_alert)
-
-display_alert_parser = alert_sp.add_parser('display',
-    help="Displays the results of the analysis for a given alert.")
-display_alert_parser.add_argument('dir', 
-    help="The directory of the alert to display")
 display_alert_parser.set_defaults(func=display_alert)

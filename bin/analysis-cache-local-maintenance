@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-source bin/initialize-environment.sh && ace analysis-cache-local-maintenance
+source bin/initialize-environment.sh && ace cache local-maintenance

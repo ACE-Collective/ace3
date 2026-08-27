@@ -465,7 +465,7 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       - ace
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace start-gui"
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace gui start"
     restart: always
     volumes: *common-volumes
     hostname: ace

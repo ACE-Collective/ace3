@@ -198,3 +198,29 @@ list_locations_parser = signatures_sp.add_parser("locations",
     help="List where ACE loads signatures from, and which git checkout versions each one.")
 _add_common_arguments(list_locations_parser)
 list_locations_parser.set_defaults(func=cli_list_locations)
+
+def build_signature_db(args):
+    import logging
+
+    from saq.configuration.config import get_analysis_module_config
+    from saq.constants import ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1
+    from saq.modules.snort import build_signature_db
+
+    signature_path = get_analysis_module_config(ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1).signature_path
+    if args.signature_path:
+        signature_path = args.signature_path
+
+    try:
+        build_signature_db(signature_path)
+    except Exception as e:
+        logging.error(f"unable to rebuild suricata db: {e}")
+        sys.exit(1)
+
+    sys.exit(0)
+
+build_suricata_db_parser = signatures_sp.add_parser('build-db',
+    help="Builds the fast suricata signature lookup redis database.")
+build_suricata_db_parser.add_argument('--signature-path', default=None,
+    help="""Path to the suricata signature file to load. 
+            Defaults to the signature_path option in the analysis_module_snort_signature_analysis_v1 configuration section.""")
+build_suricata_db_parser.set_defaults(func=build_signature_db)

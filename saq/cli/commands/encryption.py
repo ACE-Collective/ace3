@@ -56,15 +56,6 @@ def set_encryption_password(args):
     set_encryption_password(password, old_password=current_password, key=key)
     sys.exit(0)
 
-# XXX DEPRECATED
-set_encryption_password_parser = get_cli_subparsers().add_parser('set-encryption-password',
-    help="Sets the password used to encrypt and decrypt archived emails.")
-set_encryption_password_parser.add_argument('-o', '--overwrite', default=False, action='store_true',
-    help="Overwrites an existing password without prompting.")
-set_encryption_password_parser.add_argument('-k', '--key', default=False, action='store_true',
-    help="Use the sha256 hash of a string as the primary encryption key. The input is prompted for.")
-set_encryption_password_parser.set_defaults(func=set_encryption_password)
-
 set_encryption_password_parser = encryption_sp.add_parser('set',
     help="Sets the password used to encrypt and decrypt archived emails.")
 set_encryption_password_parser.add_argument('-o', '--overwrite', default=False, action='store_true',
@@ -118,7 +109,7 @@ def encrypt_file(args):
     sys.exit(0)
 
 encrypt_file_parser = encryption_sp.add_parser('encrypt',
-    help="Encrypts the given file with the password set with set-encryption-password.")
+    help="Encrypts the given file with the password set with ace encryption set.")
 encrypt_file_parser.add_argument('source_path', help="The file to encrypt from.")
 encrypt_file_parser.add_argument('target_path', help="The file to saved the decrypted data to.")
 encrypt_file_parser.add_argument('--password', help="Use the given password to encrypt the file.")
@@ -204,11 +195,6 @@ list_encrypted_passwords_parser = config_encryption_sp.add_parser('list',
     help="Lists the encrypted passwords.")
 list_encrypted_passwords_parser.set_defaults(func=list_encrypted_passwords)
 
-# XXX DEPRECATED
-list_encrypted_passwords_parser = get_cli_subparsers().add_parser('list-encrypted-passwords',
-    help="Lists the encrypted passwords.")
-list_encrypted_passwords_parser.set_defaults(func=list_encrypted_passwords)
-
 def delete_encrypted_password(args):
     from saq.configuration.encryption import delete_password
     if delete_password(args.key):
@@ -219,13 +205,6 @@ def delete_encrypted_password(args):
     sys.exit(0)
 
 delete_encrypted_password_parser = config_encryption_sp.add_parser('delete',
-    help="Deletes a given encrypted password.")
-delete_encrypted_password_parser.add_argument('key',
-    help="The name of the password to delete.")
-delete_encrypted_password_parser.set_defaults(func=delete_encrypted_password)
-
-# XXX DEPRECATED
-delete_encrypted_password_parser = get_cli_subparsers().add_parser('delete-encrypted-password',
     help="Deletes a given encrypted password.")
 delete_encrypted_password_parser.add_argument('key',
     help="The name of the password to delete.")

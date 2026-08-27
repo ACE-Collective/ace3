@@ -193,7 +193,7 @@ Once the change is on disk and the runtime-reload window has elapsed
 (see *Picking up changes at runtime* above):
 
 - `pdf_file` is reported by `get_all_valid_types()` and accepted by the `ace`
-  CLI's `add-observable` command and the `/observables/types` API.
+  CLI's `alert add-observable` command and the `/observables/types` API.
 - Any analysis module declaring `valid_observable_types = F_FILE` will also
   run on `pdf_file` observables.
 - Any `observable_modifier` rule targeting `file` will also match `pdf_file`.
