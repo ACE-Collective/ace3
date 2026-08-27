@@ -820,7 +820,7 @@ function set_owner(alert_uuid) {
     (function() {
         const params = new URLSearchParams();
         params.append('alert_uuids', alert_uuid);
-        fetch('set_owner?' + params.toString(), { credentials: 'same-origin' })
+        fetch('set_owner', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
             window.location.replace(window.location);

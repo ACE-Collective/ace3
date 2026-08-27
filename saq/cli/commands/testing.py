@@ -52,7 +52,7 @@ def test_database_connections(args):
 
     sys.exit(0)
 
-test_database_connections_parser = get_cli_subparsers().add_parser('test-database-connections',
+test_database_connections_parser = test_sp.add_parser('database-connections',
     help="Test the connections to all configured databases.")
 test_database_connections_parser.set_defaults(func=test_database_connections)
 
@@ -66,7 +66,7 @@ def test_network_semaphore(args):
     else:
         logging.error("test failed")
 
-network_semaphore_test = get_cli_subparsers().add_parser('test-network-semaphore',
+network_semaphore_test = test_sp.add_parser('network-semaphore',
     help="Test the Network Semaphore Server by requesting a semaphore.")
 network_semaphore_test.add_argument('semaphore_name', help="The name of the semaphore to acquire.")
 network_semaphore_test.add_argument('-t', '--timeout', required=False, default=60, type=int, dest='timeout',
@@ -88,7 +88,7 @@ def test_proxies(args):
 
     sys.exit(0)
 
-test_proxies_parser = get_cli_subparsers().add_parser('test-proxies',
+test_proxies_parser = test_sp.add_parser('proxies',
     help="Test the configured proxies to make sure ACE can use them.")
 test_proxies_parser.add_argument('url', help="A sample URL to attempt to download through each proxy.")
 test_proxies_parser.set_defaults(func=test_proxies)
@@ -121,6 +121,6 @@ def verify_modules(args):
 
         logging.info("analysis module {} verification OK".format(analysis_module_config.name))
     
-verify_modules_parsers = get_cli_subparsers().add_parser('verify-modules',
+verify_modules_parsers = test_sp.add_parser('modules',
     help="Executes verify_environment() on all modules that are enabled.")
 verify_modules_parsers.set_defaults(func=verify_modules)

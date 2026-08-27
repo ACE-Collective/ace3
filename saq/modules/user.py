@@ -22,7 +22,7 @@ class UserTagAnalysis(Analysis):
     pass
 
 class UserTaggingAnalyzerConfig(AnalysisModuleConfig):
-    json_path: str = Field(..., description="Location of the cache (use saq update-organization to build this file).")
+    json_path: str = Field(..., description="Location of the cache (use ace user update-organization to build this file).")
 
 class UserTaggingAnalyzer(AnalysisModule):
     @classmethod

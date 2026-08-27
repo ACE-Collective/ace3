@@ -134,8 +134,12 @@ def start_gui(args):
                #ssl_context="adhoc",
                use_reloader=True)
 
-# start-gui
-start_gui_parser = get_cli_subparsers().add_parser('start-gui',
+# gui start
+gui_parser = get_cli_subparsers().add_parser('gui',
+    help="GUI operations.")
+gui_sp = gui_parser.add_subparsers(dest='gui_cmd')
+
+start_gui_parser = gui_sp.add_parser('start',
     help="Start the SAQ GUI.")
 start_gui_parser.add_argument('args', nargs=argparse.REMAINDER,
     help="Parameters to pass to the GUI command shell.")
@@ -171,8 +175,12 @@ def start_api(args):
                ssl_context=(get_config().api.ssl_cert, get_config().api.ssl_key),
                use_reloader=False)
 
-# start-api
-start_api_parser = get_cli_subparsers().add_parser('start-api',
+# api start
+api_parser = get_cli_subparsers().add_parser('api',
+    help="API server operations.")
+api_sp = api_parser.add_subparsers(dest='api_cmd')
+
+start_api_parser = api_sp.add_parser('start',
     help="Start the ACE API server in DEBUG mode.")
 start_api_parser.add_argument('args', nargs=argparse.REMAINDER,
     help="Parameters to pass to the API command shell.")

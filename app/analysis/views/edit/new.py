@@ -275,7 +275,7 @@ ORDER BY
                 except:
                     logging.error(f"unable to close file descriptor for {file_name}")
 
-@analysis.route('/new_alert_observable', methods=['POST', 'GET'])
+@analysis.route('/new_alert_observable', methods=['GET'])
 @login_required
 def new_alert_observable():
     index = request.args['index']

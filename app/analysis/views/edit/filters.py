@@ -70,7 +70,7 @@ def _posted_filters_or_effective() -> list:
     return filters
 
 
-@analysis.route('/set_sort_filter', methods=['GET', 'POST'])
+@analysis.route('/set_sort_filter', methods=['POST'])
 @login_required
 def set_sort_filter():
     # reset page options
@@ -78,7 +78,7 @@ def set_sort_filter():
     reset_checked_alerts()
 
     # flip direction if same as current, otherwise start asc
-    name = request.args['name'] if request.method == 'GET' else request.form['name']
+    name = request.form['name']
     if 'sort_filter' in session and 'sort_filter_desc' in session and session['sort_filter'] == name:
         session['sort_filter_desc'] = not session['sort_filter_desc']
     else:
@@ -89,7 +89,7 @@ def set_sort_filter():
     return ('', 204)
 
 
-@analysis.route('/reset_filters', methods=['GET'])
+@analysis.route('/reset_filters', methods=['POST'])
 @login_required
 def reset_filters():
     # reset page options
@@ -138,7 +138,7 @@ def set_filters():
     return ('', 204)
 
 
-@analysis.route('/select_filter/<filter_uuid>', methods=['GET'])
+@analysis.route('/select_filter/<filter_uuid>', methods=['POST'])
 @require_permission('alert', 'read')
 def select_filter(filter_uuid):
     """Apply one of the analyst's own saved filters as their persistent selection."""
@@ -167,7 +167,7 @@ def apply_temp_filter():
     return ('', 204)
 
 
-@analysis.route('/revert_temp_filter', methods=['GET'])
+@analysis.route('/revert_temp_filter', methods=['POST'])
 @require_permission('alert', 'read')
 def revert_temp_filter():
     """Discard the temporary filter and restore what the analyst was using before."""
@@ -179,15 +179,15 @@ def revert_temp_filter():
     return ('', 204)
 
 
-@analysis.route('/remove_filter', methods=['GET'])
+@analysis.route('/remove_filter', methods=['POST'])
 @login_required
 def remove_filter():
     # reset page options
     reset_pagination()
     reset_checked_alerts()
 
-    name = request.args['name']
-    index = int(request.args['index'])
+    name = request.form['name']
+    index = int(request.form['index'])
     target = []
     for _filter in get_effective_filters():
         if _filter["name"] == name:
@@ -200,19 +200,19 @@ def remove_filter():
     return ('', 204)
 
 
-@analysis.route('/remove_filter_category', methods=['GET'])
+@analysis.route('/remove_filter_category', methods=['POST'])
 @login_required
 def remove_filter_category():
     # reset page options
     reset_pagination()
     reset_checked_alerts()
 
-    name = request.args['name']
+    name = request.form['name']
     write_working_filters([f for f in get_effective_filters() if f["name"] != name])
     return ('', 204)
 
 
-@analysis.route('/new_filter_option', methods=['POST', 'GET'])
+@analysis.route('/new_filter_option', methods=['GET'])
 @login_required
 def new_filter_option():
     return render_template('analysis/alert_filter_input.html', filters=getFilters(),

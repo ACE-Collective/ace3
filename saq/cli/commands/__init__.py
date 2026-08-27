@@ -19,6 +19,7 @@ from saq.cli.commands import ( # noqa: F401
     user,
     testing,
     alerts,
+    cache,
     encryption,
     company,
     config_cmd,

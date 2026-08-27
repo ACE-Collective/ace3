@@ -99,7 +99,9 @@ class SplunkKVStoreExport(ObservableExport):
 
         return documents
 
-    def publish(self, export_list: ObservableExportList) -> None:
+    def publish(self, export_list: ObservableExportList, force: bool = False) -> None:
+        # accepted for the interface: this target rewrites everything on every publish,
+        # so there is nothing for force to skip past
         collection = self.config.collection
         if not collection:
             raise ValueError(

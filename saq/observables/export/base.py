@@ -144,9 +144,13 @@ class ObservableExport(ABC):
         """
 
     @abstractmethod
-    def publish(self, export_list: ObservableExportList) -> None:
+    def publish(self, export_list: ObservableExportList, force: bool = False) -> None:
         """Publishes the given export list to the target system.
 
         Raises on failure. The caller only records the run as successful if this returns cleanly, so
         a failed publish is retried on the next run rather than being masked by the change check.
+
+        `force` means republish everything, ignoring any record the target keeps of what it published
+        before. A target that publishes incrementally -- uploading only the parts whose content
+        changed -- has to honor it, or --force would silently do nothing for that target.
         """

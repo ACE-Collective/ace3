@@ -1,4 +1,3 @@
-import argparse
 import getpass
 import logging
 import sys
@@ -76,17 +75,6 @@ add_user_parser.add_argument('--password', required=False, default=None,
     Don't do this unless it's a part of automation.""")
 add_user_parser.add_argument('-q', '--queue', required=False, default='default', 
     help="Set the default queue the user is assigned to.")
-add_user_parser.set_defaults(func=add_user)
-
-# XXX DEPRECATED
-add_user_parser = get_cli_subparsers().add_parser('add-user',
-    help="Add a new user to the system.")
-add_user_parser.add_argument('username', help="The username of the new user.")
-add_user_parser.add_argument('email', help="The email address of the new user.")
-add_user_parser.add_argument('-z', '--timezone', required=False, default=None,
-    help="The timezone the user is in. Defaults to UTC.")
-add_user_parser.add_argument('-d', '--display-name', required=False, default=None,
-    help="The (optional) display name for the user.")
 add_user_parser.set_defaults(func=add_user)
 
 def modify_user(args):
@@ -242,14 +230,143 @@ revoke_api_key_parser = user_sp.add_parser('revoke-api-key', help="Revoke an API
 revoke_api_key_parser.add_argument('key_id', type=int, help="The id of the key to revoke (see list-api-keys).")
 revoke_api_key_parser.set_defaults(func=revoke_api_key_cli)
 
-# XXX DEPRECATED
-modify_user_parser = get_cli_subparsers().add_parser('modify-user',
-    help="Modifies an existing user on the system.")
-modify_user_parser.add_argument('username', help="The username of the user to modify.")
-modify_user_parser.add_argument('-e', '--email', dest='email', default=None, help="The new email address of the user.")
-modify_user_parser.add_argument('-p', '--password', action='store_true', dest='password', default=False, help="Prompt for a new password.")
-modify_user_parser.add_argument('-z', '--timezone', required=False, default=None, help="The timezone the user is in. Defaults to UTC.")
-modify_user_parser.set_defaults(func=modify_user)
+def update_organization(args):
+    import json
+    import os
+    import re
+    import shutil
+
+    from saq.configuration import get_config
+    from saq.configuration.config import get_analysis_module_config
+    from saq.constants import ANALYSIS_MODULE_USER_TAGGER
+    from saq.environment import get_base_dir
+    from saq.error.reporting import report_exception
+
+    # load the organization information
+    config = get_analysis_module_config(ANALYSIS_MODULE_USER_TAGGER)
+
+    dest_file = os.path.join(get_base_dir(), config.json_path)
+    temp_file = os.path.join(get_base_dir(), '{0}.tmp'.format(config.json_path))
+
+    # key = userID (lowercase), value = set(tags...)
+    mapping = {}
+
+    # horrible copy-pasta (sorry)
+    # load ldap settings from configuration file
+    ldap_server = get_config().ldap.ldap_server
+    ldap_port = get_config().ldap.ldap_port or 389
+    ldap_bind_user = get_config().ldap.ldap_bind_user
+    ldap_bind_password = get_config().ldap.ldap_bind_password
+    ldap_base_dn = get_config().ldap.ldap_base_dn
+
+    def ldap_query(query):
+
+        from ldap3 import Server, Connection, SIMPLE, SYNC, SUBTREE, ALL, ALL_ATTRIBUTES
+
+        try:
+            with Connection(
+                Server(ldap_server, port = ldap_port, get_info = ALL), 
+                auto_bind = True,
+                client_strategy = SYNC,
+                user=ldap_bind_user,
+                password=ldap_bind_password,
+                authentication=SIMPLE, 
+                check_names=True) as c:
+
+                logging.debug("running ldap query for ({0})".format(query))
+                c.search(ldap_base_dn, '({0})'.format(query), SUBTREE, attributes = ALL_ATTRIBUTES)
+
+                # a little hack to move the result into json
+                response = json.loads(c.response_to_json())
+                result = c.result
+
+                if len(response['entries']) < 1:
+                    return None
+
+                # XXX not sure about the 0 here, I guess only if we only looking for one thing at a time
+                return response['entries'][0]['attributes']
+
+        except Exception as e:
+            logging.error("unable to perform ldap query: {0}".format(str(e)))
+            report_exception()
+            return None
+
+    if os.path.exists(temp_file):
+        try:
+            os.remove(temp_file)
+        except Exception:
+            logging.error("unable to remove temp file {0}".format(temp_file))
+            sys.exit(1)
+
+    def recurse_org(group_name, limit, tag, current_user_id, current_level=0):
+        # add this user
+        if current_user_id.lower() not in mapping:
+            mapping[current_user_id.lower()] = set()
+
+        mapping[current_user_id.lower()].add(tag)
+
+        current_level += 1
+        if limit != 'all' and current_level > int(limit):
+            return
+
+        # figure out who works for this guy
+        query_results = ldap_query("cn={0}*".format(current_user_id))
+        if query_results is None:
+            return
+
+        if 'directReports' in query_results:
+            for direct_report in query_results['directReports']:
+                # extract the userID from this thing
+                m = re.search(r'CN=([^,]+),', direct_report)
+                if m is None:
+                    logging.warning("unable to extract direct report info from {0}".format(direct_report))
+
+                user_id = m.group(1)
+                if user_id is not None:
+                    # add this guy (and possibly all his direct reports too)
+                    logging.debug("adding {0} as a direct report to {1} for group {2}".format(user_id, current_user_id, group_name))
+                    recurse_org(group_name, limit, tag, user_id, current_level)
+
+    # load all the hierarchy definitions
+    for section in config.keys():
+        if section.startswith('group_'):
+            m = re.match(r'^group_([^_]+)$', section)
+            if m is None:
+                logging.error("unable to parse group name from {0}".format(section))
+                continue
+
+            group_name = m.group(1)
+            parent_id, limit, tag = [x.strip() for x in config[section].split(',')]
+            
+            recurse_org(group_name, limit, tag, parent_id)
+
+    # write out the json
+    for key in mapping:
+        mapping[key] = list(mapping[key])
+
+    with open(temp_file, 'w') as fp:
+        json.dump(mapping, fp)
+
+    # finally update the production file
+    try:
+        shutil.move(temp_file, dest_file)
+    except Exception as e:
+        logging.error("unable to move {0} to {1}: {2}".format(temp_file, dest_file, str(e)))
+
+update_organization_parser = user_sp.add_parser('update-organization',
+    help="Updates the files used by the UserTaggingAnalyzer module.")
+update_organization_parser.set_defaults(func=update_organization)
+
+def generate_api_key(args):
+    import uuid
+    from saq.util import sha256_str
+    api_key = str(uuid.uuid4())
+    print(f"api_key = {api_key}")
+    print(f"api_key_sha256 = {sha256_str(api_key)}")
+    sys.exit(0)
+
+generate_api_key_parser = user_sp.add_parser('generate-api-key')
+generate_api_key_parser.set_defaults(func=generate_api_key)
 
 def delete_user(args):
     from saq.database import get_db_connection
@@ -260,11 +377,6 @@ def delete_user(args):
         db.commit()
 
     logging.info("deleted user {0}".format(args.username))
-
-delete_user_parser = get_cli_subparsers().add_parser('delete-user',
-    help="Deletes an existing user from the system.")
-delete_user_parser.add_argument('username', help="The username of the user to modify.")
-delete_user_parser.set_defaults(func=delete_user)
 
 delete_user_parser = user_sp.add_parser('delete',
     help="Deletes an existing user from the system.")

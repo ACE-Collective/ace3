@@ -114,8 +114,6 @@ services:
       - ace-phishkit:/phishkit
       - ace-js-deobfuscator:/js-deobfuscator
       - ./signatures:/opt/ace/signatures
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -148,8 +146,6 @@ services:
       ace-root-volume-initialize:
         condition: service_completed_successfully
     volumes: *common-volumes
-    cap_add:
-      - SYS_PTRACE
     hostname: ace
     networks:
       - ace
@@ -270,8 +266,6 @@ services:
       ace-db:
         condition: service_healthy
     volumes: *common-volumes
-    cap_add:
-      - SYS_PTRACE
     hostname: ace
     networks:
       - ace
@@ -343,8 +337,6 @@ services:
     hostname: ace
     expose:
       - "3030"
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -363,8 +355,6 @@ services:
     hostname: ace
     expose:
       - "3031"
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -383,8 +373,6 @@ services:
     hostname: ace
     expose:
       - "3032"
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -465,14 +453,12 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       - ace
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace start-gui"
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace gui start"
     restart: always
     volumes: *common-volumes
     hostname: ace
     ports:
       - "5000:5000"
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -490,8 +476,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     ports:
       - "53559:53559"
     networks:
@@ -509,8 +493,6 @@ services:
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start git"
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -526,8 +508,6 @@ services:
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start cron"
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -545,8 +525,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -566,8 +544,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -585,8 +561,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -604,8 +578,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -623,8 +595,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 
@@ -671,8 +641,6 @@ services:
     restart: always
     volumes: *common-volumes
     hostname: ace
-    cap_add:
-      - SYS_PTRACE
     networks:
       - ace
 

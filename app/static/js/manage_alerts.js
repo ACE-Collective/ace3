@@ -613,7 +613,7 @@ function tag_link_clicked(tag_id) {
 // reset all filters
 function reset_filters() {
     (function() {
-        fetch('reset_filters', { credentials: 'same-origin' })
+        fetch('reset_filters', { method: 'POST', credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -631,7 +631,7 @@ function select_filter(badge) {
 
 function select_filter_by_uuid(filter_uuid) {
     (function() {
-        fetch('select_filter/' + encodeURIComponent(filter_uuid), { credentials: 'same-origin' })
+        fetch('select_filter/' + encodeURIComponent(filter_uuid), { method: 'POST', credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -646,7 +646,7 @@ function select_filter_by_uuid(filter_uuid) {
 // to a BARE /manage so a refresh cannot re-apply a share link they just dismissed.
 function revert_temp_filter() {
     (function() {
-        fetch('revert_temp_filter', { credentials: 'same-origin' })
+        fetch('revert_temp_filter', { method: 'POST', credentials: 'same-origin' })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -729,7 +729,7 @@ function apply_filter() {
 function remove_filter(name, index) {
     (function() {
         const params = new URLSearchParams({ name: name, index: index });
-        fetch('remove_filter?' + params.toString(), { credentials: 'same-origin' })
+        fetch('remove_filter', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -744,7 +744,7 @@ function remove_filter(name, index) {
 function remove_filter_category(name) {
     (function() {
         const params = new URLSearchParams({ name: name });
-        fetch('remove_filter_category?' + params.toString(), { credentials: 'same-origin' })
+        fetch('remove_filter_category', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -759,7 +759,7 @@ function remove_filter_category(name) {
 function set_sort_filter(name) {
     (function() {
         const params = new URLSearchParams({ name: name });
-        fetch('set_sort_filter?' + params.toString(), { credentials: 'same-origin' })
+        fetch('set_sort_filter', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -774,7 +774,7 @@ function set_sort_filter(name) {
 function set_page_offset(offset) {
     (function() {
         const params = new URLSearchParams({ offset: offset });
-        fetch('set_page_offset?' + params.toString(), { credentials: 'same-origin' })
+        fetch('set_page_offset', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');
@@ -807,7 +807,7 @@ function set_page_size(current_size) {
 
     (function() {
         const params = new URLSearchParams({ size: limit });
-        fetch('set_page_size?' + params.toString(), { credentials: 'same-origin' })
+        fetch('set_page_size', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
             window.location.replace('/ace/manage');

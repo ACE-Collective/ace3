@@ -20,11 +20,15 @@ def list_companies(args):
             print("{}\t{}".format(company_id, company_name))
 
     print()
-    print("use ./saq add-company and ./saq delete-company to manage companies")
+    print("use ace company add and ace company delete to manage companies")
     print()
     sys.exit(0)
 
-list_companies_parser = get_cli_subparsers().add_parser('list-companies',
+company_parser = get_cli_subparsers().add_parser('company',
+    help="Company management commands.")
+company_sp = company_parser.add_subparsers(dest='company_cmd')
+
+list_companies_parser = company_sp.add_parser('list',
     help="Lists the available companies and their IDs.")
 list_companies_parser.set_defaults(func=list_companies)
 
@@ -39,7 +43,7 @@ def add_company(args):
 
     sys.exit(0)
 
-add_companies_parser = get_cli_subparsers().add_parser('add-company',
+add_companies_parser = company_sp.add_parser('add',
     help="Adds a new company entry.")
 add_companies_parser.add_argument('company_id', type=int, help="The ID of the new company (a number that is not already being used as an ID.)")
 add_companies_parser.add_argument('company_name', help="The name of the new company.")
@@ -77,7 +81,7 @@ def delete_company(args):
 
     sys.exit(0)
 
-delete_companies_parser = get_cli_subparsers().add_parser('delete-company',
+delete_companies_parser = company_sp.add_parser('delete',
     help="Deletes a given company and all associated events and alerts.")
 delete_companies_parser.add_argument('company_name', help="The name of the company to delete.")
 delete_companies_parser.set_defaults(func=delete_company)
