@@ -354,6 +354,24 @@ def test_export_force_ignores_the_change_check(export_dir, state_dir, detections
 
 
 @pytest.mark.integration
+def test_export_force_reaches_publish(export_dir, state_dir, detections, monkeypatch):
+    """A target that publishes incrementally can only honor --force if it is told about it.
+
+    Without this the change check is the only thing --force bypasses, and a target keeping its own
+    record of what it already published would silently skip everything anyway."""
+    detections("fqdn", "evil.example.com")
+    seen = []
+    monkeypatch.setattr(
+        YaraObservableExport, "publish",
+        lambda self, export_list, force=False: seen.append(force))
+
+    assert run_exports(["yara"]) == os.EX_OK
+    assert run_exports(["yara"], force=True) == os.EX_OK
+
+    assert seen == [False, True]
+
+
+@pytest.mark.integration
 def test_export_prunes_stale_rule_files(export_dir, state_dir, detections):
     fqdn_id = detections("fqdn", "evil.example.com")
     detections("email_address", "attacker@example.com")

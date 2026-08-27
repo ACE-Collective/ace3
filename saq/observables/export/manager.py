@@ -72,7 +72,7 @@ def run_exports(names: Optional[list[str]] = None, force: bool = False) -> int:
             continue
 
         try:
-            export.publish(export_list)
+            export.publish(export_list, force=force)
         except Exception as e:
             logging.error(f"unable to publish observable export {export.name}: {e}")
             result = os.EX_SOFTWARE

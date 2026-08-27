@@ -96,7 +96,9 @@ class YaraObservableExport(ObservableExport):
 
         return ObservableExportList(entries)
 
-    def publish(self, export_list: ObservableExportList) -> None:
+    def publish(self, export_list: ObservableExportList, force: bool = False) -> None:
+        # accepted for the interface: this target rewrites everything on every publish,
+        # so there is nothing for force to skip past
         import yara
         yara.set_config(max_strings_per_rule=int(get_config().yara_export.max_strings_per_rule))
 

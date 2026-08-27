@@ -61,7 +61,9 @@ class RedisObservableExport(ObservableExport):
         step after the swap.
         """
 
-    def publish(self, export_list: ObservableExportList) -> None:
+    def publish(self, export_list: ObservableExportList, force: bool = False) -> None:
+        # accepted for the interface: this target rewrites everything on every publish,
+        # so there is nothing for force to skip past
         connection = get_redis_connection(
             database=REDIS_DB_FOR_DETECTION_B, config_name=REDIS_CONFIG_NAME)
 
