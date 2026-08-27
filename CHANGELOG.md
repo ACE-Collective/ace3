@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.99] - 2026-08-27
+
+- [added method to force publish observable detection](https://github.com/ACE-Collective/ace3/pull/496)
+- [Updates Splunk observable detection functionality](https://github.com/ACE-Collective/ace3/pull/495)
+- [Bumps urlfinderlib to 0.25.2](https://github.com/ACE-Collective/ace3/pull/494)
+- [Removed SYS_PTRACE from all services except dev container.](https://github.com/ACE-Collective/ace3/pull/493)
+- [Refactor HTTP methods for various endpoints to enforce proper verb usage](https://github.com/ACE-Collective/ace3/pull/492)
+- [finish cli refactor](https://github.com/ACE-Collective/ace3/pull/490)
+
 ## [3.0.98] - 2026-08-26
 
 - [GUI alert filter refactor](https://github.com/ACE-Collective/ace3/pull/488)
