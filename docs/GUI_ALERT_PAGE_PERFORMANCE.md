@@ -83,30 +83,41 @@ renders nothing for either, exactly as before.
 
 `Observable.disposition_history` is left in place for other callers.
 
-### 3. `FileObservable.mime_type` forks `file`, and is never persisted — *open*
+### 3. `FileObservable.mime_type` forked `file`, and was never persisted — **fixed**
 
-`saq/observables/file.py` shells out to `file -b --mime-type -L` and caches the
-result only on the in-memory observable. `file_observable.html` reads
-`_observable.is_image` for every file observable, so a page load forks `file` once
-per file observable — 90 times for this alert. `KEY_MIME_TYPE` *is* serialized,
-but nothing ever populates it: all 90 file observables carry `"mime_type": null`
-in `data.json`. The value already exists on disk in each observable's
-`FileTypeAnalysis` details as `details['mime']`.
+`saq/observables/file.py` shells out to `file -b --mime-type -L` and used to cache
+the result only on the in-memory observable. `file_observable.html` reads
+`_observable.is_image` for every file observable, so a page load forked `file`
+once per file observable — 90 times for this alert. `KEY_MIME_TYPE` was already
+serialized, but nothing populated it: all 90 file observables carried
+`"mime_type": null` in `data.json`.
 
-`scaled_width` / `scaled_height` have the same problem — `PIL.Image.open` runs
-per render (22 times here) and the result is never persisted.
+`FileTypeAnalyzer` runs the same `file --mime-type` command and now stamps the
+answer onto the observable (`FileObservable.mime_type` has a setter), so it is
+serialized with the alert. For alerts analyzed before this change, the getter
+falls back to the observable's own `FileTypeAnalysis` details (`details['mime']`),
+which have always carried the value — a small JSON read instead of a fork. The
+`file` fork remains the last resort when neither is available.
 
-Standalone these are cheap (90 forks = 0.32 s, 22 `Image.open` = 0.01 s, and fork
-cost does not scale with process RSS), but they are pure waste.
+`scaled_width` / `scaled_height` had the same problem — `PIL.Image.open` ran per
+render (22 times here). `FileTypeAnalyzer` now calls `compute_scaled_dimensions()`
+for images, and the two values are serialized alongside the mime type
+(`KEY_SCALED_WIDTH` / `KEY_SCALED_HEIGHT`). Alerts serialized before those keys
+existed keep the `None` from `__init__` and recompute as before.
+
+Standalone these were cheap (90 forks = 0.32 s, 22 `Image.open` = 0.01 s, and fork
+cost does not scale with process RSS), but they were pure waste.
 
 ### 4. `/ace/image` re-parses the whole alert per request — *open*
+
 
 `app/analysis/views/image.py` reads `alert.root_analysis`, and
 `Alert.root_analysis` (`saq/database/model.py`) lazily calls `self.load()` when
 `_root_analysis is None` — which it always is on a freshly-queried `GUIAlert`.
 That is a full 1.9 MB `data.json` parse per image, ~90–440 ms each, 22 times. The
-endpoint only needs the file's path and mime type. It then forks `file` again for
-the `Content-Type` header.
+endpoint only needs the file's path and mime type. (Since #3 the `Content-Type`
+header no longer forks `file` for a newly analyzed alert, but the full reload
+remains.)
 
 ### 5. Response size — *open, and the largest remaining cost*
 
@@ -129,7 +140,7 @@ a tuning change.
 |---|---|---|---|
 | 1 | batched detection/interesting data into `ObservablePresenter` | removes ~2,700 DB round-trips per render | **done** |
 | 2 | batch `disposition_history` | removes ~900 aggregate joins per render | **done** |
-| 3 | persist `mime_type` + scaled image dimensions | removes 90 `file` forks and 22 `PIL.Image.open` per render | open |
+| 3 | persist `mime_type` + scaled image dimensions | removes 90 `file` forks and 22 `PIL.Image.open` per render | **done** |
 | 4 | `/ace/image` stops reloading the whole `RootAnalysis` | removes 22 × 1.9 MB `data.json` parses | open |
 | 5 | reduce the rendered HTML | the ~12.7 s browser cost | not planned |
 
