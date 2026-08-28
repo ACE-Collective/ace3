@@ -879,11 +879,9 @@ class Event(Base):
         }
 
     @property
-    def alerts(self):
-        uuids = []
-        for alert in self.alert_mappings:
-            uuids.append(alert.uuid)
-        return uuids
+    def alerts(self) -> list[str]:
+        """The UUIDs of every alert mapped to this event."""
+        return [mapping.alert.uuid for mapping in self.alert_mappings]
 
     @property
     def alert_objects(self) -> list["Alert"]:

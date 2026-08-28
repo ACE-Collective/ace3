@@ -1492,6 +1492,17 @@ def _cli_get_open_events(args):
 #open_events_command_parser.set_defaults(func=_cli_get_open_events)
 
 
+def get_event(event_id, *args, **kwargs):
+    """Gets a single ACE event by its database ID.
+
+    The returned dict includes an ``alerts`` list of the UUIDs of every alert in the event.
+
+    :return: The event.
+    :rtype: dict
+    """
+    return _execute_api_call('v2/events/{}'.format(event_id), *args, **kwargs).json()
+
+
 def update_event_status(event_id, status, *args, **kwargs):
     """ Updates an event's status.
 

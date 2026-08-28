@@ -92,6 +92,66 @@ class TestOpenEvents:
         assert response.status_code == 403
 
 
+class TestGetEvent:
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        response = await unauth_client.get("/events/1")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_returns_event_with_alert_uuids(self, client: AsyncClient):
+        lookups = _make_lookups()
+        event = _make_event("lookup-event", lookups, lookups["closed_status"])
+
+        db = get_db()
+        alert_uuids = []
+        for _ in range(2):
+            alert = Alert(
+                uuid=str(uuid4()),
+                location="test-location",
+                storage_dir=f"storage/{uuid4()}",
+                tool="test-tool",
+                tool_instance="test-tool-instance",
+                alert_type="test",
+            )
+            db.add(alert)
+            db.flush()
+            db.add(EventMapping(event_id=event.id, alert_id=alert.id))
+            alert_uuids.append(alert.uuid)
+        db.commit()
+
+        response = await client.get(f"/events/{event.id}")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["id"] == event.id
+        assert data["uuid"] == event.uuid
+        assert data["name"] == "lookup-event"
+        # not limited to OPEN events, unlike /events/open
+        assert data["status"] == "CLOSED"
+        assert sorted(data["alerts"]) == sorted(alert_uuids)
+
+    @pytest.mark.asyncio
+    async def test_event_without_alerts_has_empty_list(self, client: AsyncClient):
+        lookups = _make_lookups()
+        event = _make_event("empty-event", lookups, lookups["open_status"])
+
+        response = await client.get(f"/events/{event.id}")
+        assert response.status_code == 200
+        assert response.json()["alerts"] == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_event_returns_404(self, client: AsyncClient):
+        _make_lookups()
+        response = await client.get("/events/999999")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
+        response = await noperm_client.get("/events/1")
+        assert response.status_code == 403
+
+
 class TestUpdateEventStatus:
     @pytest.mark.asyncio
     async def test_requires_auth(self, unauth_client: AsyncClient):

@@ -1,14 +1,18 @@
 """Alert service for ACE API v2."""
 
+import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import uuid as uuidlib
 from datetime import datetime
 
 from fastapi import HTTPException
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
+from saq.database.model import Comment, ObservableComment, ObservableMapping
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
@@ -25,9 +29,14 @@ logger = logging.getLogger(__name__)
 
 ALERT_ZIP_PASSWORD = "infected"
 
+# Name of the file added to the alert download zip (inside the "<uuid>/"
+# directory) holding the analyst comments on the alert and on its observables.
+# Comments live only in the database, not in the alert's storage directory.
+ALERT_ZIP_COMMENTS_FILE = "comments.json"
 
-def _resolve_alert_storage_path(alert_uuid: str) -> str:
-    """Look up an alert by UUID and return the absolute path to its storage directory.
+
+def _resolve_alert(alert_uuid: str) -> GUIAlert:
+    """Look up an alert by UUID and verify its storage directory is still on disk.
 
     Raises HTTPException with appropriate status for invalid UUID, missing alert,
     archived alert, or storage directory missing on disk.
@@ -45,22 +54,130 @@ def _resolve_alert_storage_path(alert_uuid: str) -> str:
             detail="alert has been archived; storage has been cleaned up",
         )
 
-    abs_path = os.path.join(get_base_dir(), alert.storage_dir)
-    if not os.path.isdir(abs_path):
+    if not os.path.isdir(_alert_storage_path(alert)):
         raise HTTPException(
             status_code=410,
             detail="alert storage directory no longer exists on disk",
         )
 
-    return abs_path
+    return alert
+
+
+def _alert_storage_path(alert: GUIAlert) -> str:
+    """Absolute path to the alert's storage directory."""
+    return os.path.join(get_base_dir(), alert.storage_dir)
+
+
+def _resolve_alert_storage_path(alert_uuid: str) -> str:
+    """Look up an alert by UUID and return the absolute path to its storage directory."""
+    return _alert_storage_path(_resolve_alert(alert_uuid))
+
+
+def _serialize_user(user) -> dict:
+    return {
+        "username": user.username if user is not None else None,
+        "display_name": user.display_name if user is not None else None,
+    }
+
+
+def collect_alert_comments(alert: GUIAlert) -> dict:
+    """Return the analyst comments on the alert and on the observables mapped to it.
+
+    Shape::
+
+        {
+            "alert_uuid": "...",
+            "alert_comments": [
+                {"insert_date": "...", "user": {...}, "comment": "..."}, ...
+            ],
+            "observable_comments": [
+                {"observable": {"type": "...", "value": "...", "sha256": "..."},
+                 "insert_date": "...", "user": {...}, "comment": "..."}, ...
+            ],
+        }
+    """
+    alert_comments = (
+        get_db()
+        .query(Comment)
+        .filter(Comment.uuid == alert.uuid)
+        .order_by(Comment.insert_date, Comment.comment_id)
+        .all()
+    )
+
+    observable_comments = (
+        get_db()
+        .query(ObservableComment)
+        .join(ObservableMapping, ObservableMapping.observable_id == ObservableComment.observable_id)
+        .filter(ObservableMapping.alert_id == alert.id)
+        .order_by(ObservableComment.insert_date, ObservableComment.id)
+        .all()
+    )
+
+    return {
+        "alert_uuid": alert.uuid,
+        "alert_comments": [
+            {
+                "insert_date": c.insert_date.isoformat(),
+                "user": _serialize_user(c.user),
+                "comment": c.comment,
+            }
+            for c in alert_comments
+        ],
+        "observable_comments": [
+            {
+                "observable": {
+                    "type": c.observable.type,
+                    "value": c.observable.display_value,
+                    "sha256": c.observable.sha256.hex(),
+                },
+                "insert_date": c.insert_date.isoformat(),
+                "user": _serialize_user(c.user),
+                "comment": c.comment,
+            }
+            for c in observable_comments
+        ],
+    }
+
+
+def _run_zip(dest: str, cwd: str, target: str, alert_uuid: str) -> None:
+    """Add ``target`` (relative to ``cwd``) to the encrypted zip at ``dest``.
+
+    Running against an existing archive appends to it, so the storage directory
+    and the generated comments file can be added from different working
+    directories while both land under the "<uuid>/" prefix.
+    """
+    proc = subprocess.run(
+        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "--", target],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        logger.error(
+            "zip failed for alert %s (rc=%s): %s",
+            alert_uuid,
+            proc.returncode,
+            proc.stderr.decode(errors="replace"),
+        )
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail="failed to create alert zip")
 
 
 def create_encrypted_alert_zip(alert_uuid: str) -> str:
     """Build an encrypted (password='infected') zip of the alert's storage
     directory under the configured temp dir. Returns the absolute path to
     the resulting zip file. Caller is responsible for cleaning it up.
+
+    The zip also carries ``<uuid>/comments.json`` (see ``collect_alert_comments``)
+    so the analyst comments, which exist only in the database, travel with the
+    alert. The storage directory itself is never written to.
     """
-    storage_dir = _resolve_alert_storage_path(alert_uuid)
+    alert = _resolve_alert(alert_uuid)
+    storage_dir = _alert_storage_path(alert)
+    comments = collect_alert_comments(alert)
 
     dest = os.path.join(get_temp_dir(), f"{alert_uuid}.zip")
     # If a stale file is hanging around, remove it so zip doesn't try to update it.
@@ -79,24 +196,19 @@ def create_encrypted_alert_zip(alert_uuid: str) -> str:
         )
         raise HTTPException(status_code=500, detail="unexpected alert storage layout")
 
-    proc = subprocess.run(
-        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "--", alert_uuid],
-        cwd=parent_dir,
-        check=False,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        logger.error(
-            "zip failed for alert %s (rc=%s): %s",
-            alert_uuid,
-            proc.returncode,
-            proc.stderr.decode(errors="replace"),
-        )
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail="failed to create alert zip")
+    _run_zip(dest, parent_dir, alert_uuid, alert_uuid)
+
+    # Stage the comments file under a "<uuid>/" directory of its own so it
+    # lands next to data.json in the archive without touching the storage dir.
+    staging_dir = tempfile.mkdtemp(prefix="alert-comments-", dir=get_temp_dir())
+    try:
+        os.mkdir(os.path.join(staging_dir, alert_uuid))
+        with open(os.path.join(staging_dir, alert_uuid, ALERT_ZIP_COMMENTS_FILE), "w") as fp:
+            json.dump(comments, fp, indent=2)
+
+        _run_zip(dest, staging_dir, os.path.join(alert_uuid, ALERT_ZIP_COMMENTS_FILE), alert_uuid)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
     return dest
 
