@@ -260,6 +260,17 @@ class FileTypeAnalyzer(AnalysisModule):
 
         analysis.details['mime'] = stdout.decode().strip()
 
+        # stamp the mime type onto the observable so it is serialized with the alert.
+        # The alert page reads FileObservable.mime_type (via is_image) for every file
+        # observable it renders; without this it forks `file` again for each one, on
+        # every page load.
+        _file.mime_type = analysis.details['mime']
+
+        # the page also scales image previews -- computing the dimensions here means PIL
+        # opens each image once, at analysis time, instead of on every render
+        if _file.is_image:
+            _file.compute_scaled_dimensions()
+
         analysis.details['is_office_ext'] = is_office_ext(local_file_path)
         analysis.details['is_ole_file'] = is_ole_file(local_file_path)
         analysis.details['is_rtf_file'] = is_rtf_file(local_file_path)

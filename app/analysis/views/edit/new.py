@@ -1,16 +1,27 @@
-from datetime import UTC, datetime
 import logging
 import os
 import tempfile
+from datetime import UTC, datetime
+
+import pytz
 from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-import pytz
+
 import ace_api
+from aceapi_v2.observable_types.service import get_observable_types
+from aceapi_v2.sync import run_async
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_TYPE_MANUAL, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES, create_file_location
-from saq.database.model import Alert
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    ANALYSIS_TYPE_MANUAL,
+    DIRECTIVE_DESCRIPTIONS,
+    F_FILE,
+    GUI_DIRECTIVES,
+    create_file_location,
+)
+from saq.database.model import Alert, new_alert_version
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_temp_dir
@@ -18,8 +29,7 @@ from saq.error.reporting import report_exception
 from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
-from aceapi_v2.sync import run_async
-from aceapi_v2.observable_types.service import get_observable_types
+
 
 @analysis.route('/new_alert', methods=['POST'])
 @require_permission('alert', 'create')
@@ -153,7 +163,7 @@ ORDER BY
                     else:
                         upload_file = request.files.get(f'observables_values_{index}', None)
                         if upload_file:
-                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))  # noqa: F821
+                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))
                             os.close(fp)
 
                             temp_file_paths.append(save_path)
@@ -221,7 +231,7 @@ ORDER BY
 
                 if 'result' in result and 'uuid' in result['result']:
                     uuid = result['result']['uuid']
-                    get_db().execute(Alert.__table__.update().where(Alert.uuid == uuid).values(owner_id=current_user.id, owner_time=datetime.now()))
+                    get_db().execute(Alert.__table__.update().where(Alert.uuid == uuid).values(owner_id=current_user.id, owner_time=datetime.now(), version=new_alert_version()))
                     get_db().commit()
                     return redirect(url_for('analysis.index', direct=uuid))
             else:
@@ -248,7 +258,7 @@ ORDER BY
                     # in the case of multiple alerts we redirect to the last alert added
                     if 'result' in result and 'uuid' in result['result']:
                         uuid = result['result']['uuid']
-                        get_db().execute(Alert.__table__.update().where(Alert.uuid == uuid).values(owner_id=current_user.id, owner_time=datetime.now(UTC)))
+                        get_db().execute(Alert.__table__.update().where(Alert.uuid == uuid).values(owner_id=current_user.id, owner_time=datetime.now(UTC), version=new_alert_version()))
                         get_db().commit()
 
                 if 'result' in result and 'uuid' in result['result']:

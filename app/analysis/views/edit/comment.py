@@ -1,11 +1,15 @@
 import logging
+
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
+
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import REDIRECT_MAP
 from saq.database.model import Comment
 from saq.database.pool import get_db
+from saq.database.util.alert import touch_alerts
+
 
 @analysis.route('/add_comment', methods=['POST'])
 @require_permission('alert', 'write')
@@ -16,7 +20,7 @@ def add_comment():
 
     for expected_form_item in ['comment', 'uuids', 'redirect']:
         if expected_form_item not in request.form:
-            logging.error("missing expected form item {0} for user {1}".format(expected_form_item, current_user))
+            logging.error(f"missing expected form item {expected_form_item} for user {current_user}")
             flash("internal error")
             return redirect(url_for('analysis.index'))
 
@@ -49,6 +53,7 @@ def add_comment():
 
         get_db().add(comment)
 
+    touch_alerts(uuids)
     get_db().commit()
 
     from saq.llm.embedding.service import submit_embedding_task
@@ -85,6 +90,7 @@ def delete_comment():
     alert_uuid = comment.uuid
 
     get_db().delete(comment)
+    touch_alerts([alert_uuid])
     get_db().commit()
 
     from saq.llm.embedding.service import submit_embedding_task

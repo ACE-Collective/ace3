@@ -911,3 +911,120 @@ def test_qrcode_pdf_with_qr_code_at_end(datadir, test_context):
     with open(analysis.get_observables_by_type(F_FILE)[0].full_path, 'r') as fp:
         text = fp.read()
         assert text.strip() == "https://sever.emmetcrcs.org/#"
+
+#
+# mime type / scaled image dimensions persistence.
+#
+# FileObservable.mime_type shells out to `file -b --mime-type`, and the alert page
+# reads it (via is_image) for every file observable it renders -- 90 forks for one
+# page load on a large alert -- because nothing ever populated the field, even though
+# it has always been serialized. FileTypeAnalyzer already runs the same command, so
+# it now stamps the answer onto the observable. Same for the scaled image dimensions,
+# which the page recomputed with PIL on every render.
+#
+
+@pytest.mark.integration
+def test_file_type_persists_mime_type_on_observable(datadir, monkeypatch):
+    """The mime type FileTypeAnalyzer computes survives a save/load round trip, so
+    the GUI never has to fork `file` for it again."""
+    from saq.analysis.root import load_root
+    from saq.util.uuid import get_storage_dir
+
+    import saq.observables.file as file_module
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "2910293944.gif")
+
+    # deliberately never read observable.mime_type before saving -- that would populate
+    # the field as a side effect and the round trip would pass for the wrong reason
+    _run_file_type_analyzer(root, observable)
+    root.save()
+
+    reloaded_root = load_root(get_storage_dir(root.uuid))
+    reloaded = reloaded_root.get_observable(observable.uuid)
+
+    def _no_fork(*args, **kwargs):
+        raise AssertionError("mime_type forked `file` for an already-analyzed observable")
+
+    monkeypatch.setattr(file_module, "Popen", _no_fork)
+    assert reloaded.mime_type == "image/gif"
+    assert reloaded.is_image is True
+
+
+@pytest.mark.integration
+def test_file_type_persists_scaled_dimensions_for_images(datadir, monkeypatch):
+    """The scaled dimensions the alert page needs are computed once, at analysis
+    time, rather than by PIL on every render."""
+    from saq.analysis.root import load_root
+    from saq.util.uuid import get_storage_dir
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "2910293944.gif")
+
+    # as above, do not read the properties before saving
+    _run_file_type_analyzer(root, observable)
+    root.save()
+    reloaded_root = load_root(get_storage_dir(root.uuid))
+    reloaded = reloaded_root.get_observable(observable.uuid)
+
+    def _no_open(*args, **kwargs):
+        raise AssertionError("scaled dimensions re-opened the image with PIL")
+
+    monkeypatch.setattr(Image, "open", _no_open)
+    assert (reloaded.scaled_width, reloaded.scaled_height) == (320, 274)
+
+
+@pytest.mark.integration
+def test_file_type_does_not_scale_non_images(datadir):
+    """Only images get scaled dimensions -- everything else stays None."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "evil.zip")
+
+    _run_file_type_analyzer(root, observable)
+    assert observable.mime_type == "application/zip"
+    assert observable.scaled_width is None
+    assert observable.scaled_height is None
+
+
+@pytest.mark.integration
+def test_mime_type_falls_back_to_file_type_analysis(datadir, monkeypatch):
+    """Alerts analyzed before the observable started carrying its mime type read it
+    from the FileTypeAnalysis details rather than forking `file` again."""
+    from saq.analysis.root import load_root
+    from saq.util.uuid import get_storage_dir
+
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "2910293944.gif")
+
+    _run_file_type_analyzer(root, observable)
+    root.save()
+
+    reloaded_root = load_root(get_storage_dir(root.uuid))
+    reloaded = reloaded_root.get_observable(observable.uuid)
+
+    # simulate an alert analyzed before this change: the observable has no mime type
+    # of its own, only the FileTypeAnalysis that has always carried one
+    reloaded.mime_type = None
+
+    import saq.observables.file as file_module
+
+    def _no_fork(*args, **kwargs):
+        raise AssertionError("mime_type forked `file` instead of reading FileTypeAnalysis")
+
+    monkeypatch.setattr(file_module, "Popen", _no_fork)
+    assert reloaded.mime_type == "image/gif"
+
+
+@pytest.mark.integration
+def test_mime_type_forks_when_no_file_type_analysis(datadir):
+    """With neither a stored value nor a FileTypeAnalysis, the `file` fork remains
+    the fallback."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "2910293944.gif")
+
+    assert observable.mime_type == "image/gif"

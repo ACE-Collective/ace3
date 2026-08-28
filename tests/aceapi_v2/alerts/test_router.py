@@ -759,3 +759,79 @@ class TestViewAlertLogs:
         assert "attachment" in response.headers["content-disposition"]
         assert f"{VALID_UUID}-saq.log" in response.headers["content-disposition"]
         assert response.text == log_content
+
+
+class TestGetAlert:
+    """Test the GET /alerts/{alert_uuid} endpoint and its ETag / If-None-Match handling."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        response = await unauth_client.get(f"/alerts/{VALID_UUID}")
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid(self, client: AsyncClient):
+        response = await client.get("/alerts/not-a-uuid")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_alert(self, client: AsyncClient):
+        response = await client.get(f"/alerts/{VALID_UUID}")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_returns_alert_with_version(self, client: AsyncClient):
+        from tests.saq.helpers import insert_alert
+
+        alert = insert_alert()
+        response = await client.get(f"/alerts/{alert.uuid}")
+        assert response.status_code == 200
+        assert response.headers["ETag"] == f'"{alert.version}"'
+
+        result = response.json()["result"]
+        assert result["uuid"] == alert.uuid
+        assert result["version"] == alert.version
+        assert result["database_id"] == alert.id
+        # the analysis tree came along, not just the row
+        assert "observable_store" in result
+
+    @pytest.mark.asyncio
+    async def test_if_none_match_returns_304_until_the_alert_changes(self, client: AsyncClient):
+        from saq.database.util.alert import touch_alerts
+        from saq.database.pool import get_db
+        from tests.saq.helpers import insert_alert
+
+        alert = insert_alert()
+        response = await client.get(f"/alerts/{alert.uuid}")
+        etag = response.headers["ETag"]
+
+        # unchanged: the cheap path answers without loading the alert
+        response = await client.get(f"/alerts/{alert.uuid}", headers={"If-None-Match": etag})
+        assert response.status_code == 304
+        assert response.headers["ETag"] == etag
+        assert response.content == b""
+
+        # weak validators and lists are accepted too
+        response = await client.get(
+            f"/alerts/{alert.uuid}", headers={"If-None-Match": f'"other", W/{etag}'})
+        assert response.status_code == 304
+
+        # something changed: the full alert comes back with the new token
+        touch_alerts([alert.uuid])
+        get_db().commit()
+        response = await client.get(f"/alerts/{alert.uuid}", headers={"If-None-Match": etag})
+        assert response.status_code == 200
+        assert response.headers["ETag"] != etag
+        assert response.json()["result"]["version"] == response.headers["ETag"].strip('"')
+
+    @pytest.mark.asyncio
+    async def test_archived_alert_is_gone(self, client: AsyncClient):
+        from saq.database.pool import get_db
+        from tests.saq.helpers import insert_alert
+
+        alert = insert_alert()
+        alert.archived = True
+        get_db().commit()
+
+        response = await client.get(f"/alerts/{alert.uuid}")
+        assert response.status_code == 410

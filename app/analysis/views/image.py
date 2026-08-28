@@ -1,9 +1,9 @@
 import logging
 import os
 from flask import make_response, render_template, request
-from flask_login import login_required
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
+from saq.analysis.root import load_file_observable
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
 
@@ -27,8 +27,9 @@ def image():
         logging.info(f"attempted to display image but alert with uuid {alert_uuid} does not exist")
         return "unknown alert", 404
 
-    alert.root_analysis.load()
-    _file = alert.root_analysis.get_observable(observable_uuid)
+    # deliberately not alert.root_analysis: that property builds the entire analysis
+    # tree, and an alert page fires one of these requests per image it renders
+    _file = load_file_observable(alert.storage_dir, observable_uuid)
 
     if not _file:
         logging.info(f"attempted to display file observable with uuid {observable_uuid} as image but file observable does not exist")

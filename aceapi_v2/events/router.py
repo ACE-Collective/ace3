@@ -49,6 +49,7 @@ async def get_event(
     event_id: int,
     auth: Annotated[None, Depends(require_permission("event", "read"))],
 ) -> EventRead:
-    """Return one event's metadata, including the UUIDs of its alerts (``alerts``)."""
+    """Return one event's metadata, including the UUIDs of its alerts (``alerts``) and
+    each alert's current version token (``alert_versions``, uuid -> version)."""
     event = await service.get_event(event_id)
     return EventRead.model_validate(event)

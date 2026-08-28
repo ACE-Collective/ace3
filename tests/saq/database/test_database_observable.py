@@ -286,3 +286,123 @@ def test_upsert_observable_return_type():
         result = cursor.fetchone()
         assert result is not None
         assert result[0] == obs_id
+
+
+#
+# Batched disposition history.
+#
+# get_observable_disposition_histories() is the batched form of
+# get_observable_disposition_history(). The alert view reads the history twice per
+# rendered observable node, so the per-observable form issued hundreds of 3-table
+# aggregate joins for one page. The two must agree.
+#
+
+def _alert_with_observables(description: str, disposition: str, observables: list):
+    """Creates a dispositioned alert carrying the given observables and returns it."""
+    import uuid as uuid_module
+
+    from saq.analysis.root import RootAnalysis
+    from saq.constants import ANALYSIS_MODE_ANALYSIS
+    from saq.database.model import Alert as DBAlert
+    from saq.database.util.alert import ALERT
+    from saq.util.uuid import storage_dir_from_uuid
+
+    root_uuid = str(uuid_module.uuid4())
+    root = RootAnalysis(
+        uuid=root_uuid,
+        tool="tool",
+        tool_instance="tool_instance",
+        alert_type="alert_type",
+        desc=description,
+        storage_dir=storage_dir_from_uuid(root_uuid),
+        analysis_mode=ANALYSIS_MODE_ANALYSIS)
+    root.initialize_storage()
+    for observable in observables:
+        root.add_observable_by_spec(observable.type, observable.value)
+
+    root.save()
+    alert = ALERT(root)
+
+    get_db().query(DBAlert).filter(DBAlert.uuid == root_uuid).update(
+        {"disposition": disposition}, synchronize_session=False)
+    get_db().commit()
+    return alert
+
+
+@pytest.mark.integration
+def test_batched_disposition_history_matches_per_observable():
+    from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE
+    from saq.database.database_observable import (
+        get_observable_disposition_histories,
+        get_observable_disposition_history,
+    )
+
+    observable = create_observable("ipv4", "192.168.60.1")
+    other = create_observable("ipv4", "192.168.60.2")
+
+    _alert_with_observables("fp alert one", DISPOSITION_FALSE_POSITIVE, [observable])
+    _alert_with_observables("fp alert two", DISPOSITION_FALSE_POSITIVE, [observable, other])
+    _alert_with_observables("delivery alert", DISPOSITION_DELIVERY, [observable])
+
+    batched = get_observable_disposition_histories([observable, other])
+
+    for target in (observable, other):
+        expected = get_observable_disposition_history(target)
+        assert expected  # both observables appear in a dispositioned alert
+        assert dict(batched[target.uuid].history) == dict(expected.history)
+
+    assert dict(batched[observable.uuid].history) == {
+        DISPOSITION_FALSE_POSITIVE: 2,
+        DISPOSITION_DELIVERY: 1,
+    }
+
+
+@pytest.mark.integration
+def test_batched_disposition_history_skips_whitelisted_and_unseen():
+    from saq.constants import DISPOSITION_FALSE_POSITIVE
+    from saq.database.database_observable import (
+        get_observable_disposition_histories,
+        get_observable_disposition_history,
+    )
+
+    whitelisted = create_observable("ipv4", "192.168.60.3")
+    unseen = create_observable("ipv4", "192.168.60.4")
+
+    _alert_with_observables("fp alert", DISPOSITION_FALSE_POSITIVE, [whitelisted])
+    whitelisted.whitelist()
+
+    batched = get_observable_disposition_histories([whitelisted, unseen])
+
+    # whitelisted: the per-observable form returns None, the batched form omits it
+    assert get_observable_disposition_history(whitelisted) is None
+    assert whitelisted.uuid not in batched
+
+    # never seen in a dispositioned alert: the per-observable form returns an empty
+    # (falsy) history, the batched form omits it -- the view renders nothing for either
+    assert not get_observable_disposition_history(unseen)
+    assert unseen.uuid not in batched
+
+
+@pytest.mark.integration
+def test_batched_disposition_history_requires_a_matching_type():
+    """A hash can be shared across observable types; the history must not leak between them."""
+    from saq.constants import DISPOSITION_FALSE_POSITIVE
+    from saq.database.database_observable import get_observable_disposition_histories
+
+    seen = create_observable("fqdn", "history.example.com")
+    other_type = create_observable("url_domain", "history.example.com")
+    assert other_type is not None
+    assert seen.sha256_bytes == other_type.sha256_bytes
+
+    _alert_with_observables("fqdn fp alert", DISPOSITION_FALSE_POSITIVE, [seen])
+
+    batched = get_observable_disposition_histories([seen, other_type])
+    assert dict(batched[seen.uuid].history) == {DISPOSITION_FALSE_POSITIVE: 1}
+    assert other_type.uuid not in batched
+
+
+@pytest.mark.unit
+def test_batched_disposition_history_empty_input():
+    from saq.database.database_observable import get_observable_disposition_histories
+
+    assert get_observable_disposition_histories([]) == {}

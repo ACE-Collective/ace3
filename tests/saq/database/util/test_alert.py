@@ -17,7 +17,7 @@ from saq.constants import (
 )
 from saq.database.model import Alert, Comment, Observable, ObservableMapping, Workload
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, get_alert_by_uuid, set_dispositions, set_disposition_reviews
+from saq.database.util.alert import ALERT, get_alert_by_uuid, set_dispositions, set_disposition_reviews, touch_alerts
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
 from saq.permissions.user import add_user_permission
@@ -658,3 +658,101 @@ def test_set_disposition_reviews_correct_logs_unchanged_disposition(caplog):
     finally:
         delete_user("rev_ok_analyst")
         delete_user("rev_ok_reviewer")
+
+
+def _db_version(alert_uuid: str) -> str:
+    return get_db().query(Alert.version).filter(Alert.uuid == alert_uuid).scalar()
+
+
+@pytest.mark.integration
+def test_alert_version_assigned_on_insert():
+    """A new alert gets a version token and it appears in the alert's JSON."""
+    alert = insert_alert()
+    assert alert.version
+    alert.load()
+    assert alert.json[Alert.KEY_VERSION] == alert.version
+    assert _db_version(alert.uuid) == alert.version
+
+
+@pytest.mark.integration
+def test_alert_version_rotates_on_sync():
+    """Alert.sync() rotates the version even when nothing else in the row changed."""
+    alert = insert_alert()
+    before = alert.version
+    alert.sync()
+    assert alert.version != before
+    assert _db_version(alert.uuid) == alert.version
+
+
+@pytest.mark.integration
+def test_touch_alerts_rotates_version():
+    """touch_alerts() rotates every listed alert, on the session and on a raw cursor."""
+    alert_1 = insert_alert()
+    alert_2 = insert_alert()
+    before_1, before_2 = alert_1.version, alert_2.version
+
+    touch_alerts([alert_1.uuid, alert_2.uuid])
+    get_db().commit()
+    assert _db_version(alert_1.uuid) != before_1
+    assert _db_version(alert_2.uuid) != before_2
+    # both rotated in one call share the new token
+    assert _db_version(alert_1.uuid) == _db_version(alert_2.uuid)
+
+    from saq.database.pool import get_db_connection
+    after_session = _db_version(alert_1.uuid)
+    with get_db_connection() as db:
+        c = db.cursor()
+        touch_alerts([alert_1.uuid], cursor=c)
+        db.commit()
+    assert _db_version(alert_1.uuid) != after_session
+
+    # a no-op with an empty list
+    touch_alerts([])
+
+
+@pytest.mark.integration
+def test_set_dispositions_rotates_version():
+    """Dispositioning rotates the version; re-applying the same disposition does not."""
+    user = add_user("testuser_version", "testuser_version@test.com", "Test User", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+        before = alert.version
+
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+        after_first = _db_version(alert.uuid)
+        assert after_first != before
+
+        # same disposition again: the UPDATE guard skips the row, so the version stays put
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+        assert _db_version(alert.uuid) == after_first
+
+        # ... unless a comment came with it, which is a change in its own right
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id, "second look")
+        assert _db_version(alert.uuid) != after_first
+    finally:
+        delete_user("testuser_version")
+
+
+@pytest.mark.integration
+def test_set_disposition_reviews_rotates_version():
+    """Both review outcomes rotate the version."""
+    user = add_user("testuser_review_version", "testuser_review_version@test.com", "Test User", "password123")
+    add_user_permission(user.id, "*", "*")
+
+    try:
+        alert = insert_alert()
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
+        after_disposition = _db_version(alert.uuid)
+
+        set_disposition_reviews([alert.uuid], DISPOSITION_REVIEW_CORRECT, user.id)
+        after_correct = _db_version(alert.uuid)
+        assert after_correct != after_disposition
+
+        set_disposition_reviews(
+            [alert.uuid], DISPOSITION_REVIEW_INCORRECT, user.id,
+            corrected_disposition=DISPOSITION_WEAPONIZATION, review_comment="wrong call")
+        assert _db_version(alert.uuid) != after_correct
+    finally:
+        delete_user("testuser_review_version")
