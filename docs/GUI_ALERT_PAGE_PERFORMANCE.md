@@ -56,13 +56,32 @@ caller outside the alert view) still query for themselves.
 `_build_available_actions()` rather than the property, so the caching applies to
 them too.
 
-### 2. `disposition_history` re-queried per observable node — *open*
+### 2. `disposition_history` re-queried per observable node — **fixed**
 
 `Observable.disposition_history` (`saq/analysis/observable.py`) is an uncached
 property that runs a 3-table `JOIN ... GROUP BY` over
-`observables`/`observable_mapping`/`alerts`. `default_observable.html` reads it
-twice per node → **~900 aggregate joins per render**. There is no batched
-equivalent yet.
+`observables`/`observable_mapping`/`alerts`, and `default_observable.html` read
+it twice per node → **~900 aggregate joins per render**.
+
+`get_observable_disposition_histories()`
+(`saq/database/database_observable.py`) is the batched form: one query, grouped
+by `(type, sha256, disposition)` and filtered with a single indexed `IN` over the
+hashes — the same shape as `get_observable_detections()`. The view builds it once
+and passes `observable_disposition_history` into the template, which now reads
+the dict rather than the property.
+
+The predicate moved from `o.sha256 = UNHEX(observable.sha256_hash)` to
+`o.sha256 IN (observable.sha256_bytes, ...)`. These select the same rows:
+`sha256_bytes` is what `saq/database/util/index.py` writes into
+`observables.sha256`, and `FileObservable._sha256_hash` is initialized from the
+observable's value (the content hex) at construction, so the two agree even when
+the file is no longer on disk.
+
+Whitelisted observables are skipped, as in the per-observable form, and
+observables with no history are simply absent from the dict — the template
+renders nothing for either, exactly as before.
+
+`Observable.disposition_history` is left in place for other callers.
 
 ### 3. `FileObservable.mime_type` forks `file`, and is never persisted — *open*
 
@@ -109,7 +128,7 @@ a tuning change.
 | # | change | effect | state |
 |---|---|---|---|
 | 1 | batched detection/interesting data into `ObservablePresenter` | removes ~2,700 DB round-trips per render | **done** |
-| 2 | batch `disposition_history` | removes ~900 aggregate joins per render | open |
+| 2 | batch `disposition_history` | removes ~900 aggregate joins per render | **done** |
 | 3 | persist `mime_type` + scaled image dimensions | removes 90 `file` forks and 22 `PIL.Image.open` per render | open |
 | 4 | `/ace/image` stops reloading the whole `RootAnalysis` | removes 22 × 1.9 MB `data.json` parses | open |
 | 5 | reduce the rendered HTML | the ~12.7 s browser cost | not planned |
@@ -131,4 +150,4 @@ rather than read the log — e.g. spy on `observable_is_set_for_detection` /
 `run_async_with_session` in
 `saq/analysis/presenter/observable_presenter.py`, which is what
 `tests/app/analysis/views/test_index.py::test_index_does_not_query_per_observable_for_actions`
-does.
+and its `..._for_disposition_history` companion do.

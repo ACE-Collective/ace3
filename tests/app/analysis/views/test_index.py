@@ -774,3 +774,89 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     action_names = [action.name for action in presenter.available_actions]
     assert ACTION_DISABLE_DETECTION in action_names
     assert ACTION_UNMARK_INTERESTING in action_names
+
+
+#
+# Batched disposition history.
+#
+# Observable.disposition_history is an uncached property that runs a 3-table
+# JOIN ... GROUP BY, and default_observable.html reads it twice per observable
+# node -- ~900 aggregate joins on a 450-node alert. The view batches it into one
+# query instead.
+#
+
+@pytest.mark.integration
+def test_index_does_not_query_per_observable_for_disposition_history(
+    web_client, root_analysis, test_context, monkeypatch,
+):
+    """Rendering the analysis tree must not issue per-observable disposition
+    history queries."""
+    import saq.database.database_observable as database_observable
+
+    calls = []
+
+    def _spy(observable):
+        calls.append(observable.uuid)
+        return None
+
+    monkeypatch.setattr(database_observable, "get_observable_disposition_history", _spy)
+
+    _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    assert calls == [], (
+        f"per-observable disposition history ran {len(calls)} times during render")
+
+
+@pytest.mark.integration
+def test_index_renders_disposition_history_badge(web_client, root_analysis, test_context):
+    """The batched history must still drive the disposition badge.
+
+    Two dispositioned alerts share the observable, so the count is 2 -- the
+    template suppresses a badge whose count is 1 and whose disposition matches
+    the alert being viewed.
+    """
+    from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE
+    from saq.analysis.root import RootAnalysis
+    from saq.database.model import Alert as DBAlert
+    from saq.database.pool import get_db
+    from saq.util.uuid import storage_dir_from_uuid
+
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    other_uuid = str(uuid4())
+    other_root = RootAnalysis(
+        uuid=other_uuid,
+        tool="tool",
+        tool_instance="tool_instance",
+        alert_type="alert_type",
+        desc="Other Test Alert",
+        storage_dir=storage_dir_from_uuid(other_uuid),
+        analysis_mode=ANALYSIS_MODE_ANALYSIS)
+    other_root.initialize_storage()
+    other_root.add_observable_by_spec(test_observable.type, test_observable.value)
+    other_root.save()
+    ALERT(other_root)
+
+    get_db().query(DBAlert).filter(
+        DBAlert.uuid.in_([root_analysis.uuid, other_uuid])).update(
+            {"disposition": DISPOSITION_FALSE_POSITIVE}, synchronize_session=False)
+    get_db().commit()
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert f"{DISPOSITION_FALSE_POSITIVE} 100% (2)" in body

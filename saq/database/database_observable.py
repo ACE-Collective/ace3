@@ -1,9 +1,17 @@
 from typing import Optional
 
 from pymysql import IntegrityError
+from sqlalchemy import func
+
 from saq.analysis.disposition_history import DispositionHistory
 from saq.analysis.observable import Observable
-from saq.database.pool import get_db_connection
+from saq.constants import DISPOSITION_UNKNOWN
+from saq.database.model import (
+    Alert as DBAlert,
+    Observable as DBObservable,
+    ObservableMapping,
+)
+from saq.database.pool import get_db, get_db_connection
 
 def upsert_observable(observable: Observable) -> int:
     """Upserts an observable into the database. Returns the database id of the observable."""
@@ -64,3 +72,60 @@ def get_observable_disposition_history(observable: Observable) -> Optional[Dispo
             result[disposition] = count
 
     return result
+
+def get_observable_disposition_histories(observables: list[Observable]) -> dict[str, DispositionHistory]:
+    """Returns observable uuid -> DispositionHistory for the given observables, in one query.
+
+    The batched form of get_observable_disposition_history(). The alert view reads the
+    history twice per rendered observable node, so on a large alert the per-observable
+    form issued hundreds of 3-table aggregate joins for one page.
+
+    Observables that are whitelisted, or that appear in no dispositioned alert, are absent
+    from the result -- matching the per-observable function, which returns None for the
+    first and an empty (falsy) DispositionHistory for the second.
+    """
+    histories: dict[str, DispositionHistory] = {}
+    candidates = [observable for observable in observables if not observable.whitelisted]
+    if not candidates:
+        return histories
+
+    # Query by hash alone (one indexed IN), then match on type as well -- the same shape as
+    # get_observable_detections(), since a hash can be shared across types. sha256_bytes is
+    # what the observables.sha256 column holds (see FileObservable.sha256_bytes), so this
+    # matches the same rows as the per-observable form's `o.sha256 = UNHEX(sha256_hash)`.
+    hashes = {observable.sha256_bytes for observable in candidates}
+    rows = get_db().query(
+        DBObservable.type,
+        DBObservable.sha256,
+        DBAlert.disposition,
+        func.count(),
+    ).join(
+        ObservableMapping, ObservableMapping.observable_id == DBObservable.id,
+    ).join(
+        DBAlert, DBAlert.id == ObservableMapping.alert_id,
+    ).filter(
+        DBObservable.sha256.in_(hashes),
+        DBAlert.alert_type != 'faqueue',
+        DBAlert.disposition != DISPOSITION_UNKNOWN,
+    ).group_by(
+        DBObservable.type,
+        DBObservable.sha256,
+        DBAlert.disposition,
+    ).all()
+
+    counts_by_identity: dict[tuple, dict] = {}
+    for observable_type, sha256, disposition, count in rows:
+        counts_by_identity.setdefault((observable_type, sha256), {})[disposition] = count
+
+    for observable in candidates:
+        counts = counts_by_identity.get((observable.type, observable.sha256_bytes))
+        if not counts:
+            continue
+
+        history = DispositionHistory(observable)
+        for disposition, count in counts.items():
+            history[disposition] = count
+
+        histories[observable.uuid] = history
+
+    return histories
