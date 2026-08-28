@@ -7,6 +7,7 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 
 ## [3.0.99] - 2026-08-27
 
+- [Adds some event related API endpoints](https://github.com/ACE-Collective/ace3/pull/499)
 - [added method to force publish observable detection](https://github.com/ACE-Collective/ace3/pull/496)
 - [Updates Splunk observable detection functionality](https://github.com/ACE-Collective/ace3/pull/495)
 - [Bumps urlfinderlib to 0.25.2](https://github.com/ACE-Collective/ace3/pull/494)
