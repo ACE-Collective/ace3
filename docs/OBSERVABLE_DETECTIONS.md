@@ -113,8 +113,14 @@ no search at all. Each value becomes:
   every index did not finish in 5 minutes. `index=*` is affordable while a type has tens of detections;
   a type with hundreds needs the hunt narrowed to the indexes where it appears.
   `TERM()` matches a value that stands on its own in the raw event (quoted in JSON, a CSV column,
-  space-delimited); a value buried inside a longer token -- the host inside a full URL, the right-hand
-  side of a syslog `key=value` -- is not found, and needs a field-level match once the hunt is narrowed.
+  space-delimited). In a feed that logs tab- or space-separated `key=value` pairs, `=` is a *minor*
+  breaker, so a value containing `.`, `@`, `/` or `-` is indexed only as the whole `key=value` token
+  and the bare `TERM(value)` misses it (measured: 0 hits for a domain and an IP that were present in
+  every event). Each hunt therefore also emits `TERM(key=value)` for the field names its type is known
+  to be logged under, and `TERM(key=value/*)`-style trailing-wildcard forms where the value starts a
+  longer token; both stay index-only. A leading wildcard (`TERM(*=value)`) is a lexicon scan and is
+  never used. A value buried anywhere else inside a longer token is not found, and needs a
+  field-level match once the hunt is narrowed.
 - a quoted phrase otherwise (user agents, subjects, file names with spaces). Correct, but each such
   detection costs the raw scan above on every run.
 
