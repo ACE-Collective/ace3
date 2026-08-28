@@ -28,11 +28,14 @@ def create_observable_presenter(observable, **kwargs):
     Any keyword arguments are passed through to the presenter constructor -- see
     ObservablePresenter.__init__ for the batched lookups the alert view supplies.
     """
-    observable_class = type(observable)
-    presenter_class = _OBSERVABLE_PRESENTER_REGISTRY.get(
-        observable_class, ObservablePresenter
-    )
-    return presenter_class(observable, **kwargs)
+    # walk the MRO so subclasses (e.g. EmailFirstHopIPObservable -> IPObservable)
+    # inherit their parent's registered presenter instead of falling back to the default
+    for observable_class in type(observable).__mro__:
+        presenter_class = _OBSERVABLE_PRESENTER_REGISTRY.get(observable_class)
+        if presenter_class is not None:
+            return presenter_class(observable, **kwargs)
+
+    return ObservablePresenter(observable, **kwargs)
 
 
 # registry for custom observable actions
