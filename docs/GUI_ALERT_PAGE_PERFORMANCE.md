@@ -108,16 +108,33 @@ existed keep the `None` from `__init__` and recompute as before.
 Standalone these were cheap (90 forks = 0.32 s, 22 `Image.open` = 0.01 s, and fork
 cost does not scale with process RSS), but they were pure waste.
 
-### 4. `/ace/image` re-parses the whole alert per request — *open*
+### 4. `/ace/image` re-parsed the whole alert per request — **fixed**
 
+`app/analysis/views/image.py` read `alert.root_analysis`, and `Alert.root_analysis`
+(`saq/database/model.py`) lazily calls `self.load()` when `_root_analysis is None`
+— which it always is on a freshly-queried `GUIAlert`. That was a full `data.json`
+parse *and* a full analysis-tree rehydration per image, 22 times for this alert.
+The endpoint only needs the file's location on disk and its mime type.
 
-`app/analysis/views/image.py` reads `alert.root_analysis`, and
-`Alert.root_analysis` (`saq/database/model.py`) lazily calls `self.load()` when
-`_root_analysis is None` — which it always is on a freshly-queried `GUIAlert`.
-That is a full 1.9 MB `data.json` parse per image, ~90–440 ms each, 22 times. The
-endpoint only needs the file's path and mime type. (Since #3 the `Content-Type`
-header no longer forks `file` for a newly analyzed alert, but the full reload
-remains.)
+`load_file_observable(storage_dir, observable_uuid)` (`saq/analysis/root.py`)
+reads the JSON and returns just that one observable, detached: it gets a file
+manager, so `path` / `exists` / `mime_type` work, but no analysis tree is built.
+Anything that walks analyses still has to use `load_root()`.
+
+Measured against this alert:
+
+| | per request |
+|---|---|
+| full `RootAnalysis` load + `.path` | 176.5 ms |
+| `load_file_observable` + `.path` | 23.7 ms |
+| …plus the `file` fork for a pre-#505 alert with no stored mime type | 28.0 ms |
+| …`mime_type` when it is stored (post-#505 alert) | ~0 ms |
+
+The remaining cost is the `json.load` of `data.json` itself (~23 ms for 1.9 MB).
+
+Side effect: an `observable_uuid` that resolved to something other than a file
+observable used to raise `AttributeError` and return a 500. It now returns the
+404 the endpoint already had for a missing observable.
 
 ### 5. Response size — *open, and the largest remaining cost*
 
@@ -141,7 +158,7 @@ a tuning change.
 | 1 | batched detection/interesting data into `ObservablePresenter` | removes ~2,700 DB round-trips per render | **done** |
 | 2 | batch `disposition_history` | removes ~900 aggregate joins per render | **done** |
 | 3 | persist `mime_type` + scaled image dimensions | removes 90 `file` forks and 22 `PIL.Image.open` per render | **done** |
-| 4 | `/ace/image` stops reloading the whole `RootAnalysis` | removes 22 × 1.9 MB `data.json` parses | open |
+| 4 | `/ace/image` stops reloading the whole `RootAnalysis` | ~176 ms → ~24 ms per image request | **done** |
 | 5 | reduce the rendered HTML | the ~12.7 s browser cost | not planned |
 
 ## Reproducing

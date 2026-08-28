@@ -142,7 +142,7 @@ def test_image_full_success(web_client, root_analysis):
 
 
 @pytest.mark.integration
-def test_image_success(tmpdir, web_client):
+def test_image_success_full(tmpdir, web_client):
     """Test image endpoint with mocked dependencies."""
     root = create_root_analysis()
     target_path = tmpdir / "test.png"
@@ -196,5 +196,83 @@ def test_image_mocked_file_not_exists(tmpdir, web_client):
                               'observable_uuid': file_observable.uuid
                           })
     
+    assert result.status_code == 404
+    assert b"unknown file" in result.data
+
+#
+# The image endpoint used to build the whole analysis tree for every request.
+#
+# alert.root_analysis is a property that calls load() when _root_analysis is None --
+# which it always is on a freshly queried GUIAlert -- so each of the 22 image requests
+# an alert page fires re-parsed the entire data.json and rehydrated every observable
+# and analysis in it. The endpoint only needs one file's path and mime type.
+#
+
+@pytest.mark.integration
+def test_image_does_not_load_the_analysis_tree(tmpdir, web_client, monkeypatch):
+    from saq.analysis.root import RootAnalysis
+
+    root = create_root_analysis()
+    target_path = tmpdir / "test.png"
+    target_path.write_binary(TEST_IMAGE_DATA)
+    file_observable = root.add_file_observable(str(target_path))
+    root.save()
+    alert = ALERT(root)
+
+    def _no_load(self, *args, **kwargs):
+        raise AssertionError("the image endpoint built the full analysis tree")
+
+    monkeypatch.setattr(RootAnalysis, "load", _no_load)
+
+    result = web_client.get(url_for("analysis.image"),
+                          query_string={
+                              'alert_uuid': alert.uuid,
+                              'observable_uuid': file_observable.uuid,
+                          })
+
+    assert result.status_code == 200
+    assert result.headers['Content-Type'] == 'image/png'
+    assert result.data == TEST_IMAGE_DATA
+
+
+@pytest.mark.integration
+def test_image_serves_alert_without_a_stored_mime_type(tmpdir, web_client):
+    """Alerts analyzed before the observable carried its own mime type still get a
+    correct Content-Type."""
+    root = create_root_analysis()
+    target_path = tmpdir / "test.png"
+    target_path.write_binary(TEST_IMAGE_DATA)
+    file_observable = root.add_file_observable(str(target_path))
+    file_observable.mime_type = None
+    root.save()
+    alert = ALERT(root)
+
+    result = web_client.get(url_for("analysis.image"),
+                          query_string={
+                              'alert_uuid': alert.uuid,
+                              'observable_uuid': file_observable.uuid,
+                          })
+
+    assert result.status_code == 200
+    assert result.headers['Content-Type'] == 'image/png'
+    assert result.data == TEST_IMAGE_DATA
+
+
+@pytest.mark.integration
+def test_image_rejects_non_file_observable(web_client):
+    """A uuid that resolves to something other than a file observable is not an image."""
+    from saq.constants import F_TEST
+
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_TEST, "not_a_file")
+    root.save()
+    alert = ALERT(root)
+
+    result = web_client.get(url_for("analysis.image"),
+                          query_string={
+                              'alert_uuid': alert.uuid,
+                              'observable_uuid': observable.uuid,
+                          })
+
     assert result.status_code == 404
     assert b"unknown file" in result.data
