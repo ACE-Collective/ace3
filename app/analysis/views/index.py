@@ -21,6 +21,7 @@ from saq.analysis.detection_chain import (
     module_display_name,
     observable_display_value,
 )
+from saq.database.database_observable import get_observable_disposition_histories
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
@@ -502,6 +503,11 @@ def index():
         detections=observable_detections,
         interesting=interesting_observables)
 
+    # disposition history for every observable in one query -- default_observable.html
+    # reads it twice per rendered node, and the per-observable form is a 3-table
+    # aggregate join
+    observable_disposition_history = get_observable_disposition_histories(all_observables)
+
     # compute the display tree
 
     # are we viewing all analysis?
@@ -662,6 +668,7 @@ def index():
         # Skip file observables. The calculations will include their hash observables instead.
         num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
+        observable_disposition_history=observable_disposition_history,
         observable_comments=observable_comments,
         observable_added_by_display=observable_added_by_display,
         observable_db_ids=observable_db_ids,

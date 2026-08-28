@@ -87,9 +87,12 @@
     {% endfor %}
 {% endif %}
 
-{# add disposition tags #}
-{% if _observable.disposition_history %}
-    {% for disposition, count, percentage in _observable.disposition_history %}
+{# add disposition tags -- batched by the view into observable_disposition_history,
+   since reading _observable.disposition_history here would run a 3-table aggregate
+   join per observable node, twice #}
+{% set obs_disposition_history = observable_disposition_history.get(_observable.uuid) %}
+{% if obs_disposition_history %}
+    {% for disposition, count, percentage in obs_disposition_history %}
         {% if count != 1 or disposition != alert.disposition %}
         <span 
             style="transition: text-decoration 0.1s; cursor: pointer;"
