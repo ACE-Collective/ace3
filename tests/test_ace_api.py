@@ -779,8 +779,8 @@ def test_get_event(mock_api_call):
     with get_db_connection() as db:
         event_id = _create_test_event(db)
         cursor = db.cursor()
-        cursor.execute("""INSERT INTO `alerts` (`uuid`, `location`, `storage_dir`, `tool`, `tool_instance`, `alert_type`)
-                          VALUES ('aaaaaaaa-1234-1234-1234-123456789abc', 'test', 'test', 'test', 'test', 'test');""")
+        cursor.execute("""INSERT INTO `alerts` (`uuid`, `location`, `storage_dir`, `tool`, `tool_instance`, `alert_type`, `version`)
+                          VALUES ('aaaaaaaa-1234-1234-1234-123456789abc', 'test', 'test', 'test', 'test', 'test', UUID());""")
         cursor.execute("SELECT id FROM alerts WHERE uuid = 'aaaaaaaa-1234-1234-1234-123456789abc'")
         alert_id = cursor.fetchone()[0]
         cursor.execute(f"INSERT INTO `event_mapping` (`event_id`, `alert_id`) VALUES ({event_id}, {alert_id})")

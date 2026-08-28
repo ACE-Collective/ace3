@@ -130,6 +130,39 @@ class TestGetEvent:
         # not limited to OPEN events, unlike /events/open
         assert data["status"] == "CLOSED"
         assert sorted(data["alerts"]) == sorted(alert_uuids)
+        # one version token per mapped alert, matching the alerts table
+        expected = {a.uuid: a.version for a in db.query(Alert).filter(Alert.uuid.in_(alert_uuids))}
+        assert data["alert_versions"] == expected
+        assert all(expected.values())
+
+    @pytest.mark.asyncio
+    async def test_alert_versions_follow_alert_changes(self, client: AsyncClient):
+        from saq.database.util.alert import touch_alerts
+
+        lookups = _make_lookups()
+        event = _make_event("versioned-event", lookups, lookups["open_status"])
+
+        db = get_db()
+        alert = Alert(
+            uuid=str(uuid4()),
+            location="test-location",
+            storage_dir=f"storage/{uuid4()}",
+            tool="test-tool",
+            tool_instance="test-tool-instance",
+            alert_type="test",
+        )
+        db.add(alert)
+        db.flush()
+        db.add(EventMapping(event_id=event.id, alert_id=alert.id))
+        db.commit()
+
+        before = (await client.get(f"/events/{event.id}")).json()["alert_versions"][alert.uuid]
+
+        touch_alerts([alert.uuid])
+        db.commit()
+
+        after = (await client.get(f"/events/{event.id}")).json()["alert_versions"][alert.uuid]
+        assert after != before
 
     @pytest.mark.asyncio
     async def test_event_without_alerts_has_empty_list(self, client: AsyncClient):
@@ -139,6 +172,7 @@ class TestGetEvent:
         response = await client.get(f"/events/{event.id}")
         assert response.status_code == 200
         assert response.json()["alerts"] == []
+        assert response.json()["alert_versions"] == {}
 
     @pytest.mark.asyncio
     async def test_unknown_event_returns_404(self, client: AsyncClient):

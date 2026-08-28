@@ -1,12 +1,15 @@
-from datetime import datetime
 import logging
+from datetime import datetime
+
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
+
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.database.model import User
+from saq.database.model import User, new_alert_version
 from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
+
 
 @analysis.route('/assign_ownership', methods=['POST'])
 @require_permission('alert', 'write')
@@ -22,7 +25,7 @@ def assign_ownership():
             owner_id = int(raw_user_id)
         except ValueError:
             logging.warning(f"invalid user id: {raw_user_id}")
-            flash("invalid user id: {0}".format(raw_user_id))
+            flash(f"invalid user id: {raw_user_id}")
             return redirect(url_for('analysis.index'))
 
     if 'alert_uuid' in request.form:
@@ -40,7 +43,8 @@ def assign_ownership():
     if len(alert_uuids):
         get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(alert_uuids)).values(
             owner_id=None if unassign else owner_id,
-            owner_time=None if unassign else datetime.now()))
+            owner_time=None if unassign else datetime.now(),
+            version=new_alert_version()))
         get_db().commit()
 
     target_user = "unassigned" if unassign else "unknown"
@@ -68,6 +72,6 @@ def set_owner():
     # POST-only: this endpoint writes to the database. As a GET it let any prefetcher or
     # link scanner assign alert ownership by merely visiting a URL.
     session['checked'] = request.form.getlist('alert_uuids')
-    get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(session['checked'])).values(owner_id=current_user.id,owner_time=datetime.now()))
+    get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(session['checked'])).values(owner_id=current_user.id, owner_time=datetime.now(), version=new_alert_version()))
     get_db().commit()
     return ('', 204)

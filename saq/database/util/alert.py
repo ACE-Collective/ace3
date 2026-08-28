@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+
 from saq.analysis.root import RootAnalysis
 from saq.constants import (
     ANALYSIS_MODE_DISPOSITIONED,
@@ -8,7 +8,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_INCORRECT,
     REVIEW_COMMENT_PREFIX,
 )
-from saq.database.model import Alert
+from saq.database.model import Alert, new_alert_version
 from saq.database.pool import get_db, get_db_connection
 
 
@@ -56,7 +56,7 @@ def _fetch_disposition_context(c, alert_uuids: list) -> dict:
     }
 
 
-def _fetch_username(c, user_id: int) -> Optional[str]:
+def _fetch_username(c, user_id: int) -> str | None:
     """Resolve a user id to a username for logging. These helpers receive an id
     rather than a User object, and the id alone is meaningless in a log."""
     c.execute("SELECT username FROM users WHERE id = %s", (user_id,))
@@ -84,9 +84,28 @@ def ALERT(root: RootAnalysis) -> Alert:
     alert.sync()
     return alert
 
-def get_alert_by_uuid(uuid: str) -> Optional[Alert]:
+def get_alert_by_uuid(uuid: str) -> Alert | None:
     """Given a UUID, this function will return the Alert object from the database, or None if it does not exist."""
     return get_db().query(Alert).filter(Alert.uuid == uuid).one_or_none()
+
+def touch_alerts(alert_uuids: list[str], cursor=None) -> None:
+    """Rotates alerts.version for the given alerts so that API clients polling them see a change.
+
+    Call this from any code path that changes something about an alert without going through
+    Alert.sync() (which rotates the version itself) -- comments, ownership, event membership.
+    Pass the caller's pymysql cursor to rotate inside the caller's transaction; without one the
+    UPDATE is issued on the get_db() session and the caller is expected to commit it."""
+    if not alert_uuids:
+        return
+
+    version = new_alert_version()
+    if cursor is not None:
+        uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
+        cursor.execute(f"UPDATE alerts SET version = %s WHERE uuid IN ( {uuid_placeholders} )",
+                       [version, *alert_uuids])
+        return
+
+    get_db().execute(Alert.__table__.update().where(Alert.uuid.in_(alert_uuids)).values(version=version))
 
 def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
     """Utility function to the set disposition of many Alerts at once.
@@ -114,10 +133,11 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
         uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
         sql = f"""UPDATE alerts SET
                       disposition = %s, disposition_user_id = %s, disposition_time = NOW(),
-                      owner_id = IF(owner_id IS NULL, %s, owner_id), owner_time = IF(owner_time IS NULL, NOW(), owner_time)
+                      owner_id = IF(owner_id IS NULL, %s, owner_id), owner_time = IF(owner_time IS NULL, NOW(), owner_time),
+                      version = %s
                   WHERE
                       (disposition IS NULL OR disposition != %s) AND uuid IN ( {uuid_placeholders} )"""
-        parameters = [disposition, user_id, user_id, disposition]
+        parameters = [disposition, user_id, user_id, new_alert_version(), disposition]
         parameters.extend(alert_uuids)
         c.execute(sql, parameters)
 
@@ -127,6 +147,10 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
                 c.execute("""
                           INSERT INTO comments ( user_id, uuid, comment ) 
                           VALUES ( %s, %s, %s )""", ( user_id, uuid, user_comment))
+
+            # the UPDATE above only rotates the version of alerts whose disposition changed,
+            # but the comment landed on all of them
+            touch_alerts(alert_uuids, cursor=c)
 
         # now we need to insert each of these alert back into the workload
         # if we are setting the disposition to anything but IGNORE
@@ -199,10 +223,11 @@ def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_d
                           incorrect_disposition_time = disposition_time,
                           disposition = %s, disposition_user_id = %s, disposition_time = NOW(),
                           owner_id = IF(owner_id IS NULL, %s, owner_id), owner_time = IF(owner_time IS NULL, NOW(), owner_time),
-                          disposition_review = %s, review_user_id = %s, review_time = NOW()
+                          disposition_review = %s, review_user_id = %s, review_time = NOW(),
+                          version = %s
                       WHERE
                           disposition != %s AND uuid IN ( {uuid_placeholders} )"""
-            parameters = [corrected_disposition, reviewer_id, reviewer_id, DISPOSITION_REVIEW_INCORRECT, reviewer_id, corrected_disposition]
+            parameters = [corrected_disposition, reviewer_id, reviewer_id, DISPOSITION_REVIEW_INCORRECT, reviewer_id, new_alert_version(), corrected_disposition]
             parameters.extend(alert_uuids)
             c.execute(sql, parameters)
 
@@ -212,6 +237,9 @@ def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_d
                     c.execute("""
                               INSERT INTO comments ( user_id, uuid, comment )
                               VALUES ( %s, %s, %s )""", ( reviewer_id, uuid, prefixed_comment))
+
+                # the comment landed on every alert, not just the ones the UPDATE guard let through
+                touch_alerts(alert_uuids, cursor=c)
 
             # re-insert each corrected alert back into the workload unless the correction is IGNORE
             if corrected_disposition != DISPOSITION_IGNORE:
@@ -257,10 +285,11 @@ WHERE
 
             uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
             sql = f"""UPDATE alerts SET
-                          disposition_review = %s, review_user_id = %s, review_time = NOW()
+                          disposition_review = %s, review_user_id = %s, review_time = NOW(),
+                          version = %s
                       WHERE
                           uuid IN ( {uuid_placeholders} )"""
-            parameters = [DISPOSITION_REVIEW_CORRECT, reviewer_id]
+            parameters = [DISPOSITION_REVIEW_CORRECT, reviewer_id, new_alert_version()]
             parameters.extend(alert_uuids)
             c.execute(sql, parameters)
 
