@@ -37,6 +37,13 @@ def _get_open_events_sync() -> list[dict]:
     return [_serialize_event(event) for event in open_events]
 
 
+def _get_event_sync(event_id: int) -> dict:
+    event = get_db().get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event ID not found")
+    return _serialize_event(event)
+
+
 def _set_event_status_sync(event_id: int, status_value: str) -> dict:
     event = get_db().get(Event, event_id)
     if not event:
@@ -132,6 +139,14 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
 async def get_open_events() -> list[dict]:
     """Return all events with status ``OPEN`` serialized as ``Event.json`` dicts."""
     return await run_db_in_thread(_get_open_events_sync)
+
+
+async def get_event(event_id: int) -> dict:
+    """Return a single event serialized as an ``Event.json`` dict. Raises 404.
+
+    The ``alerts`` key holds the UUIDs of every alert mapped to the event.
+    """
+    return await run_db_in_thread(_get_event_sync, event_id)
 
 
 async def set_event_status(event_id: int, status_value: str) -> dict:

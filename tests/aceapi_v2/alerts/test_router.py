@@ -1,14 +1,26 @@
 """Tests for aceapi_v2 alerts router — bulk add observable endpoint."""
 
+import hashlib
+import json
 import logging
 import zipfile
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from aceapi_v2.application import app
+from saq.database import get_db
+from saq.database.model import (
+    Alert,
+    Comment,
+    Observable,
+    ObservableComment,
+    ObservableMapping,
+    User,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -521,6 +533,8 @@ class TestDownloadAlert:
             assert all(n.startswith(f"{VALID_UUID}/") for n in names)
             assert f"{VALID_UUID}/saq.log" in names
             assert f"{VALID_UUID}/data.json" in names
+            # the comments file is always present, even with no comments
+            assert f"{VALID_UUID}/comments.json" in names
 
         # The `unzip` binary can decrypt ZipCrypto; Python's stdlib zipfile can too
         # when given the right password.
@@ -532,6 +546,90 @@ class TestDownloadAlert:
         extracted_log = extract_dir / VALID_UUID / "saq.log"
         assert extracted_log.is_file()
         assert extracted_log.read_text() == "log line one\nlog line two\n"
+
+        comments = json.loads((extract_dir / VALID_UUID / "comments.json").read_text())
+        assert comments == {
+            "alert_uuid": VALID_UUID,
+            "alert_comments": [],
+            "observable_comments": [],
+        }
+
+        # the comments file was staged in a temp dir, never written into the alert
+        assert not (storage_dir / "comments.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_download_includes_comments(self, client: AsyncClient, tmp_path):
+        """Alert comments and observable comments exist only in the database, so the
+        download has to pull them in as ``<uuid>/comments.json``."""
+        alert_uuid = str(uuid4())
+        storage_dir = tmp_path / alert_uuid
+        storage_dir.mkdir()
+        (storage_dir / "data.json").write_text("{}")
+
+        db = get_db()
+        user = db.query(User).filter(User.username == "unittest").one()
+
+        alert = Alert(
+            uuid=alert_uuid,
+            location="test-location",
+            storage_dir=str(storage_dir),  # absolute; os.path.join discards get_base_dir()
+            tool="test-tool",
+            tool_instance="test-tool-instance",
+            alert_type="test",
+        )
+        db.add(alert)
+        db.flush()
+
+        # a comment on a different alert must not leak in
+        db.add(Comment(uuid=str(uuid4()), user_id=user.id, comment="other alert"))
+        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="first alert comment"))
+        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="second alert comment"))
+
+        value = b"192.0.2.1"
+        observable = Observable(type="ipv4", sha256=hashlib.sha256(value).digest(), value=value)
+        db.add(observable)
+        db.flush()
+        db.add(ObservableMapping(alert_id=alert.id, observable_id=observable.id))
+        db.add(ObservableComment(user_id=user.id, observable_id=observable.id, comment="known scanner"))
+
+        # an observable commented on but not mapped to this alert must not leak in
+        other_value = b"198.51.100.1"
+        other = Observable(type="ipv4", sha256=hashlib.sha256(other_value).digest(), value=other_value)
+        db.add(other)
+        db.flush()
+        db.add(ObservableComment(user_id=user.id, observable_id=other.id, comment="unrelated"))
+        db.commit()
+
+        response = await client.get(f"/alerts/{alert_uuid}/download")
+        assert response.status_code == 200
+
+        zip_path = tmp_path / "downloaded.zip"
+        zip_path.write_bytes(response.content)
+        extract_dir = tmp_path / "extracted"
+        extract_dir.mkdir()
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir, pwd=b"infected")
+
+        comments = json.loads((extract_dir / alert_uuid / "comments.json").read_text())
+        assert comments["alert_uuid"] == alert_uuid
+
+        assert [c["comment"] for c in comments["alert_comments"]] == [
+            "first alert comment",
+            "second alert comment",
+        ]
+        for c in comments["alert_comments"]:
+            assert c["user"]["username"] == "unittest"
+            assert c["insert_date"]
+
+        assert len(comments["observable_comments"]) == 1
+        oc = comments["observable_comments"][0]
+        assert oc["comment"] == "known scanner"
+        assert oc["user"]["username"] == "unittest"
+        assert oc["observable"] == {
+            "type": "ipv4",
+            "value": "192.0.2.1",
+            "sha256": hashlib.sha256(value).hexdigest(),
+        }
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.get_db")

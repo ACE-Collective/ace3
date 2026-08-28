@@ -40,3 +40,15 @@ async def export_events(
     # ExportFormat currently only has csv; FastAPI rejects other values with 422.
     csv_text = await service.export_events_to_csv(event_ids)
     return PlainTextResponse(content=csv_text, media_type="text/csv")
+
+
+# Declared after the static GET routes ("/open", "/export") so those paths are
+# not captured by the {event_id} parameter.
+@router.get("/{event_id}", response_model=EventRead)
+async def get_event(
+    event_id: int,
+    auth: Annotated[None, Depends(require_permission("event", "read"))],
+) -> EventRead:
+    """Return one event's metadata, including the UUIDs of its alerts (``alerts``)."""
+    event = await service.get_event(event_id)
+    return EventRead.model_validate(event)

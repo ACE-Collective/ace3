@@ -724,64 +724,82 @@ def test_get_open_events(mock_api_call):
     result = ace_api.get_open_events()
     assert result == []
 
+def _create_test_event(db) -> int:
+    """Insert the lookup rows and one OPEN event; return the event id."""
+    cursor = db.cursor()
+    cursor.execute("""INSERT INTO `event_type` (`value`) VALUES ('phish');""")
+    cursor.execute("""INSERT INTO `event_status` (`value`) VALUES ('OPEN');""")
+    cursor.execute("""INSERT INTO `event_vector` (`value`) VALUES ('corporate email');""")
+    cursor.execute("""INSERT INTO `event_prevention_tool` (`value`) VALUES ('response team');""")
+    cursor.execute("""INSERT INTO `event_remediation` (`value`) VALUES ('not remediated');""")
+    cursor.execute("""INSERT INTO `event_risk_level` (`value`) VALUES ('1');""")
+    db.commit()
+
+    cursor.execute("""SELECT id FROM event_type ORDER BY id LIMIT 1""")
+    event_type_id = cursor.fetchone()[0]
+    cursor.execute("""SELECT id FROM event_status ORDER BY id LIMIT 1""")
+    event_status_id = cursor.fetchone()[0]
+    cursor.execute("""SELECT id FROM event_vector ORDER BY id LIMIT 1""")
+    event_vector_id = cursor.fetchone()[0]
+    cursor.execute("""SELECT id FROM event_prevention_tool ORDER BY id LIMIT 1""")
+    event_prevention_tool_id = cursor.fetchone()[0]
+    cursor.execute("""SELECT id FROM event_remediation ORDER BY id LIMIT 1""")
+    event_remediation_id = cursor.fetchone()[0]
+    cursor.execute("""SELECT id FROM event_risk_level ORDER BY id LIMIT 1""")
+    event_risk_level_id = cursor.fetchone()[0]
+    cursor.execute(f"""
+                    INSERT INTO `events`
+                    (`creation_date`,
+                    `name`,
+                    `type_id`,
+                    `vector_id`,
+                    `prevention_tool_id`,
+                    `remediation_id`,
+                    `status_id`,
+                    `risk_level_id`,
+                    `comment`,
+                    `uuid`)
+                    VALUES
+                    ("2019-03-06",
+                    "test event",
+                    {event_type_id},
+                    {event_vector_id},
+                    {event_prevention_tool_id},
+                    {event_remediation_id},
+                    {event_status_id},
+                    {event_risk_level_id},
+                    "blah blah blah",
+                    "12345678-1234-1234-1234-123456789ab");""")
+    db.commit()
+    cursor.execute("SELECT id FROM events WHERE name='test event'")
+    return cursor.fetchone()[0]
+
+@pytest.mark.integration
+def test_get_event(mock_api_call):
+    with get_db_connection() as db:
+        event_id = _create_test_event(db)
+        cursor = db.cursor()
+        cursor.execute("""INSERT INTO `alerts` (`uuid`, `location`, `storage_dir`, `tool`, `tool_instance`, `alert_type`)
+                          VALUES ('aaaaaaaa-1234-1234-1234-123456789abc', 'test', 'test', 'test', 'test', 'test');""")
+        cursor.execute("SELECT id FROM alerts WHERE uuid = 'aaaaaaaa-1234-1234-1234-123456789abc'")
+        alert_id = cursor.fetchone()[0]
+        cursor.execute(f"INSERT INTO `event_mapping` (`event_id`, `alert_id`) VALUES ({event_id}, {alert_id})")
+        db.commit()
+
+    result = ace_api.get_event(event_id)
+    assert result['id'] == event_id
+    assert result['name'] == 'test event'
+    assert result['status'] == 'OPEN'
+    assert result['alerts'] == ['aaaaaaaa-1234-1234-1234-123456789abc']
+
 @pytest.mark.integration
 def test_update_event_status(mock_api_call):
-    # Create an event
     with get_db_connection() as db:
+        event_id = _create_test_event(db)
         cursor = db.cursor()
-        cursor.execute("""INSERT INTO `event_type` (`value`) VALUES ('phish');""")
-        cursor.execute("""INSERT INTO `event_status` (`value`) VALUES ('OPEN');""")
-        cursor.execute("""INSERT INTO `event_vector` (`value`) VALUES ('corporate email');""")
-        cursor.execute("""INSERT INTO `event_prevention_tool` (`value`) VALUES ('response team');""")
-        cursor.execute("""INSERT INTO `event_remediation` (`value`) VALUES ('not remediated');""")
-        cursor.execute("""INSERT INTO `event_risk_level` (`value`) VALUES ('1');""")
-        db.commit()
-
-        cursor.execute("""SELECT id FROM event_type ORDER BY id LIMIT 1""")
-        event_type_id = cursor.fetchone()[0]
-        cursor.execute("""SELECT id FROM event_status ORDER BY id LIMIT 1""")
-        event_status_id = cursor.fetchone()[0]
-        cursor.execute("""SELECT id FROM event_vector ORDER BY id LIMIT 1""")
-        event_vector_id = cursor.fetchone()[0]
-        cursor.execute("""SELECT id FROM event_prevention_tool ORDER BY id LIMIT 1""")
-        event_prevention_tool_id = cursor.fetchone()[0]
-        cursor.execute("""SELECT id FROM event_remediation ORDER BY id LIMIT 1""")
-        event_remediation_id = cursor.fetchone()[0]
-        cursor.execute("""SELECT id FROM event_risk_level ORDER BY id LIMIT 1""")
-        event_risk_level_id = cursor.fetchone()[0]
-        cursor.execute(f"""
-                        INSERT INTO `events`
-                        (`creation_date`,
-                        `name`,
-                        `type_id`,
-                        `vector_id`,
-                        `prevention_tool_id`,
-                        `remediation_id`,
-                        `status_id`,
-                        `risk_level_id`,
-                        `comment`,
-                        `uuid`)
-                        VALUES
-                        ("2019-03-06",
-                        "test event",
-                        {event_type_id},
-                        {event_vector_id},
-                        {event_prevention_tool_id},
-                        {event_remediation_id},
-                        {event_status_id},
-                        {event_risk_level_id},
-                        "blah blah blah",
-                        "12345678-1234-1234-1234-123456789ab");""")
-        db.commit()
-        cursor.execute("SELECT id FROM events WHERE name='test event'")
-        event_id = cursor.fetchone()[0]
-
         cursor.execute("""INSERT INTO `event_status` (`value`) VALUES ('CLOSED');""")
         db.commit()
 
-        cursor.execute("SELECT id FROM events WHERE name='test event'")
-        event_id = cursor.fetchone()[0]
-
-        result = ace_api.update_event_status(event_id, 'CLOSED')
-        assert result
-        assert result['status'] == 'CLOSED'
+    result = ace_api.update_event_status(event_id, 'CLOSED')
+    assert result
+    assert result['status'] == 'CLOSED'
