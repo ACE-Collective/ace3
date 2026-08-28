@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+from typing import NamedTuple
 from uuid import uuid4
 from flask import flash, redirect, render_template, request, session, url_for
 from app.analysis.views.session.alert import get_current_alert
@@ -152,8 +153,33 @@ def build_provenance_groups(root_analysis):
     return groups or None
 
 
+class ObservablePresenterContext(NamedTuple):
+    """The two per-observable database answers the action menu needs, looked up
+    in bulk for the whole alert.
+
+    Without this every ObservablePresenter re-queries for itself, and
+    default_observable.html reads available_actions three times per observable
+    node -- on a large alert that was thousands of round-trips per render, half
+    of them going through run_async_with_session. The view already has both
+    answers batched, so it hands them to the presenters instead.
+    """
+    detections: dict          # observable uuid -> ObservableDetectionSummary
+    interesting: dict         # observable uuid -> True
+
+    def presenter_kwargs(self, observable) -> dict:
+        """The batched answers for one observable, as ObservablePresenter kwargs.
+
+        Both dicts only carry the observables that *have* the flag set, matching
+        observable_is_set_for_detection() / observable_is_interesting().
+        """
+        return {
+            "detection_status": observable.uuid in self.detections,
+            "is_interesting": observable.uuid in self.interesting,
+        }
+
+
 class TreeNode:
-    def __init__(self, obj, parent=None, prune_volatile=False):
+    def __init__(self, obj, parent=None, prune_volatile=False, presenter_context=None):
         # unique ID that can be used in the GUI to track nodes
         self.uuid = str(uuid4())
         # Analysis or Observable object
@@ -168,12 +194,16 @@ class TreeNode:
         self.referents = []
         # set to True if we are not showing volatile nodes
         self.prune_volatile = prune_volatile
+        # batched observable lookups shared by every node in this tree, or None
+        # when the caller has none to give (the presenter then queries itself)
+        self.presenter_context = presenter_context
 
         # set the analysis presenter
         if isinstance(obj, Analysis):
             self.presenter = create_analysis_presenter(obj)
         elif isinstance(obj, Observable):
-            self.presenter = create_observable_presenter(obj)
+            presenter_kwargs = presenter_context.presenter_kwargs(obj) if presenter_context else {}
+            self.presenter = create_observable_presenter(obj, **presenter_kwargs)
 
     def add_child(self, child):
         assert isinstance(child, TreeNode)
@@ -284,7 +314,10 @@ def _recurse(current_node, node_tracker=None):
     for observable in analysis.observables:
         if observable.ignored:
             continue
-        child_node = TreeNode(observable, prune_volatile=current_node.prune_volatile)
+        child_node = TreeNode(
+            observable,
+            prune_volatile=current_node.prune_volatile,
+            presenter_context=current_node.presenter_context)
         current_node.add_child(child_node)
 
         # if the observable is already in the current tree then we want to display a link to the existing analysis display
@@ -295,7 +328,10 @@ def _recurse(current_node, node_tracker=None):
         node_tracker[observable.uuid] = child_node
 
         for observable_analysis in [a for a in observable.all_analysis if a]:
-            observable_analysis_node = TreeNode(observable_analysis, prune_volatile=current_node.prune_volatile)
+            observable_analysis_node = TreeNode(
+                observable_analysis,
+                prune_volatile=current_node.prune_volatile,
+                presenter_context=current_node.presenter_context)
             child_node.add_child(observable_analysis_node)
             _recurse(observable_analysis_node, node_tracker)
 
@@ -460,6 +496,12 @@ def index():
         if obs.uuid in interesting_observables
     ]
 
+    # the batched answers the observable action menus need, so that no presenter
+    # in the display tree has to look them up for itself
+    observable_presenter_context = ObservablePresenterContext(
+        detections=observable_detections,
+        interesting=interesting_observables)
+
     # compute the display tree
 
     # are we viewing all analysis?
@@ -475,7 +517,10 @@ def index():
     # we only display the tree if we're looking at the alert
     display_tree = None
     if alert.root_analysis is analysis:
-        display_tree = TreeNode(analysis, prune_volatile=session['prune_volatile'])
+        display_tree = TreeNode(
+            analysis,
+            prune_volatile=session['prune_volatile'],
+            presenter_context=observable_presenter_context)
         _recurse(display_tree)
         _sort(display_tree)
         if session['prune_volatile']:
@@ -587,7 +632,8 @@ def index():
         url_clicks_errors=url_clicks.errors,
         alert_tags=alert_tags,
         observable=observable,
-        observable_presenter=create_observable_presenter(observable) if observable else None,
+        observable_presenter=create_observable_presenter(
+            observable, **observable_presenter_context.presenter_kwargs(observable)) if observable else None,
         analysis=analysis,
         analysis_presenter=create_analysis_presenter(analysis) if analysis else None,
         ace_config=get_config(),

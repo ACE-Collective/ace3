@@ -1,4 +1,4 @@
-from typing import Type
+from typing import Optional, Type
 
 from saq import Observable
 from aceapi_v2.observables.service import observable_is_interesting
@@ -22,13 +22,17 @@ def register_observable_presenter(
     _OBSERVABLE_PRESENTER_REGISTRY[observable_class] = presenter_class
 
 
-def create_observable_presenter(observable):
-    """Factory function to create an appropriate presenter for an Observable object."""
+def create_observable_presenter(observable, **kwargs):
+    """Factory function to create an appropriate presenter for an Observable object.
+
+    Any keyword arguments are passed through to the presenter constructor -- see
+    ObservablePresenter.__init__ for the batched lookups the alert view supplies.
+    """
     observable_class = type(observable)
     presenter_class = _OBSERVABLE_PRESENTER_REGISTRY.get(
         observable_class, ObservablePresenter
     )
-    return presenter_class(observable)
+    return presenter_class(observable, **kwargs)
 
 
 # registry for custom observable actions
@@ -50,12 +54,23 @@ def register_observable_action(
 class ObservablePresenter:
     """Handles presentation logic for Observable objects, separating UI concerns from domain logic."""
 
-    def __init__(self, observable):
-        """Initialize presenter with an Observable instance."""
+    def __init__(self, observable, detection_status: Optional[bool] = None, is_interesting: Optional[bool] = None):
+        """Initialize presenter with an Observable instance.
+
+        detection_status and is_interesting are the two per-observable database
+        answers the action menu needs. The alert view already looks both of them
+        up in bulk for the whole tree (get_all_observable_detections /
+        get_interesting_observables_by_hashes), so it passes them in here rather
+        than have every presenter re-query. Left as None -- any caller outside
+        that view -- the presenter falls back to querying for itself.
+        """
         from saq.analysis.observable import Observable
 
         assert isinstance(observable, Observable)
         self._observable = observable
+        self._detection_status = detection_status
+        self._is_interesting = is_interesting
+        self._available_actions = None
 
     @property
     def template_path(self) -> str:
@@ -63,8 +78,38 @@ class ObservablePresenter:
         return "analysis/default_observable.html"
 
     @property
+    def is_set_for_detection(self) -> bool:
+        """Returns True if this observable is enabled for future detection."""
+        if self._detection_status is None:
+            self._detection_status = observable_is_set_for_detection(self._observable)
+
+        return self._detection_status
+
+    @property
+    def is_interesting(self) -> bool:
+        """Returns True if this observable is marked interesting."""
+        if self._is_interesting is None:
+            self._is_interesting = run_async_with_session(
+                observable_is_interesting, self._observable.type, self._observable.sha256_bytes)
+
+        return self._is_interesting
+
+    @property
     def available_actions(self) -> list:
-        """Returns a list of ObservableAction objects for this observable."""
+        """Returns a list of ObservableAction objects for this observable.
+
+        Cached on the presenter: default_observable.html reads this three times
+        per observable node (menu emptiness check, menu items, action templates)
+        and the tree can carry hundreds of nodes.
+        """
+        if self._available_actions is None:
+            self._available_actions = self._build_available_actions()
+
+        return self._available_actions
+
+    def _build_available_actions(self) -> list:
+        """Builds the action list. Subclasses extend this rather than
+        available_actions so that the caching above still applies."""
         from saq.gui import (
             ObservableActionAddComment,
             ObservableActionUnWhitelist,
@@ -84,7 +129,7 @@ class ObservablePresenter:
                 ObservableActionUnWhitelist(),
             ]
 
-        if observable_is_set_for_detection(self._observable):
+        if self.is_set_for_detection:
             actions.extend(
                 [
                     ObservableActionSeparator(),
@@ -98,7 +143,7 @@ class ObservablePresenter:
             )
 
         # add interesting toggle
-        if run_async_with_session(observable_is_interesting, self._observable.type, self._observable.sha256_bytes):
+        if self.is_interesting:
             actions.extend([ObservableActionSeparator(), ObservableActionUnmarkInteresting()])
         else:
             actions.extend([ObservableActionSeparator(), ObservableActionMarkInteresting()])

@@ -610,3 +610,167 @@ def test_index_tree_display_logic(web_client, root_analysis, test_context):
     
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
     assert result.status_code == 200
+
+
+#
+# Batched detection / interesting lookups for the observable action menu.
+#
+# ObservablePresenter.available_actions used to run one "is set for detection"
+# query and one "is interesting" query every time it was read, and
+# default_observable.html reads it three times per observable node. On a real
+# alert (450 observable nodes) that was ~2,700 round-trips per page render, half
+# of them going through run_async_with_session -- a cross-thread event loop hop
+# that opens an AsyncSession and commits for a single-row SELECT.
+#
+# The view already batches both lookups (get_all_observable_detections /
+# get_interesting_observables_by_hashes), so the render must not issue any of
+# the per-observable ones.
+#
+
+@pytest.mark.integration
+def test_index_does_not_query_per_observable_for_actions(
+    web_client, root_analysis, test_context, monkeypatch,
+):
+    """Rendering the analysis tree must not issue per-observable detection or
+    interesting lookups -- the view batches both before building the tree."""
+    import saq.analysis.presenter.observable_presenter as presenter_module
+
+    detection_calls = []
+    interesting_calls = []
+
+    def _spy_detection(observable):
+        detection_calls.append(observable.uuid)
+        return False
+
+    def _spy_run_async(fn, *args, **kwargs):
+        interesting_calls.append(args)
+        return False
+
+    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _spy_detection)
+    monkeypatch.setattr(presenter_module, "run_async_with_session", _spy_run_async)
+
+    _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    assert detection_calls == [], (
+        f"per-observable detection lookup ran {len(detection_calls)} times during render")
+    assert interesting_calls == [], (
+        f"per-observable interesting lookup ran {len(interesting_calls)} times during render")
+
+
+@pytest.mark.integration
+def test_index_renders_detection_and_interesting_actions(
+    web_client, root_analysis, test_context, monkeypatch,
+):
+    """The batched values must drive the same menu items the per-observable
+    queries used to. Force both to True and check the 'already enabled' variants
+    render."""
+    import app.analysis.views.index as index_module
+    from saq.database.util.observable_detection import ObservableDetectionSummary
+
+    _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    def _all_detected(alert):
+        return {
+            observable.uuid: ObservableDetectionSummary(
+                observable_uuid=observable.uuid,
+                for_detection=True,
+                detection_modified_by="tester",
+                detection_context="enabled by tester",
+            )
+            for observable in alert.all_observables
+        }
+
+    monkeypatch.setattr(index_module, "get_all_observable_detections", _all_detected)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Disable observable for future detection" in body
+    assert "Enable observable for future detection" not in body
+
+
+@pytest.mark.integration
+def test_index_renders_unmark_interesting_for_interesting_observable(
+    web_client, root_analysis, test_context,
+):
+    """Companion to the detection test for the other batched lookup: an
+    observable actually marked interesting in the database must render the
+    'Unmark as interesting' action rather than 'Mark as interesting'."""
+    from aceapi_v2.observables.service import set_observable_interesting
+    from aceapi_v2.sync import run_async_with_session
+
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    run_async_with_session(
+        set_observable_interesting, test_observable.type, test_observable.value, True)
+
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Unmark as interesting" in body
+
+
+@pytest.mark.unit
+def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
+    """available_actions is read three times per observable by
+    default_observable.html; it must only do the lookups once."""
+    import saq.analysis.presenter.observable_presenter as presenter_module
+    from saq.analysis.presenter import create_observable_presenter
+
+    detection_calls = []
+    monkeypatch.setattr(
+        presenter_module, "observable_is_set_for_detection",
+        lambda observable: detection_calls.append(observable.uuid) or False)
+    monkeypatch.setattr(
+        presenter_module, "run_async_with_session",
+        lambda fn, *args, **kwargs: False)
+
+    observable = root_analysis.add_observable_by_spec(F_TEST, "cached_actions")
+    presenter = create_observable_presenter(observable)
+
+    first = presenter.available_actions
+    assert presenter.available_actions is first
+    assert presenter.available_actions is first
+    assert len(detection_calls) == 1
+
+
+@pytest.mark.unit
+def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
+    """When the view supplies the batched values, no lookup is performed."""
+    import saq.analysis.presenter.observable_presenter as presenter_module
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.constants import ACTION_DISABLE_DETECTION, ACTION_UNMARK_INTERESTING
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("per-observable lookup should not run")
+
+    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _fail)
+    monkeypatch.setattr(presenter_module, "run_async_with_session", _fail)
+
+    observable = root_analysis.add_observable_by_spec(F_TEST, "supplied_context")
+    presenter = create_observable_presenter(
+        observable, detection_status=True, is_interesting=True)
+
+    action_names = [action.name for action in presenter.available_actions]
+    assert ACTION_DISABLE_DETECTION in action_names
+    assert ACTION_UNMARK_INTERESTING in action_names

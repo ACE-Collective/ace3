@@ -434,8 +434,7 @@ class FileObservablePresenter(ObservablePresenter):
     def template_path(self) -> str:
         return "analysis/file_observable.html"
 
-    @property
-    def available_actions(self) -> list:
+    def _build_available_actions(self) -> list:
         from saq.gui.observable_actions.file import (
             ObservableActionDownloadFileAsZip,
             ObservableActionViewAsHex,
@@ -453,7 +452,7 @@ class FileObservablePresenter(ObservablePresenter):
             ObservableActionFileRender(),
             ObservableActionSeparator(),
         ]
-        result.extend(super().available_actions)
+        result.extend(super()._build_available_actions())
         return result
 
 
@@ -520,13 +519,12 @@ class FileLocationObservablePresenter(ObservablePresenter):
     def template_path(self) -> str:
         return "analysis/file_location_observable.html"
 
-    @property
-    def available_actions(self) -> list:
+    def _build_available_actions(self) -> list:
         from saq.gui.observable_actions.file import ObservableActionCollectFile
         from saq.gui import ObservableActionSeparator
 
         result = [ObservableActionCollectFile(), ObservableActionSeparator()]
-        result.extend(super().available_actions)
+        result.extend(super()._build_available_actions())
         return result
 
 
