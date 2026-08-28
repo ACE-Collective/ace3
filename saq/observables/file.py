@@ -19,6 +19,8 @@ KEY_MD5_HASH = "md5_hash"
 KEY_SHA1_HASH = "sha1_hash"
 KEY_SHA256_HASH = "sha256_hash"
 KEY_MIME_TYPE = "mime_type"
+KEY_SCALED_WIDTH = "scaled_width"
+KEY_SCALED_HEIGHT = "scaled_height"
 KEY_SIZE = "size"
 KEY_FILE_PATH = "file_path"
 
@@ -118,6 +120,8 @@ class FileObservable(Observable):
             KEY_SHA1_HASH: self.sha1_hash,
             KEY_SHA256_HASH: self.sha256_hash,
             KEY_MIME_TYPE: self._mime_type,
+            KEY_SCALED_WIDTH: self._scaled_width,
+            KEY_SCALED_HEIGHT: self._scaled_height,
             KEY_SIZE: self._size,
         })
         return result
@@ -137,6 +141,11 @@ class FileObservable(Observable):
             self._sha256_hash = value[KEY_SHA256_HASH]
         if KEY_MIME_TYPE in value:
             self._mime_type = value[KEY_MIME_TYPE]
+        # alerts serialized before these keys existed simply keep the None set in __init__
+        if KEY_SCALED_WIDTH in value:
+            self._scaled_width = value[KEY_SCALED_WIDTH]
+        if KEY_SCALED_HEIGHT in value:
+            self._scaled_height = value[KEY_SCALED_HEIGHT]
         if KEY_SIZE in value:
             self._size = value[KEY_SIZE]
 
@@ -252,6 +261,14 @@ class FileObservable(Observable):
         if self._mime_type:
             return self._mime_type
 
+        # FileTypeAnalysis ran the same `file` command during analysis and stored the
+        # answer in its own details. Alerts created before this observable started
+        # carrying the value can read it from there rather than have the alert page fork
+        # `file` once per file observable, on every page load.
+        self._mime_type = self._mime_type_from_file_type_analysis()
+        if self._mime_type:
+            return self._mime_type
+
         p = Popen(['file', '-b', '--mime-type', '-L', self.path], stdout=PIPE, stderr=PIPE)
         stdout, stderr = p.communicate()
 
@@ -260,6 +277,26 @@ class FileObservable(Observable):
 
         self._mime_type = stdout.decode(errors='ignore').strip()
         return self._mime_type
+
+    @mime_type.setter
+    def mime_type(self, value: Optional[str]):
+        """Set by FileTypeAnalyzer, which computes it anyway, so that it is serialized
+        with the alert instead of being recomputed by every reader."""
+        self._mime_type = value
+
+    def _mime_type_from_file_type_analysis(self) -> Optional[str]:
+        """Returns the mime type recorded by this observable's FileTypeAnalysis, or None."""
+        # local import: saq.modules.file_analysis.file_type imports FileObservable
+        from saq.modules.file_analysis.file_type import FileTypeAnalysis
+
+        try:
+            analysis = self.get_and_load_analysis(FileTypeAnalysis)
+        except Exception as e:
+            logging.debug("unable to load FileTypeAnalysis for %s: %s", self.file_path, e)
+            return None
+
+        # get_analysis returns False when the module ran but produced nothing
+        return analysis.mime_type if analysis else None
 
     @property
     def path(self) -> str:
