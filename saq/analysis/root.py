@@ -1,10 +1,11 @@
 from datetime import datetime
 import gc
+import json
 import logging
 import os
 import time
 import traceback
-from typing import Callable, Optional, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 from uuid import uuid4
 
 from saq.analysis.analysis import Analysis
@@ -15,11 +16,15 @@ from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
-from saq.analysis.serialize.root_serializer import RootAnalysisSerializer
+from saq.analysis.serialize.observable_serializer import KEY_TYPE as KEY_OBSERVABLE_TYPE
+from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE, RootAnalysisSerializer
 from saq.constants import F_FILE, QUEUE_DEFAULT
 from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.util import parse_event_time
 from saq.util.time import local_time
+
+if TYPE_CHECKING:
+    from saq.observables.file import FileObservable
 
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
@@ -926,6 +931,45 @@ def load_root(dir: str) -> RootAnalysis:
     root.load()
     root.load_details()
     return root
+
+def load_file_observable(storage_dir: str, observable_uuid: str) -> Optional["FileObservable"]:
+    """Returns a single detached FileObservable from a saved RootAnalysis, or None.
+
+    load_root() rehydrates every observable and analysis in the alert, which on a large
+    one costs hundreds of milliseconds -- wasted work for a caller that only needs one
+    file's location on disk (see app/analysis/views/image.py, which the alert page hits
+    once per image it renders).
+
+    The returned observable is detached: it has a file manager, so path/exists/mime_type
+    work, but it is not attached to a RootAnalysis and its analysis tree is not built.
+    Anything that needs to walk analyses must use load_root() instead.
+
+    Returns None if the alert has no readable JSON, or the uuid is not a file observable
+    in it.
+    """
+    # local import: saq.observables.file imports from saq.analysis, so a module-level
+    # import here is circular (same reason as analysis_tree_manager.py)
+    from saq.observables.file import FileObservable
+
+    file_manager = create_file_manager(storage_dir)
+
+    try:
+        with open(file_manager.json_path, 'r') as fp:
+            parsed_json = json.load(fp)
+    except (OSError, ValueError) as e:
+        logging.warning("unable to read %s: %s", file_manager.json_path, e)
+        return None
+
+    observable_json = (parsed_json.get(KEY_OBSERVABLE_STORE) or {}).get(observable_uuid)
+    if not observable_json:
+        return None
+
+    if observable_json.get(KEY_OBSERVABLE_TYPE) != F_FILE:
+        return None
+
+    observable = FileObservable.from_json(observable_json)
+    observable.inject_file_manager(file_manager)
+    return observable
 
 def _get_failed_analysis_key(observable_type, observable_value):
     """Utility function that returns the key used to look up if analysis failed or not."""
