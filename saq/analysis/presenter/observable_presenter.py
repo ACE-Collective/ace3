@@ -24,11 +24,13 @@ def register_observable_presenter(
 
 def create_observable_presenter(observable):
     """Factory function to create an appropriate presenter for an Observable object."""
-    observable_class = type(observable)
-    presenter_class = _OBSERVABLE_PRESENTER_REGISTRY.get(
-        observable_class, ObservablePresenter
-    )
-    return presenter_class(observable)
+    # walk the MRO so subclasses (e.g. EmailFirstHopIPObservable -> IPObservable)
+    # inherit their parent's registered presenter instead of falling back to the default
+    for observable_class in type(observable).__mro__:
+        presenter_class = _OBSERVABLE_PRESENTER_REGISTRY.get(observable_class)
+        if presenter_class is not None:
+            return presenter_class(observable)
+    return ObservablePresenter(observable)
 
 
 # registry for custom observable actions
