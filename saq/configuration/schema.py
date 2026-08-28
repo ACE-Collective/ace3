@@ -1,9 +1,9 @@
-import importlib
 import logging
 import sys
 from typing import TYPE_CHECKING, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
 
 if TYPE_CHECKING:
@@ -679,8 +679,8 @@ class ACEConfig(BaseModel):
         self.__raw: Optional["YAMLConfig"] = None
         self.__integrations: Optional[dict[str, IntegrationConfig]] = None
         self.__databases: Optional[dict[str, DatabaseConfig]] = None
-        self.__services: Optional[dict[str, ServiceConfig]] = None
-        self.__analysis_modules: Optional[dict[str, "AnalysisModuleConfig"]] = None
+        self.__services: Optional[LazyConfigRegistry[ServiceConfig]] = None
+        self.__analysis_modules: Optional[LazyConfigRegistry["AnalysisModuleConfig"]] = None
         self.__analysis_module_groups: Optional[dict[str, "AnalysisModuleGroupConfig"]] = None
         self.__analysis_modes: Optional[dict[str, AnalysisModeConfig]] = None
         self.__collection_groups: Optional[dict[str, CollectionGroupConfig]] = None
@@ -693,8 +693,11 @@ class ACEConfig(BaseModel):
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
-        self.__observable_exports: Optional[dict[str, "ObservableExportConfig"]] = None
-        self.__module_config_by_python_module: dict[tuple, "AnalysisModuleConfig"] = {}
+        self.__observable_exports: Optional[LazyConfigRegistry["ObservableExportConfig"]] = None
+        # (python_module, instance) -> analysis module config *name*; storing the name rather
+        # than the config object keeps this in step with add_analysis_module_config() and
+        # avoids forcing resolution of every module just to build the index
+        self.__module_config_by_python_module: dict[tuple[str, Optional[str]], str] = {}
 
     def resolve_all_values(self):
         self.__raw.resolve_all_values()
@@ -803,36 +806,29 @@ class ACEConfig(BaseModel):
 
     @property
     def services(self) -> list[ServiceConfig]:
+        # NOTE: this forces resolution of every service config, which imports every
+        # service module. Prefer get_service_config() for a single service.
         if self.__services is None:
             self._raise_raw_data_error()
 
         return self.__services.values()
 
     def add_service_config(self, name: str, service_config: ServiceConfig):
-        self.__services[name] = service_config
+        if self.__services is None:
+            self._raise_raw_data_error()
+
+        self.__services.add_resolved(name, service_config)
 
     def load_service_configs(self):
-        self.__services = {}
+        self.__services = LazyConfigRegistry(ServiceConfig, "service config")
 
         for key, value in self.raw._data.items():
             if not key.startswith("service_"):
                 continue
 
-            try:
-                service_config = ServiceConfig.model_validate(value)
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate service config for {key}\n")
-                raise e
-
-            # load the service class so we can figure out what config class to use
-            module = importlib.import_module(service_config.python_module)
-            class_definition = getattr(module, service_config.python_class)
-
-            try:
-                self.add_service_config(service_config.name, class_definition.get_config_class().model_validate(value))
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate service config for {key}\n")
-                raise e
+            # the service class (and therefore the config class it declares) is not
+            # loaded here -- see saq.configuration.lazy_registry
+            self.__services.add_raw(key, value)
 
     def get_service_config(self, name: str) -> ServiceConfig:
         if self.__services is None:
@@ -841,7 +837,7 @@ class ACEConfig(BaseModel):
         if name not in self.__services:
             raise ValueError(f"service config for {name} not found")
 
-        return self.__services[name]
+        return self.__services.get(name)
 
     #
     # analysis modules
@@ -849,42 +845,38 @@ class ACEConfig(BaseModel):
 
     @property
     def analysis_modules(self) -> list["AnalysisModuleConfig"]:
+        # NOTE: this forces resolution of every analysis module config, which imports
+        # every analysis module. Prefer get_analysis_module_config() for a single module.
         if self.__analysis_modules is None:
             self._raise_raw_data_error()
 
         return self.__analysis_modules.values()
 
     def add_analysis_module_config(self, name: str, analysis_module_config: "AnalysisModuleConfig"):
-        self.__analysis_modules[name] = analysis_module_config
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
+
+        self.__analysis_modules.add_resolved(name, analysis_module_config)
+        lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
+        self.__module_config_by_python_module[lookup_key] = name
 
     def load_analysis_module_configs(self):
         from saq.modules.config import AnalysisModuleConfig
-        self.__analysis_modules = {}
+        self.__analysis_modules = LazyConfigRegistry(AnalysisModuleConfig, "analysis module config")
         self.__module_config_by_python_module = {}
 
         for key, value in self.raw._data.items():
             if not key.startswith("analysis_module_"):
                 continue
 
-            try:
-                analysis_module_config = AnalysisModuleConfig.model_validate(value)
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate analysis module config for {key}\n")
-                raise e
+            # the analysis module class (and therefore the config class it declares) is
+            # not loaded here -- see saq.configuration.lazy_registry
+            analysis_module_config = self.__analysis_modules.add_raw(key, value)
 
-            # load the analysis module class so we can figure out what config class to use
-            module = importlib.import_module(analysis_module_config.python_module)
-            class_definition = getattr(module, analysis_module_config.python_class)
-
-            try:
-                final_config = class_definition.get_config_class().model_validate(value)
-                self.add_analysis_module_config(analysis_module_config.name, final_config)
-                # build lookup for module_path -> config resolution
-                lookup_key = (final_config.python_module, final_config.instance)
-                self.__module_config_by_python_module[lookup_key] = final_config
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate analysis module config for {key}\n")
-                raise e
+            # build lookup for module_path -> config resolution. both fields are on the
+            # base model so this does not require the plugin subclass
+            lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
+            self.__module_config_by_python_module[lookup_key] = analysis_module_config.name
 
     def get_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
         if self.__analysis_modules is None:
@@ -893,7 +885,7 @@ class ACEConfig(BaseModel):
         if name not in self.__analysis_modules:
             raise ValueError(f"analysis module config for {name} not found")
 
-        return self.__analysis_modules[name]
+        return self.__analysis_modules.get(name)
 
     def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
         """Look up an analysis module config by a module_path string (e.g. 'saq.modules.x:AnalysisClass:instance')."""
@@ -902,7 +894,12 @@ class ACEConfig(BaseModel):
             module_name, _class_name, instance = SPLIT_MODULE_PATH(module_path)
         except ValueError:
             return None
-        return self.__module_config_by_python_module.get((module_name, instance))
+
+        name = self.__module_config_by_python_module.get((module_name, instance))
+        if name is None:
+            return None
+
+        return self.get_analysis_module_config(name)
 
     # 
     # analysis modes
@@ -1350,6 +1347,8 @@ class ACEConfig(BaseModel):
 
     @property
     def observable_exports(self) -> list["ObservableExportConfig"]:
+        # NOTE: this forces resolution of every observable export config, which imports
+        # every export module. Prefer get_observable_export_config() for a single export.
         if self.__observable_exports is None:
             self._raise_raw_data_error()
 
@@ -1357,31 +1356,21 @@ class ACEConfig(BaseModel):
 
     def load_observable_export_configs(self):
         from saq.observables.export.config import ObservableExportConfig
-        self.__observable_exports = {}
+        self.__observable_exports = LazyConfigRegistry(ObservableExportConfig, "observable export config")
 
         for key, value in self.raw._data.items():
             if not key.startswith("observable_export_"):
                 continue
 
-            try:
-                export_config = ObservableExportConfig.model_validate(value)
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate observable export config for {key}\n")
-                raise e
-
-            # load the export class so we can figure out what config class to use
-            module = importlib.import_module(export_config.python_module)
-            class_definition = getattr(module, export_config.python_class)
-
-            try:
-                self.add_observable_export_config(
-                    export_config.name, class_definition.get_config_class().model_validate(value))
-            except Exception as e:
-                sys.stderr.write(f"CONFIG ERROR: failed to validate observable export config for {key}\n")
-                raise e
+            # the export class (and therefore the config class it declares) is not
+            # loaded here -- see saq.configuration.lazy_registry
+            self.__observable_exports.add_raw(key, value)
 
     def add_observable_export_config(self, name: str, export_config: "ObservableExportConfig"):
-        self.__observable_exports[name] = export_config
+        if self.__observable_exports is None:
+            self._raise_raw_data_error()
+
+        self.__observable_exports.add_resolved(name, export_config)
 
     def get_observable_export_config(self, name: str) -> "ObservableExportConfig":
         if self.__observable_exports is None:
@@ -1390,4 +1379,4 @@ class ACEConfig(BaseModel):
         if name not in self.__observable_exports:
             raise ValueError(f"observable export config for {name} not found")
 
-        return self.__observable_exports[name]
+        return self.__observable_exports.get(name)
