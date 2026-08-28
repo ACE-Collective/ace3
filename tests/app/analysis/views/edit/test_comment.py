@@ -2,9 +2,10 @@ import logging
 from flask import url_for
 import pytest
 
-from saq.database.model import Comment
+from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
+from tests.saq.helpers import insert_alert
 
 
 @pytest.mark.integration
@@ -237,3 +238,31 @@ def test_delete_comment_wrong_user(web_client, analyst, other_user):
 
     db.delete(comment)  # Cleanup
     db.commit()
+
+
+@pytest.mark.integration
+def test_comment_add_and_delete_rotate_alert_version(web_client):
+    """Adding and deleting a comment each rotate the alert's version token."""
+    alert = insert_alert()
+    before = alert.version
+
+    def db_version():
+        return get_db().query(Alert.version).filter(Alert.uuid == alert.uuid).scalar()
+
+    response = web_client.post(url_for("analysis.add_comment"), data={
+        "comment": "versioned comment",
+        "uuids": alert.uuid,
+        "redirect": "index"
+    })
+    assert response.status_code == 302
+    after_add = db_version()
+    assert after_add != before
+
+    comment = get_db().query(Comment).filter(Comment.uuid == alert.uuid).first()
+    response = web_client.post(url_for("analysis.delete_comment"), data={
+        "comment_id": comment.comment_id,
+        "direct": alert.uuid,
+    })
+    assert response.status_code == 302
+    assert get_db().query(Comment).filter(Comment.comment_id == comment.comment_id).first() is None
+    assert db_version() != after_add

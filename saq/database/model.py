@@ -96,6 +96,13 @@ def hash_password(plain_password: str) -> str:
     return bcrypt.hashpw(plain_password.encode(), bcrypt.gensalt()).decode()
 
 
+def new_alert_version() -> str:
+    """Returns a fresh value for alerts.version -- an opaque token that is rotated every
+    time anything about an alert changes (analysis tree, comments, disposition, ownership,
+    event membership). API clients compare it between fetches instead of diffing the alert."""
+    return str(uuid.uuid4())
+
+
 class Alert(Base):
 
     @classmethod
@@ -175,6 +182,15 @@ class Alert(Base):
         String(36),
         unique=True,
         nullable=False)
+
+    # rotated on every change to the alert; see new_alert_version() and
+    # saq.database.util.alert.touch_alerts()
+    # No server default: MySQL rejects DEFAULT (UUID()) as replication-unsafe DDL under
+    # binlog + GTID, so a raw INSERT INTO alerts has to supply its own version.
+    version: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        default=new_alert_version)
 
     location: Mapped[str] = mapped_column(
         String(1024),
@@ -475,6 +491,7 @@ class Alert(Base):
 
         result = self.root_analysis.archive(*args, **kwargs)
         self.archived = True
+        self.version = new_alert_version()
         return result
 
 
@@ -518,6 +535,7 @@ class Alert(Base):
     # we also save these database properties to the JSON data
 
     KEY_DATABASE_ID = 'database_id'
+    KEY_VERSION = 'version'
     KEY_PRIORITY = 'priority'
     KEY_DISPOSITION = 'disposition'
     KEY_DISPOSITION_USER_ID = 'disposition_user_id'
@@ -535,9 +553,11 @@ class Alert(Base):
 
     @property
     def json(self):
-        result = RootAnalysis.json.fget(self)
+        """The full alert as JSON: the RootAnalysis tree (loaded on demand) plus this row's database state."""
+        result = self.root_analysis.json
         result.update({
             Alert.KEY_DATABASE_ID: self.id,
+            Alert.KEY_VERSION: self.version,
             Alert.KEY_PRIORITY: self.priority,
             Alert.KEY_DISPOSITION: self.disposition,
             Alert.KEY_DISPOSITION_USER_ID: self.disposition_user_id,
@@ -635,6 +655,10 @@ class Alert(Base):
         icon_configuration_dict = (self.root_analysis.extensions or {}).get(KEY_ICON_CONFIGURATION)
         icon_configuration = IconConfiguration.model_validate(icon_configuration_dict) if icon_configuration_dict else None
         self.apply_icon_configuration(icon_configuration)
+
+        # anything that reaches sync() may have changed the tree, so rotate the version
+        # unconditionally -- a spurious rotation only costs a client one re-fetch
+        self.version = new_alert_version()
 
         # save the alert to the database
         session = Session.object_session(self)
@@ -854,6 +878,7 @@ class Event(Base):
             'id': self.id,
             'uuid': self.uuid,
             'alerts': self.alerts,
+            'alert_versions': self.alert_versions,
             'campaign': self.campaign.name if self.campaign else None,
             'comment': self.comment,
             'companies': self.company_names,
@@ -882,6 +907,12 @@ class Event(Base):
     def alerts(self) -> list[str]:
         """The UUIDs of every alert mapped to this event."""
         return [mapping.alert.uuid for mapping in self.alert_mappings]
+
+    @property
+    def alert_versions(self) -> dict[str, str]:
+        """alert uuid -> Alert.version for every alert mapped to this event, so a client that
+        fetched the event can tell whether any of its alerts changed since."""
+        return {mapping.alert.uuid: mapping.alert.version for mapping in self.alert_mappings}
 
     @property
     def alert_objects(self) -> list["Alert"]:

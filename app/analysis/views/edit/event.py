@@ -1,15 +1,27 @@
-from datetime import datetime
 import os
+from datetime import datetime
 from uuid import uuid4
+
 from flask import flash, redirect, render_template, request, session, url_for
 from flask_login import current_user
+
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import CLOSED_EVENT_LIMIT
-from saq.database.model import Event, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventType, EventVector
+from saq.database.model import (
+    Event,
+    EventPreventionTool,
+    EventRemediation,
+    EventRiskLevel,
+    EventStatus,
+    EventType,
+    EventVector,
+)
 from saq.database.pool import get_db, get_db_connection
+from saq.database.util.alert import touch_alerts
+
 
 @analysis.route('/add_to_event', methods=['POST'])
 @require_permission('event', 'write')
@@ -107,6 +119,7 @@ def add_to_event():
             cursor.execute("""INSERT IGNORE INTO event_mapping (event_id, alert_id) VALUES (%s, %s)""", (event_id, alert_id))
             cursor.execute("""INSERT IGNORE INTO company_mapping (event_id, company_id) VALUES (%s, %s)""", (event_id, company_id))
 
+        touch_alerts(alert_uuids, cursor=cursor)
         dbm.commit()
 
         # After the alerts are associated with the event, set the alert disposition based on what was chosen on the

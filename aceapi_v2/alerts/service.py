@@ -12,12 +12,13 @@ from datetime import datetime
 from fastapi import HTTPException
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
-from saq.database.model import Comment, ObservableComment, ObservableMapping
+from saq.database.model import Alert, Comment, ObservableComment, ObservableMapping
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
+from saq.json_encoding import _JSONEncoder
 from saq.util import local_time
 from saq.util.uuid import is_uuid
 
@@ -71,6 +72,40 @@ def _alert_storage_path(alert: GUIAlert) -> str:
 def _resolve_alert_storage_path(alert_uuid: str) -> str:
     """Look up an alert by UUID and return the absolute path to its storage directory."""
     return _alert_storage_path(_resolve_alert(alert_uuid))
+
+
+def get_alert_version(alert_uuid: str) -> str:
+    """Return the alert's current version token without loading the alert.
+
+    This is the cheap path a polling client hits: one indexed read on alerts.uuid.
+    """
+    if not is_uuid(alert_uuid):
+        raise HTTPException(status_code=400, detail="invalid alert UUID")
+
+    version = get_db().query(Alert.version).filter(Alert.uuid == alert_uuid).scalar()
+    if version is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+
+    return version
+
+
+def get_alert_json(alert_uuid: str) -> dict:
+    """Load the alert from disk and return its full JSON (analysis tree plus database state,
+    including the version token under Alert.KEY_VERSION)."""
+    alert = _resolve_alert(alert_uuid)
+    alert.load()
+    return alert.json
+
+
+def get_alert(alert_uuid: str) -> tuple[str, str]:
+    """Return (body, version) for GET /alerts/{uuid}.
+
+    The body is ``{"result": <alert JSON>}`` encoded with the legacy encoder, which knows
+    how to render the datetimes, bytes and other objects found in an analysis tree.
+    """
+    alert_json = get_alert_json(alert_uuid)
+    body = json.dumps({"result": alert_json}, cls=_JSONEncoder, sort_keys=True)
+    return body, alert_json[Alert.KEY_VERSION]
 
 
 def _serialize_user(user) -> dict:
