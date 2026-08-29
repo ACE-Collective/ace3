@@ -76,8 +76,10 @@ class WorkloadManagerInterface(ABC):
         pass
 
     @abstractmethod
-    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds):
-        """Add a delayed analysis request."""
+    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds) -> bool:
+        """Add a delayed analysis request.
+
+        Returns True if the request was recorded, False if it was not."""
         pass
 
     @abstractmethod

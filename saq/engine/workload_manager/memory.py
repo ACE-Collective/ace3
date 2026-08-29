@@ -288,8 +288,10 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
         except Exception as e:
             logging.error(f"unable to clear work target {target}: {e}")
 
-    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds):
-        """Add a delayed analysis request."""
+    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds) -> bool:
+        """Add a delayed analysis request.
+
+        Returns True if the request was recorded, False if it was not."""
         # Calculate next analysis time
         next_analysis = datetime.now() + timedelta(hours=hours, minutes=minutes, seconds=seconds)
         
@@ -310,7 +312,7 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
         self._delayed_analysis_items[request_id] = request
         
         logging.info(f"added delayed analysis request for {root.uuid} observable {observable.uuid} module {analysis_module} at {next_analysis}")
-        return request
+        return True
 
     def clear_delayed_analysis_requests(self, root):
         """Clear all delayed analysis requests for the given RootAnalysis object."""

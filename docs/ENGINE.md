@@ -797,16 +797,19 @@ calls the delayed-analysis interface →
 2. checks the *timeout* — `root.initialize_delayed_analysis_start_time(observable,
    module)` records (once, keyed `<module name>:<observable uuid>`) when delaying
    started; if `start + timeout` has passed, it returns `False`;
-3. otherwise inserts the `delayed_analysis` row and returns `True`.
+3. otherwise inserts the `delayed_analysis` row: `True` if the row was written,
+   `False` if the insert failed (§19.4) — a delay nothing recorded is refused
+   rather than reported as scheduled.
 
 Back in `AnalysisModule.delay_analysis`:
 
 - returned `True` → `analysis.completed = False`, `analysis.delayed = True`,
   return `INCOMPLETE`;
-- returned `False` (deadline expired) → set the transient
-  `analysis.delay_analysis_timed_out = True`, `analysis.completed = True`,
-  `analysis.delayed = False`, return `COMPLETED`. The analysis is closed out
-  empty and the executor's cache-write gate refuses to cache it.
+- returned `False` (deadline expired, or the request could not be recorded) →
+  set the transient `analysis.delay_analysis_timed_out = True`,
+  `analysis.completed = True`, `analysis.delayed = False`, return `COMPLETED`.
+  The analysis is closed out empty and the executor's cache-write gate refuses
+  to cache it.
 
 `root.delayed` is *computed*: true if any analysis anywhere in the tree has
 `delayed` set. Its setter is a deliberate no-op (the serialized value is
@@ -1436,11 +1439,11 @@ guard on the trap above — that `SINGLE_SHOT` still polls once and processes
 exactly one work item with two queued, and that `UNTIL_COMPLETE` drains both
 without ever idling. Five of the eight failed before the fix.
 
-### 19.4 A failed delayed-analysis insert still marks the analysis delayed
+### 19.4 A failed delayed-analysis insert still marked the analysis delayed — **fixed**
 
-`db_add_delayed_analysis_request` returns `False` when the INSERT fails, `True`
-on `IntegrityError`, and **`None` on success** (it falls off the end after the
-commit). `Worker.delay_analysis` does:
+*Original observation.* `db_add_delayed_analysis_request` returned `False` when
+the INSERT failed, `True` on `IntegrityError`, and **`None` on success** (it fell
+off the end after the commit). `Worker.delay_analysis` did:
 
 ```python
 if self.workload_manager.add_delayed_analysis_request(...):
@@ -1448,17 +1451,69 @@ if self.workload_manager.add_delayed_analysis_request(...):
 return True                     # unconditional
 ```
 
-So on the success path the worker's own assignment is skipped (harmless —
+So on the success path the worker's own assignment was skipped (harmless —
 `AnalysisModule.delay_analysis` sets it), but on the *failure* path
-`Worker.delay_analysis` still returns `True`, and the module sets
-`analysis.delayed = True` with no database row behind it. The analysis is then
-permanently delayed: `root.delayed` is true forever, so final analysis and post
-analysis never run for that root, and nothing will ever resume it.
+`Worker.delay_analysis` still returned `True`, and the module set
+`analysis.delayed = True` with no database row behind it. The analysis was then
+permanently delayed: `root.delayed` true forever, so final analysis and post
+analysis never ran for that root, and nothing would ever resume it.
 
-Relatedly, the `IntegrityError` branch that logs "already waiting for delayed
-analysis" is unreachable — `delayed_analysis` has no unique constraint on
-`(uuid, observable_uuid, analysis_module)`, only `idx_node_delayed_until` and an
-index on `uuid`. Duplicate delayed requests for the same target are possible.
+*Fix.* Both halves of the contract are now honest.
+`add_delayed_analysis_request` (`saq/database/util/delayed_analysis.py`) returns
+`True` after the commit, so "recorded" and "not recorded" are distinguishable at
+all. `Worker.delay_analysis` inverted its check: a falsy answer is logged at
+ERROR and returns `False`; only a recorded request sets `analysis.delayed` and
+returns `True`.
+
+Refusing rather than raising is what the module side already knows how to
+handle — it is the same answer the deadline-expiry branch just above gives.
+`AnalysisModule.delay_analysis` sets the transient
+`analysis.delay_analysis_timed_out`, closes the analysis out `COMPLETED`, and the
+executor's cache-write gate (`executor.py`) keeps that empty result out of the
+analysis cache (§10.1, §11). The attribute keeps its name: it is already the
+general "the engine refused the delay" marker, and renaming it would churn the
+cache-attribution `skip_reason` for no behavioral gain. The root loses one
+module's analysis instead of hanging.
+
+The `-> bool` annotation and the "True = recorded" docstring were pushed through
+`WorkloadManagerInterface` / `WorkloadManagerAdapter` / `DatabaseWorkloadManager`
+/ `MemoryWorkloadManager`; the memory implementation returned the
+`DelayedAnalysisRequest` object it had just stored (truthy, so it worked by
+accident) and now returns `True`.
+
+*The `IntegrityError` branch stays, and the unique constraint is deliberately
+not added.* The branch is still unreachable — `delayed_analysis` has only
+`idx_node_delayed_until` and an index on `uuid`, so duplicate requests for the
+same `(uuid, observable_uuid, analysis_module)` remain possible — but adding
+that unique index would reintroduce this very bug. A module that delays again
+after being resumed inserts the new row *during* `orchestrate_analysis`, while
+the row for the request being resumed is only deleted afterwards, by
+`clear_work_target()` in the `finally` of `Worker.execute`. Every second delay
+would therefore collide, take the `IntegrityError` branch, be told `True`, and
+then watch its only row be deleted — permanently delayed again. The branch is
+kept because `True` is the correct answer for "a row for this target already
+exists", should a constraint ever be added deliberately.
+
+*Regression guard.* Three files, five of whose cases failed before the fix:
+
+- `tests/saq/database/util/test_delayed_analysis.py` — four unit tests over
+  `add_delayed_analysis_request` with the connection mocked: `True` on success
+  (returned `None` before), `False` when the insert raises, `True` on
+  `IntegrityError`, and the row parameters.
+- `tests/saq/engine/test_worker_delay_analysis.py` — six unit tests over
+  `Worker.delay_analysis` with a mocked workload manager: a recorded request
+  marks the analysis delayed, a `False` or `None` answer refuses the delay and
+  leaves `analysis.delayed` unset (both returned `True` before), an expired
+  deadline refuses without attempting an insert, and — the consequence —
+  a real `AnalysisModule` behind `DelayedAnalysisAdapter` closes the analysis
+  out `COMPLETED` with `root.delayed` false instead of `INCOMPLETE`.
+- `tests/saq/engine/test_functionality.py::test_delayed_analysis_insert_failure`
+  — the end-to-end path: `execute_with_retry` is patched to raise for
+  `INSERT INTO delayed_analysis` only, so the real helper takes its real failure
+  branch. The root must finish with the analysis completed and not delayed, no
+  `delayed_analysis` rows, and `execute_post_analysis` executed. Before the fix
+  the engine logged "not entering final analysis mode (delayed analysis
+  waiting)" and post analysis never ran.
 
 ### 19.5 `EngineAdapter` and `EngineInterface` are stale
 

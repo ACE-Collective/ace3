@@ -770,6 +770,59 @@ def test_delayed_analysis_timeout():
     # post analysis should have executed
     assert wait_for_log_count('execute_post_analysis called', 1, 5)
 
+# a delayed analysis request that could not be recorded must not leave the
+# analysis (and therefore the root) delayed forever -- see docs/ENGINE.md 19.4
+@pytest.mark.integration
+def test_delayed_analysis_insert_failure(monkeypatch):
+    from saq.database.util import delayed_analysis as delayed_analysis_util
+
+    original_execute_with_retry = delayed_analysis_util.execute_with_retry
+
+    def failing_execute_with_retry(db, c, sql, *args, **kwargs):
+        # fail only the delayed analysis insert so that everything else
+        # (clearing requests, the workload, locks) keeps working
+        if 'INSERT INTO delayed_analysis' in sql:
+            raise RuntimeError("simulated delayed_analysis insert failure")
+
+        return original_execute_with_retry(db, c, sql, *args, **kwargs)
+
+    monkeypatch.setattr(delayed_analysis_util, 'execute_with_retry', failing_execute_with_retry)
+
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=get_storage_dir(root_uuid))
+    root.initialize_storage()
+    # delay for 0 seconds with a 10 second timeout: the delay is well within the
+    # deadline, so the only reason it can fail is the insert
+    test_observable = root.add_observable_by_spec(F_TEST, '0:00|0:10')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_delayed_analysis', 'test_groups')
+    engine.configuration_manager.enable_module('test_post_analysis', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    # the insert failed so there is no delayed analysis request to resume
+    assert log_count('unable to insert delayed analysis') == 1
+    get_db().close()
+    assert get_db().query(DelayedAnalysis.id).count() == 0
+
+    # the analysis is closed out instead of waiting on a request that does not exist
+    root = load_root(get_storage_dir(root.uuid))
+    analysis = root.get_observable(test_observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
+    assert isinstance(analysis, DelayedAnalysisTestAnalysis)
+    assert analysis.load_details()
+    assert analysis.initial_request
+    # continue_analysis never executed because the analysis was never delayed
+    assert not analysis.delayed_request
+    assert analysis.request_count == 1
+    assert analysis.completed
+    assert not analysis.delayed
+    assert not root.delayed
+
+    # and the root was not stuck: post analysis executed
+    assert wait_for_log_count('execute_post_analysis called', 1, 5)
+
 @pytest.mark.integration
 def test_delayed_analysis_recovery():
 

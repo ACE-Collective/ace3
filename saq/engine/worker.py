@@ -132,7 +132,13 @@ class Worker:
         timeout_hours=None,
         timeout_minutes=None,
         timeout_seconds=None,
-    ):
+    ) -> bool:
+        """Requests that the analysis of the given observable by the given module
+        continue later.
+
+        Returns True if the request was accepted (the analysis is now delayed) and
+        False if it was refused, either because the delay deadline has passed or
+        because the request could not be recorded."""
         # assert hours or minutes or seconds
         assert isinstance(root, RootAnalysis)
         assert isinstance(observable, Observable)
@@ -151,7 +157,7 @@ class Worker:
             return False
 
         # add the request to the workload
-        if self.workload_manager.add_delayed_analysis_request(
+        if not self.workload_manager.add_delayed_analysis_request(
             root,
             observable,
             analysis_module,
@@ -159,8 +165,14 @@ class Worker:
             minutes,
             seconds,
         ):
-            analysis.delayed = True
+            # nothing recorded the request, so nothing will ever resume this analysis
+            # refuse the delay so that the module closes the analysis out instead of
+            # leaving it (and the root) delayed forever
+            logging.error("unable to add delayed analysis request for {} by {}".format(
+                observable, analysis_module))
+            return False
 
+        analysis.delayed = True
         return True
 
     def _create_lock_manager(self, lock_manager_type: LockManagerType):
