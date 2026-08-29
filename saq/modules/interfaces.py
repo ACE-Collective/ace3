@@ -120,16 +120,16 @@ class AnalysisModuleInterface(Protocol):
     def semaphore_name(self) -> Optional[str]:
         ...
 
-    def analyze(self, obj, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
-        """Analyze the given object.
+    def analyze(self, observable: Observable, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
+        """Analyze the given observable.
         Return COMPLETED if analysis executed successfully.
         Return INCOMPLETE if analysis should not occur for this target.
         """
         ...
     
     # Analysis execution methods
-    def execute_analysis(self, observable) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects. 
+    def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
+        """Called to analyze an Observable.
         Return COMPLETED if analysis executed successfully.
         Return INCOMPLETE if analysis should not occur for this target.
         """
@@ -139,8 +139,8 @@ class AnalysisModuleInterface(Protocol):
         """Called to continue analysis of an Observable object."""
         ...
     
-    def execute_final_analysis(self, analysis) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects after all other analysis has completed."""
+    def execute_final_analysis(self, observable: Observable) -> AnalysisExecutionResult:
+        """Called to analyze an Observable after all other analysis has completed."""
         ...
     
     def execute_pre_analysis(self) -> None:
@@ -156,15 +156,15 @@ class AnalysisModuleInterface(Protocol):
         ...
 
     # Control methods
-    def should_analyze(self, obj) -> bool:
+    def should_analyze(self, observable: Observable) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""
         ...
     
-    def accepts(self, obj) -> bool:
-        """Returns True if this module can analyze the given object."""
+    def accepts(self, observable: Observable) -> bool:
+        """Returns True if this module can analyze the given observable."""
         ...
 
-    def custom_requirement(self, obj) -> bool:
+    def custom_requirement(self, observable: Observable) -> bool:
         """Additional check evaluated by the engine as the final gate before the
         module runs. May raise WaitForAnalysisException to wait on another analysis."""
         ...

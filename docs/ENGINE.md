@@ -525,9 +525,9 @@ module that raises is recorded as `False` and never retried.
 
 - **Delayed request** → the stack contains exactly one `WorkTarget(observable,
   analysis_module)`. Anything else is a hard error.
-- **Otherwise** → push every `Analysis` and every `Observable` in the tree.
-  `WorkStack.append(Analysis)` is a deliberate no-op (`pass`), so in practice the
-  stack is "every observable currently in the tree", deduplicated by uuid.
+- **Otherwise** → push every `Observable` in the tree, deduplicated by uuid. An
+  `Observable` is the engine's only unit of analysis; `WorkStack.append` raises
+  `TypeError` on anything but a `WorkTarget` or an `Observable` (§19.13).
 
 Then it wires an event-driven feedback loop. Listeners are registered on the root,
 every existing analysis, and every existing observable:
@@ -554,7 +554,7 @@ while not context.cancel_analysis_flag:
             break                                   # truly done
         if not root.delayed:
             final_analysis_mode = True
-            for obj in root.all: work_stack.append(obj)   # one more pass
+            for o in root.all_observables: work_stack.append(o)   # one more pass
             continue
         break                                       # delayed work outstanding; stop here
 
@@ -636,9 +636,11 @@ Then the tail of `_execute_module_analysis`:
 
 - if the observable is now `whitelisted` → clear the buffer and cancel the entire
   analysis;
-- otherwise flush every `Analysis` in the buffer
-  (`analysis_tree_manager.flush_analysis_details` — writes `details` to its own
-  file and drops it from memory) and move the buffer onto the work stack;
+- otherwise `_drain_work_stack_buffer`: the buffer is deliberately mixed, so every
+  `Analysis` in it is flushed (`analysis_tree_manager.flush_analysis_details` —
+  writes `details` to its own file and drops it from memory) and *not* queued,
+  while every `Observable` moves onto the work stack. A non-empty buffer of any
+  kind — analysis-only included — reopens final analysis mode;
 - accumulate per-module wall time and invocation count into the context.
 
 ---
@@ -665,7 +667,7 @@ execution order — this ordering is the contract:
 `accepts()` (gate 4) is itself a long list, worth knowing because it is where
 most "why didn't my module run?" answers live:
 
-`requires_detection_path` → `valid_analysis_target_type` → `valid_observable_types`
+`requires_detection_path` → `valid_observable_types`
 (subtype-aware via `get_type_hierarchy()` unless `valid_observable_subtypes = False`)
 → `valid_queues` / `invalid_queues` → `invalid_alert_types` → `DIRECTIVE_EXCLUDE_ALL`
 → module-level `observable_exclusions` → observable-level exclusions →
@@ -1811,14 +1813,76 @@ The consequence is that `WorkerManager.check` can miss a hung module for one
 tick, and `_handle_failed_analysis` can miss a crash entirely. The directory is
 keyed on worker *name* only, so two engines sharing a data dir would collide.
 
-### 19.13 `WorkStack` cannot actually hold `Analysis`
+### 19.13 `WorkStack` could not actually hold `Analysis` — **fixed**
 
-`WorkStack.append` accepts `Analysis` and does nothing with it. The whole
-`WorkTarget.analysis` field is annotated "(not actually supported)", and
-`AnalysisModule.valid_analysis_target_type` plus the `isinstance(obj, Observable)`
-guards throughout `accepts()` are vestiges of a version of ACE that analyzed
-`Analysis` objects. Removing the dead branch would simplify `accepts()`
-substantially.
+*Original observation.* `WorkStack.append` accepts `Analysis` and does nothing
+with it. The whole `WorkTarget.analysis` field is annotated "(not actually
+supported)", and `AnalysisModule.valid_analysis_target_type` plus the
+`isinstance(obj, Observable)` guards throughout `accepts()` are vestiges of a
+version of ACE that analyzed `Analysis` objects. Removing the dead branch would
+simplify `accepts()` substantially.
+
+The original design intended the engine to analyze `Analysis` objects the same
+way it analyzes `Observable` objects. That was never implemented, but the
+scaffolding survived everywhere the design would have touched:
+
+- `WorkStack.append` had an `elif isinstance(item, Analysis): pass` branch, so an
+  `Analysis` handed to the stack disappeared without a log line.
+- `_initialize_work_stack` walked `root.all_analysis` and appended every one of
+  them into that branch — a full tree walk that queued nothing — and the
+  final-analysis re-push iterated the mixed `root.all` for the same reason.
+- `valid_analysis_target_type` defaulted to `Observable` and documented "return
+  `None` to disable the check", but nothing in the tree overrode it and it was
+  not a key in `AnalysisModuleConfig` or any YAML, so an operator could not set
+  it either. Since the engine's only two `accepts()` call sites pass
+  `work_item.observable`, the gate could never reject anything. The documented
+  escape hatch was also broken: with the check disabled, `accepts()` returned
+  **True** for an `Analysis` the engine can never act on, and raised
+  `AttributeError` on `obj.has_directive` as soon as the module set an
+  `automation_limit` — the cooldown and automation-limit gates sat *outside*
+  every `isinstance` guard.
+
+*Fix.* `Observable` is now the engine's only unit of analysis, stated rather
+than implied.
+
+- `WorkTarget` lost its `analysis` field (no caller ever set it; nothing but
+  `__str__` ever read it). `WorkStack.append` takes `WorkTarget | Observable` and
+  raises `TypeError` on anything else, so a future caller that means to queue an
+  `Analysis` gets an error instead of silence.
+- The two dead loops in `executor.py` are gone: `_initialize_work_stack` pushes
+  `root.all_observables`, and the final-analysis re-push does the same instead of
+  iterating `root.all`.
+- `valid_analysis_target_type` and its gate are deleted, along with all six
+  `isinstance(obj, Observable)` guards inside `accepts()` — the body is now a flat
+  sequence of gates at one indentation level rather than a method wrapped in a
+  type test, with no change to which observables it accepts.
+  `accepts`, `should_analyze`, `analyze` and `execute_final_analysis` take a
+  parameter named `observable` and typed `Observable` in `base_module.py`,
+  `interfaces.py` and `adapter.py`, and `analyze()`'s
+  `assert isinstance(obj, Analysis) or isinstance(obj, Observable)` is now just
+  `assert isinstance(observable, Observable)`. No runtime type check replaces the
+  gate — the signature carries it.
+
+One thing was deliberately kept: **`work_stack_buffer` is still mixed.** Event
+listeners push both `Analysis` and `Observable` objects into it, and the
+`Analysis` entries are load-bearing — the drain flushes their details to disk
+(`flush_analysis_details`) before the buffer is queued. Only the *queueing* of
+those entries was dead. That drain is now
+`AnalysisExecutor._drain_work_stack_buffer`, extracted from the tail of
+`_execute_module_analysis` so it can be tested without standing up an engine; it
+skips `Analysis` items explicitly rather than relying on `WorkStack.append` to
+swallow them, and keeps the existing semantics that a non-empty buffer of any
+kind — analysis-only included — reopens final analysis mode.
+
+*Regression guard.* `tests/saq/engine/test_work_stack.py` — eleven unit tests.
+Six failed before the fix: `append` rejecting an `Analysis` and an unknown type,
+`WorkTarget` no longer carrying an `analysis`, the two `_drain_work_stack_buffer`
+tests (flush-once with a duplicated analysis, and an analysis-only buffer still
+reopening final analysis mode), and a static AST scan of `saq/` asserting nothing
+declares `valid_analysis_target_type`. The two that *passed* before the fix are
+the proof the loops were dead: `_initialize_work_stack` and the final-analysis
+re-push already produced a stack of exactly `len(root.all_observables)` items
+from a tree containing four `Analysis` objects.
 
 ### 19.14 `ORDER BY RAND() ... LIMIT 128` on the workload query
 

@@ -687,10 +687,7 @@ class AnalysisExecutor:
                     )
                 )
         else:
-            # otherwise we analyze everything
-            for analysis in context.root.all_analysis:
-                context.work_stack.append(analysis)
-
+            # otherwise we analyze every observable in the tree
             for observable in context.root.all_observables:
                 context.work_stack.append(observable)
 
@@ -1849,26 +1846,52 @@ class AnalysisExecutor:
             work_stack_buffer.clear()
             context.cancel_analysis()
         else:
-            if work_stack_buffer:
-                # if an Analysis object was added to the work stack let's go ahead and flush it
-                flushed = set()
-                for item in work_stack_buffer:
-                    if isinstance(item, Analysis):
-                        if item in flushed:
-                            continue
+            self._drain_work_stack_buffer(
+                context, root, work_stack, work_stack_buffer
+            )
 
-                        logging.debug("flushing {}".format(item))
-                        root.analysis_tree_manager.flush_analysis_details(item)
-                        flushed.add(item)
+    def _drain_work_stack_buffer(
+        self,
+        context: AnalysisExecutionContext,
+        root: RootAnalysis,
+        work_stack: WorkStack,
+        work_stack_buffer: list,
+    ):
+        """Moves everything the last module call changed out of the buffer.
 
-                for buffer_item in work_stack_buffer:
-                    work_stack.append(buffer_item)
+        The buffer is deliberately mixed. Event listeners push both Analysis and
+        Observable objects into it: the Analysis entries are there so their
+        details can be flushed to disk, the Observable entries so they can be
+        analyzed again. Only observables go on the work stack.
 
-                work_stack_buffer.clear()
+        A non-empty buffer of any kind means the tree changed, so final analysis
+        mode reopens even if nothing was queued.
+        """
+        if not work_stack_buffer:
+            return
 
-                # if we were in final analysis mode and we added something to the work stack
-                # then we exit final analysis mode so that everything can get a chance to execute again
-                context.final_analysis_mode = False
+        # an Analysis in the buffer is not something to analyze -- it is something to flush
+        flushed = set()
+        for item in work_stack_buffer:
+            if isinstance(item, Analysis):
+                if item in flushed:
+                    continue
+
+                logging.debug("flushing {}".format(item))
+                root.analysis_tree_manager.flush_analysis_details(item)
+                flushed.add(item)
+
+        for buffer_item in work_stack_buffer:
+            if isinstance(buffer_item, Analysis):
+                continue
+
+            work_stack.append(buffer_item)
+
+        work_stack_buffer.clear()
+
+        # if we were in final analysis mode and we added something to the work stack
+        # then we exit final analysis mode so that everything can get a chance to execute again
+        context.final_analysis_mode = False
 
     def _execute_recursive_analysis(self, context: AnalysisExecutionContext):
         """Implements the recursive analysis logic of ACE."""
@@ -1918,8 +1941,8 @@ class AnalysisExecutor:
                         logging.info("entering final analysis for {}".format(context.root))
                         context.final_analysis_mode = True
                         # place everything back on the stack
-                        for obj in context.root.all:
-                            context.work_stack.append(obj)
+                        for observable in context.root.all_observables:
+                            context.work_stack.append(observable)
 
                         continue
 
