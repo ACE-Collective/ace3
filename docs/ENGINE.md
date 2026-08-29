@@ -271,13 +271,15 @@ process entry point:
    - past auto-refresh time → break (the manager forks a fresh worker, which
      re-imports every module — the point of the feature);
    - controlled-shutdown set *and* both queues empty → break;
-   - `get_next_work_target()`;
-     - got one → write the tracking file, `execute(work_item)`, clear tracking;
-       if `execute()` returned True the backoff resets (`idle_time = 0`) and the
-       loop polls again immediately — except in `SINGLE_SHOT`, which falls
-       through to the break below;
-     - got nothing → `idle_time = min(idle_time + 1, idle_timeout_max)` and wait
-       that long on the immediate-shutdown event;
+   - `get_next_work_target()`; if it returned a work item, write the tracking
+     file, `execute(work_item)`, clear tracking. Then, on `execute()`'s answer:
+     - True (a work item was processed) → the backoff resets (`idle_time = 0`)
+       and the loop polls again immediately — except in `SINGLE_SHOT`, which
+       falls through to the break below;
+     - False (nothing found, or a work item that could not be claimed —
+       `execute()` returns False and hands the claim back when the keepalive
+       cannot be started, §19.9) → `idle_time = min(idle_time + 1,
+       idle_timeout_max)` and wait that long on the immediate-shutdown event;
    - `SINGLE_SHOT` → break;
    - `finally: remove_all_sessions()` (SQLAlchemy session hygiene per iteration).
 
@@ -1675,14 +1677,69 @@ the integration cases, and the deleted-unalerted-root case).
 `test_functionality.py::test_cleanup_with_delayed_analysis` still pins the
 `"not cleaning up ... (found outstanding work)"` path.
 
-### 19.9 Keepalive failure leaks the claim
+### 19.9 Keepalive failure leaked the claim — **fixed**
 
-In `Worker.execute`, if `start_keepalive` fails the method returns *before* the
-`try`, so the `finally` that would call `clear_work_target()` never runs. The
-lock row and the workload row both survive. The item is then blocked until
-`lock_timeout_seconds` passes and the recovery path reclaims it. Rare (the lock
-was just acquired with the same `lock_uuid`, so the re-acquire should succeed),
-but the failure mode is a silent multi-minute stall.
+*Original observation.* In `Worker.execute`, if `start_keepalive` fails the
+method returns *before* the `try`, so the `finally` that would call
+`clear_work_target()` never runs. The lock row and the workload row both
+survive. The item is then blocked until `lock_timeout_seconds` passes and the
+recovery path reclaims it. Rare (the lock was just acquired with the same
+`lock_uuid`, so the re-acquire should succeed), but the failure mode is a silent
+multi-minute stall.
+
+*Fix.* The failure branch now gives the claim back before returning `False`:
+
+```python
+self.lock_manager.stop_keepalive()
+self.lock_manager.release_lock(work_item.uuid, ignore_lock_failure=True)
+```
+
+Deliberately `release_lock` and **not** `clear_work_target()`. The two rows are
+not symmetric here. The workload (or `delayed_analysis`) row *should* survive —
+the item was never analyzed, and deleting it would drop the work and orphan the
+root's storage directory. It is only the `locks` row that causes the stall,
+because `get_work_target` selects on `locks.uuid IS NULL` (§5.2): while it
+stands, no worker — including the one that just failed — can see the item.
+Releasing it alone makes the item selectable again on the very next poll, which
+is the outcome the original observation was asking for.
+
+The release is safe in the case the observation calls out as unlikely but
+possible, the lock genuinely having moved to another owner: `release_lock` is
+ownership-scoped (`DELETE FROM locks WHERE uuid = %s AND lock_uuid = %s`), so it
+deletes nothing rather than stealing someone else's claim.
+`ignore_lock_failure=True` keeps that no-op from logging a misleading warning.
+
+`stop_keepalive()` covers the second way `start_keepalive` can fail. Besides a
+failed `acquire_lock`, both implementations refuse when
+`self._keepalive_thread is not None` (`lock_manager/distributed.py`,
+`lock_manager/local.py`) — a thread leaked by a *previous* work item. Nothing
+cleared that state, so once it happened every subsequent work item on that
+worker failed the same way, forever. Only one `execute()` runs at a time per
+worker, so a keepalive found running here is always stale; `stop_keepalive()` is
+a no-op when there is none.
+
+*Backoff.* Releasing the claim exposes a second defect in `worker_loop`. Its
+idle backoff was keyed on whether a work item was *found*, not on whether one
+was *executed*, so an item returning `False` from `execute()` fell through to
+the next poll with no sleep. The leaked lock used to mask this by making the
+item invisible; with the claim returned correctly, a persistent keepalive
+failure would re-select the same item as fast as the database could answer. The
+loop now tracks an `executed` flag and takes the same `idle_time` increment and
+wait for an unclaimable item as for an empty poll. Every existing path is
+unchanged: a successful `execute()` still resets the backoff and `continue`s,
+and `SINGLE_SHOT` still breaks after one work item.
+
+*Regression guard.* `tests/saq/engine/test_worker_keepalive_failure.py` — seven
+unit tests over `Worker.execute` and `worker_loop` with the collaborators mocked
+(the lock released with the work item's uuid, the workload row *not* cleared, a
+leaked keepalive stopped, no analysis attempted, the same for a
+`DelayedAnalysisRequest`, the successful path still cleaning up through
+`clear_work_target`, and the loop interleaving one backing-off wait per
+unclaimable item) plus two integration tests against the real
+`DistributedLockManager` / `DatabaseWorkloadManager`: after a failed keepalive
+the `locks` row is gone while the `workload` row remains, and a second
+`get_next_work_target()` returns the same item instead of `None`. Four of the
+unit tests and both integration tests failed before the fix.
 
 ### 19.10 Only the first active dependency is ever examined
 

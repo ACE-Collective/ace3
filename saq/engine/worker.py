@@ -370,24 +370,30 @@ class Worker:
 
                 # Worker is responsible for tracking the work target
                 work_item = self.workload_manager.get_next_work_target()
+                executed = False
                 if work_item:
                     # Track the work target at the Worker level
                     self.tracking_message_manager.track_current_work_target(work_item)
-                    
+
                     try:
                         # if execute returns True it means it discovered and processed a work_item
-                        # in that case we assume there is more work to do and we check again immediately
-                        if self.execute(work_item):
-                            idle_time = 0
-                            # except in single shot mode, where we only ever process one work item
-                            # (falls through to the check below, which breaks out of the loop)
-                            if execution_mode != EngineExecutionMode.SINGLE_SHOT:
-                                continue
+                        executed = self.execute(work_item)
                     finally:
                         # Clear tracking for the completed target
                         self.tracking_message_manager.clear_target_tracking()
+
+                if executed:
+                    # we processed a work item, so we assume there is more work to do
+                    # and we check again immediately
+                    idle_time = 0
+                    # except in single shot mode, where we only ever process one work item
+                    # (falls through to the check below, which breaks out of the loop)
+                    if execution_mode != EngineExecutionMode.SINGLE_SHOT:
+                        continue
                 else:
-                    # increment idle time when no work is found
+                    # increment idle time when no work is found, or when we found a work item we
+                    # could not claim -- execute() gives that claim back, so without backing off
+                    # here a repeating failure just re-selects the same item as fast as it can
                     idle_time = min(idle_time + 1, self.idle_timeout_max)
 
                     # otherwise we wait a second until we go again
@@ -429,7 +435,14 @@ class Worker:
                 if not self.lock_manager.start_keepalive(work_item.uuid, on_lock_lost=self._handle_lock_lost):
                     logging.error("detected lock failure for work item {}".format(work_item))
                     self.current_execution_context = None
-                    # we never got to analyze this work item
+                    # a keepalive thread leaked by a previous work item is one of the two reasons
+                    # start_keepalive fails -- clearing it lets the next work item start one
+                    # (this is a no-op when nothing is running)
+                    self.lock_manager.stop_keepalive()
+                    # we never got to analyze this work item, so it stays in the workload -- but the
+                    # claim taken in get_next_work_target() has to go back, or nothing can pick the
+                    # item up until lock_timeout_seconds expires
+                    self.lock_manager.release_lock(work_item.uuid, ignore_lock_failure=True)
                     return False
 
             try:
