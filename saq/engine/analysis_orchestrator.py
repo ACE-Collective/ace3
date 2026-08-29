@@ -280,22 +280,37 @@ class AnalysisOrchestrator:
 
     def _handle_post_analysis_logic(self, execution_context: EngineExecutionContext):
         """Handle post-analysis logic including detection handling, mode changes, and cleanup."""
-        
-        # check for outstanding work and handle detection points
-        self._check_outstanding_work_and_handle_detections(execution_context)
-        
-        # handle analysis mode changes
-        self._handle_analysis_mode_changes(execution_context)
-        
+
+        # "is anything else still working on this root?" gates detection handling, cleanup and
+        # embedding submission alike, and we hold the lock for the duration of this pass, so it
+        # is evaluated once. 
+        # letting cleanup delete a root whose detections were skipped
+        # because the first answer said something else was still working on it.
+        has_outstanding_work = self._query_outstanding_work(execution_context)
+
+        # handle detection points
+        self._handle_detections_if_no_outstanding_work(execution_context, has_outstanding_work)
+
+        # handle analysis mode changes: a mode change re-queues the root under the new mode,
+        # which is itself outstanding work
+        if self._handle_analysis_mode_changes(execution_context):
+            has_outstanding_work = True
+
         # handle cleanup if analysis mode supports it
-        self._handle_cleanup(execution_context)
+        self._handle_cleanup(execution_context, has_outstanding_work)
 
         # submit alert for embedding vectorization when analysis is fully complete
-        self._submit_alert_for_embedding_if_complete(execution_context)
+        self._submit_alert_for_embedding_if_complete(execution_context, has_outstanding_work)
 
-    def _check_outstanding_work_and_handle_detections(self, execution_context: EngineExecutionContext):
-        """Check for outstanding work and handle detection points if no work remains."""
-        
+    def _query_outstanding_work(self, execution_context: EngineExecutionContext) -> bool:
+        """Evaluate _check_for_outstanding_work once for the entire post-analysis pass.
+
+        Returns:
+            True if there is outstanding work, or if the check could not be made at all --
+            without an answer we neither process detections, nor delete the storage
+            directory, nor submit the alert for embedding.
+        """
+
         try:
             with get_db_connection() as db:
                 cursor = db.cursor()
@@ -303,16 +318,20 @@ class AnalysisOrchestrator:
                 if self.lock_manager.lock_uuid is None:
                     logging.warning(f"missing lock_uuid when processing {execution_context.work_item}")
 
-                # check for outstanding work
-                has_outstanding_work = self._check_for_outstanding_work(cursor, execution_context)
-
-                if not has_outstanding_work:
-                    # Handle detection points
-                    self._handle_detection_points(execution_context)
+                return self._check_for_outstanding_work(cursor, execution_context)
 
         except Exception as e:
             logging.error(f"trouble checking finished status of {execution_context.root}: {e}")
             report_exception()
+            return True
+
+    def _handle_detections_if_no_outstanding_work(
+        self, execution_context: EngineExecutionContext, has_outstanding_work: bool
+    ):
+        """Handle detection points if no work remains."""
+
+        if not has_outstanding_work:
+            self._handle_detection_points(execution_context)
 
     def _check_for_outstanding_work(self, cursor, execution_context: EngineExecutionContext) -> bool:
         """
@@ -401,8 +420,14 @@ class AnalysisOrchestrator:
         logging.info(f"routing {root} to queue {chosen} based on detection meta")
         root.queue = chosen
 
-    def _handle_analysis_mode_changes(self, execution_context: EngineExecutionContext):
-        """Handle analysis mode changes and their consequences."""
+    def _handle_analysis_mode_changes(self, execution_context: EngineExecutionContext) -> bool:
+        """Handle analysis mode changes and their consequences.
+
+        Returns:
+            True if the analysis mode changed, in which case the root was re-scheduled under
+            the new mode (and so has outstanding work). This is returned even if the
+            scheduling failed: a root we could not re-queue must not be cleaned up either.
+        """
         
         # did the analysis mode change?
         if execution_context.root.analysis_mode != execution_context.root.original_analysis_mode:
@@ -422,9 +447,13 @@ class AnalysisOrchestrator:
                 logging.error(f"unable to add {execution_context.root} to workload: {e}")
                 report_exception()
 
+            return True
+
         elif execution_context.root.analysis_mode == ANALYSIS_MODE_CORRELATION:
             # if we are analyzing an alert, sync it to the database
             self._sync_alert_to_database(execution_context)
+
+        return False
 
     def _convert_to_alert(self, execution_context: EngineExecutionContext):
         """Convert the analysis to an alert."""
@@ -504,7 +533,7 @@ class AnalysisOrchestrator:
             if session:
                 session.close()
 
-    def _handle_cleanup(self, execution_context: EngineExecutionContext):
+    def _handle_cleanup(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
         """Handle cleanup if the analysis mode supports it."""
 
         # is this analysis_mode one that we want to clean up?
@@ -512,45 +541,32 @@ class AnalysisOrchestrator:
             execution_context.root.analysis_mode is not None
             and get_config().get_analysis_mode_config(execution_context.root.analysis_mode).cleanup
         ):
-            self._cleanup_if_no_outstanding_work(execution_context)
+            self._cleanup_if_no_outstanding_work(execution_context, has_outstanding_work)
 
-    def _cleanup_if_no_outstanding_work(self, execution_context: EngineExecutionContext):
+    def _cleanup_if_no_outstanding_work(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
         """Clean up the analysis if there is no outstanding work."""
-        
+
+        if has_outstanding_work:
+            logging.debug(f"not cleaning up {execution_context.root} (found outstanding work)")
+            return
+
+        # OK then it's time to clean this one up
+        logging.debug(f"clearing {execution_context.root.storage_dir}")
         try:
-            with get_db_connection() as db:
-                cursor = db.cursor()
-
-                if self.lock_manager.lock_uuid is None:
-                    logging.warning(f"missing lock_uuid when processing {execution_context.root}")
-
-                # Check for outstanding work
-                has_outstanding_work = self._check_for_outstanding_work(cursor, execution_context)
-
-                if not has_outstanding_work:
-                    # OK then it's time to clean this one up
-                    logging.debug(f"clearing {execution_context.root.storage_dir}")
-                    try:
-                        shutil.rmtree(execution_context.root.storage_dir)
-                    except Exception as e:
-                        logging.error(f"unable to clear {execution_context.root.storage_dir}: {e}")
-                else:
-                    logging.debug(f"not cleaning up {execution_context.root} (found outstanding work)")
-
+            shutil.rmtree(execution_context.root.storage_dir)
         except Exception as e:
-            logging.error(f"trouble checking finished status of {execution_context.root}: {e}")
-            report_exception()
+            logging.error(f"unable to clear {execution_context.root.storage_dir}: {e}")
 
-    def _submit_alert_for_embedding_if_complete(self, execution_context: EngineExecutionContext):
+    def _submit_alert_for_embedding_if_complete(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
         """Submit the alert for embedding vectorization when analysis is fully complete (no outstanding work)."""
         if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
             return
+
+        if has_outstanding_work:
+            return
+
         try:
-            with get_db_connection() as db:
-                cursor = db.cursor()
-                if self._check_for_outstanding_work(cursor, execution_context):
-                    return
-                self._submit_alert_for_embedding_vectorization(execution_context)
+            self._submit_alert_for_embedding_vectorization(execution_context)
         except Exception as e:
             logging.error(f"trouble submitting {execution_context.root} for embedding vectorization: {e}")
             report_exception()

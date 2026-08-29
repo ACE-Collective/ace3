@@ -115,7 +115,8 @@ Worker.worker_loop
             │         ├─ _execute_recursive_analysis()   ◄── the main loop
             │         └─ _execute_post_analysis()
             └─ finally: _handle_post_analysis_logic()
-                 ├─ _check_outstanding_work_and_handle_detections()
+                 ├─ _query_outstanding_work()         one evaluation for the pass
+                 ├─ _handle_detections_if_no_outstanding_work()
                  ├─ _handle_analysis_mode_changes()   (→ alert, → reschedule)
                  ├─ _handle_cleanup()
                  └─ _submit_alert_for_embedding_if_complete()
@@ -982,9 +983,18 @@ SELECT uuid FROM delayed_analysis WHERE uuid = :root [AND id != :this_request]
 Both exclusions matter: our own workload row is still present (it is deleted in
 `Worker.execute`'s `finally`, after all of this) and our own lock is still held.
 
-This predicate is evaluated up to **three times per work item** — once for
-detections, once for cleanup, once for embedding submission — each in its own
-`get_db_connection()`.
+The predicate gates three decisions — detections, cleanup, embedding submission —
+and is evaluated **once per work item**. `_query_outstanding_work` opens the one
+`get_db_connection()` at the top of `_handle_post_analysis_logic` and the answer
+is passed to all three (§19.8). Two things follow from that:
+
+- if the check itself fails, `_query_outstanding_work` returns `True`, so none of
+  the three act;
+- `_handle_analysis_mode_changes` runs in between and, on a mode change, calls
+  `root.schedule()` — a new workload row under the new mode, which is outstanding
+  work by definition. It returns `True` in that case and the answer is promoted
+  before cleanup and embedding see it. That return is unconditional on a mode
+  change, so a root whose `schedule()` *failed* is also never cleaned up.
 
 ### 13.2 Detection → alert
 
@@ -1137,8 +1147,8 @@ the memory-control mechanism for large trees.
 claim, 1 lock INSERT, one `acquire_lock` UPDATE per keepalive tick, 1 disposition
 SELECT per `_check_disposition` plus at most one per
 `alert_disposition_check_frequency` seconds of analysis (§19.1),
-up to 3 `_check_for_outstanding_work`
-round-trip pairs in post-analysis, `Alert.sync()` + `build_index()`, 1 workload
+1 `_check_for_outstanding_work`
+round-trip pair in post-analysis, `Alert.sync()` + `build_index()`, 1 workload
 DELETE, 1 lock DELETE.
 
 **Per-work-item log file.** Every work item attaches a `FileHandler` on the
@@ -1612,13 +1622,58 @@ correlation-mode alerts with large trees this is the dominant cost. Candidate
 directions: save on a dirty-flag + interval, save only at work-item boundaries
 and on delayed-analysis suspension points, or make the serializer incremental.
 
-### 19.8 `_check_for_outstanding_work` runs up to three times
+### 19.8 `_check_for_outstanding_work` ran up to three times — **fixed**
 
-`_check_outstanding_work_and_handle_detections`, `_cleanup_if_no_outstanding_work`
-and `_submit_alert_for_embedding_if_complete` each open their own
-`get_db_connection()` and run the same two queries. They are also not atomic with
-respect to each other — work can appear between them. Computing it once per
-post-analysis pass would be both cheaper and more consistent.
+*Original observation.* `_check_outstanding_work_and_handle_detections`,
+`_cleanup_if_no_outstanding_work` and `_submit_alert_for_embedding_if_complete`
+each opened their own `get_db_connection()` and ran the same two queries (§13.1).
+They were also not atomic with respect to each other — the answer could change
+between them.
+
+Consequence: up to three connections and three query pairs per work item for a
+predicate that is stable for the duration of the pass (we hold the root's lock
+throughout). Worse, one pass could act on contradictory answers. The damaging
+ordering is `True` then `False`: the first evaluation says something else is
+still working on the root, so `_handle_detection_points` never runs and a root
+carrying detection points does not become an alert; by the time cleanup asks
+again the answer has flipped, and `shutil.rmtree` deletes the storage directory
+along with the detections nobody acted on.
+
+*Fix.* `_handle_post_analysis_logic` now evaluates the predicate once, through
+the new `_query_outstanding_work` (the single `get_db_connection()`, the
+`lock_uuid is None` warning, and `_check_for_outstanding_work` itself unchanged),
+and passes the answer to all three consumers.
+`_check_outstanding_work_and_handle_detections` became
+`_handle_detections_if_no_outstanding_work(ctx, has_outstanding_work)`, and
+`_cleanup_if_no_outstanding_work` / `_submit_alert_for_embedding_if_complete`
+take the flag instead of querying. Two details carry the semantics that the
+repeated queries used to provide implicitly:
+
+- **The reschedule.** `_handle_analysis_mode_changes` runs between the old check
+  #1 and checks #2/#3, and on a mode change calls `root.schedule()` — the new
+  workload row was exactly what the later queries saw. It now returns `bool`, and
+  a `True` promotes `has_outstanding_work` before cleanup and embedding read it.
+  Returning `True` is unconditional on a mode change, so unlike the old query a
+  root whose `schedule()` raised is also not cleaned up — losing the tree of a
+  root we failed to re-queue is the worse outcome.
+- **The error path.** `_query_outstanding_work` returns `True` when the check
+  cannot be made, which reproduces the old behavior: a database failure used to
+  make all three `try` blocks bail, doing nothing.
+
+The result is one round-trip pair per work item instead of up to three, and one
+answer per pass rather than three that can disagree.
+
+*Regression guard.* `tests/saq/engine/test_orchestrator_outstanding_work.py` —
+five unit tests over `_handle_post_analysis_logic` with the collaborators mocked
+(one evaluation per pass; the `True`/`False` ordering not deleting an unalerted
+root; a rescheduled root and a root whose reschedule failed never being cleaned
+up; a database failure taking none of the three actions) and two integration
+tests counting real evaluations through a `SINGLE_SHOT` engine pass — one root in
+`test_cleanup` mode, one root that alerts. Four of the unit tests and both
+integration tests failed before the fix (3 evaluations where 1 was expected, 2 in
+the integration cases, and the deleted-unalerted-root case).
+`test_functionality.py::test_cleanup_with_delayed_analysis` still pins the
+`"not cleaning up ... (found outstanding work)"` path.
 
 ### 19.9 Keepalive failure leaks the claim
 
