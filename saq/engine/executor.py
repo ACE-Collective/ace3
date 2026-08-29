@@ -902,8 +902,9 @@ class AnalysisExecutor:
     ):
         """Checks to see if an analyst dispositioned the alert while we've been looking at it.
 
-        Returns:
-            The (new) last time we checked for a disposition.
+        This runs on every module invocation, so the actual query is throttled to
+        one per ``alert_disposition_check_frequency`` seconds. Records the time of
+        each query it makes in ``context.last_disposition_check``.
         """
 
         # has an analyst dispositioned this alert while we've been looking at it?
@@ -911,6 +912,8 @@ class AnalysisExecutor:
             datetime.now() - context.last_disposition_check
         ).total_seconds() > self.config.alert_disposition_check_frequency:
             if analysis_mode == ANALYSIS_MODE_CORRELATION:
+                # remember when we checked so the throttle window closes again
+                context.last_disposition_check = datetime.now()
                 get_db().close()
 
                 # Get the two different stop analysis setting values
