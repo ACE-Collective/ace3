@@ -158,6 +158,12 @@ analysis_module_test_delayed_analysis_instance:
   enabled: false
   instance: instance1
 
+analysis_module_test_slow_delayed_analysis:
+  name: test_slow_delayed_analysis
+  python_module: saq.modules.test
+  python_class: SlowDelayedAnalysisTestModule
+  enabled: false
+
 analysis_module_test_engine_locking:
   name: test_engine_locking
   python_module: saq.modules.test
@@ -530,6 +536,7 @@ module_group_unittest:
     - test_delayed_analysis
     - test_delayed_analysis_instance
     - test_delayed_analysis_timeout
+    - test_slow_delayed_analysis
     - test_engine_locking
     - test_final_analysis
     - test_post_analysis

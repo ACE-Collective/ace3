@@ -498,7 +498,9 @@ Everything below is `saq/engine/executor.py::AnalysisExecutor`.
 4. attach a `FileHandler` writing `<storage_dir>/saq.log` — every log line
    produced while analyzing this root also lands next to the root;
 5. seed `root.state["total_analysis_time_seconds"]` and
-   `root.state["analysis_start_time"]`;
+   `root.state["analysis_start_time"]` — reset for a `RootAnalysis` work item,
+   carried forward for a delayed-analysis resumption, so the cumulative budget
+   spans one logical analysis run (§19.6);
 6. `_execute_recursive_analysis()`;
 7. if `not root.delayed` → `_execute_post_analysis()`;
 8. on `AnalysisTimeoutError`, still run `_execute_post_analysis()` before
@@ -880,11 +882,17 @@ Everything else — key derivation, storage, refusal rules, blob spilling — is
 |---|---|---|---|
 | One module invocation | mode `maximum_analysis_time`, else `global_settings.maximum_analysis_time` (warning threshold) and module `maximum_analysis_time` (kill threshold) | `AnalysisModuleMonitor` thread | warns every 5s, then `os._exit(1)` on the worker process |
 | One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` reading the tracking file | `SIGKILL` the worker process tree |
-| Whole root, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
-| Whole root, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
+| Whole run, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
+| Whole run, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
 | Delayed analysis | `timeout_hours/minutes/seconds` passed to `delay_analysis` | `Worker.is_delayed_analysis_timed_out` | refuses further delay; analysis closed out empty |
 | Worker memory | `global_settings.memory_limit_kill` | `WorkerManager.check` | `SIGKILL` |
 | Worker lifetime | `auto_refresh_frequency` | `Worker.worker_loop` | clean exit; manager forks a replacement |
+
+The two cumulative limits measure `root.state["total_analysis_time_seconds"]`:
+this pass plus every earlier pass of the same logical analysis run — the initial
+`RootAnalysis` work item and the delayed-analysis resumptions that follow it. A
+new root work item (mode transition, disposition pass, analyst-requested
+analysis) starts the budget over. See §19.6.
 
 ### 12.2 Cancellation
 
@@ -1529,15 +1537,71 @@ Similarly dead: `AnalysisExecutor.cancel_analysis()` and
 -compatibility stubs; `Worker.current_execution_context` is assigned `None` in
 two places and never assigned anything else.
 
-### 19.6 `total_analysis_time_seconds` never accumulates
+### 19.6 `total_analysis_time_seconds` never accumulated — **fixed**
 
-`root.state["total_analysis_time_seconds"]` is initialized to `0`
-(`executor.py:425`) and read as the baseline for the cumulative timeout
-(`executor.py:1880`), but nothing ever writes a non-zero value. The cumulative
-warning/fail timeouts therefore measure only *this pass*, not the root's total
-analysis time across delayed-analysis resumptions and mode transitions. A root
-that bounces through twenty delayed cycles can never trip the cumulative fail
-timeout.
+*Original observation.* `root.state["total_analysis_time_seconds"]` was
+initialized to `0` in `execute()` and read once per pass in
+`_execute_recursive_analysis` as the baseline for the cumulative timeout, but
+nothing ever wrote a non-zero value back. The cumulative warning/fail timeouts
+therefore measured only *this pass*, not the root's total analysis time across
+delayed-analysis resumptions. A root that bounced through twenty delayed cycles
+could never trip the cumulative fail timeout — precisely the runaway the limit
+exists to catch.
+
+*Fix.* Two absolute writes, both derived from the same per-pass baseline local
+(`total_analysis_time_seconds`, read once at `executor.py:1890`), so they cannot
+double count:
+
+- `_execute_recursive_analysis` wraps the MAIN LOOP in `try`/`finally` and squares
+  the budget up on the way out (`executor.py:1990`). The `finally` is load
+  bearing: `AnalysisTimeoutError` (§12.4) and a cancelled analysis (§12.2) both
+  leave the loop that way, and `AnalysisOrchestrator._execute_analysis` saves the
+  root on both paths.
+- `_execute_module_analysis` persists the running figure where `current_total_time`
+  is already computed (`executor.py:1409`). The executor saves the root after
+  every module invocation (§15), so this is what survives a worker killed
+  mid-module — the monitor's `os._exit(1)` or the manager's `SIGKILL` (§12.5).
+
+*The budget covers one logical analysis run, not the root's lifetime.* `execute()`
+(`executor.py:431`) now seeds on `context.is_delayed_analysis`: a
+`DelayedAnalysisRequest` resumption continues the budget the pass that requested
+the delay started (`setdefault`, so a root saved before the key existed still
+resumes), while a `RootAnalysis` work item assigns `0` and starts over.
+
+Lifetime accumulation was considered and rejected. The same root re-enters the
+engine as a `RootAnalysis` work item on every mode transition, every disposition
+pass and every analyst-requested re-analysis, all of which persist through
+`KEY_STATE` in the serialized root. With a 900s default fail time, a heavily
+worked alert would eventually carry a baseline past the limit and *every*
+subsequent pass would abort at its first module — the alert becomes permanently
+un-analyzable. Resetting per run closes the delayed-cycle hole without that
+failure mode.
+
+The two state keys are now named constants — `STATE_TOTAL_ANALYSIS_TIME_SECONDS`
+and `STATE_ANALYSIS_START_TIME` in `saq/constants.py`, alongside
+`STATE_PRE_ANALYSIS_EXECUTED` and friends. `analysis_start_time` gets the same
+per-run treatment for coherence; nothing in the repo reads it.
+
+*Not to be confused with* the `total_analysis_time_seconds` field on the
+fluent-bit metrics event (`record_execution_statistics`, `executor.py:282`),
+which is the sum of per-module analysis time within one execution context.
+Same name, unrelated quantity, unchanged.
+
+*Regression guard.* `tests/saq/engine/test_cumulative_analysis_time.py` — seven
+tests, five of which failed before the fix. Three unit tests drive `execute()`
+with the recursive/post-analysis phases mocked out and assert the budget
+lifetime: a `RootAnalysis` target resets a seeded `500` to `0` (it preserved it
+before), a `DelayedAnalysisRequest` target preserves it, and a root missing the
+key defaults to `0`. Four integration tests run the real engine: a single
+`basic_test` pass records a non-zero total (`0` before); `test_delayed_analysis`
+across two `SINGLE_SHOT` passes must come back strictly greater after the
+resumption than after the initial pass (`0` and `0` before); a seeded `9999`
+must be gone after a fresh root work item; and — the consequence —
+`test_slow_delayed_analysis` (a new module in `saq/modules/test.py` that sleeps on
+both `execute_analysis` and `continue_analysis`, since nothing existing burns time
+on both) spends ~2s per pass against a 3s `maximum_cumulative_analysis_fail_time`
+and must log "ACE took too long to analyze" on the *second* pass and not the
+first. Before the fix the second pass measured ~2s and never tripped.
 
 ### 19.7 `root.save()` per module invocation
 

@@ -1113,6 +1113,15 @@ STATE_POST_ANALYSIS_EXECUTED = "post_analysis_executed"
 # one pass and does not permanently opt the alert out of the disposition short-circuit.
 STATE_ANALYST_REQUESTED_ANALYSIS = "analyst_requested_analysis"
 
+# engine state holding the cumulative analysis time budget for one logical analysis run,
+# in seconds. seeded (reset) when a RootAnalysis work item starts a pass and carried
+# forward across the delayed analysis resumptions that follow it. this is the baseline
+# the cumulative warning/fail timeouts measure against.
+STATE_TOTAL_ANALYSIS_TIME_SECONDS = "total_analysis_time_seconds"
+
+# engine state holding when the current logical analysis run started
+STATE_ANALYSIS_START_TIME = "analysis_start_time"
+
 # storage constants
 BUCKET_ACE3 = "ace3"
 

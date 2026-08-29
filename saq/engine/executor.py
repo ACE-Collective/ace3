@@ -41,8 +41,10 @@ from saq.constants import (
     EVENT_RELATIONSHIP_ADDED,
     EVENT_TAG_ADDED,
     F_FILE,
+    STATE_ANALYSIS_START_TIME,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
+    STATE_TOTAL_ANALYSIS_TIME_SECONDS,
     AnalysisExecutionResult,
 )
 from saq.database.model import Alert
@@ -418,13 +420,23 @@ class AnalysisExecutor:
         logging.getLogger().addHandler(logging_handler)
 
         try:
-            # we keep track of the total amount of time we've spent on this entire analysis (in seconds)
-            if "total_analysis_time_seconds" not in context.root.state:
-                context.root.state["total_analysis_time_seconds"] = 0
-
-            # and when we actually started to analyze this
-            if "analysis_start_time" not in context.root.state:
-                context.root.state["analysis_start_time"] = local_time()
+            # we keep track of the total amount of time we've spent analyzing this root (in
+            # seconds) -- this is the baseline the cumulative warning/fail timeouts measure
+            # against. the budget covers one logical analysis run: a RootAnalysis work item
+            # (a new submission, a mode transition, a disposition pass, analyst requested
+            # analysis) starts a fresh budget, while a delayed analysis resumption continues
+            # the budget the pass that requested the delay started. without the reset a
+            # long lived alert would eventually accumulate past the fail time and every
+            # later pass would abort at the first module
+            if context.is_delayed_analysis:
+                # setdefault rather than a plain read: a root saved before this key existed
+                # can still be resumed
+                context.root.state.setdefault(STATE_TOTAL_ANALYSIS_TIME_SECONDS, 0)
+                # and when we actually started to analyze this (nothing reads this today)
+                context.root.state.setdefault(STATE_ANALYSIS_START_TIME, local_time())
+            else:
+                context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 0
+                context.root.state[STATE_ANALYSIS_START_TIME] = local_time()
 
             # don't even start if we're already cancelled
             if not context.cancel_analysis_flag:
@@ -1389,6 +1401,13 @@ class AnalysisExecutor:
         elapsed_time = (datetime.now() - start_time).total_seconds()
         current_total_time = elapsed_time + total_analysis_time_seconds
 
+        # keep the persisted budget current as we go. the root is saved after every module
+        # invocation, so this is what survives if the worker dies mid-module (the monitor's
+        # os._exit, or the manager's SIGKILL). the pass is squared up exactly in the finally
+        # of _execute_recursive_analysis -- both writes are absolute values derived from the
+        # same per-pass baseline, so they cannot double count
+        context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = current_total_time
+
         # get the limits for the current analysis mode
         maximum_analysis_time = self._get_maximum_analysis_time(root.analysis_mode)
 
@@ -1868,7 +1887,7 @@ class AnalysisExecutor:
 
         # when we started analyzing (this time)
         start_time = datetime.now()
-        total_analysis_time_seconds = context.root.state["total_analysis_time_seconds"]
+        total_analysis_time_seconds = context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS]
 
         # the last time we logged a warning about analysis taking too long
         context.last_analyze_time_warning = None
@@ -1878,88 +1897,96 @@ class AnalysisExecutor:
         logging.info(
             f"starting analysis on {context.root} with a workload of {len(context.work_stack)}"
         )
-        while not context.cancel_analysis_flag:
-            # the current WorkTarget
-            work_item = None
+        try:
+            while not context.cancel_analysis_flag:
+                # the current WorkTarget
+                work_item = None
 
-            # are we done?
-            if (
-                len(context.work_stack) == 0
-                and len(context.root.active_dependencies) == 0
-            ):
-                # are we in final analysis mode?
-                if context.final_analysis_mode:
-                    # then we are truly done
-                    break
+                # are we done?
+                if (
+                    len(context.work_stack) == 0
+                    and len(context.root.active_dependencies) == 0
+                ):
+                    # are we in final analysis mode?
+                    if context.final_analysis_mode:
+                        # then we are truly done
+                        break
 
-                # should we enter into final analysis mode?
-                # we only do this if A) all analysis is complete and B) there is no outstanding delayed analysis
-                if not context.root.delayed:
-                    logging.info("entering final analysis for {}".format(context.root))
-                    context.final_analysis_mode = True
-                    # place everything back on the stack
-                    for obj in context.root.all:
-                        context.work_stack.append(obj)
+                    # should we enter into final analysis mode?
+                    # we only do this if A) all analysis is complete and B) there is no outstanding delayed analysis
+                    if not context.root.delayed:
+                        logging.info("entering final analysis for {}".format(context.root))
+                        context.final_analysis_mode = True
+                        # place everything back on the stack
+                        for obj in context.root.all:
+                            context.work_stack.append(obj)
 
+                        continue
+
+                    else:
+                        logging.info(
+                            "not entering final analysis mode for {} (delayed analysis waiting)".format(
+                                context.root
+                            )
+                        )
+                        break
+
+                # get the next thing to analyze
+                # if we have delayed analysis then that is the thing to analyze at this moment
+                work_item = self._get_delayed_analysis_work_item(context)
+
+                # otherwise check to see if we have any dependencies waiting
+                if not work_item:
+                    work_item = self._get_completed_dependency_work_item(context)
+
+                # otherwise just get the next item off the stack
+                if not work_item:
+                    work_item = self._get_next_work_item(context)
+
+                # otherwise we're done
+                if not work_item:
+                    logging.debug("no work item available")
                     continue
 
-                else:
-                    logging.info(
-                        "not entering final analysis mode for {} (delayed analysis waiting)".format(
-                            context.root
-                        )
-                    )
-                    break
+                # if there's no observable to analyze then we're done with this work item
+                if not work_item.observable:
+                    logging.debug(f"work item {work_item} has no observable")
+                    continue
 
-            # get the next thing to analyze
-            # if we have delayed analysis then that is the thing to analyze at this moment
-            work_item = self._get_delayed_analysis_work_item(context)
+                # check for observable exclusions
+                if (
+                    self._process_observable_exclusions(work_item)
+                    == ObservableExclusionResult.EXCLUDED
+                ):
+                    continue
 
-            # otherwise check to see if we have any dependencies waiting
-            if not work_item:
-                work_item = self._get_completed_dependency_work_item(context)
-
-            # otherwise just get the next item off the stack
-            if not work_item:
-                work_item = self._get_next_work_item(context)
-
-            # otherwise we're done
-            if not work_item:
-                logging.debug("no work item available")
-                continue
-
-            # if there's no observable to analyze then we're done with this work item
-            if not work_item.observable:
-                logging.debug(f"work item {work_item} has no observable")
-                continue
-
-            # check for observable exclusions
-            if (
-                self._process_observable_exclusions(work_item)
-                == ObservableExclusionResult.EXCLUDED
-            ):
-                continue
-
-            # select the analysis modules we want to use
-            analysis_modules = self.get_analysis_modules_for_work_item(
-                work_item, context.root.analysis_mode
-            )
-
-            logging.debug(f"analyzing {work_item} with {len(analysis_modules)} modules")
-
-            # analyze this thing with the analysis modules we've selected sorted by priority
-            for analysis_module in sorted(analysis_modules, key=attrgetter("priority")):
-                if context.cancel_analysis_flag:
-                    logging.info(f"analysis cancelled for {context.root}")
-                    break
-
-                self._execute_module_analysis(
-                    context,
-                    context.root,
-                    work_item,
-                    context.work_stack,
-                    context.work_stack_buffer,
-                    analysis_module,
-                    start_time,
-                    total_analysis_time_seconds,
+                # select the analysis modules we want to use
+                analysis_modules = self.get_analysis_modules_for_work_item(
+                    work_item, context.root.analysis_mode
                 )
+
+                logging.debug(f"analyzing {work_item} with {len(analysis_modules)} modules")
+
+                # analyze this thing with the analysis modules we've selected sorted by priority
+                for analysis_module in sorted(analysis_modules, key=attrgetter("priority")):
+                    if context.cancel_analysis_flag:
+                        logging.info(f"analysis cancelled for {context.root}")
+                        break
+
+                    self._execute_module_analysis(
+                        context,
+                        context.root,
+                        work_item,
+                        context.work_stack,
+                        context.work_stack_buffer,
+                        analysis_module,
+                        start_time,
+                        total_analysis_time_seconds,
+                    )
+        finally:
+            # square up the budget for this pass. the finally is load bearing: an
+            # AnalysisTimeoutError and a cancelled analysis both leave the loop this way,
+            # and the orchestrator saves the root on both paths
+            context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = (
+                total_analysis_time_seconds + (datetime.now() - start_time).total_seconds()
+            )
