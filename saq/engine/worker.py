@@ -367,7 +367,10 @@ class Worker:
                         # in that case we assume there is more work to do and we check again immediately
                         if self.execute(work_item):
                             idle_time = 0
-                            continue
+                            # except in single shot mode, where we only ever process one work item
+                            # (falls through to the check below, which breaks out of the loop)
+                            if execution_mode != EngineExecutionMode.SINGLE_SHOT:
+                                continue
                     finally:
                         # Clear tracking for the completed target
                         self.tracking_message_manager.clear_target_tracking()
@@ -394,8 +397,11 @@ class Worker:
 
         logging.debug("worker {} exiting".format(os.getpid()))
 
-    def execute(self, work_item: Union[RootAnalysis, DelayedAnalysisRequest]):
-        """Execute a single work item using the AnalysisOrchestrator."""
+    def execute(self, work_item: Union[RootAnalysis, DelayedAnalysisRequest]) -> bool:
+        """Execute a single work item using the AnalysisOrchestrator.
+
+        Returns True if the work item was processed, which tells worker_loop to
+        reset its idle backoff and look for more work immediately."""
 
         # correlate every log line for this work item under the root analysis uuid
         from saq.logging import transaction_id
@@ -411,7 +417,8 @@ class Worker:
                 if not self.lock_manager.start_keepalive(work_item.uuid, on_lock_lost=self._handle_lock_lost):
                     logging.error("detected lock failure for work item {}".format(work_item))
                     self.current_execution_context = None
-                    return
+                    # we never got to analyze this work item
+                    return False
 
             try:
                 work_dir = get_engine_config().work_dir
@@ -452,6 +459,10 @@ class Worker:
                 self.workload_manager.clear_work_target(work_item)
                 # Clear the execution context
                 self.current_execution_context = None
+
+            # we consumed a work item, even if the analysis of it failed or raised
+            # (both of which are handled above)
+            return True
 
     def analysis_has_timed_out(self) -> bool:
         """Returns True if the current analysis has timed out (is stuck)."""

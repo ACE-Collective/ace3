@@ -272,6 +272,9 @@ process entry point:
    - controlled-shutdown set *and* both queues empty → break;
    - `get_next_work_target()`;
      - got one → write the tracking file, `execute(work_item)`, clear tracking;
+       if `execute()` returned True the backoff resets (`idle_time = 0`) and the
+       loop polls again immediately — except in `SINGLE_SHOT`, which falls
+       through to the break below;
      - got nothing → `idle_time = min(idle_time + 1, idle_timeout_max)` and wait
        that long on the immediate-shutdown event;
    - `SINGLE_SHOT` → break;
@@ -1380,10 +1383,10 @@ Config parsing is covered by
 `test_global_observable_exclusion` in `tests/saq/engine/test_functionality.py`.
 Eight of these failed before the fix.
 
-### 19.3 The idle backoff never resets
+### 19.3 The idle backoff never reset — **fixed**
 
-`Worker.execute()` has no `return True` — its only `return` is the bare early
-return on keepalive failure. But `worker_loop` does:
+*Original observation.* `Worker.execute()` had no `return True` — its only
+`return` was the bare early return on keepalive failure. But `worker_loop` does:
 
 ```python
 if self.execute(work_item):
@@ -1391,10 +1394,47 @@ if self.execute(work_item):
     continue
 ```
 
-`execute()` always returns `None`, so `idle_time` is never reset. After a quiet
-period a worker sits at `idle_timeout_max`, and even after processing work its
-*next* empty poll waits the full maximum. The "we found work, so check again
-immediately" comment above that block also never applies.
+`execute()` always returned `None`, so `idle_time` was never reset. After a quiet
+period a worker sat at `idle_timeout_max`, and even after processing work its
+*next* empty poll waited the full maximum. The "we found work, so check again
+immediately" comment above that block never applied either.
+
+*Fix.* `execute()` now returns `True` after the `try/except/finally` around the
+orchestration and `False` on the keepalive-failure path. Both branches are
+deliberate: a work item that was claimed and consumed counts as processed even if
+`orchestrate_analysis` returned False or raised (both are already caught and
+logged inside `execute()`), because the queue moved and the next poll should
+happen immediately; a lock failure analyzed nothing, so it does not reset the
+backoff.
+
+The `continue` needed a guard the original code never had to think about. With
+`execute()` returning `None`, control always fell through to the
+`if execution_mode == EngineExecutionMode.SINGLE_SHOT: break` below it; a truthy
+`execute()` would have jumped over that break and turned `SINGLE_SHOT` ("run a
+single work item and then exit", `enums.py`) into "drain the whole queue" — the
+mode that ~233 test call sites reach through `start_single_threaded`. The reset
+therefore skips the `continue` in `SINGLE_SHOT` mode and lets the break happen:
+
+```python
+if self.execute(work_item):
+    idle_time = 0
+    if execution_mode != EngineExecutionMode.SINGLE_SHOT:
+        continue
+```
+
+`UNTIL_COMPLETE` is unaffected — the `continue` returns to the top of the loop,
+which is where the both-queues-empty drain check lives.
+
+*Regression guard.* `tests/saq/engine/test_worker_idle_backoff.py` — eight unit
+tests driving `worker_loop` in-process against a fake workload manager, with the
+orchestrator mocked and `get_engine_config` / `remove_all_sessions` patched.
+`idle_time` is a local, so it is observed through the durations the loop passes
+to `_immediate_shutdown_event.wait()`: three empty polls then a work item must
+record `[1, 2, 3, 1]` (it recorded `[1, 2, 3, 4]` before the fix). The rest cover
+the four `execute()` return paths, the `idle_timeout_max` clamp, and — as the
+guard on the trap above — that `SINGLE_SHOT` still polls once and processes
+exactly one work item with two queued, and that `UNTIL_COMPLETE` drains both
+without ever idling. Five of the eight failed before the fix.
 
 ### 19.4 A failed delayed-analysis insert still marks the analysis delayed
 
