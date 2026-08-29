@@ -3331,6 +3331,48 @@ def test_observable_whitelisting():
     assert test_observable
     assert len(test_observable.analysis) == 2
 
+@pytest.mark.integration
+def test_global_observable_exclusion():
+    """An observable listed in the global observable_exclusions: config is never
+    handed to any analysis module (docs/ENGINE.md §7.5)."""
+
+    get_config().observable_exclusions = {"exclude_test_1": f"{F_TEST}:test_1"}
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
+    assert test_observable
+    root.save()
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(default_analysis_mode="test_single"))
+    engine.configuration_manager.enable_module('basic_test', "test_single")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    assert not test_observable.get_and_load_analysis(BasicTestAnalysis)
+
+    # the same observable without the exclusion is analyzed normally
+    get_config().observable_exclusions = {}
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
+    assert test_observable
+    root.save()
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(default_analysis_mode="test_single"))
+    engine.configuration_manager.enable_module('basic_test', "test_single")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable
+    assert test_observable.get_and_load_analysis(BasicTestAnalysis)
+
 # XXX review this for due to changes to F_FILE
 @pytest.mark.integration
 def test_file_observable_whitelisting():

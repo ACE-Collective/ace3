@@ -590,8 +590,10 @@ the waiting source observable (§9).
 
 - `whitelisted` (any observable tagged `whitelisted` also makes the whole root
   whitelisted — `RootAnalysis.whitelisted`);
-- matched by `self.config.observable_exclusions[type]` (IP types are compared as
-  `iptools.IpRange` membership) — **see §19.2, this dict is never populated**;
+- matched by `self.config.observable_exclusions[type]`, the globally excluded
+  observables from the `observable_exclusions:` config section (§16.5).
+  Comparison is `Observable.matches()` — exact for most types, CIDR membership
+  for `ip`/`ipv4`;
 - carrying `DIRECTIVE_EXCLUDE_ALL`.
 
 In every case, if the work item was resolving a dependency, that dependency is
@@ -1189,6 +1191,27 @@ Two validators reject incoherent combinations: `cache_ttl` with `wide_diff`, and
 Also global runtime settings (not YAML): `lock_timeout_seconds`, `saq_node`,
 `saq_node_id`, `company_id`, `forced_alerts`, `semaphores_enabled`.
 
+### 16.5 `observable_exclusions:`
+
+A flat top-level map of arbitrary names to `<o_type>:<o_value>` specs — the
+observables the engine never analyzes, in any mode (§7.5):
+
+```yaml
+observable_exclusions:
+  exclude_loopback: ipv4:127.0.0.1
+  exclude_internal: ipv4:10.0.0.0/8
+  exclude_user: user:-
+```
+
+The name on the left is documentation only; it just has to be unique so the
+layered config can override or add entries. The value splits on the *first*
+colon, so an `o_value` may itself contain colons. `EngineConfiguration` parses
+this into `{o_type: [o_value]}` at construction
+(`_get_observable_exclusions`); a spec with no colon is logged at ERROR and
+skipped. This is separate from the per-module `observable_exclusions:` under an
+`analysis_module_<name>:` block (§16.3), which uses the already-parsed
+`{o_type: [o_value]}` shape and gates only that one module.
+
 ---
 
 ## 17. Observability
@@ -1209,8 +1232,9 @@ Also global runtime settings (not YAML): `lock_timeout_seconds`, `saq_node`,
 `tests/saq/engine/` — 120 tests in `test_functionality.py` alone, plus focused
 files for the orchestrator, configuration manager, module loader, workers, node
 manager, drain, recovery, workload transfer, delayed analysis, distributed
-locking, cache-hit behavior and the disposition-check throttle
-(`test_executor_disposition_check.py`).
+locking, cache-hit behavior, the disposition-check throttle
+(`test_executor_disposition_check.py`) and the global observable exclusions
+(`test_executor_observable_exclusions.py`).
 
 The standard shape (also in `CLAUDE.md`):
 
@@ -1289,16 +1313,72 @@ passes, `frequency = 0` checking every time, no query outside correlation mode,
 and the cancel / continue disposition paths still behaving. The first two failed
 before the fix (10 queries where 1 was expected).
 
-### 19.2 Engine-level observable exclusions are dead
+### 19.2 Engine-level observable exclusions were dead — **fixed**
 
-`EngineConfiguration.observable_exclusions` is initialized to `{}`
-(`engine_configuration.py:128`) and never written to by any code path. The
-`_process_observable_exclusions` branch that reads it (`executor.py:857`) — and
-the `iptools.IpRange` handling for `ipv4`/`ip` inside it — can never fire. Only
-*module-level* `observable_exclusions` (from `AnalysisModuleConfig`, enforced
-inside `accepts()`) actually work. A test asserts the dict is empty
-(`test_configuration_manager.py:279`), which pins the current state rather than
-the intent.
+*Original observation.* `EngineConfiguration.observable_exclusions` was
+initialized to `{}` (`engine_configuration.py:128`) and never written to by any
+code path. The `_process_observable_exclusions` branch that reads it
+(`executor.py:857`) — and the `iptools.IpRange` handling for `ipv4`/`ip` inside
+it — could never fire. Only *module-level* `observable_exclusions` (from
+`AnalysisModuleConfig`, enforced inside `accepts()`) actually worked. A test
+asserted the dict is empty (`test_configuration_manager.py:279`), which pinned
+the current state rather than the intent.
+
+This was a regression, not an unimplemented feature. `etc/saq.default.yaml`
+ships a populated top-level `observable_exclusions:` block, and
+`saq/configuration/schema.py` validates it — so an operator editing that block
+got no error and no effect. In ACE v1 the equivalent `[observable_exclusions]`
+INI section was merged into *every* module's exclusion dict by
+`AnalysisModuleConfig._load_exclusions()`; that parser was dropped in the
+pydantic config rewrite and nothing replaced it.
+
+*Fix.* `EngineConfiguration._get_observable_exclusions()` now parses the
+`observable_exclusions:` config section (§16.5) into the `{o_type: [o_value]}`
+shape the executor reads, splitting each spec on the first colon and
+de-duplicating per type; a spec with no colon is logged at ERROR and skipped
+rather than raising, so one bad entry cannot take the engine down. An
+`observable_exclusions=` constructor keyword overrides the config, matching how
+`target_nodes` / `analysis_pools` / `local_analysis_modes` already work.
+
+Restoring it at the *engine* level rather than re-adding the v1 per-module merge
+keeps the check to once per work item instead of once per module, and the
+executor branch already handles the dependency bookkeeping (a dependency being
+resolved by an excluded work item is failed and advanced so its waiter is not
+stranded).
+
+The comparison itself was also wrong. `work_item.observable.value in exclusion`
+is a *substring* test for non-IP types, so an exclusion of `google.com` matched
+an observable of `oogle.com` but not `mail.google.com`. It is now
+`work_item.observable.matches(exclusion)` — the same call the working
+module-level `AnalysisModule.is_excluded` uses. `Observable.matches` is exact
+equality, and `IPObservable.matches` / `IPv4Observable.matches` already
+implement CIDR membership when the exclusion value contains a `/`, so the
+`F_IP`/`F_IPV4` special case, the `iptools` import and the bare `except` around
+the comparison were all removed.
+
+Note that the exclusions shipped in `etc/saq.default.yaml` are now live:
+`user:-`, `user:unknown`, `user:system`, `ipv4:127.0.0.1`, `ipv4:0.0.0.0`,
+`fqdn:google.com` and `fqdn:youtube.com` are no longer analyzed by any module.
+
+Still open, and out of scope here: the v1 `observable_group:<name>` indirection
+inside module `exclude_*` keys was lost in the same rewrite, which is why
+`exclude_internal_network: observable_group:internal` under
+`analysis_module_pcap_conversation_extraction` is silently dropped by pydantic
+today.
+
+*Regression guard.* `tests/saq/engine/test_executor_observable_exclusions.py` —
+thirteen unit tests over `_process_observable_exclusions` with a mocked
+configuration manager: exact match, the `oogle.com` near-miss, the
+`mail.google.com` subdomain, `ipv4` exact and CIDR (in and out of range), an
+exclusion value containing a colon, unlisted types, the dependency-failure
+bookkeeping, and the untouched `whitelisted` / `DIRECTIVE_EXCLUDE_ALL` branches.
+Config parsing is covered by
+`test_engine_configuration_observable_exclusions*` in
+`tests/saq/engine/test_configuration_manager.py` (including
+`..._shipped_observable_exclusions_are_live`, which pins that the config in
+`etc/saq.default.yaml` actually reaches the engine), and the end-to-end path by
+`test_global_observable_exclusion` in `tests/saq/engine/test_functionality.py`.
+Eight of these failed before the fix.
 
 ### 19.3 The idle backoff never resets
 

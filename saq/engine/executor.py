@@ -8,7 +8,6 @@ import time
 from typing import Optional, Union
 from enum import Enum
 
-import iptools
 from saq.analysis.analysis import Analysis
 from saq.analysis.blob_store import get_blob_store
 from saq.analysis.cache import (
@@ -42,8 +41,6 @@ from saq.constants import (
     EVENT_RELATIONSHIP_ADDED,
     EVENT_TAG_ADDED,
     F_FILE,
-    F_IP,
-    F_IPV4,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
     AnalysisExecutionResult,
@@ -852,23 +849,14 @@ class AnalysisExecutor:
 
             return ObservableExclusionResult.EXCLUDED
 
-        # is this observable excluded?
-        excluded = False
-        if work_item.observable.type in self.config.observable_exclusions:
-            exclusions = self.config.observable_exclusions[work_item.observable.type]
-            if work_item.observable.type in [ F_IP, F_IPV4 ]:
-                exclusions = [iptools.IpRange(x) for x in exclusions]
-            for exclusion in exclusions:
-                try:
-                    if work_item.observable.value in exclusion:
-                        excluded = True
-                        break
-                except Exception:
-                    logging.debug(
-                        "{} probably is not an IP address".format(
-                            work_item.observable.value
-                        )
-                    )
+        # is this observable globally excluded? matches() is exact for most
+        # observable types and CIDR-aware for ip/ipv4
+        excluded = any(
+            work_item.observable.matches(exclusion)
+            for exclusion in self.config.observable_exclusions.get(
+                work_item.observable.type, []
+            )
+        )
 
         if excluded:
             logging.debug(

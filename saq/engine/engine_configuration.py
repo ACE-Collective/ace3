@@ -53,6 +53,7 @@ class EngineConfiguration:
         target_nodes: Optional[list[str]] = None,
         default_analysis_mode: Optional[str] = None,
         analysis_mode_priority: Optional[str] = None,
+        observable_exclusions: Optional[dict[str, list[str]]] = None,
         engine_type: EngineType = EngineType.DISTRIBUTED,
     ):
         """Initialize engine configuration.
@@ -67,6 +68,8 @@ class EngineConfiguration:
             target_nodes: list of target nodes for this engine
             default_analysis_mode: Default analysis mode for invalid analysis modes
             analysis_mode_priority: Analysis mode this worker is primary for
+            observable_exclusions: globally excluded observables as {o_type: [o_value]},
+                                   defaults to the observable_exclusions: config section
             lock_manager_type: Type of lock manager to use
             workload_manager_type: Type of workload manager to use
             service_config: Service configuration dict
@@ -124,8 +127,8 @@ class EngineConfiguration:
                 f"target nodes for {get_global_runtime_settings().saq_node} is limited to {self.target_nodes}"
             )
         
-        # Observable exclusions (initialized empty)
-        self.observable_exclusions = {}  # key = o_type, value = [] of values
+        # Observable exclusions
+        self.observable_exclusions = self._get_observable_exclusions(observable_exclusions)
 
         # engine limits
         self.memory_limit_kill = get_config().global_settings.memory_limit_kill * 1024 * 1024
@@ -140,6 +143,33 @@ class EngineConfiguration:
         
         return result
     
+    def _get_observable_exclusions(
+        self, observable_exclusions: Optional[dict[str, list[str]]]
+    ) -> dict[str, list[str]]:
+        """Get the globally excluded observables as {o_type: [o_value]}.
+
+        The config format is a flat map of arbitrary names to "<o_type>:<o_value>"
+        specs (see the observable_exclusions: section of etc/saq.default.yaml).
+        Values are split on the first colon only so a value can contain one.
+        """
+        if observable_exclusions is not None:
+            return observable_exclusions
+
+        result = {}
+        for name, spec in (get_config().observable_exclusions or {}).items():
+            if ":" not in spec:
+                logging.error(
+                    f"invalid observable exclusion {name}: {spec} (expected o_type:o_value)"
+                )
+                continue
+
+            o_type, o_value = spec.split(":", 1)
+            values = result.setdefault(o_type, [])
+            if o_value not in values:
+                values.append(o_value)
+
+        return result
+
     def _get_local_analysis_modes(self, local_analysis_modes: Optional[list[str]]) -> list[str]:
         """Get the local analysis modes."""
         if local_analysis_modes is not None:

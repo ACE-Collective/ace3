@@ -276,7 +276,84 @@ def test_engine_configuration_loads_from_config():
     assert config.stats_dir is not None
     assert config.runtime_dir is not None
     assert isinstance(config.observable_exclusions, dict)
-    assert len(config.observable_exclusions) == 0
+    # the observable_exclusions: section of etc/saq.default.yaml is parsed into
+    # {o_type: [o_value]} -- see test_engine_configuration_observable_exclusions
+    assert config.observable_exclusions
+
+
+@pytest.mark.unit
+def test_engine_configuration_observable_exclusions():
+    """The global observable_exclusions: config is parsed into the {o_type: [o_value]}
+    shape the engine reads (docs/ENGINE.md §7.5)."""
+    get_config().observable_exclusions = {
+        "exclude_loopback": "ipv4:127.0.0.1",
+        "exclude_invalid_ipv4": "ipv4:0.0.0.0",
+        "exclude_google": "fqdn:google.com",
+        # values split on the first colon only, so this url keeps its scheme
+        "exclude_url": "url:https://google.com/evil",
+        # blank values are legitimate (office365 journaling)
+        "exclude_user": "user:-",
+    }
+
+    config = EngineConfiguration()
+
+    assert config.observable_exclusions == {
+        "ipv4": ["127.0.0.1", "0.0.0.0"],
+        "fqdn": ["google.com"],
+        "url": ["https://google.com/evil"],
+        "user": ["-"],
+    }
+
+
+@pytest.mark.unit
+def test_engine_configuration_observable_exclusions_deduplicated():
+    """The same type:value listed twice under different names collapses."""
+    get_config().observable_exclusions = {
+        "exclude_google": "fqdn:google.com",
+        "exclude_google_again": "fqdn:google.com",
+    }
+
+    assert EngineConfiguration().observable_exclusions == {"fqdn": ["google.com"]}
+
+
+@pytest.mark.unit
+def test_engine_configuration_observable_exclusions_malformed():
+    """A spec with no type separator is skipped, not fatal -- one bad entry must
+    not take the engine down."""
+    get_config().observable_exclusions = {
+        "bad": "no_separator_here",
+        "exclude_google": "fqdn:google.com",
+    }
+
+    assert EngineConfiguration().observable_exclusions == {"fqdn": ["google.com"]}
+
+
+@pytest.mark.unit
+def test_engine_configuration_observable_exclusions_empty():
+    get_config().observable_exclusions = None
+
+    assert EngineConfiguration().observable_exclusions == {}
+
+
+@pytest.mark.unit
+def test_engine_configuration_observable_exclusions_override():
+    """An explicit dict passed to the constructor wins over the config."""
+    get_config().observable_exclusions = {"exclude_google": "fqdn:google.com"}
+
+    config = EngineConfiguration(observable_exclusions={"ipv4": ["127.0.0.1"]})
+
+    assert config.observable_exclusions == {"ipv4": ["127.0.0.1"]}
+
+
+@pytest.mark.unit
+def test_engine_configuration_shipped_observable_exclusions_are_live():
+    """The exclusions shipped in etc/saq.default.yaml actually reach the engine.
+    This is the specific defect recorded in docs/ENGINE.md §19.2: the config was
+    validated and then dropped on the floor."""
+    config = EngineConfiguration()
+
+    assert "127.0.0.1" in config.observable_exclusions["ipv4"]
+    assert "google.com" in config.observable_exclusions["fqdn"]
 
 
 @pytest.mark.unit
