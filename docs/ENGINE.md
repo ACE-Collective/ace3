@@ -248,7 +248,8 @@ available (§5.2).
   `memory_limit_warning`.
 
 `restart_worker()` removes the dead worker, creates a replacement with the same
-name/priority/idle timeout, starts it, and then does an awkward dance to close
+name/priority/idle timeout, starts it **in the execution mode the pool was
+started in** (§19.11), and then does an awkward dance to close
 the dead `multiprocessing.Process` (falling back to poking `_popen.finalizer()`),
 with an `XXX` acknowledging it does not handle signal-killed processes cleanly.
 
@@ -1750,13 +1751,56 @@ considered. Since `active_dependencies` is sorted by chain score this is
 says otherwise and the `logging.debug("%s active dependencies to process")` line
 implies a batch. Worth either fixing or making explicit.
 
-### 19.11 Worker restart drops the execution mode
+### 19.11 Worker restart drops the execution mode — **fixed**
 
-`WorkerManager.restart_worker` calls `new_worker.start()` with no
-`execution_mode`, defaulting to `NORMAL`. A worker restarted during a
-`SINGLE_SHOT` or `UNTIL_COMPLETE` run comes back in normal mode. The controller
-loop's own immediate `_controlled_stop()` masks this in practice, but it is
-unsound.
+*Original observation.* `WorkerManager.restart_worker` calls
+`new_worker.start()` with no `execution_mode`, defaulting to `NORMAL`. A worker
+restarted during a `SINGLE_SHOT` or `UNTIL_COMPLETE` run comes back in normal
+mode. The controller loop's own immediate `_controlled_stop()` masks this in
+practice, but it is unsound.
+
+`restart_workers()` — the SIGHUP path (§4.2) — had the identical bare
+`worker.start()`.
+
+The mode is only ever read inside the forked child: `worker_loop` sets the
+controlled-shutdown event up front for `UNTIL_COMPLETE` and breaks after one work
+item for `SINGLE_SHOT` (§4.5). A replacement started as `NORMAL` does neither, so
+it idles and polls for work forever while the rest of the pool winds down.
+
+*Fix.* The execution mode is now state of the pool rather than an argument that
+exists only during the initial fork. `WorkerManager.__init__` initializes
+`self.execution_mode = EngineExecutionMode.NORMAL` — the same default
+`Worker.start` already carried, so a manager whose workers were never started
+through `start_workers()` behaves exactly as before — `start_workers()` records
+the mode it was handed, and both restart paths replay it:
+
+```python
+new_worker.start(execution_mode=self.execution_mode)   # restart_worker
+worker.start(execution_mode=self.execution_mode)       # restart_workers
+```
+
+No signatures changed and no call site in `core.py` moved. This is a soundness
+fix, not a behavior change any running deployment will observe: `SINGLE_SHOT`
+and `UNTIL_COMPLETE` still break out of `main_controller_loop` to
+`_controlled_stop()` on the first iteration, so `check_workers()` never runs in
+those modes, and SIGHUP is only reachable from `NORMAL`. What it removes is the
+dependency of one on the other — supervision no longer has to be unreachable for
+the pool to stay in the mode it was started in.
+
+*Regression guard.* `tests/saq/engine/test_worker_restart_execution_mode.py` —
+nine unit tests, seven of which failed before the fix. Eight drive a real
+`WorkerManager` over a `FakeWorker` that records the mode each `start()` was
+given: the mode is retained by `start_workers()`; a replacement comes back in
+`SINGLE_SHOT`, `UNTIL_COMPLETE` and `NORMAL` respectively (the `NORMAL` case
+passed before and pins that the fix did not invert the default); a manager that
+never called `start_workers()` still restarts as `NORMAL`; the same assertion
+driven through `check_workers()`, the real caller in the controller loop; the
+SIGHUP `restart_workers()` path; and name / `idle_timeout_max` /
+`analysis_mode_priority` still carrying over to the replacement. The ninth uses a
+real `Worker` with `ACE_MP_CONTEXT` mocked and asserts on the fork itself — both
+the initial and the replacement `Process(...)` get
+`kwargs={"execution_mode": UNTIL_COMPLETE}` — since those kwargs are the only
+place the mode has any effect.
 
 ### 19.12 Tracking files are racy and process-global by name
 

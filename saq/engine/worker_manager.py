@@ -26,6 +26,10 @@ class WorkerManager:
         self.workers: list[Worker] = []
         self.state = WorkerManagerState.INITIALIZING
 
+        # the execution mode the workers were started in
+        # replacement workers are started in the same mode (see restart_worker)
+        self.execution_mode = EngineExecutionMode.NORMAL
+
     def set_state(self, state: WorkerManagerState):
         """Sets the state of the worker manager."""
         if state != self.state:
@@ -97,6 +101,9 @@ class WorkerManager:
         if not self.workers:
             logging.error("no workers to start (forgot to call initialize_workers?)")
             return
+
+        # remember the mode so that any worker we restart comes back in the same mode
+        self.execution_mode = execution_mode
 
         # start the workers
         for worker in self.workers:
@@ -194,8 +201,8 @@ class WorkerManager:
             analysis_mode_priority=dead_worker.analysis_mode_priority
         )
 
-        # start the worker
-        new_worker.start()
+        # start the worker in the same mode the rest of the pool is running in
+        new_worker.start(execution_mode=self.execution_mode)
 
         #
         # this is a bit hairy
@@ -232,7 +239,7 @@ class WorkerManager:
 
         # start all workers
         for worker in self.workers:
-            worker.start()
+            worker.start(execution_mode=self.execution_mode)
 
         # wait for all workers to start
         for worker in self.workers:
