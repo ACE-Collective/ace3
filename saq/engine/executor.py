@@ -58,7 +58,7 @@ from saq.engine.errors import (
     WaitForAnalysisException,
 )
 from saq.engine.shutdown_interface import ShutdownInterface
-from saq.engine.tracking import TrackingMessageManager
+from saq.engine.tracking import TrackingClient
 from saq.engine.work_stack import WorkStack, WorkTarget
 from saq.error import report_exception
 from saq.filesystem.adapter import FileSystemAdapter
@@ -152,7 +152,7 @@ class AnalysisExecutor:
         self,
         configuration_manager: ConfigurationManager,
         delayed_analysis_interface: DelayedAnalysisInterface,
-        tracking_message_manager: TrackingMessageManager,
+        tracking_message_manager: TrackingClient,
         single_threaded_mode=False,
         shutdown_interface: Optional[ShutdownInterface] = None,
     ):
@@ -761,6 +761,39 @@ class AnalysisExecutor:
         else:
             return get_config().global_settings.maximum_analysis_time
 
+    def _get_root_save_frequency(self, analysis_mode: str) -> Optional[int]:
+        """Returns the mid-pass save policy for the given analysis mode.
+
+        None means "never write mid-pass, only at the boundaries of the pass". 0 means
+        "write after every module invocation". N means "write at most once every N
+        seconds".
+        """
+        analysis_mode_config = get_config().get_analysis_mode_config(analysis_mode)
+        if analysis_mode_config.root_save_frequency is not None:
+            return analysis_mode_config.root_save_frequency
+        else:
+            return get_config().global_settings.root_save_frequency
+
+    def _save_root(self, context: EngineExecutionContext, root: RootAnalysis) -> bool:
+        """Writes the in-flight analysis tree to disk according to the mode's policy.
+
+        This only ever *defers* a write, never drops one: every exit from the pass saves
+        unconditionally in AnalysisOrchestrator._execute_analysis, on success and on
+        failure alike, while the root's lock is still held.
+
+        Returns True if the tree was written.
+        """
+        frequency = self._get_root_save_frequency(root.analysis_mode)
+        if frequency is None:
+            return False
+
+        if frequency and (datetime.now() - context.last_root_save).total_seconds() < frequency:
+            return False
+
+        root.save()
+        context.last_root_save = datetime.now()
+        return True
+
     def _check_for_analysis_timeout(
         self,
         context,
@@ -1192,9 +1225,10 @@ class AnalysisExecutor:
         elapsed_time = (datetime.now() - start_time).total_seconds()
         current_total_time = elapsed_time + total_analysis_time_seconds
 
-        # keep the persisted budget current as we go. the root is saved after every module
-        # invocation, so this is what survives if the worker dies mid-module (the monitor's
-        # os._exit, or the manager's SIGKILL). the pass is squared up exactly in the finally
+        # keep the persisted budget current as we go. whatever the mode's root_save_frequency
+        # last wrote is what survives if the worker dies mid-module (the monitor's os._exit,
+        # or the manager's SIGKILL), so on a mode that only saves at pass boundaries this
+        # rewinds with the rest of the tree. the pass is squared up exactly in the finally
         # of _execute_recursive_analysis -- both writes are absolute values derived from the
         # same per-pass baseline, so they cannot double count
         context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = current_total_time
@@ -1316,7 +1350,7 @@ class AnalysisExecutor:
                             AnalysisExecutionResult.COMPLETED, root, work_item,
                             work_stack, work_stack_buffer, analysis_module,
                         )
-                        root.save()
+                        self._save_root(context, root)
                         return
                     elif lookup_result.miss_reason is not None:
                         # Real cache miss (DB lookup happened, no usable row).
@@ -1482,7 +1516,7 @@ class AnalysisExecutor:
                 logging.debug(
                     f"analysis module {analysis_module} returned {analysis_result} for {work_item}"
                 )
-                root.save()
+                self._save_root(context, root)
 
             finally:
                 # make sure we stop the monitor thread

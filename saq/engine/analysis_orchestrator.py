@@ -516,7 +516,17 @@ class AnalysisOrchestrator:
             session = get_db()
             alert = session.query(Alert).filter(Alert.uuid == execution_context.root.uuid).first()
             if alert:
-                alert.load()
+                # hand the alert the tree we just analyzed rather than making sync() read a
+                # second copy of it off disk and serialize that back out. only safe when both
+                # point at the same storage directory -- otherwise fall back to loading.
+                if alert.storage_dir == execution_context.root.storage_dir:
+                    alert.attach_root_analysis(execution_context.root)
+                else:
+                    logging.debug(
+                        "alert %s storage_dir %s does not match root storage_dir %s - loading from disk",
+                        execution_context.root.uuid, alert.storage_dir, execution_context.root.storage_dir,
+                    )
+                    alert.load()
                 # do not rebuild the index if there are outstanding analysis requests --
                 # a later non-delayed pass will do the final rebuild. But if analysis was
                 # aborted (timeout / exception) the delayed requests were abandoned and

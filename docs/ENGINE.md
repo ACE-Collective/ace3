@@ -238,16 +238,18 @@ available (§5.2).
 `DEAD` when:
 
 - `worker.process` is `None` or has an exit code (process died / auto-refreshed);
-- `worker.analysis_has_timed_out()` — the tracking file says a module started
-  more than its `maximum_analysis_time` ago. The manager `SIGKILL`s the whole
-  process tree;
+- `worker.analysis_has_timed_out()` — the manager's own tracking state (§12.5)
+  says a module started more than its `maximum_analysis_time` ago. Both ends of
+  that comparison are monotonic readings taken in the manager. It `SIGKILL`s the
+  whole process tree;
 - RSS exceeds `global_settings.memory_limit_kill` (MB → bytes in
   `EngineConfiguration`). `SIGKILL`. A warning is logged above
   `memory_limit_warning`.
 
-`restart_worker()` removes the dead worker, creates a replacement with the same
-name/priority/idle timeout, starts it **in the execution mode the pool was
-started in** (§19.11), and then does an awkward dance to close
+`restart_worker()` marks the dead worker's tracking record as a pending failure,
+removes the worker, creates a replacement with the same name/priority/idle
+timeout, starts it **in the execution mode the pool was started in** (§19.11)
+*and with that pending record* (§12.5), and then does an awkward dance to close
 the dead `multiprocessing.Process` (falling back to poking `_popen.finalizer()`),
 with an `XXX` acknowledging it does not handle signal-killed processes cleanly.
 
@@ -263,15 +265,17 @@ process entry point:
 3. set the startup event;
 4. compute `_next_auto_refresh_time` if `auto_refresh_frequency > 0`;
 5. `UNTIL_COMPLETE` → set the controlled-shutdown event up front;
-6. `_handle_failed_analysis()` — recover from a previous incarnation that died
-   mid-module (§12.5);
+6. `_handle_failed_analysis(pending_failure)` — record the failure of a previous
+   incarnation that died mid-module, from the record the manager forked us with
+   (§12.5);
 7. loop:
    - immediate-shutdown event set → break;
    - past auto-refresh time → break (the manager forks a fresh worker, which
      re-imports every module — the point of the feature);
    - controlled-shutdown set *and* both queues empty → break;
-   - `get_next_work_target()`; if it returned a work item, write the tracking
-     file, `execute(work_item)`, clear tracking. Then, on `execute()`'s answer:
+   - `get_next_work_target()`; if it returned a work item, report the target to
+     the tracking server, `execute(work_item)`, clear it. Then, on `execute()`'s
+     answer:
      - True (a work item was processed) → the backoff resets (`idle_time = 0`)
        and the loop polls again immediately — except in `SINGLE_SHOT`, which
        falls through to the break below;
@@ -886,7 +890,7 @@ Everything else — key derivation, storage, refusal rules, blob spilling — is
 | Layer | Limit | Enforced by | Effect |
 |---|---|---|---|
 | One module invocation | mode `maximum_analysis_time`, else `global_settings.maximum_analysis_time` (warning threshold) and module `maximum_analysis_time` (kill threshold) | `AnalysisModuleMonitor` thread | warns every 5s, then `os._exit(1)` on the worker process |
-| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` reading the tracking file | `SIGKILL` the worker process tree |
+| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the manager's tracking state | `SIGKILL` the worker process tree |
 | Whole run, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
 | Whole run, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
 | Delayed analysis | `timeout_hours/minutes/seconds` passed to `delay_analysis` | `Worker.is_delayed_analysis_timed_out` | refuses further delay; analysis closed out empty |
@@ -954,18 +958,34 @@ re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
 
 Two independent mechanisms:
 
-**Local fast path.** A worker writes two pickle files under
-`data/var/tracking/<worker name>/` — `target` (the storage dir) and `module`
-(module path, observable uuid/type/value, `maximum_analysis_time`, start time).
-On startup, `Worker._handle_failed_analysis` reads them; if both are present the
-previous incarnation died mid-module. It loads the root, optionally copies the
-offending file + a `details-*` note to `data/review/failed_analysis/YYYY/MM/DD/<uuid>/`
+**Local fast path.** Every worker reports what it is doing to a `TrackingServer`
+running in the **manager** process, over a one-way `multiprocessing.Pipe` opened
+just before the fork (`saq/engine/tracking.py`). The manager holds the records in
+memory — keyed by `root_uuid`, carrying `storage_dir`, `worker_name`,
+`module_path`, the observable's uuid/type/value, `maximum_analysis_time` and a
+monotonic deadline — and mirrors them to a checksummed
+`data/var/tracking/<node>.json` so they also survive a restart of the manager
+itself. The state cannot live in the worker, because the worker is the thing that
+dies; it is deliberately not in the shared database, because it is node-local and
+would otherwise cost a transaction per module invocation per worker per node.
+
+When a worker dies, `restart_worker` marks its record pending and forks the
+replacement with it as a `Process` kwarg. `Worker._handle_failed_analysis(record)`
+loads the root at `record.storage_dir`, optionally copies the offending file + a
+`details-*` note to `data/review/failed_analysis/YYYY/MM/DD/<uuid>/`
 (`copy_terminated_analysis_causes`), calls
 `root.set_analysis_failed(module_path, obs_type, obs_value, "process died
-unexpectedly")`, saves, and force-releases the lock *scoped to the lock_uuid it
-actually observes* so it can never delete a live worker's lock. The workload row
-was never deleted (the `finally` never ran), so the item is immediately
-re-claimable — and gate 8 (`is_analysis_failed`) skips the module that killed it.
+unexpectedly")`, saves, force-releases the lock *scoped to the lock_uuid it
+actually observes* so it can never delete a live worker's lock, and finally
+**acknowledges** the record so the manager can drop it — a replacement that dies
+mid-recovery leaves the attribution in place for the next one. The workload row was
+never deleted (the `finally` never ran), so the item is immediately re-claimable —
+and gate 8 (`is_analysis_failed`) skips the module that killed it.
+
+At engine start the manager reads the snapshot before forking anything and hands
+each leftover record to a worker; a record still naming a module was never cleared
+by its owner and is unresolved by definition. Dispatch is not matched on worker
+name, so a pool that shrank since the last run cannot strand one.
 
 **Lock-expiry recovery.** `saq/engine/recovery.py::recover_expired_locks` lists
 locks older than `lock_timeout_seconds`, re-acquires each with
@@ -975,8 +995,10 @@ for its own `node_id` on each status-update tick
 (`execute_node_recovery_routines`); the primary node also runs it globally
 (`execute_primary_node_routines`).
 
-The tracking files are documented in-code as racy (`# XXX there are race
-conditions here that need to be addressed`).
+Note that lock-expiry recovery alone cannot attribute a failure — it frees the work
+item but has no idea which module killed the worker, so that module runs again.
+Tracking is the only carrier of that knowledge, which is why it matters most in
+analysis modes that do not write mid-pass (§19.7).
 
 ---
 
@@ -1144,17 +1166,25 @@ Understanding where the writes are is essential to any performance work.
 every analysis's `details` to its own file, then writes the whole tree as one
 JSON document to `data.json.tmp` and `shutil.move`s it into place. It is called:
 
-- **once per module invocation** (`_execute_module_analysis`, after `analyze()`);
-- once per **cache hit** replay;
-- once at the end of `_execute_analysis`;
+- **per module invocation** (`_execute_module_analysis`, after `analyze()`) and
+  per **cache hit** replay — both through `AnalysisExecutor._save_root`, which
+  applies the analysis mode's `root_save_frequency` policy (§16.2, §19.7). Unset
+  (every detection mode by default) writes nothing here; `0` writes every time;
+  `N` writes at most once every `N` seconds;
+- once at the end of `_execute_analysis`, on success *and* on failure — this is
+  the unconditional boundary write that makes the policy above safe to defer;
 - again in `_convert_to_alert`;
 - again inside `Alert.sync()`.
 
-So a root that runs 40 module invocations rewrites the full JSON document at
-least 40 times. For a large alert tree this dominates the I/O profile.
-`saq/analysis/io_tracking.py` instruments this (`_track_writes`/`_track_reads`);
-`tests/saq/engine/test_functionality.py::test_io_count` and friends assert on the
-counts.
+So a root that runs 40 module invocations in `correlation` (5 seconds) writes the
+full document a handful of times rather than 40+, and in a detection mode writes
+it only at the boundary. For a large alert tree — 1.9 MB, 306 observables, 1230
+analyses on the alert profiled in `docs/GUI_ALERT_PAGE_PERFORMANCE.md` — this was
+the dominant I/O cost. `saq/analysis/io_tracking.py` instruments it
+(`_track_writes`/`_track_reads`); `tests/saq/engine/test_functionality.py::test_io_count`
+and friends assert on the counts, though they are all currently `@pytest.mark.skip`.
+`tests/saq/engine/test_root_save_frequency.py` counts the mid-pass writes directly
+instead.
 
 **Details flushing.** Analysis `details` blobs live out-of-line. When a module
 produces or updates an analysis, the workflow event puts it in the buffer, and
@@ -1204,8 +1234,16 @@ than per-process.
 
 `module_groups`, `enabled_modules`, `disabled_modules`, `cleanup`, and optional
 per-mode `maximum_cumulative_analysis_warning_time`,
-`maximum_cumulative_analysis_fail_time`, `maximum_analysis_time` (each falls back
-to `global_settings`).
+`maximum_cumulative_analysis_fail_time`, `maximum_analysis_time`,
+`root_save_frequency` (each falls back to `global_settings`).
+
+`root_save_frequency` is how often the in-flight tree is written to disk *during*
+a pass (§19.7). Omitted/`null` never writes mid-pass — correct for detection modes,
+where nobody is watching an individual root; `0` writes after every module
+invocation; `N` writes at most once every `N` seconds. The shipped config sets `5`
+on `correlation`, `dispositioned` and `event`, the modes an analyst may be looking
+at while they run. It never affects the unconditional writes at the pass
+boundaries.
 
 Resolution (`saq/engine/module_loader.py::_build_analysis_mode_mapping`): union of
 every module in every `module_group`, plus `enabled_modules`, minus
@@ -1229,7 +1267,8 @@ Two validators reject incoherent combinations: `cache_ttl` with `wide_diff`, and
 
 `lock_keepalive_frequency`, `maximum_cumulative_analysis_warning_time`,
 `maximum_cumulative_analysis_fail_time`, `maximum_analysis_time`,
-`memory_limit_warning`, `memory_limit_kill` (both MB).
+`root_save_frequency` (the fallback for modes that do not set their own — see
+§16.2; shipped unset), `memory_limit_warning`, `memory_limit_kill` (both MB).
 
 Also global runtime settings (not YAML): `lock_timeout_seconds`, `saq_node`,
 `saq_node_id`, `company_id`, `forced_alerts`, `semaphores_enabled`.
@@ -1263,7 +1302,7 @@ skipped. This is separate from the per-module `observable_exclusions:` under an
 |---|---|
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
-| What a worker is doing right now | `data/var/tracking/<worker>/target` and `/module` (pickled) |
+| What a worker is doing right now | in memory in the manager, mirrored to `data/var/tracking/<node>.json` (checksummed) |
 | Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`EngineExecutionContext.record_execution_statistics`) |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
@@ -1717,14 +1756,89 @@ on both) spends ~2s per pass against a 3s `maximum_cumulative_analysis_fail_time
 and must log "ACE took too long to analyze" on the *second* pass and not the
 first. Before the fix the second pass measured ~2s and never tripped.
 
-### 19.7 `root.save()` per module invocation
+### 19.7 `root.save()` per module invocation — **fixed**
 
-§15 covers the mechanics. The design question: the executor writes the entire
+*Original observation.* §15 covers the mechanics. The executor wrote the entire
 serialized tree after every single module call (plus every cache-hit replay), so
-serialization cost scales as *O(modules × tree size)* within one work item. For
-correlation-mode alerts with large trees this is the dominant cost. Candidate
-directions: save on a dirty-flag + interval, save only at work-item boundaries
-and on delayed-analysis suspension points, or make the serializer incremental.
+serialization cost scaled as *O(modules × tree size)* within one work item.
+`docs/GUI_ALERT_PAGE_PERFORMANCE.md` measures a real alert at 1.9 MB `data.json`,
+306 observables, 1230 analyses and 925 detail files; `save_to_disk` also walks
+every one of those analyses calling `save_analysis_details`. The cache-hit replay
+path was the worst case — the cache turns a multi-second module into a
+millisecond replay, and the save straight after re-imposed the full O(tree) cost.
+
+*What the write was actually buying.* Two things, and they do not apply to the
+same work. **Alert enrichment** (`correlation` and the other alert-facing modes)
+is long-running, low-volume and watched by a human: an analyst reloading the alert
+page mid-run should see partial results. **Detection** (`email`, `http`, `file`,
+`binary`, `yara`, …) is high-volume and fast, nobody is watching an individual
+root, and restarting a crashed root from the beginning is cheaper than paying an
+O(tree) serialize per module.
+
+Nothing in the GUI polls alert *content*: `GET /analysis?direct=<uuid>` reads
+`data.json` once per page load, and the only alert-page poller is a 5s
+`GET /get_alert_meta` returning DB columns (disposition, owner, `is_locked`,
+status). `alerts.version` and the index tables update once per work-item pass. So
+even in `correlation` the mid-run disk copy is observable only by a manual page
+reload, which tolerates seconds of lag comfortably.
+
+*Fix.* The mid-pass write is now a per-mode policy, `root_save_frequency`
+(§16.2/§16.4), resolved by `AnalysisExecutor._get_root_save_frequency` exactly the
+way `maximum_analysis_time` is: the mode's value if set, else `global_settings`.
+Unset means never write mid-pass; `0` means write after every module invocation
+(the old behavior); `N` means at most once every `N` seconds. Both hot-path calls
+(`executor.py`, after `analyze()` and on cache-hit replay) go through
+`_save_root`, which is also the only place that consults the policy. The shipped
+`etc/saq.default.yaml` sets `5` on `correlation`, `dispositioned` and `event`, and
+leaves every detection mode unset.
+
+Everything else that saves is left unconditional, and that is what makes the
+policy safe: the throttle only ever *defers* a write, never drops one. Every pass
+exits through `_execute_analysis`'s save — on success, timeout, error and
+cancellation — while the root's lock is still held, so a delayed module's
+suspension point is covered too.
+
+Deliberately **not** done: skipping the write when `ModuleExecutionSnapshot.diff`
+reports an empty delta. Narrow diffs (86 of 88 configured modules) do not capture
+mutations to other pre-existing observables, in-place edits to an existing
+analysis's `details`, or `root.state` writes such as the cumulative-time budget. A
+time throttle defers; a delta-based skip would permanently drop.
+
+*Consequences.* Memory is unaffected — details flushing runs off the work-stack
+buffer drain, not off `root.save()`. A `SIGKILL`/`os._exit(1)` now loses up to
+`root_save_frequency` seconds of completed module work in an alert-facing mode,
+and the whole pass in a detection mode; those modules re-run, and any external
+side effects they have may be repeated.
+`root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS]` rewinds with them. What does *not*
+change is that the module which killed the worker is still skipped:
+`set_analysis_failed` keys on `observable_type:observable_value` rather than uuid
+(deliberately, since the crash may predate the observable reaching disk), so a
+re-created observable still matches and gate 8 fires on the retry. That property
+is what makes restart-from-scratch safe. One small regression: with no mid-pass
+write, `copy_terminated_analysis_causes` cannot find a file observable that was
+created during the lost pass, so the forensic copy silently does nothing — the
+bytes are still under `files/`, only the reference is missing.
+
+While here, the tail of a correlation pass stopped doing two full round-trips for
+nothing. `_sync_alert_to_database` called `alert.load()`, parsing `data.json` into
+a *second* `RootAnalysis` for `Alert.sync()` to re-serialize straight back out,
+immediately after `_convert_to_alert` had already saved the live tree. It now
+hands the alert the live tree via `Alert.attach_root_analysis()`, falling back to
+loading when the alert's `storage_dir` does not match the root's.
+
+*Regression guard.* `tests/saq/engine/test_root_save_frequency.py`. Unit
+tests pin the resolution table (mode wins when set, else `global_settings`) and the
+policy itself (unset never writes, `0` writes every time, `N` collapses a burst to
+one write and reopens the window afterwards). Integration
+tests run the real engine over `test_groups` under each of the three values and
+assert the mid-pass write count while confirming the reloaded root still holds
+every module's analysis, plus that a delayed-analysis suspension is on disk under
+every policy. A system test is the counterpart to `test_timeout_root_flushed`: in
+a mode with no mid-pass write, `GenerateFileAnalysis` runs *twice* after a worker
+death — the cost — while `is_analysis_failed` still records the module that killed
+it, so there is no crash loop.
+`etc/saq.unittest.default.yaml` pins the test modes to `0` so the rest of the
+suite keeps the pre-throttle behavior.
 
 ### 19.8 `_check_for_outstanding_work` ran up to three times — **fixed**
 
@@ -1903,14 +2017,108 @@ the initial and the replacement `Process(...)` get
 `kwargs={"execution_mode": UNTIL_COMPLETE}` — since those kwargs are the only
 place the mode has any effect.
 
-### 19.12 Tracking files are racy and process-global by name
+### 19.12 Tracking files are racy and process-global by name — **fixed**
 
-`TrackingMessageManager` writes non-atomically (open + `pickle.dump`) and reads
-with a bare `except` that treats a torn read as "nothing being tracked" — the
-code says so (`# XXX there are race conditions here that need to be addressed`).
-The consequence is that `WorkerManager.check` can miss a hung module for one
-tick, and `_handle_failed_analysis` can miss a crash entirely. The directory is
-keyed on worker *name* only, so two engines sharing a data dir would collide.
+*Original observation.* `TrackingMessageManager` wrote non-atomically (open +
+`pickle.dump`) and read with a bare `except` that treated a torn read as "nothing
+being tracked" — the code said so (`# XXX there are race conditions here that need
+to be addressed`). `WorkerManager.check` could therefore miss a hung module for a
+tick, and `_handle_failed_analysis` could miss a crash entirely. The directory was
+keyed on worker *name* only, so two engines sharing a data dir would collide. The
+child stamped a naive `datetime.now()` and the parent compared it against its own,
+which a clock step or DST shift could skew either way. Roughly 40% of the module
+was dead: `WorkTargetTrackingMessage` and all four `TRACKER_MESSAGE_TYPE_*`
+constants had no references outside the file, and
+`WorkTargetTrackingMessage.__init__` had a live bug where `self.target = target`
+unconditionally clobbered its `DelayedAnalysisRequest` branch.
+
+*Where the state belongs.* Not in the worker — the worker is the thing that dies.
+Not in the ACE database either: it is shared by every node, and this is node-local
+information consumed only by the process that spawned the worker, so writing it
+centrally would mean a transaction per module invocation per worker per node. It
+belongs in the **manager process**, which is the one process guaranteed to outlive
+the worker.
+
+*Fix.* `saq/engine/tracking.py` is now a client/server pair over local IPC.
+
+- **Transport.** One `multiprocessing.Pipe(duplex=False)` per worker, opened
+  immediately before the fork and with the parent's copy of the write end dropped
+  immediately after — so the child inherits a live write end, no sibling's, and a
+  worker restarted in place gets a fresh channel. Not a shared
+  `multiprocessing.Queue`: a process killed while holding its internal write lock
+  can wedge every other writer, and workers dying by `SIGKILL` is the whole premise
+  here. `Connection.send`/`recv` is length-prefixed, so a worker killed mid-write
+  surfaces as a read error rather than a plausible-looking half record.
+- **Reader.** A dedicated thread in the manager (`multiprocessing.connection.wait`),
+  not the one-second controller tick — a worker replaying many cache hits can emit
+  hundreds of small messages a second and its `send()` must never block on the
+  analysis critical path. It is stopped across every fork (`TrackingServer.forking`),
+  because a child forked from a multi-threaded parent inherits locks — the logging
+  module's included — with no thread alive to release them.
+- **Store.** An in-memory dict, so the timeout check is a dict lookup instead of two
+  file reads per worker per second, mirrored on every change to
+  `<data_dir>/var/tracking/<node>.json`: a SHA-256 digest on the first line and the
+  JSON payload after it, written to a `.tmp` sibling and atomically renamed. The
+  rename makes it all-or-nothing against a crash; the checksum covers what the
+  rename cannot, which is a power loss that lands the directory entry but not the
+  data blocks. A file that fails to verify reads as "nothing was tracked" —
+  deliberately, rather than by swallowing an exception. Not fsync'd: a power loss
+  can lose the last record, and the node is restarting anyway, so we lose only the
+  attribution. Keying the path on the node fixes the shared-data-dir collision.
+- **Records are keyed by `root_uuid`, not by worker name.** The unit of tracking is
+  the analysis, not the process doing it, so a pool that shrinks between restarts
+  cannot strand anything. Pending failures live in their own map rather than as a flag
+  on the in-flight one: the replacement worker normally re-claims the very root that
+  killed its predecessor (that workload row was never deleted), and sharing one map
+  would let the new work target overwrite the failure before anyone applied it — which
+  is exactly the crash loop this subsystem exists to prevent.
+- **Clock.** The manager stamps the module start on `time.monotonic()` and compares
+  against its own reading, so both ends of the comparison are now taken in one
+  process.
+- **Handoff.** On death the manager marks the record and passes it to the
+  replacement through `Process(kwargs=...)`, alongside `execution_mode` (§19.11).
+  `Worker._handle_failed_analysis` takes the record as an argument instead of
+  reading two pickle files, and — this is new — acknowledges it over the pipe once
+  applied. The old code cleared tracking in a `finally` regardless of outcome, so a
+  replacement that itself died mid-recovery lost the attribution. At engine start
+  the manager reads the snapshot first and hands each leftover to a worker; a record
+  still naming a module was never cleared by its owner and is unresolved by
+  definition. Dispatch is deliberately not matched on worker name.
+
+The recovery work stays in the worker on purpose: loading a large root and possibly
+copying a file observable would stall the manager's supervision tick for every
+other worker in the pool. The manager owns the *record*; the worker does the *work*.
+`WorkerManager.check` now also has its module/target detail back in the
+memory-limit-kill log line, which had been commented out with a `TODO` because the
+information was not reachable.
+
+*Not attempted.* Putting the record in the shared database so another node's
+`recover_expired_locks` could attribute a failure. Storage directories are not
+necessarily shared across nodes, so a remote node could not load the root to record
+it anyway; the manager's startup recovery covers the case that actually happens,
+which is this node's engine restarting.
+
+*Regression guard.* `tests/saq/engine/test_tracking.py` covers the
+record's serialization (the monotonic deadline never persists; unknown keys from
+another build do not break a load), the state transitions, the monotonic timeout
+boundary, and the failure handoff: a pending record survives until acknowledged, a
+worker that died *between* modules has nothing to attribute, and a replacement
+under the same name taking a different root leaves the pending record alone. On
+the snapshot: a round trip through a fresh server (the full-manager-restart path),
+a cleanly finished root that must not be resurrected, and a tampered payload and a
+truncated file that must both read as empty rather than as garbage. On the
+transport: delivery through a real pipe, a truncated frame that must not corrupt
+existing state, EOF dropping the connection, and a send after close staying silent
+so a worker whose manager went away never fails its analysis over it. One test pins
+the re-claim case specifically — a replacement taking the same root back must not
+wipe the pending failure, before or after a manager restart. Two more tests
+cover what the file-based design never could — a record recovered from a snapshot
+landing on the correct root by `root_uuid` and then being acknowledged, and startup
+dispatch handing out a record whose original worker no longer exists after the pool
+was resized. The three worker-death system tests in `test_functionality.py`
+(`test_failed_analysis_module`, `test_timeout`,
+`test_copy_terminated_analysis_cause`) are unchanged and remain the end-to-end
+contract.
 
 ### 19.13 `WorkStack` could not actually hold `Analysis` — **fixed**
 
@@ -2161,7 +2369,7 @@ saq/engine/
   module_loader.py            resolve mode configs → module section names → loaded modules
   worker_manager.py           fork/supervise/restart/shutdown the worker pool
   worker.py                   worker process loop, work-item execution, delayed-analysis API,
-                              crash recovery from tracking files, current_execution_context,
+                              crash recovery from the manager's tracking record, current_execution_context,
                               the two shutdown events WorkerShutdownAdapter reports
   analysis_orchestrator.py    per-work-item lifecycle: load, disposition, execute,
                               detections, mode transitions, alerting, cleanup
@@ -2174,7 +2382,8 @@ saq/engine/
   work_stack.py               WorkTarget, WorkStack
   delayed_analysis.py         DelayedAnalysisRequest
   delayed_analysis_adapter.py / delayed_analysis_interface.py
-  tracking.py                 TrackingMessageManager (what a worker is doing, on disk)
+  tracking.py                 TrackingServer / TrackingClient (what a worker is doing,
+                              held by the manager over a local pipe)
   recovery.py                 expired-lock recovery
   errors.py                   AnalysisTimeoutError, AnalysisFailedException,
                               WaitForAnalysisException

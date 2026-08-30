@@ -471,6 +471,68 @@ class TestSyncAlertToDatabaseBuildIndex:
         assert mock_alert.sync.called is expected_sync
 
 
+@pytest.mark.unit
+class TestSyncAlertToDatabaseAvoidsRereadingTheTree:
+    """_sync_alert_to_database used to make Alert.sync() read the tree back off disk.
+
+    alert.load() parses the whole data.json into a *second* RootAnalysis, which sync() then
+    re-serializes straight back out -- immediately after _convert_to_alert had already saved
+    the live tree. On a large alert that is two full round trips of a multi-megabyte document
+    for nothing. The engine is holding the tree it just analyzed, so it hands that over
+    instead (see docs/ENGINE.md §19.7)."""
+
+    @pytest.fixture
+    def orchestrator(self):
+        config_manager = Mock(spec=ConfigurationManager)
+        config_manager.config = Mock()
+        return AnalysisOrchestrator(
+            configuration_manager=config_manager,
+            analysis_executor=Mock(spec=AnalysisExecutor),
+            workload_manager=Mock(),
+            lock_manager=Mock(),
+        )
+
+    def _context(self, storage_dir):
+        context = Mock(spec=EngineExecutionContext)
+        context.root = Mock()
+        context.root.uuid = str(uuid.uuid4())
+        context.root.storage_dir = storage_dir
+        context.root.delayed = False
+        context.analysis_aborted = False
+        context.analysis_skipped = False
+        return context
+
+    def test_live_tree_is_attached_when_the_storage_dir_matches(self, orchestrator):
+        mock_alert = Mock()
+        mock_alert.storage_dir = "/data/ace/abc"
+        mock_session = Mock()
+        mock_session.query.return_value.filter.return_value.first.return_value = mock_alert
+
+        context = self._context("/data/ace/abc")
+        with patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
+            orchestrator._sync_alert_to_database(context)
+
+        mock_alert.attach_root_analysis.assert_called_once_with(context.root)
+        mock_alert.load.assert_not_called()
+        assert mock_alert.sync.called
+
+    def test_falls_back_to_loading_when_the_storage_dir_does_not_match(self, orchestrator):
+        """The alert and the root must actually be the same thing before we substitute one
+        for the other -- otherwise sync() would write the wrong tree to the alert."""
+        mock_alert = Mock()
+        mock_alert.storage_dir = "/data/ace/abc"
+        mock_session = Mock()
+        mock_session.query.return_value.filter.return_value.first.return_value = mock_alert
+
+        context = self._context("/data/work/abc")
+        with patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
+            orchestrator._sync_alert_to_database(context)
+
+        mock_alert.load.assert_called_once()
+        mock_alert.attach_root_analysis.assert_not_called()
+        assert mock_alert.sync.called
+
+
 @pytest.mark.integration
 class TestSyncAlertToDatabaseRebuildIndexIntegration:
     """End-to-end variant of TestSyncAlertToDatabaseBuildIndex against a real alert + DB:

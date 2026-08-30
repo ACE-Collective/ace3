@@ -74,6 +74,9 @@ class EngineExecutionContext:
         self.work_stack_buffer: Optional[list["WorkTarget"]] = None
         self.first_pass: bool = True
         self.last_disposition_check: datetime = datetime.now()
+        # when the in-flight tree was last written to disk by AnalysisExecutor._save_root.
+        # only meaningful for analysis modes that set root_save_frequency
+        self.last_root_save: datetime = datetime.now()
         self.final_analysis_mode: bool = False
         self.last_analyze_time_warning: Optional[datetime] = None
 

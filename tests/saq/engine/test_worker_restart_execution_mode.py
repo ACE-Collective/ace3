@@ -40,17 +40,22 @@ class FakeWorker:
     ``WorkerManager.check()`` looks at.
     """
 
-    def __init__(self, name, configuration_manager, node_manager, idle_timeout_max=None, analysis_mode_priority=None):
+    def __init__(self, name, configuration_manager, node_manager, idle_timeout_max=None,
+                 analysis_mode_priority=None, tracking_server=None):
         self.name = name
         self.configuration_manager = configuration_manager
         self.node_manager = node_manager
         self.idle_timeout_max = idle_timeout_max
         self.analysis_mode_priority = analysis_mode_priority
+        self.tracking_server = tracking_server
         self.process = None
         self.start_modes = []
+        self.pending_failures = []
 
-    def start(self, execution_mode: EngineExecutionMode = EngineExecutionMode.NORMAL):
+    def start(self, execution_mode: EngineExecutionMode = EngineExecutionMode.NORMAL,
+              pending_failure=None):
         self.start_modes.append(execution_mode)
+        self.pending_failures.append(pending_failure)
         self.process = MagicMock()
         self.process.pid = 1000 + len(self.start_modes)
         self.process.exitcode = None
@@ -92,7 +97,13 @@ def manager(configuration_manager) -> WorkerManager:
     with patch("saq.engine.worker_manager.Worker", FakeWorker):
         worker_manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
         worker_manager.initialize_workers()
-        yield worker_manager
+        try:
+            yield worker_manager
+        finally:
+            # start_workers spins up the tracking server's reader thread. these tests drive
+            # WorkerManager in the pytest process rather than a forked engine, so leaving it
+            # running would leave pytest multi-threaded for every later test that forks
+            worker_manager.tracking_server.stop()
 
 
 @pytest.mark.unit
@@ -197,12 +208,21 @@ def test_restarted_worker_process_receives_execution_mode(configuration_manager)
         # one worker per pool entry keeps the Process call list unambiguous
         manager.workers = manager.workers[:1]
 
-        manager.start_workers(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-        dead_worker = manager.workers[0]
-        assert isinstance(dead_worker, Worker)
+        try:
+            manager.start_workers(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+            dead_worker = manager.workers[0]
+            assert isinstance(dead_worker, Worker)
 
-        manager.restart_worker(dead_worker)
+            manager.restart_worker(dead_worker)
+        finally:
+            manager.tracking_server.stop()
 
         assert len(mock_mp_context.Process.call_args_list) == 2
         for call in mock_mp_context.Process.call_args_list:
-            assert call.kwargs["kwargs"] == {"execution_mode": EngineExecutionMode.UNTIL_COMPLETE}
+            # pending_failure rides alongside the mode (see docs/ENGINE.md §19.12) -- there
+            # is nothing to hand over here, so it is None on both the initial fork and the
+            # replacement
+            assert call.kwargs["kwargs"] == {
+                "execution_mode": EngineExecutionMode.UNTIL_COMPLETE,
+                "pending_failure": None,
+            }

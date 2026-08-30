@@ -161,6 +161,17 @@ class Alert(Base):
         self._root_analysis.set_log_error_on_load(self._log_error_on_load)
         return self._root_analysis.load()
 
+    def attach_root_analysis(self, root_analysis: RootAnalysis):
+        """Attaches an already-loaded RootAnalysis instead of reading one from disk.
+
+        The engine holds the live tree it just finished analyzing, so having sync() call
+        load() would parse the entire data.json into a second RootAnalysis only to
+        re-serialize that copy straight back out. The caller is responsible for checking
+        that the root actually belongs to this alert (matching storage_dir).
+        """
+        assert isinstance(root_analysis, RootAnalysis)
+        self._root_analysis = root_analysis
+
     __tablename__ = 'alerts'
     __table_args__ = (
         Index('idx_location', 'location', mysql_length=767),

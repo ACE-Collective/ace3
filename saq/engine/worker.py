@@ -28,7 +28,13 @@ from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.lock_manager.local import LocalLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.shutdown_adapter import WorkerShutdownAdapter
-from saq.engine.tracking import TrackingMessageManager
+from saq.engine.tracking import (
+    PipeTrackingClient,
+    TrackingRecord,
+    TrackingServer,
+    close_inherited_clients,
+    get_tracking_snapshot_path,
+)
 from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
@@ -52,7 +58,8 @@ class Worker:
         configuration_manager: ConfigurationManager,
         node_manager: NodeManagerInterface,
         idle_timeout_max: Optional[int] = None,
-        analysis_mode_priority: Optional[str] = None
+        analysis_mode_priority: Optional[str] = None,
+        tracking_server: Optional[TrackingServer] = None,
     ):
         self.name = name
         self.process = None
@@ -71,8 +78,16 @@ class Worker:
         # the time at which we will automatically refresh the worker
         self._next_auto_refresh_time = None  # datetime
 
-        # used to track the current work target and analysis module
-        self.tracking_message_manager = TrackingMessageManager(name)
+        # what this worker is analyzing is tracked by the process that spawned it, because
+        # this process is the one that dies. when a manager gave us its server we report to
+        # it over a pipe; otherwise (single threaded mode, or a directly constructed worker)
+        # there is no manager to report to and we keep the state right here.
+        if tracking_server is not None:
+            self.tracking_server = tracking_server
+            self.tracking_message_manager = tracking_server.create_pipe_client(name)
+        else:
+            self.tracking_server = TrackingServer(snapshot_path=get_tracking_snapshot_path())
+            self.tracking_message_manager = self.tracking_server.create_local_client(name)
 
         # maximum amount of time to wait until looking for new work again
         self.idle_timeout_max = idle_timeout_max or 5
@@ -263,14 +278,41 @@ class Worker:
         """Returns True if the worker is in a shutdown state."""
         return self.is_immediate_shutdown() or self.is_controlled_shutdown()
 
-    def start(self, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Process:
-        """Non-blocking call to start the worker. Returns the Process object created for the worker."""
-        self.process = ACE_MP_CONTEXT.Process(
-            target=self.worker_loop,
-            name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
-            kwargs={"execution_mode": execution_mode}
-        )
-        self.process.start()
+    def start(
+        self,
+        execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL,
+        pending_failure: Optional[TrackingRecord] = None,
+    ) -> Process:
+        """Non-blocking call to start the worker. Returns the Process object created for the worker.
+
+        ``pending_failure`` is how the manager hands a replacement worker the record of the
+        module that killed its predecessor. It travels as a Process kwarg for the same
+        reason execution_mode does -- it is state the child needs before it does anything
+        else, and there is no channel back from the manager to the worker.
+        """
+        def _fork():
+            self.process = ACE_MP_CONTEXT.Process(
+                target=self.worker_loop,
+                name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
+                kwargs={"execution_mode": execution_mode, "pending_failure": pending_failure}
+            )
+            self.process.start()
+
+        if isinstance(self.tracking_message_manager, PipeTrackingClient):
+            # the pipe is opened immediately before the fork so the child inherits a live
+            # write end and no sibling's, and so a worker restarted in place gets a working
+            # channel again. forking() makes sure we are single threaded while we do it
+            with self.tracking_server.forking():
+                self.tracking_server.open_pipe(self.tracking_message_manager)
+                _fork()
+        else:
+            _fork()
+
+        # the child has its own copy of the write end now. the parent has to drop this one,
+        # or the manager's read end never reaches EOF when the child dies
+        if isinstance(self.tracking_message_manager, PipeTrackingClient):
+            self.tracking_message_manager.close()
+
         return self.process
 
     def single_threaded_start(self, execution_mode: EngineExecutionMode):
@@ -319,12 +361,16 @@ class Worker:
     # WORKER INTERFACE
     # ------------------------------------------------------------------------
 
-    def worker_loop(self, execution_mode: EngineExecutionMode):
+    def worker_loop(self, execution_mode: EngineExecutionMode, pending_failure: Optional[TrackingRecord] = None):
 
         # forked workers inherit the parent's transaction id, so generate a fresh
         # default for this process to distinguish its loop-level logs from siblings
         from saq.logging import initialize_transaction_id
         initialize_transaction_id()
+
+        # we also inherited an open copy of every sibling worker's tracking pipe. holding
+        # those open would stop the manager from ever seeing EOF on a sibling that dies
+        close_inherited_clients(keep=self.tracking_message_manager)
 
         logging.info(
             "started worker {} loop on process {} with priority {}".format(
@@ -358,8 +404,9 @@ class Worker:
             logging.info("single shot mode - shutting down after completing work")
             self._controlled_shutdown_event.set()
 
-        # check for any failed analysis that may have occurred before we started
-        self._handle_failed_analysis()
+        # if we are replacing a worker that died mid-module, the manager handed us the
+        # record of what it was doing so we can record the failure against that root
+        self._handle_failed_analysis(pending_failure)
 
         while True:
             # is this worker shutting down?
@@ -520,36 +567,36 @@ class Worker:
             return True
 
     def analysis_has_timed_out(self) -> bool:
-        """Returns True if the current analysis has timed out (is stuck)."""
+        """Returns True if the current analysis has timed out (is stuck).
 
-        #
-        # NOTE this is called by the manager
-        #
-
-        # is it taking too long to analyze something?
-        last_analysis_module = self.tracking_message_manager.get_current_analysis_module()
-        last_work_target = self.tracking_message_manager.get_current_work_target()
-        if last_analysis_module is None:
+        NOTE this is called by the manager, against the manager's own tracking state -- both
+        ends of the comparison are taken in this process on the monotonic clock, so it is
+        immune to the clock steps and DST shifts the old cross-process comparison was not.
+        """
+        if not self.tracking_server.is_timed_out(self.name):
             return False
 
-        threshold = last_analysis_module.start_time + timedelta(seconds=last_analysis_module.maximum_analysis_time)
-        if datetime.now() > threshold:
-            logging.error(
-                f"analysis module {last_analysis_module} "
-                f"timed out analyzing {last_work_target if last_work_target else 'unknown'} "
-                f"on pid {self.process.pid if self.process else 'unknown'}"
-            )
-            return True
+        record = self.tracking_server.get_active_record(self.name)
+        logging.error(
+            f"analysis module {record.module_path if record else 'unknown'} "
+            f"timed out analyzing {record.storage_dir if record else 'unknown'} "
+            f"on pid {self.process.pid if self.process else 'unknown'}"
+        )
+        return True
 
-        return False
+    def _handle_failed_analysis(self, record: Optional[TrackingRecord]):
+        """Records the module that killed our predecessor so we do not run it again.
 
-    def _handle_failed_analysis(self):
-        # was the process executing an analysis module?
-        last_work_target = self.tracking_message_manager.get_current_work_target()
-        last_analysis_module = self.tracking_message_manager.get_current_analysis_module()
-
-        if not last_work_target or not last_analysis_module:
+        Without this the replacement worker picks the same work item back up (its workload
+        row was never deleted -- the finally that would have deleted it never ran), runs the
+        same module, and dies again. ``record`` is supplied by the manager, which owns the
+        tracking state precisely because the process that produced it is gone.
+        """
+        if record is None or not record.has_module:
             return
+
+        last_work_target = record.storage_dir
+        last_analysis_module = record
 
         logging.warning(
             f"detected failed analysis module {last_analysis_module} while analyzing {last_work_target}"
@@ -590,7 +637,7 @@ class Worker:
                                 file_observable.full_path, failed_analysis_dir
                             )
 
-                    target_uuid = last_analysis_module.observable_id or str(
+                    target_uuid = last_analysis_module.observable_uuid or str(
                         uuid.uuid4()
                     )
 
@@ -625,10 +672,11 @@ analysis_module = {last_analysis_module}
             observed_lock_uuid = get_lock_uuid(root.uuid)
             self.lock_manager.force_release_lock(root.uuid, lock_uuid=observed_lock_uuid)
 
+            # only now tell the manager it can forget the record. acknowledging on the way
+            # out rather than unconditionally means a replacement that itself dies during
+            # recovery leaves the attribution in place for the next one
+            self.tracking_message_manager.report_failure_resolved(record.root_uuid)
+
         except Exception as e:
             logging.error(f"unable to mark analysis as failed: {e}")
             report_exception()
-
-        finally:
-            self.tracking_message_manager.clear_target_tracking()
-            self.tracking_message_manager.clear_module_tracking()
