@@ -2529,6 +2529,7 @@ analysis_mode_analysis:
     - email
     - correlation
 
+analysis_mode_cli:
   name: cli
   # more of a debug mode, used by the command line correlate subcommand of the ace executable script
   module_groups:

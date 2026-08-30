@@ -212,6 +212,21 @@ class EngineConfiguration:
             logging.error("both excluded_analysis_modes and local_analysis_modes are enabled for the engine")
             logging.error("this is a misconfiguration error")
             sys.exit(1)
+
+        # default_analysis_mode is what every fallback path lands on: a root submitted with no
+        # mode (add_workload), an unknown mode (get_analysis_modules_by_mode), or a module that
+        # declares no modes. If it does not resolve to a defined analysis mode then all of those
+        # silently get an empty module list, and get_analysis_mode_config() raises later in the
+        # pass. Logged rather than fatal so an existing deployment with this wrong does not fail
+        # to start on upgrade.
+        defined_modes = sorted(mode.name for mode in get_config().analysis_modes)
+        if self.default_analysis_mode not in defined_modes:
+            logging.error(
+                "default_analysis_mode %s is not a defined analysis mode - work falling back to "
+                "it will run no analysis modules. defined modes are: %s",
+                self.default_analysis_mode,
+                ", ".join(defined_modes),
+            )
     
     def _filter_valid_analysis_pools(self, analysis_pools: dict[str, int]) -> dict[str, int]:
         """Filter the analysis pools to only include valid modes."""

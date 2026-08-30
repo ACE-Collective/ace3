@@ -13,6 +13,46 @@ ENV_PREFIX = "env:"
 ENCRYPTED_PREFIX = "encrypted:"
 FILE_PREFIX = "file:"
 
+
+class DuplicateKeyWarningLoader(yaml.SafeLoader):
+    """SafeLoader that says something when a mapping declares the same key twice.
+
+    YAML silently keeps the last value for a duplicate key, which makes a whole class of
+    config defect invisible. A missing `analysis_mode_cli:` section header once left that
+    mode's keys sitting inside the `analysis_mode_analysis:` mapping, quietly redefining
+    the wrong mode and leaving the engine's default_analysis_mode pointing at nothing --
+    and nobody noticed for months.
+
+    Deliberately a warning rather than an error: a duplicate key anywhere in a site's own
+    SAQ_CONFIG_PATHS overlay or an integration's etc/<name>.yaml would otherwise stop the
+    engine from starting. Last-wins semantics are unchanged.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            try:
+                key = self.construct_object(key_node, deep=deep)
+            except Exception:
+                # unhashable or unconstructable keys are the base class's problem, not ours
+                continue
+
+            try:
+                if key in seen:
+                    logging.warning(
+                        "%s:%d: duplicate key %r in mapping - the last value wins",
+                        key_node.start_mark.name,
+                        key_node.start_mark.line + 1,
+                        key,
+                    )
+                else:
+                    seen.add(key)
+            except TypeError:
+                continue
+
+        return super().construct_mapping(node, deep=deep)
+
+
 custom_merger = Merger(
     # type strategies
     [
@@ -35,7 +75,7 @@ class YAMLConfig:
     def __init__(self) -> None:
         self._data: dict[str, dict[str, Any]] = {}
         self.loaded_files: set[str] = set()
-        self._yaml_loader_cls = yaml.SafeLoader
+        self._yaml_loader_cls = DuplicateKeyWarningLoader
 
     def copy(self) -> "YAMLConfig":
         """Return a deep copy of this YAMLConfig object."""

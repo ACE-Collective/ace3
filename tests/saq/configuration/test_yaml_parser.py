@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -614,3 +615,60 @@ def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
     assert config._data["section"]["password"] == "dict_secret"
     assert config._data["section"]["tokens"][0] == "list_secret"
     assert config._data["section"]["tokens"][1] == "plain_value"
+
+#
+# duplicate key detection
+#
+
+@pytest.mark.unit
+def test_duplicate_key_logs_a_warning(tmp_path, caplog):
+    """YAML keeps the last value for a duplicate key and says nothing about it, which is how
+    a missing `analysis_mode_cli:` section header hid inside another mode's block for months.
+    The loader now names the file, line and key."""
+    path = tmp_path / "dup.yaml"
+    path.write_text("block:\n  name: first\n  cleanup: true\n  name: second\n")
+
+    with caplog.at_level(logging.WARNING):
+        data = YAMLConfig()._load_yaml_file(str(path))
+
+    messages = [r.getMessage() for r in caplog.records if "duplicate key" in r.getMessage()]
+    assert len(messages) == 1
+    assert "dup.yaml:4" in messages[0]
+    assert "'name'" in messages[0]
+
+    # and the warning changes nothing about how the file parses
+    assert data == {"block": {"name": "second", "cleanup": True}}
+
+
+@pytest.mark.unit
+def test_no_warning_without_duplicates(tmp_path, caplog):
+    path = tmp_path / "clean.yaml"
+    path.write_text("block:\n  name: first\n  cleanup: true\nother:\n  name: first\n")
+
+    with caplog.at_level(logging.WARNING):
+        data = YAMLConfig()._load_yaml_file(str(path))
+
+    assert not [r for r in caplog.records if "duplicate key" in r.getMessage()]
+    assert data == {"block": {"name": "first", "cleanup": True}, "other": {"name": "first"}}
+
+
+@pytest.mark.unit
+def test_duplicate_key_reported_once_per_occurrence(tmp_path, caplog):
+    """Nested mappings are checked too, and each duplicate is reported where it appears."""
+    path = tmp_path / "nested.yaml"
+    path.write_text(
+        "outer:\n"
+        "  inner:\n"
+        "    a: 1\n"
+        "    a: 2\n"
+        "  other:\n"
+        "    b: 1\n"
+        "    b: 2\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        data = YAMLConfig()._load_yaml_file(str(path))
+
+    messages = [r.getMessage() for r in caplog.records if "duplicate key" in r.getMessage()]
+    assert len(messages) == 2
+    assert data == {"outer": {"inner": {"a": 2}, "other": {"b": 2}}}

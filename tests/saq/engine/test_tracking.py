@@ -490,6 +490,9 @@ def test_startup_dispatch_survives_a_shrunken_pool(configuration_manager_for_dis
             assert "correlation-7" not in {worker.name for worker in manager.workers}
         finally:
             manager.tracking_server.stop()
+            # this test deliberately writes to the real node snapshot path, and start_workers
+            # leaves the record pending (nobody acked it). don't leave that for the next test.
+            clear_all_tracking()
 
 
 @pytest.mark.integration

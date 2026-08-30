@@ -52,7 +52,7 @@ Related documents:
 | **RootAnalysis** | The unit of work and the root of the analysis tree. Serialized to a storage directory (`<storage_dir>/data.json` plus `.ace/` details files and a `files/` + hardcopy tree). | `saq/analysis/root.py` |
 | **Observable** | A piece of data that can be analyzed (`ipv4`, `url`, `file`, `email_address`, …). Carries tags, directives, relationships, dependencies, detection points. | `saq/analysis/observable.py` |
 | **Analysis** | The output of one analysis module applied to one observable. Has a summary, `summary_details`, a free-form `details` blob stored out-of-line, and any observables it produced. | `saq/analysis/analysis.py` |
-| **analysis mode** | A named set of analysis modules (`correlation`, `email`, `analysis`, `dispositioned`, …). The mode on the `RootAnalysis` decides which modules are eligible. | `analysis_mode_<name>:` in YAML |
+| **analysis mode** | A named set of analysis modules (`correlation`, `email`, `analysis`, `cli`, `dispositioned`, …). The mode on the `RootAnalysis` decides which modules are eligible. A mode is registered under its `name:` field, *not* its section key — the two must agree. | `analysis_mode_<name>:` in YAML |
 | **work item / work target** | What a worker pulls off the queue: either a `RootAnalysis` (from the `workload` table) or a `DelayedAnalysisRequest` (from the `delayed_analysis` table). | `saq/engine/worker.py` |
 | **WorkTarget** | An *inner*-loop item: one observable, optionally pinned to one module and/or one dependency. Not the same thing as a work item. | `saq/engine/work_stack.py` |
 | **detection point** | A marker anywhere in the tree that says "this is worth an analyst's time". Any detection point promotes the analysis to an alert. | `saq/analysis/detection_point.py` |
@@ -1244,6 +1244,17 @@ invocation; `N` writes at most once every `N` seconds. The shipped config sets `
 on `correlation`, `dispositioned` and `event`, the modes an analyst may be looking
 at while they run. It never affects the unconditional writes at the pass
 boundaries.
+
+A mode is registered under its **`name:` field**, not its `analysis_mode_<name>:`
+section key (`ACEConfig.load_analysis_mode_configs`). The two must agree — a block
+whose key and `name:` disagree silently defines a mode under the wrong identity and
+leaves nothing behind under the expected one. `service_engine.default_analysis_mode`
+must name a defined mode: every fallback path lands there (a submission with no
+mode, an unknown mode, a module declaring no modes), and if it does not resolve, all
+of them get an empty module list and `get_analysis_mode_config()` raises later in the
+pass. `EngineConfiguration._validate_analysis_mode_configuration` logs an error when
+it does not, and `tests/saq/configuration/test_analysis_mode_config.py` guards both
+invariants against the shipped config.
 
 Resolution (`saq/engine/module_loader.py::_build_analysis_mode_mapping`): union of
 every module in every `module_group`, plus `enabled_modules`, minus
