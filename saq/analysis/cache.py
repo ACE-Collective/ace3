@@ -156,7 +156,7 @@ class CacheWriteResult(NamedTuple):
     """Metadata returned by :func:`put_cached_delta` on a successful write.
 
     Callers use this to bump per-(root, module) counters on the
-    :class:`AnalysisExecutionContext` — the actual metric emission happens at
+    :class:`EngineExecutionContext` — the actual metric emission happens at
     end-of-root in ``record_execution_statistics``.
     """
     op: str  # NOTE always "insert" — cache is append-only

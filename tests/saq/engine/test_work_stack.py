@@ -16,6 +16,7 @@ nor a running engine, so everything below is a unit test.
 """
 import ast
 import os
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,7 +24,9 @@ import pytest
 from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_TEST
-from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
+from saq.engine.delayed_analysis import DelayedAnalysisRequest
+from saq.engine.execution_context import EngineExecutionContext
+from saq.engine.executor import AnalysisExecutor
 from saq.engine.work_stack import WorkStack, WorkTarget
 
 
@@ -113,7 +116,7 @@ def test_initialize_work_stack_queues_only_observables(tmp_path):
     always was — exactly the observables in the tree."""
     executor = _make_executor()
     root = _make_root(tmp_path)
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     executor._initialize_work_stack(context)
 
@@ -131,12 +134,20 @@ def test_initialize_work_stack_for_delayed_request_holds_one_target(tmp_path):
     root = _make_root(tmp_path, observable_count=1)
     observable = root.all_observables[0]
 
-    delayed_request = MagicMock()
+    # the work item *is* the delayed request now -- the context derives both
+    # `root` and `delayed_analysis_request` from it (docs/ENGINE.md 19.15)
+    delayed_request = DelayedAnalysisRequest(
+        uuid=root.uuid,
+        observable_uuid=observable.uuid,
+        analysis_module_str="analysis_module_basic_test",
+        next_analysis=datetime.now(),
+        storage_dir=str(tmp_path),
+    )
+    delayed_request.root = root
     delayed_request.observable = observable
     delayed_request.analysis_module = MagicMock()
 
-    context = AnalysisExecutionContext(root)
-    context.delayed_analysis_request = delayed_request
+    context = EngineExecutionContext(delayed_request)
 
     executor._initialize_work_stack(context)
 
@@ -179,7 +190,7 @@ def test_drain_work_stack_buffer_flushes_analysis_and_queues_observables(tmp_pat
     flush_analysis_details = MagicMock()
     root.analysis_tree_manager.flush_analysis_details = flush_analysis_details
 
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.final_analysis_mode = True
 
     work_stack = WorkStack()
@@ -206,7 +217,7 @@ def test_drain_work_stack_buffer_of_analysis_only_still_exits_final_analysis(tmp
     flush_analysis_details = MagicMock()
     root.analysis_tree_manager.flush_analysis_details = flush_analysis_details
 
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.final_analysis_mode = True
 
     work_stack = WorkStack()

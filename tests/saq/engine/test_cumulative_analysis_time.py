@@ -17,6 +17,7 @@ from saq.constants import F_TEST, STATE_TOTAL_ANALYSIS_TIME_SECONDS
 from saq.engine.core import Engine
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.enums import EngineExecutionMode
+from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count
@@ -45,7 +46,7 @@ def _executor() -> AnalysisExecutor:
 def test_root_work_item_starts_a_fresh_budget(root_analysis):
     root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 500
 
-    _executor().execute(root_analysis)
+    _executor().execute(EngineExecutionContext(root_analysis))
 
     assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 0
 
@@ -61,7 +62,7 @@ def test_delayed_analysis_request_continues_the_budget(root_analysis):
         storage_dir=root_analysis.storage_dir)
     request.root = root_analysis
 
-    _executor().execute(request)
+    _executor().execute(EngineExecutionContext(request))
 
     assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 500
 
@@ -78,7 +79,7 @@ def test_budget_defaults_to_zero_when_missing(root_analysis):
         storage_dir=root_analysis.storage_dir)
     request.root = root_analysis
 
-    _executor().execute(request)
+    _executor().execute(EngineExecutionContext(request))
 
     assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 0
 

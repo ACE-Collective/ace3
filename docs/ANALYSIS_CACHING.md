@@ -3339,7 +3339,7 @@ activity, so non-cacheable modules pay no byte cost.
 > lookup-cost-vs-live-cost payoff comparison needs. Divide by
 > `(cache_hit_count + cache_miss_count)`, not hits, for a per-lookup
 > average. The aggregation is held on
-`AnalysisExecutionContext` counters and flushed at end-of-root. PR #242 also
+`EngineExecutionContext` counters and flushed at end-of-root. PR #242 also
 fixed the per-root `count`/latency semantics (it was counting
 `(root, context)` pairs, not individual `analyze()` invocations). Note
 `exec_count` counts `analyze()` *invocations*, so a delayed-analysis module

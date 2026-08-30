@@ -80,6 +80,11 @@ class Worker:
         self.workload_manager = self._create_workload_manager(self.config.workload_manager_type)
         self.analysis_orchestrator = self._create_analysis_orchestrator()
 
+        # the context for the work item we are currently executing, or None when idle.
+        # this is the single object every layer below us shares for that work item, and
+        # it is what _handle_lock_lost() cancels
+        self.current_execution_context: Optional[EngineExecutionContext] = None
+
     def __str__(self):
         return f"worker {self.name}"
 
@@ -222,9 +227,21 @@ class Worker:
         )
 
     def _handle_lock_lost(self):
-        logging.warning("lost lock on current work item - cancelling in-flight analysis")
+        """Called from the keepalive thread when the claim on our work item is gone.
+
+        The cancel lands on the work item's one execution context, which exists
+        from the moment we claimed the item -- so a loss noticed while the root
+        is still being loaded, or while the disposition is being checked, is
+        honored rather than dropped.
+        """
+        context = self.current_execution_context
+        if context is None:
+            logging.warning("lost lock but no work item is in flight")
+            return
+
+        logging.warning("lost lock on %s - cancelling in-flight analysis", context.work_item)
         try:
-            self.analysis_orchestrator.cancel_current_analysis()
+            context.cancel_analysis()
         except Exception as e:
             logging.error("error cancelling analysis after lock loss: %s", e)
 
@@ -426,8 +443,11 @@ class Worker:
         with transaction_id(work_item.uuid):
             logging.debug("got work item {}".format(work_item))
 
-            # Create execution context for this work item
+            # Create execution context for this work item. publishing it before the
+            # keepalive starts is what lets on_lock_lost cancel an item that is still
+            # being loaded rather than firing into a None
             execution_context = EngineExecutionContext(work_item)
+            self.current_execution_context = execution_context
 
             # at this point the thing to work on is locked (using the locks database table)
             # start a secondary thread that just keeps the lock open

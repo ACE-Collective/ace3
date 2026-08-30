@@ -114,10 +114,6 @@ class AnalysisOrchestrator:
                     logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
                     report_exception()
 
-    def cancel_current_analysis(self):
-        """Cancel the analysis currently being orchestrated, if any."""
-        self.analysis_executor.cancel_current_analysis()
-
     def _process_work_item(self, execution_context: EngineExecutionContext) -> bool:
         """Process the work item and set up the root analysis."""
         work_item = execution_context.work_item
@@ -233,8 +229,10 @@ class AnalysisOrchestrator:
         start_time = time.time()
 
         try:
-            # use the AnalysisExecutor to perform the core analysis
-            context = self.analysis_executor.execute(execution_context.work_item)
+            # use the AnalysisExecutor to perform the core analysis. it runs against
+            # the context we already have rather than building one of its own, so a
+            # cancellation that arrived before now is still visible to it
+            self.analysis_executor.execute(execution_context)
 
             elapsed_time = time.time() - start_time
 
@@ -246,7 +244,7 @@ class AnalysisOrchestrator:
             # record the execution statistics
             engine_config = get_engine_config()
             if engine_config.metrics_logging.enabled:
-                context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
+                execution_context.record_execution_statistics(elapsed_time, get_global_runtime_settings().module_stats_dir)
 
         except Exception as e:
             elapsed_time = time.time() - start_time

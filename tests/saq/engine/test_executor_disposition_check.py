@@ -24,7 +24,8 @@ from saq.constants import (
     DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_IGNORE,
 )
-from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
+from saq.engine.execution_context import EngineExecutionContext
+from saq.engine.executor import AnalysisExecutor
 
 ALERT_UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -45,10 +46,10 @@ def _make_executor(frequency: int) -> AnalysisExecutor:
     )
 
 
-def _make_context(tmp_path, elapsed_seconds: float = 0) -> AnalysisExecutionContext:
+def _make_context(tmp_path, elapsed_seconds: float = 0) -> EngineExecutionContext:
     """Real context, with ``last_disposition_check`` rewound by
     ``elapsed_seconds`` to simulate an analysis that has been running a while."""
-    context = AnalysisExecutionContext(RootAnalysis(storage_dir=str(tmp_path)))
+    context = EngineExecutionContext(RootAnalysis(storage_dir=str(tmp_path)))
     context.last_disposition_check = datetime.now() - timedelta(seconds=elapsed_seconds)
     return context
 

@@ -5,7 +5,7 @@ import os
 import shutil
 import threading
 import time
-from typing import Optional, Union
+from typing import Optional
 from enum import Enum
 
 from saq.analysis.analysis import Analysis
@@ -50,8 +50,8 @@ from saq.constants import (
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.delayed_analysis_interface import DelayedAnalysisInterface
+from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.errors import (
     AnalysisFailedException,
     AnalysisTimeoutError,
@@ -65,8 +65,6 @@ from saq.modules.context import AnalysisModuleContext
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.network_semaphore.client import NetworkSemaphore
 from saq.util import local_time
-
-from fluent import sender
 
 
 class ObservableExclusionResult(Enum):
@@ -140,191 +138,14 @@ class AnalysisModuleMonitor:
                 break
 
 
-class AnalysisExecutionContext:
-    """
-    Context object that holds all runtime state for a single analysis execution.
-    This separates the transient state from the configuration in AnalysisExecutor.
-    """
-
-    def __init__(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]):
-        """Initialize the context with the analysis target."""
-        assert isinstance(analysis_target, RootAnalysis) or isinstance(
-            analysis_target, DelayedAnalysisRequest
-        )
-
-        # Set root and delayed analysis request based on target type
-        if isinstance(analysis_target, RootAnalysis):
-            self.root = analysis_target
-            self.delayed_analysis_request = None
-        elif isinstance(analysis_target, DelayedAnalysisRequest):
-            self.root = analysis_target.root
-            self.delayed_analysis_request = analysis_target
-
-        # Runtime state variables
-        self._cancel_analysis_flag = False
-        self.total_analysis_time = {}
-        # Per-(root, module) aggregates surfaced on the per-root metrics event.
-        # Keyed by module.name; default 0 when absent.
-        self.total_exec_count: dict[str, int] = {}
-        self.cache_hit_count: dict[str, int] = {}
-        self.cache_miss_count: dict[str, int] = {}
-        # the cache is append-only — every write is an insert
-        self.cache_write_count_insert: dict[str, int] = {}
-        self.cache_lookup_ms_sum: dict[str, int] = {}
-        self.cache_lookup_ms_max: dict[str, int] = {}
-        # lookup_ms decomposed: key_ms is the (separately measured) cache-key /
-        # tool-probe cost; db/decode/blob sum to lookup_ms.
-        self.cache_lookup_key_ms_sum: dict[str, int] = {}
-        self.cache_lookup_db_ms_sum: dict[str, int] = {}
-        self.cache_lookup_decode_ms_sum: dict[str, int] = {}
-        self.cache_lookup_blob_ms_sum: dict[str, int] = {}
-        self.cache_write_ms_sum: dict[str, int] = {}
-        self.cache_write_ms_max: dict[str, int] = {}
-        self.cache_write_bytes_uncompressed_sum: dict[str, int] = {}
-        self.cache_write_bytes_compressed_sum: dict[str, int] = {}
-        self.work_stack = None
-        self.work_stack_buffer = None
-        self.first_pass = True
-        self.last_disposition_check = datetime.now()
-        self.final_analysis_mode = False
-        self.last_analyze_time_warning = None
-
-    @property
-    def is_delayed_analysis(self) -> bool:
-        """Returns True if the analysis target is a delayed analysis request."""
-        return self.delayed_analysis_request is not None
-    
-    @property
-    def cancel_analysis_flag(self):
-        """Return whether analysis has been cancelled."""
-        return self._cancel_analysis_flag
-
-    def cancel_analysis(self):
-        """Cancel the current analysis."""
-        self._cancel_analysis_flag = True
-
-    def record_cache_lookup(self, module_name: str, result) -> None:
-        """Accumulate a cache lookup's latency into the per-module aggregates.
-
-        Called for BOTH hits and misses (a miss's lookup time is pure overhead
-        on top of the live run — see the cache-miss handling in the executor).
-        ``result`` is a ``CacheLookupResult``; ``lookup_ms`` gets both a sum and
-        a max, the four components only sums (they drive the per-component
-        averages the payoff panel breaks lookup cost down by).
-        """
-        self.cache_lookup_ms_sum[module_name] = (
-            self.cache_lookup_ms_sum.get(module_name, 0) + result.lookup_ms
-        )
-        self.cache_lookup_ms_max[module_name] = max(
-            self.cache_lookup_ms_max.get(module_name, 0), result.lookup_ms
-        )
-        self.cache_lookup_key_ms_sum[module_name] = (
-            self.cache_lookup_key_ms_sum.get(module_name, 0) + result.key_ms
-        )
-        self.cache_lookup_db_ms_sum[module_name] = (
-            self.cache_lookup_db_ms_sum.get(module_name, 0) + result.db_ms
-        )
-        self.cache_lookup_decode_ms_sum[module_name] = (
-            self.cache_lookup_decode_ms_sum.get(module_name, 0) + result.decode_ms
-        )
-        self.cache_lookup_blob_ms_sum[module_name] = (
-            self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
-        )
-
-    def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
-        """Records the execution statistics for the analysis.
-
-        Emits one fluent-bit event per (root, module) pair where the module
-        had any activity in this execution context — either live execution
-        time, cache hits, cache misses, or cache writes. Each event carries
-        the per-module aggregates (exec_count, cache_* counters, byte/time
-        sums) and root-level context (alert_type, is_alert, queue).
-
-        Args:
-            elapsed_time: The total elapsed time for the analysis.
-            stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
-        """
-        try:
-            engine_config = get_engine_config()
-            if not engine_config.metrics_logging.enabled:
-                return
-
-            fluent_bit_sender = sender.FluentSender(
-                engine_config.metrics_logging.fluent_bit_tag,
-                host=engine_config.metrics_logging.fluent_bit_hostname,
-                port=engine_config.metrics_logging.fluent_bit_port)
-
-            current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
-            _total = sum(self.total_analysis_time.values())
-
-            # Iterate the union of all per-(root, module) counter dicts so
-            # cache-only modules (cache hits, no live executions) still get
-            # a row.
-            all_module_keys = (
-                set(self.total_analysis_time.keys())
-                | set(self.total_exec_count.keys())
-                | set(self.cache_hit_count.keys())
-                | set(self.cache_miss_count.keys())
-                | set(self.cache_write_count_insert.keys())
-            )
-
-            for key in all_module_keys:
-                analysis_time = self.total_analysis_time.get(key, 0.0)
-                percentage = 0.0
-                if elapsed_time:
-                    percentage = (analysis_time / elapsed_time) * 100.0
-                if not elapsed_time:
-                    elapsed_time = 0
-
-                payload = {
-                    "timestamp": current_time,
-                    "module": key,
-                    "analysis_time_seconds": analysis_time,
-                    "percentage": percentage,
-                    "total_analysis_time_seconds": _total,
-                    "total_time_seconds": elapsed_time,
-                    "root_uuid": self.root.uuid,
-                    "exec_count": self.total_exec_count.get(key, 0),
-                    "alert_type": self.root.alert_type,
-                    "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
-                    "queue": self.root.queue,
-                }
-
-                hits = self.cache_hit_count.get(key, 0)
-                misses = self.cache_miss_count.get(key, 0)
-                inserts = self.cache_write_count_insert.get(key, 0)
-                if hits or misses or inserts:
-                    payload["cache_hit_count"] = hits
-                    payload["cache_miss_count"] = misses
-                    payload["cache_write_count_insert"] = inserts
-                    # lookup latency covers ALL lookups (hits + misses) —
-                    # misses' lookup time is the cache's pure overhead.
-                    if hits or misses:
-                        payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
-                        payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
-                        # lookup_ms decomposed: db+decode+blob sum to lookup_ms;
-                        # key_ms is the separate cache-key/tool-probe cost.
-                        payload["cache_lookup_key_ms_sum"] = self.cache_lookup_key_ms_sum.get(key, 0)
-                        payload["cache_lookup_db_ms_sum"] = self.cache_lookup_db_ms_sum.get(key, 0)
-                        payload["cache_lookup_decode_ms_sum"] = self.cache_lookup_decode_ms_sum.get(key, 0)
-                        payload["cache_lookup_blob_ms_sum"] = self.cache_lookup_blob_ms_sum.get(key, 0)
-                    if inserts:
-                        payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
-                        payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
-                        payload["cache_write_bytes_uncompressed_sum"] = (
-                            self.cache_write_bytes_uncompressed_sum.get(key, 0)
-                        )
-                        payload["cache_write_bytes_compressed_sum"] = (
-                            self.cache_write_bytes_compressed_sum.get(key, 0)
-                        )
-
-                fluent_bit_sender.emit(None, payload)
-
-        except Exception as e:
-            logging.error("unable to record statistics: {}".format(e))
-
 class AnalysisExecutor:
-    """Executes analysis modules on observables and manages the analysis workflow."""
+    """Executes analysis modules on observables and manages the analysis workflow.
+
+    This object is configuration only -- it holds no state for the run in
+    progress. What the executor is currently working on lives on the
+    EngineExecutionContext it is handed, which the Worker owns and publishes on
+    ``Worker.current_execution_context``.
+    """
 
     def __init__(
         self,
@@ -349,37 +170,19 @@ class AnalysisExecutor:
         self.tracking_message_manager = tracking_message_manager
         self.single_threaded_mode = single_threaded_mode
 
-        # we keep track of total analysis time per module
-        self.total_analysis_time = {}  # key = module.name, value = total_seconds
-
-        # this is set to True to cancel the analysis going on in the process() function
-        self._cancel_analysis_flag = False
-
-        # the AnalysisExecutionContext for the analysis currently running in execute(), or None.
-        self._current_context: Optional[AnalysisExecutionContext] = None
-
-    def cancel_current_analysis(self):
-        """Cancel the analysis currently running in execute(), if any."""
-        context = self._current_context
-        if context is not None:
-            logging.warning("cancelling in-flight analysis for %s", context.root)
-            context.cancel_analysis()
-
-    def execute(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]) -> AnalysisExecutionContext:
+    def execute(self, context: EngineExecutionContext) -> None:
         """
-        Execute analysis on the given target.
+        Execute analysis on the work item the given context was created for.
+
+        The executor holds no per-run state of its own. Everything lives on the
+        context, which the Worker created when it claimed the work item and
+        which the caller keeps -- that is what makes the cancel check below able
+        to see a cancellation that arrived before we were called.
 
         Args:
-            analysis_target: Either a RootAnalysis or DelayedAnalysisRequest
-
-        Returns:
-            AnalysisExecutionContext containing the runtime state from this execution
+            context: The EngineExecutionContext for this work item
         """
-        # Create a new execution context for this analysis
-        context = AnalysisExecutionContext(analysis_target)
-
-        # expose it so cancel_current_analysis() can reach it while this analysis runs
-        self._current_context = context
+        assert isinstance(context, EngineExecutionContext)
 
         # each module gets a brand new context for this analysis
         from saq.modules.state_repository import StateRepositoryFactory
@@ -472,23 +275,6 @@ class AnalysisExecutor:
         finally:
             # make sure we remove the logging handler that we added
             logging.getLogger().removeHandler(logging_handler)
-            # this analysis is no longer running -- nothing left to cancel
-            self._current_context = None
-
-        return context
-
-    def cancel_analysis(self):
-        """Cancel the current analysis."""
-        # This method is kept for backwards compatibility but doesn't do anything
-        # since cancellation is now handled per-context
-        pass
-
-    @property
-    def cancel_analysis_flag(self):
-        """Return whether analysis has been cancelled."""
-        # This property is kept for backwards compatibility but always returns False
-        # since cancellation is now handled per-context
-        return False
 
     def get_analysis_modules_by_mode(
         self, analysis_mode
@@ -753,7 +539,7 @@ class AnalysisExecutor:
         else:
             return None
 
-    def _get_completed_dependency_work_item(self, context: AnalysisExecutionContext) -> Optional[WorkTarget]:
+    def _get_completed_dependency_work_item(self, context: EngineExecutionContext) -> Optional[WorkTarget]:
         assert isinstance(context.root, RootAnalysis)
         logging.debug(
             "%s active dependencies to process", len(context.root.active_dependencies)
@@ -1135,7 +921,7 @@ class AnalysisExecutor:
 
     def _apply_cached_delta(
         self,
-        context: "AnalysisExecutionContext",
+        context: "EngineExecutionContext",
         root: RootAnalysis,
         observable: Observable,
         module: AnalysisModuleInterface,
@@ -1199,7 +985,7 @@ class AnalysisExecutor:
 
     def _maybe_write_cache_delta(
         self,
-        context: "AnalysisExecutionContext",
+        context: "EngineExecutionContext",
         root: RootAnalysis,
         observable: Observable,
         analysis_module: AnalysisModuleInterface,
@@ -1375,7 +1161,7 @@ class AnalysisExecutor:
 
     def _execute_module_analysis(
         self,
-        context: AnalysisExecutionContext,
+        context: EngineExecutionContext,
         root: RootAnalysis,
         work_item: WorkTarget,
         work_stack: WorkStack,
@@ -1852,7 +1638,7 @@ class AnalysisExecutor:
 
     def _drain_work_stack_buffer(
         self,
-        context: AnalysisExecutionContext,
+        context: EngineExecutionContext,
         root: RootAnalysis,
         work_stack: WorkStack,
         work_stack_buffer: list,
@@ -1893,7 +1679,7 @@ class AnalysisExecutor:
         # then we exit final analysis mode so that everything can get a chance to execute again
         context.final_analysis_mode = False
 
-    def _execute_recursive_analysis(self, context: AnalysisExecutionContext):
+    def _execute_recursive_analysis(self, context: EngineExecutionContext):
         """Implements the recursive analysis logic of ACE."""
 
         self._execute_pre_analysis(context)

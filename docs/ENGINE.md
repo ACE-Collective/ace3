@@ -58,18 +58,16 @@ Related documents:
 | **detection point** | A marker anywhere in the tree that says "this is worth an analyst's time". Any detection point promotes the analysis to an alert. | `saq/analysis/detection_point.py` |
 | **alert** | A `RootAnalysis` in `correlation` mode with a row in the `alerts` table. | `saq/database/model.py::Alert` |
 
-Two easily-confused context objects exist, both alive at once during a work item:
-
-- `EngineExecutionContext` (`saq/engine/execution_context.py`) — created by the
-  `Worker`, wraps the work item, carries the `analysis_aborted` / `analysis_skipped`
-  flags the orchestrator's post-analysis logic reads.
-- `AnalysisExecutionContext` (`saq/engine/executor.py`) — created by the
-  `AnalysisExecutor`, carries the work stack, event buffer, per-module timing
-  and cache counters, `final_analysis_mode`, and the cancel flag that actually
-  stops the loop.
-
-They overlap (`root`, `total_analysis_time`, a cancel flag) and are not kept in
-sync — the executor's is the one the analysis loop reads.
+One context object exists per work item: `EngineExecutionContext`
+(`saq/engine/execution_context.py`). The `Worker` creates it the moment it claims
+the item and publishes it on `Worker.current_execution_context`; the
+`AnalysisOrchestrator` and the `AnalysisExecutor` are handed that same object.
+It wraps the work item and derives `root` from it lazily (a delayed request has
+no root until it is loaded); it carries the `analysis_aborted` /
+`analysis_skipped` flags the orchestrator's post-analysis logic reads, the work
+stack and event buffer, per-module timing and cache counters,
+`final_analysis_mode`, and the cancel flag the analysis loop tests. Nothing below
+the worker holds run state of its own — see §19.15 for what this replaced.
 
 ---
 
@@ -109,7 +107,7 @@ Worker.worker_loop
             ├─ _process_work_item()              load root / delayed request
             ├─ _check_disposition()              bail if analyst dispositioned
             ├─ _execute_analysis()
-            │    └─ AnalysisExecutor.execute(AnalysisExecutionContext)
+            │    └─ AnalysisExecutor.execute(the same EngineExecutionContext)
             │         ├─ _execute_pre_analysis()
             │         ├─ _initialize_work_stack()
             │         ├─ _execute_recursive_analysis()   ◄── the main loop
@@ -393,9 +391,9 @@ Each worker's lock owner is `"<node>-worker-<name>"`. That prefix is load-bearin
 The `DistributedLockManager` keepalive thread re-`acquire_lock`s every
 `global_settings.lock_keepalive_frequency` seconds. If a refresh fails, it sets
 `_lock_lost` and fires the `on_lock_lost` callback — `Worker._handle_lock_lost`,
-which calls `AnalysisOrchestrator.cancel_current_analysis()` →
-`AnalysisExecutor.cancel_current_analysis()` → sets the context cancel flag. The
-running analysis loop stops at its next check.
+which cancels `Worker.current_execution_context`, the one context for the work
+item. The running analysis loop stops at its next check; if analysis has not
+started yet, it never starts (§12.2, §19.15).
 
 `stop_keepalive()` deliberately does **not** release the lock; release is owned by
 `clear_work_target()`.
@@ -413,6 +411,7 @@ lock cannot be stolen.
 ```python
 with transaction_id(work_item.uuid):            # every log line correlated to the root
     execution_context = EngineExecutionContext(work_item)
+    self.current_execution_context = execution_context   # before the keepalive: §19.15
     if not single_threaded_mode:
         if not lock_manager.start_keepalive(uuid, on_lock_lost=self._handle_lock_lost):
             return                              # NOTE: returns without clearing work target
@@ -489,8 +488,8 @@ Everything below is `saq/engine/executor.py::AnalysisExecutor`.
 
 ### 7.1 `execute()` setup
 
-1. build `AnalysisExecutionContext` and publish it on `self._current_context` so
-   `cancel_current_analysis()` can reach it;
+1. take the `EngineExecutionContext` the worker built for this work item — the
+   executor constructs nothing and keeps no state of its own (§19.15);
 2. build a `StateRepository` for the root and hand every loaded module a fresh
    `AnalysisModuleContext` (delayed-analysis interface, root, configuration
    manager, filesystem adapter, state repository). **Modules are long-lived
@@ -509,7 +508,7 @@ Everything below is `saq/engine/executor.py::AnalysisExecutor`.
 7. if `not root.delayed` → `_execute_post_analysis()`;
 8. on `AnalysisTimeoutError`, still run `_execute_post_analysis()` before
    re-raising;
-9. always remove the log handler and clear `_current_context`.
+9. always remove the log handler.
 
 ### 7.2 Pre-analysis
 
@@ -902,17 +901,32 @@ analysis) starts the budget over. See §19.6.
 
 ### 12.2 Cancellation
 
-`AnalysisExecutionContext.cancel_analysis()` sets a flag the main loop tests at
-the top of each iteration and between modules. Three things set it:
+`EngineExecutionContext.cancel_analysis()` sets a flag the main loop tests at the
+top of each iteration and between modules. Four things set it:
 
 - an analyst dispositioned the alert mid-analysis (`_check_for_alert_disposition`);
 - the module itself called `cancel_analysis()` (checked via
   `module.is_canceled_analysis()` right after the call);
 - an observable came back `whitelisted`;
-- the lock was lost (`Worker._handle_lock_lost` → `cancel_current_analysis()`).
+- the lock was lost (`Worker._handle_lock_lost` → `context.cancel_analysis()`).
+
+Because the context is created by the worker when it claims the item rather than
+by the executor when it starts analyzing, the flag is live for the whole work
+item. A cancel arriving during `Worker.execute`'s setup, during
+`_process_work_item`'s `root.load()`, or during `_check_disposition`'s database
+round trip is honored: `AnalysisExecutor.execute` opens with
+`if not context.cancel_analysis_flag` and simply never enters the loop (§19.15).
+`_execute_post_analysis` still runs, exactly as it does for a cancel that lands
+mid-loop.
 
 Cancellation is cooperative — a module already inside `execute_analysis` runs to
 completion.
+
+`AnalysisModuleContext.cancel_analysis_flag` (`saq/modules/context.py`) is a
+*different*, deliberately separate flag: it is per module instance, reset with
+every fresh `AnalysisModuleContext`, set by `AnalysisModule.cancel_analysis()`
+and also read by `AnalysisModule.sleep()`. `_execute_module_analysis` promotes it
+into the run-level flag above right after the call returns.
 
 ### 12.3 Module exceptions
 
@@ -1250,7 +1264,7 @@ skipped. This is separate from the per-module `observable_exclusions:` under an
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<worker>/target` and `/module` (pickled) |
-| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`AnalysisExecutionContext.record_execution_statistics`) |
+| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`EngineExecutionContext.record_execution_statistics`) |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
 
@@ -1262,8 +1276,9 @@ skipped. This is separate from the per-module `observable_exclusions:` under an
 files for the orchestrator, configuration manager, module loader, workers, node
 manager, drain, recovery, workload transfer, delayed analysis, distributed
 locking, cache-hit behavior, the disposition-check throttle
-(`test_executor_disposition_check.py`) and the global observable exclusions
-(`test_executor_observable_exclusions.py`).
+(`test_executor_disposition_check.py`), the global observable exclusions
+(`test_executor_observable_exclusions.py`) and the single per-work-item
+execution context (`test_execution_context_merge.py`).
 
 The standard shape (also in `CLAUDE.md`):
 
@@ -1307,7 +1322,8 @@ descriptive sections above on purpose.
 
 ### 19.1 The mid-analysis disposition throttle never engaged — **fixed**
 
-*Original observation.* `AnalysisExecutionContext.last_disposition_check` was set
+*Original observation.* `AnalysisExecutionContext.last_disposition_check` (the
+class since merged into `EngineExecutionContext` — §19.15) was set
 once in `__init__` (`executor.py:189`) and only ever read in
 `_check_for_alert_disposition` — it was never updated. The method's docstring
 claimed it "Returns: The (new) last time we checked", but it returned nothing and
@@ -1893,13 +1909,153 @@ is no FIFO ordering, no aging, and no way to express intra-mode priority. A
 `SKIP LOCKED`-style claim (or an explicit claim column with an indexed
 `ORDER BY insert_date`) would be cheaper and give ordering guarantees.
 
-### 19.15 Two context objects for one execution
+### 19.15 Two context objects for one execution — **fixed**
 
-`EngineExecutionContext` and `AnalysisExecutionContext` both hold `root`,
-`total_analysis_time` and a cancel flag, are created for the same work item at
-two layers, and are not synchronized. `EngineExecutionContext.cancel_analysis()`
-in particular sets a flag nothing reads — real cancellation goes through
-`AnalysisExecutor.cancel_current_analysis()`.
+*Original observation.* `EngineExecutionContext` and `AnalysisExecutionContext`
+both held `root`, `total_analysis_time` and a cancel flag, were created for the
+same work item at two layers, and were not synchronized.
+`EngineExecutionContext.cancel_analysis()` in particular set a flag nothing read
+— real cancellation went through `AnalysisExecutor.cancel_current_analysis()`.
+
+*What that actually cost.* The split was not merely redundant. The orchestrator
+handed the executor the *work item* rather than the context it already had:
+
+```python
+def _execute_analysis(self, execution_context: EngineExecutionContext):
+    context = self.analysis_executor.execute(execution_context.work_item)
+```
+
+so `execute()` built a second context — and then opened with a guard on it:
+
+```python
+context = AnalysisExecutionContext(analysis_target)   # built here
+self._current_context = context
+...
+# don't even start if we're already cancelled
+if not context.cancel_analysis_flag:                  # ← could never be True
+    self._execute_recursive_analysis(context)
+```
+
+That guard was dead, because the only object it could read was one `execute()`
+had constructed two lines earlier. Cancellation therefore had to travel sideways
+— `Worker._handle_lock_lost` → `AnalysisOrchestrator.cancel_current_analysis` →
+`AnalysisExecutor.cancel_current_analysis` → `self._current_context` — and
+`_current_context` is non-`None` **only while `execute()` is running**, which is
+exactly the window that was already covered by the main loop's own checks.
+
+Everything before that was a hole. A lock lost during `Worker.execute`'s setup,
+during `_process_work_item` (`root.load()` / `DelayedAnalysisRequest.load()` —
+real disk I/O) or during `_check_disposition` (a database round trip) was logged
+and then silently discarded, and the full analysis ran on a root this worker no
+longer owned. That window is where a keepalive failure is *most* likely to be
+noticed, because it is the first thing that happens after the claim.
+
+*Fix.* One context per work item. `EngineExecutionContext` absorbed everything
+`AnalysisExecutionContext` held — the per-module timing and cache counters, the
+work stack and its event buffer, `first_pass`, `last_disposition_check`,
+`final_analysis_mode`, `last_analyze_time_warning`, `is_delayed_analysis`,
+`record_cache_lookup()` and `record_execution_statistics()` — and
+`AnalysisExecutionContext` was deleted with no alias. `AnalysisExecutor.execute`
+now takes the context instead of building one:
+
+```python
+def execute(self, context: EngineExecutionContext) -> None:
+```
+
+which makes the `if not context.cancel_analysis_flag` guard live. That single
+line is the behavioral fix; nothing else in the recursive algorithm changed.
+
+`root` and `delayed_analysis_request` stayed **properties** rather than becoming
+the snapshot attributes `AnalysisExecutionContext` used, and that is load-bearing
+rather than cosmetic. The context is now built in `Worker.execute`, *before*
+`_process_work_item` calls `DelayedAnalysisRequest.load()` — and `load()` is what
+*constructs* the `RootAnalysis` (`delayed_analysis.py`: `self.root` is `None`
+until then). A value captured in `__init__` would be `None` for the entire life
+of every delayed-analysis pass. The property returns `None` before the load,
+which is what `orchestrate_analysis`'s existing `if execution_context.root is
+None` guard already expects, and the real root after it; the annotation was
+widened to `Optional[RootAnalysis]` to say so. `execute()`'s
+`assert isinstance(context.root, RootAnalysis)` is the place that demands a
+loaded root, and it stays.
+
+*Cancellation routing.* `AnalysisExecutor._current_context` and both
+`cancel_current_analysis()` delegators are gone. The worker owns the context and
+cancels it directly:
+
+```python
+def _handle_lock_lost(self):
+    context = self.current_execution_context
+    if context is None:
+        logging.warning("lost lock but no work item is in flight")
+        return
+    context.cancel_analysis()
+```
+
+`Worker.current_execution_context` already existed but was only ever *assigned*
+`None` (in the keepalive-failure branch and in the `finally`) and was never
+declared in `__init__` — a vestige of the design this restores. It is now
+initialized there and published in `execute()` **before** `start_keepalive`
+registers the callback, so the keepalive thread can never fire into a `None` for
+an item that is in flight. Both existing clears are unchanged: dropping the
+reference when the item is done also releases the whole `RootAnalysis` tree
+during idle. The read-plus-`bool`-store is atomic under the GIL, the same
+property the old `_current_context` relied on.
+
+*Also removed*, all provably unreachable: `AnalysisExecutor.cancel_analysis()`
+and `.cancel_analysis_flag` (documented no-op / always-`False` back-compat
+stubs), and `AnalysisExecutor.total_analysis_time` / `._cancel_analysis_flag`
+(instance attributes nothing read). `AnalysisExecutor` now holds no state for the
+run in progress at all — what it is working on lives on the context the worker
+publishes.
+
+*Deliberately left alone.* `AnalysisModuleContext.cancel_analysis_flag`
+(`saq/modules/context.py`) is a genuinely separate signal, not a third copy of
+this one: it is per module *instance*, reset with every fresh
+`AnalysisModuleContext`, and read by `AnalysisModule.sleep()` as well as by the
+executor. `_execute_module_analysis` promotes it into the run-level flag right
+after the call returns, which is the correct bridge (§12.2). Separately,
+`saq/modules/alerts.py::ACEAlertDispositionAnalyzer` calls
+`self.get_engine().cancel_analysis()`, but `AnalysisModuleContext` has no
+`engine` member and `Engine` has no `cancel_analysis`, so that path raises
+`AttributeError` on every disposition it means to stop on and is swallowed as a
+module exception. That is §19.5's stale `EngineAdapter`, not this.
+
+*Behavior change to expect.* A keepalive failure now produces a partially
+analyzed root that stays queued, instead of a fully analyzed one racing whoever
+took the lock. `_execute_post_analysis` and `_handle_post_analysis_logic` still
+run on that path, identically to a cancel that lands mid-loop.
+
+*Regression guard.* `tests/saq/engine/test_execution_context_merge.py` — twelve
+tests, **all twelve of which failed before the fix**, and for the documented
+reasons rather than on a renamed API (every one is written against
+`AnalysisOrchestrator.orchestrate_analysis`, `Worker.execute` or the context
+itself, none of whose signatures changed). Eight unit tests: the orchestrator
+hands the executor the context it already has (previously the work item, so an
+identity check failed); a context cancelled before `execute()` skips the
+recursive analysis but still runs post-analysis; the uncancelled path still
+analyzes, and does so with *that* context object; a cancel fired from inside
+`_process_work_item` — the keepalive noticing during `root.load()` — reaches the
+executor (previously it was recorded on an object nothing read and every module
+ran); `_handle_lock_lost` cancels the worker's context; `_handle_lock_lost` on a
+worker with nothing in flight is a no-op rather than an `AttributeError`; and the
+`root` / `delayed_analysis_request` / `is_delayed_analysis` property set for both
+work-item kinds, including that `root` *returns* `None` before the load rather
+than raising. Four integration tests against a real single-threaded engine pass,
+capturing the contexts by spying on `orchestrate_analysis`: a cancel injected
+after `_process_work_item` leaves the observable with zero analysis (it had one);
+`BasicTestAnalyzer.execute_test_cancel`'s module-level cancel is visible on the
+worker's context (asserting the merge from the inside out); `total_analysis_time`
+is populated and keyed by module name (it was permanently `{}`); and a delayed
+analysis run produces exactly two passes whose second context resolves `root`
+through the property to the tree `load()` built — the guard against merging in
+the other direction.
+
+The existing suites came along unchanged in substance:
+`test_work_stack.py`'s delayed-request case now builds its context from a real
+`DelayedAnalysisRequest` work item, since `delayed_analysis_request` is a derived
+property and no longer assignable, and `test_functionality.py`'s
+`record_execution_statistics` tests patch `saq.engine.execution_context` rather
+than `saq.engine.executor` now that the method lives there.
 
 ### 19.16 Config reload on SIGHUP is not implemented
 
@@ -1922,12 +2078,14 @@ saq/engine/
   module_loader.py            resolve mode configs → module section names → loaded modules
   worker_manager.py           fork/supervise/restart/shutdown the worker pool
   worker.py                   worker process loop, work-item execution, delayed-analysis API,
-                              crash recovery from tracking files
+                              crash recovery from tracking files, current_execution_context
   analysis_orchestrator.py    per-work-item lifecycle: load, disposition, execute,
                               detections, mode transitions, alerting, cleanup
   executor.py                 the recursive analysis algorithm, per-module gauntlet,
-                              cache integration, metrics
-  execution_context.py        EngineExecutionContext
+                              cache integration (stateless -- state lives on the context)
+  execution_context.py        EngineExecutionContext: the one per-work-item context
+                              (work item, root, cancel flag, work stack, timing +
+                              cache counters, metrics emission)
   work_stack.py               WorkTarget, WorkStack
   delayed_analysis.py         DelayedAnalysisRequest
   delayed_analysis_adapter.py / delayed_analysis_interface.py

@@ -1623,7 +1623,7 @@ def test_file_error_reporting():
 @pytest.mark.unit
 def test_record_execution_statistics_basic(tmpdir):
     """test that record_execution_statistics returns early when metrics logging is disabled"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     # create a root analysis
@@ -1631,7 +1631,7 @@ def test_record_execution_statistics_basic(tmpdir):
     root.initialize_storage()
 
     # create an execution context
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # add some mock module execution times
     context.total_analysis_time["module_a"] = 2.5
@@ -1643,8 +1643,8 @@ def test_record_execution_statistics_basic(tmpdir):
     mock_engine_config.metrics_logging.enabled = False
 
     # mock the fluent sender
-    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             # record statistics
             elapsed_time = 10.0
             stats_dir = str(tmpdir)
@@ -1657,7 +1657,7 @@ def test_record_execution_statistics_basic(tmpdir):
 @pytest.mark.unit
 def test_record_execution_statistics_with_fluent_bit(tmpdir):
     """test that record_execution_statistics sends metrics to fluent bit when enabled"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     # create a root analysis
@@ -1665,7 +1665,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
     root.initialize_storage()
 
     # create an execution context
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # add some mock module execution times
     context.total_analysis_time["module_a"] = 2.5
@@ -1679,8 +1679,8 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
     mock_engine_config.metrics_logging.fluent_bit_port = 24224
 
     # mock the fluent sender
-    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
 
@@ -1753,7 +1753,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir):
 @pytest.mark.unit
 def test_record_execution_statistics_zero_elapsed_time(tmpdir):
     """test that record_execution_statistics handles zero elapsed time"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     # create a root analysis
@@ -1761,7 +1761,7 @@ def test_record_execution_statistics_zero_elapsed_time(tmpdir):
     root.initialize_storage()
 
     # create an execution context
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # add some mock module execution times
     context.total_analysis_time["module_a"] = 1.0
@@ -1774,8 +1774,8 @@ def test_record_execution_statistics_zero_elapsed_time(tmpdir):
     mock_engine_config.metrics_logging.fluent_bit_port = 24224
 
     # mock the fluent sender
-    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
 
@@ -1796,14 +1796,14 @@ def test_record_execution_statistics_zero_elapsed_time(tmpdir):
 @pytest.mark.unit
 def test_record_execution_statistics_no_modules(tmpdir):
     """test that record_execution_statistics handles no modules"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
 
     # create a root analysis
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
 
     # create an execution context with no module execution times
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # record statistics - should complete without error
     elapsed_time = 10.0
@@ -1814,7 +1814,7 @@ def test_record_execution_statistics_no_modules(tmpdir):
 @pytest.mark.unit
 def test_record_execution_statistics_exception_handling(tmpdir):
     """test that record_execution_statistics handles exceptions gracefully"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     # create a root analysis
@@ -1822,7 +1822,7 @@ def test_record_execution_statistics_exception_handling(tmpdir):
     root.initialize_storage()
 
     # create an execution context
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
 
     # mock the engine config to enable metrics logging
@@ -1833,8 +1833,8 @@ def test_record_execution_statistics_exception_handling(tmpdir):
     mock_engine_config.metrics_logging.fluent_bit_port = 24224
 
     # mock the fluent sender to raise an exception
-    with patch("saq.engine.executor.get_engine_config", return_value=mock_engine_config):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=mock_engine_config):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender_class.side_effect = Exception("connection failed")
 
             # record statistics - should not raise an exception
@@ -1848,14 +1848,14 @@ def test_record_execution_statistics_exception_handling(tmpdir):
 @pytest.mark.unit
 def test_record_execution_statistics_with_multiple_modules(tmpdir):
     """test that record_execution_statistics correctly handles multiple modules"""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
 
     # create a root analysis
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
 
     # create an execution context
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # add multiple mock module execution times
     context.total_analysis_time["module_a"] = 1.0
@@ -1885,20 +1885,20 @@ def test_per_root_emits_for_cache_only_modules(tmpdir):
     """A module that only ever hit the cache (no live execution) must still
     produce a row in the per-root summary so the dashboard can count it.
     """
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
 
     # Module X had ONLY cache hits — no live executions.
     context.cache_hit_count["module_x"] = 3
     context.cache_lookup_ms_sum["module_x"] = 12
     context.cache_lookup_ms_max["module_x"] = 5
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(10.0, str(tmpdir))
@@ -1921,17 +1921,17 @@ def test_per_root_emits_for_cache_only_modules(tmpdir):
 def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir):
     """exec_count + alert fields are always present; cache_* fields appear
     only when the module had cache activity in this (root, module)."""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.5
     context.total_exec_count["module_a"] = 3
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(10.0, str(tmpdir))
@@ -1955,17 +1955,17 @@ def test_per_root_exec_count_reflects_repeated_invocations(tmpdir):
     """Each module.analyze() invocation bumps total_exec_count, so a module
     invoked multiple times within a single context (e.g. via delayed
     retries that resume in the same context) shows exec_count > 1."""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 2.0
     context.total_exec_count["module_a"] = 2
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(5.0, str(tmpdir))
@@ -1979,19 +1979,19 @@ def test_per_root_exec_count_reflects_repeated_invocations(tmpdir):
 def test_per_root_is_alert_true_when_correlation_mode(tmpdir):
     """is_alert is True when analysis_mode is CORRELATION."""
     from saq.constants import ANALYSIS_MODE_CORRELATION
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     root.alert_type = "splunk - ipv4 search"
     root.queue = "external"
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
     context.total_exec_count["module_a"] = 1
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(2.0, str(tmpdir))
@@ -2006,18 +2006,18 @@ def test_per_root_is_alert_true_when_correlation_mode(tmpdir):
 def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir):
     """is_alert is False when analysis_mode hasn't transitioned to CORRELATION yet.
     """
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.alert_type = "mailbox"
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
     context.total_exec_count["module_a"] = 1
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(2.0, str(tmpdir))
@@ -2030,12 +2030,12 @@ def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir):
 @pytest.mark.unit
 def test_per_root_cache_write_byte_aggregation(tmpdir):
     """Write byte sums flow through to the payload when cache writes occurred."""
-    from saq.engine.executor import AnalysisExecutionContext
+    from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import MagicMock, patch
 
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-    context = AnalysisExecutionContext(root)
+    context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
     context.total_exec_count["module_a"] = 2
     context.cache_miss_count["module_a"] = 2
@@ -2047,8 +2047,8 @@ def test_per_root_cache_write_byte_aggregation(tmpdir):
     context.cache_write_bytes_uncompressed_sum["module_a"] = 4000
     context.cache_write_bytes_compressed_sum["module_a"] = 800
 
-    with patch("saq.engine.executor.get_engine_config", return_value=_mock_fluent_config()):
-        with patch("saq.engine.executor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.get_engine_config", return_value=_mock_fluent_config()):
+        with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
             mock_sender = MagicMock()
             mock_sender_class.return_value = mock_sender
             context.record_execution_statistics(5.0, str(tmpdir))
