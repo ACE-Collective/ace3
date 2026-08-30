@@ -15,6 +15,7 @@ from aceapi_v2.observable_comments.schemas import (
     ObservableCommentUpdate,
 )
 from aceapi_v2.schemas import ListResponse
+from saq.database.util.observable_detection import InvalidDetectionValue
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -48,9 +49,12 @@ async def create_comment(
 ) -> ObservableCommentRead:
     if auth.auth_user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
-    comment = await service.create_comment(
-        session, auth.auth_user_id, body.observable_type, body.observable_value, body.comment
-    )
+    try:
+        comment = await service.create_comment(
+            session, auth.auth_user_id, body.observable_type, body.observable_value, body.comment
+        )
+    except InvalidDetectionValue as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return _to_read(comment)
 
 

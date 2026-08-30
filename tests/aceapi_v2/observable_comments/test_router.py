@@ -267,3 +267,37 @@ class TestObservableComments:
         data = response.json()
         assert len(data["data"]) == 1
         assert data["data"][0]["comment"] == "shared comment"
+
+    @pytest.mark.asyncio
+    async def test_create_comment_on_file_uses_content_hash_identity(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """A file observable's DB identity is unhex(value), not sha256(value), so the comment
+        must land on the engine-indexed row rather than creating a mis-keyed duplicate."""
+        content_hash = "ef" * 32
+        engine_indexed = Observable(
+            type="file", sha256=bytes.fromhex(content_hash), value=content_hash.encode("utf8"))
+        session.add(engine_indexed)
+        await session.commit()
+
+        response = await client.post("/observable-comments/", json={
+            "observable_type": "file",
+            "observable_value": content_hash.upper(),
+            "comment": "known dropper",
+        })
+        assert response.status_code == 201
+        assert response.json()["observable_id"] == engine_indexed.id
+
+        # no second row was created for the same file
+        result = await session.execute(
+            select(Observable).where(Observable.type == "file"))
+        assert len(result.scalars().all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_comment_invalid_value_returns_400(self, client: AsyncClient):
+        response = await client.post("/observable-comments/", json={
+            "observable_type": "file",
+            "observable_value": "not-a-hex-digest",
+            "comment": "should fail",
+        })
+        assert response.status_code == 400
