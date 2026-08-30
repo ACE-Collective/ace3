@@ -12,7 +12,6 @@ from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.constants import AnalysisExecutionResult
-from saq.engine.interface import EngineInterface
 from saq.error.reporting import report_exception
 from saq.modules.base_module import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -168,10 +167,6 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def set_context(self, context: AnalysisModuleContext) -> None:
         """Set the dependency injection context."""
         self._module.set_context(context)
-    
-    def get_engine(self) -> EngineInterface:
-        """Get the engine interface from context."""
-        return self._module.get_engine()
     
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from context."""

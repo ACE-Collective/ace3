@@ -1277,8 +1277,9 @@ files for the orchestrator, configuration manager, module loader, workers, node
 manager, drain, recovery, workload transfer, delayed analysis, distributed
 locking, cache-hit behavior, the disposition-check throttle
 (`test_executor_disposition_check.py`), the global observable exclusions
-(`test_executor_observable_exclusions.py`) and the single per-work-item
-execution context (`test_execution_context_merge.py`).
+(`test_executor_observable_exclusions.py`), the single per-work-item
+execution context (`test_execution_context_merge.py`) and the module-facing
+shutdown signal (`test_module_shutdown_signals.py`).
 
 The standard shape (also in `CLAUDE.md`):
 
@@ -1554,19 +1555,101 @@ exists", should a constraint ever be added deliberately.
   the engine logged "not entering final analysis mode (delayed analysis
   waiting)" and post analysis never ran.
 
-### 19.5 `EngineAdapter` and `EngineInterface` are stale
+### 19.5 `EngineAdapter` and `EngineInterface` were stale — **fixed**
 
-`saq/engine/adapter.py::EngineAdapter` forwards `shutdown`,
-`controlled_shutdown`, `delay_analysis`, `is_module_enabled` and
+*Original observation.* `saq/engine/adapter.py::EngineAdapter` forwarded
+`shutdown`, `controlled_shutdown`, `delay_analysis`, `is_module_enabled` and
 `cancel_analysis` to a wrapped `Engine`. The current `Engine`
-(`saq/engine/core.py`) defines none of those. The adapter is imported only by
-`tests/saq/engine/test_module_loader.py` and would `AttributeError` if actually
-used. `EngineInterface` describes an engine that no longer exists.
+(`saq/engine/core.py`) defines none of those — every member would
+`AttributeError` if called. `EngineInterface` described an engine that no longer
+exists. Both files were untouched since the v1 port.
 
-Similarly dead: `AnalysisExecutor.cancel_analysis()` and
-`AnalysisExecutor.cancel_analysis_flag` are explicit no-op/`False` backwards
--compatibility stubs; `Worker.current_execution_context` is assigned `None` in
-two places and never assigned anything else.
+*What the observation missed.* `EngineInterface` was not merely unused. It was
+the declared return type of `AnalysisModule.get_engine()`, which returned
+`self._context.engine` — and `AnalysisModuleContext` (`saq/modules/context.py`)
+has no `engine` member, so the `AttributeError` landed one level *earlier* than
+the adapter and the adapter was never even reached. Three module-facing APIs
+raised on every call:
+
+- `AnalysisModule.shutdown` and `AnalysisModule.controlled_shutdown` — the whole
+  module-facing shutdown signal.
+- `AnalysisModule.sleep()`, whose entire purpose is "sleep for N seconds without
+  blocking shutdown": its loop condition opens with `not self.shutdown`, so it
+  raised on the first iteration.
+- `saq/modules/alerts.py::ACEAlertDispositionAnalyzer.check_disposition()`, three
+  calls to `self.get_engine().cancel_analysis()`, swallowed as a module exception
+  (§19.15's closing paragraph deferred this here).
+
+*Fix.* The signal now comes from the object that actually holds shutdown state,
+by the same route `DelayedAnalysisAdapter` already took:
+
+- `saq/engine/shutdown_interface.py` — `ShutdownInterface`, a `Protocol` with the
+  two properties modules genuinely need. The other three members of the old
+  interface have real homes already and no engine indirection to reach them:
+  `delay_analysis` through `AnalysisModule.delay_analysis()` →
+  `DelayedAnalysisInterface` → `Worker`, `is_module_enabled` on
+  `ConfigurationManager` (`self._context.configuration_manager.is_module_enabled()`,
+  which `saq/modules/test.py` already calls), and cancellation through
+  `AnalysisModule.cancel_analysis()`, which sets the per-module-instance flag the
+  executor promotes onto the run-level context (§12.2).
+- `saq/engine/shutdown_adapter.py` — `WorkerShutdownAdapter`, wrapping a `Worker`.
+  `Worker` grew `is_immediate_shutdown()` / `is_controlled_shutdown()` predicates
+  over its two existing `ACE_MP_CONTEXT.Event`s, and `is_in_shutdown_state()` is
+  now expressed in terms of them. New names were required because
+  `Worker.controlled_shutdown` is already the *setter*. The events are created
+  before the fork, so a worker process reads what the manager set in the parent.
+- `Worker._create_analysis_executor()` passes `WorkerShutdownAdapter(self)` next
+  to `DelayedAnalysisAdapter(self)`; `AnalysisExecutor` carries it as an optional
+  keyword and hands it to each `AnalysisModuleContext` it builds in `execute()`.
+- `AnalysisModuleContext` exposes `shutdown` / `controlled_shutdown`, which
+  **degrade to `False`** when no interface was injected rather than raising the
+  way `root` and `configuration_manager` do — a module built outside a worker (the
+  GUI, a unit test) is genuinely not shutting down. `AnalysisModule.shutdown` and
+  `.controlled_shutdown` read those; `sleep()` is unchanged and starts working.
+
+The two shutdown flags stay **separate** rather than collapsing into
+`is_in_shutdown_state()`: an immediate shutdown must break a module out of
+`sleep()`, while a controlled one means "finish the work item you have", which is
+exactly the distinction a module in a long wait needs to make.
+
+*Removed.* `saq/engine/adapter.py`, `saq/engine/interface.py`,
+`AnalysisModule.get_engine()` and its `AnalysisModuleInterface` /
+`AnalysisModuleAdapter` copies, the unused `EngineAdapter` import in
+`tests/saq/engine/test_module_loader.py` (its only reference in the repo), and the
+`engine_adapter:` line in `ModuleLoader.__init__`'s docstring, which documented an
+argument the signature never had.
+
+`saq/modules/alerts.py` went with them rather than being repaired.
+`ACEAlertDispositionAnalyzer` and `ACEDetectionAnalyzer` were registered in no
+config file and imported nowhere: the disposition check has lived in
+`AnalysisExecutor._check_for_alert_disposition` since before §19.1, and the
+detection → mode transition in `AnalysisOrchestrator` (§13.2, §13.3). The
+orphaned `# analysis_module_alert_disposition_analyzer: no` comment in
+`etc/saq.default.yaml` went too. Nothing that repairing the module would have
+fixed was reachable.
+
+The second paragraph of the original observation — `AnalysisExecutor.cancel_analysis()`
+/ `.cancel_analysis_flag` as no-op stubs, and `Worker.current_execution_context`
+assigned only `None` — had already been resolved by the §19.15 work; see the
+*Also removed* and *Cancellation routing* notes there.
+
+*Regression guard.* `tests/saq/engine/test_module_shutdown_signals.py` — eight
+tests, four of which failed before the fix, all four with the exact
+`AttributeError: 'AnalysisModuleContext' object has no attribute 'engine'`.
+Three are unit tests: a module reports
+`shutdown is False`, the same for `controlled_shutdown`, and `sleep(1)` returns
+instead of raising on its first iteration. The integration
+test is the standard analysis-module shape against a real single-shot engine:
+`BasicTestAnalyzer.execute_test_engine_signals` (a new branch in
+`saq/modules/test.py`) reads both flags *before* calling `create_analysis`, so
+before the fix the module raised, the executor logged
+`analysis module AnalysisModuleAdapter(BasicTestAnalyzer) failed ... reason
+'AnalysisModuleContext' object has no attribute 'engine'` and the observable came
+back with no analysis at all. The remaining four pin the new behavior: both flags
+travel from an injected `ShutdownInterface` to the module, `WorkerShutdownAdapter`
+tracks a real `Worker`'s two events independently, and `saq.engine.interface`,
+`saq.engine.adapter`, `saq.modules.alerts` and `AnalysisModule.get_engine` are
+gone.
 
 ### 19.6 `total_analysis_time_seconds` never accumulated — **fixed**
 
@@ -2014,11 +2097,11 @@ this one: it is per module *instance*, reset with every fresh
 `AnalysisModuleContext`, and read by `AnalysisModule.sleep()` as well as by the
 executor. `_execute_module_analysis` promotes it into the run-level flag right
 after the call returns, which is the correct bridge (§12.2). Separately,
-`saq/modules/alerts.py::ACEAlertDispositionAnalyzer` calls
-`self.get_engine().cancel_analysis()`, but `AnalysisModuleContext` has no
-`engine` member and `Engine` has no `cancel_analysis`, so that path raises
-`AttributeError` on every disposition it means to stop on and is swallowed as a
-module exception. That is §19.5's stale `EngineAdapter`, not this.
+`saq/modules/alerts.py::ACEAlertDispositionAnalyzer` called
+`self.get_engine().cancel_analysis()` against an `AnalysisModuleContext` with no
+`engine` member, raising `AttributeError` on every disposition it meant to stop
+on. That was §19.5's stale `EngineAdapter`, not this, and §19.5 has since deleted
+the module.
 
 *Behavior change to expect.* A keepalive failure now produces a partially
 analyzed root that stays queued, instead of a fully analyzed one racing whoever
@@ -2078,11 +2161,13 @@ saq/engine/
   module_loader.py            resolve mode configs → module section names → loaded modules
   worker_manager.py           fork/supervise/restart/shutdown the worker pool
   worker.py                   worker process loop, work-item execution, delayed-analysis API,
-                              crash recovery from tracking files, current_execution_context
+                              crash recovery from tracking files, current_execution_context,
+                              the two shutdown events WorkerShutdownAdapter reports
   analysis_orchestrator.py    per-work-item lifecycle: load, disposition, execute,
                               detections, mode transitions, alerting, cleanup
   executor.py                 the recursive analysis algorithm, per-module gauntlet,
-                              cache integration (stateless -- state lives on the context)
+                              cache integration, per-module AnalysisModuleContext
+                              (stateless -- state lives on the context)
   execution_context.py        EngineExecutionContext: the one per-work-item context
                               (work item, root, cancel flag, work stack, timing +
                               cache counters, metrics emission)
@@ -2093,7 +2178,9 @@ saq/engine/
   recovery.py                 expired-lock recovery
   errors.py                   AnalysisTimeoutError, AnalysisFailedException,
                               WaitForAnalysisException
-  interface.py / adapter.py   stale EngineInterface / EngineAdapter (§19.5)
+  shutdown_interface.py / shutdown_adapter.py
+                              ShutdownInterface / WorkerShutdownAdapter: the shutdown state
+                              modules read as self.shutdown / self.controlled_shutdown (§19.5)
   workload_manager/
     interface.py, adapter.py
     database.py               production: workload/delayed_analysis/locks tables

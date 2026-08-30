@@ -27,6 +27,7 @@ from saq.engine.lock_manager.adapter import LockManagerAdapter
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.lock_manager.local import LocalLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.shutdown_adapter import WorkerShutdownAdapter
 from saq.engine.tracking import TrackingMessageManager
 from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
@@ -213,6 +214,7 @@ class Worker:
         return AnalysisExecutor(
             configuration_manager=self.configuration_manager,
             delayed_analysis_interface=DelayedAnalysisAdapter(self),
+            shutdown_interface=WorkerShutdownAdapter(self),
             tracking_message_manager=self.tracking_message_manager,
             single_threaded_mode=self.config.single_threaded_mode
         )
@@ -249,9 +251,17 @@ class Worker:
     # MANGER INTERFACE
     # ------------------------------------------------------------------------
 
+    def is_immediate_shutdown(self) -> bool:
+        """Returns True if the worker has been told to shut down immediately."""
+        return self._immediate_shutdown_event.is_set()
+
+    def is_controlled_shutdown(self) -> bool:
+        """Returns True if the worker has been told to shut down when complete."""
+        return self._controlled_shutdown_event.is_set()
+
     def is_in_shutdown_state(self) -> bool:
         """Returns True if the worker is in a shutdown state."""
-        return self._immediate_shutdown_event.is_set() or self._controlled_shutdown_event.is_set()
+        return self.is_immediate_shutdown() or self.is_controlled_shutdown()
 
     def start(self, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Process:
         """Non-blocking call to start the worker. Returns the Process object created for the worker."""

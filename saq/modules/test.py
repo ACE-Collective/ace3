@@ -28,6 +28,8 @@ KEY_COMPLETE_TIME = 'complete_time'
 KEY_INITIAL_REQUEST = 'initial_request'
 KEY_DELAYED_REQUEST = 'delayed_request'
 KEY_REQUEST_COUNT = 'request_count'
+KEY_SHUTDOWN = 'shutdown'
+KEY_CONTROLLED_SHUTDOWN = 'controlled_shutdown'
 
 class TestAnalysis(Analysis):
     @property
@@ -102,6 +104,8 @@ class BasicTestAnalyzer(AnalysisModule):
             return self.execute_test_pause(test)
         elif test.value == 'test_cancel':
             return self.execute_test_cancel(test)
+        elif test.value == 'test_engine_signals':
+            return self.execute_test_engine_signals(test)
         else:
             return AnalysisExecutionResult.COMPLETED
 
@@ -211,6 +215,18 @@ class BasicTestAnalyzer(AnalysisModule):
 
     def execute_test_cancel(self, test) -> AnalysisExecutionResult:
         self.cancel_analysis()
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_test_engine_signals(self, test) -> AnalysisExecutionResult:
+        # records the module facing shutdown signal (see docs/ENGINE.md 19.5)
+        # these are read *before* the analysis is created on purpose: they used to
+        # raise AttributeError, and that leaves no analysis attached at all
+        signals = {
+            KEY_SHUTDOWN: self.shutdown,
+            KEY_CONTROLLED_SHUTDOWN: self.controlled_shutdown,
+        }
+        analysis = self.create_analysis(test)
+        analysis.details = { KEY_TEST_RESULT: True, **signals }
         return AnalysisExecutionResult.COMPLETED
 
 class ConfigurableModuleTestAnalysis(TestAnalysis):

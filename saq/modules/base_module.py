@@ -14,7 +14,6 @@ from saq.constants import (
     F_FILE,
 )
 from saq.constants import AnalysisExecutionResult
-from saq.engine.interface import EngineInterface
 from saq.environment import get_base_dir, get_data_dir
 from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
@@ -264,11 +263,12 @@ class AnalysisModule(FileWatcherMixin):
     @property
     def shutdown(self):
         """Returns True if the current analysis engine is shutting down, False otherwise."""
-        return self.get_engine().shutdown
+        return self._context.shutdown
 
     @property
     def controlled_shutdown(self):
-        return self.get_engine().controlled_shutdown
+        """Returns True if the current analysis engine is shutting down when complete."""
+        return self._context.controlled_shutdown
 
     @property
     def generated_analysis_type(self) -> Optional[Type[Analysis]]:
@@ -288,14 +288,6 @@ class AnalysisModule(FileWatcherMixin):
     def set_context(self, context: AnalysisModuleContext):
         """Set the analysis context for dependency injection."""
         self._context = context
-
-    def get_engine(self) -> EngineInterface:
-        """Get the engine interface from the dependency injection context."""
-        if self._context is None:
-            raise RuntimeError(
-                "No context available - AnalysisModule must be created with an AnalysisContext"
-            )
-        return self._context.engine
 
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""

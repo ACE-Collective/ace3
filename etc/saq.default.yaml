@@ -2526,7 +2526,6 @@ analysis_mode_analysis:
     - email
     - correlation
   cleanup: false
-  # analysis_module_alert_disposition_analyzer: no
 
 analysis_mode_dispositioned:
   name: dispositioned

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from saq.engine.delayed_analysis_interface import DelayedAnalysisInterface
     from saq.engine.configuration_manager import ConfigurationManager
     from saq.engine.engine_configuration import EngineConfiguration
+    from saq.engine.shutdown_interface import ShutdownInterface
 
 
 from datetime import datetime
@@ -23,7 +24,8 @@ class AnalysisModuleContext:
                  configuration_manager: Optional["ConfigurationManager"] = None,
                  filesystem: Optional[FileSystemInterface] = None,
                  state_repository: Optional["StateRepositoryInterface"] = None,
-                 cache_strategy: Optional["AnalysisCacheStrategyInterface"] = None):
+                 cache_strategy: Optional["AnalysisCacheStrategyInterface"] = None,
+                 shutdown_interface: Optional["ShutdownInterface"] = None):
 
         self._delayed_analysis_interface: Optional["DelayedAnalysisInterface"] = delayed_analysis_interface
         self._root: Optional[RootAnalysisInterface] = root
@@ -31,6 +33,7 @@ class AnalysisModuleContext:
         self._filesystem: Optional[FileSystemInterface] = filesystem
         self.state_repository: Optional["StateRepositoryInterface"] = state_repository
         self.cache_strategy: Optional["AnalysisCacheStrategyInterface"] = cache_strategy
+        self._shutdown_interface: Optional["ShutdownInterface"] = shutdown_interface
 
         # something might try to cancel an analysis execution
         self.cancel_analysis_flag: bool = False
@@ -84,3 +87,17 @@ class AnalysisModuleContext:
             raise RuntimeError("filesystem is not set")
 
         return self._filesystem
+
+    # unlike root and configuration_manager these degrade to False rather than
+    # raising when no interface was injected: a module built outside of a worker
+    # (the GUI, a unit test) is genuinely not shutting down
+
+    @property
+    def shutdown(self) -> bool:
+        """Returns True if an immediate shutdown has been signaled."""
+        return self._shutdown_interface.shutdown if self._shutdown_interface else False
+
+    @property
+    def controlled_shutdown(self) -> bool:
+        """Returns True if a controlled shutdown has been signaled."""
+        return self._shutdown_interface.controlled_shutdown if self._shutdown_interface else False

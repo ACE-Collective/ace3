@@ -57,6 +57,7 @@ from saq.engine.errors import (
     AnalysisTimeoutError,
     WaitForAnalysisException,
 )
+from saq.engine.shutdown_interface import ShutdownInterface
 from saq.engine.tracking import TrackingMessageManager
 from saq.engine.work_stack import WorkStack, WorkTarget
 from saq.error import report_exception
@@ -153,6 +154,7 @@ class AnalysisExecutor:
         delayed_analysis_interface: DelayedAnalysisInterface,
         tracking_message_manager: TrackingMessageManager,
         single_threaded_mode=False,
+        shutdown_interface: Optional[ShutdownInterface] = None,
     ):
         """
         Initialize the AnalysisExecutor.
@@ -163,12 +165,17 @@ class AnalysisExecutor:
             delayed_analysis_interface: Interface for delayed analysis
             tracking_message_manager: Manager for tracking analysis module execution
             single_threaded_mode: Whether running in single-threaded mode
+            shutdown_interface: The shutdown state modules see as self.shutdown /
+                self.controlled_shutdown. None (the default) means "nothing is
+                shutting down", which is what an executor built outside of a
+                Worker wants.
         """
         self.configuration_manager = configuration_manager
         self.config = configuration_manager.config
         self.delayed_analysis_interface = delayed_analysis_interface
         self.tracking_message_manager = tracking_message_manager
         self.single_threaded_mode = single_threaded_mode
+        self.shutdown_interface = shutdown_interface
 
     def execute(self, context: EngineExecutionContext) -> None:
         """
@@ -201,6 +208,7 @@ class AnalysisExecutor:
                     configuration_manager=self.configuration_manager,
                     filesystem=FileSystemAdapter(),
                     state_repository=state_repository,
+                    shutdown_interface=self.shutdown_interface,
                 )
             )
 

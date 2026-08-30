@@ -5,7 +5,6 @@ Tests for the ModuleLoader class that was extracted from the ConfigurationManage
 import pytest
 
 from saq.constants import ANALYSIS_MODE_ANALYSIS
-from saq.engine.adapter import EngineAdapter
 from saq.engine.core import Engine
 from saq.engine.module_loader import ModuleLoader
 

@@ -7,7 +7,6 @@ from typing import Optional, Protocol, Type, runtime_checkable
 from saq.analysis.analysis import Analysis
 from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.observable import Observable
-from saq.engine.interface import EngineInterface
 from saq.constants import AnalysisExecutionResult
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
@@ -181,10 +180,6 @@ class AnalysisModuleInterface(Protocol):
     # Dependency injection methods
     def set_context(self, context: "AnalysisModuleContext") -> None:
         """Set the dependency injection context."""
-        ...
-    
-    def get_engine(self) -> EngineInterface:
-        """Get the engine interface from context."""
         ...
     
     def get_root(self) -> RootAnalysisInterface:
