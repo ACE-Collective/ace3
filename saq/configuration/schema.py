@@ -45,6 +45,7 @@ class GlobalConfig(BaseModel):
     maximum_cumulative_analysis_warning_time: int = Field(..., description="amount of time (in seconds) that we expect analysis to take, in general; we use this to warn ourselves that something might be wrong with logic in a module")
     maximum_cumulative_analysis_fail_time: int = Field(..., description="amount of time (in seconds) to give analysis (in total) before we bail entirely")
     maximum_analysis_time: int = Field(..., description="amount of time (in seconds) that we expect a single analysis module to take")
+    root_save_frequency: Optional[int] = Field(default=None, description="default policy for saving the in-flight analysis tree to disk during a pass, for analysis modes that do not override it; leave unset to only save at pass boundaries, 0 to save after every module invocation, or N to save at most once every N seconds")
     check_watched_files_frequency: int = Field(..., description="how often (in seconds) modules check to see if watched files have been modified")
     memory_limit_warning: int = Field(..., description="issue a warning when a worker process uses this much memory (in MB)")
     memory_limit_kill: int = Field(..., description="kill a worker when it uses this much memory (in MB)")
@@ -374,6 +375,7 @@ class AnalysisModeConfig(BaseModel):
     maximum_cumulative_analysis_warning_time: Optional[int] = Field(default=None, description="the maximum cumulative analysis warning time (in seconds)")
     maximum_cumulative_analysis_fail_time: Optional[int] = Field(default=None, description="the maximum cumulative analysis fail time (in seconds)")
     maximum_analysis_time: Optional[int] = Field(default=None, description="the maximum analysis time (in seconds)")
+    root_save_frequency: Optional[int] = Field(default=None, description="how often the in-flight analysis tree is written to disk during a pass; unset falls back to global_settings.root_save_frequency, 0 saves after every module invocation, N saves at most once every N seconds")
 
 class HuntRuleDirConfig(BaseModel):
     rule_dir: str = Field(..., description="directory ACE loads hunt yaml from")

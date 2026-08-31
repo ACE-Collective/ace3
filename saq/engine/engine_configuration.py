@@ -53,6 +53,7 @@ class EngineConfiguration:
         target_nodes: Optional[list[str]] = None,
         default_analysis_mode: Optional[str] = None,
         analysis_mode_priority: Optional[str] = None,
+        observable_exclusions: Optional[dict[str, list[str]]] = None,
         engine_type: EngineType = EngineType.DISTRIBUTED,
     ):
         """Initialize engine configuration.
@@ -67,6 +68,8 @@ class EngineConfiguration:
             target_nodes: list of target nodes for this engine
             default_analysis_mode: Default analysis mode for invalid analysis modes
             analysis_mode_priority: Analysis mode this worker is primary for
+            observable_exclusions: globally excluded observables as {o_type: [o_value]},
+                                   defaults to the observable_exclusions: config section
             lock_manager_type: Type of lock manager to use
             workload_manager_type: Type of workload manager to use
             service_config: Service configuration dict
@@ -124,8 +127,8 @@ class EngineConfiguration:
                 f"target nodes for {get_global_runtime_settings().saq_node} is limited to {self.target_nodes}"
             )
         
-        # Observable exclusions (initialized empty)
-        self.observable_exclusions = {}  # key = o_type, value = [] of values
+        # Observable exclusions
+        self.observable_exclusions = self._get_observable_exclusions(observable_exclusions)
 
         # engine limits
         self.memory_limit_kill = get_config().global_settings.memory_limit_kill * 1024 * 1024
@@ -140,6 +143,33 @@ class EngineConfiguration:
         
         return result
     
+    def _get_observable_exclusions(
+        self, observable_exclusions: Optional[dict[str, list[str]]]
+    ) -> dict[str, list[str]]:
+        """Get the globally excluded observables as {o_type: [o_value]}.
+
+        The config format is a flat map of arbitrary names to "<o_type>:<o_value>"
+        specs (see the observable_exclusions: section of etc/saq.default.yaml).
+        Values are split on the first colon only so a value can contain one.
+        """
+        if observable_exclusions is not None:
+            return observable_exclusions
+
+        result = {}
+        for name, spec in (get_config().observable_exclusions or {}).items():
+            if ":" not in spec:
+                logging.error(
+                    f"invalid observable exclusion {name}: {spec} (expected o_type:o_value)"
+                )
+                continue
+
+            o_type, o_value = spec.split(":", 1)
+            values = result.setdefault(o_type, [])
+            if o_value not in values:
+                values.append(o_value)
+
+        return result
+
     def _get_local_analysis_modes(self, local_analysis_modes: Optional[list[str]]) -> list[str]:
         """Get the local analysis modes."""
         if local_analysis_modes is not None:
@@ -182,6 +212,21 @@ class EngineConfiguration:
             logging.error("both excluded_analysis_modes and local_analysis_modes are enabled for the engine")
             logging.error("this is a misconfiguration error")
             sys.exit(1)
+
+        # default_analysis_mode is what every fallback path lands on: a root submitted with no
+        # mode (add_workload), an unknown mode (get_analysis_modules_by_mode), or a module that
+        # declares no modes. If it does not resolve to a defined analysis mode then all of those
+        # silently get an empty module list, and get_analysis_mode_config() raises later in the
+        # pass. Logged rather than fatal so an existing deployment with this wrong does not fail
+        # to start on upgrade.
+        defined_modes = sorted(mode.name for mode in get_config().analysis_modes)
+        if self.default_analysis_mode not in defined_modes:
+            logging.error(
+                "default_analysis_mode %s is not a defined analysis mode - work falling back to "
+                "it will run no analysis modules. defined modes are: %s",
+                self.default_analysis_mode,
+                ", ".join(defined_modes),
+            )
     
     def _filter_valid_analysis_pools(self, analysis_pools: dict[str, int]) -> dict[str, int]:
         """Filter the analysis pools to only include valid modes."""

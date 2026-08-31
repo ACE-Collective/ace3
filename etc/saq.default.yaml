@@ -90,6 +90,13 @@ global:
   maximum_cumulative_analysis_fail_time: 900
   # amount of time (in seconds) that we expect a single analysis module to take
   maximum_analysis_time: 60
+  # how often the in-flight analysis tree is written to disk during a single pass.
+  # leave unset to only write at pass boundaries -- correct for high volume detection
+  # modes where nobody is watching an individual root and restarting a crashed root
+  # from the beginning is cheaper than serializing the whole tree per module.
+  # set to 0 to write after every module invocation, or to N to write at most once
+  # every N seconds. alert-facing modes override this (see analysis_mode_correlation).
+  # root_save_frequency:
   # how often (in seconds) modules check to see if watched files have been modified
   check_watched_files_frequency: 5
   # issue a warning when a worker process uses this much memory (in MB)
@@ -2498,6 +2505,10 @@ analysis_mode_http:
 analysis_mode_correlation:
   name: correlation
   # mode used for analyzing alerts
+  # alert-facing mode: an analyst may be reloading this alert while it is still being
+  # analyzed, so flush the tree to disk periodically. see root_save_frequency in
+  # global: for the meaning of the value
+  root_save_frequency: 5
   module_groups:
     - common
     - file
@@ -2518,6 +2529,7 @@ analysis_mode_analysis:
     - email
     - correlation
 
+analysis_mode_cli:
   name: cli
   # more of a debug mode, used by the command line correlate subcommand of the ace executable script
   module_groups:
@@ -2526,10 +2538,11 @@ analysis_mode_analysis:
     - email
     - correlation
   cleanup: false
-  # analysis_module_alert_disposition_analyzer: no
 
 analysis_mode_dispositioned:
   name: dispositioned
+  # alert-facing mode -- see analysis_mode_correlation
+  root_save_frequency: 5
   # when an alert is dispositioned by an analyst, any current analysis stops and the mode is changed to dispositioned and re-analyzed
   # this gives certain analysis modules a chance to do something with the value of the disposition (limited list runs here)
   module_groups: []
@@ -2540,6 +2553,8 @@ analysis_mode_dispositioned:
 
 analysis_mode_event:
   name: event
+  # alert-facing mode -- see analysis_mode_correlation
+  root_save_frequency: 5
   # mode used for when alerts are added to an event; allows more in-depth or time consuming analysis only for things inside of events
   module_groups: []
   cleanup: false

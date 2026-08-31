@@ -14,7 +14,6 @@ from saq.constants import (
     F_FILE,
 )
 from saq.constants import AnalysisExecutionResult
-from saq.engine.interface import EngineInterface
 from saq.environment import get_base_dir, get_data_dir
 from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
@@ -182,12 +181,6 @@ class AnalysisModule(FileWatcherMixin):
         return self.config.file_size_limit
 
     @property
-    def valid_analysis_target_type(self):
-        """Returns a valid analysis target type for this module.
-        Defaults to Observable.  Return None to disable the check."""
-        return Observable
-
-    @property
     def valid_observable_types(self) -> Union[str, list[str], None]:
         """Returns a single (or list of) Observable type that are valid for this module.
         If the configuration setting valid_observable_types is present then those values are used.
@@ -270,11 +263,12 @@ class AnalysisModule(FileWatcherMixin):
     @property
     def shutdown(self):
         """Returns True if the current analysis engine is shutting down, False otherwise."""
-        return self.get_engine().shutdown
+        return self._context.shutdown
 
     @property
     def controlled_shutdown(self):
-        return self.get_engine().controlled_shutdown
+        """Returns True if the current analysis engine is shutting down when complete."""
+        return self._context.controlled_shutdown
 
     @property
     def generated_analysis_type(self) -> Optional[Type[Analysis]]:
@@ -294,14 +288,6 @@ class AnalysisModule(FileWatcherMixin):
     def set_context(self, context: AnalysisModuleContext):
         """Set the analysis context for dependency injection."""
         self._context = context
-
-    def get_engine(self) -> EngineInterface:
-        """Get the engine interface from the dependency injection context."""
-        if self._context is None:
-            raise RuntimeError(
-                "No context available - AnalysisModule must be created with an AnalysisContext"
-            )
-        return self._context.engine
 
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""
@@ -377,12 +363,12 @@ class AnalysisModule(FileWatcherMixin):
         If this function is not overridden then it is ignored."""
         raise NotImplementedError()
 
-    def should_analyze(self, obj):
+    def should_analyze(self, observable: Observable) -> bool:
         """Put your custom "should I analyze this?" logic in this function."""
         return True
 
-    def accepts(self, obj):
-        """Returns True if this object should be analyzed by this module, False otherwise."""
+    def accepts(self, observable: Observable) -> bool:
+        """Returns True if this observable should be analyzed by this module, False otherwise."""
 
         # we still call execution on the module in cooldown mode
         # there may be things it can (or should) do while on cooldown
@@ -392,23 +378,15 @@ class AnalysisModule(FileWatcherMixin):
         if self.generated_analysis_type is None:
             return False
 
-        if isinstance(obj, Observable):
-            # does this analysis module require that the observable be on a detection path?
-            if self.requires_detection_path:
-                if not obj.is_on_detection_path():
-                    logging.debug(
-                        "module %s requires %s be on a detection path", self.name, obj
-                    )
-                    return False
-
-        if self.valid_analysis_target_type is not None:
-            if not isinstance(obj, self.valid_analysis_target_type):
-                logging.debug("{} is not a valid target type for {}".format(obj, self))
+        # does this analysis module require that the observable be on a detection path?
+        if self.requires_detection_path:
+            if not observable.is_on_detection_path():
+                logging.debug(
+                    "module %s requires %s be on a detection path", self.name, observable
+                )
                 return False
 
-        # XXX these isinstance checks are from an older version ace that tried to support analyzing analysis modules
-        # XXX these can probably be removed
-        if isinstance(obj, Observable) and self.valid_observable_types is not None:
+        if self.valid_observable_types is not None:
             # a little hack to allow valid_observable_types to return a single value
             valid_types = self.valid_observable_types
             if isinstance(valid_types, str):
@@ -417,10 +395,12 @@ class AnalysisModule(FileWatcherMixin):
             try:
                 if self.valid_observable_subtypes:
                     hierarchy = get_type_hierarchy()
-                    if not any(hierarchy.is_subtype(obj.type, vt) for vt in valid_types):
+                    if not any(
+                        hierarchy.is_subtype(observable.type, vt) for vt in valid_types
+                    ):
                         return False
                 else:
-                    if obj.type not in valid_types:
+                    if observable.type not in valid_types:
                         return False
             except Exception:
                 logging.error(
@@ -431,19 +411,19 @@ class AnalysisModule(FileWatcherMixin):
                 return False
 
         # do not accept observables from queues we are not configured to accept
-        if isinstance(obj, Observable) and self.valid_queues is not None:
+        if self.valid_queues is not None:
             root = self.get_root()
             if hasattr(root, "queue") and root.queue not in self.valid_queues:
                 return False
 
         # do not accept observables from queues we are configured to ignore
-        if isinstance(obj, Observable) and self.invalid_queues is not None:
+        if self.invalid_queues is not None:
             root = self.get_root()
             if hasattr(root, "queue") and root.queue in self.invalid_queues:
                 return False
 
         # are we ignoring this observable for this analysis module because of the alert type?
-        if isinstance(obj, Observable) and self.invalid_alert_types is not None:
+        if self.invalid_alert_types is not None:
             root = self.get_root()
             if (
                 hasattr(root, "alert_type")
@@ -451,91 +431,90 @@ class AnalysisModule(FileWatcherMixin):
             ):
                 return False
 
-        if isinstance(obj, Observable):
-            # has this observable been marked to skip all analysis? this mirrors
-            # the check in the engine's _process_observable_exclusions so a
-            # directive added mid-work-item (e.g. by the observable modifier)
-            # immediately gates the remaining modules in the same pass.
-            if obj.has_directive(DIRECTIVE_EXCLUDE_ALL):
+        # has this observable been marked to skip all analysis? this mirrors
+        # the check in the engine's _process_observable_exclusions so a
+        # directive added mid-work-item (e.g. by the observable modifier)
+        # immediately gates the remaining modules in the same pass.
+        if observable.has_directive(DIRECTIVE_EXCLUDE_ALL):
+            return False
+
+        # does this analysis module exclude this observable from analysis?
+        if self.is_excluded(observable):
+            # logging.debug("observable {} is excluded from analysis by {}".format(observable, self))
+            return False
+
+        # does this observable exclude itself from this kind of analysis?
+        if observable.is_excluded(self):
+            # logging.debug("analysis module {} excluded from analyzing {}".format(self, observable))
+            return False
+
+        # does this analysis module require directives?
+        for directive in self.required_directives:
+            if not observable.has_directive(directive):
+                # logging.debug("{} does not have required directive {} for {}".format(observable, directive, self))
                 return False
 
-            # does this analysis module exclude this observable from analysis?
-            if self.is_excluded(obj):
-                # logging.debug("observable {} is excluded from analysis by {}".format(obj, self))
+        # does this analysis module require tags?
+        for tag in self.required_tags:
+            if not observable.has_tag(tag):
+                # logging.debug("{} does not have required directive {} for {}".format(observable, directive, self))
                 return False
 
-            # does this observable exclude itself from this kind of analysis?
-            if obj.is_excluded(self):
-                # logging.debug("analysis module {} excluded from analyzing {}".format(self, obj))
-                return False
+        # NOTE custom_requirement is intentionally NOT evaluated here. it is
+        # evaluated by the engine as the final gate right before the module runs
+        # (after declared dependencies are satisfied) so that it can inspect
+        # dependency results and wait on cross-observable analysis. see
+        # AnalysisExecutor._execute_module_analysis.
 
-            # does this analysis module require directives?
-            for directive in self.required_directives:
-                if not obj.has_directive(directive):
-                    # logging.debug("{} does not have required directive {} for {}".format(obj, directive, self))
-                    return False
-
-            # does this analysis module require tags?
-            for tag in self.required_tags:
-                if not obj.has_tag(tag):
-                    # logging.debug("{} does not have required directive {} for {}".format(obj, directive, self))
-                    return False
-
-            # NOTE custom_requirement is intentionally NOT evaluated here. it is
-            # evaluated by the engine as the final gate right before the module runs
-            # (after declared dependencies are satisfied) so that it can inspect
-            # dependency results and wait on cross-observable analysis. see
-            # AnalysisExecutor._execute_module_analysis.
-
-            # have we already generated analysis for this target?
-            current_analysis = obj.get_analysis(
-                self.generated_analysis_type, instance=self.instance
-            )
-            if current_analysis is not None:
-                # did it return nothing?
-                if isinstance(current_analysis, bool) and not current_analysis:
-                    logging.debug(
-                        "already analyzed {} with {} and returned nothing".format(
-                            obj, self
-                        )
+        # have we already generated analysis for this target?
+        current_analysis = observable.get_analysis(
+            self.generated_analysis_type, instance=self.instance
+        )
+        if current_analysis is not None:
+            # did it return nothing?
+            if isinstance(current_analysis, bool) and not current_analysis:
+                logging.debug(
+                    "already analyzed {} with {} and returned nothing".format(
+                        observable, self
                     )
+                )
+                return False
+
+            # has this analysis completed?
+            if current_analysis.completed:
+                # Check if this module allows re-analysis on failure and the analysis failed
+                if self.allow_reanalysis_on_failure and hasattr(current_analysis, 'error'):
+                    # Load details to get the actual error value from disk
+                    current_analysis.load_details()
+                    if current_analysis.error:
+                        # Remove the failed analysis to allow retry
+                        logging.info(
+                            f"removing failed analysis {current_analysis} from {observable} "
+                            f"to allow retry by {self}"
+                        )
+                        module_path = current_analysis.module_path
+                        if module_path in observable.analysis:
+                            del observable.analysis[module_path]
+                        # Continue - don't return False, allow reanalysis
+                    else:
+                        logging.debug("already analyzed {} with {}".format(observable, self))
+                        return False
+                else:
+                    logging.debug("already analyzed {} with {}".format(observable, self))
                     return False
 
-                # has this analysis completed?
-                if current_analysis.completed:
-                    # Check if this module allows re-analysis on failure and the analysis failed
-                    if self.allow_reanalysis_on_failure and hasattr(current_analysis, 'error'):
-                        # Load details to get the actual error value from disk
-                        current_analysis.load_details()
-                        if current_analysis.error:
-                            # Remove the failed analysis to allow retry
-                            logging.info(
-                                f"removing failed analysis {current_analysis} from {obj} "
-                                f"to allow retry by {self}"
-                            )
-                            module_path = current_analysis.module_path
-                            if module_path in obj.analysis:
-                                del obj.analysis[module_path]
-                            # Continue - don't return False, allow reanalysis
-                        else:
-                            logging.debug("already analyzed {} with {}".format(obj, self))
-                            return False
-                    else:
-                        logging.debug("already analyzed {} with {}".format(obj, self))
+        # is this observable a file and do we have a file size limit for this module?
+        if observable.type == F_FILE and self.file_size_limit > 0:
+            try:
+                target_path = observable.full_path
+                if os.path.exists(target_path):
+                    if observable.size > self.file_size_limit:
+                        logging.debug(
+                            f"{target_path} exceeds file size limit {self.file_size_limit} for {self}"
+                        )
                         return False
-
-            # is this observable a file and do we have a file size limit for this module?
-            if obj.type == F_FILE and self.file_size_limit > 0:
-                try:
-                    target_path = obj.full_path
-                    if os.path.exists(target_path):
-                        if obj.size > self.file_size_limit:
-                            logging.debug(
-                                f"{target_path} exceeds file size limit {self.file_size_limit} for {self}"
-                            )
-                            return False
-                except Exception as e:
-                    logging.warning(f"unable to get size of file {target_path}: {e}")
+            except Exception as e:
+                logging.warning(f"unable to get size of file {target_path}: {e}")
 
         # are we in cooldown mode?
         # XXX side effect!
@@ -551,7 +530,7 @@ class AnalysisModule(FileWatcherMixin):
         if self.automation_limit is not None:
             # and is this observable NOT ignoring automation limits?
             # this can be the case if an analyst is forcing analysis of something
-            if not obj.has_directive(DIRECTIVE_IGNORE_AUTOMATION_LIMITS):
+            if not observable.has_directive(DIRECTIVE_IGNORE_AUTOMATION_LIMITS):
                 # how many times have we already generated analysis with this module?
                 current_analysis_count = len(
                     self.get_root().get_analysis_by_type(self.generated_analysis_type)
@@ -563,7 +542,7 @@ class AnalysisModule(FileWatcherMixin):
                     return False
 
         # end with custom logic, which defaults to True if not implemented
-        return self.should_analyze(obj)
+        return self.should_analyze(observable)
 
     # ========================================
     # Analysis Lifecycle
@@ -629,35 +608,34 @@ class AnalysisModule(FileWatcherMixin):
 
         return analysis
 
-    def analyze(self, obj, final_analysis: bool=False, delayed_analysis: bool=False) -> AnalysisExecutionResult:
-        """Called by an analysis engine to analyze a given Analysis or Observable object."""
+    def analyze(self, observable: Observable, final_analysis: bool=False, delayed_analysis: bool=False) -> AnalysisExecutionResult:
+        """Called by an analysis engine to analyze a given Observable."""
 
-        assert isinstance(obj, Analysis) or isinstance(obj, Observable)
-        logging.debug(f"analyzing {obj} with {self} (final analysis={final_analysis}, delayed analysis={delayed_analysis})")
+        assert isinstance(observable, Observable)
+        logging.debug(f"analyzing {observable} with {self} (final analysis={final_analysis}, delayed analysis={delayed_analysis})")
 
         # if we're watching any files, see if they've changed and need to be reloaded
         self.check_watched_files()
 
-        if isinstance(obj, Observable):
-            if self.analysis_covered(obj):
-                logging.debug(f"{obj} is already covered by another {self} analysis")
-                return AnalysisExecutionResult.COMPLETED
+        if self.analysis_covered(observable):
+            logging.debug(f"{observable} is already covered by another {self} analysis")
+            return AnalysisExecutionResult.COMPLETED
 
         analysis_result = AnalysisExecutionResult.COMPLETED
 
         # if we are executing in "final analysis mode" then we call this function instead
         if final_analysis:
-            analysis_result = self.execute_final_analysis(obj)
+            analysis_result = self.execute_final_analysis(observable)
         # are we continuing analysis of a delayed analysis?
         elif delayed_analysis:
             # get the analysis that has been completed so far
-            existing_analysis = obj.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
+            existing_analysis = observable.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
             if existing_analysis:
-                analysis_result = self.continue_analysis(obj, existing_analysis)
+                analysis_result = self.continue_analysis(observable, existing_analysis)
             else:
-                analysis_result = self.execute_analysis(obj)
+                analysis_result = self.execute_analysis(observable)
         else:
-            analysis_result = self.execute_analysis(obj)
+            analysis_result = self.execute_analysis(observable)
                 
         if not isinstance(analysis_result, AnalysisExecutionResult):
             logging.error(f"analysis module {self} should return an AnalysisExecutionResult (returned {type(analysis_result)})")
@@ -666,7 +644,7 @@ class AnalysisModule(FileWatcherMixin):
         # if we are grouping by time then we mark this Observable as a future target for other grouping
         # (if we got an analysis result)
         if analysis_result == AnalysisExecutionResult.COMPLETED and self.is_grouped_by_time:
-            obj.grouping_target = True
+            observable.grouping_target = True
 
         return analysis_result
 
@@ -748,7 +726,7 @@ class AnalysisModule(FileWatcherMixin):
         pass
 
     def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects. Override this in your subclass.
+        """Called to analyze an Observable. Override this in your subclass.
         Return COMPLETED if analysis has completed. The engine will not call this function again for this target.
         Return INCOMPLETE if analysis has NOT completed. The engine will call this function again for this target.
         """
@@ -758,8 +736,8 @@ class AnalysisModule(FileWatcherMixin):
         """Called to continue analysis of an Observable object after delay_analysis has been called."""
         raise NotImplementedError()
 
-    def execute_final_analysis(self, analysis) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects after all other analysis has completed.
+    def execute_final_analysis(self, observable: Observable) -> AnalysisExecutionResult:
+        """Called to analyze an Observable after all other analysis has completed.
         Return COMPLETED if analysis has completed. The engine will not call this function again for this target.
         Return INCOMPLETE if analysis has NOT completed. The engine will call this function again for this target.
         """

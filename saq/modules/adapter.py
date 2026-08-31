@@ -12,7 +12,6 @@ from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.constants import AnalysisExecutionResult
-from saq.engine.interface import EngineInterface
 from saq.error.reporting import report_exception
 from saq.modules.base_module import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -108,15 +107,15 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         return self._module.extended_version
 
     # Analysis execution methods
-    def analyze(self, obj, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
-        """Analyze the given object.
+    def analyze(self, observable: Observable, final_analysis=False, delayed_analysis=False) -> AnalysisExecutionResult:
+        """Analyze the given observable.
         Return COMPLETED if analysis executed successfully.
         Return INCOMPLETE if analysis should not occur for this target.
         """
-        return self._module.analyze(obj, final_analysis, delayed_analysis)
+        return self._module.analyze(observable, final_analysis, delayed_analysis)
 
-    def execute_analysis(self, observable) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects. 
+    def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
+        """Called to analyze an Observable.
         Return COMPLETED if analysis executed successfully.
         Return INCOMPLETE if analysis should not occur for this target.
         """
@@ -126,9 +125,9 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         """Called to continue analysis of an Observable object."""
         return self._module.continue_analysis(observable, analysis)
     
-    def execute_final_analysis(self, analysis) -> AnalysisExecutionResult:
-        """Called to analyze Analysis or Observable objects after all other analysis has completed."""
-        return self._module.execute_final_analysis(analysis)
+    def execute_final_analysis(self, observable: Observable) -> AnalysisExecutionResult:
+        """Called to analyze an Observable after all other analysis has completed."""
+        return self._module.execute_final_analysis(observable)
     
     def execute_pre_analysis(self) -> None:
         """This is called once at the very beginning of analysis."""
@@ -143,18 +142,18 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         self._module.on_cache_hit(root, observable)
 
     # Control methods
-    def should_analyze(self, obj) -> bool:
+    def should_analyze(self, observable: Observable) -> bool:
         """Put your custom 'should I analyze this?' logic in this function."""
-        return self._module.should_analyze(obj)
+        return self._module.should_analyze(observable)
     
-    def accepts(self, obj) -> bool:
-        """Returns True if this module can analyze the given object."""
-        return self._module.accepts(obj)
+    def accepts(self, observable: Observable) -> bool:
+        """Returns True if this module can analyze the given observable."""
+        return self._module.accepts(observable)
 
-    def custom_requirement(self, obj) -> bool:
+    def custom_requirement(self, observable: Observable) -> bool:
         """Additional check evaluated by the engine as the final gate before the
         module runs. May raise WaitForAnalysisException to wait on another analysis."""
-        return self._module.custom_requirement(obj)
+        return self._module.custom_requirement(observable)
     
     def cancel_analysis(self) -> None:
         """Cancel the current analysis."""
@@ -168,10 +167,6 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
     def set_context(self, context: AnalysisModuleContext) -> None:
         """Set the dependency injection context."""
         self._module.set_context(context)
-    
-    def get_engine(self) -> EngineInterface:
-        """Get the engine interface from context."""
-        return self._module.get_engine()
     
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from context."""

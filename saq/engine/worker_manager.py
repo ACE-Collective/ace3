@@ -7,6 +7,7 @@ import psutil
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.enums import EngineExecutionMode, WorkerManagerState, WorkerStatus
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.tracking import TrackingServer, get_tracking_snapshot_path
 from saq.engine.worker import Worker
 from saq.util.process import kill_process_tree
 
@@ -26,6 +27,14 @@ class WorkerManager:
         self.workers: list[Worker] = []
         self.state = WorkerManagerState.INITIALIZING
 
+        # this process owns what every worker is currently analyzing -- see
+        # saq/engine/tracking.py for why it does not live in the worker or in the database
+        self.tracking_server = TrackingServer(snapshot_path=get_tracking_snapshot_path())
+
+        # the execution mode the workers were started in
+        # replacement workers are started in the same mode (see restart_worker)
+        self.execution_mode = EngineExecutionMode.NORMAL
+
     def set_state(self, state: WorkerManagerState):
         """Sets the state of the worker manager."""
         if state != self.state:
@@ -39,7 +48,8 @@ class WorkerManager:
             configuration_manager=self.configuration_manager,
             node_manager=self.node_manager,
             idle_timeout_max=idle_timeout_max,
-            analysis_mode_priority=analysis_mode_priority
+            analysis_mode_priority=analysis_mode_priority,
+            tracking_server=self.tracking_server
         )
         self.workers.append(worker)
         return worker
@@ -98,9 +108,40 @@ class WorkerManager:
             logging.error("no workers to start (forgot to call initialize_workers?)")
             return
 
-        # start the workers
+        # remember the mode so that any worker we restart comes back in the same mode
+        self.execution_mode = execution_mode
+
+        # pick up anything a previous incarnation of this manager left behind. a record that
+        # still names a module was never cleared by the worker that owned it, so the module
+        # in it is what killed that worker and must not run again
+        pending = self.tracking_server.load_snapshot()
+        if pending:
+            logging.warning(
+                "recovered %d unresolved analysis failure(s) from the previous engine", len(pending)
+            )
+
+        # start the workers, handing each one a leftover failure to resolve. dispatch is
+        # deliberately not matched on worker name: a pool that shrank since the last run
+        # would strand every record whose worker no longer exists, and the record is fully
+        # self describing (root_uuid + storage_dir) so any worker can apply it
         for worker in self.workers:
-            worker.start(execution_mode=execution_mode)
+            worker.start(
+                execution_mode=execution_mode,
+                pending_failure=pending.pop() if pending else None,
+            )
+
+        if pending:
+            # more leftovers than workers. they stay in the server's store, so the next
+            # restart picks them up again rather than losing them -- but say so, because a
+            # backlog this size means something is repeatedly killing workers
+            logging.warning(
+                "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
+            )
+
+        # the reader thread starts only once the initial forks are done, so the common case
+        # never forks a multi-threaded process at all. restart_worker does have to, and
+        # pauses the reader across the fork (TrackingServer.forking) to stay safe
+        self.tracking_server.start()
 
         # wait for all workers to start
         for worker in self.workers:
@@ -152,23 +193,20 @@ class WorkerManager:
             worker_process = psutil.Process(pid=worker.process.pid)
             memory = worker_process.memory_info()
             if memory.rss > self.config.memory_limit_kill:
-                # TODO: add back in the analysis module and work target
-                #logging.error(
-                    #f"worker {worker} used too much memory "
-                    #f"on analysis module {worker.last_analysis_module} "
-                    #f"while analyzing {worker.last_work_target}: {memory} KILLING"
-                #)
-                logging.error(f"worker {worker} used too much memory: {memory} KILLING")
+                record = self.tracking_server.get_active_record(worker.name)
+                logging.error(
+                    f"worker {worker} used too much memory "
+                    f"on {record if record else 'unknown work'}: {memory} KILLING"
+                )
                 kill_process_tree(worker.process.pid, signal.SIGKILL)
                 return WorkerStatus.DEAD
 
             elif memory.rss > self.config.memory_limit_warning:
-                #logging.warning(
-                    #f"worker {worker} is using too much memory "
-                    #f"on analysis module {worker.last_analysis_module} "
-                    #f"while analyzing {worker.last_work_target}: {memory}"
-                #)
-                logging.warning(f"worker {worker} is using too much memory: {memory}")
+                record = self.tracking_server.get_active_record(worker.name)
+                logging.warning(
+                    f"worker {worker} is using too much memory "
+                    f"on {record if record else 'unknown work'}: {memory}"
+                )
 
         except Exception as e:
             logging.error(f"unable to check memory of worker {worker}: {e}")
@@ -184,6 +222,14 @@ class WorkerManager:
             )
         )
 
+        # what was it doing when it died? the record leaves the active index right away so
+        # the replacement (which reuses the name) can track its next root without touching
+        # the failure we still owe somebody, but it stays in the store until the replacement
+        # acknowledges having applied it
+        pending_failure = self.tracking_server.mark_pending_failure(dead_worker.name)
+        if pending_failure is not None:
+            logging.warning("worker %s died while running %s", dead_worker.name, pending_failure)
+
         # remove the worker from the list
         self.workers.remove(dead_worker)
 
@@ -194,8 +240,8 @@ class WorkerManager:
             analysis_mode_priority=dead_worker.analysis_mode_priority
         )
 
-        # start the worker
-        new_worker.start()
+        # start the worker in the same mode the rest of the pool is running in
+        new_worker.start(execution_mode=self.execution_mode, pending_failure=pending_failure)
 
         #
         # this is a bit hairy
@@ -232,7 +278,7 @@ class WorkerManager:
 
         # start all workers
         for worker in self.workers:
-            worker.start()
+            worker.start(execution_mode=self.execution_mode)
 
         # wait for all workers to start
         for worker in self.workers:
@@ -251,6 +297,8 @@ class WorkerManager:
         for worker in self.workers:
             worker.wait()
 
+        self.tracking_server.stop()
+
         logging.info("all workers shut down")
 
     def controlled_shutdown(self):
@@ -265,6 +313,8 @@ class WorkerManager:
         # make sure all the processes exit
         for worker in self.workers:
             worker.wait()
+
+        self.tracking_server.stop()
 
         logging.info("all workers shut down")
 

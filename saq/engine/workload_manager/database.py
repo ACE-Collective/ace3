@@ -501,8 +501,10 @@ LIMIT 128""".format(
             logging.error(f"unable to clear work target {target}: {e}")
             report_exception()
 
-    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds):
-        """Add a delayed analysis request."""
+    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds) -> bool:
+        """Add a delayed analysis request.
+
+        Returns True if the request was recorded, False if it was not."""
         return db_add_delayed_analysis_request(
             root, 
             observable, 

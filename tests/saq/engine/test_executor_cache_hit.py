@@ -22,7 +22,8 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.analysis.root import RootAnalysis
 from saq.constants import AnalysisExecutionResult, F_FILE, F_FQDN, F_URL
-from saq.engine.executor import AnalysisExecutionContext, AnalysisExecutor
+from saq.engine.execution_context import EngineExecutionContext
+from saq.engine.executor import AnalysisExecutor
 from saq.modules.rdap import RdapAnalysis
 
 
@@ -46,10 +47,10 @@ def _make_root(tmp_path):
     return root
 
 
-def _make_context(root) -> AnalysisExecutionContext:
-    """Real AnalysisExecutionContext bound to ``root`` so counter bumps
+def _make_context(root) -> EngineExecutionContext:
+    """Real EngineExecutionContext bound to ``root`` so counter bumps
     flow into the same dicts ``record_execution_statistics`` consumes."""
-    return AnalysisExecutionContext(root)
+    return EngineExecutionContext(root)
 
 
 def _make_module(name="rdap_analyzer"):
@@ -159,7 +160,7 @@ class TestApplyCachedDelta:
     @pytest.mark.unit
     def test_bumps_cache_hit_counters_on_context(self, tmp_path):
         """The plain ``analysis cache hit`` log line was replaced by
-        per-(root, module) aggregation on the AnalysisExecutionContext.
+        per-(root, module) aggregation on the EngineExecutionContext.
         Each call to ``_apply_cached_delta`` must bump cache_hit_count
         and the lookup-latency accumulators for the module.
         """

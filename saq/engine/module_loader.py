@@ -36,7 +36,6 @@ class ModuleLoader:
         """Initialize the module loader.
         
         Args:
-            engine_adapter: Adapter for engine dependencies
             local_analysis_modes: List of analysis modes supported locally
             excluded_analysis_modes: List of analysis modes to exclude
             locally_enabled_modules: List of modules enabled for local testing

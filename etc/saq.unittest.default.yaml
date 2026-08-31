@@ -25,6 +25,10 @@ global:
   fp_days: 0
   data_dir: data_unittest
   log_sql: false
+  # the test suite asserts on analysis that is on disk mid-pass, so keep the pre-throttle
+  # behavior of writing the tree after every module invocation. tests that exercise the
+  # throttle set root_save_frequency explicitly on the mode they use.
+  root_save_frequency: 0
 
 monitor:
   use_stdout: false
@@ -157,6 +161,12 @@ analysis_module_test_delayed_analysis_instance:
   python_class: DelayedAnalysisTestModule
   enabled: false
   instance: instance1
+
+analysis_module_test_slow_delayed_analysis:
+  name: test_slow_delayed_analysis
+  python_module: saq.modules.test
+  python_class: SlowDelayedAnalysisTestModule
+  enabled: false
 
 analysis_module_test_engine_locking:
   name: test_engine_locking
@@ -530,6 +540,7 @@ module_group_unittest:
     - test_delayed_analysis
     - test_delayed_analysis_instance
     - test_delayed_analysis_timeout
+    - test_slow_delayed_analysis
     - test_engine_locking
     - test_final_analysis
     - test_post_analysis
@@ -635,6 +646,20 @@ collection_group_disabled:
   full_delivery: true
   database: ace
   company_id: 1
+
+# saq.default.yaml gives these modes a 5 second throttle; the test suite expects the
+# pre-throttle behavior unless a test opts in, so pin them back to 0
+analysis_mode_correlation:
+  name: correlation
+  root_save_frequency: 0
+
+analysis_mode_dispositioned:
+  name: dispositioned
+  root_save_frequency: 0
+
+analysis_mode_event:
+  name: event
+  root_save_frequency: 0
 
 analysis_mode_test_empty:
   name: test_empty

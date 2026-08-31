@@ -178,7 +178,7 @@ def test_safe_file_name(input: str, expected: str):
 def test_extract_windows_filepaths(input: str, expected: str):
     extract_windows_filepaths(input) == expected
 
-def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None):
+def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None):
     from saq.modules.state_repository import StateRepositoryFactory
     root_analysis = root or RootAnalysis()
     return AnalysisModuleContext(
@@ -188,5 +188,6 @@ def create_test_context(root: Optional[RootAnalysis] = None, configuration_manag
         filesystem=FileSystemAdapter(),
         state_repository=StateRepositoryFactory.create_root_analysis_repository(
             RootAnalysisAdapter(root_analysis)
-        )
+        ),
+        shutdown_interface=shutdown_interface,
     )

@@ -5,10 +5,9 @@ import os
 import shutil
 import threading
 import time
-from typing import Optional, Union
+from typing import Optional
 from enum import Enum
 
-import iptools
 from saq.analysis.analysis import Analysis
 from saq.analysis.blob_store import get_blob_store
 from saq.analysis.cache import (
@@ -42,23 +41,24 @@ from saq.constants import (
     EVENT_RELATIONSHIP_ADDED,
     EVENT_TAG_ADDED,
     F_FILE,
-    F_IP,
-    F_IPV4,
+    STATE_ANALYSIS_START_TIME,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
+    STATE_TOTAL_ANALYSIS_TIME_SECONDS,
     AnalysisExecutionResult,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.delayed_analysis_interface import DelayedAnalysisInterface
+from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.errors import (
     AnalysisFailedException,
     AnalysisTimeoutError,
     WaitForAnalysisException,
 )
-from saq.engine.tracking import TrackingMessageManager
+from saq.engine.shutdown_interface import ShutdownInterface
+from saq.engine.tracking import TrackingClient
 from saq.engine.work_stack import WorkStack, WorkTarget
 from saq.error import report_exception
 from saq.filesystem.adapter import FileSystemAdapter
@@ -66,8 +66,6 @@ from saq.modules.context import AnalysisModuleContext
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.network_semaphore.client import NetworkSemaphore
 from saq.util import local_time
-
-from fluent import sender
 
 
 class ObservableExclusionResult(Enum):
@@ -141,198 +139,22 @@ class AnalysisModuleMonitor:
                 break
 
 
-class AnalysisExecutionContext:
-    """
-    Context object that holds all runtime state for a single analysis execution.
-    This separates the transient state from the configuration in AnalysisExecutor.
-    """
-
-    def __init__(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]):
-        """Initialize the context with the analysis target."""
-        assert isinstance(analysis_target, RootAnalysis) or isinstance(
-            analysis_target, DelayedAnalysisRequest
-        )
-
-        # Set root and delayed analysis request based on target type
-        if isinstance(analysis_target, RootAnalysis):
-            self.root = analysis_target
-            self.delayed_analysis_request = None
-        elif isinstance(analysis_target, DelayedAnalysisRequest):
-            self.root = analysis_target.root
-            self.delayed_analysis_request = analysis_target
-
-        # Runtime state variables
-        self._cancel_analysis_flag = False
-        self.total_analysis_time = {}
-        # Per-(root, module) aggregates surfaced on the per-root metrics event.
-        # Keyed by module.name; default 0 when absent.
-        self.total_exec_count: dict[str, int] = {}
-        self.cache_hit_count: dict[str, int] = {}
-        self.cache_miss_count: dict[str, int] = {}
-        # the cache is append-only — every write is an insert
-        self.cache_write_count_insert: dict[str, int] = {}
-        self.cache_lookup_ms_sum: dict[str, int] = {}
-        self.cache_lookup_ms_max: dict[str, int] = {}
-        # lookup_ms decomposed: key_ms is the (separately measured) cache-key /
-        # tool-probe cost; db/decode/blob sum to lookup_ms.
-        self.cache_lookup_key_ms_sum: dict[str, int] = {}
-        self.cache_lookup_db_ms_sum: dict[str, int] = {}
-        self.cache_lookup_decode_ms_sum: dict[str, int] = {}
-        self.cache_lookup_blob_ms_sum: dict[str, int] = {}
-        self.cache_write_ms_sum: dict[str, int] = {}
-        self.cache_write_ms_max: dict[str, int] = {}
-        self.cache_write_bytes_uncompressed_sum: dict[str, int] = {}
-        self.cache_write_bytes_compressed_sum: dict[str, int] = {}
-        self.work_stack = None
-        self.work_stack_buffer = None
-        self.first_pass = True
-        self.last_disposition_check = datetime.now()
-        self.final_analysis_mode = False
-        self.last_analyze_time_warning = None
-
-    @property
-    def is_delayed_analysis(self) -> bool:
-        """Returns True if the analysis target is a delayed analysis request."""
-        return self.delayed_analysis_request is not None
-    
-    @property
-    def cancel_analysis_flag(self):
-        """Return whether analysis has been cancelled."""
-        return self._cancel_analysis_flag
-
-    def cancel_analysis(self):
-        """Cancel the current analysis."""
-        self._cancel_analysis_flag = True
-
-    def record_cache_lookup(self, module_name: str, result) -> None:
-        """Accumulate a cache lookup's latency into the per-module aggregates.
-
-        Called for BOTH hits and misses (a miss's lookup time is pure overhead
-        on top of the live run — see the cache-miss handling in the executor).
-        ``result`` is a ``CacheLookupResult``; ``lookup_ms`` gets both a sum and
-        a max, the four components only sums (they drive the per-component
-        averages the payoff panel breaks lookup cost down by).
-        """
-        self.cache_lookup_ms_sum[module_name] = (
-            self.cache_lookup_ms_sum.get(module_name, 0) + result.lookup_ms
-        )
-        self.cache_lookup_ms_max[module_name] = max(
-            self.cache_lookup_ms_max.get(module_name, 0), result.lookup_ms
-        )
-        self.cache_lookup_key_ms_sum[module_name] = (
-            self.cache_lookup_key_ms_sum.get(module_name, 0) + result.key_ms
-        )
-        self.cache_lookup_db_ms_sum[module_name] = (
-            self.cache_lookup_db_ms_sum.get(module_name, 0) + result.db_ms
-        )
-        self.cache_lookup_decode_ms_sum[module_name] = (
-            self.cache_lookup_decode_ms_sum.get(module_name, 0) + result.decode_ms
-        )
-        self.cache_lookup_blob_ms_sum[module_name] = (
-            self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
-        )
-
-    def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
-        """Records the execution statistics for the analysis.
-
-        Emits one fluent-bit event per (root, module) pair where the module
-        had any activity in this execution context — either live execution
-        time, cache hits, cache misses, or cache writes. Each event carries
-        the per-module aggregates (exec_count, cache_* counters, byte/time
-        sums) and root-level context (alert_type, is_alert, queue).
-
-        Args:
-            elapsed_time: The total elapsed time for the analysis.
-            stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
-        """
-        try:
-            engine_config = get_engine_config()
-            if not engine_config.metrics_logging.enabled:
-                return
-
-            fluent_bit_sender = sender.FluentSender(
-                engine_config.metrics_logging.fluent_bit_tag,
-                host=engine_config.metrics_logging.fluent_bit_hostname,
-                port=engine_config.metrics_logging.fluent_bit_port)
-
-            current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
-            _total = sum(self.total_analysis_time.values())
-
-            # Iterate the union of all per-(root, module) counter dicts so
-            # cache-only modules (cache hits, no live executions) still get
-            # a row.
-            all_module_keys = (
-                set(self.total_analysis_time.keys())
-                | set(self.total_exec_count.keys())
-                | set(self.cache_hit_count.keys())
-                | set(self.cache_miss_count.keys())
-                | set(self.cache_write_count_insert.keys())
-            )
-
-            for key in all_module_keys:
-                analysis_time = self.total_analysis_time.get(key, 0.0)
-                percentage = 0.0
-                if elapsed_time:
-                    percentage = (analysis_time / elapsed_time) * 100.0
-                if not elapsed_time:
-                    elapsed_time = 0
-
-                payload = {
-                    "timestamp": current_time,
-                    "module": key,
-                    "analysis_time_seconds": analysis_time,
-                    "percentage": percentage,
-                    "total_analysis_time_seconds": _total,
-                    "total_time_seconds": elapsed_time,
-                    "root_uuid": self.root.uuid,
-                    "exec_count": self.total_exec_count.get(key, 0),
-                    "alert_type": self.root.alert_type,
-                    "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
-                    "queue": self.root.queue,
-                }
-
-                hits = self.cache_hit_count.get(key, 0)
-                misses = self.cache_miss_count.get(key, 0)
-                inserts = self.cache_write_count_insert.get(key, 0)
-                if hits or misses or inserts:
-                    payload["cache_hit_count"] = hits
-                    payload["cache_miss_count"] = misses
-                    payload["cache_write_count_insert"] = inserts
-                    # lookup latency covers ALL lookups (hits + misses) —
-                    # misses' lookup time is the cache's pure overhead.
-                    if hits or misses:
-                        payload["cache_lookup_ms_sum"] = self.cache_lookup_ms_sum.get(key, 0)
-                        payload["cache_lookup_ms_max"] = self.cache_lookup_ms_max.get(key, 0)
-                        # lookup_ms decomposed: db+decode+blob sum to lookup_ms;
-                        # key_ms is the separate cache-key/tool-probe cost.
-                        payload["cache_lookup_key_ms_sum"] = self.cache_lookup_key_ms_sum.get(key, 0)
-                        payload["cache_lookup_db_ms_sum"] = self.cache_lookup_db_ms_sum.get(key, 0)
-                        payload["cache_lookup_decode_ms_sum"] = self.cache_lookup_decode_ms_sum.get(key, 0)
-                        payload["cache_lookup_blob_ms_sum"] = self.cache_lookup_blob_ms_sum.get(key, 0)
-                    if inserts:
-                        payload["cache_write_ms_sum"] = self.cache_write_ms_sum.get(key, 0)
-                        payload["cache_write_ms_max"] = self.cache_write_ms_max.get(key, 0)
-                        payload["cache_write_bytes_uncompressed_sum"] = (
-                            self.cache_write_bytes_uncompressed_sum.get(key, 0)
-                        )
-                        payload["cache_write_bytes_compressed_sum"] = (
-                            self.cache_write_bytes_compressed_sum.get(key, 0)
-                        )
-
-                fluent_bit_sender.emit(None, payload)
-
-        except Exception as e:
-            logging.error("unable to record statistics: {}".format(e))
-
 class AnalysisExecutor:
-    """Executes analysis modules on observables and manages the analysis workflow."""
+    """Executes analysis modules on observables and manages the analysis workflow.
+
+    This object is configuration only -- it holds no state for the run in
+    progress. What the executor is currently working on lives on the
+    EngineExecutionContext it is handed, which the Worker owns and publishes on
+    ``Worker.current_execution_context``.
+    """
 
     def __init__(
         self,
         configuration_manager: ConfigurationManager,
         delayed_analysis_interface: DelayedAnalysisInterface,
-        tracking_message_manager: TrackingMessageManager,
+        tracking_message_manager: TrackingClient,
         single_threaded_mode=False,
+        shutdown_interface: Optional[ShutdownInterface] = None,
     ):
         """
         Initialize the AnalysisExecutor.
@@ -343,44 +165,31 @@ class AnalysisExecutor:
             delayed_analysis_interface: Interface for delayed analysis
             tracking_message_manager: Manager for tracking analysis module execution
             single_threaded_mode: Whether running in single-threaded mode
+            shutdown_interface: The shutdown state modules see as self.shutdown /
+                self.controlled_shutdown. None (the default) means "nothing is
+                shutting down", which is what an executor built outside of a
+                Worker wants.
         """
         self.configuration_manager = configuration_manager
         self.config = configuration_manager.config
         self.delayed_analysis_interface = delayed_analysis_interface
         self.tracking_message_manager = tracking_message_manager
         self.single_threaded_mode = single_threaded_mode
+        self.shutdown_interface = shutdown_interface
 
-        # we keep track of total analysis time per module
-        self.total_analysis_time = {}  # key = module.name, value = total_seconds
-
-        # this is set to True to cancel the analysis going on in the process() function
-        self._cancel_analysis_flag = False
-
-        # the AnalysisExecutionContext for the analysis currently running in execute(), or None.
-        self._current_context: Optional[AnalysisExecutionContext] = None
-
-    def cancel_current_analysis(self):
-        """Cancel the analysis currently running in execute(), if any."""
-        context = self._current_context
-        if context is not None:
-            logging.warning("cancelling in-flight analysis for %s", context.root)
-            context.cancel_analysis()
-
-    def execute(self, analysis_target: Union[RootAnalysis, DelayedAnalysisRequest]) -> AnalysisExecutionContext:
+    def execute(self, context: EngineExecutionContext) -> None:
         """
-        Execute analysis on the given target.
+        Execute analysis on the work item the given context was created for.
+
+        The executor holds no per-run state of its own. Everything lives on the
+        context, which the Worker created when it claimed the work item and
+        which the caller keeps -- that is what makes the cancel check below able
+        to see a cancellation that arrived before we were called.
 
         Args:
-            analysis_target: Either a RootAnalysis or DelayedAnalysisRequest
-
-        Returns:
-            AnalysisExecutionContext containing the runtime state from this execution
+            context: The EngineExecutionContext for this work item
         """
-        # Create a new execution context for this analysis
-        context = AnalysisExecutionContext(analysis_target)
-
-        # expose it so cancel_current_analysis() can reach it while this analysis runs
-        self._current_context = context
+        assert isinstance(context, EngineExecutionContext)
 
         # each module gets a brand new context for this analysis
         from saq.modules.state_repository import StateRepositoryFactory
@@ -399,6 +208,7 @@ class AnalysisExecutor:
                     configuration_manager=self.configuration_manager,
                     filesystem=FileSystemAdapter(),
                     state_repository=state_repository,
+                    shutdown_interface=self.shutdown_interface,
                 )
             )
 
@@ -421,13 +231,23 @@ class AnalysisExecutor:
         logging.getLogger().addHandler(logging_handler)
 
         try:
-            # we keep track of the total amount of time we've spent on this entire analysis (in seconds)
-            if "total_analysis_time_seconds" not in context.root.state:
-                context.root.state["total_analysis_time_seconds"] = 0
-
-            # and when we actually started to analyze this
-            if "analysis_start_time" not in context.root.state:
-                context.root.state["analysis_start_time"] = local_time()
+            # we keep track of the total amount of time we've spent analyzing this root (in
+            # seconds) -- this is the baseline the cumulative warning/fail timeouts measure
+            # against. the budget covers one logical analysis run: a RootAnalysis work item
+            # (a new submission, a mode transition, a disposition pass, analyst requested
+            # analysis) starts a fresh budget, while a delayed analysis resumption continues
+            # the budget the pass that requested the delay started. without the reset a
+            # long lived alert would eventually accumulate past the fail time and every
+            # later pass would abort at the first module
+            if context.is_delayed_analysis:
+                # setdefault rather than a plain read: a root saved before this key existed
+                # can still be resumed
+                context.root.state.setdefault(STATE_TOTAL_ANALYSIS_TIME_SECONDS, 0)
+                # and when we actually started to analyze this (nothing reads this today)
+                context.root.state.setdefault(STATE_ANALYSIS_START_TIME, local_time())
+            else:
+                context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 0
+                context.root.state[STATE_ANALYSIS_START_TIME] = local_time()
 
             # don't even start if we're already cancelled
             if not context.cancel_analysis_flag:
@@ -463,23 +283,6 @@ class AnalysisExecutor:
         finally:
             # make sure we remove the logging handler that we added
             logging.getLogger().removeHandler(logging_handler)
-            # this analysis is no longer running -- nothing left to cancel
-            self._current_context = None
-
-        return context
-
-    def cancel_analysis(self):
-        """Cancel the current analysis."""
-        # This method is kept for backwards compatibility but doesn't do anything
-        # since cancellation is now handled per-context
-        pass
-
-    @property
-    def cancel_analysis_flag(self):
-        """Return whether analysis has been cancelled."""
-        # This property is kept for backwards compatibility but always returns False
-        # since cancellation is now handled per-context
-        return False
 
     def get_analysis_modules_by_mode(
         self, analysis_mode
@@ -678,10 +481,7 @@ class AnalysisExecutor:
                     )
                 )
         else:
-            # otherwise we analyze everything
-            for analysis in context.root.all_analysis:
-                context.work_stack.append(analysis)
-
+            # otherwise we analyze every observable in the tree
             for observable in context.root.all_observables:
                 context.work_stack.append(observable)
 
@@ -747,7 +547,7 @@ class AnalysisExecutor:
         else:
             return None
 
-    def _get_completed_dependency_work_item(self, context: AnalysisExecutionContext) -> Optional[WorkTarget]:
+    def _get_completed_dependency_work_item(self, context: EngineExecutionContext) -> Optional[WorkTarget]:
         assert isinstance(context.root, RootAnalysis)
         logging.debug(
             "%s active dependencies to process", len(context.root.active_dependencies)
@@ -852,23 +652,14 @@ class AnalysisExecutor:
 
             return ObservableExclusionResult.EXCLUDED
 
-        # is this observable excluded?
-        excluded = False
-        if work_item.observable.type in self.config.observable_exclusions:
-            exclusions = self.config.observable_exclusions[work_item.observable.type]
-            if work_item.observable.type in [ F_IP, F_IPV4 ]:
-                exclusions = [iptools.IpRange(x) for x in exclusions]
-            for exclusion in exclusions:
-                try:
-                    if work_item.observable.value in exclusion:
-                        excluded = True
-                        break
-                except Exception:
-                    logging.debug(
-                        "{} probably is not an IP address".format(
-                            work_item.observable.value
-                        )
-                    )
+        # is this observable globally excluded? matches() is exact for most
+        # observable types and CIDR-aware for ip/ipv4
+        excluded = any(
+            work_item.observable.matches(exclusion)
+            for exclusion in self.config.observable_exclusions.get(
+                work_item.observable.type, []
+            )
+        )
 
         if excluded:
             logging.debug(
@@ -902,8 +693,9 @@ class AnalysisExecutor:
     ):
         """Checks to see if an analyst dispositioned the alert while we've been looking at it.
 
-        Returns:
-            The (new) last time we checked for a disposition.
+        This runs on every module invocation, so the actual query is throttled to
+        one per ``alert_disposition_check_frequency`` seconds. Records the time of
+        each query it makes in ``context.last_disposition_check``.
         """
 
         # has an analyst dispositioned this alert while we've been looking at it?
@@ -911,6 +703,8 @@ class AnalysisExecutor:
             datetime.now() - context.last_disposition_check
         ).total_seconds() > self.config.alert_disposition_check_frequency:
             if analysis_mode == ANALYSIS_MODE_CORRELATION:
+                # remember when we checked so the throttle window closes again
+                context.last_disposition_check = datetime.now()
                 get_db().close()
 
                 # Get the two different stop analysis setting values
@@ -966,6 +760,39 @@ class AnalysisExecutor:
             return analysis_mode_config.maximum_analysis_time
         else:
             return get_config().global_settings.maximum_analysis_time
+
+    def _get_root_save_frequency(self, analysis_mode: str) -> Optional[int]:
+        """Returns the mid-pass save policy for the given analysis mode.
+
+        None means "never write mid-pass, only at the boundaries of the pass". 0 means
+        "write after every module invocation". N means "write at most once every N
+        seconds".
+        """
+        analysis_mode_config = get_config().get_analysis_mode_config(analysis_mode)
+        if analysis_mode_config.root_save_frequency is not None:
+            return analysis_mode_config.root_save_frequency
+        else:
+            return get_config().global_settings.root_save_frequency
+
+    def _save_root(self, context: EngineExecutionContext, root: RootAnalysis) -> bool:
+        """Writes the in-flight analysis tree to disk according to the mode's policy.
+
+        This only ever *defers* a write, never drops one: every exit from the pass saves
+        unconditionally in AnalysisOrchestrator._execute_analysis, on success and on
+        failure alike, while the root's lock is still held.
+
+        Returns True if the tree was written.
+        """
+        frequency = self._get_root_save_frequency(root.analysis_mode)
+        if frequency is None:
+            return False
+
+        if frequency and (datetime.now() - context.last_root_save).total_seconds() < frequency:
+            return False
+
+        root.save()
+        context.last_root_save = datetime.now()
+        return True
 
     def _check_for_analysis_timeout(
         self,
@@ -1135,7 +962,7 @@ class AnalysisExecutor:
 
     def _apply_cached_delta(
         self,
-        context: "AnalysisExecutionContext",
+        context: "EngineExecutionContext",
         root: RootAnalysis,
         observable: Observable,
         module: AnalysisModuleInterface,
@@ -1199,7 +1026,7 @@ class AnalysisExecutor:
 
     def _maybe_write_cache_delta(
         self,
-        context: "AnalysisExecutionContext",
+        context: "EngineExecutionContext",
         root: RootAnalysis,
         observable: Observable,
         analysis_module: AnalysisModuleInterface,
@@ -1375,7 +1202,7 @@ class AnalysisExecutor:
 
     def _execute_module_analysis(
         self,
-        context: AnalysisExecutionContext,
+        context: EngineExecutionContext,
         root: RootAnalysis,
         work_item: WorkTarget,
         work_stack: WorkStack,
@@ -1397,6 +1224,14 @@ class AnalysisExecutor:
         # how long have we been analyzing?
         elapsed_time = (datetime.now() - start_time).total_seconds()
         current_total_time = elapsed_time + total_analysis_time_seconds
+
+        # keep the persisted budget current as we go. whatever the mode's root_save_frequency
+        # last wrote is what survives if the worker dies mid-module (the monitor's os._exit,
+        # or the manager's SIGKILL), so on a mode that only saves at pass boundaries this
+        # rewinds with the rest of the tree. the pass is squared up exactly in the finally
+        # of _execute_recursive_analysis -- both writes are absolute values derived from the
+        # same per-pass baseline, so they cannot double count
+        context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = current_total_time
 
         # get the limits for the current analysis mode
         maximum_analysis_time = self._get_maximum_analysis_time(root.analysis_mode)
@@ -1515,7 +1350,7 @@ class AnalysisExecutor:
                             AnalysisExecutionResult.COMPLETED, root, work_item,
                             work_stack, work_stack_buffer, analysis_module,
                         )
-                        root.save()
+                        self._save_root(context, root)
                         return
                     elif lookup_result.miss_reason is not None:
                         # Real cache miss (DB lookup happened, no usable row).
@@ -1681,7 +1516,7 @@ class AnalysisExecutor:
                 logging.debug(
                     f"analysis module {analysis_module} returned {analysis_result} for {work_item}"
                 )
-                root.save()
+                self._save_root(context, root)
 
             finally:
                 # make sure we stop the monitor thread
@@ -1839,28 +1674,54 @@ class AnalysisExecutor:
             work_stack_buffer.clear()
             context.cancel_analysis()
         else:
-            if work_stack_buffer:
-                # if an Analysis object was added to the work stack let's go ahead and flush it
-                flushed = set()
-                for item in work_stack_buffer:
-                    if isinstance(item, Analysis):
-                        if item in flushed:
-                            continue
+            self._drain_work_stack_buffer(
+                context, root, work_stack, work_stack_buffer
+            )
 
-                        logging.debug("flushing {}".format(item))
-                        root.analysis_tree_manager.flush_analysis_details(item)
-                        flushed.add(item)
+    def _drain_work_stack_buffer(
+        self,
+        context: EngineExecutionContext,
+        root: RootAnalysis,
+        work_stack: WorkStack,
+        work_stack_buffer: list,
+    ):
+        """Moves everything the last module call changed out of the buffer.
 
-                for buffer_item in work_stack_buffer:
-                    work_stack.append(buffer_item)
+        The buffer is deliberately mixed. Event listeners push both Analysis and
+        Observable objects into it: the Analysis entries are there so their
+        details can be flushed to disk, the Observable entries so they can be
+        analyzed again. Only observables go on the work stack.
 
-                work_stack_buffer.clear()
+        A non-empty buffer of any kind means the tree changed, so final analysis
+        mode reopens even if nothing was queued.
+        """
+        if not work_stack_buffer:
+            return
 
-                # if we were in final analysis mode and we added something to the work stack
-                # then we exit final analysis mode so that everything can get a chance to execute again
-                context.final_analysis_mode = False
+        # an Analysis in the buffer is not something to analyze -- it is something to flush
+        flushed = set()
+        for item in work_stack_buffer:
+            if isinstance(item, Analysis):
+                if item in flushed:
+                    continue
 
-    def _execute_recursive_analysis(self, context: AnalysisExecutionContext):
+                logging.debug("flushing {}".format(item))
+                root.analysis_tree_manager.flush_analysis_details(item)
+                flushed.add(item)
+
+        for buffer_item in work_stack_buffer:
+            if isinstance(buffer_item, Analysis):
+                continue
+
+            work_stack.append(buffer_item)
+
+        work_stack_buffer.clear()
+
+        # if we were in final analysis mode and we added something to the work stack
+        # then we exit final analysis mode so that everything can get a chance to execute again
+        context.final_analysis_mode = False
+
+    def _execute_recursive_analysis(self, context: EngineExecutionContext):
         """Implements the recursive analysis logic of ACE."""
 
         self._execute_pre_analysis(context)
@@ -1877,7 +1738,7 @@ class AnalysisExecutor:
 
         # when we started analyzing (this time)
         start_time = datetime.now()
-        total_analysis_time_seconds = context.root.state["total_analysis_time_seconds"]
+        total_analysis_time_seconds = context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS]
 
         # the last time we logged a warning about analysis taking too long
         context.last_analyze_time_warning = None
@@ -1887,88 +1748,96 @@ class AnalysisExecutor:
         logging.info(
             f"starting analysis on {context.root} with a workload of {len(context.work_stack)}"
         )
-        while not context.cancel_analysis_flag:
-            # the current WorkTarget
-            work_item = None
+        try:
+            while not context.cancel_analysis_flag:
+                # the current WorkTarget
+                work_item = None
 
-            # are we done?
-            if (
-                len(context.work_stack) == 0
-                and len(context.root.active_dependencies) == 0
-            ):
-                # are we in final analysis mode?
-                if context.final_analysis_mode:
-                    # then we are truly done
-                    break
+                # are we done?
+                if (
+                    len(context.work_stack) == 0
+                    and len(context.root.active_dependencies) == 0
+                ):
+                    # are we in final analysis mode?
+                    if context.final_analysis_mode:
+                        # then we are truly done
+                        break
 
-                # should we enter into final analysis mode?
-                # we only do this if A) all analysis is complete and B) there is no outstanding delayed analysis
-                if not context.root.delayed:
-                    logging.info("entering final analysis for {}".format(context.root))
-                    context.final_analysis_mode = True
-                    # place everything back on the stack
-                    for obj in context.root.all:
-                        context.work_stack.append(obj)
+                    # should we enter into final analysis mode?
+                    # we only do this if A) all analysis is complete and B) there is no outstanding delayed analysis
+                    if not context.root.delayed:
+                        logging.info("entering final analysis for {}".format(context.root))
+                        context.final_analysis_mode = True
+                        # place everything back on the stack
+                        for observable in context.root.all_observables:
+                            context.work_stack.append(observable)
 
+                        continue
+
+                    else:
+                        logging.info(
+                            "not entering final analysis mode for {} (delayed analysis waiting)".format(
+                                context.root
+                            )
+                        )
+                        break
+
+                # get the next thing to analyze
+                # if we have delayed analysis then that is the thing to analyze at this moment
+                work_item = self._get_delayed_analysis_work_item(context)
+
+                # otherwise check to see if we have any dependencies waiting
+                if not work_item:
+                    work_item = self._get_completed_dependency_work_item(context)
+
+                # otherwise just get the next item off the stack
+                if not work_item:
+                    work_item = self._get_next_work_item(context)
+
+                # otherwise we're done
+                if not work_item:
+                    logging.debug("no work item available")
                     continue
 
-                else:
-                    logging.info(
-                        "not entering final analysis mode for {} (delayed analysis waiting)".format(
-                            context.root
-                        )
-                    )
-                    break
+                # if there's no observable to analyze then we're done with this work item
+                if not work_item.observable:
+                    logging.debug(f"work item {work_item} has no observable")
+                    continue
 
-            # get the next thing to analyze
-            # if we have delayed analysis then that is the thing to analyze at this moment
-            work_item = self._get_delayed_analysis_work_item(context)
+                # check for observable exclusions
+                if (
+                    self._process_observable_exclusions(work_item)
+                    == ObservableExclusionResult.EXCLUDED
+                ):
+                    continue
 
-            # otherwise check to see if we have any dependencies waiting
-            if not work_item:
-                work_item = self._get_completed_dependency_work_item(context)
-
-            # otherwise just get the next item off the stack
-            if not work_item:
-                work_item = self._get_next_work_item(context)
-
-            # otherwise we're done
-            if not work_item:
-                logging.debug("no work item available")
-                continue
-
-            # if there's no observable to analyze then we're done with this work item
-            if not work_item.observable:
-                logging.debug(f"work item {work_item} has no observable")
-                continue
-
-            # check for observable exclusions
-            if (
-                self._process_observable_exclusions(work_item)
-                == ObservableExclusionResult.EXCLUDED
-            ):
-                continue
-
-            # select the analysis modules we want to use
-            analysis_modules = self.get_analysis_modules_for_work_item(
-                work_item, context.root.analysis_mode
-            )
-
-            logging.debug(f"analyzing {work_item} with {len(analysis_modules)} modules")
-
-            # analyze this thing with the analysis modules we've selected sorted by priority
-            for analysis_module in sorted(analysis_modules, key=attrgetter("priority")):
-                if context.cancel_analysis_flag:
-                    logging.info(f"analysis cancelled for {context.root}")
-                    break
-
-                self._execute_module_analysis(
-                    context,
-                    context.root,
-                    work_item,
-                    context.work_stack,
-                    context.work_stack_buffer,
-                    analysis_module,
-                    start_time,
-                    total_analysis_time_seconds,
+                # select the analysis modules we want to use
+                analysis_modules = self.get_analysis_modules_for_work_item(
+                    work_item, context.root.analysis_mode
                 )
+
+                logging.debug(f"analyzing {work_item} with {len(analysis_modules)} modules")
+
+                # analyze this thing with the analysis modules we've selected sorted by priority
+                for analysis_module in sorted(analysis_modules, key=attrgetter("priority")):
+                    if context.cancel_analysis_flag:
+                        logging.info(f"analysis cancelled for {context.root}")
+                        break
+
+                    self._execute_module_analysis(
+                        context,
+                        context.root,
+                        work_item,
+                        context.work_stack,
+                        context.work_stack_buffer,
+                        analysis_module,
+                        start_time,
+                        total_analysis_time_seconds,
+                    )
+        finally:
+            # square up the budget for this pass. the finally is load bearing: an
+            # AnalysisTimeoutError and a cancelled analysis both leave the loop this way,
+            # and the orchestrator saves the root on both paths
+            context.root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = (
+                total_analysis_time_seconds + (datetime.now() - start_time).total_seconds()
+            )

@@ -76,8 +76,10 @@ class WorkloadManagerAdapter(WorkloadManagerInterface):
         """
         return self._workload_manager.clear_work_target(target)
 
-    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds):
-        """Add a delayed analysis request."""
+    def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds) -> bool:
+        """Add a delayed analysis request.
+
+        Returns True if the request was recorded, False if it was not."""
         return self._workload_manager.add_delayed_analysis_request(root, observable, analysis_module, hours, minutes, seconds)
 
     def clear_delayed_analysis_requests(self, root):

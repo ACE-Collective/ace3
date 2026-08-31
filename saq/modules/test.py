@@ -28,6 +28,8 @@ KEY_COMPLETE_TIME = 'complete_time'
 KEY_INITIAL_REQUEST = 'initial_request'
 KEY_DELAYED_REQUEST = 'delayed_request'
 KEY_REQUEST_COUNT = 'request_count'
+KEY_SHUTDOWN = 'shutdown'
+KEY_CONTROLLED_SHUTDOWN = 'controlled_shutdown'
 
 class TestAnalysis(Analysis):
     @property
@@ -102,6 +104,8 @@ class BasicTestAnalyzer(AnalysisModule):
             return self.execute_test_pause(test)
         elif test.value == 'test_cancel':
             return self.execute_test_cancel(test)
+        elif test.value == 'test_engine_signals':
+            return self.execute_test_engine_signals(test)
         else:
             return AnalysisExecutionResult.COMPLETED
 
@@ -211,6 +215,18 @@ class BasicTestAnalyzer(AnalysisModule):
 
     def execute_test_cancel(self, test) -> AnalysisExecutionResult:
         self.cancel_analysis()
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_test_engine_signals(self, test) -> AnalysisExecutionResult:
+        # records the module facing shutdown signal (see docs/ENGINE.md 19.5)
+        # these are read *before* the analysis is created on purpose: they used to
+        # raise AttributeError, and that leaves no analysis attached at all
+        signals = {
+            KEY_SHUTDOWN: self.shutdown,
+            KEY_CONTROLLED_SHUTDOWN: self.controlled_shutdown,
+        }
+        analysis = self.create_analysis(test)
+        analysis.details = { KEY_TEST_RESULT: True, **signals }
         return AnalysisExecutionResult.COMPLETED
 
 class ConfigurableModuleTestAnalysis(TestAnalysis):
@@ -455,6 +471,49 @@ class DelayedAnalysisTestModule(AnalysisModule):
         analysis.details[KEY_DELAYED_REQUEST] = True
         analysis.details[KEY_REQUEST_COUNT] += 1
         analysis.details[KEY_COMPLETE_TIME] = datetime.datetime.now()
+        return AnalysisExecutionResult.COMPLETED
+
+class SlowDelayedAnalysisTestAnalysis(TestAnalysis):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.details = {
+            KEY_DELAYED_REQUEST: False,
+            KEY_REQUEST_COUNT: 1,
+        }
+
+    @property
+    def delayed_request(self):
+        return self.details[KEY_DELAYED_REQUEST]
+
+    @property
+    def request_count(self):
+        return self.details[KEY_REQUEST_COUNT]
+
+class SlowDelayedAnalysisTestModule(AnalysisModule):
+    """Burns time on BOTH the initial pass and the delayed resumption.
+
+    DelayedAnalysisTestModule delays without spending any time, and PauseAnalyzer
+    spends time but does not run again on the resumption (its analysis already
+    exists), so neither can drive the cumulative analysis timeout across passes.
+    The observable value is the number of seconds to sleep on each pass."""
+
+    @property
+    def generated_analysis_type(self):
+        return SlowDelayedAnalysisTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        time.sleep(float(test.value))
+        return self.delay_analysis(test, analysis, seconds=0, timeout_minutes=1)
+
+    def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
+        time.sleep(float(observable.value))
+        analysis.details[KEY_DELAYED_REQUEST] = True
+        analysis.details[KEY_REQUEST_COUNT] += 1
         return AnalysisExecutionResult.COMPLETED
 
 class EngineLockingTestAnalysis(Analysis):
