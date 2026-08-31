@@ -713,6 +713,11 @@ class ACEConfig(BaseModel):
         raise RuntimeError("Raw data not initialized")
 
     @property
+    def has_raw_data(self) -> bool:
+        """True if raw config data is available, so that .raw can be read without raising."""
+        return self.__raw is not None
+
+    @property
     def raw(self) -> "YAMLConfig":
         """Property to access raw data that is not part of model validation."""
         if self.__raw is None:
