@@ -241,15 +241,16 @@ available (§5.2).
 `DEAD` when:
 
 - `worker.process` is `None` or has an exit code (process died / auto-refreshed);
-- `worker.analysis_has_timed_out()` — the manager's own tracking state (§12.5)
-  says a module started more than its `maximum_analysis_time` ago. Both ends of
-  that comparison are monotonic readings taken in the manager. It `SIGKILL`s the
-  whole process tree;
+- `worker.analysis_has_timed_out(record)` — the tracking record the manager just
+  read off disk for this worker (§12.5) says a module started more than its
+  `maximum_analysis_time` ago. The deadline is on `CLOCK_MONOTONIC`, which is
+  system-wide, so the manager compares it against its own reading. It `SIGKILL`s
+  the whole process tree;
 - RSS exceeds `global_settings.memory_limit_kill` (MB → bytes in
   `EngineConfiguration`). `SIGKILL`. A warning is logged above
   `memory_limit_warning`.
 
-`restart_worker()` marks the dead worker's tracking record as a pending failure,
+`restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
 timeout, starts it **in the execution mode the pool was started in** (§19.11)
 *and with that pending record* (§12.5), and then does an awkward dance to close
@@ -276,8 +277,8 @@ process entry point:
    - past auto-refresh time → break (the manager forks a fresh worker, which
      re-imports every module — the point of the feature);
    - controlled-shutdown set *and* both queues empty → break;
-   - `get_next_work_target()`; if it returned a work item, report the target to
-     the tracking server, `execute(work_item)`, clear it. Then, on `execute()`'s
+   - `get_next_work_target()`; if it returned a work item, write the target to
+     the worker's tracking file, `execute(work_item)`, clear it. Then, on `execute()`'s
      answer:
      - True (a work item was processed) → the backoff resets (`idle_time = 0`)
        and the loop polls again immediately — except in `SINGLE_SHOT`, which
@@ -893,7 +894,7 @@ Everything else — key derivation, storage, refusal rules, blob spilling — is
 | Layer | Limit | Enforced by | Effect |
 |---|---|---|---|
 | One module invocation | mode `maximum_analysis_time`, else `global_settings.maximum_analysis_time` (warning threshold) and module `maximum_analysis_time` (kill threshold) | `AnalysisModuleMonitor` thread | warns every 5s, then `os._exit(1)` on the worker process |
-| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the manager's tracking state | `SIGKILL` the worker process tree |
+| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the worker's tracking file | `SIGKILL` the worker process tree |
 | Whole run, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
 | Whole run, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
 | Delayed analysis | `timeout_hours/minutes/seconds` passed to `delay_analysis` | `Worker.is_delayed_analysis_timed_out` | refuses further delay; analysis closed out empty |
@@ -961,34 +962,55 @@ re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
 
 Two independent mechanisms:
 
-**Local fast path.** Every worker reports what it is doing to a `TrackingServer`
-running in the **manager** process, over a one-way `multiprocessing.Pipe` opened
-just before the fork (`saq/engine/tracking.py`). The manager holds the records in
-memory — keyed by `root_uuid`, carrying `storage_dir`, `worker_name`,
+**Local fast path.** Every worker writes what it is doing to its own file under
+`data/var/tracking/<node>/` (`saq/engine/tracking.py`). `TrackingWriter` keeps the
+live `TrackingRecord` — `root_uuid`, `storage_dir`, `worker_name`, `pid`,
 `module_path`, the observable's uuid/type/value, `maximum_analysis_time` and a
-monotonic deadline — and mirrors them to a checksummed
-`data/var/tracking/<node>.json` so they also survive a restart of the manager
-itself. The state cannot live in the worker, because the worker is the thing that
-dies; it is deliberately not in the shared database, because it is node-local and
-would otherwise cost a transaction per module invocation per worker per node.
+monotonic module start — in memory and flushes it to `worker-<name>.json` on every
+change: once per work target and twice per module invocation. Each flush is a
+`.tmp` sibling plus an `os.replace`, so the manager never reads a torn record, and
+nothing is fsync'd — a power loss costs the attribution on a node that is
+restarting anyway. The worker being the thing that dies is not a reason to keep
+the state elsewhere: the file outlives the process. It is deliberately not in the
+shared database, which every node shares, because this is node-local information
+consumed only by the process that spawned the worker.
 
-When a worker dies, `restart_worker` marks its record pending and forks the
-replacement with it as a `Process` kwarg. `Worker._handle_failed_analysis(record)`
-loads the root at `record.storage_dir`, optionally copies the offending file + a
-`details-*` note to `data/review/failed_analysis/YYYY/MM/DD/<uuid>/`
+`WorkerManager.check` reads that file once per worker per tick — that is the only
+read on the happy path, and it feeds both the timeout check and the memory-limit
+log lines. `module_start_monotonic` is on `CLOCK_MONOTONIC`, which is system-wide
+on Linux, so the manager compares it against its own reading; there is no
+cross-process wall-clock comparison to be skewed by a clock step or a DST shift.
+
+When a worker dies, `restart_worker` calls `TrackingReader.claim_failure`, which
+promotes a record still naming a module to `pending/<root_uuid>.json` and removes
+the worker file, and forks the replacement with the record as a `Process` kwarg.
+Pending failures are keyed on `root_uuid` and live in their own directory rather
+than as a flag on the in-flight record: the replacement normally re-claims the very
+root that killed its predecessor, and sharing one file would let that new work
+target overwrite the failure before anyone applied it — which is exactly the crash
+loop this subsystem exists to prevent. A record naming no module means the worker
+exited cleanly between modules, so there is nothing to attribute.
+
+`Worker._handle_failed_analysis(record)` loads the root at `record.storage_dir`,
+optionally copies the offending file + a `details-*` note to
+`data/review/failed_analysis/YYYY/MM/DD/<uuid>/`
 (`copy_terminated_analysis_causes`), calls
 `root.set_analysis_failed(module_path, obs_type, obs_value, "process died
 unexpectedly")`, saves, force-releases the lock *scoped to the lock_uuid it
 actually observes* so it can never delete a live worker's lock, and finally
-**acknowledges** the record so the manager can drop it — a replacement that dies
-mid-recovery leaves the attribution in place for the next one. The workload row was
-never deleted (the `finally` never ran), so the item is immediately re-claimable —
-and gate 8 (`is_analysis_failed`) skips the module that killed it.
+**deletes the pending file** — deleting it is the acknowledgement, so a replacement
+that dies mid-recovery leaves the attribution in place for the next one. It also
+resolves the record when `storage_dir` no longer exists, since a root that is gone
+can never be attributed and the file would otherwise be immortal. The workload row
+was never deleted (the `finally` never ran), so the item is immediately
+re-claimable — and gate 8 (`is_analysis_failed`) skips the module that killed it.
 
-At engine start the manager reads the snapshot before forking anything and hands
-each leftover record to a worker; a record still naming a module was never cleared
-by its owner and is unresolved by definition. Dispatch is not matched on worker
-name, so a pool that shrank since the last run cannot strand one.
+At engine start `TrackingReader.recover_pending_failures` promotes any leftover
+`worker-*.json` that still names a module — never cleared by its owner, so
+unresolved by definition — discards the rest, and hands each pending record to a
+worker. Dispatch is not matched on worker name, so a pool that shrank since the
+last run cannot strand one. Keying the directory on the node keeps two engines
+sharing a data directory apart.
 
 **Lock-expiry recovery.** `saq/engine/recovery.py::recover_expired_locks` lists
 locks older than `lock_timeout_seconds`, re-acquires each with
@@ -1316,7 +1338,7 @@ skipped. This is separate from the per-module `observable_exclusions:` under an
 |---|---|
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
-| What a worker is doing right now | in memory in the manager, mirrored to `data/var/tracking/<node>.json` (checksummed) |
+| What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
 | Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`EngineExecutionContext.record_execution_statistics`) |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
@@ -1393,7 +1415,7 @@ comments throughout the tests and source.
 | [19.9](ENGINE_DESIGN_NOTES.md#199-keepalive-failure-leaked-the-claim--fixed) | Keepalive failure leaked the claim | fixed |
 | [19.10](ENGINE_DESIGN_NOTES.md#1910-only-the-first-active-dependency-is-ever-examined) | Only the first active dependency is ever examined | **open** |
 | [19.11](ENGINE_DESIGN_NOTES.md#1911-worker-restart-drops-the-execution-mode--fixed) | Worker restart drops the execution mode | fixed |
-| [19.12](ENGINE_DESIGN_NOTES.md#1912-tracking-files-are-racy-and-process-global-by-name--fixed) | Tracking files are racy and process-global by name | fixed |
+| [19.12](ENGINE_DESIGN_NOTES.md#1912-tracking-files-were-racy-and-process-global-by-name--fixed) | Tracking files were racy and process-global by name | fixed |
 | [19.13](ENGINE_DESIGN_NOTES.md#1913-workstack-could-not-actually-hold-analysis--fixed) | `WorkStack` could not actually hold `Analysis` | fixed |
 | [19.14](ENGINE_DESIGN_NOTES.md#1914-order-by-rand--limit-128-on-the-workload-query) | `ORDER BY RAND() ... LIMIT 128` on the workload query | **open** |
 | [19.15](ENGINE_DESIGN_NOTES.md#1915-two-context-objects-for-one-execution--fixed) | Two context objects for one execution | fixed |
@@ -1425,8 +1447,8 @@ saq/engine/
   work_stack.py               WorkTarget, WorkStack
   delayed_analysis.py         DelayedAnalysisRequest
   delayed_analysis_adapter.py / delayed_analysis_interface.py
-  tracking.py                 TrackingServer / TrackingClient (what a worker is doing,
-                              held by the manager over a local pipe)
+  tracking.py                 TrackingWriter / TrackingReader (what a worker is doing,
+                              written by the worker to a file the manager reads)
   recovery.py                 expired-lock recovery
   errors.py                   AnalysisTimeoutError, AnalysisFailedException,
                               WaitForAnalysisException

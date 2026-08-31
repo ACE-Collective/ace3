@@ -41,13 +41,12 @@ class FakeWorker:
     """
 
     def __init__(self, name, configuration_manager, node_manager, idle_timeout_max=None,
-                 analysis_mode_priority=None, tracking_server=None):
+                 analysis_mode_priority=None):
         self.name = name
         self.configuration_manager = configuration_manager
         self.node_manager = node_manager
         self.idle_timeout_max = idle_timeout_max
         self.analysis_mode_priority = analysis_mode_priority
-        self.tracking_server = tracking_server
         self.process = None
         self.start_modes = []
         self.pending_failures = []
@@ -64,7 +63,7 @@ class FakeWorker:
     def wait_for_start(self):
         pass
 
-    def analysis_has_timed_out(self) -> bool:
+    def analysis_has_timed_out(self, record) -> bool:
         return False
 
     def controlled_shutdown(self):
@@ -97,13 +96,7 @@ def manager(configuration_manager) -> WorkerManager:
     with patch("saq.engine.worker_manager.Worker", FakeWorker):
         worker_manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
         worker_manager.initialize_workers()
-        try:
-            yield worker_manager
-        finally:
-            # start_workers spins up the tracking server's reader thread. these tests drive
-            # WorkerManager in the pytest process rather than a forked engine, so leaving it
-            # running would leave pytest multi-threaded for every later test that forks
-            worker_manager.tracking_server.stop()
+        yield worker_manager
 
 
 @pytest.mark.unit
@@ -208,14 +201,11 @@ def test_restarted_worker_process_receives_execution_mode(configuration_manager)
         # one worker per pool entry keeps the Process call list unambiguous
         manager.workers = manager.workers[:1]
 
-        try:
-            manager.start_workers(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-            dead_worker = manager.workers[0]
-            assert isinstance(dead_worker, Worker)
+        manager.start_workers(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+        dead_worker = manager.workers[0]
+        assert isinstance(dead_worker, Worker)
 
-            manager.restart_worker(dead_worker)
-        finally:
-            manager.tracking_server.stop()
+        manager.restart_worker(dead_worker)
 
         assert len(mock_mp_context.Process.call_args_list) == 2
         for call in mock_mp_context.Process.call_args_list:
