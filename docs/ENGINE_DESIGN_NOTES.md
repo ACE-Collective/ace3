@@ -29,7 +29,7 @@ still resolve.
 - [19.9 Keepalive failure leaked the claim](#199-keepalive-failure-leaked-the-claim--fixed)
 - [19.10 Only the first active dependency is ever examined](#1910-only-the-first-active-dependency-is-ever-examined) — *open*
 - [19.11 Worker restart drops the execution mode](#1911-worker-restart-drops-the-execution-mode--fixed)
-- [19.12 Tracking files are racy and process-global by name](#1912-tracking-files-are-racy-and-process-global-by-name--fixed)
+- [19.12 Tracking files were racy and process-global by name](#1912-tracking-files-were-racy-and-process-global-by-name--fixed)
 - [19.13 `WorkStack` could not actually hold `Analysis`](#1913-workstack-could-not-actually-hold-analysis--fixed)
 - [19.14 `ORDER BY RAND() ... LIMIT 128` on the workload query](#1914-order-by-rand--limit-128-on-the-workload-query) — *open*
 - [19.15 Two context objects for one execution](#1915-two-context-objects-for-one-execution--fixed)
@@ -694,7 +694,7 @@ the initial and the replacement `Process(...)` get
 `kwargs={"execution_mode": UNTIL_COMPLETE}` — since those kwargs are the only
 place the mode has any effect.
 
-## 19.12 Tracking files are racy and process-global by name — **fixed**
+## 19.12 Tracking files were racy and process-global by name — **fixed**
 
 *Original observation.* `TrackingMessageManager` wrote non-atomically (open +
 `pickle.dump`) and read with a bare `except` that treated a torn read as "nothing
@@ -707,67 +707,83 @@ which a clock step or DST shift could skew either way. Roughly 40% of the module
 was dead: `WorkTargetTrackingMessage` and all four `TRACKER_MESSAGE_TYPE_*`
 constants had no references outside the file, and
 `WorkTargetTrackingMessage.__init__` had a live bug where `self.target = target`
-unconditionally clobbered its `DelayedAnalysisRequest` branch.
+unconditionally clobbered its `DelayedAnalysisRequest` branch. `_handle_failed_analysis`
+also cleared tracking in a `finally` regardless of outcome, so a replacement that
+itself died mid-recovery lost the attribution.
 
-*Where the state belongs.* Not in the worker — the worker is the thing that dies.
-Not in the ACE database either: it is shared by every node, and this is node-local
-information consumed only by the process that spawned the worker, so writing it
-centrally would mean a transaction per module invocation per worker per node. It
-belongs in the **manager process**, which is the one process guaranteed to outlive
-the worker.
+*The attempt that did not work.* The first fix moved the state into the manager
+process behind a client/server pair: one `multiprocessing.Pipe` per worker, a
+dedicated reader thread, an in-memory store, and a checksummed
+`data/var/tracking/<node>.json` snapshot. It was a severe performance regression,
+and structurally so. `TrackingServer.handle_message` ended **every** message with
+`_save_snapshot()` — `os.makedirs`, `json.dumps` of every record, SHA-256, write,
+rename — under the store lock. The executor emits two messages per module
+invocation, so the whole pool's module invocations funnelled through one thread
+doing a full serialize-and-rename each time. That thread was also the only drain
+for every worker's 64KB pipe, so once it fell behind, `Connection.send` blocked
+*inside the worker* on the analysis critical path — the exact failure the design
+was supposed to prevent. In single-threaded mode (`ace correlate`, the whole test
+suite) `LocalTrackingClient` called `handle_message` directly, putting the entire
+snapshot write inline on the worker's critical path.
 
-*Fix.* `saq/engine/tracking.py` is now a client/server pair over local IPC.
+*Where the state belongs.* Back in the worker, which is the only process that
+knows what it is doing without being told. "The worker is the thing that dies" is
+not an argument against this: the *file* outlives the worker, which is the whole
+point. Not the ACE database either — it is shared by every node, and this is
+node-local information consumed only by the process that spawned the worker, so
+writing it centrally would mean a transaction per module invocation per worker per
+node.
 
-- **Transport.** One `multiprocessing.Pipe(duplex=False)` per worker, opened
-  immediately before the fork and with the parent's copy of the write end dropped
-  immediately after — so the child inherits a live write end, no sibling's, and a
-  worker restarted in place gets a fresh channel. Not a shared
-  `multiprocessing.Queue`: a process killed while holding its internal write lock
-  can wedge every other writer, and workers dying by `SIGKILL` is the whole premise
-  here. `Connection.send`/`recv` is length-prefixed, so a worker killed mid-write
-  surfaces as a read error rather than a plausible-looking half record.
-- **Reader.** A dedicated thread in the manager (`multiprocessing.connection.wait`),
-  not the one-second controller tick — a worker replaying many cache hits can emit
-  hundreds of small messages a second and its `send()` must never block on the
-  analysis critical path. It is stopped across every fork (`TrackingServer.forking`),
-  because a child forked from a multi-threaded parent inherits locks — the logging
-  module's included — with no thread alive to release them.
-- **Store.** An in-memory dict, so the timeout check is a dict lookup instead of two
-  file reads per worker per second, mirrored on every change to
-  `<data_dir>/var/tracking/<node>.json`: a SHA-256 digest on the first line and the
-  JSON payload after it, written to a `.tmp` sibling and atomically renamed. The
-  rename makes it all-or-nothing against a crash; the checksum covers what the
-  rename cannot, which is a power loss that lands the directory entry but not the
-  data blocks. A file that fails to verify reads as "nothing was tracked" —
-  deliberately, rather than by swallowing an exception. Not fsync'd: a power loss
-  can lose the last record, and the node is restarting anyway, so we lose only the
-  attribution. Keying the path on the node fixes the shared-data-dir collision.
+*Fix.* `saq/engine/tracking.py` is a `TrackingWriter` (worker) and a
+`TrackingReader` (manager) over files under `<data_dir>/var/tracking/<node>/`.
+Each of the original defects is one property of that layout:
+
+- **Torn reads.** Every write goes to a `.tmp` sibling and is then `os.replace`d.
+  The rename is atomic against a concurrent reader, which is all a same-host reader
+  needs; there is no checksum because there is nothing left for one to catch that
+  matters. Not fsync'd: a power loss costs the attribution on a node that is
+  restarting anyway. A file that will not parse reads as "nothing was tracked",
+  deliberately and with a warning, rather than by swallowing an exception.
+- **Collisions.** The directory is keyed on the node, not the worker name, so two
+  engines sharing a data dir stay apart. Within it, `worker-<name>.json` is the
+  worker's live record.
+- **Clock.** The worker stamps `module_start_monotonic` with `time.monotonic()`.
+  On Linux that is `CLOCK_MONOTONIC`, which is system-wide, so the manager compares
+  it against its own reading — the comparison is now between two readings of the
+  same clock even though they are taken in different processes. It is only ever
+  read for a live worker on this host, so it never has to survive a reboot.
+- **Acknowledgement.** `TrackingReader.claim_failure` promotes the dead worker's
+  record to `pending/<root_uuid>.json` and removes the worker file; the replacement
+  gets it as a `Process` kwarg (alongside `execution_mode`, §19.11) and **deletes
+  the file** once it has applied it. Deleting it *is* the ack, and it is crash-safe
+  for free: a replacement that dies mid-recovery never runs the delete, so the next
+  one still finds the record. `_handle_failed_analysis` also resolves it when
+  `storage_dir` no longer exists, since a root that is gone can never be attributed
+  and the file would otherwise be handed out at every engine start forever.
 - **Records are keyed by `root_uuid`, not by worker name.** The unit of tracking is
-  the analysis, not the process doing it, so a pool that shrinks between restarts
-  cannot strand anything. Pending failures live in their own map rather than as a flag
-  on the in-flight one: the replacement worker normally re-claims the very root that
-  killed its predecessor (that workload row was never deleted), and sharing one map
-  would let the new work target overwrite the failure before anyone applied it — which
-  is exactly the crash loop this subsystem exists to prevent.
-- **Clock.** The manager stamps the module start on `time.monotonic()` and compares
-  against its own reading, so both ends of the comparison are now taken in one
-  process.
-- **Handoff.** On death the manager marks the record and passes it to the
-  replacement through `Process(kwargs=...)`, alongside `execution_mode` (§19.11).
-  `Worker._handle_failed_analysis` takes the record as an argument instead of
-  reading two pickle files, and — this is new — acknowledges it over the pipe once
-  applied. The old code cleared tracking in a `finally` regardless of outcome, so a
-  replacement that itself died mid-recovery lost the attribution. At engine start
-  the manager reads the snapshot first and hands each leftover to a worker; a record
-  still naming a module was never cleared by its owner and is unresolved by
-  definition. Dispatch is deliberately not matched on worker name.
+  the analysis, not the process doing it, so a pool that shrank between restarts
+  cannot strand anything. Pending failures live in their own directory rather than
+  as a flag on the in-flight record: the replacement normally re-claims the very
+  root that killed its predecessor, and sharing one file would let the new work
+  target overwrite the failure before anyone applied it — which is exactly the
+  crash loop this subsystem exists to prevent.
+- **Dead code.** The message classes and constants are gone; so are the pipe, the
+  reader thread, `TrackingServer.forking()` (needed only because a fork from a
+  multi-threaded parent inherits the logging lock with no thread to release it),
+  and `close_inherited_clients` (needed only because a forked child inherited its
+  siblings' pipe write ends).
+
+Cost on the hot path is two ~300-byte atomic writes per module invocation, done by
+the worker itself and therefore parallel across the pool, with no central
+serialization point and no back-pressure. `WorkerManager.check` reads one small
+file per worker per tick and uses it for both the timeout check and the
+memory-limit log lines. Single-threaded mode gets a `NullTrackingWriter`: there is
+no manager, so a dead worker is a dead engine and there is nobody left to recover
+anything.
 
 The recovery work stays in the worker on purpose: loading a large root and possibly
 copying a file observable would stall the manager's supervision tick for every
-other worker in the pool. The manager owns the *record*; the worker does the *work*.
-`WorkerManager.check` now also has its module/target detail back in the
-memory-limit-kill log line, which had been commented out with a `TODO` because the
-information was not reachable.
+other worker in the pool. The manager owns the *hand-off*; the worker does the *work*.
 
 *Not attempted.* Putting the record in the shared database so another node's
 `recover_expired_locks` could attribute a failure. Storage directories are not
@@ -775,27 +791,23 @@ necessarily shared across nodes, so a remote node could not load the root to rec
 it anyway; the manager's startup recovery covers the case that actually happens,
 which is this node's engine restarting.
 
-*Regression guard.* `tests/saq/engine/test_tracking.py` covers the
-record's serialization (the monotonic deadline never persists; unknown keys from
-another build do not break a load), the state transitions, the monotonic timeout
-boundary, and the failure handoff: a pending record survives until acknowledged, a
-worker that died *between* modules has nothing to attribute, and a replacement
-under the same name taking a different root leaves the pending record alone. On
-the snapshot: a round trip through a fresh server (the full-manager-restart path),
-a cleanly finished root that must not be resurrected, and a tampered payload and a
-truncated file that must both read as empty rather than as garbage. On the
-transport: delivery through a real pipe, a truncated frame that must not corrupt
-existing state, EOF dropping the connection, and a send after close staying silent
-so a worker whose manager went away never fails its analysis over it. One test pins
-the re-claim case specifically — a replacement taking the same root back must not
-wipe the pending failure, before or after a manager restart. Two more tests
-cover what the file-based design never could — a record recovered from a snapshot
-landing on the correct root by `root_uuid` and then being acknowledged, and startup
-dispatch handing out a record whose original worker no longer exists after the pool
-was resized. The three worker-death system tests in `test_functionality.py`
-(`test_failed_analysis_module`, `test_timeout`,
-`test_copy_terminated_analysis_cause`) are unchanged and remain the end-to-end
-contract.
+*Regression guard.* `tests/saq/engine/test_tracking.py` covers the record's JSON
+round trip and the derived monotonic deadline (unknown keys from another build do
+not break a load), the state transitions, the monotonic timeout boundary, the
+atomic write leaving no `.tmp`, a corrupt file reading as nothing tracked, node
+scoping, and the null writer writing nothing. On failure attribution: a pending
+record survives until acknowledged, a worker that died *between* modules has
+nothing to attribute, and a replacement re-claiming the same root — or a different
+one under the same name — leaves the pending file alone. On startup recovery: a
+leftover worker file naming a module is promoted, a cleanly finished root is not
+resurrected, a worker file with no module is discarded, and dispatch hands out a
+record whose original worker no longer exists after the pool was resized. Two
+integration tests close the loop: a recovered record landing on the correct root by
+`root_uuid` and then being resolved, and a record for a deleted root being resolved
+rather than replayed. The three worker-death system tests in `test_functionality.py`
+(`test_failed_analysis_module`, `test_timeout`, `test_copy_terminated_analysis_cause`)
+and `test_root_save_frequency.py::test_detection_mode_restarts_from_scratch_without_looping`
+are unchanged and remain the end-to-end contract.
 
 ## 19.13 `WorkStack` could not actually hold `Analysis` — **fixed**
 

@@ -58,7 +58,7 @@ from saq.engine.errors import (
     WaitForAnalysisException,
 )
 from saq.engine.shutdown_interface import ShutdownInterface
-from saq.engine.tracking import TrackingClient
+from saq.engine.tracking import TrackingWriter
 from saq.engine.work_stack import WorkStack, WorkTarget
 from saq.error import report_exception
 from saq.filesystem.adapter import FileSystemAdapter
@@ -152,7 +152,7 @@ class AnalysisExecutor:
         self,
         configuration_manager: ConfigurationManager,
         delayed_analysis_interface: DelayedAnalysisInterface,
-        tracking_message_manager: TrackingClient,
+        tracking_message_manager: TrackingWriter,
         single_threaded_mode=False,
         shutdown_interface: Optional[ShutdownInterface] = None,
     ):
