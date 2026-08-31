@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.101] - 2026-08-31
+
+- [engine bugfixes](https://github.com/ACE-Collective/ace3/pull/510)
+- [Resolve observable presenter via MRO so subtypes display like their parent type](https://github.com/ACE-Collective/ace3/pull/509)
+- [lazy loading configuration](https://github.com/ACE-Collective/ace3/pull/508)
+- [Adds concept of alert version](https://github.com/ACE-Collective/ace3/pull/501)
+
 ## [3.0.100] - 2026-08-28
 
 - [GUI performance improvements Part 4](https://github.com/ACE-Collective/ace3/pull/506)
