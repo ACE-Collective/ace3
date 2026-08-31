@@ -40,21 +40,35 @@ under `saq/observables/export/`:
 | yara | `observable_export_yara` | one yara rule file per observable type, scanned against files |
 | splunk | `observable_export_splunk` (`etc/saq.splunk.default.yaml`) | a KV store collection that Splunk hunts search |
 
-Every target except redis publishes each detection under the configured parent type (`email_reply_to`
-becomes `email_address`), because the external system rarely knows the context ACE knew.
+The yara target publishes each detection under the parent type its `export_list` names
+(`email_reply_to` becomes `email_address`), because a yara rule scanning a blob of data has no way to
+know the context ACE knew. The splunk target exports **every** active detection under its **exact**
+type: which types are worth hunting is a hunt-side decision, an exported type no hunt selects costs
+nothing, and keeping the exact type is what lets the engine's own exact-type match fire on the
+alerts a hunt creates. It follows that enabling a detection on a newly added observable type needs
+no ACE config change -- the type reaches the collection on the next export, and only the hunt
+consuming it has to exist.
 
 ## The Splunk KV store collection
 
 Disabled by default: a stock install has no Splunk to publish to. Enable it by setting `collection` and
-`enabled: true` in a site overlay. The exporter writes one document per detection:
+`enabled: true` in a site overlay. The exporter writes one document per active detection, of every
+type:
 
 | field | value |
 |---|---|
 | `_key` | the `observable_detections` row id, as a string; publishing is an upsert on it |
 | `id` | the same id, as a number |
-| `type` | the observable type the detection is exported under |
+| `type` | the exact observable type the detection was created with |
+| `type_path` | `type` plus its ancestors from the type hierarchy, space-joined, most specific first (`email_reply_to email_address`) -- what a hunt selects a type family by, after `makemv` |
 | `value` | the detection exactly as ACE stores it -- what a hunt searches for, and what it reports back as the observable so the engine's own match fires on the resulting alert |
 | `pattern` | `value` lowercased and wrapped in `*`; for `url` and `uri_path` the scheme and any trailing `/` are removed first so the pattern is a substring of however a log renders the url |
+
+`type_path` is derived from the observable type registry (`observable_types.config_path`) at publish
+time and is not part of the change-detection fingerprint, so an edit to the hierarchy alone reaches
+the collection on the next publish -- the next detection change, or an
+`ace observables export --force splunk` -- not the next export run. A type absent from the registry
+(legacy detections can carry one) exports with a self-only `type_path`.
 
 A literal `*` in a value is left as a wildcard in `pattern`. A url detection with no path
 (`http://evil.com/`) therefore becomes `*evil.com*` and matches every url on that host; an analyst who
@@ -66,12 +80,13 @@ The exporter does not create Splunk objects. In the app the export connects thro
 of the `splunk_config_<api>` block), shared globally, create:
 
 1. A KV store collection named as configured in `collection`, with fields `id` (number), `type`,
-   `value`, `pattern` (string), and an accelerated field over `type` + `value`.
+   `type_path`, `value`, `pattern` (string), and an accelerated field over `type` + `value`.
 2. A lookup definition `ace_detections` over that collection with
-   `fields_list = _key, id, type, value, pattern`, used with `inputlookup`.
+   `fields_list = _key, id, type, type_path, value, pattern`, used with `inputlookup`.
 3. A lookup definition `ace_detections_pattern` over the same collection with the same fields plus
    `match_type = WILDCARD(pattern)` and a `max_matches` large enough for an event that contains several
-   indicators, used with `lookup`.
+   indicators, used with `lookup`. A field missing from a `fields_list` is silently absent from that
+   lookup's output, so both definitions must list all five.
 
 Until the collection exists the export logs an error every minute; once it exists the next run
 publishes. On a search head cluster a KV store write takes a few seconds to reach every member, so a
@@ -82,12 +97,14 @@ rewrite it.
 
 ### How a hunt uses it
 
-A hunt per observable type turns the detections into search terms, then uses the pattern lookup to
-learn which detection each event contains:
+A hunt per observable type (or type family) selects its detections by `type_path`, turns them into
+search terms, then uses the pattern lookup to learn which detection each event contains:
 
 ```
 index=* NOT index=<ace's own log index>
-  [| inputlookup ace_detections where type="fqdn"
+  [| inputlookup ace_detections
+   | makemv type_path
+   | search type_path="fqdn"
    | eval myCandidate=value
    | eval myTerm=if(match(myCandidate, "[\\s\"'()\\[\\]{}<>|!;,*&?+]"),
                     "\"" . replace(myCandidate, "([\"\\\\])", "\\\\\\1") . "\"",
@@ -96,10 +113,21 @@ index=* NOT index=<ace's own log index>
    | where mvcount(myTerms) > 0
    | eval search="(" . mvjoin(myTerms, " OR ") . ")"
    | fields search]
-| eval myLookupType="fqdn", myRawLc=lower(_raw)
-| lookup ace_detections_pattern type AS myLookupType pattern AS myRawLc OUTPUT id AS myDetectionId value AS myDetectionValue
+| eval myRawLc=lower(_raw)
+| lookup ace_detections_pattern pattern AS myRawLc
+    OUTPUT id AS myDetectionId value AS myDetectionValue type AS myDetectionType type_path AS myDetectionTypePath
 | where isnotnull(myDetectionId)
 ```
+
+`search type_path="fqdn"` after `makemv` matches an exact element of the path, never a substring --
+`type_path="ip"` selects `ip` and its subtypes, not `uri_path`. Selecting a family
+(`type_path="email_address"`) picks up every subtype's detections in one hunt while each stays
+exported under its exact type. The pattern lookup joins on `pattern` alone, so it attributes every
+detection the event contains, including one from another family that the hunt's search terms
+happened to surface; a hunt that should stay within its family filters the expanded results on
+`myDetectionTypePath`. The observable the hunt reports is `myDetectionValue` under
+`myDetectionType` -- the exact type and original case the detection was created with, which is what
+the engine's own exact-type, case-sensitive match recognizes.
 
 The subsearch returns a single field named `search`, which Splunk inserts into the outer search
 verbatim (only when `format` is *not* applied -- `format` would quote it into a phrase). No rows means
@@ -126,8 +154,13 @@ no search at all. Each value becomes:
 
 A url hunt also searches the scheme-stripped form and the `http://` / `https://` variants, since logs
 disagree on which they store. The lookup then runs only on the events that survived, matching each
-detection's `pattern` against the lowercased raw event, and yields `value` in its original case, so the
-observable the hunt creates from `myDetectionValue` is the one ACE's own match recognizes. Exclude ACE's
-own log index from the search: it echoes the detection values back. Matching the whole raw event is
-deliberately broad; a hunt is narrowed to specific indexes and fields once it is known where a type
-actually appears.
+detection's `pattern` against the lowercased raw event. Exclude ACE's own log index from the search:
+it echoes the detection values back. Matching the whole raw event is deliberately broad; a hunt is
+narrowed to specific indexes and fields once it is known where a type actually appears.
+
+A detection of a type no hunt selects sits inert in the collection. That is by design -- an untested
+type must not be injected into an `index=*` search just because someone enabled it, and a type may be
+deliberately hunted in a different backend or matched only in-engine and by the yara export -- but it
+means the gap is silent: nothing distinguishes "hunted elsewhere" from "nobody wrote the hunt". When
+enabling a detection on a type for the first time, check that a hunt actually selects its
+`type_path` wherever it is expected to be hunted.

@@ -73,7 +73,7 @@ def no_detections():
 
 @pytest.mark.unit
 def test_config_class_is_the_subclass():
-    # the config block carries collection/export_list/etc, so the target has to declare its own model
+    # the config block carries collection/max_export/etc, so the target has to declare its own model
     assert SplunkKVStoreExport.get_config_class() is SplunkKVStoreExportConfig
     assert issubclass(SplunkKVStoreExportConfig, ObservableExportConfig)
 
@@ -83,13 +83,6 @@ def test_configured_settings_are_loaded():
     config = get_config().get_observable_export_config("splunk")
     assert isinstance(config, SplunkKVStoreExportConfig)
     assert config.max_export == 500
-    assert "fqdn" in config.export_list
-    # both the generic type and the legacy one detections may still carry
-    assert "ip" in config.export_list
-    assert "ipv4" in config.export_list
-    # identities a hunt can match in sign-in and endpoint logs
-    assert "user" in config.export_list
-    assert "hostname" in config.export_list
 
 
 @pytest.mark.unit
@@ -109,73 +102,60 @@ def test_named_explicitly_runs_even_though_disabled():
 #
 
 @pytest.mark.unit
-def test_build_export_list_filters_by_type_only():
-    export = splunk_export(export_list=["fqdn", "ip"])
+def test_build_export_list_exports_every_type():
+    export = splunk_export()
 
     export_list = export.build_export_list({
         "fqdn": [{"id": 1, "value": "evil.example.com"}],
         # no minimum length here, unlike yara -- a lookup keyed on type and value tolerates it
         "ip": [{"id": 2, "value": "::1"}],
-        "url": [{"id": 3, "value": "http://not-configured.example.com"}],
-    })
-
-    assert {(entry.type, entry.id) for entry in export_list} == {("fqdn", 1), ("ip", 2)}
-
-
-@pytest.mark.unit
-def test_build_export_list_includes_subtypes(email_type_hierarchy):
-    export = splunk_export(export_list=[F_EMAIL_ADDRESS])
-
-    export_list = export.build_export_list({
-        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
-        F_EMAIL_FROM: [{"id": 2, "value": "from@example.com"}],
-        F_EMAIL_ADDRESS: [{"id": 3, "value": "plain@example.com"}],
+        # a type nothing hunts yet still lands in the collection; the hunts decide what to search
+        "mutex": [{"id": 3, "value": "Global\\evil"}],
     })
 
     assert {(entry.type, entry.id) for entry in export_list} == {
-        (F_EMAIL_ADDRESS, 1), (F_EMAIL_ADDRESS, 2), (F_EMAIL_ADDRESS, 3)}
+        ("fqdn", 1), ("ip", 2), ("mutex", 3)}
 
 
 @pytest.mark.unit
-def test_build_export_list_most_specific_configured_type_wins(email_type_hierarchy):
-    export = splunk_export(export_list=[F_EMAIL_ADDRESS, F_EMAIL_REPLY_TO])
-
-    export_list = export.build_export_list({
-        F_EMAIL_REPLY_TO: [{"id": 1, "value": "reply@example.com"}],
-    })
-
-    # exported once, under the more specific of the two configured types -- a duplicate would
-    # collide on _key in the kv store
-    documents = export.build_documents(export_list)
-    assert [document["_key"] for document in documents] == ["1"]
-    assert documents[0]["type"] == F_EMAIL_REPLY_TO
-
-
-@pytest.mark.unit
-def test_document_reports_the_configured_type_for_a_subtype(email_type_hierarchy):
-    export = splunk_export(export_list=[F_EMAIL_ADDRESS])
+def test_subtype_keeps_its_exact_type_with_the_family_in_type_path(email_type_hierarchy):
+    export = splunk_export()
     export_list = export.build_export_list({
         F_EMAIL_REPLY_TO: [{"id": 7, "value": "Reply@example.com"}]})
 
-    # a search filtering the lookup on type="email_address" has to find it
+    # the exact type is what the engine's own detection match fires on; the family membership a
+    # hunt selects by lives in type_path
     assert export.build_documents(export_list) == [{
         "_key": "7",
         "id": 7,
-        "type": F_EMAIL_ADDRESS,
+        "type": F_EMAIL_REPLY_TO,
+        "type_path": f"{F_EMAIL_REPLY_TO} {F_EMAIL_ADDRESS}",
         "value": "Reply@example.com",
         "pattern": "*reply@example.com*",
     }]
 
 
 @pytest.mark.unit
+def test_unregistered_type_gets_a_self_only_type_path():
+    # legacy detections can carry a type absent from the deployment's registry (production's
+    # registry has no ipv4, which predates the generic ip type); they still export, with no
+    # ancestors to add
+    export = splunk_export()
+    export_list = export.build_export_list({"legacy_type": [{"id": 9, "value": "1.2.3.4"}]})
+
+    assert export.build_documents(export_list)[0]["type_path"] == "legacy_type"
+
+
+@pytest.mark.unit
 def test_document_shape():
-    export = splunk_export(export_list=["fqdn"])
+    export = splunk_export()
     export_list = export.build_export_list({"fqdn": [{"id": 7, "value": "EVIL.example.com"}]})
 
     assert export.build_documents(export_list) == [{
         "_key": "7",
         "id": 7,
         "type": "fqdn",
+        "type_path": "fqdn",
         # the value as stored: what a hunt searches for and reports back as the observable
         "value": "EVIL.example.com",
         # lowercased and wrapped in wildcards: what a WILDCARD lookup matches against
@@ -219,7 +199,7 @@ def test_pattern_for_an_atomic_type_is_plain():
 
 @pytest.mark.unit
 def test_publish_requires_a_collection(mock_splunk):
-    export = splunk_export(collection="", export_list=["fqdn"])
+    export = splunk_export(collection="")
     export_list = export.build_export_list({"fqdn": [{"id": 1, "value": "evil.example.com"}]})
 
     # publishing into a collection named "" would report success while going nowhere
@@ -229,7 +209,7 @@ def test_publish_requires_a_collection(mock_splunk):
 
 @pytest.mark.unit
 def test_publish_saves_documents(mock_splunk):
-    export = splunk_export(export_list=["fqdn"])
+    export = splunk_export()
     export.publish(export.build_export_list({"fqdn": [{"id": 1, "value": "evil.example.com"}]}))
 
     mock_splunk.kvstore_batch_save.assert_called_once()
@@ -244,7 +224,7 @@ def test_publish_deletes_only_the_stale_documents(mock_splunk):
     mock_splunk.kvstore_query.return_value = [
         {"_key": "1"}, {"_key": "2"}, {"_key": "3"}]
 
-    export = splunk_export(export_list=["fqdn"])
+    export = splunk_export()
     export.publish(export.build_export_list({"fqdn": [
         {"id": 2, "value": "b.example.com"},
         {"id": 3, "value": "c.example.com"},
@@ -260,7 +240,7 @@ def test_publish_deletes_only_the_stale_documents(mock_splunk):
 
 @pytest.mark.unit
 def test_publish_chunks_at_max_export(mock_splunk):
-    export = splunk_export(export_list=["fqdn"], max_export=500)
+    export = splunk_export(max_export=500)
     detections = [{"id": i, "value": f"host{i}.example.com"} for i in range(1001)]
 
     export.publish(export.build_export_list({"fqdn": detections}))
@@ -274,7 +254,7 @@ def test_publish_chunks_at_max_export(mock_splunk):
 def test_publish_chunks_deletes_too(mock_splunk):
     mock_splunk.kvstore_query.return_value = [{"_key": str(i)} for i in range(1001)]
 
-    export = splunk_export(export_list=["fqdn"], max_export=500)
+    export = splunk_export(max_export=500)
     export.publish(export.build_export_list({}))
 
     assert mock_splunk.kvstore_delete.call_count == 3
@@ -284,7 +264,7 @@ def test_publish_chunks_deletes_too(mock_splunk):
 def test_publish_empty_list_clears_the_collection(mock_splunk):
     mock_splunk.kvstore_query.return_value = [{"_key": "1"}, {"_key": "2"}]
 
-    export = splunk_export(export_list=["fqdn"])
+    export = splunk_export()
     export.publish(export.build_export_list({}))
 
     mock_splunk.kvstore_delete.assert_called_once_with(
@@ -296,7 +276,7 @@ def test_publish_empty_list_clears_the_collection(mock_splunk):
 def test_publish_propagates_failures(mock_splunk):
     mock_splunk.kvstore_batch_save.side_effect = RuntimeError("splunk is down")
 
-    export = splunk_export(export_list=["fqdn"])
+    export = splunk_export()
     export_list = export.build_export_list({"fqdn": [{"id": 1, "value": "evil.example.com"}]})
 
     with pytest.raises(RuntimeError):
@@ -318,8 +298,6 @@ def test_failed_publish_is_not_recorded_as_success(no_detections, state_dir, mon
     monkeypatch.setattr("saq.splunk.SplunkClient", Mock(return_value=client))
     monkeypatch.setattr(
         get_config().get_observable_export_config("splunk"), "collection", "test_collection")
-    monkeypatch.setattr(
-        get_config().get_observable_export_config("splunk"), "export_list", [F_TEST])
 
     assert run_exports(["splunk"]) == os.EX_SOFTWARE
 
@@ -336,8 +314,6 @@ def test_successful_publish_then_skip(no_detections, state_dir, monkeypatch):
     monkeypatch.setattr("saq.splunk.SplunkClient", Mock(return_value=client))
     monkeypatch.setattr(
         get_config().get_observable_export_config("splunk"), "collection", "test_collection")
-    monkeypatch.setattr(
-        get_config().get_observable_export_config("splunk"), "export_list", [F_TEST])
 
     assert run_exports(["splunk"]) == os.EX_OK
     assert client.kvstore_batch_save.call_count == 1
