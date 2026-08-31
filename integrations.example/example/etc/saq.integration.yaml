@@ -1,0 +1,32 @@
+# This file MUST be named saq.integration.yaml -- load_integration_component_etc() in
+# saq/integration/integration_loader.py only auto-loads that exact name. A config file under any
+# other name is silently ignored.
+
+# Every integration requires an integration_<name>: block. It is the only thing that causes your
+# integration's python package to be imported, and importing the package is what runs your
+# registration hooks: register_integration_configuration(), register_directive(),
+# register_observable_action(), register_integration_blueprint_callback().
+#
+# Without this block your src/ still lands on the path and this config file is still merged, so
+# everything *looks* configured -- but none of your hooks run, and the failures are invisible.
+integration_example:
+  name: example
+  # required -- an integration with enabled: false is not imported
+  enabled: true
+  description: "Example Integration"
+  # the python package name under src/ -- note this is often NOT the integration directory name
+  python_module: example
+  # extra keys are permitted and ignored
+  author: unixfreak0037@gmail.com
+  repo: https://github.com/unixfreak0037/ace3-example-integration
+
+analysis_module_example:
+  name: example
+  python_module: example.modules
+  python_class: ExampleAnalyzer
+  enabled: true
+
+module_group_correlation:
+  name: correlation
+  modules:
+    - example

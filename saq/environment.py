@@ -232,6 +232,14 @@ def initialize_environment(
         fluent_bit_tag=os.environ.get(ENV_FLUENT_BIT_TAG),
     )  # this log file just gets some startup information
 
+    # initialize_integrations() runs well before logging is configured, so anything it wanted to
+    # warn about was stashed rather than logged
+    from saq.integration.integration_loader import DEFERRED_INTEGRATION_WARNINGS
+    for message in DEFERRED_INTEGRATION_WARNINGS:
+        logging.warning(message)
+
+    DEFERRED_INTEGRATION_WARNINGS.clear()
+
     # has the encryption password been set yet?
     from saq.crypto import initialize_encryption
 

@@ -75,23 +75,29 @@ You can use the example provided in `integrations.example` as a starting point t
 
 ## Integration Configuration
 
-Each integration requires an integration configuration section.
+Each integration requires an integration configuration section, in a file named exactly
+`etc/saq.integration.yaml`. 
 
-```ini
-; each integration section starts with integration_NAME
-; where NAME is a unique name for the integration
-[integration_example]
-; a brief description of what the integration provides
-description = Example Integration
-; who to contact for issues
-author = unixfreak0037@gmail.com
-; where to obtain updates
-repo = https://github.com/unixfreak0037/ace3-example-integration
-; the python module to load
-module = example
+```yaml
+# each integration block starts with integration_NAME
+# where NAME is a unique name for the integration
+integration_example:
+  name: example
+  # required -- an integration with enabled: false is not imported
+  enabled: true
+  # a brief description of what the integration provides
+  description: "Example Integration"
+  # the python package to import
+  python_module: example
+  # extra keys are permitted and ignored
+  author: unixfreak0037@gmail.com
+  repo: https://github.com/unixfreak0037/ace3-example-integration
 ```
 
-The `module` configuration item is important as it allows the integration hooks to execute. The value is the name of the python module to load. Remember that the `src` directory is automatically included in PYTHONPATH.
+**The `integration_<name>:` block is mandatory.** 
+
+ACE logs a warning at startup for any discovered integration directory that has no
+`integration_*:` block.
 
 ## Notes
 
