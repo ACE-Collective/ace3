@@ -6,8 +6,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import aceapi_v2.observables.service as observables_service
+from aceapi_v2.observables.schemas import LookupPair
 from aceapi_v2.observables.service import (
     get_interesting_observables_by_hashes,
+    lookup_observables,
     observable_is_interesting,
     set_observable_interesting,
 )
@@ -187,3 +190,46 @@ class TestGetInterestingObservablesByHashes:
         )
         assert len(result) == 1
         assert result[0].type == "ipv4"
+
+
+class TestLookupObservables:
+    """Service-level tests for lookup_observables (chunking and stitching)."""
+
+    @pytest.mark.asyncio
+    async def test_chunking_merges_all_chunks(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Every observable resolves even when the batch spans multiple IN chunks."""
+        monkeypatch.setattr(observables_service, "CHUNK_SIZE", 2)
+
+        values = [f"10.20.30.{i}" for i in range(5)]
+        for value in values:
+            session.add(Observable(type="ipv4", sha256=_sha256(value), value=value.encode("utf8")))
+        await session.commit()
+
+        response = await observables_service.lookup_observables(
+            session,
+            pairs=[LookupPair(type="ipv4", value=v) for v in values],
+            recent_alert_limit=5,
+            exclude_alert_uuids=[],
+            since=None,
+        )
+        assert len(response.results) == 5
+        assert all(r.found for r in response.results)
+
+    @pytest.mark.asyncio
+    async def test_type_matching_is_casefolded(self, session: AsyncSession):
+        """A stored row whose type differs only in case still stitches back to the request pair
+        (observables.type compares case-insensitively in MySQL)."""
+        session.add(Observable(type="IPv4", sha256=_sha256("10.40.50.60"), value=b"10.40.50.60"))
+        await session.commit()
+
+        response = await lookup_observables(
+            session,
+            pairs=[LookupPair(type="ipv4", value="10.40.50.60")],
+            recent_alert_limit=5,
+            exclude_alert_uuids=[],
+            since=None,
+        )
+        (result,) = response.results
+        assert result.found is True
