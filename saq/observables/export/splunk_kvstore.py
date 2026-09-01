@@ -1,14 +1,21 @@
 """Exports the observables enabled for detection into a Splunk KV store collection.
 
-The collection is meant to be used as a lookup by hunts that search for the detections. Each document
-carries the detection in two forms:
+The collection is meant to be used as a lookup by hunts that search for the detections. Every active
+detection is exported, under its exact type -- which detections are worth hunting is a hunt-side
+decision, and an exported type no hunt selects costs nothing. Each document carries the detection in
+two forms:
 
 - ``value``: the detection exactly as ACE stores it. A hunt turns these into search terms, and the
   value a hunt reports back is what becomes the observable on the alert -- so it has to match what
-  the analysis engine matches on, case included.
+  the analysis engine matches on, case included. The engine's match is exact-type, which is why
+  ``type`` is the exact type the detection was created with rather than a parent.
 - ``pattern``: the lowercased value wrapped in wildcards, for a lookup definition with
   ``match_type = WILDCARD(pattern)``. Matched against a lowercased field (or the whole lowercased
   event), it tells the hunt which detection an event actually contains.
+
+``type_path`` carries the type plus its ancestors from the observable type hierarchy, so a hunt can
+select a whole family (``email_address`` covering ``email_reply_to`` and the rest) without ACE
+deciding on its behalf which types collapse into which.
 
 Documents are keyed on the `observable_detections` row id, which makes publishing an upsert -- a
 detection that has not changed simply overwrites itself.
@@ -25,9 +32,9 @@ from saq.observables.export.base import (
     ExportEntry,
     ObservableExport,
     ObservableExportList,
-    select_detections,
 )
 from saq.observables.export.config import ObservableExportConfig
+from saq.observables.type_hierarchy import get_type_hierarchy
 
 # the types whose pattern is matched as a substring of a longer value (a url inside a proxy log line,
 # a path inside a full url), and therefore need the parts logs disagree on removed
@@ -61,7 +68,6 @@ def build_pattern(observable_type: str, value: str) -> str:
 
 class SplunkKVStoreExportConfig(ObservableExportConfig):
     collection: str = Field(default="", description="the KV store collection to publish into")
-    export_list: list[str] = Field(default_factory=list, description="the observable types to export")
     max_export: int = Field(default=500, description="how many documents to send per batch save request")
     api: str = Field(default="default", description="which splunk_config_<name> block to connect through")
     # NOTE: these are only used when the splunk config named by `api` leaves them unset -- SplunkClient
@@ -77,22 +83,31 @@ class SplunkKVStoreExport(ObservableExport):
         return SplunkKVStoreExportConfig
 
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
-        """The detections of a configured type."""
+        """Every active detection, under its exact type."""
         entries = []
-        for observable_type, detection in select_detections(detections, self.config.export_list):
-            entries.append(
-                ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
+        for observable_type, type_detections in detections.items():
+            for detection in type_detections:
+                entries.append(
+                    ExportEntry(id=detection["id"], type=observable_type, value=detection["value"]))
 
         return ObservableExportList(entries)
 
     def build_documents(self, export_list: ObservableExportList) -> list[dict]:
-        """The KV store documents for the given export list. See the module docstring for the shape."""
+        """The KV store documents for the given export list. See the module docstring for the shape.
+
+        ``type_path`` is space-joined for ``makemv``; it is derived from the hierarchy at publish
+        time and is not part of the change-detection fingerprint, so an edit to the type hierarchy
+        alone reaches the collection on the next publish (the next detection change, or a --force
+        run), not the next export run.
+        """
+        hierarchy = get_type_hierarchy()
         documents = []
         for entry in export_list:
             documents.append({
                 "_key": str(entry.id),
                 "id": entry.id,
                 "type": entry.type,
+                "type_path": " ".join((entry.type, *hierarchy.ancestors(entry.type))),
                 "value": entry.value,
                 "pattern": build_pattern(entry.type, entry.value),
             })
