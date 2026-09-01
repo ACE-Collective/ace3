@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.102] - 2026-09-01
+
+- [Fixes issues with Splunk observable detection](https://github.com/ACE-Collective/ace3/pull/517)
+- [Adds banner notifying analyst when alert has changed](https://github.com/ACE-Collective/ace3/pull/516)
+- [Adds bulk observable search endpoint](https://github.com/ACE-Collective/ace3/pull/511)
+
 ## [3.0.101] - 2026-08-31
 
 - [engine bugfixes](https://github.com/ACE-Collective/ace3/pull/510)
