@@ -8,7 +8,7 @@ from saq.configuration import get_config
 from saq.constants import F_TEST
 from saq.database.model import Alert, Comment, Tag, TagMapping
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT
+from saq.database.util.alert import ALERT, touch_alerts
 from saq.environment import get_global_runtime_settings
 from saq.observables.testing import TestObservable
 from saq.util.time import local_time
@@ -274,6 +274,30 @@ def test_get_alert_metadata_with_owner(web_client, root_analysis):
     assert data["owner_name"] is not None
     assert data["owner_time"] is not None
     assert data["owner_time"].endswith("Z")
+
+
+@pytest.mark.integration
+def test_get_alert_metadata_version(web_client, root_analysis):
+    """Test that get_alert_metadata carries alerts.version and reflects a rotation."""
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.get_alert_metadata"),
+                          query_string={'direct': alert.uuid})
+    assert result.status_code == 200
+    first_version = result.get_json()["version"]
+
+    db = get_db()
+    db_alert = db.query(Alert).filter(Alert.uuid == alert.uuid).one()
+    assert first_version == db_alert.version
+
+    touch_alerts([alert.uuid])
+    db.commit()
+
+    result = web_client.get(url_for("analysis.get_alert_metadata"),
+                          query_string={'direct': alert.uuid})
+    assert result.status_code == 200
+    assert result.get_json()["version"] != first_version
 
 
 @pytest.mark.integration

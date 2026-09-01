@@ -720,3 +720,15 @@ nav[data-toggle="toc"] {
 .alert-description-cell {
     overflow-wrap: anywhere;
 }
+
+/* "this alert has been updated" notice on the analysis page -- fixed to the
+   viewport so it stays visible however far the analyst has scrolled */
+#alert_updated_banner {
+    position: fixed;
+    top: 0.75rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1045; /* over page content, under Bootstrap's modal backdrop (1050) */
+    max-width: 90vw;
+    margin-bottom: 0;
+}

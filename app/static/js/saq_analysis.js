@@ -8,6 +8,32 @@ var ownership_check_failures = 0;
 var last_successful_check = null;
 var FAILURE_WARNING_THRESHOLD = 3;
 
+// most recent alerts.version token seen by check_alert_meta, and the token the
+// analyst last dismissed the updated-alert banner at (so the banner comes back
+// only if the alert changes again after the dismissal)
+var latest_alert_version = null;
+var dismissed_alert_version = null;
+
+function update_version_banner(new_version) {
+    if (!new_version)
+        return;
+
+    latest_alert_version = new_version;
+
+    // current_alert_version is rendered into the page (see analysis/index.html)
+    if (typeof current_alert_version === "undefined" || !current_alert_version)
+        return;
+
+    if (new_version !== current_alert_version && new_version !== dismissed_alert_version) {
+        $("#alert_updated_banner").removeClass("d-none");
+    }
+}
+
+function dismiss_alert_updated_banner() {
+    dismissed_alert_version = latest_alert_version;
+    $("#alert_updated_banner").addClass("d-none");
+}
+
 function update_status_display(status, is_locked) {
     var el = $("#alert-status-value");
     if (is_locked) {
@@ -72,6 +98,11 @@ function check_alert_meta() {
             ownership_check_failures = 0;
             last_successful_check = Date.now();
             $("#ownership_check_warning").addClass("d-none");
+
+            // before the lock/status handling: current_alert_status et al are only
+            // rendered on the root alert view, so on sub-analysis views the block
+            // below throws into the catch handler and never returns here
+            update_version_banner(data["version"]);
 
             // update lock state and status field
             var is_locked = data["is_locked"] === true;
