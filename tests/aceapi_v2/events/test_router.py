@@ -360,6 +360,27 @@ class TestGetEventByReferenceAndAlertDetails:
         assert detail["insert_date"]  # set by the database on insert
 
     @pytest.mark.asyncio
+    async def test_event_with_malware_serializes_threat_names(self, client: AsyncClient):
+        """Event.json read `t.type` on a Threat row, which only has `threat_type`: every event with malware
+        tagged answered 500 on both APIs."""
+        from saq.database import Malware, MalwareMapping, Threat, ThreatType, get_db
+
+        lookups = _make_lookups()
+        event = _make_event("with-malware", lookups, lookups["open_status"])
+        db = get_db()
+        ttype = ThreatType(name="ai-test-rat")
+        malware = Malware(name="ai-test-family")
+        db.add_all([ttype, malware])
+        db.commit()
+        db.add(Threat(malware_id=malware.id, threat_type_id=ttype.id))
+        db.add(MalwareMapping(event_id=event.id, malware_id=malware.id))
+        db.commit()
+
+        response = await client.get(f"/events/{event.id}")
+        assert response.status_code == 200
+        assert response.json()["malware"] == [{"ai-test-family": ["ai-test-rat"]}]
+
+    @pytest.mark.asyncio
     async def test_disposition_time_is_the_disposition_time(self, client: AsyncClient):
         """Event.json used to emit ownership_time under the disposition_time key."""
         from datetime import datetime
