@@ -498,10 +498,10 @@ $(document).ready(function() {
         return $("input[name='user_id_" + user_id + "']").closest("tr").find("td:first").text().trim();
     }
 
-    // ---- New API key: name + inherit-or-scope, revealed exactly once ----
+    // ---- API key scope editor, shared by the new-key and edit-key modals ----
     // The scope picker reuses build_permission_select (the same catalog-driven widget as the
     // user-permission editor), so there is no second catalog fetch and no bespoke editor.
-    function add_api_key_scope_row(key) {
+    function add_api_key_scope_row(list, key) {
         var li = $("<li class='mb-1 d-flex align-items-center'></li>").css("list-style-type", "none");
         var deleteButton = $("<button type='button' class='btn btn-xs btn-outline-danger ms-1'>delete</button>");
         var permSelect = build_permission_select(key || "");
@@ -513,13 +513,13 @@ $(document).ready(function() {
             else { customInput.val("").hide(); }
         });
         li.append(deleteButton).append(permSelect).append(customInput);
-        $("#new_api_key_scope_list").append(li);
+        $(list).append(li);
         deleteButton.on('click', function() { $(this).closest("li").remove(); });
     }
 
-    function collect_api_key_scope() {
+    function collect_api_key_scope(list) {
         var scope = [];
-        $("#new_api_key_scope_list").children().each(function() {
+        $(list).children().each(function() {
             var row = $(this);
             var selected = row.find(".perm-select").val();
             var value = (selected === CUSTOM_PERMISSION) ? row.find(".perm-custom").val().trim() : selected;
@@ -530,16 +530,40 @@ $(document).ready(function() {
         return scope;
     }
 
-    function set_api_key_mode(mode) {
-        if (mode === "inherit") { $("#new_api_key_scope_section").hide(); }
-        else { $("#new_api_key_scope_section").show(); }
+    // prefix is "new_api_key" or "edit_api_key": the two modals share element naming
+    function set_api_key_mode(prefix, mode) {
+        if (mode === "inherit") { $("#" + prefix + "_scope_section").hide(); }
+        else { $("#" + prefix + "_scope_section").show(); }
     }
 
-    $("input[name='new_api_key_mode']").on("change", function() {
-        set_api_key_mode($("input[name='new_api_key_mode']:checked").val());
+    // read the form of either modal into the request body, or return null after alerting
+    function collect_api_key_body(prefix) {
+        var mode = $("input[name='" + prefix + "_mode']:checked").val();
+        var body = { name: $("#" + prefix + "_name").val().trim() };
+        if (mode === "inherit") {
+            body.inherit = true;
+            body.scope = [];
+        } else {
+            body.inherit = false;
+            body.scope = collect_api_key_scope("#" + prefix + "_scope_list");
+            if (body.scope.length === 0) {
+                alert("Add at least one permission, or choose Full account access (inherit).");
+                return null;
+            }
+        }
+        return body;
+    }
+
+    ["new_api_key", "edit_api_key"].forEach(function(prefix) {
+        $("input[name='" + prefix + "_mode']").on("change", function() {
+            set_api_key_mode(prefix, $("input[name='" + prefix + "_mode']:checked").val());
+        });
+        $("#btn_" + prefix + "_add_scope").on('click', function() {
+            add_api_key_scope_row("#" + prefix + "_scope_list", "");
+        });
     });
 
-    $("#btn_new_api_key_add_scope").on('click', function() { add_api_key_scope_row(""); });
+    // ---- New API key: name + inherit-or-scope, revealed exactly once ----
 
     var new_api_key_user_id = null;
 
@@ -554,27 +578,16 @@ $(document).ready(function() {
         $("#new_api_key_name").val("");
         $("#new_api_key_scope_list").children().remove();
         $("#new_api_key_mode_restricted").prop("checked", true);
-        set_api_key_mode("restricted");
-        add_api_key_scope_row("");
+        set_api_key_mode("new_api_key", "restricted");
+        add_api_key_scope_row("#new_api_key_scope_list", "");
         $("#new_api_key_modal").modal("show");
     });
 
     $("#new_api_key_form").on('submit', function(e) {
         e.preventDefault();
         if (new_api_key_user_id === null) { return; }
-        var mode = $("input[name='new_api_key_mode']:checked").val();
-        var body = { name: $("#new_api_key_name").val().trim() };
-        if (mode === "inherit") {
-            body.inherit = true;
-            body.scope = [];
-        } else {
-            body.inherit = false;
-            body.scope = collect_api_key_scope();
-            if (body.scope.length === 0) {
-                alert("Add at least one permission, or choose Full account access (inherit).");
-                return;
-            }
-        }
+        var body = collect_api_key_body("new_api_key");
+        if (body === null) { return; }
         var name = $("#new_api_key_username").text();
         api_request("POST", USERS_API + "/" + new_api_key_user_id + "/apikeys", body)
             .then(response => response.json())
@@ -603,7 +616,56 @@ $(document).ready(function() {
         });
     });
 
-    // ---- Manage keys: list a user's keys and revoke them individually ----
+    // ---- Manage keys: list a user's keys, edit their scope, or revoke them individually ----
+    var edit_api_key = null; // { id, user_id } of the key open in the edit modal
+    var returning_to_key_list = false; // the list closed only to open the editor; no page reload
+
+    function open_edit_api_key(user_id, key) {
+        edit_api_key = { id: key.id, user_id: user_id };
+        $("#edit_api_key_username").text(username_for(user_id));
+        $("#edit_api_key_name").val(key.name);
+        $("#edit_api_key_scope_list").children().remove();
+        if (key.inherit_user_scope) {
+            $("#edit_api_key_mode_inherit").prop("checked", true);
+            set_api_key_mode("edit_api_key", "inherit");
+        } else {
+            $("#edit_api_key_mode_restricted").prop("checked", true);
+            set_api_key_mode("edit_api_key", "restricted");
+            key.scope.forEach(function(s) {
+                add_api_key_scope_row("#edit_api_key_scope_list", s.major + ":" + s.minor);
+            });
+        }
+        if ($("#edit_api_key_scope_list").children().length === 0) {
+            add_api_key_scope_row("#edit_api_key_scope_list", "");
+        }
+        // Bootstrap does not stack modals (the list would paint over the editor and swallow its
+        // clicks), so hand off: close the list, open the editor, and come back when it closes.
+        returning_to_key_list = true;
+        $("#manage_api_keys_modal").one("hidden.bs.modal", function() {
+            $("#edit_api_key_modal").modal("show");
+        });
+        $("#manage_api_keys_modal").modal("hide");
+    }
+
+    $("#edit_api_key_form").on('submit', function(e) {
+        e.preventDefault();
+        if (edit_api_key === null) { return; }
+        var body = collect_api_key_body("edit_api_key");
+        if (body === null) { return; }
+        api_request("PUT", USERS_API + "/apikeys/" + edit_api_key.id, body)
+            .then(function() { $("#edit_api_key_modal").modal("hide"); })
+            .catch(function(error) { alert(error.message); });
+    });
+
+    // saved or cancelled, return to the key list with fresh data
+    $("#edit_api_key_modal").on("hidden.bs.modal", function() {
+        if (edit_api_key === null) { return; }
+        var user_id = edit_api_key.user_id;
+        edit_api_key = null;
+        load_api_keys(user_id);
+        $("#manage_api_keys_modal").modal("show");
+    });
+
     function render_api_keys(user_id, keys) {
         var tbody = $("#manage_api_keys_list");
         tbody.empty();
@@ -617,6 +679,8 @@ $(document).ready(function() {
             var tr = $("<tr></tr>");
             tr.append($("<td></td>").text(k.name));
             tr.append($("<td></td>").text(scope));
+            var edit = $("<button type='button' class='btn btn-xs btn-outline-dark me-1'>edit</button>");
+            edit.on('click', function() { open_edit_api_key(user_id, k); });
             var revoke = $("<button type='button' class='btn btn-xs btn-outline-danger'>revoke</button>");
             revoke.on('click', function() {
                 if (!confirm("Revoke key '" + k.name + "'? This cannot be undone.")) { return; }
@@ -624,7 +688,7 @@ $(document).ready(function() {
                     .then(function() { load_api_keys(user_id); })
                     .catch(function(error) { alert(error.message); });
             });
-            tr.append($("<td></td>").append(revoke));
+            tr.append($("<td class='text-nowrap'></td>").append(edit).append(revoke));
             tbody.append(tr);
         });
     }
@@ -650,6 +714,7 @@ $(document).ready(function() {
 
     // reload when the manage modal closes so the table's key counts reflect any revokes
     $("#manage_api_keys_modal").on("hidden.bs.modal", function() {
+        if (returning_to_key_list) { returning_to_key_list = false; return; }
         window.location.reload();
     });
 

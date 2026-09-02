@@ -340,6 +340,61 @@ class TestApiKeys:
             await service.create_user_api_key(session, 999999, name="k", inherit=True, scope=[])
 
     @pytest.mark.asyncio
+    async def test_update_replaces_scope_in_place(self, session: AsyncSession):
+        from aceapi_v2.users.schemas import ApiKeyScope
+        from saq.database.model import AuthApiKeyPermission
+
+        user = await _make_user(session, "svc_apikey_update")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="ai", inherit=False, scope=[ApiKeyScope(major="ai", minor="*")]
+        )
+        key_hash = key.key_hash
+
+        updated = await service.update_user_api_key(
+            session, key.id, name="ai+obs", inherit=False,
+            scope=[ApiKeyScope(major="ai", minor="*"), ApiKeyScope(major="observable", minor="read")],
+        )
+        assert updated is not None and updated.id == key.id
+        assert updated.name == "ai+obs"
+        assert updated.key_hash == key_hash  # the credential itself never changes
+        assert sorted((s.major, s.minor) for s in updated.scope) == [("ai", "*"), ("observable", "read")]
+
+        # the old rows are gone from the table, not just detached from the relationship
+        rows = (await session.execute(
+            select(AuthApiKeyPermission).where(AuthApiKeyPermission.api_key_id == key.id)
+        )).scalars().all()
+        assert sorted((r.major, r.minor) for r in rows) == [("ai", "*"), ("observable", "read")]
+
+        updated = await service.update_user_api_key(session, key.id, name="ai+obs", inherit=True, scope=[])
+        assert updated.inherit_user_scope is True and updated.scope == []
+        rows = (await session.execute(
+            select(AuthApiKeyPermission).where(AuthApiKeyPermission.api_key_id == key.id)
+        )).scalars().all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_update_validation_and_missing_key(self, session: AsyncSession):
+        from aceapi_v2.users.schemas import ApiKeyScope
+
+        user = await _make_user(session, "svc_apikey_update_bad")
+        key, _ = await service.create_user_api_key(session, user.id, name="k", inherit=True, scope=[])
+
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(session, key.id, name="k", inherit=False, scope=[])
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(
+                session, key.id, name="k", inherit=True, scope=[ApiKeyScope(major="ai", minor="*")]
+            )
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(
+                session, key.id, name="k", inherit=False, scope=[ApiKeyScope(major="ai", minor="")]
+            )
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(session, key.id, name="", inherit=True, scope=[])
+
+        assert await service.update_user_api_key(session, -1, name="k", inherit=True, scope=[]) is None
+
+    @pytest.mark.asyncio
     async def test_api_key_count_reflected_in_management_view(self, session: AsyncSession):
         user = await _make_user(session, "svc_apikey_view")
         await session.flush()
