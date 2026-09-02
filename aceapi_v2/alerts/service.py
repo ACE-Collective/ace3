@@ -74,6 +74,23 @@ def _resolve_alert_storage_path(alert_uuid: str) -> str:
     return _alert_storage_path(_resolve_alert(alert_uuid))
 
 
+def etag(version: str) -> str:
+    """The alert version token as an HTTP entity tag (shared by the v2 and AI apps)."""
+    return f'"{version}"'
+
+
+def etag_matches(if_none_match: str, version: str) -> bool:
+    """True if the If-None-Match header names the given version (or is the wildcard)."""
+    for candidate in if_none_match.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        candidate = candidate.removeprefix("W/")
+        if candidate.strip('"') == version:
+            return True
+    return False
+
+
 def get_alert_version(alert_uuid: str) -> str:
     """Return the alert's current version token without loading the alert.
 

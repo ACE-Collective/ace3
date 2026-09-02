@@ -126,7 +126,7 @@ async def client(_override_db_session, session: AsyncSession, test_user: User) -
 
 @pytest_asyncio.fixture
 async def ai_scoped_client(_override_db_session, session: AsyncSession, test_user: User) -> AsyncGenerator[AsyncClient]:
-    """Client holding a key scoped exactly like a real AI investigation key: ai:fake + ai:alert."""
-    key = await make_api_key(session, test_user.id, inherit=False, scope=[("ai", "fake"), ("ai", "alert")])
+    """Client holding a key scoped exactly like a real AI investigation key: ai:fake + ai:alert + ai:event."""
+    key = await make_api_key(session, test_user.id, inherit=False, scope=[("ai", "fake"), ("ai", "alert"), ("ai", "event")])
     async with api_key_client(key) as client:
         yield client

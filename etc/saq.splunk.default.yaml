@@ -99,7 +99,9 @@ ai_query_backend_splunk:
     hourly_budget: 400
     default_limit: 1000
     max_limit: 5000
-    max_window: "90:00:00:00"
+    # wide enough for an aggregate over a 180-day retention index in one request; row-level pulls
+    # over long windows are chunked by the client, so the window is not what bounds their size
+    max_window: "180:00:00:00"
     default_query_timeout: 300
     max_query_timeout: 600
 

@@ -264,13 +264,22 @@ class TestRouteCoverage:
             assert dependant is not None, f"enabled backend {name} has no /query/{name} route"
             assert _dependant_permission_pairs(dependant) == {("ai", name)}
 
-    def test_ai_alert_download_gates_ai_alert(self):
+    def test_ai_alert_and_event_routes_gate_their_static_minor(self):
+        """Every /alerts/... route on the AI app requires exactly ai:alert and /events/{id} exactly
+        ai:event -- and all of them exist (a renamed route must not silently drop out of the sweep)."""
         import aceapi_ai.application
 
-        dependant = next(
-            dependant for path, _, dependant in _iter_effective_routes(aceapi_ai.application.app)
-            if path == "/alerts/{alert_uuid}/download")
-        assert _dependant_permission_pairs(dependant) == {("ai", "alert")}
+        expected = {
+            "/alerts/{alert_uuid}": {("ai", "alert")},
+            "/alerts/{alert_uuid}/logs": {("ai", "alert")},
+            "/alerts/{alert_uuid}/download": {("ai", "alert")},
+            "/events/{event_ref}": {("ai", "event")},
+        }
+        seen = {}
+        for path, _, dependant in _iter_effective_routes(aceapi_ai.application.app):
+            if path.startswith(("/alerts/", "/events/")):
+                seen[path] = _dependant_permission_pairs(dependant)
+        assert seen == expected
 
 
 @pytest.mark.unit
