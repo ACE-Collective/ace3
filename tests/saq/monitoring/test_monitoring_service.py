@@ -282,6 +282,35 @@ class TestACEMonitoringService:
         assert service.threaded_monitors[0].frequency == 3.0
 
     @patch("saq.monitoring.service.get_config")
+    def test_enabled_then_disabled_same_name(self, mock_get_config):
+        """A later config file must be able to disable a monitor an earlier one enabled.
+
+        Configuration lists append rather than replace (see saq/configuration/yaml_parser.py),
+        so an overlay that sets enabled: false on a monitor defined in etc/saq.default.yaml
+        arrives as a second entry with the same name. That entry has to win.
+        """
+        config = _make_service_config(monitors=[
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="toggle_monitor",
+                frequency=1.0,
+                enabled=True,
+            ),
+            _make_monitor_config(
+                python_module="tests.saq.monitoring.conftest",
+                python_class="ConcreteTestMonitor",
+                name="toggle_monitor",
+                frequency=3.0,
+                enabled=False,
+            ),
+        ])
+        mock_get_config.return_value.get_service_config.return_value = config
+
+        service = ACEMonitoringService()
+        assert service.threaded_monitors == []
+
+    @patch("saq.monitoring.service.get_config")
     def test_mixed_enabled_and_disabled(self, mock_get_config):
         config = _make_service_config(monitors=[
             _make_monitor_config(

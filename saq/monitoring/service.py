@@ -34,17 +34,29 @@ class ACEMonitoringService(ACEServiceInterface):
     def load_threaded_monitors(self):
         self.threaded_monitors: list[ACEThreadedMonitor] = []
         for monitor_config in self.config.monitors:
+            # configuration lists append rather than replace (see saq/configuration/yaml_parser.py),
+            # so an overlay that disables a monitor defined in an earlier file arrives as a second
+            # entry with the same name -- it has to remove what that earlier entry loaded
+            existing_index = next(
+                (i for i, m in enumerate(self.threaded_monitors) if m.name == monitor_config.name),
+                None,
+            )
+
             if not monitor_config.enabled:
-                logging.info("threaded monitor %s is disabled, skipping", monitor_config.name)
+                if existing_index is not None:
+                    logging.info(
+                        "threaded monitor %s is disabled by a later configuration, removing",
+                        monitor_config.name,
+                    )
+                    del self.threaded_monitors[existing_index]
+                else:
+                    logging.info("threaded monitor %s is disabled, skipping", monitor_config.name)
                 continue
+
             try:
                 module = importlib.import_module(monitor_config.python_module)
                 class_definition = getattr(module, monitor_config.python_class)
                 monitor = class_definition(name=monitor_config.name, frequency=monitor_config.frequency)
-                existing_index = next(
-                    (i for i, m in enumerate(self.threaded_monitors) if m.name == monitor_config.name),
-                    None,
-                )
                 if existing_index is not None:
                     logging.info(
                         "replacing threaded monitor %s with new configuration from %s.%s",
