@@ -153,6 +153,16 @@ pipeline:
       parser: iso8601_json
       reserve_data: on
 
+    # the one-shot setup/init containers emit unstructured shell output through the docker
+    # fluentd driver. rename the docker envelope keys so searches use the same field names
+    # as everything else -- in particular the envelope's own "source" (stdout/stderr)
+    # collides with the "source" metadata field downstream.
+    - name: modify
+      match: setup
+      rename:
+        - log message
+        - source stream
+
   outputs:
     - name: file
       path: /data/logs
@@ -170,6 +180,28 @@ pipeline:
     - name: file
       path: /data/logs
       match: monitoring
+      format: out_file
+      workers: 1
+
+    # per-job outcome records from bin/run-cron-job. the ace-cron stream carries the
+    # scheduler's own lines; this one carries whether each job actually worked.
+    #
+    # deliberately outside the ace-* wildcard above: fluent-bit outputs are not exclusive,
+    # and that output is format: template rendering only [{asctime}] ... - {message}, so a
+    # record tagged ace-* would have its exit_code, duration_seconds and output_tail
+    # silently discarded.
+    - name: file
+      path: /data/logs
+      match: cron-jobs
+      format: out_file
+      workers: 1
+
+    # ace-initialize and ace-setup, via the docker fluentd driver. ace-setup runs
+    # alembic upgrade head against four migration chains on every startup, so a failed
+    # migration must not be invisible.
+    - name: file
+      path: /data/logs
+      match: setup
       format: out_file
       workers: 1
 

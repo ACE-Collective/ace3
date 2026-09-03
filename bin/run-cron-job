@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+#
+# Run a scheduled job, keep its output in data/logs the way the raw shell redirect used
+# to, and emit one structured outcome record to fluent-bit so the run is queryable.
+#
+# Before this existed every job in etc/cron.yaml redirected stdout and stderr to
+# data/logs/<job>-<date>.log and nothing else. yacron does log one line per run
+# ("Job %s exit code %s; has stdout: %s, has stderr: %s") onto the ace-cron stream, so
+# failures were not strictly invisible -- but it is prose, buried in the scheduler's own
+# per-run chatter, and it carries none of the job's output. A failed database backup, a
+# failed observable export or a maintenance script that quietly stopped running produced
+# nothing you could alert on.
+#
+# usage: run-cron-job <slug> <command> [args...]
+#
+#   <slug>  names the log file (data/logs/<slug>-<date>.log) and the "job" field on the
+#           emitted record. keep it stable -- log rotation and alerts both group on it.
+#
+# The record lands on fluent-bit tag "cron-jobs". That tag is deliberately outside the
+# "ace-*" wildcard: fluent-bit outputs are not exclusive, and the ace-* output is
+# format: template rendering only [{asctime}] ... - {message}, which would silently drop
+# exit_code, duration_seconds and output_tail. See etc/fluent-bit/fluent-bit.yaml.
+#
+# Keep the module-level imports stdlib-only.
+#
+import os
+import os.path
+import signal
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime
+from typing import Optional
+
+FLUENT_BIT_HOST = os.environ.get("FLUENT_BIT_HOST", "fluent-bit")
+FLUENT_BIT_PORT = int(os.environ.get("FLUENT_BIT_PORT", "24224"))
+FLUENT_BIT_TAG = "cron-jobs"
+
+# how much of the job's output to carry on a failure record. enough to see the traceback
+# or the failing command without shipping an entire maintenance log.
+FAILURE_OUTPUT_TAIL_BYTES = 4096
+
+SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
+
+# what run_job() returns when the command could not be started at all
+EXIT_CODE_UNLAUNCHABLE = 127
+
+
+def log_file_path(slug: str, when: Optional[datetime] = None) -> str:
+    """Returns the per-day log file for the given job.
+
+    This reproduces exactly what the old `>> data/logs/<slug>-`date '+%Y-%m-%d'`.log`
+    redirect produced, so anything reading these on the box (etc/logrotate.conf and the
+    cleanup in bin/daily-maintenance.sh) is unaffected.
+    """
+    when = when or datetime.now()
+    return os.path.join(SAQ_HOME, "data", "logs", "{}-{}.log".format(slug, when.strftime("%Y-%m-%d")))
+
+
+def read_tail(path: str, size: int) -> str:
+    """Returns the last size bytes of path. Never raises."""
+    try:
+        with open(path, "rb") as fp:
+            fp.seek(0, os.SEEK_END)
+            fp.seek(max(0, fp.tell() - size), os.SEEK_SET)
+            return fp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return "<unable to read {}: {}>".format(path, e)
+
+
+def run_job(command: list[str], fp) -> tuple[int, Optional[str]]:
+    """Runs command with both streams appended to fp. Returns (exit_code, launch_error).
+
+    SIGTERM/SIGINT are forwarded to the child so that this wrapper cannot orphan it when
+    yacron cancels the job.
+    """
+    try:
+        proc = subprocess.Popen(command, stdout=fp, stderr=subprocess.STDOUT)
+    except Exception as e:
+        fp.write("run-cron-job: unable to execute {}: {}\n".format(command, e).encode())
+        return EXIT_CODE_UNLAUNCHABLE, str(e)
+
+    def _forward(signum, frame):
+        try:
+            proc.send_signal(signum)
+        except Exception:
+            pass
+
+    previous = {}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[signum] = signal.signal(signum, _forward)
+        except ValueError:
+            # not the main thread -- forwarding is a nicety, not a requirement
+            pass
+
+    try:
+        return proc.wait(), None
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def build_record(
+    slug: str,
+    command: list[str],
+    exit_code: int,
+    duration_seconds: float,
+    log_path: str,
+    started_at: datetime,
+    output_tail: Optional[str] = None,
+    launch_error: Optional[str] = None,
+) -> dict:
+    """Builds the outcome record. Pure -- the caller reads the output tail."""
+    success = exit_code == 0
+
+    if success:
+        message = "cron job {} succeeded in {:.3f}s".format(slug, duration_seconds)
+    else:
+        message = "cron job {} failed with exit code {} after {:.3f}s".format(slug, exit_code, duration_seconds)
+
+    record = {
+        # same key and format MonitorEmitter.emit_fluent_bit uses
+        "timestamp": started_at.isoformat(),
+        # named to match what ACE's own log records carry, so one search can find errors
+        # across every stream
+        "severity": "INFO" if success else "ERROR",
+        "message": message,
+        "job": slug,
+        "command": " ".join(command),
+        "exit_code": exit_code,
+        "success": success,
+        "duration_seconds": round(duration_seconds, 3),
+        "node": os.environ.get("SAQ_NODE") or socket.gethostname(),
+        "log_file": log_path,
+    }
+
+    if launch_error is not None:
+        record["error"] = launch_error
+
+    # only carry output on failure. export-observables alone runs every minute, and
+    # daily-maintenance produces a lot of text -- shipping all of it every run would cost
+    # more than it tells us.
+    if not success and output_tail is not None:
+        record["output_tail"] = output_tail
+
+    return record
+
+
+def emit(record: dict) -> bool:
+    """Sends the outcome record to fluent-bit.
+
+    Never raises: a monitoring failure must not turn a successful job into a failed one.
+    Diagnostics go to stderr, which yacron captures onto the ace-cron stream, so a broken
+    emitter is itself visible.
+    """
+    try:
+        # imported here rather than at module level so that a broken or missing fluent
+        # library still lets the job itself run -- by the time we get here the child has
+        # already exited, so nothing below can affect its outcome
+        from fluent import sender
+
+        fluent_sender = sender.FluentSender(FLUENT_BIT_TAG, host=FLUENT_BIT_HOST, port=FLUENT_BIT_PORT)
+        try:
+            if not fluent_sender.emit(None, record):
+                print(
+                    "run-cron-job: unable to emit outcome record: {}".format(fluent_sender.last_error),
+                    file=sys.stderr,
+                )
+                return False
+            return True
+        finally:
+            fluent_sender.close()
+    except Exception as e:
+        print("run-cron-job: unable to emit outcome record: {}".format(e), file=sys.stderr)
+        return False
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        print("usage: run-cron-job <slug> <command> [args...]", file=sys.stderr)
+        return 2
+
+    slug = argv[1]
+    command = argv[2:]
+
+    started_at = datetime.now()
+    log_path = log_file_path(slug, started_at)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    start = time.monotonic()
+
+    # append to the same per-day file the bare shell redirect produced
+    with open(log_path, "ab") as fp:
+        exit_code, launch_error = run_job(command, fp)
+
+    duration = time.monotonic() - start
+
+    output_tail = None
+    if exit_code != 0:
+        output_tail = read_tail(log_path, FAILURE_OUTPUT_TAIL_BYTES)
+
+    emit(
+        build_record(
+            slug=slug,
+            command=command,
+            exit_code=exit_code,
+            duration_seconds=duration,
+            log_path=log_path,
+            started_at=started_at,
+            output_tail=output_tail,
+            launch_error=launch_error,
+        )
+    )
+
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
