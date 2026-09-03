@@ -1,7 +1,7 @@
 service:
   flush: 1
   daemon: off
-  log_level: debug
+  log_level: info
 
   # HTTP server useful for health/metrics while testing
   # http_server: on

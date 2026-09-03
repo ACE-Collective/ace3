@@ -283,6 +283,12 @@ class GitManagerService(ACEServiceInterface):
         self.shutdown_event.set()
 
     def wait(self):
+        if not self.threads:
+            # nothing to join. block until stop() so that a container restart policy
+            # does not loop on an immediate exit 0 when no repos are configured
+            logging.info("no git repos configured, git service idling until stopped")
+            self.shutdown_event.wait()
+
         for repo_name, thread in self.threads.items():
             logging.info(f"waiting for git repo manager thread {repo_name} to finish")
             thread.join()
