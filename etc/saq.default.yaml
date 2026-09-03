@@ -483,20 +483,26 @@ service_monitoring:
   python_class: ACEMonitoringService
   description: Monitoring - system health and operational monitoring service
   enabled: true
+  # the threaded monitors, keyed by the name of the monitor
+  # a later configuration file can turn one off with just
+  #   monitors:
+  #     <name>:
+  #       enabled: false
+  # since mappings merge by key (see saq/configuration/yaml_parser.py)
   monitors:
-    - name: distributed_workload
+    distributed_workload:
       python_module: saq.monitoring.monitors.distributed_workload_monitor
       python_class: DistributedWorkloadMonitor
       frequency: 5
-    - name: distributed_delayed_analysis
+    distributed_delayed_analysis:
       python_module: saq.monitoring.monitors.distributed_delayed_analysis_monitor
       python_class: DistributedDelayedAnalysisMonitor
       frequency: 5
-    - name: distributed_locks
+    distributed_locks:
       python_module: saq.monitoring.monitors.distributed_locks_monitor
       python_class: DistributedLocksMonitor
       frequency: 5
-    - name: local_workload
+    local_workload:
       python_module: saq.monitoring.monitors.local_workload_monitor
       python_class: LocalWorkloadMonitor
       frequency: 5

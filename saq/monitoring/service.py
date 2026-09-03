@@ -14,12 +14,11 @@ from saq.service import ACEServiceInterface
 class ThreadedMonitorConfig(BaseModel):
     python_module: str = Field(description="the Python module of the threaded monitor")
     python_class: str = Field(description="the Python class of the threaded monitor")
-    name: str = Field(description="the unique name of the threaded monitor")
     frequency: float = Field(description="how often (in seconds) the monitor should emit data", default=1)
     enabled: bool = Field(description="whether the monitor is enabled", default=True)
 
 class ACEMonitoringServiceConfig(ServiceConfig):
-    monitors: list[ThreadedMonitorConfig] = Field(description="the list of threaded monitors")
+    monitors: dict[str, ThreadedMonitorConfig] = Field(description="the threaded monitors, keyed by monitor name")
 
 class ACEMonitoringService(ACEServiceInterface):
 
@@ -33,44 +32,22 @@ class ACEMonitoringService(ACEServiceInterface):
 
     def load_threaded_monitors(self):
         self.threaded_monitors: list[ACEThreadedMonitor] = []
-        for monitor_config in self.config.monitors:
-            # configuration lists append rather than replace (see saq/configuration/yaml_parser.py),
-            # so an overlay that disables a monitor defined in an earlier file arrives as a second
-            # entry with the same name -- it has to remove what that earlier entry loaded
-            existing_index = next(
-                (i for i, m in enumerate(self.threaded_monitors) if m.name == monitor_config.name),
-                None,
-            )
-
+        for name, monitor_config in self.config.monitors.items():
             if not monitor_config.enabled:
-                if existing_index is not None:
-                    logging.info(
-                        "threaded monitor %s is disabled by a later configuration, removing",
-                        monitor_config.name,
-                    )
-                    del self.threaded_monitors[existing_index]
-                else:
-                    logging.info("threaded monitor %s is disabled, skipping", monitor_config.name)
+                logging.info("threaded monitor %s is disabled, skipping", name)
                 continue
 
             try:
                 module = importlib.import_module(monitor_config.python_module)
                 class_definition = getattr(module, monitor_config.python_class)
-                monitor = class_definition(name=monitor_config.name, frequency=monitor_config.frequency)
-                if existing_index is not None:
-                    logging.info(
-                        "replacing threaded monitor %s with new configuration from %s.%s",
-                        monitor_config.name, monitor_config.python_module, monitor_config.python_class,
-                    )
-                    self.threaded_monitors[existing_index] = monitor
-                else:
-                    logging.info(
-                        "loaded threaded monitor %s from %s.%s",
-                        monitor_config.name, monitor_config.python_module, monitor_config.python_class,
-                    )
-                    self.threaded_monitors.append(monitor)
+                monitor = class_definition(name=name, frequency=monitor_config.frequency)
+                logging.info(
+                    "loaded threaded monitor %s from %s.%s",
+                    name, monitor_config.python_module, monitor_config.python_class,
+                )
+                self.threaded_monitors.append(monitor)
             except Exception as e:
-                logging.error("error loading threaded monitor %s: %s", monitor_config.name, e)
+                logging.error("error loading threaded monitor %s: %s", name, e)
                 report_exception(e)
 
     def start(self):
