@@ -13,6 +13,7 @@ from aceapi_v2.users.schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyRead,
+    ApiKeyUpdate,
     CatalogEntryRead,
     GroupCreate,
     GroupDelete,
@@ -187,6 +188,26 @@ async def create_api_key(
     # a credential must not be cached by the browser or any intermediary
     response.headers["Cache-Control"] = "no-store"
     return ApiKeyCreated(key_id=key.id, user_id=user_id, api_key=api_key)
+
+
+@router.put("/apikeys/{key_id}", response_model=ApiKeyRead)
+async def update_api_key(
+    key_id: int,
+    body: ApiKeyUpdate,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+) -> ApiKeyRead:
+    """Rename a key and replace its scope. The secret is unchanged, so a key already in use picks
+    up the new permissions without being reissued. Same exactly-one-of rule as creation."""
+    try:
+        key = await service.update_user_api_key(
+            session, key_id, name=body.name, inherit=body.inherit, scope=body.scope
+        )
+    except service.InvalidPermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if key is None:
+        raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
+    return service._api_key_read(key)
 
 
 @router.delete("/apikeys/{key_id}", status_code=200)

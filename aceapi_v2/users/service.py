@@ -410,6 +410,30 @@ async def list_user_api_keys(session: AsyncSession, user_id: int) -> list[AuthAp
     return list(result.scalars())
 
 
+def _validate_api_key_scope(
+    *, name: str, inherit: bool, scope: list[ApiKeyScope]
+) -> tuple[str, list[AuthApiKeyPermission]]:
+    """Shared create/update validation. Returns the cleaned name and the ALLOW rows a restricted
+    key gets (empty when it inherits)."""
+    if inherit == bool(scope):
+        raise InvalidPermissionError("provide exactly one of inherit or a non-empty scope")
+
+    name = (name or "").strip()
+    if not name:
+        raise InvalidPermissionError("a key name is required")
+
+    rows: list[AuthApiKeyPermission] = []
+    if not inherit:
+        for perm in scope:
+            major = (perm.major or "").strip()
+            minor = (perm.minor or "").strip()
+            if not major or not minor:
+                raise InvalidPermissionError("both a major and a minor are required for each scope entry")
+            rows.append(AuthApiKeyPermission(major=major, minor=minor, effect="ALLOW"))
+
+    return name, rows
+
+
 async def create_user_api_key(
     session: AsyncSession,
     user_id: int,
@@ -426,12 +450,7 @@ async def create_user_api_key(
     (ALLOW-only (major, minor) patterns) must be given -- there is no silent full-scope default.
     Only the sha256 is stored.
     """
-    if inherit == bool(scope):
-        raise InvalidPermissionError("provide exactly one of inherit or a non-empty scope")
-
-    name = (name or "").strip()
-    if not name:
-        raise InvalidPermissionError("a key name is required")
+    name, rows = _validate_api_key_scope(name=name, inherit=inherit, scope=scope)
 
     user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
@@ -445,17 +464,44 @@ async def create_user_api_key(
         inherit_user_scope=inherit,
         created_by=created_by,
     )
-    if not inherit:
-        for perm in scope:
-            major = (perm.major or "").strip()
-            minor = (perm.minor or "").strip()
-            if not major or not minor:
-                raise InvalidPermissionError("both a major and a minor are required for each scope entry")
-            key.scope.append(AuthApiKeyPermission(major=major, minor=minor, effect="ALLOW"))
+    key.scope.extend(rows)
 
     session.add(key)
     await session.flush()
     return key, api_key
+
+
+async def update_user_api_key(
+    session: AsyncSession,
+    key_id: int,
+    *,
+    name: str,
+    inherit: bool,
+    scope: list[ApiKeyScope],
+) -> AuthApiKey | None:
+    """Rename a key and replace its scope in place. Returns None if no such key exists.
+
+    The stored hash is untouched, so a credential already handed out keeps working with its new
+    permissions on the next request (scope is read from the database per request, never cached).
+    """
+    name, rows = _validate_api_key_scope(name=name, inherit=inherit, scope=scope)
+
+    key = (await session.execute(
+        select(AuthApiKey).options(selectinload(AuthApiKey.scope)).where(AuthApiKey.id == key_id)
+    )).scalar_one_or_none()
+    if key is None:
+        return None
+
+    key.name = name
+    key.inherit_user_scope = inherit
+    # delete-orphan on the relationship removes the old rows, but the unit of work would issue
+    # the new INSERTs before those DELETEs and trip u_api_key_perm whenever a pattern is kept,
+    # so flush the removal on its own first.
+    key.scope.clear()
+    await session.flush()
+    key.scope.extend(rows)
+    await session.flush()
+    return key
 
 
 def _api_key_read(key: AuthApiKey) -> ApiKeyRead:

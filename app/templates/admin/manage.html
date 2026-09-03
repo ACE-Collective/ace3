@@ -346,6 +346,54 @@
     </form>
 </div>
 
+<!-- edit api key modal -->
+<div class="modal fade modal-lg" id="edit_api_key_modal" tabindex="-1" role="dialog" aria-labelledby="edit_api_key_modal_label" aria-hidden="true">
+    {# submitted via fetch to the v2 API; there is no Flask route behind this form #}
+    <form id="edit_api_key_form" class="form-horizontal" role="form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="edit_api_key_modal_label">Edit API Key</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="edit_api_key_modal_body">
+                <p class="mb-2">Editing an API key for <strong id="edit_api_key_username"></strong>. The key itself does not change &mdash; anything already using it picks up the new scope immediately.</p>
+                <div class="row">
+                    <div class="col">
+                        <label for="edit_api_key_name">Name</label>
+                        <input type="text" class="form-control" id="edit_api_key_name" placeholder="A name to identify this key">
+                    </div>
+                </div>
+                <div class="row mt-2">
+                    <div class="col">
+                        <label class="form-label d-block">Scope</label>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="edit_api_key_mode" id="edit_api_key_mode_restricted" value="restricted" checked>
+                            <label class="form-check-label" for="edit_api_key_mode_restricted">Restricted to specific permissions</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="edit_api_key_mode" id="edit_api_key_mode_inherit" value="inherit">
+                            <label class="form-check-label" for="edit_api_key_mode_inherit">Full account access (inherit)</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-2" id="edit_api_key_scope_section">
+                    <div class="col">
+                        <button type="button" class="btn btn-xs btn-outline-dark" id="btn_edit_api_key_add_scope">add permission</button>
+                        <ul style="padding-left: 0; margin-left: 0;" id="edit_api_key_scope_list"></ul>
+                        <small class="text-muted">The key can do only what these permissions allow, intersected with the user's own permissions.</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary" id="btn_save_api_key">Save</button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
 <!-- manage api keys modal -->
 <div class="modal fade modal-lg" id="manage_api_keys_modal" tabindex="-1" role="dialog" aria-labelledby="manage_api_keys_modal_label" aria-hidden="true">
     <div class="modal-dialog">
