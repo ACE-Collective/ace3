@@ -904,7 +904,7 @@ class Event(Base):
             'contain_time': str(self.contain_time),
             'remediation_time': str(self.remediation_time),
             'disposition': self.disposition,
-            'malware': [{mal.name: [t.type for t in mal.threats]} for mal in self.malware],
+            'malware': [{mal.name: [t.threat_type.name for t in mal.threats]} for mal in self.malware],
             'name': self.name,
             'prevention_tool': self.prevention_tool.value,
             'remediation': self.remediation.value,
