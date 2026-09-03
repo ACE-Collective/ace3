@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.104] - 2026-09-03
+
+- [monitoring improvements](https://github.com/ACE-Collective/ace3/pull/524)
+- [block dark mode attempts](https://github.com/ACE-Collective/ace3/pull/523)
+- [Adds ability to edit API key scopes in UI](https://github.com/ACE-Collective/ace3/pull/522)
+- [Fixes existing bug in event API endpoint](https://github.com/ACE-Collective/ace3/pull/521)
+
 ## [3.0.103] - 2026-09-02
 
 - [Adds extra functionality to AI endpoints](https://github.com/ACE-Collective/ace3/pull/519)
