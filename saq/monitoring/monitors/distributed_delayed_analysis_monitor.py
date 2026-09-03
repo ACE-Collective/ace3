@@ -21,7 +21,11 @@ class DistributedDelayedAnalysisMonitor(ACEThreadedMonitor):
             for storage_dir, analysis_module, count in cursor:
                 emit_monitor(MONITOR_DISTRIBUTED_DELAYED_ANALYSIS, {
                     "uuid": os.path.basename(storage_dir),
-                    "module": analysis_module[len("analysis_module_"):],
+                    # this column holds AnalysisModule.name, which is already the bare
+                    # name -- removeprefix leaves it alone rather than slicing 16
+                    # characters off the front of it, while still tolerating the
+                    # config-section form if anything ever writes that instead
+                    "module": analysis_module.removeprefix("analysis_module_"),
                     "count": count,
                 })
             db.commit()

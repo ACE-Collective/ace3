@@ -1,7 +1,10 @@
 import asyncio
+import os
 import signal
+from pathlib import Path
 
 import pytest
+import yaml
 
 from saq.cron import ACECronConfig, ACECronService
 
@@ -146,3 +149,41 @@ class TestACECronService:
             ACECronService().start()
 
         assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+
+
+CRON_CONFIG_PATH = Path(__file__).resolve().parents[2] / "etc" / "cron.yaml"
+
+
+@pytest.mark.unit
+class TestShippedCronConfig:
+    """guards etc/cron.yaml itself, which nothing else exercises"""
+
+    @pytest.fixture
+    def jobs(self):
+        with open(CRON_CONFIG_PATH, "r", encoding="utf-8") as fp:
+            return yaml.safe_load(fp)["jobs"]
+
+    def test_every_job_is_wrapped(self, jobs):
+        """every job goes through bin/run-cron-job, so every run produces an outcome record
+
+        the wrapper owns the log file now -- a bare shell redirect would take the job's
+        output back out of the record and leave a failure with nothing to alert on
+        """
+        assert jobs
+
+        for job in jobs:
+            assert job["command"].startswith("/opt/ace/bin/run-cron-job "), job["name"]
+            assert ">>" not in job["command"], job["name"]
+            assert "2>&1" not in job["command"], job["name"]
+
+    def test_every_referenced_script_is_executable(self, jobs):
+        """catches a rename in bin/ silently breaking a scheduled job"""
+        for job in jobs:
+            # run-cron-job <slug> <script> [args...]
+            script = job["command"].split()[2]
+            assert os.access(script, os.X_OK), "{}: {} is not executable".format(job["name"], script)
+
+    def test_every_job_forbids_concurrent_runs(self, jobs):
+        """none of these jobs are safe to overlap with themselves"""
+        for job in jobs:
+            assert job.get("concurrencyPolicy") == "Forbid", job["name"]
