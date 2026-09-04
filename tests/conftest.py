@@ -133,6 +133,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM delayed_analysis")
         cursor.execute("DELETE FROM users")
         cursor.execute("DELETE FROM malware")
+        cursor.execute("DELETE FROM threat_type")
         cursor.execute("DELETE FROM `config`")
         cursor.execute("DELETE FROM incoming_workload")
         cursor.execute("DELETE FROM incoming_workload_type")
