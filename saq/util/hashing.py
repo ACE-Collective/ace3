@@ -2,6 +2,11 @@ import hashlib
 from io import DEFAULT_BUFFER_SIZE
 import re
 
+# the hashes of zero-length content
+EMPTY_CONTENT_MD5 = hashlib.md5(b"").hexdigest()
+EMPTY_CONTENT_SHA1 = hashlib.sha1(b"").hexdigest()
+EMPTY_CONTENT_SHA256 = hashlib.sha256(b"").hexdigest()
+
 def get_md5_hash_of_file(path:str) -> str:
     """Computes the MD5 hash of a file. Returns the string hex representation of the hash in lowercase."""
     assert isinstance(path, str)
