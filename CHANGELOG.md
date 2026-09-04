@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.105] - 2026-09-04
+
+- [Report the whole cluster from the distributed monitors](https://github.com/ACE-Collective/ace3/pull/528)
+- [updated pip deps](https://github.com/ACE-Collective/ace3/pull/527)
+- [do not shut down dev container on exit](https://github.com/ACE-Collective/ace3/pull/526)
+
 ## [3.0.104] - 2026-09-03
 
 - [monitoring improvements](https://github.com/ACE-Collective/ace3/pull/524)
