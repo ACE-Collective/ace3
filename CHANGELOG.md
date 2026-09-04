@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.104] - 2026-09-03
+
+- [monitoring improvements](https://github.com/ACE-Collective/ace3/pull/524)
+- [block dark mode attempts](https://github.com/ACE-Collective/ace3/pull/523)
+- [Adds ability to edit API key scopes in UI](https://github.com/ACE-Collective/ace3/pull/522)
+- [Fixes existing bug in event API endpoint](https://github.com/ACE-Collective/ace3/pull/521)
+
+## [3.0.103] - 2026-09-02
+
+- [Adds extra functionality to AI endpoints](https://github.com/ACE-Collective/ace3/pull/519)
+
+## [3.0.102] - 2026-09-01
+
+- [Fixes issues with Splunk observable detection](https://github.com/ACE-Collective/ace3/pull/517)
+- [Adds banner notifying analyst when alert has changed](https://github.com/ACE-Collective/ace3/pull/516)
+- [Adds bulk observable search endpoint](https://github.com/ACE-Collective/ace3/pull/511)
+
+## [3.0.101] - 2026-08-31
+
+- [engine bugfixes](https://github.com/ACE-Collective/ace3/pull/510)
+- [Resolve observable presenter via MRO so subtypes display like their parent type](https://github.com/ACE-Collective/ace3/pull/509)
+- [lazy loading configuration](https://github.com/ACE-Collective/ace3/pull/508)
+- [Adds concept of alert version](https://github.com/ACE-Collective/ace3/pull/501)
+
 ## [3.0.100] - 2026-08-28
 
 - [GUI performance improvements Part 4](https://github.com/ACE-Collective/ace3/pull/506)

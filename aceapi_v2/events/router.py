@@ -44,12 +44,14 @@ async def export_events(
 
 # Declared after the static GET routes ("/open", "/export") so those paths are
 # not captured by the {event_id} parameter.
-@router.get("/{event_id}", response_model=EventRead)
+@router.get("/{event_ref}", response_model=EventRead)
 async def get_event(
-    event_id: int,
+    event_ref: str,
     auth: Annotated[None, Depends(require_permission("event", "read"))],
 ) -> EventRead:
-    """Return one event's metadata, including the UUIDs of its alerts (``alerts``) and
-    each alert's current version token (``alert_versions``, uuid -> version)."""
-    event = await service.get_event(event_id)
+    """Return one event by numeric id or uuid: its metadata, the UUIDs of its alerts
+    (``alerts``), each alert's current version token (``alert_versions``, uuid -> version) and
+    each alert's database state (``alert_details``: insert_date, owner, owner_time, disposition,
+    disposition_time, disposition_user)."""
+    event = await service.get_event(event_ref)
     return EventRead.model_validate(event)

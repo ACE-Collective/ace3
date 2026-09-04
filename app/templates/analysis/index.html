@@ -44,6 +44,14 @@
 {% endblock %}
 
 {% block page_content %}
+{# floats over the viewport (see saq.css) so it stays visible however far the
+   analyst has scrolled; shown by check_alert_meta() when alerts.version rotates #}
+<div id="alert_updated_banner" class="alert alert-info alert-dismissible shadow d-none" role="status">
+    <span class="bi bi-arrow-clockwise"></span>
+    This alert has been updated since you loaded it.
+    <a href="#" class="alert-link" onclick="location.reload(); return false;">Refresh</a> to see the latest analysis.
+    <button type="button" class="btn-close" onclick="dismiss_alert_updated_banner()" aria-label="Dismiss"></button>
+</div>
 <div class="container-fluid">
     <!-- main content area -->
     <!-- 
@@ -247,5 +255,10 @@
 
 {% block scripts %}
 {{ super() }}
+<script type="text/javascript">
+    // the alert version this page was rendered from; check_alert_meta() compares
+    // the polled value against this to detect changes made after the page loaded
+    var current_alert_version = {{ alert.version | tojson }};
+</script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}

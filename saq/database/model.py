@@ -548,6 +548,7 @@ class Alert(Base):
     KEY_DATABASE_ID = 'database_id'
     KEY_VERSION = 'version'
     KEY_PRIORITY = 'priority'
+    KEY_INSERT_DATE = 'insert_date'
     KEY_DISPOSITION = 'disposition'
     KEY_DISPOSITION_USER_ID = 'disposition_user_id'
     KEY_DISPOSITION_TIME = 'disposition_time'
@@ -570,6 +571,7 @@ class Alert(Base):
             Alert.KEY_DATABASE_ID: self.id,
             Alert.KEY_VERSION: self.version,
             Alert.KEY_PRIORITY: self.priority,
+            Alert.KEY_INSERT_DATE: self.insert_date,
             Alert.KEY_DISPOSITION: self.disposition,
             Alert.KEY_DISPOSITION_USER_ID: self.disposition_user_id,
             Alert.KEY_DISPOSITION_TIME: self.disposition_time,
@@ -890,6 +892,7 @@ class Event(Base):
             'uuid': self.uuid,
             'alerts': self.alerts,
             'alert_versions': self.alert_versions,
+            'alert_details': self.alert_details,
             'campaign': self.campaign.name if self.campaign else None,
             'comment': self.comment,
             'companies': self.company_names,
@@ -897,11 +900,11 @@ class Event(Base):
             'event_time': str(self.event_time),
             'alert_time': str(self.alert_time),
             'ownership_time': str(self.ownership_time),
-            'disposition_time': str(self.ownership_time),
+            'disposition_time': str(self.disposition_time),
             'contain_time': str(self.contain_time),
             'remediation_time': str(self.remediation_time),
             'disposition': self.disposition,
-            'malware': [{mal.name: [t.type for t in mal.threats]} for mal in self.malware],
+            'malware': [{mal.name: [t.threat_type.name for t in mal.threats]} for mal in self.malware],
             'name': self.name,
             'prevention_tool': self.prevention_tool.value,
             'remediation': self.remediation.value,
@@ -924,6 +927,26 @@ class Event(Base):
         """alert uuid -> Alert.version for every alert mapped to this event, so a client that
         fetched the event can tell whether any of its alerts changed since."""
         return {mapping.alert.uuid: mapping.alert.version for mapping in self.alert_mappings}
+
+    @property
+    def alert_details(self) -> list[dict]:
+        """Per-alert database state for every alert mapped to this event -- the columns that live only
+        in the alerts table (never in the alert's storage directory): when it was inserted, who owns it
+        and since when, and how and by whom it was dispositioned. Users are given by username. Lets a
+        client reconstruct an event's timeline without loading each alert."""
+        details = []
+        for mapping in self.alert_mappings:
+            alert = mapping.alert
+            details.append({
+                'uuid': alert.uuid,
+                'insert_date': alert.insert_date,
+                'owner': alert.owner.username if alert.owner else None,
+                'owner_time': alert.owner_time,
+                'disposition': alert.disposition,
+                'disposition_time': alert.disposition_time,
+                'disposition_user': alert.disposition_user.username if alert.disposition_user else None,
+            })
+        return details
 
     @property
     def alert_objects(self) -> list["Alert"]:

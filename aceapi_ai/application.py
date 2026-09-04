@@ -1,8 +1,9 @@
 """FastAPI application factory for the ACE AI investigation API.
 
 A deliberately small app: the query routes for the configured read-only backends, backend
-discovery, alert download, and health. It runs in its own container with no encryption capability
-(see aceapi_ai.startup_checks, enforced by the entrypoint) -- nothing here may depend on decrypting
+discovery, alert reads (alert + version token, saq.log, package download), the ACE Event read,
+and health. It runs in its own container with no encryption capability (see
+aceapi_ai.startup_checks, enforced by the entrypoint) -- nothing here may depend on decrypting
 a secret.
 """
 
@@ -12,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from aceapi_ai.alerts.router import router as alerts_router
+from aceapi_ai.events.router import router as events_router
 from aceapi_ai.health.router import router as health_router
 from aceapi_ai.query.router import build_query_router
 from saq.ai_query.registry import build_backend_registry
@@ -40,6 +42,7 @@ def create_app() -> FastAPI:
 
     app.include_router(build_query_router(registry), tags=["query"])
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
+    app.include_router(events_router, prefix="/events", tags=["events"])
     app.include_router(health_router, prefix="/health", tags=["health"])
 
     return app

@@ -49,8 +49,11 @@ def test_validate_request_rejections(backend):
     with pytest.raises(AIQueryRejected):
         backend.validate_request(make_request(start_time=end, end_time=end - timedelta(hours=1)))
 
+    # one day past the configured max_window, whatever it is set to
+    from saq.util import create_timedelta
+    too_wide = create_timedelta(backend.config.limits.max_window) + timedelta(days=1)
     with pytest.raises(AIQueryRejected):
-        backend.validate_request(make_request(start_time=end - timedelta(days=91), end_time=end))
+        backend.validate_request(make_request(start_time=end - too_wide, end_time=end))
 
     with pytest.raises(AIQueryRejected):
         backend.validate_request(make_request(limit=backend.config.limits.max_limit + 1))

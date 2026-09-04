@@ -230,9 +230,9 @@ ACE has the ability to mark observables for detection such that ACE will add a d
 
 ACE will add a detection point when the observable **and the type** match exactly.
 
-When ACE exports observable detection information into external systems, it **collapses the type to the parent type**. For example, observables with the type `email_reply_to` that are enabled for detection are exported as the `email_address` observable type.
+When ACE exports observable detection information into the yara export, it **collapses the type to the parent type**. For example, observables with the type `email_reply_to` that are enabled for detection are exported as the `email_address` observable type. ACE often understands the context of observations because it did the analysis/parsing; a yara rule scanning an entire blob of data does not, so the context of an email address being used as the reply-to is not available there.
 
-ACE often understands the context of observations because it did the analysis/parsing. In the case of external systems, this isn't always the case. For example, yara rules scan entire blobs of data, so the context of an email address being used as the reply-to is not available.
+The Splunk KV store export instead keeps the **exact type** on each document and publishes the ancestor chain alongside it (`type_path`), so a hunt can select a whole family itself while the alert it creates carries the exact type the engine's own match fires on.
 
 How detections are stored, matched, and exported (including the Splunk KV store collection hunts search) is covered in [OBSERVABLE_DETECTIONS.md](OBSERVABLE_DETECTIONS.md).
 

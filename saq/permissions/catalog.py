@@ -33,11 +33,13 @@ class CatalogEntry:
 # entry has at least one in-repo enforcement site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
-    # The ai: major gates the AI investigation API (aceapi_ai). ai:alert (alert download) is the
-    # only static entry; the per-backend ai:<name> entries are DERIVED from the deployment's
+    # The ai: major gates the AI investigation API (aceapi_ai). ai:alert (alert reads: the alert and
+    # its version token, saq.log, package download) and ai:event (ACE Event read) are the only static
+    # entries; the per-backend ai:<name> entries are DERIVED from the deployment's
     # ai_query_backend_<name> config sections (see dynamic_backend_entries), so integration-provided
     # backends surface their permission without their vendor name appearing in this open-source file.
-    CatalogEntry("ai", "alert", "Download alert packages via the AI investigation API."),
+    CatalogEntry("ai", "alert", "Read alerts (alert + version token, saq.log, package download) via the AI investigation API."),
+    CatalogEntry("ai", "event", "Read ACE Events (metadata and mapped alerts) via the AI investigation API."),
     CatalogEntry("alert", "create", "Create new alerts or upload alert data via API/GUI."),
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "review", "Review and correct alert dispositions."),

@@ -7,7 +7,7 @@ import psutil
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.enums import EngineExecutionMode, WorkerManagerState, WorkerStatus
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
-from saq.engine.tracking import TrackingServer, get_tracking_snapshot_path
+from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
 from saq.util.process import kill_process_tree
 
@@ -27,9 +27,9 @@ class WorkerManager:
         self.workers: list[Worker] = []
         self.state = WorkerManagerState.INITIALIZING
 
-        # this process owns what every worker is currently analyzing -- see
-        # saq/engine/tracking.py for why it does not live in the worker or in the database
-        self.tracking_server = TrackingServer(snapshot_path=get_tracking_snapshot_path())
+        # reads what each worker wrote about the analysis it is running -- see
+        # saq/engine/tracking.py
+        self.tracking_reader = TrackingReader()
 
         # the execution mode the workers were started in
         # replacement workers are started in the same mode (see restart_worker)
@@ -49,7 +49,6 @@ class WorkerManager:
             node_manager=self.node_manager,
             idle_timeout_max=idle_timeout_max,
             analysis_mode_priority=analysis_mode_priority,
-            tracking_server=self.tracking_server
         )
         self.workers.append(worker)
         return worker
@@ -114,7 +113,7 @@ class WorkerManager:
         # pick up anything a previous incarnation of this manager left behind. a record that
         # still names a module was never cleared by the worker that owned it, so the module
         # in it is what killed that worker and must not run again
-        pending = self.tracking_server.load_snapshot()
+        pending = self.tracking_reader.recover_pending_failures()
         if pending:
             logging.warning(
                 "recovered %d unresolved analysis failure(s) from the previous engine", len(pending)
@@ -131,17 +130,12 @@ class WorkerManager:
             )
 
         if pending:
-            # more leftovers than workers. they stay in the server's store, so the next
-            # restart picks them up again rather than losing them -- but say so, because a
-            # backlog this size means something is repeatedly killing workers
+            # more leftovers than workers. their files are still there, so the next restart
+            # picks them up again rather than losing them -- but say so, because a backlog
+            # this size means something is repeatedly killing workers
             logging.warning(
                 "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
             )
-
-        # the reader thread starts only once the initial forks are done, so the common case
-        # never forks a multi-threaded process at all. restart_worker does have to, and
-        # pauses the reader across the fork (TrackingServer.forking) to stay safe
-        self.tracking_server.start()
 
         # wait for all workers to start
         for worker in self.workers:
@@ -177,9 +171,13 @@ class WorkerManager:
                 )
                 return WorkerStatus.DEAD
 
+        # what is this worker doing? read once and use it for both the timeout check and
+        # the memory limit log lines below, so the tick costs one small read per worker
+        record = self.tracking_reader.read_worker_record(worker.name)
+
         # is the process running?
         # is it taking too long to analyze something?
-        if worker.analysis_has_timed_out():
+        if worker.analysis_has_timed_out(record):
             logging.warning(f"worker {worker} analysis has timed out")
             try:
                 kill_process_tree(worker.process.pid, signal.SIGKILL)
@@ -193,7 +191,6 @@ class WorkerManager:
             worker_process = psutil.Process(pid=worker.process.pid)
             memory = worker_process.memory_info()
             if memory.rss > self.config.memory_limit_kill:
-                record = self.tracking_server.get_active_record(worker.name)
                 logging.error(
                     f"worker {worker} used too much memory "
                     f"on {record if record else 'unknown work'}: {memory} KILLING"
@@ -202,7 +199,6 @@ class WorkerManager:
                 return WorkerStatus.DEAD
 
             elif memory.rss > self.config.memory_limit_warning:
-                record = self.tracking_server.get_active_record(worker.name)
                 logging.warning(
                     f"worker {worker} is using too much memory "
                     f"on {record if record else 'unknown work'}: {memory}"
@@ -222,11 +218,11 @@ class WorkerManager:
             )
         )
 
-        # what was it doing when it died? the record leaves the active index right away so
-        # the replacement (which reuses the name) can track its next root without touching
-        # the failure we still owe somebody, but it stays in the store until the replacement
-        # acknowledges having applied it
-        pending_failure = self.tracking_server.mark_pending_failure(dead_worker.name)
+        # what was it doing when it died? the record moves out of the worker's own file and
+        # into the pending directory right away, so the replacement (which reuses the name)
+        # can track its next root without touching the failure we still owe somebody. it
+        # stays there until the worker that applies it deletes it
+        pending_failure = self.tracking_reader.claim_failure(dead_worker.name)
         if pending_failure is not None:
             logging.warning("worker %s died while running %s", dead_worker.name, pending_failure)
 
@@ -297,8 +293,6 @@ class WorkerManager:
         for worker in self.workers:
             worker.wait()
 
-        self.tracking_server.stop()
-
         logging.info("all workers shut down")
 
     def controlled_shutdown(self):
@@ -313,8 +307,6 @@ class WorkerManager:
         # make sure all the processes exit
         for worker in self.workers:
             worker.wait()
-
-        self.tracking_server.stop()
 
         logging.info("all workers shut down")
 

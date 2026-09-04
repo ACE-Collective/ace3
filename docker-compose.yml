@@ -95,6 +95,14 @@ services:
     platform: linux/amd64
     environment: *common-env
     user: root
+    # this runs before fluent-bit (which depends on it), so it cannot ship to the
+    # collector. the local driver at least keeps its output bounded and retrievable
+    # with docker compose logs.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       args:
@@ -124,6 +132,13 @@ services:
     ports:
       - "24224:24224"
     restart: unless-stopped
+    # fluent-bit obviously cannot ship its own logs through itself. if the collector is
+    # broken this is the only place that says so, so keep a bounded local copy.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     hostname: fluent-bit
     command: /fluent-bin/bin/fluent-bit -c /fluent-bit/etc/fluent-bit.yaml
     depends_on:
@@ -145,6 +160,16 @@ services:
     depends_on:
       ace-root-volume-initialize:
         condition: service_completed_successfully
+      # without this ace-initialize races fluent-bit (both depended only on the volume
+      # init) and its early output is dropped
+      fluent-bit:
+        condition: service_started
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: setup
+        fluentd-async: "true"
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -230,6 +255,7 @@ services:
       QDRANT__TLS__KEY: /ssl/ace.key.pem
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/qdrant/qdrant
     hostname: ${QDRANT_HOSTNAME:-qdrant}
+    restart: always
     entrypoint: >
       /bin/sh -c "
       export QDRANT__SERVICE__API_KEY=$(cat /auth/passwords/qdrant) && ./entrypoint.sh
@@ -257,14 +283,21 @@ services:
   # performs all first-time initialization routines that require the db
   ace-setup:
     platform: linux/amd64
-    environment:
-      <<: *common-env
-      FLUENT_BIT_TAG: ace-setup
+    environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/setup.sh"
     depends_on:
       ace-db:
         condition: service_healthy
+    # setup.sh runs alembic upgrade head against four migration chains on every startup
+    # and verifies the encryption password. that is shell and alembic output, not python
+    # logging, so it needs the docker driver rather than ACE_LOG_CONFIG_PATH.
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        tag: setup
+        fluentd-async: "true"
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -491,6 +524,7 @@ services:
       - ace
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start git"
+    restart: always
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -506,6 +540,7 @@ services:
       - ace
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start cron"
+    restart: always
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -704,6 +739,7 @@ services:
       args:
         DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_PHISHKIT_MANAGER_IMAGE_URL:-phishkit-manager:latest}
+    restart: always
     logging:
       driver: fluentd
       options:
@@ -754,6 +790,7 @@ services:
       args:
         DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL:-js-deobfuscator-manager:latest}
+    restart: always
     logging:
       driver: fluentd
       options:

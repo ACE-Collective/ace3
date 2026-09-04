@@ -196,6 +196,96 @@ class TestHappyPath:
         assert r.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_update_key_scope_and_name(self, client: AsyncClient, session: AsyncSession):
+        user = await _make_user(session, "rtr_apikey_update", perms=[])
+        r = await client.post(
+            f"/users/{user.id}/apikeys",
+            json={"name": "ai", "inherit": False, "scope": [{"major": "ai", "minor": "*"}]},
+        )
+        key_id = r.json()["key_id"]
+
+        r = await client.put(
+            f"/users/apikeys/{key_id}",
+            json={"name": "ai+obs", "inherit": False,
+                  "scope": [{"major": "ai", "minor": "*"}, {"major": "observable", "minor": "read"}]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == key_id and body["name"] == "ai+obs"
+        assert body["inherit_user_scope"] is False
+        assert body["scope"] == [{"major": "ai", "minor": "*"}, {"major": "observable", "minor": "read"}]
+        assert "api_key" not in body
+
+        listed = (await client.get(f"/users/{user.id}/apikeys")).json()
+        entry = next(k for k in listed if k["id"] == key_id)
+        assert entry["scope"] == [{"major": "ai", "minor": "*"}, {"major": "observable", "minor": "read"}]
+
+        # switching to inherit drops the scope rows; switching back replaces them wholesale
+        r = await client.put(f"/users/apikeys/{key_id}", json={"name": "ai+obs", "inherit": True, "scope": []})
+        assert r.status_code == 200 and r.json()["inherit_user_scope"] is True and r.json()["scope"] == []
+        r = await client.put(
+            f"/users/apikeys/{key_id}",
+            json={"name": "ai+obs", "inherit": False, "scope": [{"major": "observable", "minor": "read"}]},
+        )
+        assert r.status_code == 200 and r.json()["scope"] == [{"major": "observable", "minor": "read"}]
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_bad_input(self, client: AsyncClient, session: AsyncSession):
+        user = await _make_user(session, "rtr_apikey_update_bad", perms=[])
+        r = await client.post(f"/users/{user.id}/apikeys", json={"name": "k", "inherit": True, "scope": []})
+        key_id = r.json()["key_id"]
+
+        # neither inherit nor scope
+        r = await client.put(f"/users/apikeys/{key_id}", json={"name": "k", "inherit": False, "scope": []})
+        assert r.status_code == 400
+        # empty name
+        r = await client.put(f"/users/apikeys/{key_id}", json={"name": " ", "inherit": True, "scope": []})
+        assert r.status_code == 400
+        # unknown key
+        r = await client.put("/users/apikeys/999999", json={"name": "k", "inherit": True, "scope": []})
+        assert r.status_code == 404
+        # nothing above touched the key
+        listed = (await client.get(f"/users/{user.id}/apikeys")).json()
+        assert next(k for k in listed if k["id"] == key_id)["inherit_user_scope"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_requires_user_write(self, _override_db_session, session: AsyncSession):
+        reader = await _make_user(session, "rtr_apikey_update_reader", perms=[("user", "read")])
+        async with _client_for(reader) as c:
+            r = await c.put("/users/apikeys/1", json={"name": "k", "inherit": True, "scope": []})
+            assert r.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_updated_scope_applies_to_the_existing_key(
+        self, client: AsyncClient, _override_db_session, session: AsyncSession
+    ):
+        """The point of editing: a key already handed out gains the new permission on its next
+        request, without being reissued. Scope is read per request, so no restart is needed."""
+        from saq.database.model import AuthApiKey
+        from saq.util import sha256_str
+        from tests.aceapi_v2.conftest import api_key_client, make_api_key
+
+        user = await _make_user(session, "rtr_apikey_live", perms=[("user", "read")])
+        plaintext = await make_api_key(session, user.id, inherit=False, scope=[("ai", "*")])
+        # _make_user also minted an inherit key, so find the scoped one by its hash
+        key_id = (await session.execute(
+            select(AuthApiKey.id).where(AuthApiKey.key_hash == sha256_str(plaintext))
+        )).scalar_one()
+
+        async with api_key_client(plaintext) as c:
+            assert (await c.get("/users/management-view")).status_code == 403
+
+        r = await client.put(
+            f"/users/apikeys/{key_id}",
+            json={"name": "test", "inherit": False,
+                  "scope": [{"major": "ai", "minor": "*"}, {"major": "user", "minor": "read"}]},
+        )
+        assert r.status_code == 200
+
+        async with api_key_client(plaintext) as c:
+            assert (await c.get("/users/management-view")).status_code == 200
+
+    @pytest.mark.asyncio
     async def test_me_apikeys_lists_only_the_callers_own_keys(self, _override_db_session, session: AsyncSession):
         """GET /users/me/apikeys takes its id from the auth result, so no other user's keys appear."""
         from saq.database.model import AuthApiKey

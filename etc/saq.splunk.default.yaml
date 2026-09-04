@@ -32,10 +32,13 @@ splunk_config_default:
   app_context:
 
 # exports the observables enabled for detection into a splunk kv store collection, so hunts can
-# search for them. each document carries the detection as `value` (exactly as ACE stores it, for
-# building search terms and for reporting back as the observable) and as `pattern` (lowercased and
-# wrapped in wildcards, for a lookup definition using match_type = WILDCARD(pattern)). see
-# docs/OBSERVABLE_DETECTIONS.md for the collection and lookup definitions splunk needs.
+# search for them. every active detection is exported under its exact type -- which types are
+# worth hunting is decided by the hunts that read the collection, not here -- and each document
+# carries the detection as `value` (exactly as ACE stores it, for building search terms and for
+# reporting back as the observable), as `pattern` (lowercased and wrapped in wildcards, for a
+# lookup definition using match_type = WILDCARD(pattern)), and with a `type_path` of the type plus
+# its ancestors so a hunt can select a whole type family. see docs/OBSERVABLE_DETECTIONS.md for
+# the collection and lookup definitions splunk needs.
 observable_export_splunk:
   name: splunk
   python_module: saq.observables.export.splunk_kvstore
@@ -46,26 +49,6 @@ observable_export_splunk:
   enabled: false
   # the kv store collection to publish into
   collection: ""
-  # the observable types to export
-  # NOTE: an entry also covers every observable type that `extends` it (see
-  # docs/OBSERVABLE_TYPE_INHERITANCE.md), so `email_address` here picks up email_from,
-  # email_reply_to, and so on. Those detections are exported under the type named here.
-  export_list:
-    - email_address
-    - email_subject
-    - email_x_mailer
-    - file_name
-    - fqdn
-    - ip
-    # legacy: detections created before the migration to the generic `ip` type still carry `ipv4`
-    - ipv4
-    - uri_path
-    - url
-    - user_agent
-    - md5
-    - sha256
-    - user
-    - hostname
   # how many documents to send per batch save request
   max_export: 500
   # which splunk_config_<name> block to connect through
@@ -116,7 +99,9 @@ ai_query_backend_splunk:
     hourly_budget: 400
     default_limit: 1000
     max_limit: 5000
-    max_window: "90:00:00:00"
+    # wide enough for an aggregate over a 180-day retention index in one request; row-level pulls
+    # over long windows are chunked by the client, so the window is not what bounds their size
+    max_window: "180:00:00:00"
     default_query_timeout: 300
     max_query_timeout: 600
 

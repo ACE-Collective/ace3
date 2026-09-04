@@ -35,6 +35,7 @@ class GUIAlert(Alert):
             "owner_time": self.owner_time.isoformat() + "Z" if self.owner_time is not None else None,
             "is_locked": lock is not None,
             "status": self.status,
+            "version": self.version,
         }
 
     """Extends the Alert class to add functionality specific to the GUI."""

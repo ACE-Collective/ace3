@@ -27,6 +27,11 @@ REGISTERED_INTEGRATION_CONFIGURATIONS: dict[str, type[BaseModel]] = {}
 # integration configurations
 INTEGRATION_CONFIGURATIONS: dict[str, BaseModel] = {}
 
+# True once resolve_configuration() has run. From that point on CONFIG.raw._data has been through
+# resolve_all_values(), so an integration config model registered later can be validated against it
+# immediately instead of waiting for a resolve pass that is never going to happen again.
+CONFIG_RESOLVED: bool = False
+
 def get_config(name: str | None = None) -> ACEConfig:
     """Returns the global configuration object (YAMLConfig)."""
     if name is None:
@@ -35,7 +40,12 @@ def get_config(name: str | None = None) -> ACEConfig:
     try:
         return INTEGRATION_CONFIGURATIONS[name]
     except KeyError:
-        raise KeyError(f"integration configuration for {name} not found")
+        registered = ", ".join(sorted(REGISTERED_INTEGRATION_CONFIGURATIONS)) or "(none)"
+        raise KeyError(
+            f"integration configuration for {name} not found -- the package that calls "
+            f"register_integration_configuration({name!r}, ...) was never imported. Check that its "
+            f"integration directory declares an integration_*: block in etc/saq.integration.yaml. "
+            f"Registered: {registered}")
 
 def get_database_config(name: str=DB_ACE) -> "DatabaseConfig":
     return get_config().get_database_config(name)
@@ -63,21 +73,33 @@ def set_config(config):
     CONFIG = config
 
 def resolve_configuration(existing_config: ACEConfig):
-    global CONFIG
+    global CONFIG, CONFIG_RESOLVED
     existing_config.resolve_all_values()
     CONFIG = ACEConfig.model_validate(existing_config.raw._data)
     CONFIG.raw = existing_config.raw
+    CONFIG_RESOLVED = True
 
     # load integration configurations as separate objects
     for integration_name, integration_class in REGISTERED_INTEGRATION_CONFIGURATIONS.items():
-        INTEGRATION_CONFIGURATIONS[integration_name] = integration_class.model_validate(existing_config.raw._data)
+        _build_integration_configuration(integration_name, integration_class)
 
     # encrypted:<name> markers are no longer resolved eagerly -- they must land in a SecretRef field
     # (resolved lazily at point-of-use). Any that reached a plain-string field is an unmigrated secret
     # field that would otherwise silently receive the literal "encrypted:..." string. Fail loudly.
     _assert_no_unresolved_encrypted_markers(CONFIG)
-    for integration_name, integration_config in INTEGRATION_CONFIGURATIONS.items():
-        _assert_no_unresolved_encrypted_markers(integration_config, context=f"integration '{integration_name}'")
+
+
+def _build_integration_configuration(integration_name: str, integration_class: type[BaseModel]) -> BaseModel:
+    """Validates one integration's config model against the resolved config and caches it.
+
+    Runs the encrypted-marker custody check here rather than in the caller so that an integration
+    registered after resolve_configuration() gets exactly the same validation as one registered
+    before it.
+    """
+    integration_config = integration_class.model_validate(CONFIG.raw._data)
+    _assert_no_unresolved_encrypted_markers(integration_config, context=f"integration '{integration_name}'")
+    INTEGRATION_CONFIGURATIONS[integration_name] = integration_config
+    return integration_config
 
 
 def _assert_no_unresolved_encrypted_markers(model: BaseModel, context: str = "configuration") -> None:
@@ -114,6 +136,19 @@ def register_integration_configuration(integration_name: str, integration_class:
         raise ValueError(f"integration configuration for {integration_name} already registered")
 
     REGISTERED_INTEGRATION_CONFIGURATIONS[integration_name] = integration_class
+
+    # Analysis module and service configs resolve lazily (saq/configuration/lazy_registry.py), so an
+    # integration package is often not imported until the engine constructs one of its modules --
+    # long after resolve_configuration() took its one-shot pass over this registry. Build the config
+    # now, or every get_config(<name>) in that integration raises KeyError for the life of the
+    # process. Building it here rather than on demand in get_config() also keeps
+    # INTEGRATION_CONFIGURATIONS complete for the callers that iterate it (the secret custody sweep
+    # in aceapi_ai/startup_checks.py).
+    # NOTE this runs at import time of the integration package, so it must not raise for a reason
+    # as mundane as the config not being loaded yet -- that would turn a benign ordering into an
+    # ImportError. A genuine validation failure still propagates.
+    if CONFIG_RESOLVED and CONFIG is not None and CONFIG.has_raw_data:
+        _build_integration_configuration(integration_name, integration_class)
 
 def initialize_configuration(config_paths: list[str] | None=None):
     global CONFIG

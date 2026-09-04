@@ -307,3 +307,91 @@ class TestExportEvents:
     async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
         response = await noperm_client.get("/events/export", params={"type": "csv"})
         assert response.status_code == 403
+
+
+class TestGetEventByReferenceAndAlertDetails:
+    """GET /events/{ref} takes a numeric id or the event's uuid, and carries each mapped alert's
+    database state under alert_details -- the columns the alert's storage directory never holds."""
+
+    @pytest.mark.asyncio
+    async def test_lookup_by_uuid_matches_lookup_by_id(self, client: AsyncClient):
+        lookups = _make_lookups()
+        event = _make_event("by-uuid", lookups, lookups["open_status"])
+        by_id = (await client.get(f"/events/{event.id}")).json()
+        response = await client.get(f"/events/{event.uuid}")
+        assert response.status_code == 200
+        assert response.json() == by_id
+        assert by_id["uuid"] == event.uuid
+
+    @pytest.mark.asyncio
+    async def test_malformed_reference_is_400_and_unknown_uuid_is_404(self, client: AsyncClient):
+        assert (await client.get("/events/not-an-id")).status_code == 400
+        assert (await client.get("/events/11111111-1111-1111-1111-111111111111")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_alert_details_carry_database_state(self, client: AsyncClient):
+        from datetime import datetime, timezone
+
+        from saq.database import EventMapping, User, get_db
+        from tests.saq.helpers import insert_alert
+
+        lookups = _make_lookups()
+        event = _make_event("with-details", lookups, lookups["open_status"])
+        alert = insert_alert()
+        db = get_db()
+        analyst = db.query(User).filter(User.username == "unittest").one()
+        when = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+        alert.owner_id = analyst.id
+        alert.owner_time = when
+        alert.disposition = "FALSE_POSITIVE"
+        alert.disposition_user_id = analyst.id
+        alert.disposition_time = when
+        db.add(EventMapping(event_id=event.id, alert_id=alert.id))
+        db.commit()
+
+        body = (await client.get(f"/events/{event.id}")).json()
+        assert [d["uuid"] for d in body["alert_details"]] == [alert.uuid]
+        detail = body["alert_details"][0]
+        assert detail["owner"] == "unittest"
+        assert detail["disposition"] == "FALSE_POSITIVE"
+        assert detail["disposition_user"] == "unittest"
+        assert detail["owner_time"].startswith("2026-09-02T12:00:00")
+        assert detail["disposition_time"].startswith("2026-09-02T12:00:00")
+        assert detail["insert_date"]  # set by the database on insert
+
+    @pytest.mark.asyncio
+    async def test_event_with_malware_serializes_threat_names(self, client: AsyncClient):
+        """Event.json read `t.type` on a Threat row, which only has `threat_type`: every event with malware
+        tagged answered 500 on both APIs."""
+        from saq.database import Malware, MalwareMapping, Threat, ThreatType, get_db
+
+        lookups = _make_lookups()
+        event = _make_event("with-malware", lookups, lookups["open_status"])
+        db = get_db()
+        ttype = ThreatType(name="ai-test-rat")
+        malware = Malware(name="ai-test-family")
+        db.add_all([ttype, malware])
+        db.commit()
+        db.add(Threat(malware_id=malware.id, threat_type_id=ttype.id))
+        db.add(MalwareMapping(event_id=event.id, malware_id=malware.id))
+        db.commit()
+
+        response = await client.get(f"/events/{event.id}")
+        assert response.status_code == 200
+        assert response.json()["malware"] == [{"ai-test-family": ["ai-test-rat"]}]
+
+    @pytest.mark.asyncio
+    async def test_disposition_time_is_the_disposition_time(self, client: AsyncClient):
+        """Event.json used to emit ownership_time under the disposition_time key."""
+        from datetime import datetime
+
+        from saq.database import get_db
+
+        lookups = _make_lookups()
+        event = _make_event("times", lookups, lookups["open_status"])
+        event.ownership_time = datetime(2026, 9, 1, 8, 0, 0)
+        event.disposition_time = datetime(2026, 9, 3, 9, 30, 0)
+        get_db().commit()
+        body = (await client.get(f"/events/{event.id}")).json()
+        assert body["ownership_time"] == "2026-09-01 08:00:00"
+        assert body["disposition_time"] == "2026-09-03 09:30:00"

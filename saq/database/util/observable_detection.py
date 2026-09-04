@@ -35,16 +35,16 @@ class DetectionIdentity(NamedTuple):
     value_sha256: bytes
 
 
-def resolve_detection_identity(observable_type: str, observable_value: str) -> DetectionIdentity:
-    """Normalizes and validates a type/value pair into what a detection row stores.
+def resolve_observable_identity(observable_type: str, observable_value: str) -> DetectionIdentity:
+    """Normalizes and validates a type/value pair into the identity the observables index stores.
 
-    Raises InvalidDetectionValue if the value is not valid for the type, is too long, or is not
-    representable as text.
+    Raises InvalidDetectionValue if the value is not valid for the type or is not representable
+    as text.
 
-    This runs the value through the real observable class, which is what makes a detection actually
-    fire: the analysis engine looks the observable up in redis under f"{type}:{value}" using the
-    *normalized* in-memory value, so storing a raw un-normalized string would produce a detection
-    that silently never matches.
+    This runs the value through the real observable class, so the returned value and value_sha256
+    match what the analysis engine produces at runtime: the engine indexes and looks up observables
+    by their *normalized* in-memory value, so matching against a raw un-normalized string would
+    silently never hit.
     """
     if observable_type == F_FILE:
         return _file_detection_identity(observable_value)
@@ -61,6 +61,21 @@ def resolve_detection_identity(observable_type: str, observable_value: str) -> D
         raise InvalidDetectionValue(f"{observable_value!r} is not a valid value for observable type {observable_type}")
 
     return _identity_from_observable(observable)
+
+
+def resolve_detection_identity(observable_type: str, observable_value: str) -> DetectionIdentity:
+    """Normalizes and validates a type/value pair into what a detection row stores.
+
+    Same as resolve_observable_identity, plus the detection storage rule: the value must fit the
+    detections table's text column, so anything longer than MAX_DETECTION_VALUE_LENGTH is rejected.
+    """
+    identity = resolve_observable_identity(observable_type, observable_value)
+    if len(identity.value) > MAX_DETECTION_VALUE_LENGTH:
+        raise InvalidDetectionValue(
+            f"observable value is {len(identity.value)} characters, which exceeds the "
+            f"{MAX_DETECTION_VALUE_LENGTH} character limit for a detection")
+
+    return identity
 
 
 def _file_detection_identity(observable_value: str) -> DetectionIdentity:
@@ -87,11 +102,6 @@ def _file_detection_identity(observable_value: str) -> DetectionIdentity:
 
 def _identity_from_observable(observable: Observable) -> DetectionIdentity:
     value = observable.value
-    if len(value) > MAX_DETECTION_VALUE_LENGTH:
-        raise InvalidDetectionValue(
-            f"observable value is {len(value)} characters, which exceeds the "
-            f"{MAX_DETECTION_VALUE_LENGTH} character limit for a detection")
-
     # The column is text, and the runtime redis key is built from a str, so a value that cannot
     # round-trip through utf-8 could never match anything. Reject it rather than storing it lossily.
     try:

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from saq.csv_builder import CSV
 from saq.database import Event, EventStatus, get_db
+from saq.util.uuid import is_uuid
 
 from aceapi_v2.sync import run_db_in_thread
 
@@ -37,11 +38,24 @@ def _get_open_events_sync() -> list[dict]:
     return [_serialize_event(event) for event in open_events]
 
 
-def _get_event_sync(event_id: int) -> dict:
-    event = get_db().get(Event, event_id)
+def resolve_event(event_ref: int | str) -> Event:
+    """The event named by a numeric id or a uuid (the two never look alike: one is all digits, the
+    other has hyphens). 400 for anything else, 404 when nothing matches."""
+    ref = str(event_ref).strip()
+    db = get_db()
+    if ref.isdigit():
+        event = db.get(Event, int(ref))
+    elif is_uuid(ref):
+        event = db.query(Event).filter(Event.uuid == ref).one_or_none()
+    else:
+        raise HTTPException(status_code=400, detail="event reference must be a numeric id or a uuid")
     if not event:
         raise HTTPException(status_code=404, detail="Event ID not found")
-    return _serialize_event(event)
+    return event
+
+
+def _get_event_sync(event_ref: int | str) -> dict:
+    return _serialize_event(resolve_event(event_ref))
 
 
 def _set_event_status_sync(event_id: int, status_value: str) -> dict:
@@ -141,12 +155,15 @@ async def get_open_events() -> list[dict]:
     return await run_db_in_thread(_get_open_events_sync)
 
 
-async def get_event(event_id: int) -> dict:
-    """Return a single event serialized as an ``Event.json`` dict. Raises 404.
+async def get_event(event_ref: int | str) -> dict:
+    """Return a single event serialized as an ``Event.json`` dict, looked up by numeric id or
+    uuid. Raises 400 for a malformed reference, 404 for an unknown one.
 
-    The ``alerts`` key holds the UUIDs of every alert mapped to the event.
+    ``alerts`` holds the UUIDs of every alert mapped to the event, ``alert_versions`` their
+    version tokens, and ``alert_details`` their database state (insert_date, owner, owner_time,
+    disposition, disposition_time, disposition_user).
     """
-    return await run_db_in_thread(_get_event_sync, event_id)
+    return await run_db_in_thread(_get_event_sync, event_ref)
 
 
 async def set_event_status(event_id: int, status_value: str) -> dict:

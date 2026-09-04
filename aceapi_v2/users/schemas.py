@@ -62,6 +62,15 @@ class ApiKeyCreate(BaseModel):
     scope: list[ApiKeyScope] = []
 
 
+class ApiKeyUpdate(BaseModel):
+    """Request to change an existing key's name and scope. The scope is replaced wholesale, under
+    the same exactly-one-of rule as creation. The secret itself never changes: editing a key
+    is how a deployed credential gets new permissions without being reissued."""
+    name: str
+    inherit: bool = False
+    scope: list[ApiKeyScope] = []
+
+
 class GroupRead(BaseModel):
     id: int
     name: str

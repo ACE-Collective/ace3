@@ -201,7 +201,7 @@ add_api_key_parser.add_argument('username', help="The username to create the key
 add_api_key_parser.add_argument('--name', default=None, help="Human-readable name for the key.")
 add_api_key_scope_group = add_api_key_parser.add_mutually_exclusive_group(required=True)
 add_api_key_scope_group.add_argument('--inherit', action='store_true', help="The key inherits the user's full permissions.")
-add_api_key_scope_group.add_argument('--scope', default=None, help='Comma-separated "major:minor" patterns to restrict the key to (e.g. "ai:splunk,ai:alert").')
+add_api_key_scope_group.add_argument('--scope', default=None, help='Comma-separated "major:minor" patterns to restrict the key to (e.g. "ai:splunk,ai:alert,ai:event", or "ai:*" for the whole AI investigation API).')
 add_api_key_parser.set_defaults(func=add_api_key)
 
 def list_user_api_keys_cli(args):

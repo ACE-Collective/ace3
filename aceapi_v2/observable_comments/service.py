@@ -1,6 +1,5 @@
 """Observable comment service for ACE API v2."""
 
-import hashlib
 import logging
 from typing import Optional
 
@@ -10,32 +9,31 @@ from sqlalchemy.orm import selectinload
 
 from saq.analysis.observable import Observable as AnalysisObservable
 from saq.database.model import Observable as DBObservable, ObservableComment
+from saq.database.util.observable_detection import resolve_observable_identity
 
 logger = logging.getLogger(__name__)
-
-
-def _compute_sha256(value: str) -> bytes:
-    """Compute SHA256 hash bytes for an observable value string."""
-    return hashlib.sha256(value.encode("utf8", errors="ignore")).digest()
 
 
 async def _find_or_create_observable(
     session: AsyncSession, observable_type: str, observable_value: str
 ) -> DBObservable:
-    """Find an existing DB observable by type+sha256, or create one."""
-    sha256 = _compute_sha256(observable_value)
+    """Find an existing DB observable by type+sha256, or create one.
+
+    Raises InvalidDetectionValue if the value is not valid for the type.
+    """
+    identity = resolve_observable_identity(observable_type, observable_value)
     result = await session.execute(
         select(DBObservable).where(
-            DBObservable.type == observable_type,
-            DBObservable.sha256 == sha256,
+            DBObservable.type == identity.type,
+            DBObservable.sha256 == identity.value_sha256,
         )
     )
     db_observable = result.scalar_one_or_none()
     if db_observable is None:
         db_observable = DBObservable(
-            type=observable_type,
-            sha256=sha256,
-            value=observable_value.encode("utf8", errors="ignore"),
+            type=identity.type,
+            sha256=identity.value_sha256,
+            value=identity.value.encode("utf8"),
         )
         session.add(db_observable)
         await session.flush()

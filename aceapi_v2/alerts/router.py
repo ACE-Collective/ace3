@@ -20,22 +20,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
 
-def _etag(version: str) -> str:
-    return f'"{version}"'
-
-
-def _etag_matches(if_none_match: str, version: str) -> bool:
-    """True if the If-None-Match header names the given version (or is the wildcard)."""
-    for candidate in if_none_match.split(","):
-        candidate = candidate.strip()
-        if candidate == "*":
-            return True
-        candidate = candidate.removeprefix("W/")
-        if candidate.strip('"') == version:
-            return True
-    return False
-
-
 def _safe_unlink(path: str) -> None:
     try:
         os.remove(path)
@@ -96,12 +80,12 @@ async def get_alert(
     client can poll with If-None-Match and get a 304 without the alert being loaded.
     """
     version = await run_db_in_thread(service.get_alert_version, alert_uuid)
-    if if_none_match and _etag_matches(if_none_match, version):
-        return Response(status_code=304, headers={"ETag": _etag(version)})
+    if if_none_match and service.etag_matches(if_none_match, version):
+        return Response(status_code=304, headers={"ETag": service.etag(version)})
 
     # the token comes from the loaded row, so the header always agrees with the body
     body, version = await run_db_in_thread(service.get_alert, alert_uuid)
-    return Response(content=body, media_type="application/json", headers={"ETag": _etag(version)})
+    return Response(content=body, media_type="application/json", headers={"ETag": service.etag(version)})
 
 
 @router.get("/{alert_uuid}/download")

@@ -226,6 +226,41 @@ class TestDistributedDelayedAnalysisMonitor:
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor")
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_global_runtime_settings")
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_db_connection")
+    def test_execute_preserves_bare_module_name(self, mock_get_db, mock_get_settings, mock_emit):
+        """delayed_analysis.analysis_module holds AnalysisModule.name, which is already
+        the bare name -- add_delayed_analysis_request() writes analysis_module.name and
+        base_module.name returns config.name. Stripping a prefix that is not there
+        silently eats 16 characters off the front of the real name."""
+        mock_get_db.return_value = _make_mock_db([
+            ("/opt/ace/data/uuid-1", "o365_session_activity", 3),
+            ("/opt/ace/data/uuid-2", "phishkit_analyzer", 1),
+        ])
+        mock_get_settings.return_value.saq_node = "node1"
+
+        monitor = DistributedDelayedAnalysisMonitor(name="test", frequency=1.0)
+        monitor.execute()
+
+        modules = [c[0][1]["module"] for c in mock_emit.call_args_list]
+        assert modules == ["o365_session_activity", "phishkit_analyzer"]
+
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor")
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_global_runtime_settings")
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_db_connection")
+    def test_execute_does_not_erase_short_module_name(self, mock_get_db, mock_get_settings, mock_emit):
+        """A bare name of 16 characters or fewer was truncated to the empty string."""
+        mock_get_db.return_value = _make_mock_db([
+            ("/opt/ace/data/uuid-1", "yara", 9),
+        ])
+        mock_get_settings.return_value.saq_node = "node1"
+
+        monitor = DistributedDelayedAnalysisMonitor(name="test", frequency=1.0)
+        monitor.execute()
+
+        assert mock_emit.call_args[0][1]["module"] == "yara"
+
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor")
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_global_runtime_settings")
+    @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_db_connection")
     def test_execute_queries_with_current_node(self, mock_get_db, mock_get_settings, mock_emit):
         mock_db = _make_mock_db([])
         mock_get_db.return_value = mock_db

@@ -12,6 +12,24 @@ from saq.integration.integration_util import (
     get_valid_integration_dirs,
 )
 
+# Warnings raised by initialize_integrations(), which runs at saq/environment.py:189 -- BEFORE
+# initialize_logging() at :228. Anything logged there goes to the un-configured root logger and is
+# lost, so stash it here and let the caller re-emit once logging is up.
+DEFERRED_INTEGRATION_WARNINGS: list[str] = []
+
+
+def discover_integration_packages(dir_path: str) -> list[str]:
+    """Returns the importable top level package names under <dir_path>/src."""
+    src_path = os.path.join(dir_path, "src")
+    if not os.path.isdir(src_path):
+        return []
+
+    return sorted(
+        name for name in os.listdir(src_path)
+        if os.path.isfile(os.path.join(src_path, name, "__init__.py"))
+    )
+
+
 def load_integrations() -> bool:
     """Loads all integrations. Returns True if all defined and enabled integrations were loaded successfully."""
     result = True
@@ -94,6 +112,8 @@ def load_integration_component_etc(dir_path: str) -> bool:
 def initialize_integrations():
     """Initializes all integrations. 
     This simply imports the module as defined by each integration, giving the module a chance to initialize itself."""
+    imported: set[str] = set()
+
     for integration_config in get_config().integrations:
 
         #
@@ -102,9 +122,53 @@ def initialize_integrations():
 
         try:
             importlib.import_module(integration_config.python_module)
+            imported.add(integration_config.python_module)
         except Exception as e:
             logging.error(f"failed to import integration module {integration_config.name}: {e}")
             report_exception()
+
+    _warn_about_undeclared_integrations(imported)
+
+
+def _warn_about_undeclared_integrations(imported: set[str]):
+    """Warns about an integration directory that declares no integration_<name>: block.
+
+    Such a directory is still discovered: its src/ goes on the path and its etc/saq.integration.yaml
+    is merged, so its analysis modules and services look configured. But nothing ever imports the
+    package, so every module level register_integration_configuration(), register_directive(),
+    register_observable_action() and register_integration_blueprint_callback() call in it silently
+    never runs. The resulting failures are invisible -- a missing integration config surfaces only as
+    a swallowed constructor exception in saq/modules/adapter.py, and a missing observable action or
+    GUI blueprint surfaces as nothing at all. This is what shipped broken in 3.0.101.
+    """
+    for dir_path in get_valid_integration_dirs():
+        integration_name = get_integration_name_from_path(dir_path)
+
+        if not is_integration_enabled(integration_name):
+            continue
+
+        packages = discover_integration_packages(dir_path)
+
+        # warn per directory rather than per package: an integration with more than one package
+        # under src/ only needs one of them declared for its hooks to run
+        if not packages or any(package in imported for package in packages):
+            continue
+
+        for package in packages:
+            message = (
+                f"integration {integration_name} ({dir_path}) declares no 'integration_*:' block in "
+                f"etc/saq.integration.yaml, so its package {package!r} is never imported and none of "
+                f"its registration hooks run. Add:\n"
+                f"integration_{integration_name}:\n"
+                f"  name: {integration_name}\n"
+                f"  enabled: true\n"
+                f"  description: \"<describe the integration>\"\n"
+                f"  python_module: {package}")
+
+            DEFERRED_INTEGRATION_WARNINGS.append(message)
+            # logging is not configured yet at this point in startup -- see the note on
+            # DEFERRED_INTEGRATION_WARNINGS above
+            sys.stderr.write(f"WARNING: {message}\n")
 
 def load_integration_from_directory(dir_path: str) -> bool:
     """Loads an ACE integration from a local directory.

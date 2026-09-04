@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1069,6 +1070,24 @@ class TestRunLoop:
 
         assert len(wait_calls) == 1
         assert wait_calls[0] == 0
+
+    def test_wait_blocks_until_stopped_when_no_repos_configured(self):
+        # with no repos there are no threads to join. wait() must still block until
+        # stop() is called, otherwise the service exits 0 immediately and a container
+        # restart policy loops on it forever
+        service = GitManagerService()
+        assert not service.threads
+
+        waiter = threading.Thread(target=service.wait)
+        waiter.daemon = True
+        waiter.start()
+
+        waiter.join(timeout=0.2)
+        assert waiter.is_alive()
+
+        service.stop()
+        waiter.join(timeout=5)
+        assert not waiter.is_alive()
 
 
 def _init_repo_with_commit(path):

@@ -285,8 +285,8 @@ def global_function_setup(request):
     # reset emitter to default state
     reset_emitter()
 
-    # the worker tracking snapshot is node-scoped state on disk that outlives the process that
-    # wrote it -- that is the point of it. a test that leaves a pending analysis failure behind
+    # the worker tracking files are state on disk that outlives the process that wrote
+    # them -- that is the point of them. a test that leaves a pending analysis failure behind
     # would otherwise have it picked up by the next test to call WorkerManager.start_workers(),
     # which hands it to a worker as a pending_failure. with pytest-randomly shuffling order that
     # shows up as an intermittent failure somewhere unrelated, so clear it per test rather than

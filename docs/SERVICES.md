@@ -191,4 +191,4 @@ docker compose logs -f myservice
 | `monitoring`         | `saq.monitoring.service.ACEMonitoringService`  | `service_monitoring`         |
 | `llm_embedding`      | `saq.llm.embedding.service.*`                  | `service_llm_embedding`      |
 
-`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable list of sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.
+`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.

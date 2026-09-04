@@ -1,40 +1,49 @@
+#
+# cron job settings
+#
+# Jobs run through bin/run-cron-job: daily logs at data/logs/<slug>-<date>.log, plus a
+# structured outcome (job, exit_code, duration_seconds, node; failure tail) to fluent-bit
+# on tag "cron-jobs". The wrapper passes the job's exit code through unchanged.
+# Keep <slug> (first argument) stable — it names the rotated log and is the alert grouping key.
+#
 jobs:
   - name: daily maintenance
-    command: /opt/ace/bin/daily-maintenance.sh >> /opt/ace/data/logs/daily-maintenance-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job daily-maintenance /opt/ace/bin/daily-maintenance.sh
     shell: /bin/bash
     schedule: "0 5 * * *"
     concurrencyPolicy: Forbid
   - name: weekly maintenance
-    command: /opt/ace/bin/weekly-maintenance.sh >> /opt/ace/data/logs/weekly-maintenance-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job weekly-maintenance /opt/ace/bin/weekly-maintenance.sh
     shell: /bin/bash
     schedule: "0 5 * * 1"
     concurrencyPolicy: Forbid
   - name: export observables for detection
-    command: /opt/ace/bin/export-observables >> /opt/ace/data/logs/export-observables-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job export-observables /opt/ace/bin/export-observables
     shell: /bin/bash
     schedule: "* * * * *"
     concurrencyPolicy: Forbid
   - name: refresh newly registered domains
-    command: /opt/ace/bin/nrd-refresh >> /opt/ace/data/logs/nrd-refresh-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job nrd-refresh /opt/ace/bin/nrd-refresh
     shell: /bin/bash
     schedule: "*/30 * * * *"
+    concurrencyPolicy: Forbid
   
   #
   # these three jobs should only run on the primary node
   #
 
   - name: analysis cache partition maintenance
-    command: /opt/ace/bin/manage-analysis-result-cache-partitions.sh >> /opt/ace/data/logs/analysis-cache-partitions-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job analysis-cache-partitions /opt/ace/bin/manage-analysis-result-cache-partitions.sh
     shell: /bin/bash
     schedule: "0 4 * * *"
     concurrencyPolicy: Forbid
   - name: analysis cache stats
-    command: /opt/ace/bin/analysis-cache-stats >> /opt/ace/data/logs/analysis-cache-stats-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job analysis-cache-stats /opt/ace/bin/analysis-cache-stats
     shell: /bin/bash
     schedule: "*/15 * * * *"
     concurrencyPolicy: Forbid
   - name: analysis cache gc (durable blobs)
-    command: /opt/ace/bin/analysis-cache-gc >> /opt/ace/data/logs/analysis-cache-gc-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job analysis-cache-gc /opt/ace/bin/analysis-cache-gc
     shell: /bin/bash
     schedule: "0 * * * *"
     concurrencyPolicy: Forbid
@@ -44,7 +53,7 @@ jobs:
   #
 
   - name: analysis cache local maintenance
-    command: /opt/ace/bin/analysis-cache-local-maintenance >> /opt/ace/data/logs/analysis-cache-local-maintenance-`date '+%Y-%m-%d'`.log 2>&1
+    command: /opt/ace/bin/run-cron-job analysis-cache-local-maintenance /opt/ace/bin/analysis-cache-local-maintenance
     shell: /bin/bash
     schedule: "*/15 * * * *"
     concurrencyPolicy: Forbid
