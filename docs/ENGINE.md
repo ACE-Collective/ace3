@@ -1121,9 +1121,16 @@ work → `saq.llm.embedding.service.submit_embedding_task(uuid)`.
 
 ### 14.1 The `nodes` table
 
-`(id, name, location, company_id, last_update, is_primary, any_mode, status)`
-plus `node_modes` / `node_modes_excluded`. Status is an enum:
+`(id, name, location, company_id, last_update, is_primary, any_mode, status,
+expected_state)` plus `node_modes` / `node_modes_excluded`. Status is an enum:
 `starting | running | draining | draining_collectors | drained | stopped`.
+
+`expected_state` (`online | offline`) is operator intent, not observed state: a drain
+sets it to `offline`, and a resume or an engine start sets it back to `online`. It exists
+because `status` cannot distinguish a node that was drained and then deliberately shut
+down from one that crashed — the graceful shutdown path and
+`reconcile_stale_node_statuses()` both land on `stopped`. Monitoring reads the pair, so
+`stopped + online` is a failure and `stopped + offline` is a planned outage.
 
 Every `node_status_update_frequency` seconds the controller loop calls
 `update_node_status_and_execute_primary_routines()`, which updates
@@ -1179,7 +1186,12 @@ put and resumes when the node restarts. The status machine is
 `draining_collectors → draining → drained`, with revert paths in both directions
 if a collector's backlog reappears or new work races in.
 
-Restarting a node always resets its status to `starting`, which cancels a drain.
+Restarting a node always resets its status to `starting` and its `expected_state` to
+`online`, which cancels a drain. That reset lives in
+`DistributedNodeManager.initialize_node()` and deliberately not in
+`saq.database.util.node.initialize_node()`, which every ACE process calls through
+`initialize_environment()` — putting it there would let any `ace` command silently cancel
+an in-progress drain.
 
 ---
 
