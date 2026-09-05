@@ -13,7 +13,7 @@ from saq.constants import DIRECTIVE_VIEW_IN_BROWSER, DIRECTIVE_YARA_META_PREFIX,
 from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
-from saq.util.hashing import is_sha256_hex
+from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256, is_sha256_hex
 
 KEY_MD5_HASH = "md5_hash"
 KEY_SHA1_HASH = "sha1_hash"
@@ -568,15 +568,28 @@ class FileLocationObservablePresenter(ObservablePresenter):
 register_observable_presenter(FileLocationObservable, FileLocationObservablePresenter)
 
 
+def validate_hash_value(value: str, empty_content_hash: str, label: str) -> str:
+    """Strips and validates a hash observable value, raising ObservableValueError if it is not worth tracking.
+
+    All-zero hashes are placeholders. The hash of zero-length content is produced by every empty
+    file, so it identifies nothing and would link unrelated alerts to each other."""
+    value = value.strip()
+    if value.count('0') == len(value):
+        raise ObservableValueError(f"invalid {label} {value}")
+
+    if value.lower() == empty_content_hash:
+        raise ObservableValueError(f"{label} {value} is the hash of empty content")
+
+    return value
+
+
 class MD5Observable(CaselessObservable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_MD5, *args, **kwargs)
 
     @CaselessObservable.value.setter
     def value(self, new_value):
-        self._value = new_value.strip()
-        if self.value.count('0') == len(self.value):
-            raise ObservableValueError(f"invalid MD5 {self.value}")
+        self._value = validate_hash_value(new_value, EMPTY_CONTENT_MD5, "MD5")
 
     @property
     def related_file(self) -> Union[FileObservable, None]:
@@ -596,9 +609,7 @@ class SHA1Observable(CaselessObservable):
 
     @CaselessObservable.value.setter
     def value(self, new_value):
-        self._value = new_value.strip()
-        if self.value.count('0') == len(self.value):
-            raise ObservableValueError(f"invalid SHA1 {self.value}")
+        self._value = validate_hash_value(new_value, EMPTY_CONTENT_SHA1, "SHA1")
 
     @property
     def related_file(self) -> Union[FileObservable, None]:
@@ -629,9 +640,7 @@ class SHA256Observable(CaselessObservable):
 
     @CaselessObservable.value.setter
     def value(self, new_value):
-        self._value = new_value.strip()
-        if self.value.count('0') == len(self.value):
-            raise ObservableValueError(f"invalid SHA256 {self.value}")
+        self._value = validate_hash_value(new_value, EMPTY_CONTENT_SHA256, "SHA256")
 
     @property
     def related_file(self) -> Union[FileObservable, None]:

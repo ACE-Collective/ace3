@@ -1,7 +1,8 @@
 import pytest
 
 from saq.analysis import RootAnalysis, Observable
-from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_IP, F_MESSAGE_ID, F_USER, F_YARA_STRING
+from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_IP, F_MD5, F_MESSAGE_ID, F_SHA1, F_SHA256, F_USER, F_YARA_STRING
+from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256
 
 @pytest.mark.unit
 def test_observables():
@@ -113,6 +114,29 @@ def test_message_id_observable(caplog):
 
     o = root.add_observable_by_spec(F_MESSAGE_ID, 'asdf@asdf.com')
     assert o.value == '<asdf@asdf.com>'
+
+@pytest.mark.parametrize('o_type,valid_value,empty_content_hash', [
+    (F_MD5, 'a3aa6e1cf9973fd30868021b2dd7b5cf', EMPTY_CONTENT_MD5),
+    (F_SHA1, '9d8f22a2d1a9d8a4f43b1c4b8a0ef5d0b3d1a3c5', EMPTY_CONTENT_SHA1),
+    (F_SHA256, '90645b5c3c279e2c40649c72915575ca98c1f73a53fe3bdbf9d0b991dfc03924', EMPTY_CONTENT_SHA256),
+])
+@pytest.mark.unit
+def test_hash_observable_refuses_placeholder_values(o_type, valid_value, empty_content_hash):
+    root = RootAnalysis()
+    o = root.add_observable_by_spec(o_type, valid_value)
+    assert o is not None
+    assert o.value == valid_value
+
+    # surrounding whitespace is stripped
+    assert root.add_observable_by_spec(o_type, f' {valid_value} ') is o
+
+    # all-zero placeholder hashes
+    assert root.add_observable_by_spec(o_type, '0' * len(valid_value)) is None
+
+    # the hash of zero-length content, in any case
+    assert root.add_observable_by_spec(o_type, empty_content_hash) is None
+    assert root.add_observable_by_spec(o_type, empty_content_hash.upper()) is None
+    assert root.add_observable_by_spec(o_type, f' {empty_content_hash} ') is None
 
 @pytest.mark.unit
 def test_yara_string_observable():
