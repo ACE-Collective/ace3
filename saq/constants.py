@@ -42,6 +42,23 @@ VALID_NODE_STATUSES = [
     NODE_STATUS_STOPPED,
 ]
 
+#
+# node expected state values (nodes.expected_state column)
+#
+# status is what the node IS, expected_state is what an operator says it SHOULD be.
+# draining a node sets expected_state to offline; resuming it, or restarting the
+# engine on it, sets it back to online. the two are needed together because status
+# alone cannot distinguish a node that was drained and deliberately shut down from
+# one that crashed -- reconcile_stale_node_statuses() collapses both to stopped.
+#
+
+NODE_EXPECTED_STATE_ONLINE = "online"
+NODE_EXPECTED_STATE_OFFLINE = "offline"
+VALID_NODE_EXPECTED_STATES = [
+    NODE_EXPECTED_STATE_ONLINE,
+    NODE_EXPECTED_STATE_OFFLINE,
+]
+
 # 
 # instance types
 #

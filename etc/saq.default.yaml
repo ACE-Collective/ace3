@@ -506,6 +506,14 @@ service_monitoring:
       python_module: saq.monitoring.monitors.local_workload_monitor
       python_class: LocalWorkloadMonitor
       frequency: 5
+    # reports every node in the cluster, so like the other distributed monitors it is
+    # meant to run on exactly one node. sampled at the node heartbeat interval
+    # (engine.node_status_update_frequency) -- polling faster than nodes write cannot
+    # produce anything new.
+    node_status:
+      python_module: saq.monitoring.monitors.node_status_monitor
+      python_class: NodeStatusMonitor
+      frequency: 30
 
 service_network_semaphore:
   name: network_semaphore

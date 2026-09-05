@@ -1,5 +1,7 @@
 import pytest
 from saq.constants import (
+    NODE_EXPECTED_STATE_OFFLINE,
+    NODE_EXPECTED_STATE_ONLINE,
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
     NODE_STATUS_DRAINING_COLLECTORS,
@@ -7,7 +9,12 @@ from saq.constants import (
     NODE_STATUS_STARTING,
 )
 from saq.database.pool import get_db_connection
-from saq.database.util.node import get_node_status, set_node_status, update_collector_status
+from saq.database.util.node import (
+    get_node_status,
+    set_node_expected_state,
+    set_node_status,
+    update_collector_status,
+)
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineType
@@ -47,6 +54,30 @@ def test_distributed_initialize_node_sets_starting_status():
     node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
     node_manager.initialize_node()
     assert get_node_status(get_global_runtime_settings().saq_node_id) == NODE_STATUS_STARTING
+
+
+def _get_node_expected_state(node_id: int) -> str:
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT expected_state FROM nodes WHERE id = %s", (node_id,))
+        return cursor.fetchone()[0]
+
+
+@pytest.mark.integration
+def test_distributed_initialize_node_clears_offline_intent():
+    """Starting the engine on a node cancels a drain, and that has to include the intent
+    to keep it offline -- otherwise a node that was drained, restarted and put back to work
+    would stay invisible to monitoring for as long as it ran."""
+    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
+    node_manager.initialize_node()
+    set_node_expected_state(get_global_runtime_settings().saq_node_id, NODE_EXPECTED_STATE_OFFLINE)
+
+    # a second startup, as though the host had been brought back up
+    get_global_runtime_settings().saq_node_id = None
+    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
+    node_manager.initialize_node()
+
+    assert _get_node_expected_state(get_global_runtime_settings().saq_node_id) == NODE_EXPECTED_STATE_ONLINE
 
 
 @pytest.mark.integration

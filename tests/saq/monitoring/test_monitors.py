@@ -8,6 +8,7 @@ from saq.monitoring.monitors.distributed_workload_monitor import DistributedWork
 from saq.monitoring.monitors.local_workload_monitor import LocalWorkloadMonitor
 from saq.monitoring.monitors.distributed_delayed_analysis_monitor import DistributedDelayedAnalysisMonitor
 from saq.monitoring.monitors.distributed_locks_monitor import DistributedLocksMonitor
+from saq.monitoring.monitors.node_status_monitor import NodeStatusMonitor
 from saq.monitoring.threaded_monitor import ACEThreadedMonitor
 
 
@@ -412,13 +413,14 @@ class TestDistributedMonitorQueries:
     lock to the wrong node."""
 
     @staticmethod
-    def _add_node(db, name):
+    def _add_node(db, name, status="running", expected_state="online", heartbeat_age_seconds=0):
         cursor = db.cursor()
         cursor.execute("SELECT id FROM company LIMIT 1")
         company_id = cursor.fetchone()[0]
         cursor.execute(
-            "INSERT INTO nodes (name, location, company_id, last_update) VALUES (%s, %s, %s, NOW())",
-            (name, name, company_id))
+            "INSERT INTO nodes (name, location, company_id, last_update, status, expected_state) "
+            "VALUES (%s, %s, %s, DATE_SUB(NOW(), INTERVAL %s SECOND), %s, %s)",
+            (name, name, company_id, heartbeat_age_seconds, status, expected_state))
         return cursor.lastrowid
 
     @staticmethod
@@ -491,3 +493,109 @@ class TestDistributedMonitorQueries:
         assert len(emitted) == 1
         assert emitted[0]["node"] == "email-scanner-2"
         assert emitted[0]["module"] == "phishkit_analyzer"
+
+
+@pytest.mark.integration
+class TestNodeStatusMonitorQueries:
+    """Exercises the real SQL behind the node status monitor.
+
+    The point of this monitor is that monitoring can no longer tell a planned outage from
+    a failure: a node that was drained and shut down and a node that crashed both end up
+    at status = stopped. These tests pin the distinction it exists to preserve."""
+
+    _add_node = TestDistributedMonitorQueries.__dict__["_add_node"]
+
+    @staticmethod
+    def _emitted_by_node(mock_emit):
+        return {c[0][1]["node"]: c[0][1] for c in mock_emit.call_args_list}
+
+    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor")
+    def test_drained_node_is_distinguishable_from_a_crashed_one(self, mock_emit):
+        """The regression this monitor exists for. Both nodes are stopped with a stale
+        heartbeat and are indistinguishable by status alone; only expected_state says
+        which one anybody meant to take down."""
+        with get_db_connection() as db:
+            self._add_node(db, "planned-node", status="stopped",
+                           expected_state="offline", heartbeat_age_seconds=3600)
+            self._add_node(db, "crashed-node", status="stopped",
+                           expected_state="online", heartbeat_age_seconds=3600)
+            db.commit()
+
+        NodeStatusMonitor(name="test", frequency=1.0).execute()
+
+        emitted = self._emitted_by_node(mock_emit)
+        assert emitted["planned-node"]["status"] == "stopped"
+        assert emitted["planned-node"]["expected_state"] == "offline"
+        assert emitted["crashed-node"]["status"] == "stopped"
+        assert emitted["crashed-node"]["expected_state"] == "online"
+
+    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor")
+    def test_reports_a_node_that_is_not_running(self, mock_emit):
+        """A node that is off cannot report on itself, which is exactly why this reads the
+        database from one node rather than having each node report for itself."""
+        with get_db_connection() as db:
+            self._add_node(db, "shut-down-node", status="stopped",
+                           expected_state="offline", heartbeat_age_seconds=7200)
+            db.commit()
+
+        NodeStatusMonitor(name="test", frequency=1.0).execute()
+
+        assert "shut-down-node" in self._emitted_by_node(mock_emit)
+
+    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor")
+    def test_heartbeat_age_comes_from_the_database_clock(self, mock_emit):
+        with get_db_connection() as db:
+            self._add_node(db, "stale-node", heartbeat_age_seconds=600)
+            self._add_node(db, "fresh-node", heartbeat_age_seconds=0)
+            db.commit()
+
+        NodeStatusMonitor(name="test", frequency=1.0).execute()
+
+        emitted = self._emitted_by_node(mock_emit)
+        # allow a little slack for the time between the insert and the query
+        assert 595 <= emitted["stale-node"]["heartbeat_age_seconds"] <= 660
+        assert emitted["fresh-node"]["heartbeat_age_seconds"] < 60
+
+    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor")
+    def test_each_node_reported_exactly_once_with_both_counts(self, mock_emit):
+        """workload and delayed_analysis are both one-to-many against nodes: joining them
+        in a single statement multiplies the rows and reports 2x2 instead of 2 and 2."""
+        with get_db_connection() as db:
+            node_id = self._add_node(db, "counted-node")
+            cursor = db.cursor()
+            cursor.execute("SELECT id FROM company LIMIT 1")
+            company_id = cursor.fetchone()[0]
+            for i in range(2):
+                cursor.execute(
+                    "INSERT INTO workload (uuid, node_id, company_id, analysis_mode, insert_date, storage_dir) "
+                    "VALUES (%s, %s, %s, %s, NOW(), %s)",
+                    (f"wl-uuid-{i}", node_id, company_id, "correlation", f"/opt/ace/data/wl-uuid-{i}"))
+            for i in range(2):
+                cursor.execute(
+                    "INSERT INTO delayed_analysis (uuid, observable_uuid, analysis_module, "
+                    "insert_date, delayed_until, node_id, storage_dir) "
+                    "VALUES (%s, %s, %s, NOW(), NOW(), %s, %s)",
+                    (f"ns-da-uuid-{i}", f"ns-obs-{i}", "phishkit_analyzer", node_id,
+                     f"/opt/ace/data/ns-da-uuid-{i}"))
+            db.commit()
+
+        NodeStatusMonitor(name="test", frequency=1.0).execute()
+
+        emitted = [c[0][1] for c in mock_emit.call_args_list if c[0][1]["node"] == "counted-node"]
+        assert len(emitted) == 1
+        assert emitted[0]["workload_count"] == 2
+        assert emitted[0]["delayed_analysis_count"] == 2
+
+    @patch("saq.monitoring.monitors.node_status_monitor.emit_monitor")
+    def test_carries_the_node_name_splunk_uses_as_host(self, mock_emit):
+        """The payload key is `node` and it holds nodes.name -- the same string fluent-bit
+        stamps as the Splunk host, which is what the saved searches join on."""
+        with get_db_connection() as db:
+            self._add_node(db, "email-scanner-1")
+            db.commit()
+
+        NodeStatusMonitor(name="test", frequency=1.0).execute()
+
+        emitted = self._emitted_by_node(mock_emit)["email-scanner-1"]
+        assert emitted["node"] == "email-scanner-1"
+        assert emitted["location"] == "email-scanner-1"

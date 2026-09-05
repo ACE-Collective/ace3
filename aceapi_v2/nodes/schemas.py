@@ -18,6 +18,10 @@ class NodeRead(BaseModel):
     location: str
     company_id: int
     status: str
+    # operator intent (online/offline), as opposed to the observed state in status.
+    # draining sets this to offline so a planned shutdown stays distinguishable from a
+    # crash once the node reaches status = stopped.
+    expected_state: str
     last_update: datetime
     is_primary: bool
     any_mode: bool
