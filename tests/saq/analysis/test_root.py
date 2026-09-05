@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import os
 import uuid
 import pytest
@@ -6,14 +7,17 @@ import pytest
 from saq.analysis.analysis import Analysis
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.root import RootAnalysis, Submission, load_root
+from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_TEST
+from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_MD5, F_SHA1, F_SHA256, F_TEST, R_IS_HASH_OF
 from saq.database.database_observable import get_observable_disposition_history
 from saq.database.model import Alert
 from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.environment import get_global_runtime_settings
 from saq.observables.file import FileObservable
 from saq.observables.generator import create_observable
+from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256
+from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, track_io
 
 class TestRootAnalysis:
@@ -343,3 +347,85 @@ def test_archive_root_analysis(tmpdir):
 
     # untracked dir should be gone
     assert not os.path.exists(untracked_dir)
+class HashObservableAnalysis(Analysis):
+    """Stands in for whatever module analyzed the hash observable before the check existed."""
+    pass
+
+@pytest.mark.parametrize('o_type,valid_value,empty_content_hash', [
+    (F_MD5, 'a3aa6e1cf9973fd30868021b2dd7b5cf', EMPTY_CONTENT_MD5),
+    (F_SHA1, '9d8f22a2d1a9d8a4f43b1c4b8a0ef5d0b3d1a3c5', EMPTY_CONTENT_SHA1),
+    (F_SHA256, '90645b5c3c279e2c40649c72915575ca98c1f73a53fe3bdbf9d0b991dfc03924', EMPTY_CONTENT_SHA256),
+])
+@pytest.mark.unit
+def test_load_root_with_hash_observable_rejected_after_the_fact(tmpdir, caplog, o_type, valid_value, empty_content_hash):
+    """An alert saved before the hash types started refusing the hash of empty content must
+    still load and save. The offending observable is dropped with a warning; everything else
+    in the tree survives and the tree stays internally consistent."""
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    target_file = tmpdir / "target.bin"
+    target_file.write_binary(b'hello')
+    file_observable = root.add_file_observable(target_file)
+
+    survivor = root.add_observable_by_spec(F_TEST, 'survivor')
+    survivor.add_tag('survivor_tag')
+
+    # what FileHashAnalyzer produces: the link and the relationship both live on the hash
+    hash_observable = root.add_observable_by_spec(o_type, valid_value)
+    hash_observable.add_tag('hash_tag')
+    hash_observable.add_directive('test_directive')
+    hash_observable.add_link(file_observable)
+    hash_observable.add_relationship(R_IS_HASH_OF, file_observable)
+
+    # analysis hanging off the hash observable, which generated an observable of its own
+    analysis = HashObservableAnalysis()
+    hash_observable.add_analysis(analysis)
+    generated = analysis.add_observable_by_spec(F_TEST, 'generated_by_hash_analysis')
+
+    root.save()
+
+    # rewrite data.json the way it looked before the empty content hash was refused
+    with open(root.json_path, 'r') as fp:
+        stored = json.load(fp)
+
+    stored[KEY_OBSERVABLE_STORE][hash_observable.uuid]['value'] = empty_content_hash
+
+    with open(root.json_path, 'w') as fp:
+        json.dump(stored, fp)
+
+    caplog.clear()
+    reloaded = load_root(get_storage_dir(root.uuid))
+
+    # the load does not fail
+    assert reloaded is not None
+    assert f"invalid observable type {o_type}" in caplog.text
+
+    # the observable that is no longer valid is gone, along with the analysis under it
+    assert reloaded.get_observable(hash_observable.uuid) is None
+    assert reloaded.find_observable(lambda o: o.type == o_type) is None
+    assert not [a for a in reloaded.all_analysis if isinstance(a, HashObservableAnalysis)]
+
+    # everything else survived, including the file the dropped hash pointed at
+    assert reloaded.get_observable(file_observable.uuid) is not None
+    assert reloaded.get_observable(survivor.uuid).has_tag('survivor_tag')
+
+    # the observable the dropped analysis generated stays in the registry as an orphan.
+    # this is how ACE has always handled an observable that fails to load, for every type
+    assert reloaded.get_observable(generated.uuid) is not None
+
+    # nothing is left pointing at the observable that went away
+    assert reloaded.analysis_tree_manager.validate_tree_integrity() == []
+
+    # and the save does not fail either
+    assert reloaded.save()
+
+    caplog.clear()
+    reloaded_again = load_root(get_storage_dir(root.uuid))
+
+    # the bad value is off disk now, so the second load is clean
+    assert reloaded_again is not None
+    assert "invalid observable type" not in caplog.text
+    assert sorted(o.uuid for o in reloaded_again.all_observables) == \
+           sorted(o.uuid for o in reloaded.all_observables)
