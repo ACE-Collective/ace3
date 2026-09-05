@@ -1491,6 +1491,14 @@ class Nodes(Base):
         nullable=False,
         server_default=text("'stopped'"))
 
+    # operator intent, as opposed to the observed state in status. a drain sets this to
+    # offline so monitoring can tell a planned shutdown from a crash: both end up with
+    # status = stopped, but only the planned one is expected to be down.
+    expected_state: Mapped[str] = mapped_column(
+        Enum('online', 'offline'),
+        nullable=False,
+        server_default=text("'online'"))
+
 class CollectorStatus(Base):
     """Status reported by a collector service running on a node. Used by the
     node drain feature to determine when a node's collectors have flushed

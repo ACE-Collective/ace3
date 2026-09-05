@@ -4,7 +4,7 @@ import socket
 from typing import Optional
 
 from saq.configuration.config import get_config, get_engine_config
-from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_STARTING
+from saq.constants import NODE_EXPECTED_STATE_ONLINE, NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_STARTING
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.engine.recovery import recover_expired_locks
@@ -18,6 +18,7 @@ from saq.database.util.node import (
     reconcile_stale_node_statuses,
     revert_drained_if_work_appeared,
     revert_draining_if_collector_pending,
+    set_node_expected_state,
     set_node_status,
     warn_if_blob_store_not_multi_node_safe,
 )
@@ -175,6 +176,14 @@ class DistributedNodeManager(NodeManagerInterface):
         # a node always starts up in the starting status, regardless of any previous status
         # in particular this means restarting a draining node cancels the drain
         self.set_status(NODE_STATUS_STARTING)
+
+        # starting the engine also clears any intent to keep this node offline, for the same
+        # reason: bringing the node back up is itself the statement that it should be running.
+        #
+        # this belongs here rather than in saq.database.util.node.initialize_node(), which
+        # every ACE process calls at startup (see initialize_environment) -- resetting intent
+        # there would let any `ace` command silently cancel an in-progress drain.
+        set_node_expected_state(get_global_runtime_settings().saq_node_id, NODE_EXPECTED_STATE_ONLINE)
 
         # warn if a multi-node cluster is running a node-local blob store
         warn_if_blob_store_not_multi_node_safe()

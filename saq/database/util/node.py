@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 from typing import Optional
-from saq.constants import ENV_ACE_IS_PRIMARY_NODE, VALID_NODE_STATUSES
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE, VALID_NODE_EXPECTED_STATES, VALID_NODE_STATUSES
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
@@ -199,6 +199,14 @@ def assign_node_analysis_modes(node_id: Optional[int]=None, analysis_modes: Opti
 # drained: nothing outstanding, safe to shut down
 # stopped: node is not running (set on graceful shutdown, or reconciled by the primary node)
 #
+# separately from status, each node carries an expected_state of online or offline. status
+# is what the node IS; expected_state is what an operator says it SHOULD be. draining a node
+# sets it to offline, resuming it or restarting the engine sets it back to online.
+#
+# the pair is what makes a planned shutdown distinguishable from a crash: both a drained
+# node that was then shut down and a node that died land on status = stopped, so monitoring
+# has to read expected_state to know whether anyone meant for it to be down.
+#
 
 def get_node_status(node_id: Optional[int]=None) -> Optional[str]:
     """Returns the status of the node referenced by ID, or None if the node does not exist.
@@ -256,6 +264,19 @@ def set_node_status(node_id: int, status: str):
 
     clear_node_status_cache()
     logging.info("node %s status set to %s", node_id, status)
+
+def set_node_expected_state(node_id: int, expected_state: str):
+    """Sets the operator intent for the node (online or offline). Independent of
+    status: draining sets this to offline so that monitoring can tell a planned
+    shutdown from a crash, since both end up with status = stopped."""
+    assert expected_state in VALID_NODE_EXPECTED_STATES
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        execute_with_retry(db, cursor, "UPDATE nodes SET expected_state = %s WHERE id = %s",
+                           (expected_state, node_id), commit=True)
+
+    logging.info("node %s expected state set to %s", node_id, expected_state)
 
 def transition_node_status(node_id: int, to_status: str, from_statuses: list[str]) -> bool:
     """Atomically transitions the status of the node from one of from_statuses to to_status.

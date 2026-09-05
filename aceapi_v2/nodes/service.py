@@ -4,7 +4,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.nodes.schemas import CollectorStatusRead, NodeRead
-from saq.constants import NODE_STATUS_DRAINED, NODE_STATUS_DRAINING, NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_RUNNING
+from saq.constants import (
+    NODE_EXPECTED_STATE_OFFLINE,
+    NODE_EXPECTED_STATE_ONLINE,
+    NODE_STATUS_DRAINED,
+    NODE_STATUS_DRAINING,
+    NODE_STATUS_DRAINING_COLLECTORS,
+    NODE_STATUS_RUNNING,
+)
 from saq.database.model import CollectorStatus, DelayedAnalysis, Nodes, Workload
 
 
@@ -24,6 +31,7 @@ async def _build_node_read(session: AsyncSession, node: Nodes) -> NodeRead:
         location=node.location,
         company_id=node.company_id,
         status=node.status,
+        expected_state=node.expected_state,
         last_update=node.last_update,
         is_primary=node.is_primary,
         any_mode=node.any_mode,
@@ -60,12 +68,24 @@ async def get_node_status(session: AsyncSession, node_id: int) -> str | None:
     return result.scalar_one_or_none()
 
 
-async def transition_node_status(session: AsyncSession, node_id: int, to_status: str, from_statuses: list[str]) -> bool:
-    """Atomically transitions the node status. Returns True if the transition occurred."""
+async def transition_node_status(
+        session: AsyncSession,
+        node_id: int,
+        to_status: str,
+        from_statuses: list[str],
+        expected_state: str | None = None) -> bool:
+    """Atomically transitions the node status. Returns True if the transition occurred.
+
+    When expected_state is given it is written in the same statement, so operator
+    intent can never disagree with the status transition that carried it."""
+    values = {"status": to_status}
+    if expected_state is not None:
+        values["expected_state"] = expected_state
+
     result = await session.execute(
         update(Nodes)
         .where(Nodes.id == node_id, Nodes.status.in_(from_statuses))
-        .values(status=to_status))
+        .values(**values))
     await session.flush()
     return result.rowcount == 1
 
@@ -73,12 +93,20 @@ async def transition_node_status(session: AsyncSession, node_id: int, to_status:
 async def drain_node(session: AsyncSession, node_id: int) -> bool:
     """Transitions the node from running to draining_collectors, the first phase
     of the drain. The node advances to draining on its own once every collector
-    has flushed its backlog."""
-    return await transition_node_status(session, node_id, NODE_STATUS_DRAINING_COLLECTORS, [NODE_STATUS_RUNNING])
+    has flushed its backlog.
+
+    Also records the intent to take the node offline. The drain is the only signal
+    anyone gives that a shutdown is planned, and it has to outlive the status: the
+    node ends up stopped either way, whether it was drained first or simply died."""
+    return await transition_node_status(
+        session, node_id, NODE_STATUS_DRAINING_COLLECTORS, [NODE_STATUS_RUNNING],
+        expected_state=NODE_EXPECTED_STATE_OFFLINE)
 
 
 async def resume_node(session: AsyncSession, node_id: int) -> bool:
-    """Transitions the node from any drain phase back to running."""
+    """Transitions the node from any drain phase back to running, and marks it as
+    expected to be online again."""
     return await transition_node_status(
         session, node_id, NODE_STATUS_RUNNING,
-        [NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED])
+        [NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED],
+        expected_state=NODE_EXPECTED_STATE_ONLINE)

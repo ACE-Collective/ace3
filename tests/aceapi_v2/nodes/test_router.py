@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.constants import (
+    NODE_EXPECTED_STATE_OFFLINE,
+    NODE_EXPECTED_STATE_ONLINE,
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
     NODE_STATUS_DRAINING_COLLECTORS,
@@ -19,7 +21,11 @@ from saq.database.model import CollectorStatus, Company, DelayedAnalysis, Nodes,
 pytestmark = pytest.mark.integration
 
 
-async def create_node(session: AsyncSession, name: str = "test_api_node", status: str = NODE_STATUS_RUNNING) -> Nodes:
+async def create_node(
+        session: AsyncSession,
+        name: str = "test_api_node",
+        status: str = NODE_STATUS_RUNNING,
+        expected_state: str = NODE_EXPECTED_STATE_ONLINE) -> Nodes:
     company = (await session.execute(select(Company))).scalars().first()
     node = Nodes(
         name=name,
@@ -27,6 +33,7 @@ async def create_node(session: AsyncSession, name: str = "test_api_node", status
         company_id=company.id,
         last_update=datetime.now(),
         status=status,
+        expected_state=expected_state,
     )
     session.add(node)
     await session.commit()
@@ -109,6 +116,9 @@ class TestNodesRouter:
         response = await client.post(f"/nodes/{node.id}/drain")
         assert response.status_code == 200
         assert response.json()["status"] == NODE_STATUS_DRAINING_COLLECTORS
+        # the drain is the only signal that a shutdown is planned, and it has to outlive
+        # the status: the node reaches stopped either way, drained first or crashed
+        assert response.json()["expected_state"] == NODE_EXPECTED_STATE_OFFLINE
 
     @pytest.mark.asyncio
     async def test_drain_invalid_status(self, session: AsyncSession, client: AsyncClient):
@@ -177,3 +187,27 @@ class TestNodesRouter:
         response = await client.post(f"/nodes/{node.id}/resume")
         assert response.status_code == 200
         assert response.json()["status"] == NODE_STATUS_RUNNING
+
+    @pytest.mark.asyncio
+    async def test_resume_marks_the_node_expected_online(self, session: AsyncSession, client: AsyncClient):
+        node = await create_node(session, status=NODE_STATUS_DRAINED,
+                                 expected_state=NODE_EXPECTED_STATE_OFFLINE)
+
+        response = await client.post(f"/nodes/{node.id}/resume")
+        assert response.status_code == 200
+        assert response.json()["status"] == NODE_STATUS_RUNNING
+        assert response.json()["expected_state"] == NODE_EXPECTED_STATE_ONLINE
+
+    @pytest.mark.asyncio
+    async def test_intent_is_not_written_when_the_transition_is_rejected(
+            self, session: AsyncSession, client: AsyncClient):
+        """A drain that loses the race must not leave the node marked offline -- that would
+        silence monitoring for a node nobody actually drained."""
+        node = await create_node(session, name="test_api_node_rejected_drain",
+                                 status=NODE_STATUS_STOPPED)
+
+        response = await client.post(f"/nodes/{node.id}/drain")
+        assert response.status_code == 409
+
+        await session.refresh(node)
+        assert node.expected_state == NODE_EXPECTED_STATE_ONLINE
