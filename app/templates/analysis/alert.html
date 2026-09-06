@@ -220,7 +220,9 @@
     <div class="col">
         <div class="card mb-3">
             <div class="card-header">
-                <h5>Remediation Timeline <small class="text-muted">({{ remediation_timeline_events | length }} event{{ '' if remediation_timeline_events|length == 1 else 's' }})</small> <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_timeline" aria-expanded="true" aria-controls="collapse_remediation_timeline">(hide/show)</a></h5>
+                {# the badge is the same email remediation coverage the alert list's Remediation
+                   column shows (saq.remediation.coverage), so the two views always agree #}
+                <h5>Remediation Timeline <small class="text-muted">({{ remediation_timeline_events | length }} event{{ '' if remediation_timeline_events|length == 1 else 's' }})</small> {% include "analysis/_remediation_badge.html" %} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_timeline" aria-expanded="true" aria-controls="collapse_remediation_timeline">(hide/show)</a></h5>
             </div>
             <div class="card-body">
                 <div class="card-text collapse show" id="collapse_remediation_timeline">
@@ -583,51 +585,6 @@
         </ul>
     {% endif %}
 {% endmacro %}
-
-{% if alert.remediation_targets | length > 0 %}
-
-{# Count Remediation Statuses #}
-{% set remediation_status = {'success': 0, 'failed': 0, 'in_progress': 0} %}
-{% for target in alert.remediation_targets %}
-    {% if target.css_class == 'success' %}
-        {{ increment(remediation_status, 'success') }}
-    {% elif target.css_class == 'warning'%}
-        {{ increment(remediation_status, 'in_progress') }}
-    {% elif target.css_class == 'danger'%}
-        {# We don't need to remediate external emails, so we can mark those failures as successes #}
-        {# Do that here by grabbing most recent remediation event and checking the message #}
-        {% if target.history[0].results.values() %}
-            {%  set results =  target.history[0].results.values() | first %}
-            {% if results['message'] == 'external domain' %}
-                {{ increment(remediation_status, 'success') }}
-            {% else %}
-                {{ increment(remediation_status, 'failed') }}
-            {% endif %}
-        {% else %}
-            {{ increment(remediation_status, 'failed') }}
-        {% endif %}
-    {% endif %}
-{% endfor %}
-
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-heading">
-                <h3>Remediation Targets: {{ remediation_status['success'] }} Successful | {{ remediation_status['failed'] }} Failed | {{ remediation_status['in_progress'] }} In Progress <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_targets" aria-expanded="false" aria-controls="collapse_remediation_targets">(hide/show)</a></h3>
-            </div>
-            <div class="card-body collapse" id="collapse_remediation_targets">
-                <div class="card-text">
-                    {% for target_type in target_types %}
-                    {% with first=loop.first, base='remediation/base_results.html', targets=target_types[target_type], prefix='' %}
-                    {% include ['remediation/{}.html'.format(target_type), 'remediation/default.html'] %}
-                    {% endwith %}
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
 
 {% if domain_summary_str %}
 <div class="row">

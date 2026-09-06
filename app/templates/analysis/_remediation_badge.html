@@ -1,0 +1,7 @@
+{# Alert-level remediation coverage badge. Expects `alert` and the `remediation_coverage`
+   dict built by saq.remediation.coverage.get_remediation_coverage(); renders nothing for an
+   alert with no email targets or no remediation activity. #}
+{% set coverage = (remediation_coverage or {}).get(alert.uuid) %}
+{% if coverage and coverage.visible %}
+<span class="badge {{ coverage.css_class }}" title="{{ coverage.tooltip }}">{{ coverage.label }}</span>
+{% endif %}
