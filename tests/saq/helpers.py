@@ -11,6 +11,7 @@ import uuid
 
 from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
+from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
 from saq.database.model import load_alert
@@ -31,6 +32,35 @@ EV_ROOT_ANALYSIS_DESCRIPTION = 'This is only a test.'
 EV_ROOT_ANALYSIS_EVENT_TIME = EV_TEST_DATE
 EV_ROOT_ANALYSIS_NAME = 'test'
 EV_ROOT_ANALYSIS_UUID = '14ca0ff2-ff7e-4fa1-a375-160dc072ab02'
+
+IntegrationConfigurationSnapshot = tuple[dict, dict, bool]
+
+def snapshot_integration_configurations() -> IntegrationConfigurationSnapshot:
+    """Snapshots the process-global integration configuration registries.
+
+    INTEGRATION_CONFIGURATIONS holds *mutable pydantic instances* handed out by
+    get_config(<name>), so a test that writes a field on one of them (rather than replacing the
+    entry) changes what every later test in the process sees. A dict() copy restores membership
+    but not that field, so the values are deep copied here.
+    """
+    return (
+        dict(config_module.REGISTERED_INTEGRATION_CONFIGURATIONS),
+        {name: value.model_copy(deep=True)
+         for name, value in config_module.INTEGRATION_CONFIGURATIONS.items()},
+        config_module.CONFIG_RESOLVED,
+    )
+
+def restore_integration_configurations(snapshot: IntegrationConfigurationSnapshot):
+    """Restores the registries captured by snapshot_integration_configurations()."""
+    registered, resolved, resolved_flag = snapshot
+
+    config_module.CONFIG_RESOLVED = resolved_flag
+
+    # mutate in place: other modules hold references to these dict objects
+    config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.clear()
+    config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.update(registered)
+    config_module.INTEGRATION_CONFIGURATIONS.clear()
+    config_module.INTEGRATION_CONFIGURATIONS.update(resolved)
 
 class MockObservable:
     def __init__(self, type: str, observable_value: str, faqueue_hits: Union[int, None]):
