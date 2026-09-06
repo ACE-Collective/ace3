@@ -1,11 +1,12 @@
 """Tests for the aceapi_v2 saved filters router."""
 
 import json
+from datetime import datetime
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
@@ -41,6 +42,28 @@ async def _create(client: AsyncClient, name: str, **kwargs) -> dict:
     response = await client.post(f"{BASE}/", json=body)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+# updated_at is a MySQL TIMESTAMP with no fractional seconds, so a write that lands in the same
+# whole second as the create bumps it to the same value. Backdating first is what makes the
+# "did the response report the bump?" assertions below deterministic instead of ~1-in-5 flaky.
+STALE_UPDATED_AT = datetime(2020, 1, 1, 0, 0, 0)
+
+
+async def _backdate_updated_at(session: AsyncSession, filter_uuid: str) -> None:
+    """Force a known-old updated_at. An explicit value in the UPDATE overrides ON UPDATE
+    CURRENT_TIMESTAMP, and the test session shares the API's connection so the write is
+    visible to the request that follows."""
+    await session.execute(
+        update(SavedFilter).where(SavedFilter.uuid == filter_uuid).values(
+            updated_at=STALE_UPDATED_AT))
+    await session.commit()
+
+
+async def _stored_updated_at(session: AsyncSession, filter_uuid: str) -> datetime:
+    """The row's real updated_at, read as a bare column so no identity map can answer it."""
+    return (await session.execute(
+        select(SavedFilter.updated_at).where(SavedFilter.uuid == filter_uuid))).scalar_one()
 
 
 class TestAuth:
@@ -86,6 +109,21 @@ class TestCrud:
         assert response.status_code == 200
         assert response.json()["name"] == "After"
         assert response.json()["filters"][0]["inverted"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_returns_the_bumped_updated_at(
+        self, client: AsyncClient, session: AsyncSession
+    ):
+        """The response must report the row's real updated_at, not the value the request
+        session happened to load before its own UPDATE bumped it server-side."""
+        created = await _create(client, "Before")
+        await _backdate_updated_at(session, created["uuid"])
+
+        response = await client.patch(f"{BASE}/{created['uuid']}", json={"name": "After"})
+
+        returned = datetime.fromisoformat(response.json()["updated_at"])
+        assert returned != STALE_UPDATED_AT
+        assert returned == await _stored_updated_at(session, created["uuid"])
 
     @pytest.mark.asyncio
     async def test_delete(self, client: AsyncClient):
@@ -212,6 +250,22 @@ class TestQuickFilters:
         assert first.json() == second.json()
 
     @pytest.mark.asyncio
+    async def test_returns_the_bumped_updated_at(
+        self, client: AsyncClient, session: AsyncSession
+    ):
+        """The deterministic half of test_is_idempotent: pinning a filter bumps updated_at
+        server-side, so the response has to carry the new value. Serving the pre-UPDATE one
+        is what made two identical PUTs return different bodies."""
+        a = await _create(client, "A")
+        await _backdate_updated_at(session, a["uuid"])
+
+        response = await client.put(f"{BASE}/quick-filters", json={"filter_uuids": [a["uuid"]]})
+
+        returned = datetime.fromisoformat(response.json()["data"][0]["updated_at"])
+        assert returned != STALE_UPDATED_AT
+        assert returned == await _stored_updated_at(session, a["uuid"])
+
+    @pytest.mark.asyncio
     async def test_empty_list_unpins_everything(self, client: AsyncClient):
         a = await _create(client, "A", quick_filter=True)
         assert a["quick_filter_order"] == 0
@@ -272,6 +326,22 @@ class TestScratchRows:
         response = await client.put(f"{BASE}/scratch/temp", json={
             "filters": QUEUE_FILTER, "label": "Tag: needs_research"})
         assert response.json()["description"] == "Tag: needs_research"
+
+    @pytest.mark.asyncio
+    async def test_overwrite_returns_the_bumped_updated_at(
+        self, client: AsyncClient, session: AsyncSession
+    ):
+        """The overwrite branch reads the row, UPDATEs it and projects it without an
+        intervening SELECT, so it is the third place a stale updated_at can escape."""
+        first = await client.put(f"{BASE}/scratch/working", json={"filters": QUEUE_FILTER})
+        await _backdate_updated_at(session, first.json()["uuid"])
+
+        second = await client.put(f"{BASE}/scratch/working", json={
+            "filters": [{"name": "Tag", "inverted": False, "values": ["x"]}]})
+
+        returned = datetime.fromisoformat(second.json()["updated_at"])
+        assert returned != STALE_UPDATED_AT
+        assert returned == await _stored_updated_at(session, first.json()["uuid"])
 
     @pytest.mark.asyncio
     async def test_scratch_rows_are_excluded_from_the_list(self, client: AsyncClient):

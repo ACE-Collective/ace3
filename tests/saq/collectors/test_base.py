@@ -4,6 +4,7 @@
 
 from datetime import datetime
 import os
+import shutil
 import threading
 from typing import Generator, override
 from uuid import uuid4
@@ -1824,9 +1825,15 @@ def test_failing_submission_is_quarantined_not_retried_forever():
     collector_service.execute_collection_loop()
 
     # the poison submission is out of staging and available for review
+    quarantine_dir = os.path.join(file_manager.error_dir, poison_uuid)
     assert poison_uuid not in file_manager.list_staged_submissions()
-    assert os.path.isdir(os.path.join(file_manager.error_dir, poison_uuid))
+    assert os.path.isdir(quarantine_dir)
 
     # and the submission queued behind it was still handed to process_submission rather than
     # being abandoned along with the rest of the batch
     assert good_uuid in processed
+
+    # error_dir here is the shared collection error dir, and nothing cleans it (a human reviews
+    # quarantined submissions). unit tests get no data dir reset, so leaving this behind breaks
+    # the next unit test that reads the directory.
+    shutil.rmtree(quarantine_dir, ignore_errors=True)

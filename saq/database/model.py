@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    FetchedValue,
     ForeignKey,
     Index,
     Integer,
@@ -1680,10 +1681,13 @@ class ObservableDetection(Base):
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
+    # server_onupdate carries no DDL -- it tells the ORM the value it holds goes stale on every
+    # UPDATE, so the column is expired and re-read instead of projected from the pre-UPDATE load.
     modified_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+        server_onupdate=FetchedValue())
 
     created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
     modified_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[modified_by])
@@ -2606,10 +2610,13 @@ class SavedFilter(Base):
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'))
 
+    # see ObservableDetection.modified_at: server_onupdate is what keeps a write's response from
+    # reporting the updated_at the row had *before* that same write bumped it.
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP,
         nullable=False,
-        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+        server_onupdate=FetchedValue())
 
     user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
 

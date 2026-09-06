@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.106] - 2026-09-06
+
+- [Report node status so monitoring can tell a planned outage from a failure](https://github.com/ACE-Collective/ace3/pull/532)
+- [Refuse null hash observables](https://github.com/ACE-Collective/ace3/pull/530)
+
 ## [3.0.105] - 2026-09-04
 
 - [Report the whole cluster from the distributed monitors](https://github.com/ACE-Collective/ace3/pull/528)

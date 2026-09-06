@@ -1,5 +1,6 @@
 import os
 import os.path
+import shutil
 from typing import Generator, override
 
 import pytest
@@ -32,14 +33,22 @@ class TestCollector(Collector):
 @pytest.mark.unit
 def test_save_submission_for_review(monkeypatch, tmpdir, root_analysis):
     submission = Submission(root_analysis)
-    assert len(os.listdir(get_collection_error_dir())) == 0
-    save_submission_for_review(submission)
     storage_dir = os.path.join(get_collection_error_dir(), submission.root.uuid)
+
+    # the error dir is shared by every test and is only wiped for integration/system tests
+    # (tests/conftest.py::needs_full_reset), so assert on this submission's own directory
+    # rather than on the whole directory being empty
+    assert not os.path.exists(storage_dir)
+    save_submission_for_review(submission)
     assert os.path.exists(storage_dir)
     root = RootAnalysis(storage_dir=storage_dir)
     root.load()
 
     assert root.uuid == submission.root.uuid
+
+    # nothing cleans the error dir (a human reviews what lands there), so take this back out
+    # instead of leaking it into whatever unit test reads the directory next
+    shutil.rmtree(storage_dir, ignore_errors=True)
 
 @pytest.mark.unit
 def test_schedule_submission_interface_error_no_recovery(root_analysis, monkeypatch):
