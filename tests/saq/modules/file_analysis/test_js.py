@@ -1106,3 +1106,116 @@ def test_html_extraction_to_deobfuscation_chain(tmpdir, monkeypatch, patched_deo
     with open(emitted[0].full_path, "r", encoding="utf-8") as fp:
         body = fp.read()
     assert "https://example.com/dG9rZW4=" in body
+
+
+# ---------------------------------------------------------------------------
+# document.write side-channel and the <html>-attribute redirect it reveals.
+#
+# The sample writes an entire second document whose own inline <script> does
+# `location.replace(atob(html.getAttribute(a)) + html.getAttribute(b))`. The
+# first pass must materialize the written document as a .html blob so
+# html_js_extraction recurses; the second pass (the nested script plus the
+# snapshot of the written document) must resolve document.documentElement and
+# the mixed-case attribute names the HTML parser has lowercased.
+# ---------------------------------------------------------------------------
+
+DOC_WRITE_B64_URL = "aHR0cHM6Ly9waGlzaC5leGFtcGxlLmNvbS9vLz9jM1k5ZEdWemRBPT1OMDEyM04="
+
+
+@pytest.mark.unit
+def test_document_write_materializes_written_document(datadir, monkeypatch, patched_deobfuscate):
+    """document.write of a whole document must come back out as a .html blob
+    observable carrying the nested <script> and the <html> attributes it reads,
+    not just as a string literal inside the trace."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "document_write_nested_script.js")
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    result = analyzer.execute_analysis(observable)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+    assert analysis.error is None
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 2
+    blob_obs = next(o for o in file_observables if o.file_name.endswith(".blob_0.html"))
+    with open(blob_obs.full_path, "r", encoding="utf-8") as fp:
+        blob_body = fp.read()
+    assert blob_body.startswith("<!doctype html><html lang='en' xsZxtFeeOM='#victim%40example.com'")
+    assert f"QzVrcCRMjx='{DOC_WRITE_B64_URL}'" in blob_body
+    assert "<script>const UecfeQBGtd = document.documentElement;" in blob_body
+    assert blob_obs.has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert blob_obs.has_relationship(R_EXTRACTED_FROM)
+
+
+@pytest.mark.unit
+def test_document_write_fragments_join_into_one_blob(tmpdir, monkeypatch, patched_deobfuscate):
+    """A browser builds one document out of every write; the fragments must be
+    joined into a single blob (in order, writeln included) rather than emitted
+    one file each, or the <script> tag split across two writes never parses."""
+    sample_path = tmpdir / "doc_write_fragments.js"
+    sample_path.write(
+        'document.write("<html><body>");\n'
+        'document.writeln("<scr" + "ipt>top.location = \\"https://evil.example.org/x\\";</scr" + "ipt>");\n'
+        'window.document.write("</body></html>");\n'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.exit_code == 0
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    blobs = [o for o in file_observables if ".blob_" in o.file_name]
+    assert len(blobs) == 1
+    assert blobs[0].file_name.endswith(".blob_0.html")
+    with open(blobs[0].full_path, "r", encoding="utf-8") as fp:
+        assert fp.read() == (
+            '<html><body><script>top.location = "https://evil.example.org/x";</script></body></html>'
+        )
+
+
+@pytest.mark.unit
+def test_documentelement_attribute_redirect_recovers_url(datadir, monkeypatch, patched_deobfuscate):
+    """The nested script from the written document, run against that document's
+    snapshot: document.documentElement must resolve to the <html> wrapper, and
+    getAttribute must hit the parser-lowercased attribute names, so the trace
+    carries the fully assembled redirect URL."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(datadir / "documentelement_attr_redirect.js")
+    observable.add_directive(YARA_META_JS)
+    # attribute names lowercased exactly as html_js_extraction's bs4/lxml parse
+    # stores them, while the script asks for the mixed-case originals
+    _write_sidecar(observable, {
+        "version": 1, "truncated": False,
+        "elements": [
+            {"tag": "html", "attrs": {"lang": "en", "xszxtfeeom": "#victim%40example.com", "qzvrccrmjx": DOC_WRITE_B64_URL}},
+            {"tag": "head", "attrs": {}},
+            {"tag": "body", "attrs": {"style": "display:none"}},
+        ],
+    })
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis is not None
+    assert analysis.error_type is None
+    assert analysis.dom_snapshot is True
+
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert 'location.replace("https://phish.example.com/o/?c3Y9dGVzdA==N0123N#victim%40example.com");' in body
+    assert "[document.documentElement" not in body
