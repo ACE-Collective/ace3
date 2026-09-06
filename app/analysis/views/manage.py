@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 import pytz
 from flask import flash, jsonify, make_response, redirect, render_template, request, session, url_for
@@ -41,9 +42,7 @@ from saq.database.model import (
     Campaign,
     Comment,
     Event,
-    Observable,
     ObservableMapping,
-    ObservableRemediationMapping,
     Owner,
     Tag,
     TagMapping,
@@ -52,6 +51,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
+from saq.remediation.coverage import get_remediation_coverage
 
 
 def _is_single_disposition_filter(filters: list) -> bool:
@@ -106,10 +106,6 @@ def build_manage_list_context() -> dict:
     query = query.options(selectinload(GUIAlert.observable_mappings))
     #query = query.options(selectinload('observable_mappings.observable'))
     query = query.options(selectinload(GUIAlert.observable_mappings).selectinload(ObservableMapping.observable))
-    #query = query.options(selectinload('observable_mappings.observable.observable_remediation_mappings'))
-    query = query.options(selectinload(GUIAlert.observable_mappings).selectinload(ObservableMapping.observable).selectinload(Observable.observable_remediation_mappings))
-    #query = query.options(selectinload('observable_mappings.observable.observable_remediation_mappings.remediation'))
-    query = query.options(selectinload(GUIAlert.observable_mappings).selectinload(ObservableMapping.observable).selectinload(Observable.observable_remediation_mappings).selectinload(ObservableRemediationMapping.remediation))
     #query = query.options(selectinload('event_mapping'))
     query = query.options(selectinload(GUIAlert.event_mapping))
     #query = query.options(selectinload('tag_mapping'))
@@ -158,6 +154,7 @@ def build_manage_list_context() -> dict:
         'Description': GUIAlert.description,
         'Disposition': GUIAlert.disposition,
         'Owner': Owner.display_name,
+        'Queue': GUIAlert.queue,
     }
     if session['sort_filter_desc']:
         query = query.order_by(sort_filters[session['sort_filter']].desc(), GUIAlert.id.desc())
@@ -205,10 +202,17 @@ def build_manage_list_context() -> dict:
                 alert_tags[alert_uuid] = []
             alert_tags[alert_uuid].append(tag)
 
+    # per-alert email remediation coverage for the badge next to the description
+    remediation_coverage = get_remediation_coverage(alerts)
+
     # alert display timezone
+    display_timezone = pytz.utc
     if current_user.timezone and pytz.timezone(current_user.timezone) != pytz.utc:
+        display_timezone = pytz.timezone(current_user.timezone)
         for alert in alerts:
-            alert.display_timezone = pytz.timezone(current_user.timezone)
+            alert.display_timezone = display_timezone
+    # the Date column header names the timezone so the cells can drop the offset suffix
+    display_timezone_label = datetime.now(display_timezone).strftime('%Z')
 
     # if we did a vector search then we need to order by the scores
     if search_result_uuids:
@@ -236,6 +240,8 @@ def build_manage_list_context() -> dict:
         # alert data
         'alerts': alerts,
         'comments': comments,
+        'remediation_coverage': remediation_coverage,
+        'display_timezone_label': display_timezone_label,
         'alert_tags': alert_tags,
         # hide the disposition column when the analyst has narrowed to a single disposition
         # (it would be the same value on every row). The old form indexed the filter LIST

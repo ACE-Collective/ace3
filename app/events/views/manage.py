@@ -10,6 +10,7 @@ from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import Alert, Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
+from saq.remediation.coverage import get_remediation_coverage
 from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
 
@@ -291,10 +292,13 @@ def manage_event_details():
                 comments[comment.uuid] = []
             comments[comment.uuid].append(comment)
 
+    remediation_coverage = get_remediation_coverage(alerts)
+
     return render_template(
         'events/manage_event_summary.html',
         alert_tags = alert_tags,
         alerts = alerts,
         event = event,
         comments = comments,
+        remediation_coverage = remediation_coverage,
     )

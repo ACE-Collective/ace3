@@ -7,7 +7,7 @@ from typing import Optional
 from saq import RootAnalysis
 from saq.analysis.presenter import register_analysis_presenter, AnalysisPresenter
 from saq.configuration.config import get_config
-from saq.constants import EVENT_TIME_FORMAT_TZ
+from saq.constants import EVENT_TIME_FORMAT, EVENT_TIME_FORMAT_TZ
 from saq.database.model import Alert
 from saq.environment import get_base_dir
 from saq.gui.icon import BlueprintFileLocation, IconConfiguration, KEY_ICON_CONFIGURATION
@@ -111,6 +111,12 @@ class GUIAlert(Alert):
     def display_insert_date(self):
         """Returns the insert date in the timezone specified by display_timezone."""
         return self.insert_date.astimezone(self.display_timezone).strftime(EVENT_TIME_FORMAT_TZ)
+
+    @property
+    def display_insert_date_no_tz(self):
+        """The insert date in display_timezone without the UTC offset suffix, for
+        tables whose column header already names the timezone."""
+        return self.insert_date.astimezone(self.display_timezone).strftime(EVENT_TIME_FORMAT)
 
     @property
     def display_disposition_time(self):
