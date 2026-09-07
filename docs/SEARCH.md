@@ -137,9 +137,13 @@ session; `GET /ace/search/similar/<uuid>` stores `{"mode": "similar", ...}` (the
 button on the alert page). `build_manage_list_context()` maps the effective filters to
 `SearchFilters` (`app/analysis/views/session/search_filters.py`: Alert Date, Alert Type,
 Disposition, Queue, non-wildcard Tag; the rest stay SQL-only), runs the search with the page
-size/offset, loads the page's `GUIAlert` rows and orders them by rank. The table shows a tier
-badge per alert and up to five hits (kind badge, title, snippet). Auto-refresh is off during a
-search; Clear resets it.
+size/offset, loads the page's `GUIAlert` rows and orders them by rank. Under each alert row the
+table shows the tier as plain colored text (bold green for `exact`, green for `strong`, black for
+`good`, light grey for `weak`) followed by up to five hits, each a line with a kind-colored left
+rule, a muted kind label, the title and the snippet. None of this is a badge on purpose: the alert
+row directly above uses badges for tags and disposition, and a badge here read as a tag (the
+styling lives under `.search-tier*` / `.search-hit*` in `app/static/css/saq.css`). Auto-refresh is
+off during a search; Clear resets it.
 
 **API v2** (`aceapi_v2/search/`, `alert:read`):
 

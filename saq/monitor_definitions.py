@@ -53,3 +53,9 @@ MONITOR_DISTRIBUTED_LOCKS = Monitor(
     data_type=dict,
     description="Single lock entry from the distributed workload."
 )
+
+MONITOR_NODE_STATUS = Monitor(
+    path="node.status",
+    data_type=dict,
+    description="Status and operator intent for a single node in the cluster."
+)

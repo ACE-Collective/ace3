@@ -183,6 +183,9 @@ async def update_saved_filter(
         await session.rollback()
         raise SavedFilterNameConflict(f"a saved filter named {data.name!r} already exists") from e
 
+    # the UPDATE bumped updated_at server-side; without this the response reports the value the
+    # row carried before this very call (SavedFilter.updated_at is server_onupdate).
+    await session.refresh(row, attribute_names=["updated_at"])
     return _to_read(row)
 
 
@@ -235,6 +238,9 @@ async def set_quick_filters(
             row.quick_filter_order = None
 
     await session.flush()
+    # this re-SELECT is not just for ordering: it also re-reads the updated_at that the flush
+    # above expired on every row it touched. Sorting `rows` in Python instead would serve the
+    # pre-UPDATE timestamps and make two identical calls return different bodies.
     return await get_saved_filters_for_user(session, user_id)
 
 
@@ -281,6 +287,7 @@ async def upsert_scratch_filter(
         row.filters_json = _dump(data.filters)
         row.description = data.label
         await session.flush()
+        await session.refresh(row, attribute_names=["updated_at"])
 
     return _to_read(row)
 

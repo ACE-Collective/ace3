@@ -33,7 +33,14 @@ from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
 from saq.remediation.target import reset_observable_remediation_interface_registry
 from saq.util.uuid import storage_dir_from_uuid
-from tests.saq.helpers import reset_unittest_logging, start_api_server, stop_api_server, initialize_unittest_logging
+from tests.saq.helpers import (
+    initialize_unittest_logging,
+    reset_unittest_logging,
+    restore_integration_configurations,
+    snapshot_integration_configurations,
+    start_api_server,
+    stop_api_server,
+)
 from tests.saq.test_util import create_test_context
 
 pytest.register_assert_rewrite("tests.saq.requests")
@@ -133,6 +140,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM delayed_analysis")
         cursor.execute("DELETE FROM users")
         cursor.execute("DELETE FROM malware")
+        cursor.execute("DELETE FROM threat_type")
         cursor.execute("DELETE FROM `config`")
         cursor.execute("DELETE FROM incoming_workload")
         cursor.execute("DELETE FROM incoming_workload_type")
@@ -301,6 +309,12 @@ def global_function_setup(request):
     # make a deep copy of the current configuration
     config_copy = copy.deepcopy(get_config())
 
+    # the integration configurations are a *separate* set of process globals living in
+    # saq.configuration.config -- set_config() below does not touch them, so a test that writes a
+    # field on the object get_config(<name>) hands back would otherwise change what every later
+    # test in the process sees
+    integration_configuration_copy = snapshot_integration_configurations()
+
     # make a deep copy of the global runtime settings
     global_runtime_settings_copy = copy.deepcopy(get_global_runtime_settings())
 
@@ -347,6 +361,9 @@ def global_function_setup(request):
 
     # restore the original configuration
     set_config(config_copy)
+
+    # restore the original integration configurations
+    restore_integration_configurations(integration_configuration_copy)
 
     # restore the original global runtime settings
     set_global_runtime_settings(global_runtime_settings_copy)

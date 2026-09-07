@@ -16,28 +16,15 @@ from saq.configuration.config import (
     register_integration_configuration,
     resolve_configuration,
 )
+from tests.saq.helpers import (
+    restore_integration_configurations,
+    snapshot_integration_configurations,
+)
 
 
 class FakeIntegrationConfig(BaseModel):
     """Validated against the whole raw config dict, the way real integration configs are."""
     global_settings: dict = {}
-
-
-@pytest.fixture(autouse=True, scope="function")
-def restore_integration_registries():
-    """The two registries are process globals shared with every other test."""
-    saved_registered = dict(config_module.REGISTERED_INTEGRATION_CONFIGURATIONS)
-    saved_resolved = dict(config_module.INTEGRATION_CONFIGURATIONS)
-    saved_resolved_flag = config_module.CONFIG_RESOLVED
-
-    yield
-
-    config_module.CONFIG_RESOLVED = saved_resolved_flag
-
-    config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.clear()
-    config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.update(saved_registered)
-    config_module.INTEGRATION_CONFIGURATIONS.clear()
-    config_module.INTEGRATION_CONFIGURATIONS.update(saved_resolved)
 
 
 @pytest.mark.unit
@@ -98,3 +85,24 @@ def test_resolved_integration_config_is_cached():
     register_integration_configuration("fake_cached_integration", FakeIntegrationConfig)
 
     assert get_config("fake_cached_integration") is get_config("fake_cached_integration")
+
+
+@pytest.mark.unit
+def test_integration_config_object_mutation_is_rolled_back():
+    """A field written on a cached integration config must not outlive the test that wrote it.
+
+    get_config(<name>) hands back a shared mutable pydantic object, and tests do write to it --
+    ace_crowdstrike/tests/test_lib.py set crowdstrike.proxy that way. tests/conftest.py restores
+    the ACEConfig with set_config(), which rolls back an add_proxy_config() but not a field set on
+    an integration config object. That asymmetry left every later falcon module construction
+    asking for a proxy that no longer existed, and only under the pytest-randomly orders that put
+    the crowdstrike file first.
+    """
+    register_integration_configuration("fake_mutated_integration", FakeIntegrationConfig)
+    snapshot = snapshot_integration_configurations()
+
+    get_config("fake_mutated_integration").global_settings["leaked"] = True
+
+    restore_integration_configurations(snapshot)
+
+    assert "leaked" not in get_config("fake_mutated_integration").global_settings
