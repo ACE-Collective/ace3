@@ -1,7 +1,7 @@
 """add NOT_FOUND remediation result
 
 Revision ID: 4ceec152b520
-Revises: decc3390927c
+Revises: f97dcbc93819
 Create Date: 2026-09-06 18:12:57.409121
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision: str = '4ceec152b520'
-down_revision: Union[str, None] = 'decc3390927c'
+down_revision: Union[str, None] = 'f97dcbc93819'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
