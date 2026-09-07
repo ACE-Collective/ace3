@@ -3,12 +3,13 @@ import logging
 import pytz
 from flask import flash, jsonify, make_response, redirect, render_template, request, session, url_for
 from flask_login import current_user
-from qdrant_client.models import ScoredPoint
 from sqlalchemy import distinct, func
 from sqlalchemy.orm import selectinload
 
 from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
+from app.analysis.views.search import SEARCH_MODE_SIMILAR, get_search_spec
+from app.analysis.views.session.search_filters import effective_filters_to_search_filters
 from app.analysis.views.session.filters import (
     _reset_filters,
     apply_temporary_filter,
@@ -52,6 +53,8 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
+from saq.search.query import search_alerts, similar_alerts
+from saq.search.types import AlertSearchResult, SearchRequest
 
 
 def _is_single_disposition_filter(filters: list) -> bool:
@@ -120,60 +123,83 @@ def build_manage_list_context() -> dict:
 
     saved_filters = get_saved_filter_list()
 
-    # if we have a search query then apply it
-    search_query = session.get("search", None)
-    search_result_uuids = []
-    search_result_mapping: dict[str, list[ScoredPoint]] = {}
+    # an active search decides which alerts are listed and in what order; the analyst's
+    # filters still apply (pushed into the search as pre-filters and re-applied in SQL)
+    search_spec = get_search_spec()
+    search_query = None
+    search_mode = None
+    search_result_mapping: dict[str, AlertSearchResult] = {}
 
-    if search_query:
-        from saq.llm.embedding.search import search
-        logging.info(f"search query: {search_query}")
-        search_results = search(search_query)
-        logging.info(f"got {len(search_results)} search results")
-        for result in search_results:
-            alert_uuid = result.payload.get("root_uuid", None)
-            logging.info(f"search result alert uuid: {alert_uuid}")
-            if alert_uuid:
-                search_result_uuids.append(alert_uuid)
-                if alert_uuid not in search_result_mapping:
-                    search_result_mapping[alert_uuid] = []
+    if search_spec:
+        search_mode = search_spec["mode"]
+        page_offset = max(session['page_offset'], 0)
 
-                # for now we'll limit these to 5 max
-                if len(search_result_mapping[alert_uuid]) < 5:
-                    search_result_mapping[alert_uuid].append(result)
+        def post_filter(uuids: list[str]) -> list[str]:
+            # the filter list is authoritative: keep only fused matches it lets through
+            visible = {row[0] for row in build_alert_query(effective_filters).with_entities(GUIAlert.uuid).filter(GUIAlert.uuid.in_(uuids)).distinct()}
+            return [alert_uuid for alert_uuid in uuids if alert_uuid in visible]
 
-    if search_result_uuids:
-        query = query.filter(GUIAlert.uuid.in_(list(set(search_result_uuids))))
+        search_filters = effective_filters_to_search_filters(effective_filters)
+        if search_mode == SEARCH_MODE_SIMILAR:
+            search_query = f"Similar to: {search_spec.get('description') or search_spec['alert_uuid']}"
+        else:
+            search_query = search_spec["query"]
 
-    # get total number of alerts
-    count_query = query.statement.with_only_columns(func.count(distinct(GUIAlert.id)))
-    total_alerts = get_db().execute(count_query).scalar()
+        def run_search(offset: int):
+            if search_mode == SEARCH_MODE_SIMILAR:
+                return similar_alerts(search_spec["alert_uuid"], search_filters, limit=session['page_size'], offset=offset, post_filter=post_filter)
 
-    # group by id to prevent duplicates
-    query = query.group_by(GUIAlert.id)
+            return search_alerts(
+                SearchRequest(query=search_query, filters=search_filters, limit=session['page_size'], offset=offset),
+                post_filter=post_filter,
+            )
 
-    # apply sort filter
-    sort_filters = {
-        'Alert Date': GUIAlert.insert_date,
-        'Description': GUIAlert.description,
-        'Disposition': GUIAlert.disposition,
-        'Owner': Owner.display_name,
-    }
-    if session['sort_filter_desc']:
-        query = query.order_by(sort_filters[session['sort_filter']].desc(), GUIAlert.id.desc())
+        response = run_search(page_offset)
+        total_alerts = response.total
+        if page_offset >= total_alerts:
+            # the page the session remembers is past the end of this result set (the search
+            # changed, or a filter narrowed it): clamp like the unsearched path and re-page
+            clamped = max((total_alerts // session['page_size']) * session['page_size'], 0)
+            if clamped != page_offset:
+                page_offset = clamped
+                response = run_search(page_offset)
+
+        page_uuids = response.alert_uuids
+        search_result_mapping = {result.alert_uuid: result for result in response.results}
+        if page_uuids:
+            query = query.filter(GUIAlert.uuid.in_(page_uuids)).group_by(GUIAlert.id)
+        else:
+            query = query.filter(GUIAlert.id == None) # noqa: E711  (an empty page)
     else:
-        query = query.order_by(sort_filters[session['sort_filter']].asc(), GUIAlert.id.asc())
+        # get total number of alerts
+        count_query = query.statement.with_only_columns(func.count(distinct(GUIAlert.id)))
+        total_alerts = get_db().execute(count_query).scalar()
 
-    # apply pagination
-    # the offset is clamped into a local rather than back into the session: this also
-    # runs from the polled refresh endpoint, where a Set-Cookie could race a pagination
-    # click in another request
-    query = query.limit(session['page_size'])
-    page_offset = session['page_offset']
-    if page_offset >= total_alerts:
-        page_offset = (total_alerts // session['page_size']) * session['page_size']
-    page_offset = max(page_offset, 0)
-    query = query.offset(page_offset)
+        # group by id to prevent duplicates
+        query = query.group_by(GUIAlert.id)
+
+        # apply sort filter
+        sort_filters = {
+            'Alert Date': GUIAlert.insert_date,
+            'Description': GUIAlert.description,
+            'Disposition': GUIAlert.disposition,
+            'Owner': Owner.display_name,
+        }
+        if session['sort_filter_desc']:
+            query = query.order_by(sort_filters[session['sort_filter']].desc(), GUIAlert.id.desc())
+        else:
+            query = query.order_by(sort_filters[session['sort_filter']].asc(), GUIAlert.id.asc())
+
+        # apply pagination
+        # the offset is clamped into a local rather than back into the session: this also
+        # runs from the polled refresh endpoint, where a Set-Cookie could race a pagination
+        # click in another request
+        query = query.limit(session['page_size'])
+        page_offset = session['page_offset']
+        if page_offset >= total_alerts:
+            page_offset = (total_alerts // session['page_size']) * session['page_size']
+        page_offset = max(page_offset, 0)
+        query = query.offset(page_offset)
 
     # execute query to get all alerts
     alerts = query.all()
@@ -210,9 +236,9 @@ def build_manage_list_context() -> dict:
         for alert in alerts:
             alert.display_timezone = pytz.timezone(current_user.timezone)
 
-    # if we did a vector search then we need to order by the scores
-    if search_result_uuids:
-        alerts = sorted(alerts, key=lambda x: max([_.score for _ in search_result_mapping[x.uuid]]), reverse=True)
+    # a search page is shown in relevance order (the fused ranking), not the sort filter's
+    if search_result_mapping:
+        alerts = sorted(alerts, key=lambda alert: search_result_mapping[alert.uuid].rank if alert.uuid in search_result_mapping else 0)
 
     return {
         # settings
@@ -226,6 +252,7 @@ def build_manage_list_context() -> dict:
         # lets the filter bar show what a relative token like -24h currently resolves to
         'date_range_filter_names': DATE_RANGE_FILTER_NAMES,
         'search_query': search_query,
+        'search_mode': search_mode,
         'saved_filters': saved_filters,
         'quick_filters': get_quick_filter_display_data(saved_filters),
         'current_filter': get_current_filter(),

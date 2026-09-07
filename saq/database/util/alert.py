@@ -9,7 +9,10 @@ from saq.constants import (
     REVIEW_COMMENT_PREFIX,
 )
 from saq.database.model import Alert, new_alert_version
+from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
+from saq.environment import get_global_runtime_settings
+from saq.search.tasks import submit_index_task, submit_payload_task
 
 
 def _fetch_disposition_context(c, alert_uuids: list) -> dict:
@@ -107,6 +110,27 @@ def touch_alerts(alert_uuids: list[str], cursor=None) -> None:
 
     get_db().execute(Alert.__table__.update().where(Alert.uuid.in_(alert_uuids)).values(version=version))
 
+def node_scope_locations() -> list[str] | None:
+    """The alert locations (nodes) this deployment lets analysts see, or None for no scoping.
+
+    This is the only server-side visibility rule ACE applies to alert lists; the GUI alert
+    query and the search API both use it so a search can never show an alert the manage page
+    would not.
+    """
+    if get_config().gui.local_node_only:
+        return [get_global_runtime_settings().saq_node]
+
+    if get_config().gui.display_node_list:
+        return list(get_config().gui.display_node_list)
+
+    return None
+
+def _submit_search_updates(alert_uuids, reindex: bool) -> None:
+    """Queues search index updates for alerts whose disposition (and possibly comments) changed."""
+    submit = submit_index_task if reindex else submit_payload_task
+    for alert_uuid in alert_uuids:
+        submit(alert_uuid)
+
 def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
     """Utility function to the set disposition of many Alerts at once.
        :param alert_uuids: A list of UUIDs of Alert objects to set.
@@ -173,6 +197,10 @@ WHERE
             c.execute(sql, tuple(params))
 
         db.commit()
+
+    # keep the search index in step: a comment means new text to index, otherwise only
+    # the disposition in the payload changes
+    _submit_search_updates(alert_uuids, reindex=bool(user_comment))
 
     # log only alerts that actually changed, mirroring the UPDATE's own guard --
     # re-applying the same disposition is a no-op and must not look like an event.
@@ -262,6 +290,8 @@ WHERE
 
             db.commit()
 
+        _submit_search_updates(alert_uuids, reindex=bool(review_comment))
+
         # a correction to IGNORE deletes the alert just as a direct disposition
         # does, so this path needs the same lasting record
         changed_uuids = [
@@ -301,6 +331,9 @@ WHERE
                               VALUES ( %s, %s, %s )""", ( reviewer_id, uuid, prefixed_comment))
 
             db.commit()
+
+        if prefixed_comment:
+            _submit_search_updates(alert_uuids, reindex=True)
 
         # the review confirms the existing disposition rather than changing it,
         # so old and new are the same -- but the review itself is still an event

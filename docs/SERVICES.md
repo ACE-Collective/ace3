@@ -1,6 +1,6 @@
 # ACE Services
 
-A "service" in ACE is a long-running process that exposes a uniform lifecycle (start / wait / stop) and is typically run as its own container in `docker-compose.yml`. Examples include `engine`, `remediation`, `hunter`, `cron`, `yara`, `network_semaphore`, `monitoring`, and `llm_embedding`.
+A "service" in ACE is a long-running process that exposes a uniform lifecycle (start / wait / stop) and is typically run as its own container in `docker-compose.yml`. Examples include `engine`, `remediation`, `hunter`, `cron`, `yara`, `network_semaphore`, `monitoring`, and `search_indexer`.
 
 This document describes how the service framework is wired together and what is required to add a new service.
 
@@ -189,6 +189,6 @@ docker compose logs -f myservice
 | `yara`               | `saq.yara.service.*`                           | `service_yara`               |
 | `network_semaphore`  | `saq.network_semaphore.service.NetworkSemaphoreService` | `service_network_semaphore` |
 | `monitoring`         | `saq.monitoring.service.ACEMonitoringService`  | `service_monitoring`         |
-| `llm_embedding`      | `saq.llm.embedding.service.*`                  | `service_llm_embedding`      |
+| `search_indexer`     | `saq.search.service.SearchIndexService`        | `service_search_indexer`     |
 
 `saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.

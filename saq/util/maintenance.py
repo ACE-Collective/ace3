@@ -21,6 +21,7 @@ from saq.database.pool import get_db_connection
 from saq.database.util.node import is_primary_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error import report_exception
+from saq.search.tasks import submit_delete_task
 
 from sqlalchemy.sql.expression import select, delete
 
@@ -70,7 +71,7 @@ def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[in
 def cleanup_ignored_alerts(days: int, dry_run: bool):
     # delete alerts dispositioned as IGNORE and older than N days
     dry_run_count = 0
-    for storage_dir, alert_id in get_db().execute(select(Alert.storage_dir, Alert.id)
+    for storage_dir, alert_id, alert_uuid in get_db().execute(select(Alert.storage_dir, Alert.id, Alert.uuid)
         .where(Alert.location == get_global_runtime_settings().saq_node)
         .where(Alert.disposition == DISPOSITION_IGNORE)
         .where(Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days))):
@@ -90,6 +91,7 @@ def cleanup_ignored_alerts(days: int, dry_run: bool):
         # delete the alert from the database
         logging.info(f"deleting database entry {alert_id}")
         retry_sql_on_deadlock(delete(Alert).where(Alert.id == alert_id), commit=True)
+        submit_delete_task(alert_uuid)
 
     if dry_run:
         logging.info(f"{dry_run_count} ignored alerts would be deleted")

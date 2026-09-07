@@ -167,17 +167,31 @@ def test_manage_page_wires_datastar(web_client, analyst):
     assert f'id="cb_{alert.uuid}"' in html
 
 
+def _search_response(alert_uuids, query="some search query", total=None):
+    """A canned saq.search response: the first alert an exact match, the rest semantic."""
+    from saq.search.types import LANE_LEXICAL, LANE_SEMANTIC, AlertSearchResult, SearchHit, SearchResponse
+
+    results = []
+    for rank, alert_uuid in enumerate(alert_uuids, start=1):
+        lane = LANE_LEXICAL if rank == 1 else LANE_SEMANTIC
+        results.append(AlertSearchResult(
+            alert_uuid=alert_uuid, rank=rank, fused_score=1.0 / rank, tier="exact" if rank == 1 else "good",
+            hits=[SearchHit(lane=lane, kind="observable" if rank == 1 else "comment", key="k", title="hit title", text="snippet text for the analyst", score=1.0)],
+            lanes=frozenset({lane})))
+    return SearchResponse(query=query, total=len(results) if total is None else total, offset=0, limit=50, results=results, lanes_used=frozenset({LANE_LEXICAL, LANE_SEMANTIC}))
+
+
 @pytest.mark.integration
 def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypatch):
-    """Auto-refresh is disabled while a vector search is active -- each refresh would
-    re-run the embedding search, and the results are a snapshot."""
-    monkeypatch.setattr("saq.llm.embedding.search.search", lambda query: [])
+    """Auto-refresh is disabled while a search is active -- each refresh would re-run the
+    search, and the results are a snapshot."""
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", lambda request, **kwargs: _search_response([]))
 
     _insert_alert('manage-search-1', 'search suppression test alert')
 
     with web_client.session_transaction() as sess:
         _seed_manage_session(sess, analyst)
-        sess['search'] = 'some search query'
+        sess['search'] = {'mode': 'query', 'query': 'some search query'}
 
     response = web_client.get(url_for("analysis.manage"))
     assert response.status_code == 200
@@ -185,6 +199,102 @@ def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypa
 
     assert 'data-on-interval' not in html
     assert 'data-on:ace-refresh' not in html
+    assert 'id="alert-search-clear"' in html
+    assert '0 matching alerts' in html
+
+
+@pytest.mark.integration
+def test_manage_search_orders_by_relevance_and_shows_hits(web_client, analyst, monkeypatch):
+    """The page follows the fused ranking (not the date sort), reports the fused total, and
+    renders tier/kind badges without any percentage."""
+    import uuid as uuidlib
+    from unittest.mock import Mock
+
+    older = _insert_alert(str(uuidlib.uuid4()), 'older but exact match')
+    newer = _insert_alert(str(uuidlib.uuid4()), 'newer semantic match')
+    from saq.database.pool import get_db
+    get_db().execute(Alert.__table__.update().where(Alert.uuid == newer.uuid).values(insert_date='2024-01-01 00:00:00'))
+    get_db().commit()
+
+    search = Mock(return_value=_search_response([older.uuid, newer.uuid], total=7))
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        sess['search'] = {'mode': 'query', 'query': '10.20.30.40'}
+
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    html = response.data.decode()
+
+    # relevance order: the older exact match precedes the newer semantic match
+    assert html.index(older.uuid) < html.index(newer.uuid)
+    assert 'Exact match' in html and '>Good<' in html
+    assert 'snippet text for the analyst' in html
+    assert '%</span>' not in html
+    assert '7 matching alerts' in html
+    assert 'value="10.20.30.40"' in html
+
+    request = search.call_args[0][0]
+    assert request.query == '10.20.30.40'
+    assert request.limit == 50 and request.offset == 0
+    # the analyst's filters travel with the search as pre-filters and as the SQL post-filter
+    assert request.filters.locations is not None
+    assert callable(search.call_args.kwargs['post_filter'])
+
+
+@pytest.mark.integration
+def test_manage_similar_mode(web_client, analyst, monkeypatch):
+    import uuid as uuidlib
+    from unittest.mock import Mock
+
+    source = _insert_alert(str(uuidlib.uuid4()), 'the source alert')
+    neighbour = _insert_alert(str(uuidlib.uuid4()), 'a look-alike alert')
+    similar = Mock(return_value=_search_response([neighbour.uuid], query=f"similar:{source.uuid}"))
+    monkeypatch.setattr("app.analysis.views.manage.similar_alerts", similar)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    response = web_client.get(url_for("analysis.search_similar", alert_uuid=source.uuid))
+    assert response.status_code == 302
+
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert 'value="Similar to: the source alert"' in html
+    assert 'readonly' in html
+    assert neighbour.uuid in html
+    assert similar.call_args[0][0] == source.uuid
+
+
+@pytest.mark.integration
+def test_search_endpoint_sets_and_clears_the_spec(web_client, analyst):
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, page_offset=100)
+
+    assert web_client.post(url_for("analysis.search"), data={"search": "  invoice  "}).status_code == 204
+    with web_client.session_transaction() as sess:
+        assert sess['search'] == {'mode': 'query', 'query': 'invoice'}
+        assert sess['page_offset'] == 0
+
+    assert web_client.post(url_for("analysis.search"), data={"search": ""}).status_code == 204
+    with web_client.session_transaction() as sess:
+        assert sess['search'] is None
+
+
+@pytest.mark.integration
+def test_search_endpoint_requires_alert_read(app):
+    from saq.database.util.user_management import add_user, delete_user
+
+    add_user(username="noperm", email="noperm@localhost", display_name="noperm", password="password")
+    try:
+        with app.test_client() as client:
+            client.post(url_for("auth.login"), data={"username": "noperm", "password": "password"})
+            assert client.post(url_for("analysis.search"), data={"search": "x"}).status_code == 403
+            assert client.get(url_for("analysis.search_similar", alert_uuid="x")).status_code == 403
+    finally:
+        delete_user("noperm")
 
 
 @pytest.mark.integration
@@ -243,3 +353,31 @@ def test_filter_editor_renders_a_stored_relative_token_in_relative_mode(web_clie
 
     assert 'data-relative="1"' in body
     assert 'value="-24h"' in body
+
+
+@pytest.mark.integration
+def test_manage_search_repages_when_offset_is_past_the_end(web_client, analyst, monkeypatch):
+    """A remembered page offset beyond the (now smaller) result set is clamped and the search
+    re-run with the clamped offset, so the analyst never sees an empty page with a total."""
+    import uuid as uuidlib
+    from unittest.mock import Mock
+
+    only = _insert_alert(str(uuidlib.uuid4()), 'the only match')
+
+    def fake_search(request, **kwargs):
+        response = _search_response([only.uuid])
+        response.offset = request.offset
+        response.results = response.results if request.offset == 0 else []
+        return response
+
+    search = Mock(side_effect=fake_search)
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, page_offset=100)
+        sess['search'] = {'mode': 'query', 'query': 'match'}
+
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    assert only.uuid in response.data.decode()
+    assert [call[0][0].offset for call in search.call_args_list] == [100, 0]

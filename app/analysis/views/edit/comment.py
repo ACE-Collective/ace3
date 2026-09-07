@@ -9,6 +9,7 @@ from saq.constants import REDIRECT_MAP
 from saq.database.model import Comment
 from saq.database.pool import get_db
 from saq.database.util.alert import touch_alerts
+from saq.search.tasks import submit_index_task
 
 
 @analysis.route('/add_comment', methods=['POST'])
@@ -56,9 +57,8 @@ def add_comment():
     touch_alerts(uuids)
     get_db().commit()
 
-    from saq.llm.embedding.service import submit_embedding_task
     for uuid in uuids:
-        submit_embedding_task(uuid)
+        submit_index_task(uuid)
 
     flash("added comment to {0} item{1}".format(len(uuids), "s" if len(uuids) != 1 else ''))
 
@@ -93,7 +93,6 @@ def delete_comment():
     touch_alerts([alert_uuid])
     get_db().commit()
 
-    from saq.llm.embedding.service import submit_embedding_task
-    submit_embedding_task(alert_uuid)
+    submit_index_task(alert_uuid)
 
     return redirect(url_for('analysis.index', direct=request.form['direct']))

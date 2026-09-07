@@ -26,9 +26,24 @@
                 <span class="bi bi-search" style="margin-right:2px;"></span>
                 <span>Search</span>
             </button>
-            <input type="text" class="form-control me-2" id="alert-search" placeholder="Search alerts..." {% if search_query %}value="{{ search_query | e }}"{% endif %}>
+            <input type="text" class="form-control me-2" id="alert-search"
+                   placeholder="Search alerts: free text, an indicator (ip, hash, url, email), a tag or an alert uuid..."
+                   data-search-url="{{ url_for('analysis.search') }}" data-manage-url="{{ url_for('analysis.manage') }}"
+                   {% if search_query %}value="{{ search_query | e }}"{% endif %}
+                   {% if search_mode == "similar" %}readonly{% endif %}>
+            <button type="button" class="btn btn-outline-dark d-flex align-items-center" id="alert-search-clear" title="Clear the search" {% if not search_query %}style="display:none"{% endif %}>
+                <span class="bi bi-x-lg" style="margin-right:2px;"></span>
+                <span>Clear</span>
+            </button>
         </div>
     </div>
+    {% if search_query %}
+    <div class="row">
+        <div class="col">
+            <small class="text-muted">{{ total_alerts }} matching alert{{ '' if total_alerts == 1 else 's' }}, sorted by relevance (exact indicator, tag and uuid matches first, newest first); the active filters still apply.</small>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 <div class="container-fluid" style="margin-top:5px;margin-bottom:7px;">
@@ -47,7 +62,7 @@
    only while the tab is visible and no modal is open; the ace-refresh custom event
    (dispatched from manage_alerts.js when the tab becomes visible again) triggers an
    immediate catch-up. Auto-refresh is disabled during a vector search -- re-running the
-   embedding search every poll is expensive and the results are a snapshot. #}
+   search every poll is expensive and the results are a snapshot. #}
 <div id="manage_page"
      data-signals:_sel='{{ session["checked"] | tojson }}'
      data-signals:_open-comments='[]'

@@ -179,6 +179,10 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 Phishkit has it's own CLAUDE.md file available at `phishkit/CLAUDE.md` as needed.
 
+#### Search
+
+`saq/search/` is the alert search subsystem (`docs/SEARCH.md`): the `search_indexer` service turns each alert into a handful of text documents (header, comments, detections, email/command-line/extracted text) stored in one Qdrant collection with a dense and a sparse vector per chunk, and `saq/search/query.py` fuses that with an exact SQL lane (observable values, hashes, tags, uuids) into one ranking used by the manage-page search box, `POST /api/v2/search/*`, `POST /ai/v1/search/*` (permission `ai:search`) and `ace search`. The engine flags an alert for indexing in the orchestrator but the worker submits the task only after releasing its lock; dispositions update the payload without re-encoding. Retrieval quality is pinned by `tests/saq/search/test_retrieval.py` against the real Qdrant and model.
+
 #### js_deobfuscator
 
 `js_deobfuscator/` is a JavaScript sandbox that reports what a sample *did* rather than what it says: it lives outside the `saq` namespace and never imports it, and it is a Celery worker that runs `harness.js` in a throwaway container per sample, exchanging payloads and results only through the shared `ace-js-deobfuscator` volume. The harness executes the sample in a `node:vm` context where browser/Acrobat globals are recording Proxies, and emits a pseudo-JS trace of everything the sample touched. ACE reaches it only through `saq/js_deobfuscator.py`, a thin Celery client; the consumer is `JavaScriptDeobfuscationAnalyzer` (`saq/modules/file_analysis/js.py`, config block `analysis_module_javascript_deobfuscation`), which calls **synchronously** rather than via delayed analysis, and re-emits the trace and any extracted payloads as file observables for URL extraction.

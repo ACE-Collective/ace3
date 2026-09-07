@@ -142,19 +142,37 @@ analysis_cache:
 fixed_directives:
   - archive
 
-# LLM settings
-llm:
-  # the embedding model to use for vectorization
+# alert search settings (see docs/SEARCH.md)
+search:
+  # the sentence-transformers model used for the dense vector
+  # changing this changes the qdrant collection name and requires `ace search index --all`
   embedding_model: all-MiniLM-L6-v2
+  # some models (e.g. bge) expect an instruction prefix on queries
+  query_prefix: ""
+  # chunking and size caps (defaults shown)
+  #chunk_tokens: 200
+  #chunk_overlap: 32
+  #max_chunks_per_document: 16
+  #max_document_bytes: 262144
+  # retrieval budget and rank fusion (defaults shown)
+  #semantic_limit: 100
+  #semantic_group_size: 3
+  #lexical_limit: 200
+  #rrf_k: 60
+  #semantic_weight: 1.0
+  #lexical_weight: 2.0
+  #score_threshold: 0.3
+  #strong_threshold: 0.55
+  #max_results: 500
 
-service_llm_embedding:
-  name: llm_embedding
-  python_module: saq.llm.embedding.service
-  python_class: EmbeddingService
-  description: LLM Embedding - embeds alerts into a vector space
+service_search_indexer:
+  name: search_indexer
+  python_module: saq.search.service
+  python_class: SearchIndexService
+  description: Search Indexer - maintains the alert search index in qdrant
   enabled: true
-  # the number of worker processes to spawn (defaults to the cpu count when omitted)
-  #worker_count: 4
+  # the number of worker processes to spawn (each loads its own copy of the embedding model)
+  worker_count: 2
 
 # cron settings
 service_cron:
@@ -229,8 +247,8 @@ qdrant:
   use_ssl: true
   ssl_ca_path: ssl/ca-chain.cert.pem
   api_key: file:/auth/passwords/qdrant
-  # the collection name for ace3 alert data
-  collection_alerts: ace3-alerts
+  # prefix of the alert search collection name (the model slug and schema version are appended)
+  collection_prefix: ace3-alerts
   # HTTP timeout (in seconds) for background qdrant operations
   timeout: 30
   # shorter timeout for the analyst-facing GUI search path, which should fail fast

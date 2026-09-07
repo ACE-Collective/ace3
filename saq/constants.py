@@ -698,7 +698,7 @@ SERVICE_EMAIL_COLLECTOR = "email_collector"
 SERVICE_ENGINE = "engine"
 SERVICE_HUNTER = "hunter"
 SERVICE_JOURNAL_EMAIL_COLLECTOR = "journal_email_collector"
-SERVICE_LLM_EMBEDDING = "llm_embedding"
+SERVICE_SEARCH_INDEXER = "search_indexer"
 SERVICE_NETWORK_SEMAPHORE = "network_semaphore"
 SERVICE_REMEDIATION = "remediation"
 SERVICE_FILE_COLLECTION = "file_collection"
@@ -783,11 +783,10 @@ CONFIG_SERVICE_CLASS = "class"
 CONFIG_SERVICE_INSTANCE_TYPES = "instance_types"
 CONFIG_SERVICE_ENABLED = "enabled"
 
-# LLM
-CONFIG_LLM = "llm"
-CONFIG_LLM_EMBEDDING_MODEL = "embedding_model"
-CONFIG_SERVICE_LLM_EMBEDDING = "service_llm_embedding"
-CONFIG_SERVICE_LLM_EMBEDDING_ENABLED = "enabled"
+# search
+CONFIG_SEARCH = "search"
+CONFIG_SEARCH_EMBEDDING_MODEL = "embedding_model"
+CONFIG_SERVICE_SEARCH_INDEXER = "service_search_indexer"
 
 # Qdrant
 CONFIG_QDRANT = "qdrant"
@@ -795,7 +794,7 @@ CONFIG_QDRANT_URL = "url"
 CONFIG_QDRANT_USE_SSL = "use_ssl"
 CONFIG_QDRANT_SSL_CA_PATH = "ssl_ca_path"
 CONFIG_QDRANT_API_KEY = "api_key"
-CONFIG_QDRANT_COLLECTION_ALERTS = "collection_alerts"
+CONFIG_QDRANT_COLLECTION_PREFIX = "collection_prefix"
 
 # monitoring
 CONFIG_MONITOR = "monitor"

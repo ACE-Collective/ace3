@@ -24,6 +24,7 @@
             <a href="/api/v2/alerts/{{alert.uuid}}/download" class="btn btn-outline-dark btn-xs" title="Download alert as encrypted zip (password: infected)"><span class="bi bi-file-earmark-zip"></span></a>
             <a href="/api/v2/alerts/{{alert.uuid}}/logs" target="_blank" rel="noopener" class="btn btn-outline-dark btn-xs" title="View raw analysis log (saq.log)"><span class="bi bi-file-earmark-text"></span></a>
             {% endif %}
+            <a href="{{ url_for('analysis.search_similar', alert_uuid=alert.uuid) }}" class="btn btn-outline-dark btn-xs" title="Find similar alerts (by the alert's indexed text) and how they were dispositioned"><span class="bi bi-diagram-3"></span> Similar alerts</a>
             <script type="text/javascript">
                 $('#copy_action_storage_dir').on('click', function() {
                     // avoid escaping issues going from python to javascript by using base64

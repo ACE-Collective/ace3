@@ -95,8 +95,24 @@ class CollectionGroupConfig(BaseModel):
     thread_count: int = Field(default=1, description="The number of threads to use for the collection group.")
     max_delivery_attempts: int = Field(default=DEFAULT_MAX_DELIVERY_ATTEMPTS, ge=1, description="How many times a work item may fail delivery with a retriable error before it is marked ERROR. Only applies when full_delivery is enabled. A work item that keeps failing holds this group's batch lock and stalls everything queued behind it, so this must be finite. Raising it tolerates a longer outage of a target node that is still advertising itself as available, at the cost of a longer stall.")
 
-class LLMConfig(BaseModel):
-    embedding_model: str = Field(..., description="the embedding model to use for vectorization")
+class SearchConfig(BaseModel):
+    """Settings for the alert search subsystem (saq/search). Every field has a default so the block may be omitted."""
+    embedding_model: str = Field(default="all-MiniLM-L6-v2", description="the sentence-transformers model used for the dense vector; changing it changes the collection name and requires a full re-index")
+    query_prefix: str = Field(default="", description="text prepended to every query before dense encoding (some models, e.g. bge, expect an instruction prefix)")
+    model_cache_dir: str = Field(default="search/models", description="directory (relative to the data dir) where downloaded models are cached")
+    chunk_tokens: int = Field(default=200, ge=32, description="target size of one chunk in model tokens (clamped to the model's max sequence length)")
+    chunk_overlap: int = Field(default=32, ge=0, description="tokens shared between consecutive chunks of one document")
+    max_chunks_per_document: int = Field(default=16, ge=1, description="a document longer than this many chunks is truncated")
+    max_document_bytes: int = Field(default=262144, ge=1024, description="on-disk text (email bodies, OCR output, ...) is read up to this many bytes")
+    semantic_limit: int = Field(default=100, ge=1, description="maximum number of alerts returned by the semantic (qdrant) lane")
+    semantic_group_size: int = Field(default=3, ge=1, description="maximum number of hits kept per alert from the semantic lane")
+    lexical_limit: int = Field(default=200, ge=1, description="maximum number of alerts returned by the lexical (sql) lane")
+    rrf_k: int = Field(default=60, ge=1, description="the k constant of reciprocal rank fusion")
+    semantic_weight: float = Field(default=1.0, gt=0, description="weight of the semantic lane in rank fusion")
+    lexical_weight: float = Field(default=2.0, gt=0, description="weight of the lexical lane in rank fusion (exact matches outrank semantic ones)")
+    score_threshold: float = Field(default=0.3, ge=-1.0, le=1.0, description="minimum dense cosine similarity for a semantic hit; the dense lane always has a nearest neighbour, so without a floor every query matches something")
+    strong_threshold: float = Field(default=0.55, ge=-1.0, le=1.0, description="dense cosine similarity at or above which a semantic-only match is reported as a strong match")
+    max_results: int = Field(default=500, ge=1, description="cap on the fused result list (pagination happens within this cap)")
 
 class FluentBitMonitoringConfig(BaseModel):
     hostname: str = Field(description="the hostname of the fluent-bit server")
@@ -153,7 +169,7 @@ class QdrantConfig(BaseModel):
     use_ssl: bool = Field(..., description="use SSL for qdrant connection")
     ssl_ca_path: str = Field(..., description="path to SSL CA certificate")
     api_key: str = Field(..., description="qdrant API key")
-    collection_alerts: str = Field(..., description="the collection name for ace3 alert data")
+    collection_prefix: str = Field(default="ace3-alerts", description="prefix of the alert search collection name; the model slug and schema version are appended so a model change never mixes incompatible vectors")
     timeout: int = Field(default=30, ge=1, description="HTTP timeout (in seconds) for qdrant operations")
     search_timeout: int = Field(default=10, ge=1, description="HTTP timeout (in seconds) for the user-facing GUI search path")
 
@@ -433,6 +449,7 @@ class AIQueryBackendConfig(BaseModel):
 class AIApiConfig(BaseModel):
     """Settings for the AI investigation API app (aceapi_ai)."""
     rate_limit_fail_open: bool = Field(default=False, description="when redis is unreachable, serve queries without rate limiting (true) or refuse them with 503 (false); the limiter protects vendor quotas shared with production analysis, so failing closed is the default")
+    search_limits: AIQueryBackendLimits = Field(default_factory=AIQueryBackendLimits, description="rate limits applied to the AI API search endpoints (only the concurrency, per-minute, hourly and query timeout fields are used)")
 
 class APIQueryDefaultsConfig(BaseModel):
     name: str = Field(..., description="The name of the API query defaults.")
@@ -599,7 +616,7 @@ class ConfigApiKey(BaseModel):
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
-    llm: Optional[LLMConfig] = None
+    search: SearchConfig = Field(default_factory=SearchConfig)
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")

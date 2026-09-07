@@ -23,7 +23,7 @@ from app.analysis.views.edit.observable_action.detection import observable_actio
 from app.analysis.views.edit.observable_action.legacy import observable_action
 from app.analysis.views.edit.observable_action.clicker import observable_action_check_for_clickers, observable_action_open_clicker_search_splunk
 from app.analysis.views.edit.event import add_to_event, load_more_events, get_analysis_event_name_candidate
-from app.analysis.views.search import search
+from app.analysis.views.search import search, search_similar
 from app.analysis.views.misc import upload_file, analyze_alert
 from app.analysis.views.archive import download_archive
 from app.analysis.views.image import image, image_full

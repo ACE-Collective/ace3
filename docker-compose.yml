@@ -563,19 +563,21 @@ services:
     networks:
       - ace
 
-  embedding-service:
+  search-indexer:
     platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
-      FLUENT_BIT_TAG: ace-embedding-service
+      FLUENT_BIT_TAG: ace-search-indexer
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       ace:
         condition: service_started
       redis:
         condition: service_started
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start llm_embedding"
+      qdrant:
+        condition: service_started
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start search_indexer"
     restart: always
     volumes: *common-volumes
     hostname: ace

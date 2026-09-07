@@ -95,13 +95,21 @@
                         <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
                     </tr>
                     {% if alert.uuid in search_result_mapping %}
-                        <tr>
+                        {% set search_result = search_result_mapping[alert.uuid] %}
+                        {% set tier_css = {"exact": "success", "strong": "primary", "good": "info", "weak": "light"} %}
+                        {% set tier_label = {"exact": "Exact match", "strong": "Strong", "good": "Good", "weak": "Weak"} %}
+                        <tr class="search-hits">
                             <td></td>
                             <td></td>
                             <td></td>
                             <td colspan="4">
-                                {% for search_result in search_result_mapping[alert.uuid] %}
-                                <span class="badge bg-white border border-black" style="color: black; border-width: 1px;">{{ "%.2f"|format(search_result.score * 100.0) }}%</span> {{search_result.payload.get("text", "")}}<br />
+                                <span class="badge text-bg-{{ tier_css.get(search_result.tier, "light") }} border border-dark" title="relative relevance within this result set">{{ tier_label.get(search_result.tier, search_result.tier) }}</span>
+                                {% for hit in search_result.hits[:5] %}
+                                <div class="text-truncate" style="max-width: 100%;">
+                                    <span class="badge bg-white border border-dark text-dark">{{ hit.kind }}</span>
+                                    {% if hit.title %}<b>{{ hit.title | truncate(80) }}</b>{% endif %}
+                                    <span class="text-muted">{{ hit.text | truncate(240) }}</span>
+                                </div>
                                 {% endfor %}
                             </td>
                         </tr>

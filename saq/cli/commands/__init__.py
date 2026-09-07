@@ -27,7 +27,7 @@ from saq.cli.commands import ( # noqa: F401
     permissions,
     phishkit,
     storage,
-    llm,
+    search,
     nrd,
     observables,
     signatures,

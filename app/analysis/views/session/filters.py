@@ -5,7 +5,6 @@ from sqlalchemy import distinct, func
 
 from app.filters import AutoTextFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
-from saq.environment import get_global_runtime_settings
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.saved_filters import service as saved_filters_service
@@ -14,6 +13,7 @@ from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping
 from saq.database.pool import get_db
+from saq.database.util.alert import node_scope_locations
 from saq.gui.alert import GUIAlert
 
 
@@ -128,14 +128,11 @@ def build_alert_query(filters: list):
         _filter = create_filter(filter_dict["name"], inverted=filter_dict.get("inverted", False))
         query = _filter.apply(query, filter_dict["values"])
 
-    # only show alerts from this node
+    # only show alerts from this node (or the configured DR node list)
     # NOTE: this will not be necessary once alerts are stored externally
-    if get_config().gui.local_node_only:
-        query = query.filter(GUIAlert.location == get_global_runtime_settings().saq_node)
-    elif get_config().gui.display_node_list:
-        # alternatively we can display alerts for specific nodes
-        # this was added on 05/02/2023 to support a DR mode of operation
-        query = query.filter(GUIAlert.location.in_(get_config().gui.display_node_list))
+    locations = node_scope_locations()
+    if locations is not None:
+        query = query.filter(GUIAlert.location.in_(locations))
 
     return query
 
