@@ -51,19 +51,27 @@ function setup_daterange_pickers() {
     });
 }
 
+function submit_search(search_query) {
+    // the urls come from the template (url_for) so this works under any mount point
+    let input = $("#alert-search");
+    fetch(input.data('search-url'), { credentials: 'same-origin', method: 'POST', body: new URLSearchParams({ search: search_query }) })
+    .then(function(resp){
+        if (!resp.ok) { throw new Error(resp.statusText); }
+        window.location.replace(input.data('manage-url'));
+    })
+    .catch(function(err){
+        alert('search failed: ' + err.message);
+    });
+}
+
 function search_alerts() {
-    // get the search query
-    let search_query = $("#alert-search").val();
-    (function() {
-        fetch('search', { credentials: 'same-origin', method: 'POST', body: new URLSearchParams({ search: search_query }) })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){
-            alert('DOH: ' + err.message);
-        });
-    })();
+    // a read-only box is showing a "similar alerts" search; typing is not possible there
+    if ($("#alert-search").prop('readonly')) { return; }
+    submit_search($("#alert-search").val());
+}
+
+function clear_search() {
+    submit_search('');
 }
 
 // Shows the "Show more" button under each comment block whose content overflows the
@@ -485,6 +493,10 @@ $(document).ready(function() {
 
     $("#alert-search-btn").click(function(e) {
         search_alerts();
+    });
+
+    $("#alert-search-clear").click(function(e) {
+        clear_search();
     });
 
     $("#alert-search").on("keyup", function(e) {

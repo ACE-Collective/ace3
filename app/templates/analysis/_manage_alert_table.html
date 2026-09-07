@@ -95,13 +95,23 @@
                         <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
                     </tr>
                     {% if alert.uuid in search_result_mapping %}
-                        <tr>
+                        {% set search_result = search_result_mapping[alert.uuid] %}
+                        {% set tier_class = {"exact": "search-tier-exact", "strong": "search-tier-strong", "good": "search-tier-good", "weak": "search-tier-weak"} %}
+                        {% set tier_label = {"exact": "Exact match", "strong": "Strong", "good": "Good", "weak": "Weak"} %}
+                        {# hit.kind comes off a qdrant payload, so only a known kind reaches a class name #}
+                        {% set hit_kinds = ["alert", "comment", "detection", "analysis", "context", "observable", "tag", "uuid"] %}
+                        <tr class="search-hits">
                             <td></td>
                             <td></td>
                             <td></td>
                             <td colspan="4">
-                                {% for search_result in search_result_mapping[alert.uuid] %}
-                                <span class="badge bg-white border border-black" style="color: black; border-width: 1px;">{{ "%.2f"|format(search_result.score * 100.0) }}%</span> {{search_result.payload.get("text", "")}}<br />
+                                <div class="search-tier {{ tier_class.get(search_result.tier, "search-tier-weak") }}" title="relative relevance within this result set">{{ tier_label.get(search_result.tier, search_result.tier) }}</div>
+                                {% for hit in search_result.hits[:5] %}
+                                <div class="search-hit text-truncate{% if hit.kind in hit_kinds %} search-hit-{{ hit.kind }}{% endif %}" style="max-width: 100%;">
+                                    <span class="search-hit-kind">{{ hit.kind }}</span>
+                                    {% if hit.title %}<b>{{ hit.title | truncate(80) }}</b>{% endif %}
+                                    <span class="text-muted">{{ hit.text | truncate(240) }}</span>
+                                </div>
                                 {% endfor %}
                             </td>
                         </tr>

@@ -79,7 +79,6 @@ def test_outstanding_work_queried_once_per_pass():
     with patch.object(orchestrator, "_check_for_outstanding_work", return_value=False) as mock_check, \
          patch("saq.engine.analysis_orchestrator.get_db_connection") as mock_connection, \
          patch("saq.engine.analysis_orchestrator.get_db"), \
-         patch("saq.llm.embedding.service.submit_embedding_task") as mock_submit, \
          patch("shutil.rmtree") as mock_rmtree, \
          _cleanup_mode(True):
 
@@ -90,7 +89,7 @@ def test_outstanding_work_queried_once_per_pass():
 
     # and the single answer (no outstanding work) still drove both consumers
     mock_rmtree.assert_called_once()
-    mock_submit.assert_called_once_with(context.root.uuid)
+    assert context.search_index_requested is True
 
 @pytest.mark.unit
 def test_inconsistent_answers_do_not_delete_an_unalerted_root():
@@ -107,7 +106,6 @@ def test_inconsistent_answers_do_not_delete_an_unalerted_root():
     with patch.object(orchestrator, "_check_for_outstanding_work", side_effect=[True, False, False]), \
          patch("saq.engine.analysis_orchestrator.get_db_connection"), \
          patch("saq.engine.analysis_orchestrator.get_db"), \
-         patch("saq.llm.embedding.service.submit_embedding_task") as mock_submit, \
          patch("shutil.rmtree") as mock_rmtree, \
          _cleanup_mode(True):
 
@@ -117,7 +115,7 @@ def test_inconsistent_answers_do_not_delete_an_unalerted_root():
     assert context.root.analysis_mode == "test_single"
     # ... so the tree that still carries them must survive
     mock_rmtree.assert_not_called()
-    mock_submit.assert_not_called()
+    assert context.search_index_requested is False
 
 @pytest.mark.unit
 def test_rescheduled_root_is_never_cleaned_up():
@@ -138,7 +136,6 @@ def test_rescheduled_root_is_never_cleaned_up():
          patch("saq.engine.analysis_orchestrator.get_db_connection"), \
          patch("saq.engine.analysis_orchestrator.get_db"), \
          patch.object(context.root, "schedule") as mock_schedule, \
-         patch("saq.llm.embedding.service.submit_embedding_task") as mock_submit, \
          patch("shutil.rmtree") as mock_rmtree, \
          _cleanup_mode(True):
 
@@ -146,7 +143,7 @@ def test_rescheduled_root_is_never_cleaned_up():
 
     mock_schedule.assert_called_once()
     mock_rmtree.assert_not_called()
-    mock_submit.assert_not_called()
+    assert context.search_index_requested is False
 
 @pytest.mark.unit
 def test_failed_reschedule_still_blocks_cleanup():
@@ -175,14 +172,13 @@ def test_database_failure_is_fail_safe():
 
     with patch("saq.engine.analysis_orchestrator.get_db_connection", side_effect=RuntimeError("no database")), \
          patch("saq.engine.analysis_orchestrator.get_db"), \
-         patch("saq.llm.embedding.service.submit_embedding_task") as mock_submit, \
          patch("shutil.rmtree") as mock_rmtree, \
          _cleanup_mode(True):
 
         orchestrator._handle_post_analysis_logic(context)
 
     mock_rmtree.assert_not_called()
-    mock_submit.assert_not_called()
+    assert context.search_index_requested is False
 
 #
 # integration tests: the round-trip count against a real engine pass

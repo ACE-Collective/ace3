@@ -521,6 +521,7 @@ suite keeps the pre-throttle behavior.
 
 *Original observation.* `_check_outstanding_work_and_handle_detections`,
 `_cleanup_if_no_outstanding_work` and `_submit_alert_for_embedding_if_complete`
+(since replaced by `_request_search_index_if_complete`, see `docs/SEARCH.md`)
 each opened their own `get_db_connection()` and ran the same two queries (§13.1).
 They were also not atomic with respect to each other — the answer could change
 between them.
@@ -547,7 +548,7 @@ repeated queries used to provide implicitly:
 - **The reschedule.** `_handle_analysis_mode_changes` runs between the old check
   #1 and checks #2/#3, and on a mode change calls `root.schedule()` — the new
   workload row was exactly what the later queries saw. It now returns `bool`, and
-  a `True` promotes `has_outstanding_work` before cleanup and embedding read it.
+  a `True` promotes `has_outstanding_work` before cleanup and search indexing read it.
   Returning `True` is unconditional on a mode change, so unlike the old query a
   root whose `schedule()` raised is also not cleaned up — losing the tree of a
   root we failed to re-queue is the worse outcome.
