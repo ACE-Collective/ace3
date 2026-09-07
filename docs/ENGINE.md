@@ -120,8 +120,9 @@ Worker.worker_loop
                  ├─ _handle_detections_if_no_outstanding_work()
                  ├─ _handle_analysis_mode_changes()   (→ alert, → reschedule)
                  ├─ _handle_cleanup()
-                 └─ _submit_alert_for_embedding_if_complete()
+                 └─ _request_search_index_if_complete()   sets ctx.search_index_requested
        └─ finally: stop_keepalive(); clear_work_target()
+       └─ if ctx.search_index_requested: submit_index_task()   (lock already released)
 ```
 
 ---
@@ -1049,7 +1050,7 @@ SELECT uuid FROM delayed_analysis WHERE uuid = :root [AND id != :this_request]
 Both exclusions matter: our own workload row is still present (it is deleted in
 `Worker.execute`'s `finally`, after all of this) and our own lock is still held.
 
-The predicate gates three decisions — detections, cleanup, embedding submission —
+The predicate gates three decisions — detections, cleanup, search indexing —
 and is evaluated **once per work item**. `_query_outstanding_work` opens the one
 `get_db_connection()` at the top of `_handle_post_analysis_logic` and the answer
 is passed to all three (§19.8). Two things follow from that:
@@ -1059,7 +1060,7 @@ is passed to all three (§19.8). Two things follow from that:
 - `_handle_analysis_mode_changes` runs in between and, on a mode change, calls
   `root.schedule()` — a new workload row under the new mode, which is outstanding
   work by definition. It returns `True` in that case and the answer is promoted
-  before cleanup and embedding see it. That return is unconditional on a mode
+  before cleanup and search indexing see it. That return is unconditional on a mode
   change, so a root whose `schedule()` *failed* is also never cleaned up.
 
 ### 13.2 Detection → alert
@@ -1110,10 +1111,14 @@ If the mode's `cleanup: true` **and** there is no outstanding work,
 `yara`, `binary` modes leave nothing behind while `correlation`, `dispositioned`
 and `event` (`cleanup: false`) persist.
 
-### 13.5 Embedding
+### 13.5 Search indexing
 
-`_submit_alert_for_embedding_if_complete` — `correlation` mode, no outstanding
-work → `saq.llm.embedding.service.submit_embedding_task(uuid)`.
+`_request_search_index_if_complete` — `correlation` or `dispositioned` mode, no
+outstanding work → sets `execution_context.search_index_requested`. The task
+itself is submitted by `Worker.execute()` *after* its `finally` has run
+`clear_work_target()` (which releases the lock): submitting from inside the
+orchestrator guaranteed the indexer's first attempt found the alert locked by the
+engine that requested it. See `docs/SEARCH.md`.
 
 ---
 

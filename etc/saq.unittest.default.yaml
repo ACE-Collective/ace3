@@ -799,8 +799,11 @@ storage:
 #   access_key: file:/auth/passwords/garage-test-access-key
 #   secret_key: file:/auth/passwords/garage-test-secret-key
 
-service_llm_embedding:
+service_search_indexer:
   enabled: false
+
+qdrant:
+  collection_prefix: ace3-alerts-unittest
 
 email_archive:
   s3_bucket: ace-email-archive-test

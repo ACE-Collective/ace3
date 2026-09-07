@@ -12,6 +12,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
 from saq.configuration import get_config
 from saq.database.pool import get_db
 from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.search.tasks import submit_delete_task
 from saq.util.uuid import storage_dir_from_uuid
 
 
@@ -206,6 +207,7 @@ def delete_alerts(args):
             session.execute(Alert.__table__.delete().where(Alert.uuid == uuid))
             session.commit()
             session.close()
+            submit_delete_task(uuid)
         except Exception as e:
             logging.error("unable to delete alert {0}: {1}".format(uuid, str(e)))
 

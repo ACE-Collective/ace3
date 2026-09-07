@@ -53,3 +53,12 @@ class TestGetQdrantClient:
         assert mock_client.call_args.kwargs["https"] is True
         assert mock_client.call_args.kwargs["verify"] == "ssl/ca-chain.cert.pem"
         assert mock_client.call_args.kwargs["api_key"] == "test-key"
+
+    def test_api_key_sent_without_ssl(self, mock_qdrant_config, monkeypatch):
+        """A plain-http qdrant with an api key configured still requires the key."""
+        monkeypatch.setattr(get_config().qdrant, "api_key", "test-key")
+        with patch("saq.qdrant_client.QdrantClient") as mock_client:
+            get_qdrant_client()
+
+        assert mock_client.call_args.kwargs["api_key"] == "test-key"
+        assert "https" not in mock_client.call_args.kwargs

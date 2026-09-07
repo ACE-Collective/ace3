@@ -43,7 +43,7 @@ def test_cli_commands_registered():
     assert not missing, f"missing CLI subcommands: {sorted(missing)}"
 
     # commands that live in other modules but must remain registered too
-    for external in ("perm", "phishkit", "storage", "llm", "nrd",
+    for external in ("perm", "phishkit", "storage", "search", "nrd",
                      "observables", "signatures"):
         assert external in registered, f"missing external CLI subcommand: {external}"
 

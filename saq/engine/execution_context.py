@@ -45,6 +45,11 @@ class EngineExecutionContext:
         # already dispositioned. Nothing in the tree changed, so there is nothing to sync.
         self.analysis_skipped: bool = False
 
+        # set True by the orchestrator when the alert is fully analyzed and should be (re)indexed
+        # for search. Acted on by Worker.execute() only AFTER the lock on the work item has been
+        # released, so the indexer never finds the alert locked by the engine that requested it.
+        self.search_index_requested: bool = False
+
         # we keep track of the total amount of time (in seconds) that each module takes
         # key = module.name, value = total_seconds
         self.total_analysis_time: dict = {}

@@ -19,11 +19,13 @@ def get_qdrant_client(timeout: Optional[int] = None) -> QdrantClient:
         "timeout": config.timeout if timeout is None else timeout,
     }
 
+    # the api key is independent of TLS: a plain-http qdrant with an api key configured
+    # still requires it
+    if config.api_key:
+        kwargs["api_key"] = config.api_key
+
     if config.use_ssl:
         kwargs["https"] = True
         kwargs["verify"] = config.ssl_ca_path
-        # Note: SSL certificate verification is handled by the underlying HTTP client
-        # The ca_certs configuration is not directly supported in qdrant-client
-        kwargs["api_key"] = config.api_key
 
     return QdrantClient(**kwargs)

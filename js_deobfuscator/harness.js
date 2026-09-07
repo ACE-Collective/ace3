@@ -179,8 +179,35 @@ const MAX_BLOB_FILES = 10;     // bound disk + downstream observable count
 const MAX_BLOB_BYTES = 1024 * 1024;  // truncate single-blob payloads at 1MB
 const blobFiles = [];
 
-function maybeWriteBlobPayload(args) {
+// Concatenate the string members of `parts`, skipping recorder Proxies and
+// other non-strings — they don't represent real bytes the malware author
+// authored. Bounded at MAX_BLOB_BYTES.
+function joinStringParts(parts) {
+  let content = '';
+  for (const part of parts) {
+    if (typeof part === 'string') {
+      content += part;
+      if (content.length >= MAX_BLOB_BYTES) {
+        return content.slice(0, MAX_BLOB_BYTES);
+      }
+    }
+  }
+  return content;
+}
+
+function writeSidecarPayload(content, ext) {
+  if (!content) return;
   if (blobFiles.length >= MAX_BLOB_FILES) return;
+  const filename = `blob_${blobFiles.length}.${ext}`;
+  try {
+    fs.writeFileSync(path.join(OUTPUT_DIR, filename), content, 'utf8');
+    blobFiles.push(filename);
+  } catch (e) {
+    events.push({ kind: 'blob.write.error', error: e && (e.message || String(e)) });
+  }
+}
+
+function maybeWriteBlobPayload(args) {
   if (!Array.isArray(args) || args.length === 0) return;
   const parts = args[0];
   const opts = args[1];
@@ -190,26 +217,32 @@ function maybeWriteBlobPayload(args) {
     : '';
   const ext = BLOB_MIME_TO_EXT[rawType];
   if (!ext) return;
-  // Concatenate string parts; skip recorder Proxies and other non-strings —
-  // they don't represent real bytes the malware author authored.
-  let content = '';
-  for (const part of parts) {
-    if (typeof part === 'string') {
-      content += part;
-      if (content.length >= MAX_BLOB_BYTES) {
-        content = content.slice(0, MAX_BLOB_BYTES);
-        break;
-      }
-    }
-  }
-  if (!content) return;
-  const filename = `blob_${blobFiles.length}.${ext}`;
-  try {
-    fs.writeFileSync(path.join(OUTPUT_DIR, filename), content, 'utf8');
-    blobFiles.push(filename);
-  } catch (e) {
-    events.push({ kind: 'blob.write.error', error: e && (e.message || String(e)) });
-  }
+  writeSidecarPayload(joinStringParts(parts), ext);
+}
+
+// `document.write` / `document.writeln` side-channel. The dominant shape is a
+// script that writes an entire second HTML document (typically decoded from a
+// percent-encoded or base64 literal) whose own inline <script> performs the
+// redirect, often by reading attributes the written document carries on its
+// <html> tag. The recorder only records the call, so the written markup
+// survives as a string literal inside the trace's document.write(...) line:
+// the nested <script> never executes and any URL it would have assembled is
+// lost with no error. Writes are accumulated here and flushed after the run
+// as a single blob_<n>.html — a browser builds one document out of every
+// fragment the sample writes, so the fragments must be joined, not emitted
+// one file each — and ACE recurses into it exactly as it does for a Blob
+// payload: html_js_extraction pulls the nested script back out, ships a DOM
+// snapshot of the WRITTEN document, and a second deob pass runs the script
+// against the attributes it actually reads.
+const documentWrites = [];
+function accumulateDocumentWrite(args) {
+  if (!Array.isArray(args)) return;
+  const content = joinStringParts(args);
+  if (content) documentWrites.push(content);
+}
+function flushDocumentWrites() {
+  if (!documentWrites.length) return;
+  writeSidecarPayload(joinStringParts(documentWrites), 'html');
 }
 
 // Per-label hooks invoked from the recorder's construct trap. Adding new
@@ -234,6 +267,13 @@ const callHooks = {
   'window.addEventListener': queueDomReadyListener,
   // bare global form -- see the recorder list for why it exists separately
   'addEventListener': queueDomReadyListener,
+  // The snapshot-backed document hands `window.document` back as the same
+  // `document` recorder, so those calls arrive under the bare label; the
+  // `window.document.*` forms cover the no-snapshot case.
+  'document.write': accumulateDocumentWrite,
+  'document.writeln': accumulateDocumentWrite,
+  'window.document.write': accumulateDocumentWrite,
+  'window.document.writeln': accumulateDocumentWrite,
 };
 
 function safeStringify(value) {
@@ -487,8 +527,21 @@ function buildDomDocument(snapshot) {
     // once recorder() has built it, which is before any handler can run.
     let wrapper;
     const overrides = Object.create(null);
-    overrides.getAttribute = (name) => ((String(name) in attrs) ? String(attrs[String(name)]) : null);
-    overrides.hasAttribute = (name) => (String(name) in attrs);
+    // Browsers lowercase the name on HTML elements, and the snapshot's HTML
+    // parser has already lowercased every attribute it stored — so a script
+    // asking for a mixed-case name it authored (`getAttribute('QzVrcCRMjx')`
+    // against `QzVrcCRMjx='...'` on the <html> tag) must still hit. Exact
+    // match first so an SVG attribute that kept its case is unaffected.
+    const attrsLower = Object.create(null);
+    for (const [k, v] of Object.entries(attrs)) attrsLower[k.toLowerCase()] = v;
+    const lookupAttr = (name) => {
+      const key = String(name);
+      if (key in attrs) return attrs[key];
+      const lower = key.toLowerCase();
+      return (lower in attrsLower) ? attrsLower[lower] : undefined;
+    };
+    overrides.getAttribute = (name) => { const v = lookupAttr(name); return v === undefined ? null : String(v); };
+    overrides.hasAttribute = (name) => (lookupAttr(name) !== undefined);
     overrides.dataset = dataset;
     overrides.id = (typeof attrs.id === 'string') ? attrs.id : '';
     overrides.className = (typeof attrs.class === 'string') ? attrs.class : '';
@@ -571,6 +624,16 @@ function buildDomDocument(snapshot) {
     return matched.map((el, i) => wrapperFor(el, `querySelectorAll(${JSON.stringify(String(sel))})[${i}]`));
   };
   docOverrides.getElementsByTagName = (tag) => (byTag.get(String(tag).toLowerCase()) || []).map((el, i) => wrapperFor(el, `getElementsByTagName(${JSON.stringify(String(tag))})[${i}]`));
+  // The root/body/head shortcuts. A kit that stashes its pieces as custom
+  // attributes on the <html> tag reads them through
+  // `document.documentElement.getAttribute(...)`; without these the property
+  // falls through to a child recorder, `atob()` decodes the `[label]`
+  // placeholder into garbage, and the redirect URL is lost with no error. The
+  // same miss policy as the lookups above: a recorder, never null.
+  for (const [prop, tag] of [['documentElement', 'html'], ['body', 'body'], ['head', 'head']]) {
+    const el = (byTag.get(tag) || [])[0];
+    docOverrides[prop] = el ? wrapperFor(el, `document.${prop}`) : recorder(`document.${prop}`);
+  }
   docOverrides.getElementsByClassName = (cls) => (byClass.get(String(cls)) || []).map((el, i) => wrapperFor(el, `getElementsByClassName(${JSON.stringify(String(cls))})[${i}]`));
   docOverrides.readyState = 'complete';
 
@@ -795,6 +858,10 @@ for (let i = 0; i < secondaryScripts.length; i++) {
     events.push({ kind: 'secondary.error', error: e && (e.message || String(e)) });
   }
 }
+
+// Every execution phase that can call document.write has run; materialize
+// the written document (if any) as a side-channel file.
+flushDocumentWrites();
 
 // Emit a deobfuscated pseudo-JS file: one line per significant event.
 // Downstream URL extraction just needs the string values to be visible in

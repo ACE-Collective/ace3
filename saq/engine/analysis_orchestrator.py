@@ -10,6 +10,7 @@ from saq.configuration.config import (
 )
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
+    ANALYSIS_MODE_DISPOSITIONED,
     DISPOSITION_OPEN,
     QUEUE_DEFAULT,
     STATE_ANALYST_REQUESTED_ANALYSIS,
@@ -280,7 +281,7 @@ class AnalysisOrchestrator:
         """Handle post-analysis logic including detection handling, mode changes, and cleanup."""
 
         # "is anything else still working on this root?" gates detection handling, cleanup and
-        # embedding submission alike, and we hold the lock for the duration of this pass, so it
+        # search indexing alike, and we hold the lock for the duration of this pass, so it
         # is evaluated once. 
         # letting cleanup delete a root whose detections were skipped
         # because the first answer said something else was still working on it.
@@ -297,8 +298,9 @@ class AnalysisOrchestrator:
         # handle cleanup if analysis mode supports it
         self._handle_cleanup(execution_context, has_outstanding_work)
 
-        # submit alert for embedding vectorization when analysis is fully complete
-        self._submit_alert_for_embedding_if_complete(execution_context, has_outstanding_work)
+        # request search indexing when analysis is fully complete (the worker submits the task
+        # after the lock is released)
+        self._request_search_index_if_complete(execution_context, has_outstanding_work)
 
     def _query_outstanding_work(self, execution_context: EngineExecutionContext) -> bool:
         """Evaluate _check_for_outstanding_work once for the entire post-analysis pass.
@@ -306,7 +308,7 @@ class AnalysisOrchestrator:
         Returns:
             True if there is outstanding work, or if the check could not be made at all --
             without an answer we neither process detections, nor delete the storage
-            directory, nor submit the alert for embedding.
+            directory, nor request search indexing of the alert.
         """
 
         try:
@@ -565,21 +567,15 @@ class AnalysisOrchestrator:
         except Exception as e:
             logging.error(f"unable to clear {execution_context.root.storage_dir}: {e}")
 
-    def _submit_alert_for_embedding_if_complete(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
-        """Submit the alert for embedding vectorization when analysis is fully complete (no outstanding work)."""
-        if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
+    def _request_search_index_if_complete(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
+        """Flags the alert for search indexing when its analysis is fully complete (no outstanding work).
+
+        Only alerts are indexed (correlation mode, and the post-disposition pass that may add
+        analysis). The task itself is submitted by Worker.execute() once the lock is released."""
+        if execution_context.root.analysis_mode not in (ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED):
             return
 
         if has_outstanding_work:
             return
 
-        try:
-            self._submit_alert_for_embedding_vectorization(execution_context)
-        except Exception as e:
-            logging.error(f"trouble submitting {execution_context.root} for embedding vectorization: {e}")
-            report_exception()
-
-    def _submit_alert_for_embedding_vectorization(self, execution_context: EngineExecutionContext):
-        """Submit the alert for embedding vectorization."""
-        from saq.llm.embedding.service import submit_embedding_task
-        submit_embedding_task(execution_context.root.uuid)
+        execution_context.search_index_requested = True
