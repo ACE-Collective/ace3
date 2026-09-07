@@ -6,7 +6,7 @@ key never needs alert:read on the main app. This seeds the catalog read-model en
 tables are untouched, so no one's access changes.
 
 Revision ID: f97dcbc93819
-Revises: b2e9c137a93c
+Revises: decc3390927c
 Create Date: 2026-09-04 14:28:21.444853
 
 """
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'f97dcbc93819'
-down_revision: Union[str, None] = 'b2e9c137a93c'
+down_revision: Union[str, None] = 'decc3390927c'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
