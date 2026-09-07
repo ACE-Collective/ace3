@@ -361,49 +361,6 @@ class Alert(Base):
         query = query.group_by(Observable.id)
         return query.all()
 
-    # XXX revist this weird thing -- no idea why this is designed like this
-    def get_remediation_targets(self):
-        # XXX hack to get around circular import - probably need to merge some modules into one
-        from saq.observables import create_observable
-        return []
-
-        # get observables for this alert
-        observables = self.get_observables()
-
-        # get remediation targets for each observable
-        targets = {}
-        for o in observables:
-            observable = create_observable(o.type, o.display_value)
-            # create observable returns none if the value is bad for the type (e.g. 123 is not a valid ipv4)
-            if observable is None:
-                continue
-            observable.alert = self
-            for target in observable.remediation_targets:
-                targets[target.id] = target
-
-        # return sorted list of targets
-        targets = list(targets.values())
-        targets.sort(key=lambda x: f"{x.type}|{x.value}")
-        return targets
-
-    def get_remediation_status(self):
-        targets = self.get_remediation_targets()
-        remediations = []
-        for target in targets:
-            if len(target.history) > 0:
-                remediations.append(target.history[0])
-
-        if len(remediations) == 0:
-            return 'new'
-
-        s = 'success'
-        for r in remediations:
-            if not r.successful:
-                return 'failed'
-            if r.status != 'COMPLETED':
-                s = 'processing'
-        return s
-
     @property
     def wiki(self) -> str:
         return ''
@@ -433,31 +390,6 @@ class Alert(Base):
             self._observable_open_event_counts = results
 
         return self._observable_open_event_counts
-
-    @property
-    def remediation_status(self):
-        if not self.observable_mappings:
-            return ''
-
-        remediations = []
-        for om in self.observable_mappings:
-            for orm in om.observable.observable_remediation_mappings:
-                remediations.append(orm.remediation)
-
-        if len(remediations) == 0:
-            return 'new'
-
-        s = 'success'
-        for rem in remediations:
-            if not rem.successful:
-                return 'failed'
-            if rem.status != 'COMPLETED':
-                s = 'processing'
-        return s
-
-    @property
-    def remediation_targets(self):
-        return self._remediation_targets if hasattr(self, '_remediation_targets') else self.get_remediation_targets()
 
     @property
     def all_email_analysis(self) -> list[Analysis]:
@@ -1823,7 +1755,7 @@ class Remediation(Base):
         default=None)
 
     result: Mapped[Optional[str]] = mapped_column(
-        Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED'),
+        Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED', 'NOT_FOUND'),
         nullable=True)
 
     comment: Mapped[Optional[str]] = mapped_column(
@@ -1914,7 +1846,7 @@ class RemediationHistory(Base):
         server_default=text('CURRENT_TIMESTAMP'))
 
     result: Mapped[str] = mapped_column(
-        Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED'),
+        Enum('DELAYED', 'ERROR', 'FAILED', 'IGNORE', 'SUCCESS', 'CANCELLED', 'NOT_FOUND'),
         nullable=False)
 
     message: Mapped[str] = mapped_column(

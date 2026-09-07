@@ -567,13 +567,14 @@ def test_get_distinct_remediation_actions():
 def test_get_distinct_remediator_statuses():
     """test getting distinct remediator statuses"""
     statuses = get_distinct_remediator_statuses()
-    assert len(statuses) == 6
+    assert len(statuses) == 7
     assert RemediatorStatus.DELAYED.value in statuses
     assert RemediatorStatus.ERROR.value in statuses
     assert RemediatorStatus.FAILED.value in statuses
     assert RemediatorStatus.IGNORE.value in statuses
     assert RemediatorStatus.SUCCESS.value in statuses
     assert RemediatorStatus.CANCELLED.value in statuses
+    assert RemediatorStatus.NOT_FOUND.value in statuses
 
 
 @pytest.mark.unit

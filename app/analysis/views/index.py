@@ -26,6 +26,7 @@ from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
+from saq.remediation.coverage import get_remediation_coverage
 from saq.remediation.external.database import get_external_checks_for_alert
 from saq.remediation.external.events import summarize_alert_checks
 from saq.remediation.timeline import gather_remediation_events
@@ -584,13 +585,6 @@ def index():
 
     domain_summary_str = create_histogram_string(domains)
 
-    # sort remediation targets
-    target_types = {}
-    for target in alert.remediation_targets:
-        if target.type not in target_types:
-            target_types[target.type] = []
-        target_types[target.type].append(target)
-
     # Aggregate remediation events from any analysis in the tree that publishes them
     # plus ACE's own email_delivery remediation attempts from the DB
     # (see saq/remediation/timeline.py). ACE rows have no native received_time,
@@ -608,6 +602,9 @@ def index():
     external_check_footer = summarize_alert_checks(
         get_external_checks_for_alert(alert.uuid)
     )
+
+    # the Remediation Timeline heading carries the same coverage badge as the alert list
+    remediation_coverage = get_remediation_coverage([alert])
 
     # Aggregate URL-click state from any analysis in the tree that publishes it
     # (see saq/clicker_detection/timeline.py). The template renders an alert-level
@@ -630,9 +627,9 @@ def index():
         'analysis/index.html',
         alert=alert,
         cache_hit_map=cache_hit_map,
-        target_types=target_types,
         remediation_timeline_events=remediation_timeline_events,
         external_check_footer=external_check_footer,
+        remediation_coverage=remediation_coverage,
         url_clicks_events=url_clicks.events,
         url_clicks_ran=url_clicks.ran,
         url_clicks_errors=url_clicks.errors,

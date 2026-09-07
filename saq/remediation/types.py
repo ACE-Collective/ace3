@@ -19,11 +19,16 @@ class RemediatorStatus(Enum):
     IGNORE = 'IGNORE'
     SUCCESS = 'SUCCESS'
     CANCELLED = 'CANCELLED'
+    # the target does not exist where the remediator looked for it (e.g. the email is not in the
+    # mailbox because something else already removed it, or it was never delivered). Nothing was
+    # done, but there is nothing left for the analyst to act on either, so this is complete
+    # without being a failure.
+    NOT_FOUND = 'NOT_FOUND'
 
     @property
     def completed(self) -> bool:
         """Returns True if the status indicates that the remediation is complete."""
-        return self in [self.FAILED, self.IGNORE, self.SUCCESS, self.CANCELLED]
+        return self in [self.FAILED, self.IGNORE, self.SUCCESS, self.CANCELLED, self.NOT_FOUND]
 
     @property
     def in_progress(self) -> bool:

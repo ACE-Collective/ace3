@@ -18,13 +18,7 @@
             {% for tag in alert_tags[alert.uuid] %}
               {% if tag.display %}<span class="badge text-bg-{{tag.name | get_tag_css_class}}">{{tag.name}}</span>{% endif %}
             {% endfor %}
-            {% if alert.remediation_status == 'success' %}
-                <span class="badge text-bg-success" style="cursor:pointer" >remediated</span>
-            {% elif alert.remediation_status == 'failed' %}
-                <span class="badge text-bg-danger" style="cursor:pointer" >remediation failed</span>
-            {% elif alert.remediation_status == 'processing' %}
-                <span class="badge text-bg-warning" style="cursor:pointer" >remediating</span>
-            {% endif %}
+            {% include "analysis/_remediation_badge.html" %}
             {% if comments[alert.uuid]|length != 0 %}
                 {% for comment in comments[alert.uuid] %}
                     <br />

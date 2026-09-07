@@ -5,6 +5,7 @@ from app.events.views.session import get_current_event
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
 from saq.database.model import Comment
+from saq.remediation.coverage import get_remediation_coverage
 from saq.util.ui import create_histogram_string
 
 @events.route('/analysis', methods=['GET'])
@@ -44,6 +45,8 @@ def index():
                 comments[comment.uuid] = []
             comments[comment.uuid].append(comment)
 
+    remediation_coverage = get_remediation_coverage(alerts)
+
     return render_template(
         'events/index.html',
         event=event,
@@ -59,5 +62,6 @@ def index():
         urls='\n'.join(sorted(list(event.all_urls))),
         observables=event.all_observables_sorted,
         closed_status=get_config().events.closed_status,
-        comments=comments
+        comments=comments,
+        remediation_coverage=remediation_coverage,
     )

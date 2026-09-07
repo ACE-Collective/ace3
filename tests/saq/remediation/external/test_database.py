@@ -200,3 +200,19 @@ def test_get_external_checks_for_alert_ordered(make_check, db_alert):
 
     rows = get_external_checks_for_alert(db_alert.uuid)
     assert [r.id for r in rows] == [first.id, second.id, third.id]
+
+
+@pytest.mark.unit
+def test_superseding_source_from_reason_round_trips_both_formats():
+    from saq.remediation.external.database import (
+        ace_supersede_reason,
+        probe_supersede_reason,
+        superseding_source_from_reason,
+    )
+
+    when = datetime(2026, 5, 13, 12, 0, tzinfo=timezone.utc)
+    assert superseding_source_from_reason(probe_supersede_reason("msdefender", when)) == "msdefender"
+    assert superseding_source_from_reason(ace_supersede_reason(42, when)) == "ACE"
+    assert superseding_source_from_reason(None) is None
+    assert superseding_source_from_reason("") is None
+    assert superseding_source_from_reason("something else entirely") is None

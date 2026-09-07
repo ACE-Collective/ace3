@@ -117,6 +117,37 @@ def get_pending_external_check_by_observable(
     )
 
 
+# The supersede reason is stored verbatim on ``external_remediation_check.result_message``.
+# ``superseding_source_from_reason`` reads it back, so the two formats and the parser
+# live together here.
+_PROBE_SUPERSEDE_PREFIX = "probe "
+_ACE_SUPERSEDE_PREFIX = "ACE remediation id="
+
+
+def probe_supersede_reason(probe_name: str, confirmed_at: Optional[datetime]) -> str:
+    return f"{_PROBE_SUPERSEDE_PREFIX}{probe_name} confirmed remediation at {confirmed_at}"
+
+
+def ace_supersede_reason(remediation_id: int, succeeded_at: Optional[datetime]) -> str:
+    return f"{_ACE_SUPERSEDE_PREFIX}{remediation_id} (remove) succeeded at {succeeded_at}"
+
+
+def superseding_source_from_reason(reason: Optional[str]) -> Optional[str]:
+    """Recover who confirmed the remediation from a stored supersede reason:
+    the sibling probe's registered name, or ``"ACE"``. ``None`` when the
+    message is not one of ours."""
+    if not reason:
+        return None
+    if reason.startswith(_ACE_SUPERSEDE_PREFIX):
+        return "ACE"
+    if reason.startswith(_PROBE_SUPERSEDE_PREFIX):
+        rest = reason[len(_PROBE_SUPERSEDE_PREFIX):]
+        probe_name, sep, _ = rest.partition(" confirmed remediation at ")
+        if sep and probe_name:
+            return probe_name
+    return None
+
+
 def find_superseding_confirmation(
     observable_type: str,
     observable_value: str,
@@ -152,7 +183,7 @@ def find_superseding_confirmation(
         sibling_query = sibling_query.filter(ExternalRemediationCheck.update_time <= confirmed_before)
     sibling = sibling_query.order_by(ExternalRemediationCheck.id.desc()).first()
     if sibling is not None:
-        return f"probe {sibling.probe_name} confirmed remediation at {sibling.update_time}"
+        return probe_supersede_reason(sibling.probe_name, sibling.update_time)
 
     # the latest completed+successful action decides: a successful remove means the target is
     # gone; a successful restore after it means the target is back and polling should continue
@@ -171,7 +202,7 @@ def find_superseding_confirmation(
             func.coalesce(Remediation.update_time, Remediation.insert_date) <= confirmed_before)
     latest = latest_query.order_by(Remediation.id.desc()).first()
     if latest is not None and latest.action == "remove":
-        return f"ACE remediation id={latest.id} (remove) succeeded at {latest.update_time}"
+        return ace_supersede_reason(latest.id, latest.update_time)
 
     return None
 
