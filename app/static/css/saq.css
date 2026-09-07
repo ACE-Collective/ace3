@@ -732,3 +732,38 @@ nav[data-toggle="toc"] {
     max-width: 90vw;
     margin-bottom: 0;
 }
+
+/* alert search results on the manage page. Deliberately NOT badges: the alert row directly
+   above uses badges for tags and disposition, so a badge here reads as a tag. */
+.search-tier {
+    font-size: 0.8125rem;
+    background-color: transparent;
+}
+
+.search-tier-exact  { color: #198754; font-weight: 700; }
+.search-tier-strong { color: #198754; }
+.search-tier-good   { color: #000000; }
+.search-tier-weak   { color: #adb5bd; }
+
+.search-hit {
+    border-left: 3px solid #dee2e6; /* neutral default, also unknown/empty kind */
+    padding-left: 0.5rem;
+    margin: 0.125rem 0 0.125rem 0.25rem;
+}
+
+.search-hit-kind {
+    display: inline-block;
+    min-width: 5.5rem; /* keeps the snippets aligned in a column */
+    color: #6c757d;
+    font-size: 0.75rem;
+}
+
+/* one rule color per document kind (saq/search/types.py) */
+.search-hit-alert      { border-left-color: #6c757d; }
+.search-hit-comment    { border-left-color: #6f42c1; }
+.search-hit-detection  { border-left-color: #b02a37; }
+.search-hit-analysis   { border-left-color: #3d6fb4; }
+.search-hit-context    { border-left-color: #adb5bd; }
+.search-hit-observable { border-left-color: #0f766e; }
+.search-hit-tag        { border-left-color: #997404; }
+.search-hit-uuid       { border-left-color: #495057; }
