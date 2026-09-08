@@ -31,11 +31,18 @@ on the main thread, interrupting whatever it was doing, so calling ``stop()`` th
 deadlocks any service whose ``stop()`` joins the threads the main thread is already
 joining. Shutdown work belongs on the main path, after ``wait_for_shutdown()`` returns.
 
+Handlers also may not touch a ``multiprocessing`` primitive. A handler usually interrupts
+a wait on the very event it is about to set, and multiprocessing's ``Condition.notify()``
+blocks until a sleeper wakes -- where the only sleeper is the thread now suspended inside
+the handler. So the handler sets a ``threading.Event`` and nothing else; the
+``shutdown-observer`` thread does the logging, the mirror and the watchdog.
+
 Fork safety
 -----------
-The flag is backed by an ``ACE_MP_CONTEXT.Event()`` created before any fork, so a forked
-engine worker observes what the parent set. This mirrors what ``saq.engine.worker``
-already does with its own two events.
+The local ``threading.Event`` cannot cross a fork -- a child gets a stale copy the parent
+can never set -- so it is mirrored onto an ``ACE_MP_CONTEXT.Event()`` created before any
+fork. A forked engine worker reads the mirror, which is what ``saq.engine.worker`` already
+does with its own two events. The mirror is set by the observer, never by a handler.
 """
 
 import logging
@@ -55,6 +62,10 @@ DEFAULT_SHUTDOWN_DEADLINE = 20.0
 # how long the watchdog waits past the deadline before taking the process down itself.
 # this is slack for a stop() that is nearly finished, not a second budget.
 WATCHDOG_GRACE = 5.0
+
+# resolved once at import: looking a name up inside a signal handler would allocate and
+# can raise, and the handler must stay trivial
+_SIGNAL_NAMES = {int(s): f"received {s.name}" for s in signal.Signals}
 
 
 class ShutdownHook(NamedTuple):
@@ -76,8 +87,29 @@ class ShutdownCoordinator:
     def __init__(self, deadline_seconds: float = DEFAULT_SHUTDOWN_DEADLINE):
         self.deadline_seconds = deadline_seconds
 
-        # created pre-fork so forked children see what the parent sets
-        self._event = ACE_MP_CONTEXT.Event()
+        # Two events, and the split matters.
+        #
+        # _event is what the signal handler sets and what in-process waiters block on.
+        # It is a threading.Event specifically because a multiprocessing.Event cannot be
+        # set from a signal handler that interrupted a wait on that same event: mp's
+        # Condition.notify() blocks until a sleeper wakes, and the only sleeper is the
+        # very thread now suspended inside the handler. That self-deadlock hung every
+        # service whose main thread sat in wait_for_shutdown() until docker SIGKILLed it.
+        # threading.Event has no such problem -- its notify only releases locks, which
+        # never blocks.
+        self._event = threading.Event()
+
+        # _mp_event mirrors _event across a fork, so a forked engine worker can still see
+        # a shutdown its parent requested. Set in _on_shutdown_requested, which always
+        # runs on a normal thread -- never inside a signal handler.
+        self._mp_event = ACE_MP_CONTEXT.Event()
+
+        # turns the raw flag into the follow-on work (mirror, logging, watchdog) off the
+        # signal handler. see _start_observer.
+        self._observer: Optional[threading.Thread] = None
+
+        # guards the one-time follow-on work in _on_shutdown_requested
+        self._announced = False
 
         # monotonic timestamp of when shutdown was requested, or None
         self._requested_at: Optional[float] = None
@@ -103,8 +135,21 @@ class ShutdownCoordinator:
 
     @property
     def is_shutting_down(self) -> bool:
-        """True once shutdown has been requested, in this process or its parent."""
-        return self._event.is_set()
+        """True once shutdown has been requested, in this process or its parent.
+
+        Reads both events: a forked child inherits a stale copy of the local one, so the
+        multiprocessing mirror is the only thing its parent can still reach.
+        """
+        return self._event.is_set() or self._mp_event.is_set()
+
+    def _wait_event(self):
+        """The event to block on in this process.
+
+        The parent waits on the local event -- that is the one the signal handler sets.
+        A forked child's copy of it can never be set by the parent, so the child watches
+        the multiprocessing mirror instead.
+        """
+        return self._event if os.getpid() == self._owner_pid else self._mp_event
 
     @property
     def reason(self) -> Optional[str]:
@@ -127,16 +172,72 @@ class ShutdownCoordinator:
         ignored, so a SIGTERM followed by an impatient second SIGTERM does not restart
         the clock or re-run hooks."""
         with self._lock:
-            if self._event.is_set():
-                logging.debug("shutdown already requested (%s), ignoring: %s", self._reason, reason)
-                return
+            already_requested = self._event.is_set()
 
+        if already_requested:
+            logging.debug("shutdown already requested (%s), ignoring: %s", self._reason, reason)
+            # the flag may have been set by the signal handler moments ago, with the
+            # observer not yet scheduled. announcing here (idempotent) means the caller
+            # can rely on the watchdog being armed by the time this returns.
+            self._on_shutdown_requested()
+            return
+
+        with self._lock:
             self._reason = reason
             self._requested_at = time.monotonic()
             self._event.set()
 
-        logging.info("shutdown requested: %s (deadline %.1fs)", reason, self.deadline_seconds)
+        self._on_shutdown_requested()
+
+    def _on_shutdown_requested(self):
+        """Everything that follows a shutdown request but must not run in a handler.
+
+        Idempotent, and deliberately reachable from two directions: the observer thread
+        picks it up when a signal set the flag, and any caller on the normal path runs it
+        inline. Whoever gets there first wins, so the watchdog is armed and the mirror is
+        set before shutdown proceeds rather than whenever the observer happens to be
+        scheduled -- the watchdog is the safety net, and arming it asynchronously would
+        leave a window where a wedged stop() had nothing watching it.
+
+        Never call this from a signal handler: it logs, takes a lock, and sets a
+        multiprocessing event, none of which are safe there.
+        """
+        with self._lock:
+            if self._announced:
+                return
+
+            self._announced = True
+
+        logging.info("shutdown requested: %s (deadline %.1fs)", self._reason, self.deadline_seconds)
+
+        # mirror the flag for forked children
+        self._mp_event.set()
+
         self._start_watchdog()
+
+    def _start_observer(self):
+        """Start the thread that reacts to a shutdown requested from a signal handler.
+
+        A signal handler runs on the main thread, interrupting whatever it was doing, so
+        it may only touch things that cannot block: setting a threading.Event, and
+        assigning a couple of attributes. Logging takes a lock, arming the watchdog takes
+        a lock, and setting the multiprocessing mirror can block outright -- so all three
+        happen here instead, as soon as the flag is seen.
+        """
+        with self._lock:
+            if self._observer is not None:
+                return
+
+            self._observer = threading.Thread(
+                target=self._observer_loop,
+                name="shutdown-observer",
+                daemon=True,
+            )
+            self._observer.start()
+
+    def _observer_loop(self):
+        self._event.wait()
+        self._on_shutdown_requested()
 
     def mark_complete(self):
         """Declare shutdown finished, standing the watchdog down.
@@ -147,15 +248,20 @@ class ShutdownCoordinator:
         self._complete.set()
 
     def _signal_handler(self, signum, frame):
-        """Async-signal-safe as far as we can make it in python: set a flag, nothing else.
+        """Set the flag. Nothing else.
 
-        Note this deliberately does not call stop() -- see the module docstring."""
-        try:
-            name = signal.Signals(signum).name
-        except ValueError:
-            name = str(signum)
+        This runs on the main thread, interrupting whatever it was doing -- including,
+        typically, a wait on the very event it is about to set. So it takes no lock, logs
+        nothing, and touches no multiprocessing primitive; the observer thread picks the
+        flag up and does the rest. It also deliberately does not call stop(): see the
+        module docstring.
+        """
+        if self._event.is_set():
+            return
 
-        self.request_shutdown(f"received {name}")
+        self._reason = _SIGNAL_NAMES.get(signum, f"signal {signum}")
+        self._requested_at = time.monotonic()
+        self._event.set()
 
     def install_signal_handlers(self, signals=(signal.SIGTERM, signal.SIGINT)):
         """Install the shutdown signal handlers for this process.
@@ -164,6 +270,10 @@ class ShutdownCoordinator:
         deadline. Docker sends SIGTERM and an operator at a terminal sends SIGINT; there
         is no reason for them to behave differently.
         """
+        # started before the handlers, so a signal arriving immediately still has
+        # something to pick the flag up
+        self._start_observer()
+
         for signum in signals:
             try:
                 signal.signal(signum, self._signal_handler)
@@ -184,11 +294,11 @@ class ShutdownCoordinator:
         if seconds <= 0:
             return self.is_shutting_down
 
-        return self._event.wait(seconds)
+        return self._wait_event().wait(seconds)
 
     def wait_for_shutdown(self, timeout: Optional[float] = None) -> bool:
         """Block until shutdown is requested. Returns True if it was."""
-        return self._event.wait(timeout)
+        return self._wait_event().wait(timeout)
 
     # ------------------------------------------------------------------
     # hooks

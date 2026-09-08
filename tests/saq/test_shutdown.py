@@ -2,6 +2,7 @@ import os
 import signal
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,9 @@ from saq.shutdown import (
     reset_shutdown_coordinator,
     run_bounded,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -289,3 +293,89 @@ def test_reset_stands_the_watchdog_down(make_coordinator):
     reset_shutdown_coordinator()
 
     assert coordinator._complete.is_set()
+
+
+# The body of test_sigterm_while_waiting_does_not_deadlock, run as a subprocess.
+#
+# It has to be a subprocess: the failure mode is a hang, not an exception, and an
+# in-process version would wedge the whole suite rather than fail.
+_SIGTERM_DEADLOCK_PROGRAM = """
+import os, signal, sys, threading
+sys.path.insert(0, {repo!r})
+from saq.shutdown import get_shutdown_coordinator
+
+coordinator = get_shutdown_coordinator(deadline_seconds=20.0)
+coordinator.install_signal_handlers()
+
+def _fire():
+    import time
+    time.sleep(0.5)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+threading.Thread(target=_fire, daemon=True).start()
+
+# the main thread blocks on the very event the handler is about to set. this is the
+# shape every threaded ACE service runs in (see saq/cli/commands/service.py).
+if coordinator.wait_for_shutdown(10):
+    print("WOKE")
+    sys.exit(0)
+
+print("TIMED OUT")
+sys.exit(1)
+"""
+
+
+@pytest.mark.unit
+def test_sigterm_while_waiting_does_not_deadlock(tmp_path):
+    """SIGTERM must wake a thread that is blocked in wait_for_shutdown().
+
+    This is the shape every threaded service runs in, and it used to deadlock outright.
+    The coordinator's flag was a multiprocessing.Event, and setting one from a signal
+    handler that interrupted a wait on that same event blocks forever: mp's
+    Condition.notify() waits for a sleeper to wake, and the only sleeper is the thread
+    suspended inside the handler. Services hung until docker SIGKILLed them at the end of
+    their grace period, which read as "shutdown is very slow".
+    """
+    import subprocess
+    import sys as _sys
+
+    program = tmp_path / "sigterm_wait.py"
+    program.write_text(_SIGTERM_DEADLOCK_PROGRAM.format(repo=str(REPO_ROOT)))
+
+    result = subprocess.run(
+        [_sys.executable, str(program)],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    assert "WOKE" in result.stdout, f"stdout={result.stdout!r} stderr={result.stderr[-2000:]!r}"
+    assert result.returncode == 0
+
+
+@pytest.mark.unit
+def test_signal_handler_touches_no_blocking_primitive(make_coordinator):
+    """The handler must not log, take the coordinator lock, or set the mp mirror.
+
+    Each of those can block, and the handler runs on a thread that may be holding the
+    very lock it would need. The follow-on work belongs on the observer thread.
+    """
+    coordinator = make_coordinator(deadline_seconds=5)
+    coordinator._start_observer()
+
+    # hold the coordinator lock, then run the handler as a signal would
+    with coordinator._lock:
+        coordinator._signal_handler(signal.SIGTERM, None)
+
+        # the flag is set without ever needing the lock we are holding
+        assert coordinator.is_shutting_down
+        assert coordinator.reason == "received SIGTERM"
+
+        # and the mp mirror is NOT set from the handler
+        assert not coordinator._mp_event.is_set()
+
+    # the observer picks it up once we are out of the way
+    for _ in range(200):
+        if coordinator._mp_event.is_set():
+            break
+        time.sleep(0.01)
+
+    assert coordinator._mp_event.is_set()

@@ -58,11 +58,22 @@ Three rules about it:
 - **Signal handlers only set the flag.** They never call `stop()`. A handler runs on the
   main thread, so calling `stop()` there deadlocks any service whose `stop()` joins the
   threads the main thread is already joining.
+
+  This is stricter than it sounds, and it is worth understanding why. The flag is a
+  `threading.Event`, *not* a `multiprocessing.Event`, because the handler typically
+  interrupts a wait on the very event it is about to set — and `multiprocessing`'s
+  `Condition.notify()` blocks until a sleeper wakes, where the only sleeper is the thread
+  now suspended inside the handler. That is an unbreakable self-deadlock, and it hung
+  every threaded ACE service until Docker SIGKILLed it. The handler therefore sets a
+  `threading.Event` and assigns two attributes; it does not log, take a lock, or touch a
+  multiprocessing primitive. A `shutdown-observer` thread picks the flag up and does the
+  rest. `saq/shutdown.py` carries the fork-visible mirror separately, set off the handler.
 - **SIGTERM and SIGINT mean the same thing.** Docker sends the first, an operator at a
   terminal sends the second. (Until this change SIGTERM meant *abrupt* and only SIGINT
   was graceful, so the graceful path never ran in production.)
-- **The flag is an `mp.Event` created before any fork**, so forked engine workers observe
-  a shutdown requested by the parent.
+- **A multiprocessing mirror is created before any fork**, so forked engine workers still
+  observe a shutdown requested by the parent. A child inherits a stale copy of the local
+  `threading.Event`, so it watches the mirror instead.
 
 `get_shutdown_coordinator()` also offers `sleep()` (returns early on shutdown),
 `deadline_remaining()`, and `register()` for ordered shutdown hooks. `run_bounded()` runs
@@ -197,6 +208,18 @@ docker compose logs | grep -Ei "error|traceback|DEADLOCK STATEMENT" | wc -l
 docker compose up -d
 ```
 
-The best single regression signal is on the way back up: the engine logs
-`clearing N locks from previous execution` at startup. After a clean shutdown that count
-should be **zero**, because the node released its own locks on the way out.
+The best single regression signal is on the way back up. At startup the engine logs
+`clearing N locks from previous execution` — but **only when N is non-zero**. After a
+clean shutdown the line is absent entirely, because the node released its own locks on
+the way out. Seeing it at all means work was stranded, and the number tells you how much.
+
+The other signal is the shutdown sequence itself. Each service logs three lines, and the
+elapsed time between the first and last is that service's real shutdown cost:
+
+```
+shutdown requested: received SIGTERM (deadline 20.0s)
+stopping service <name>
+service <name> exited with code 0
+```
+
+A service missing those lines did not shut down — it was killed partway through.
