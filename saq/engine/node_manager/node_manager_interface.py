@@ -46,6 +46,10 @@ class NodeManagerInterface(Protocol):
         """Sets the status of this node in the database."""
         ...
 
+    def clear_node_locks(self, reason: str) -> int:
+        """Delete every lock held by this node, returning how many were cleared."""
+        ...
+
     def execute_primary_node_routines(self) -> None:
         """Executes primary node routines if this node is configured as primary via the ACE_IS_PRIMARY_NODE environment variable."""
         ...

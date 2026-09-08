@@ -8,7 +8,7 @@ import threading
 from typing import Optional
 from saq.configuration.config import get_config
 from saq.constants import SERVICE_NETWORK_SEMAPHORE
-from saq.error.reporting import report_exception
+from saq.error.reporting import log_loop_exception
 from saq.network_semaphore.config import NetworkSemaphoreConfig
 from saq.network_semaphore.fallback import initialize_fallback_semaphores
 from saq.network_semaphore.logging import LoggingSemaphore
@@ -149,8 +149,7 @@ class NetworkSemaphoreServer:
                     t.start()
                     
             except Exception as e:
-                logging.error(f"uncaught exception: {e}")
-                report_exception()
+                log_loop_exception(e, "uncaught exception in semaphore server loop")
 
                 # TODO clean up socket stuff to restart
                 self.shutdown_event.wait(1)

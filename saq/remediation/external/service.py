@@ -16,7 +16,7 @@ from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_EXTERNAL_REMEDIATION_CHECK
 from saq.database.model import Alert, ExternalRemediationCheck
 from saq.database.pool import get_db, remove_all_sessions
-from saq.error.reporting import report_exception
+from saq.error.reporting import log_loop_exception
 from saq.remediation.external.database import cancel_external_checks_for_alert
 from saq.remediation.external.manager import ExternalRemediationCheckManager
 from saq.remediation.external.types import CheckStatus
@@ -97,8 +97,7 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             try:
                 self._run_disposition_sweep()
             except Exception as e:
-                logging.error(f"disposition sweep failed: {e}")
-                report_exception()
+                log_loop_exception(e, "disposition sweep failed")
             finally:
                 try:
                     remove_all_sessions()

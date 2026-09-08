@@ -1,9 +1,8 @@
 
 from abc import abstractmethod
-import logging
 import threading
 
-from saq.error.reporting import report_exception
+from saq.error.reporting import log_loop_exception
 
 
 class ACEThreadedMonitor:
@@ -19,8 +18,7 @@ class ACEThreadedMonitor:
             try:
                 self.execute()
             except Exception as e:
-                logging.error(f"error in {self.name} monitor: {e}")
-                report_exception(e)
+                log_loop_exception(e, f"error in {self.name} monitor")
 
             self.shutdown_event.wait(self.frequency)
 

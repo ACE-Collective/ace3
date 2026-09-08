@@ -16,14 +16,6 @@ parser.add_argument('-c', '--config-path', required=False, dest='config_paths', 
          This option can be specified multiple times and each file is loaded in order.""")
 parser.add_argument('-u', '--user-name', required=False, dest='user_name', default=None,
     help="The user name of the ACE user executing the command. This information is required for some commands.")
-parser.add_argument('--start', required=False, dest='start', default=False, action='store_true',
-    help="Start the specified service.  Blocks keyboard unless --daemon (-d) is used.")
-parser.add_argument('--stop', required=False, dest='stop', default=False, action='store_true',
-    help="Stop the specified service.  Only applies to services started with --daemon (-d).")
-parser.add_argument('-d', '--daemon', required=False, dest='daemon', default=False, action='store_true',
-    help="Run this process as a daemon in the background.")
-parser.add_argument('-k', '--kill-daemon', required=False, dest='kill_daemon', default=False, action='store_true',
-    help="Kill the currently processing process.")
 parser.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
     help="Force all analysis to always generate an alert.")
 parser.add_argument('--relative-dir', required=False, dest='relative_dir', default=None,

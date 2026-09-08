@@ -3,6 +3,8 @@ import uuid as uuidlib
 import pytest
 
 from saq.constants import (
+    NODE_EXPECTED_STATE_OFFLINE,
+    NODE_EXPECTED_STATE_ONLINE,
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
     NODE_STATUS_DRAINING_COLLECTORS,
@@ -13,6 +15,9 @@ from saq.constants import (
 from saq.database.pool import get_db_connection
 from saq.database.util.node import (
     check_and_advance_collectors_drained,
+    drain_node,
+    get_node_expected_state,
+    resume_node,
     check_and_mark_drained,
     clear_node_status_cache,
     get_collector_statuses,
@@ -336,3 +341,62 @@ def test_update_collector_status_upsert():
     name, status, backlog_count, last_update = statuses[0]
     assert status == NODE_STATUS_DRAINING
     assert backlog_count == 5
+
+
+def test_transition_node_status_writes_expected_state():
+    """status and expected_state move in one statement, so operator intent can never
+    disagree with the transition that carried it."""
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+
+    assert transition_node_status(node_id, NODE_STATUS_DRAINING, [NODE_STATUS_RUNNING],
+                                  expected_state=NODE_EXPECTED_STATE_OFFLINE)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+    assert get_node_expected_state(node_id) == NODE_EXPECTED_STATE_OFFLINE
+
+    # a rejected transition must not write expected_state either
+    assert not transition_node_status(node_id, NODE_STATUS_RUNNING, [NODE_STATUS_STARTING],
+                                      expected_state=NODE_EXPECTED_STATE_ONLINE)
+    assert get_node_expected_state(node_id) == NODE_EXPECTED_STATE_OFFLINE
+
+
+def test_drain_and_resume_node():
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_RUNNING)
+
+    assert drain_node(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
+    assert get_node_expected_state(node_id) == NODE_EXPECTED_STATE_OFFLINE
+
+    assert resume_node(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_RUNNING
+    assert get_node_expected_state(node_id) == NODE_EXPECTED_STATE_ONLINE
+
+
+def test_drain_node_is_rejected_when_not_running():
+    """`ace node drain` has to be safe to run twice from a shutdown script, so a second
+    drain is a no-op rather than an error."""
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_DRAINING)
+
+    assert not drain_node(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_DRAINING
+
+
+def test_resume_node_works_from_every_drain_phase():
+    node_id = local_node_id()
+
+    for status in (NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED):
+        set_node_status(node_id, status)
+        assert resume_node(node_id), f"could not resume from {status}"
+        assert get_node_status(node_id) == NODE_STATUS_RUNNING
+
+
+def test_resume_node_is_rejected_from_stopped():
+    """A stopped node is not resumed by an API call -- it is resumed by being started,
+    which is what sets it back to starting/running."""
+    node_id = local_node_id()
+    set_node_status(node_id, NODE_STATUS_STOPPED)
+
+    assert not resume_node(node_id)
+    assert get_node_status(node_id) == NODE_STATUS_STOPPED

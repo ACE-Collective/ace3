@@ -125,6 +125,17 @@ _session_makers: "WeakKeyDictionary[asyncio.AbstractEventLoop, async_sessionmake
 _registry_lock = threading.RLock()
 
 
+async def dispose_engines_for_current_loop():
+    """Dispose the async engine bound to the running event loop."""
+    loop = asyncio.get_running_loop()
+    with _registry_lock:
+        engine = _engines.pop(loop, None)
+        _session_makers.pop(loop, None)
+
+    if engine is not None:
+        await engine.dispose()
+
+
 def _get_engine() -> AsyncEngine:
     """get or create the async engine bound to the running event loop"""
     loop = asyncio.get_running_loop()

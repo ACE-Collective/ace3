@@ -20,7 +20,7 @@ from saq.database import ALERT, execute_with_retry, get_db_connection, remove_al
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_data_dir, get_global_runtime_settings
-from saq.error import report_exception
+from saq.error.reporting import log_loop_exception, report_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
 
@@ -292,8 +292,7 @@ class RemoteNodeGroup:
                         break
 
             except Exception as e:
-                logging.error("unexpected exception thrown in loop for {}: {}".format(self, e))
-                report_exception()
+                log_loop_exception(e, "unexpected exception thrown in loop for {}".format(self))
                 if self.shutdown_event.wait(1):
                     break
 

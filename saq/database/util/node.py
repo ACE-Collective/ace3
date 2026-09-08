@@ -4,7 +4,13 @@ import sys
 import threading
 import time
 from typing import Optional
-from saq.constants import ENV_ACE_IS_PRIMARY_NODE, VALID_NODE_EXPECTED_STATES, VALID_NODE_STATUSES
+from saq.constants import (
+    ENV_ACE_IS_PRIMARY_NODE,
+    NODE_TRANSITION_DRAIN,
+    NODE_TRANSITION_RESUME,
+    VALID_NODE_EXPECTED_STATES,
+    VALID_NODE_STATUSES,
+)
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
@@ -265,6 +271,18 @@ def set_node_status(node_id: int, status: str):
     clear_node_status_cache()
     logging.info("node %s status set to %s", node_id, status)
 
+def get_node_expected_state(node_id: Optional[int]=None) -> Optional[str]:
+    """Returns the expected_state (online/offline) of the given node, or None."""
+    if node_id is None:
+        node_id = get_global_runtime_settings().saq_node_id
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT expected_state FROM nodes WHERE id = %s", (node_id,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+
 def set_node_expected_state(node_id: int, expected_state: str):
     """Sets the operator intent for the node (online or offline). Independent of
     status: draining sets this to offline so that monitoring can tell a planned
@@ -278,15 +296,26 @@ def set_node_expected_state(node_id: int, expected_state: str):
 
     logging.info("node %s expected state set to %s", node_id, expected_state)
 
-def transition_node_status(node_id: int, to_status: str, from_statuses: list[str]) -> bool:
+def transition_node_status(node_id: int, to_status: str, from_statuses: list[str],
+                           expected_state: Optional[str]=None) -> bool:
     """Atomically transitions the status of the node from one of from_statuses to to_status.
-    Returns True if the transition occurred, False otherwise."""
+    Returns True if the transition occurred, False otherwise.
+
+    When expected_state is given it is written in the same statement, so operator intent
+    can never disagree with the status transition that carried it."""
     assert to_status in VALID_NODE_STATUSES
     assert from_statuses and all(_ in VALID_NODE_STATUSES for _ in from_statuses)
+    assert expected_state is None or expected_state in VALID_NODE_EXPECTED_STATES
 
-    sql = "UPDATE nodes SET status = %s WHERE id = %s AND status IN ( {} )".format(
-        ",".join(["%s" for _ in from_statuses]))
-    params = [to_status, node_id]
+    assignments = "status = %s"
+    params = [to_status]
+    if expected_state is not None:
+        assignments += ", expected_state = %s"
+        params.append(expected_state)
+
+    sql = "UPDATE nodes SET {} WHERE id = %s AND status IN ( {} )".format(
+        assignments, ",".join(["%s" for _ in from_statuses]))
+    params.append(node_id)
     params.extend(from_statuses)
 
     with get_db_connection() as db:
@@ -471,3 +500,29 @@ def get_node_workload_counts(node_id: int) -> tuple[int, int]:
         cursor.execute("SELECT COUNT(*) FROM delayed_analysis WHERE node_id = %s", (node_id,))
         delayed_count = cursor.fetchone()[0]
         return workload_count, delayed_count
+
+
+def drain_node(node_id: int) -> bool:
+    """Begin draining this node: pause its collectors and record the intent to take it
+    offline. Returns True if the transition occurred.
+
+    The node advances through draining to drained on its own, driven by the engine's
+    drain routines. This only starts it. See NODE_TRANSITION_DRAIN for the rule, which
+    the API path in aceapi_v2.nodes.service applies too.
+    """
+    return transition_node_status(
+        node_id,
+        NODE_TRANSITION_DRAIN.to_status,
+        NODE_TRANSITION_DRAIN.from_statuses,
+        expected_state=NODE_TRANSITION_DRAIN.expected_state,
+    )
+
+
+def resume_node(node_id: int) -> bool:
+    """Cancel a drain, returning the node to running and marking it expected online."""
+    return transition_node_status(
+        node_id,
+        NODE_TRANSITION_RESUME.to_status,
+        NODE_TRANSITION_RESUME.from_statuses,
+        expected_state=NODE_TRANSITION_RESUME.expected_state,
+    )

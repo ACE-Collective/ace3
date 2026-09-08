@@ -1,4 +1,5 @@
 import logging
+import time
 from multiprocessing import cpu_count
 import signal
 from typing import Optional
@@ -9,6 +10,8 @@ from saq.engine.enums import EngineExecutionMode, WorkerManagerState, WorkerStat
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
+from saq.error.reporting import log_loop_exception
+from saq.shutdown import get_shutdown_coordinator
 from saq.util.process import kill_process_tree
 
 
@@ -204,8 +207,14 @@ class WorkerManager:
                     f"on {record if record else 'unknown work'}: {memory}"
                 )
 
+        except psutil.NoSuchProcess:
+            # the worker exited between the exitcode check above and this call. routine
+            # during shutdown, when every worker is on its way out and this check runs on
+            # each poll -- at ERROR it produced a line per worker per poll, which is the
+            # kind of noise this whole path exists to avoid
+            logging.debug("worker %s exited while being checked", worker)
         except Exception as e:
-            logging.error(f"unable to check memory of worker {worker}: {e}")
+            log_loop_exception(e, f"unable to check memory of worker {worker}")
 
         return WorkerStatus.OK
 
@@ -281,19 +290,15 @@ class WorkerManager:
             worker.wait_for_start()
 
     def immediate_shutdown(self):
-        """Shutdown all workers immediately."""
+        """Shutdown all workers immediately, abandoning in-flight analysis."""
         logging.info(f"shutting down {len(self.workers)} workers immediately")
 
         self.set_state(WorkerManagerState.SHUTTING_DOWN)
 
         for worker in self.workers:
             worker.immediate_shutdown()
-        
-        # make sure all the processes exit
-        for worker in self.workers:
-            worker.wait()
 
-        logging.info("all workers shut down")
+        self.supervise_shutdown()
 
     def controlled_shutdown(self):
         """Shutdown all workers after they have finished processing all work."""
@@ -304,9 +309,53 @@ class WorkerManager:
         for worker in self.workers:
             worker.controlled_shutdown()
 
-        # make sure all the processes exit
+        self.supervise_shutdown()
+
+    def supervise_shutdown(self, poll_interval: float = 0.25):
+        """Wait for every worker to exit, against one shared deadline.
+
+        This replaces a per-worker 60 second join taken one worker at a time. With a pool
+        of N workers that gave a worst case of N x 60 seconds, far past any container
+        stop grace period, so the pool never actually finished shutting down before docker
+        SIGKILLed the whole thing.
+
+        Two things matter here beyond the shared budget:
+
+        - workers are polled together, so slow ones overlap instead of queueing;
+        - the timeout and memory watchdog keeps running throughout. That watchdog is what
+          catches an analysis module stuck in a CPU loop, and it used to stop running the
+          moment the controller loop broke for shutdown -- precisely when a stuck module
+          is most likely to be what is holding everything up.
+        """
+        coordinator = get_shutdown_coordinator()
+
+        # leave headroom for the caller to release locks and mark the node stopped after
+        # this returns; those steps are what keep the logs quiet on the peers
+        budget = max(1.0, coordinator.deadline_remaining() * 0.5)
+        deadline = time.monotonic() + budget
+
+        logging.info("waiting up to %.1fs for %d workers to exit", budget, len(self.workers))
+
+        while time.monotonic() < deadline:
+            alive = [w for w in self.workers if w.is_alive()]
+            if not alive:
+                logging.info("all workers shut down")
+                return
+
+            # keep enforcing analysis timeouts and memory limits while we wait
+            for worker in alive:
+                try:
+                    self.check(worker)
+                except Exception as e:
+                    logging.debug("error checking worker %s during shutdown: %s", worker, e)
+
+            time.sleep(poll_interval)
+
+        # anything still running has ignored the shutdown event past the budget
         for worker in self.workers:
-            worker.wait()
+            if worker.is_alive():
+                logging.warning("worker %s did not exit in time - killing", worker.name)
+                worker.kill()
 
         logging.info("all workers shut down")
 

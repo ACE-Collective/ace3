@@ -27,7 +27,7 @@ from saq.constants import (
 from saq.database import remove_all_sessions
 from saq.database.util.node import get_node_status_cached, update_collector_status
 from saq.environment import get_data_dir, get_global_runtime_settings
-from saq.error import report_exception
+from saq.error.reporting import log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.persistence import Persistable
 from saq.service import ACEServiceInterface
@@ -349,8 +349,7 @@ class CollectorService(ACEServiceInterface):
             try:
                 self.execute_workload_cleanup()
             except Exception as e:
-                logging.error(f"unable to execute workload cleanup: {e}")
-                report_exception()
+                log_loop_exception(e, "unable to execute workload cleanup")
 
             if self.sleep(self.config.cleanup_frequency):
                 break
@@ -429,8 +428,7 @@ class CollectorService(ACEServiceInterface):
                     self.sleep(self.config.collection_frequency)
 
             except Exception as e:
-                logging.error(f"unexpected exception thrown during loop for {self}: {e}")
-                report_exception()
+                log_loop_exception(e, f"unexpected exception thrown during loop for {self}")
                 if self.sleep(1):
                     break
             finally:
@@ -512,13 +510,11 @@ class CollectorService(ACEServiceInterface):
                         # so a submission that fails every time would be retried forever and,
                         # because one exception used to abandon the whole batch, would block
                         # everything queued behind it. quarantine it instead
-                        logging.error("unable to process submission %s: %s", submission.root.uuid, e)
-                        report_exception()
+                        log_loop_exception(e, f"unable to process submission {submission.root.uuid}")
                         self.file_manager.quarantine_staged_submission(submission.root.uuid)
 
         except Exception as e:
-            logging.error(f"error during collection: {e}")
-            report_exception()
+            log_loop_exception(e, "error during collection")
 
         # clear expired persistent data periodically
         self.clear_expired_persistent_data()
@@ -537,8 +533,7 @@ class CollectorService(ACEServiceInterface):
             try:
                 self.collector.update()
             except Exception as e:
-                logging.error(f"error during update: {e}")
-                report_exception()
+                log_loop_exception(e, "error during update")
 
             if self.execution_mode in [CollectorExecutionMode.SINGLE_SHOT, CollectorExecutionMode.SINGLE_SUBMISSION]:
                 break

@@ -1,6 +1,7 @@
 """FastAPI application factory for ACE API v2."""
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -25,6 +26,27 @@ from saq.error.reporting import report_exception
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: the shutdown half is the part that matters."""
+    yield
+
+    logger.info("shutting down api")
+
+    from aceapi_v2.database import dispose_engines_for_current_loop
+    from aceapi_v2.sync import shutdown_loop
+
+    try:
+        await dispose_engines_for_current_loop()
+    except Exception as e:
+        logger.debug("error disposing async engines: %s", e)
+
+    try:
+        shutdown_loop()
+    except Exception as e:
+        logger.debug("error stopping the background event loop: %s", e)
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
@@ -32,6 +54,7 @@ def create_app() -> FastAPI:
         description="Analysis Correlation Engine API v2",
         version="2.0.0",
         root_path="/api/v2",
+        lifespan=lifespan,
     )
 
     @app.exception_handler(Exception)

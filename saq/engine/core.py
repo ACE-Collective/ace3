@@ -14,8 +14,10 @@ from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from saq.error import report_exception
+from saq.error.reporting import log_loop_exception
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
+from saq.shutdown import get_shutdown_coordinator
 from saq.engine.enums import EngineState, EngineExecutionMode
 from saq.configuration.schema import ServiceConfig
 
@@ -96,10 +98,9 @@ class Engine():
         # set once the engine has started
         self.started_event = ACE_MP_CONTEXT.Event()
         
-        # signal handling flags
-        self.sigterm_received = False
+        # SIGHUP is the only signal the engine handles itself (worker reload). shutdown
+        # signals belong to the process-wide ShutdownCoordinator.
         self.sighup_received = False
-        self.sigint_received = False
 
         # initialize configuration manager
         self.configuration_manager = ConfigurationManager(self.config)
@@ -185,6 +186,8 @@ class Engine():
         self.node_manager.set_status(NODE_STATUS_RUNNING)
         self.started_event.set()
 
+        coordinator = get_shutdown_coordinator()
+
         while True:
             try:
                 if execution_mode in [EngineExecutionMode.SINGLE_SHOT, EngineExecutionMode.UNTIL_COMPLETE]:
@@ -192,13 +195,13 @@ class Engine():
                     self._controlled_stop()
                     break
 
-                if self.sigint_received:
-                    logging.info("received SIGINT")
-                    self._controlled_stop()
-                    break
+                # SIGTERM and SIGINT mean the same thing and take the same path. docker
+                # sends SIGTERM and an operator at a terminal sends SIGINT; both mean
+                # "stop now", and in-flight analysis is abandoned and requeued rather
+                # than finished, so another node can pick it up immediately.
 
-                if self.sigterm_received:
-                    logging.info("received SIGTERM")
+                if coordinator.is_shutting_down:
+                    logging.info("shutdown requested (%s)", coordinator.reason)
                     self._immediate_stop()
                     break
 
@@ -228,12 +231,19 @@ class Engine():
                 self.loop_control_event.wait(1.0)
 
             except Exception as e:
-                logging.error(f"unexpected exception thrown in main controller loop: {e}")
-                report_exception()
+                log_loop_exception(e, "unexpected exception thrown in main controller loop")
                 self.loop_control_event.wait(1.0)
 
         logging.info("ended main controller loop")
         self._set_state(EngineState.STOPPED)
+
+        # release the locks this node still holds so the work they were blocking is
+        # claimable by another node right away rather than after lock_timeout_seconds.
+        # the workers have exited by now, so nothing is going to re-take them.
+        self.node_manager.clear_node_locks("this node shutting down")
+
+        # tell the cluster we are gone. doing this last means peers stop routing work
+        # here only once there is genuinely nothing left running to receive it.
         self.node_manager.set_status(NODE_STATUS_STOPPED)
 
     def initialize_single_threaded_worker(self, analysis_priority_mode: Optional[str]=None, execution_mode: EngineExecutionMode=EngineExecutionMode.NORMAL) -> Worker:
@@ -269,34 +279,46 @@ class Engine():
         logging.info("single-threaded execution loop ended")
 
     def initialize_signal_handlers(self):
-        """Initialize signal handlers for the engine process."""
+        """Initialize the signal handlers the engine owns."""
         def handle_sighup(signum, frame):
             self.sighup_received = True
 
-        def handle_sigterm(signum, frame):
-            self.sigterm_received = True
-
-        def handle_sigint(signum, frame):
-            self.sigint_received = True
-
         signal.signal(signal.SIGHUP, handle_sighup)
-        signal.signal(signal.SIGTERM, handle_sigterm)
-        signal.signal(signal.SIGINT, handle_sigint)
+
+        # if the engine is running outside the service runner (tests, `ace correlate`)
+        # nobody has installed the shutdown handlers yet, so do it here
+        get_shutdown_coordinator().install_signal_handlers()
 
     # ------------------------------------------------------------
     # control methods
     # ------------------------------------------------------------
 
     def _immediate_stop(self):
-        """Immediately stop the engine."""
+        """Stop the engine now, abandoning in-flight analysis.
+
+        Abandoning is not the same as being killed. Each worker cancels the analysis it
+        is running so that it unwinds through its own finally blocks -- releasing its
+        lock and clearing its tracking record -- which leaves the workload row intact and
+        immediately claimable by another node. A SIGKILL'd worker leaves the same row
+        behind but with a lock nobody releases for lock_timeout_seconds (5 minutes by
+        default), which is why the work appeared to stall after a restart.
+        """
         logging.info("stopping engine NOW")
         self._set_state(EngineState.IMMEDIATE_SHUTDOWN)
+
+        # wake the controller loop out of its 1 second tick
+        self.loop_control_event.set()
+
         self.worker_manager.immediate_shutdown()
 
     def _controlled_stop(self):
         """Shutdown the engine in a controlled manner allowing existing jobs to complete."""
         logging.info("stopping engine")
         self._set_state(EngineState.CONTROLLED_SHUTDOWN)
+
+        # wake the controller loop out of its 1 second tick
+        self.loop_control_event.set()
+
         self.worker_manager.controlled_shutdown()
 
 class EngineService(ACEServiceInterface):
@@ -313,10 +335,19 @@ class EngineService(ACEServiceInterface):
         self.engine.start_single_threaded()
     
     def wait(self):
+        # Engine.start() blocks in the controller loop until the engine has stopped, so
+        # by the time anything calls wait() there is nothing left to wait for.
         pass
 
     def stop(self):
-        self.engine._controlled_stop()
+        # abandon in-flight analysis and requeue it rather than draining, so the node
+        # exits promptly and another node picks the work up. draining a node before
+        # stopping it is a separate, operator-driven action (`ace node drain`).
+        if self.engine.state in (EngineState.IMMEDIATE_SHUTDOWN, EngineState.CONTROLLED_SHUTDOWN, EngineState.STOPPED):
+            logging.debug("engine already stopping (state %s)", self.engine.state)
+            return
+
+        self.engine._immediate_stop()
 
     @classmethod
     def get_config_class(cls) -> Type[ServiceConfig]:

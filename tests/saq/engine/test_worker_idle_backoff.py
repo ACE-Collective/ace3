@@ -89,6 +89,12 @@ class FakeShutdownEvent:
         pass
 
     def wait(self, timeout=None) -> bool:
+        # the shutdown watcher thread blocks on this event with no timeout. that is not
+        # an idle wait, so it is not recorded; returning True lets its thread exit
+        # rather than leaking one per test.
+        if timeout is None:
+            return True
+
         self.waits.append(timeout)
         return len(self.waits) >= self._stop_after_waits
 

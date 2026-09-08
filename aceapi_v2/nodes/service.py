@@ -5,12 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.nodes.schemas import CollectorStatusRead, NodeRead
 from saq.constants import (
-    NODE_EXPECTED_STATE_OFFLINE,
-    NODE_EXPECTED_STATE_ONLINE,
-    NODE_STATUS_DRAINED,
-    NODE_STATUS_DRAINING,
-    NODE_STATUS_DRAINING_COLLECTORS,
-    NODE_STATUS_RUNNING,
+    NODE_TRANSITION_DRAIN,
+    NODE_TRANSITION_RESUME,
 )
 from saq.database.model import CollectorStatus, DelayedAnalysis, Nodes, Workload
 
@@ -97,16 +93,18 @@ async def drain_node(session: AsyncSession, node_id: int) -> bool:
 
     Also records the intent to take the node offline. The drain is the only signal
     anyone gives that a shutdown is planned, and it has to outlive the status: the
-    node ends up stopped either way, whether it was drained first or simply died."""
+    node ends up stopped either way, whether it was drained first or simply died.
+
+    The transition itself is defined in saq.constants.NODE_TRANSITION_DRAIN, shared with
+    the synchronous `ace node drain` path so the two cannot drift apart."""
     return await transition_node_status(
-        session, node_id, NODE_STATUS_DRAINING_COLLECTORS, [NODE_STATUS_RUNNING],
-        expected_state=NODE_EXPECTED_STATE_OFFLINE)
+        session, node_id, NODE_TRANSITION_DRAIN.to_status, NODE_TRANSITION_DRAIN.from_statuses,
+        expected_state=NODE_TRANSITION_DRAIN.expected_state)
 
 
 async def resume_node(session: AsyncSession, node_id: int) -> bool:
     """Transitions the node from any drain phase back to running, and marks it as
     expected to be online again."""
     return await transition_node_status(
-        session, node_id, NODE_STATUS_RUNNING,
-        [NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED],
-        expected_state=NODE_EXPECTED_STATE_ONLINE)
+        session, node_id, NODE_TRANSITION_RESUME.to_status, NODE_TRANSITION_RESUME.from_statuses,
+        expected_state=NODE_TRANSITION_RESUME.expected_state)

@@ -173,6 +173,10 @@ The `docker-compose.yml` configuration is the open source default configuration.
 ### Significant Subsystems
 
 
+#### Shutdown
+
+`saq/shutdown.py` is the single shutdown control point for an ACE process (`docs/SHUTDOWN.md`): one `ShutdownCoordinator` per process, whose flag `is_shutting_down()` exposes to any code that needs to tell "this failed" from "this failed because we are stopping". Signal handlers only set that flag — SIGTERM and SIGINT mean the same thing, and `ace service start` (`saq/cli/commands/service.py`) owns the whole lifecycle, running `stop()`/`wait()` under bounded timeouts and force-exiting at a deadline shorter than the container's `stop_grace_period`. The engine abandons and requeues in-flight analysis rather than finishing it, releases its own locks and marks the node `stopped`. Taking a node out of the cluster before stopping it is a separate, pre-existing thing: the `nodes.status` drain state machine, driven by `ace node drain` or `POST /api/v2/nodes/{id}/drain`, with `bin/ace-shutdown.sh` as the operator entry point. In a long-running loop use `log_loop_exception()` rather than `logging.error()` + `report_exception()`.
+
 #### Phishkit
 
 `phishkit/` is a browser-detonation service that lives outside the `saq` namespace and never imports it: a Celery worker (RabbitMQ broker, Redis backend) that detonates a URL or file in a throwaway Chrome/SeleniumBase container and leaves the artifacts (screenshot, DOM, captured requests and response bodies, metrics) on the shared `ace-phishkit` volume. Its behavior is configured by `etc/phishkit_config.yaml`, which is *not* part of the layered `saq.yaml` config. ACE reaches it only through `saq/phishkit.py`, a thin Celery client plus an `ace phishkit` CLI; the real consumer is `PhishkitAnalyzer` (`saq/modules/phishkit.py`, config block `analysis_module_phishkit_analyzer`), which dispatches asynchronously, polls via delayed analysis, and turns the returned artifacts and the URLs found in them into observables.

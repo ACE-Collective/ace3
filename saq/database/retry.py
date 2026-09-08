@@ -12,6 +12,47 @@ from saq.database.pool import get_db
 from saq.error import report_exception
 
 
+# MySQL error codes that mean the connection itself is gone rather than the statement
+# being wrong. During shutdown these are the expected outcome, not a fault: containers
+# stop in dependency order, so processes routinely outlive the database by a few seconds.
+#   2006 MySQL server has gone away
+#   2013 Lost connection to MySQL server during query
+#   2003 Can't connect to MySQL server
+#   2002 Can't connect to local MySQL server through socket
+#   1053 Server shutdown in progress
+#   1077/1078/1079 Normal/Aborted shutdown
+CONNECTION_LOST_ERROR_CODES = frozenset({2002, 2003, 2006, 2013, 1053, 1077, 1078, 1079})
+
+
+def get_dbapi_error_code(e):
+    """Return the numeric driver error code for an exception, or None.
+
+    Safe against the shapes that used to break the retry handlers: a DBAPIError whose
+    .orig has no args, an exception with no args at all, or a non-numeric first arg.
+    """
+    candidate = getattr(e, "orig", e)
+    args = getattr(candidate, "args", None)
+    if not args:
+        return None
+
+    return args[0] if isinstance(args[0], int) else None
+
+
+def is_connection_lost(e) -> bool:
+    """True if this exception means the database connection went away."""
+    return get_dbapi_error_code(e) in CONNECTION_LOST_ERROR_CODES
+
+
+def log_connection_lost(e, context: str):
+    """Log a lost database connection at a level that matches whether we expected it."""
+    from saq.shutdown import is_shutting_down
+
+    if is_shutting_down():
+        logging.info("%s during shutdown: %s", context, e)
+    else:
+        logging.warning("%s: %s", context, e)
+
+
 def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=False):
     """Executes the given SQL or function (and params) against the given cursor with
        re-attempts up to N times (defaults to 2) on deadlock detection.
@@ -83,14 +124,26 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
                 time.sleep(random.uniform(0, 1))
                 continue
             else:
+                # this branch is every OperationalError that is not a retryable deadlock,
+                # which very much includes "MySQL server has gone away" (2006) and "Lost
+                # connection" (2013). Those are what a shutdown looks like from here --
+                # the database container stops while this one is still running -- and
+                # logging them as DEADLOCK STATEMENT sent people hunting for deadlocks
+                # that never happened.
+                if is_connection_lost(e):
+                    log_connection_lost(e, "database connection lost")
+                    raise e
+
                 if not callable(sql_or_func):
                     i = 0
                     for _sql, _params in zip(sql_or_func, params):
-                        logging.warning("DEADLOCK STATEMENT #{} SQL {} PARAMS {}".format(i, _sql, ','.join([str(_) for _ in _params])))
+                        logging.warning("FAILED STATEMENT #{} ({}) SQL {} PARAMS {}".format(
+                            i, e.args[0] if e.args else "unknown", _sql,
+                            ','.join([str(_) for _ in _params])))
                         i += 1
 
                     # TODO log innodb lock status
-                    raise e
+                raise e
 
 def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
     """Executes the given targets, in order. If a deadlock condition is detected, the database session
@@ -136,26 +189,28 @@ def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
         except DBAPIError as e:
             # catch the deadlock error ids 1213 and 1205
             # NOTE this is for MySQL only
-            if e.orig.args[0] == 1213 or e.orig.args[0] == 1205 and current_attempt < attempts:
+            error_code = get_dbapi_error_code(e)
+
+            if error_code in (1213, 1205) and current_attempt < attempts:
                 logging.debug(f"DEADLOCK STATEMENT attempt #{current_attempt + 1} SQL {e.statement} PARAMS {e.params}")
 
                 try:
                     get_db().rollback() # rolls back to the begin_nested()
-                except Exception as e:
-                    logging.error(f"unable to roll back transaction: {e}")
+                except Exception as rollback_error:
+                    logging.error(f"unable to roll back transaction: {rollback_error}")
                     report_exception()
-
-                    et, ei, tb = sys.exc_info()
-                    raise e.with_traceback(tb)
+                    raise e
 
                 # ... and try again 
                 time.sleep(0.1) # ... after a bit
                 current_attempt += 1
                 continue
 
+            if is_connection_lost(e):
+                log_connection_lost(e, "database connection lost")
+
             # otherwise we propagate the error
-            et, ei, tb = sys.exc_info()
-            raise e.with_traceback(tb)
+            raise
 
 def retry_function_on_deadlock(function, *args, **kwargs):
     assert callable(function)

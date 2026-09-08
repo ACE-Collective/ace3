@@ -45,6 +45,10 @@ class LocalNodeManager(NodeManagerInterface):
         """Sets the status of this node in the database. No-op in local mode."""
         pass
 
+    def clear_node_locks(self, reason: str) -> int:
+        """No-op in local mode: locks are held in process and die with it."""
+        return 0
+
 
     def execute_primary_node_routines(self) -> None:
         """Executes primary node routines and may become the primary node. No-op in local mode."""

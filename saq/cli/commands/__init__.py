@@ -24,6 +24,7 @@ from saq.cli.commands import ( # noqa: F401
     company,
     config_cmd,
     misc,
+    node,
     permissions,
     phishkit,
     storage,

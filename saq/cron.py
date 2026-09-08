@@ -7,6 +7,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_CRON
 from saq.service import ACEServiceInterface
+from saq.shutdown import get_shutdown_coordinator
 
 from yacron.cron import Cron
 
@@ -15,10 +16,22 @@ class ACECronConfig(ServiceConfig):
 
 
 async def _run_cron(cron: Cron):
-    # add_signal_handler requires the running loop, and only works on the main thread
+    # add_signal_handler requires the running loop, and only works on the main thread.
+    #
+    # these replace the ShutdownCoordinator's handlers for as long as cron is running, so
+    # without the wrapper below the coordinator would not learn about the signal until
+    # cron.run() had already returned. that matters because yacron shuts down "after
+    # currently running jobs finish" -- an unbounded wait that nothing was timing. telling
+    # the coordinator first arms its watchdog, so a long-running job can no longer hold
+    # the container past its stop grace period.
     loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, cron.signal_shutdown)
-    loop.add_signal_handler(signal.SIGTERM, cron.signal_shutdown)
+
+    def _handle_shutdown_signal():
+        get_shutdown_coordinator().request_shutdown("received shutdown signal")
+        cron.signal_shutdown()
+
+    loop.add_signal_handler(signal.SIGINT, _handle_shutdown_signal)
+    loop.add_signal_handler(signal.SIGTERM, _handle_shutdown_signal)
     try:
         await cron.run()
     finally:
