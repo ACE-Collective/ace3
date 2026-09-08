@@ -191,6 +191,23 @@ $(document).ready(function() {
         // and then allow the form to follow through
     });
 
+    $("#btn-copy-alert-ids").click(function(e) {
+        all_alert_uuids = get_all_checked_alerts();
+        if (all_alert_uuids.length == 0) {
+            alert("You must select one or more alerts to copy.");
+            return;
+        }
+
+        var $btn = $(this);
+        navigator.clipboard.writeText(all_alert_uuids.join(", ")).then(function() {
+            var original = $btn.html();
+            $btn.html('<span class="bi bi-clipboard-check"></span> Copied ' + all_alert_uuids.length + '!');
+            setTimeout(function() { $btn.html(original); }, 1500);
+        }).catch(function(err) {
+            alert("Failed to copy alert ID(s) to the clipboard: " + err.message);
+        });
+    });
+
     $("#btn-review").click(function(e) {
         // compile a list of all the alerts that are checked
         all_alert_uuids = get_all_checked_alerts();
