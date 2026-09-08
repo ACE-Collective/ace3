@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import logging
 import os
+import sys
 import threading
 from typing import Any, Callable
 import warnings
@@ -510,6 +511,15 @@ def reset_database_after_fork():
     registry.clear() drops the inherited Session objects the same way -- unlike
     remove_all_sessions(), which calls Session.close() and would check a connection back
     into the pool with a rollback on the way.
+
+    Nothing here may use the logging module either, which is why the diagnostics below go
+    straight to sys.stderr. os.register_at_fork child handlers run inside os.fork(), before
+    multiprocessing's _bootstrap calls util._run_after_forkers() -- so at this point every
+    fork-aware thread-local still holds the object the child inherited from the parent. A
+    root handler that talks to another process is then used over the *parent's* connection:
+    the unit test MemoryLogHandler writes every record into a SyncManager list, and two
+    processes on one stream socket desynchronise it exactly the way two processes on one
+    MySQL socket do. Both sides block forever on a reply that was never sent.
     """
     pid = os.getpid()
 
@@ -522,13 +532,13 @@ def reset_database_after_fork():
         try:
             connection._force_close()
         except Exception as e:
-            logging.debug("unable to force close inherited connection after fork: %s", e)
+            sys.stderr.write(f"WARNING: unable to force close inherited connection after fork: {e}\n")
 
     for engine in list(_db_engines):
         try:
             engine.dispose(close=False)
         except Exception as e:
-            logging.debug("unable to dispose inherited engine after fork: %s", e)
+            sys.stderr.write(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
 
     for name, session in list(_db_sessions.items()):
         if session is None:
@@ -537,14 +547,14 @@ def reset_database_after_fork():
         try:
             session.registry.clear()
         except Exception as e:
-            logging.debug("unable to clear inherited %s session after fork: %s", name, e)
+            sys.stderr.write(f"WARNING: unable to clear inherited {name} session after fork: {e}\n")
 
     # the raw pymysql pools go the same way. get_pool() would rebuild them lazily on its
     # own pid check, but dropping them here means an inherited connection is never even
     # a candidate.
     _global_db_pools.clear()
 
-    logging.debug("reset %d inherited database connections in pid %s", len(inherited), pid)
+    sys.stderr.write(f"NOTICE: reset {len(inherited)} inherited database connections in pid {pid}\n")
 
 
 def _before_fork():
