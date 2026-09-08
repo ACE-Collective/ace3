@@ -14,7 +14,7 @@ the poll immediately after processing a work item waited the full maximum.
 The defect is arithmetic, not integration, so these are unit tests: the loop runs
 in-process against a fake workload manager and a mocked orchestrator.
 ``idle_time`` is a local variable, so it is observed through the durations the
-loop passes to ``_immediate_shutdown_event.wait()`` — that list *is* the backoff
+loop passes to ``_wait_for_immediate_shutdown()`` — that list *is* the backoff
 curve.
 
 ``test_single_shot_processes_exactly_one_work_item`` guards the other side of the
@@ -71,27 +71,21 @@ class FakeWorkloadManager:
         self.cleared.append(work_item)
 
 
-class FakeShutdownEvent:
-    """Stand-in for ``_immediate_shutdown_event`` that records the idle waits.
+class FakeShutdownWait:
+    """Stand-in for ``Worker._wait_for_immediate_shutdown`` that records the idle waits.
 
-    ``wait()`` returns True on the ``stop_after_waits``-th call, which breaks the
-    loop — that bound also keeps a broken loop from spinning forever.
+    Returns True on the ``stop_after_waits``-th call, which breaks the loop — that
+    bound also keeps a broken loop from spinning forever.
     """
 
     def __init__(self, stop_after_waits: int = 1):
         self.waits = []
         self._stop_after_waits = stop_after_waits
 
-    def is_set(self) -> bool:
-        return False
-
-    def set(self):
-        pass
-
-    def wait(self, timeout=None) -> bool:
-        # the shutdown watcher thread blocks on this event with no timeout. that is not
-        # an idle wait, so it is not recorded; returning True lets its thread exit
-        # rather than leaking one per test.
+    def __call__(self, timeout=None) -> bool:
+        # the shutdown watcher thread waits with no timeout. that is not an idle wait,
+        # so it is not recorded; returning True lets its thread exit rather than
+        # leaking one per test.
         if timeout is None:
             return True
 
@@ -190,12 +184,12 @@ def test_idle_backoff_resets_after_work(worker):
     """Three empty polls back off 1, 2, 3 - then a work item resets the counter
     so the next empty poll waits 1 second again, not 4."""
     worker.workload_manager = FakeWorkloadManager([None, None, None, make_work_item()])
-    shutdown_event = FakeShutdownEvent(stop_after_waits=4)
-    worker._immediate_shutdown_event = shutdown_event
+    shutdown_wait = FakeShutdownWait(stop_after_waits=4)
+    worker._wait_for_immediate_shutdown = shutdown_wait
 
     worker.worker_loop(EngineExecutionMode.NORMAL)
 
-    assert shutdown_event.waits == [1, 2, 3, 1]
+    assert shutdown_wait.waits == [1, 2, 3, 1]
     assert worker.analysis_orchestrator.orchestrate_analysis.call_count == 1
 
 
@@ -203,12 +197,12 @@ def test_idle_backoff_resets_after_work(worker):
 def test_idle_backoff_caps_at_idle_timeout_max(worker):
     """Without work the backoff climbs by one second per poll and clamps."""
     worker.idle_timeout_max = 2
-    shutdown_event = FakeShutdownEvent(stop_after_waits=4)
-    worker._immediate_shutdown_event = shutdown_event
+    shutdown_wait = FakeShutdownWait(stop_after_waits=4)
+    worker._wait_for_immediate_shutdown = shutdown_wait
 
     worker.worker_loop(EngineExecutionMode.NORMAL)
 
-    assert shutdown_event.waits == [1, 2, 2, 2]
+    assert shutdown_wait.waits == [1, 2, 2, 2]
 
 
 @pytest.mark.unit
@@ -216,14 +210,14 @@ def test_single_shot_processes_exactly_one_work_item(worker):
     """SINGLE_SHOT means one work item, even with more waiting - the idle reset
     must not skip the single shot check."""
     worker.workload_manager = FakeWorkloadManager([make_work_item(), make_work_item()])
-    shutdown_event = FakeShutdownEvent(stop_after_waits=1)
-    worker._immediate_shutdown_event = shutdown_event
+    shutdown_wait = FakeShutdownWait(stop_after_waits=1)
+    worker._wait_for_immediate_shutdown = shutdown_wait
 
     worker.worker_loop(EngineExecutionMode.SINGLE_SHOT)
 
     assert worker.workload_manager.get_calls == 1
     assert worker.analysis_orchestrator.orchestrate_analysis.call_count == 1
-    assert shutdown_event.waits == []
+    assert shutdown_wait.waits == []
 
 
 @pytest.mark.unit
@@ -231,10 +225,10 @@ def test_until_complete_drains_without_idling(worker):
     """UNTIL_COMPLETE processes everything queued and exits on the empty queue
     check at the top of the loop - it never idles."""
     worker.workload_manager = FakeWorkloadManager([make_work_item(), make_work_item()])
-    shutdown_event = FakeShutdownEvent(stop_after_waits=1)
-    worker._immediate_shutdown_event = shutdown_event
+    shutdown_wait = FakeShutdownWait(stop_after_waits=1)
+    worker._wait_for_immediate_shutdown = shutdown_wait
 
     worker.worker_loop(EngineExecutionMode.UNTIL_COMPLETE)
 
     assert worker.analysis_orchestrator.orchestrate_analysis.call_count == 2
-    assert shutdown_event.waits == []
+    assert shutdown_wait.waits == []

@@ -188,7 +188,7 @@ which is where the both-queues-empty drain check lives.
 tests driving `worker_loop` in-process against a fake workload manager, with the
 orchestrator mocked and `get_engine_config` / `remove_all_sessions` patched.
 `idle_time` is a local, so it is observed through the durations the loop passes
-to `_immediate_shutdown_event.wait()`: three empty polls then a work item must
+to `_wait_for_immediate_shutdown()`: three empty polls then a work item must
 record `[1, 2, 3, 1]` (it recorded `[1, 2, 3, 4]` before the fix). The rest cover
 the four `execute()` return paths, the `idle_timeout_max` clamp, and — as the
 guard on the trap above — that `SINGLE_SHOT` still polls once and processes
@@ -656,7 +656,7 @@ practice, but it is unsound.
 `worker.start()`.
 
 The mode is only ever read inside the forked child: `worker_loop` sets the
-controlled-shutdown event up front for `UNTIL_COMPLETE` and breaks after one work
+controlled-shutdown flag up front for `UNTIL_COMPLETE` and breaks after one work
 item for `SINGLE_SHOT` (§4.5). A replacement started as `NORMAL` does neither, so
 it idles and polls for work forever while the rest of the pool winds down.
 

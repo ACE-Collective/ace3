@@ -164,6 +164,9 @@ bin/procyon-decompiler*
 # unit testing
 data_unittest
 
+# pytest session marker (see tests/session_lock.py)
+.pytest-running
+
 # any site directory
 **/site/
 

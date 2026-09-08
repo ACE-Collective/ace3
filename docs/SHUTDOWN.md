@@ -71,9 +71,22 @@ Three rules about it:
 - **SIGTERM and SIGINT mean the same thing.** Docker sends the first, an operator at a
   terminal sends the second. (Until this change SIGTERM meant *abrupt* and only SIGINT
   was graceful, so the graceful path never ran in production.)
-- **A multiprocessing mirror is created before any fork**, so forked engine workers still
-  observe a shutdown requested by the parent. A child inherits a stale copy of the local
-  `threading.Event`, so it watches the mirror instead.
+- **A shared-memory mirror is created before any fork**, so a forked child still observes
+  a shutdown requested by the parent. A child inherits a stale copy of the local
+  `threading.Event`, so it watches the mirror instead — polling it through
+  `wait_for_shared_flag()`.
+
+  The mirror is a lock-free flag, *not* a `multiprocessing.Event`, and for a sharper
+  reason than the handler rule above. ACE kills processes abruptly on purpose (an
+  analysis module past its limit is `os._exit(1)`ed; a worker that overruns is SIGKILLed
+  as a process tree), and mp's `Condition` registers a sleeper *before* it sleeps while
+  `notify_all()` waits for one wake per sleeper. A child killed mid-wait leaves a sleeper
+  that never wakes, wedging every later `set()` — and since `Event.is_set()` takes that
+  same condition's lock, a child killed while merely *reading* the mirror can wedge
+  `is_shutting_down()` for the whole process tree. That call is made from hot loops in
+  library code (`saq/error/reporting.py`, `saq/database/pool.py`, `saq/database/retry.py`),
+  so it must never be able to block. Engine workers carry the same kind of flag for their
+  own two shutdown signals (`saq/engine/worker.py`).
 
 `get_shutdown_coordinator()` also offers `sleep()` (returns early on shutdown),
 `deadline_remaining()`, and `register()` for ordered shutdown hooks. `run_bounded()` runs

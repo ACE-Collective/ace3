@@ -94,11 +94,11 @@ class FakeWorkloadManager:
         self.cleared.append(work_item)
 
 
-class FakeShutdownEvent:
-    """Stand-in for ``_immediate_shutdown_event`` that records the idle waits.
+class FakeShutdownWait:
+    """Stand-in for ``Worker._wait_for_immediate_shutdown`` that records the idle waits.
 
-    ``wait()`` returns True on the ``stop_after_waits``-th call, which breaks the
-    loop -- that bound also keeps a broken loop from spinning forever.
+    Returns True on the ``stop_after_waits``-th call, which breaks the loop -- that
+    bound also keeps a broken loop from spinning forever.
     """
 
     def __init__(self, stop_after_waits: int = 1, event_log=None):
@@ -106,16 +106,10 @@ class FakeShutdownEvent:
         self._stop_after_waits = stop_after_waits
         self.event_log = event_log if event_log is not None else []
 
-    def is_set(self) -> bool:
-        return False
-
-    def set(self):
-        pass
-
-    def wait(self, timeout=None) -> bool:
-        # the shutdown watcher thread blocks on this event with no timeout. that is not
-        # an idle wait, so it is not recorded; returning True lets its thread exit
-        # rather than leaking one per test.
+    def __call__(self, timeout=None) -> bool:
+        # the shutdown watcher thread waits with no timeout. that is not an idle wait,
+        # so it is not recorded; returning True lets its thread exit rather than
+        # leaking one per test.
         if timeout is None:
             return True
 
@@ -270,8 +264,8 @@ def test_worker_loop_backs_off_after_keepalive_failure(worker):
     worker.workload_manager = FakeWorkloadManager(
         [make_work_item(), make_work_item(), make_work_item()], event_log=event_log
     )
-    shutdown_event = FakeShutdownEvent(stop_after_waits=3, event_log=event_log)
-    worker._immediate_shutdown_event = shutdown_event
+    shutdown_wait = FakeShutdownWait(stop_after_waits=3, event_log=event_log)
+    worker._wait_for_immediate_shutdown = shutdown_wait
 
     worker.worker_loop(EngineExecutionMode.NORMAL)
 

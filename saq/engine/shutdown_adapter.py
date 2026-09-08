@@ -9,9 +9,11 @@ if TYPE_CHECKING:
 class WorkerShutdownAdapter(ShutdownInterface):
     """Adapter that implements ShutdownInterface using a Worker instance.
 
-    The Worker owns the two multiprocessing events the shutdown signal actually
-    lives in. They are created before the fork, so a worker process reads what
-    the manager set in the parent.
+    The Worker owns the two shared flags the shutdown signal actually lives in.
+    They are created before the fork, so a worker process reads what the manager
+    set in the parent. They are deliberately not multiprocessing events -- see
+    the note in Worker.__init__ -- which also makes these reads cheap enough for
+    the analysis loop to poll per module.
     """
 
     def __init__(self, worker: "Worker"):

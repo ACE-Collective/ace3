@@ -40,11 +40,22 @@ the handler. So the handler sets a ``threading.Event`` and nothing else; the
 Fork safety
 -----------
 The local ``threading.Event`` cannot cross a fork -- a child gets a stale copy the parent
-can never set -- so it is mirrored onto an ``ACE_MP_CONTEXT.Event()`` created before any
-fork. A forked engine worker reads the mirror, which is what ``saq.engine.worker`` already
-does with its own two events. The mirror is set by the observer, never by a handler.
+can never set -- so it is mirrored onto a lock-free shared flag created before any fork.
+A forked child reads the mirror; the engine's own workers carry the same kind of flag for
+their own signals (``saq.engine.worker``). The mirror is set by the observer, never by a
+handler.
+
+The mirror is a flag rather than an ``mp.Event`` for the same reason the handler above
+may not touch one, arrived at from the other direction: mp's ``Condition`` registers a
+sleeper before it sleeps and makes ``notify_all()`` wait for one wake per sleeper, and
+ACE kills processes abruptly by design. A child killed mid-wait leaves a sleeper that
+never wakes, wedging every later ``set()``; and because ``Event.is_set()`` takes that
+same condition's lock, a child killed while merely *reading* the mirror can wedge
+``is_shutting_down()`` for every process in the tree -- a call that library code makes
+from hot loops. See ``wait_for_shared_flag()``.
 """
 
+import ctypes
 import logging
 import os
 import signal
@@ -62,6 +73,11 @@ DEFAULT_SHUTDOWN_DEADLINE = 20.0
 # how long the watchdog waits past the deadline before taking the process down itself.
 # this is slack for a stop() that is nearly finished, not a second budget.
 WATCHDOG_GRACE = 5.0
+
+# how often a process re-reads a shared shutdown flag while it is sleeping on one. this
+# is the worst case wake latency for a shutdown request seen across a fork, and matches
+# the interval WorkerManager.supervise_shutdown() polls its pool at.
+SHUTDOWN_POLL_INTERVAL = 0.25
 
 # resolved once at import: looking a name up inside a signal handler would allocate and
 # can raise, and the handler must stay trivial
@@ -99,10 +115,14 @@ class ShutdownCoordinator:
         # never blocks.
         self._event = threading.Event()
 
-        # _mp_event mirrors _event across a fork, so a forked engine worker can still see
-        # a shutdown its parent requested. Set in _on_shutdown_requested, which always
-        # runs on a normal thread -- never inside a signal handler.
-        self._mp_event = ACE_MP_CONTEXT.Event()
+        # _mp_flag mirrors _event across a fork, so a forked child can still see a
+        # shutdown its parent requested. Set in _on_shutdown_requested, which always runs
+        # on a normal thread -- never inside a signal handler.
+        #
+        # It is a lock-free shared byte rather than an mp.Event because both the write and
+        # the read must be incapable of blocking: see the fork safety note in the module
+        # docstring, and wait_for_shared_flag() for how a child waits on it.
+        self._mp_flag = ACE_MP_CONTEXT.Value(ctypes.c_bool, False, lock=False)
 
         # turns the raw flag into the follow-on work (mirror, logging, watchdog) off the
         # signal handler. see _start_observer.
@@ -137,19 +157,23 @@ class ShutdownCoordinator:
     def is_shutting_down(self) -> bool:
         """True once shutdown has been requested, in this process or its parent.
 
-        Reads both events: a forked child inherits a stale copy of the local one, so the
-        multiprocessing mirror is the only thing its parent can still reach.
+        Reads both: a forked child inherits a stale copy of the local event, so the
+        shared mirror is the only thing its parent can still reach. Neither read can
+        block, which is what makes this safe to call from anywhere.
         """
-        return self._event.is_set() or self._mp_event.is_set()
+        return self._event.is_set() or self._mp_flag.value
 
-    def _wait_event(self):
-        """The event to block on in this process.
+    def _wait(self, timeout: Optional[float]) -> bool:
+        """Block until shutdown is requested in this process or its parent.
 
-        The parent waits on the local event -- that is the one the signal handler sets.
-        A forked child's copy of it can never be set by the parent, so the child watches
-        the multiprocessing mirror instead.
+        The owner waits on the local event -- that is the one the signal handler sets, so
+        it wakes with no latency. A forked child's copy of that event can never be set by
+        the parent, so the child polls the shared mirror instead.
         """
-        return self._event if os.getpid() == self._owner_pid else self._mp_event
+        if os.getpid() == self._owner_pid:
+            return self._event.wait(timeout)
+
+        return wait_for_shared_flag(self._mp_flag, timeout)
 
     @property
     def reason(self) -> Optional[str]:
@@ -199,8 +223,9 @@ class ShutdownCoordinator:
         scheduled -- the watchdog is the safety net, and arming it asynchronously would
         leave a window where a wedged stop() had nothing watching it.
 
-        Never call this from a signal handler: it logs, takes a lock, and sets a
-        multiprocessing event, none of which are safe there.
+        Never call this from a signal handler: it logs and takes a lock, neither of
+        which is safe there. Setting the mirror is safe -- it is a plain shared byte --
+        but the other two are what keep this off the handler.
         """
         with self._lock:
             if self._announced:
@@ -211,7 +236,7 @@ class ShutdownCoordinator:
         logging.info("shutdown requested: %s (deadline %.1fs)", self._reason, self.deadline_seconds)
 
         # mirror the flag for forked children
-        self._mp_event.set()
+        self._mp_flag.value = True
 
         self._start_watchdog()
 
@@ -294,11 +319,11 @@ class ShutdownCoordinator:
         if seconds <= 0:
             return self.is_shutting_down
 
-        return self._wait_event().wait(seconds)
+        return self._wait(seconds)
 
     def wait_for_shutdown(self, timeout: Optional[float] = None) -> bool:
         """Block until shutdown is requested. Returns True if it was."""
-        return self._wait_event().wait(timeout)
+        return self._wait(timeout)
 
     # ------------------------------------------------------------------
     # hooks
@@ -378,6 +403,41 @@ class ShutdownCoordinator:
         )
         _flush_logging()
         os._exit(0)
+
+
+def wait_for_shared_flag(flag, timeout: Optional[float] = None) -> bool:
+    """Poll a lock-free shared flag until it is set, or until ``timeout`` expires.
+
+    Returns True if the flag was set. ``timeout=None`` waits indefinitely and
+    ``timeout=0`` is just a read.
+
+    This is how a process waits on shutdown state that crossed a fork, and it polls
+    rather than blocking on a shared primitive on purpose. The obvious primitive is a
+    multiprocessing Event, but ACE kills processes abruptly by design -- an analysis
+    module that runs past its limit is ``os._exit(1)``ed, a worker that overruns is
+    SIGKILLed as a process tree -- and mp's Condition registers a sleeper before it
+    sleeps, then makes ``notify_all()`` wait for one wake per sleeper. A process killed
+    mid-wait leaves a sleeper that never wakes, and every later ``set()`` blocks forever.
+    A byte in shared memory has nothing to orphan. The cost is SHUTDOWN_POLL_INTERVAL of
+    wake latency, which is far inside any shutdown budget.
+
+    ``flag`` is anything with a ``.value`` -- in practice an
+    ``ACE_MP_CONTEXT.Value(ctypes.c_bool, False, lock=False)``.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    while True:
+        if flag.value:
+            return True
+
+        if deadline is None:
+            remaining = SHUTDOWN_POLL_INTERVAL
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+
+        time.sleep(min(SHUTDOWN_POLL_INTERVAL, remaining))
 
 
 def run_bounded(callback: Callable[[], None], timeout: float, name: str) -> bool:
