@@ -205,6 +205,27 @@ The unittest overlay disables the service and uses the `ace3-alerts-unittest` pr
 
 ## 5. Operations
 
+The indexer logs one INFO line per event, with the fields in `extra={}` (see `saq/logging.py`)
+so they are searchable in Splunk rather than buried in message text. Each worker process gets
+its own `transactionId`, so a single worker's lines can be followed end to end.
+
+| event | level | when | fields worth reading |
+|---|---|---|---|
+| `search_indexer_starting` | INFO | service start, before forking | `worker_count`, `model`, `collection` |
+| `search_indexer_loading_model` / `search_indexer_worker_ready` | INFO | once per worker | `model`, `collection`, `model_load_ms`, `elapsed_ms` |
+| `search_index_task_complete` | INFO | once per task | `op`, `alert_uuid`, `documents`, `points`, `updated`, `skipped`, `elapsed_ms`, `queue_depth` |
+| `search_index_task_deferred` | INFO | the alert was locked | `deferrals`, `max_deferrals` |
+| `search_index_task_requeued` | WARNING | the task errored and will retry | `attempt`, `max_attempts` |
+| `search_index_task_error` | ERROR | what actually went wrong | `error`, `attempt` |
+| `search_index_task_dead_lettered` | ERROR | giving up on the task | `reason` (`error` or `locked`), `queue` |
+| `search_index_task_invalid` | ERROR | an unparseable queue entry | `payload` |
+| `search_indexer_worker_error` | ERROR | the worker loop itself failed | `ready` — `false` means it never started (qdrant down, model download blocked) |
+| `search_indexer_worker_exiting` | INFO | shutdown | `tasks_completed`, `tasks_failed`, `tasks_deferred` |
+
+A rising `queue_depth` on `search_index_task_complete` is the backlog signal; `elapsed_ms` on
+the same line is the per-alert cost. `search_index_task_start` is DEBUG only — raise the level
+to attribute a hung worker to a specific alert.
+
 - `ace search status` — collection name, existence, point count, payload indexes, queue and
   dead-letter depths. Points appear a few seconds after an alert finishes analysis.
 - A dead-lettered task (`search_index_tasks_failed`) is an alert whose indexing failed three
