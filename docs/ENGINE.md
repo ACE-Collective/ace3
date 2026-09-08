@@ -272,12 +272,12 @@ process entry point:
    here exits the worker;
 3. set the startup event;
 4. compute `_next_auto_refresh_time` if `auto_refresh_frequency > 0`;
-5. `UNTIL_COMPLETE` → set the controlled-shutdown event up front;
+5. `UNTIL_COMPLETE` → set the controlled-shutdown flag up front;
 6. `_handle_failed_analysis(pending_failure)` — record the failure of a previous
    incarnation that died mid-module, from the record the manager forked us with
    (§12.5);
 7. loop:
-   - immediate-shutdown event set → break;
+   - immediate-shutdown flag set → break;
    - past auto-refresh time → break (the manager forks a fresh worker, which
      re-imports every module — the point of the feature);
    - controlled-shutdown set *and* both queues empty → break;
@@ -290,7 +290,7 @@ process entry point:
      - False (nothing found, or a work item that could not be claimed —
        `execute()` returns False and hands the claim back when the keepalive
        cannot be started, §19.9) → `idle_time = min(idle_time + 1,
-       idle_timeout_max)` and wait that long on the immediate-shutdown event;
+       idle_timeout_max)` and wait that long on the immediate-shutdown flag;
    - `SINGLE_SHOT` → break;
    - `finally: remove_all_sessions()` (SQLAlchemy session hygiene per iteration).
 
@@ -1455,7 +1455,9 @@ saq/engine/
   worker_manager.py           fork/supervise/restart/shutdown the worker pool
   worker.py                   worker process loop, work-item execution, delayed-analysis API,
                               crash recovery from the manager's tracking record, current_execution_context,
-                              the two shutdown events WorkerShutdownAdapter reports
+                              the two shutdown flags WorkerShutdownAdapter reports (lock free
+                              shared memory, not mp.Events: a worker killed mid-wait on an
+                              Event leaves a sleeper that wedges the manager's set())
   analysis_orchestrator.py    per-work-item lifecycle: load, disposition, execute,
                               detections, mode transitions, alerting, cleanup
   executor.py                 the recursive analysis algorithm, per-module gauntlet,

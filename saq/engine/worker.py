@@ -1,3 +1,4 @@
+import ctypes
 from datetime import datetime, timedelta
 import logging
 from multiprocessing import Process
@@ -45,6 +46,11 @@ from saq.util.process import kill_process_tree
 from saq.util.time import local_time
 from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
 
+# how often a worker re-reads its shutdown flags while it is sleeping. this is the worst
+# case wake latency for a shutdown request, and matches the interval
+# WorkerManager.supervise_shutdown() polls the pool at
+SHUTDOWN_POLL_INTERVAL = 0.25
+
 class Worker:
     """Responsible for maintaining an executing analysis process."""
 
@@ -63,9 +69,9 @@ class Worker:
         self.config: EngineConfiguration = self.configuration_manager.config
         self.analysis_mode_priority: Optional[str] = analysis_mode_priority if analysis_mode_priority is not None else self.config.analysis_mode_priority
 
-        # controls when the worker exits
-        self._controlled_shutdown_event = ACE_MP_CONTEXT.Event()
-        self._immediate_shutdown_event = ACE_MP_CONTEXT.Event()
+        # controls when the worker exits.
+        self._controlled_shutdown = ACE_MP_CONTEXT.Value(ctypes.c_bool, False, lock=False)
+        self._immediate_shutdown = ACE_MP_CONTEXT.Value(ctypes.c_bool, False, lock=False)
 
         # set this Event once you're started up and are running
         self._worker_startup_event = ACE_MP_CONTEXT.Event()
@@ -259,15 +265,40 @@ class Worker:
 
     def is_immediate_shutdown(self) -> bool:
         """Returns True if the worker has been told to shut down immediately."""
-        return self._immediate_shutdown_event.is_set()
+        return self._immediate_shutdown.value
 
     def is_controlled_shutdown(self) -> bool:
         """Returns True if the worker has been told to shut down when complete."""
-        return self._controlled_shutdown_event.is_set()
+        return self._controlled_shutdown.value
 
     def is_in_shutdown_state(self) -> bool:
         """Returns True if the worker is in a shutdown state."""
         return self.is_immediate_shutdown() or self.is_controlled_shutdown()
+
+    def _wait_for_immediate_shutdown(self, timeout: Optional[float] = None) -> bool:
+        """Sleep until immediate shutdown is requested, or until timeout expires.
+
+        Returns True if shutdown was requested. ``timeout=None`` waits indefinitely and
+        ``timeout=0`` is just a read of the flag -- which is the common case, because
+        worker_loop's idle backoff starts at zero.
+
+        This polls instead of blocking on a shared primitive on purpose: see the note on
+        the flags in __init__. The cost is SHUTDOWN_POLL_INTERVAL of wake latency.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        while True:
+            if self._immediate_shutdown.value:
+                return True
+
+            if deadline is None:
+                remaining = SHUTDOWN_POLL_INTERVAL
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+
+            time.sleep(min(SHUTDOWN_POLL_INTERVAL, remaining))
 
     def start(
         self,
@@ -308,12 +339,12 @@ class Worker:
     def immediate_shutdown(self):
         """Stop the worker immediately."""
         logging.info(f"sending signal to shut down worker {self.name} immediately")
-        self._immediate_shutdown_event.set()
+        self._immediate_shutdown.value = True
 
     def controlled_shutdown(self):
         """Stop the worker when it has finished processing all work."""
         logging.info(f"sending signal to shut down worker {self.name} when complete")
-        self._controlled_shutdown_event.set()
+        self._controlled_shutdown.value = True
 
     def is_alive(self) -> bool:
         """True if this worker's process still exists."""
@@ -356,7 +387,7 @@ class Worker:
 
         self.process.join(timeout)
         if self.process.is_alive():
-            if self._immediate_shutdown_event.is_set():
+            if self.is_immediate_shutdown():
                 logging.warning("process {} not stopping".format(self.process))
 
             self.process.kill()
@@ -369,8 +400,8 @@ class Worker:
     def _start_shutdown_watcher(self):
         """Start the thread that turns a shutdown signal into a cancelled analysis.
 
-        Runs inside the forked worker process. The shutdown events are mp.Events created
-        before the fork, so the manager setting one in the parent is visible here.
+        Runs inside the forked worker process. The shutdown flags live in shared memory
+        created before the fork, so the manager setting one in the parent is visible here.
 
         Cancellation rather than termination is the whole point: cancel_analysis() makes
         the executor's analysis loop stop at its next check and unwind through its own
@@ -379,7 +410,7 @@ class Worker:
         immediately. This reuses exactly the mechanism the lock-lost path already uses.
         """
         def _watch():
-            self._immediate_shutdown_event.wait()
+            self._wait_for_immediate_shutdown()
 
             context = self.current_execution_context
             if context is None:
@@ -446,7 +477,7 @@ class Worker:
 
         if execution_mode == EngineExecutionMode.UNTIL_COMPLETE:
             logging.info("single shot mode - shutting down after completing work")
-            self._controlled_shutdown_event.set()
+            self._controlled_shutdown.value = True
 
         # if we are replacing a worker that died mid-module, the manager handed us the
         # record of what it was doing so we can record the failure against that root
@@ -454,7 +485,7 @@ class Worker:
 
         while True:
             # is this worker shutting down?
-            if self._immediate_shutdown_event.is_set():
+            if self.is_immediate_shutdown():
                 break
             
             # is it time to die?
@@ -469,7 +500,7 @@ class Worker:
 
             try:
                 # if the control event is set then it means we're looking to exit when everything is done
-                if self._controlled_shutdown_event.is_set():
+                if self.is_controlled_shutdown():
                     if (
                         self.workload_manager.delayed_analysis_queue_is_empty
                         and self.workload_manager.workload_queue_is_empty
@@ -516,7 +547,7 @@ class Worker:
 
                     # otherwise we wait a second until we go again
                     # if we're in an immediate shutdown state then we don't wait at all here
-                    if self._immediate_shutdown_event.wait(idle_time):
+                    if self._wait_for_immediate_shutdown(idle_time):
                         break
 
                 if execution_mode == EngineExecutionMode.SINGLE_SHOT:
@@ -527,7 +558,7 @@ class Worker:
                 log_loop_exception(e, "uncaught exception in worker_loop")
                 # avoid spinning, but wake immediately once we are shutting down rather
                 # than sleeping out the full second against peers that are already gone
-                self._immediate_shutdown_event.wait(1)
+                self._wait_for_immediate_shutdown(1)
             finally:
                 # SQLAlchemy session management
                 remove_all_sessions()
