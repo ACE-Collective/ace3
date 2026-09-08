@@ -39,17 +39,13 @@ from saq.environment import ACE_MP_CONTEXT, get_data_dir, get_global_runtime_set
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
+from saq.shutdown import wait_for_shared_flag
 
 
 from saq.observables.file import FileObservable
 from saq.util.process import kill_process_tree
 from saq.util.time import local_time
 from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
-
-# how often a worker re-reads its shutdown flags while it is sleeping. this is the worst
-# case wake latency for a shutdown request, and matches the interval
-# WorkerManager.supervise_shutdown() polls the pool at
-SHUTDOWN_POLL_INTERVAL = 0.25
 
 class Worker:
     """Responsible for maintaining an executing analysis process."""
@@ -282,23 +278,10 @@ class Worker:
         ``timeout=0`` is just a read of the flag -- which is the common case, because
         worker_loop's idle backoff starts at zero.
 
-        This polls instead of blocking on a shared primitive on purpose: see the note on
-        the flags in __init__. The cost is SHUTDOWN_POLL_INTERVAL of wake latency.
+        Polling rather than blocking on a shared primitive is the whole point: see the
+        note on the flags in __init__, and wait_for_shared_flag() for the argument.
         """
-        deadline = None if timeout is None else time.monotonic() + timeout
-
-        while True:
-            if self._immediate_shutdown.value:
-                return True
-
-            if deadline is None:
-                remaining = SHUTDOWN_POLL_INTERVAL
-            else:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-
-            time.sleep(min(SHUTDOWN_POLL_INTERVAL, remaining))
+        return wait_for_shared_flag(self._immediate_shutdown, timeout)
 
     def start(
         self,

@@ -194,6 +194,8 @@ def test_shutdown_flag_set_after_the_fork_reaches_a_running_worker():
 
 @pytest.mark.unit
 def test_wait_for_immediate_shutdown_wakes_when_the_flag_is_set():
+    """The worker's wait is wired to its own flag. The polling primitive underneath is
+    saq.shutdown.wait_for_shared_flag, covered in tests/saq/test_shutdown.py."""
     worker = _make_worker()
 
     def _set_soon():
@@ -206,21 +208,3 @@ def test_wait_for_immediate_shutdown_wakes_when_the_flag_is_set():
     assert worker._wait_for_immediate_shutdown(10) is True
     assert time.monotonic() - started < 5
 
-
-@pytest.mark.unit
-def test_wait_for_immediate_shutdown_times_out():
-    worker = _make_worker()
-
-    started = time.monotonic()
-    assert worker._wait_for_immediate_shutdown(0.5) is False
-    assert time.monotonic() - started >= 0.5
-
-
-@pytest.mark.unit
-def test_wait_for_immediate_shutdown_with_no_timeout_just_reads_the_flag():
-    """worker_loop's idle backoff starts at 0, so this is the common case."""
-    worker = _make_worker()
-    assert worker._wait_for_immediate_shutdown(0) is False
-
-    worker.immediate_shutdown()
-    assert worker._wait_for_immediate_shutdown(0) is True
