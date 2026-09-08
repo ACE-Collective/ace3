@@ -12,6 +12,7 @@ from saq.shutdown import (
     is_shutting_down,
     reset_shutdown_coordinator,
     run_bounded,
+    wait_for_shared_flag,
 )
 
 
@@ -178,8 +179,14 @@ def test_hooks_skipped_once_deadline_exceeded(make_coordinator):
 
 @pytest.mark.unit
 def test_flag_is_visible_across_a_fork(make_coordinator):
-    """Engine workers are forked, so a worker must observe a shutdown requested by the
-    parent after the fork. This is why the flag is an mp.Event and not a plain bool."""
+    """A forked child must observe a shutdown requested by its parent after the fork.
+
+    This is why the mirror lives in shared memory and not in a plain bool: the child
+    inherits a copy of everything else, including the local threading.Event, and the
+    parent can never set that copy. It is a lock free flag rather than an mp.Event
+    because a child killed while reading or waiting on an Event orphans its condition --
+    see test_request_shutdown_returns_after_a_waiting_child_was_killed.
+    """
     coordinator = make_coordinator(deadline_seconds=5)
 
     read_fd, write_fd = os.pipe()
@@ -369,13 +376,186 @@ def test_signal_handler_touches_no_blocking_primitive(make_coordinator):
         assert coordinator.is_shutting_down
         assert coordinator.reason == "received SIGTERM"
 
-        # and the mp mirror is NOT set from the handler
-        assert not coordinator._mp_event.is_set()
+        # and the shared mirror is NOT set from the handler
+        assert not coordinator._mp_flag.value
 
     # the observer picks it up once we are out of the way
     for _ in range(200):
-        if coordinator._mp_event.is_set():
+        if coordinator._mp_flag.value:
             break
         time.sleep(0.01)
 
-    assert coordinator._mp_event.is_set()
+    assert coordinator._mp_flag.value
+
+
+#
+# the fork mirror must not be something a killed child can wedge
+#
+# A multiprocessing.Event is exactly that. Condition.wait() registers a sleeper before it
+# sleeps and Condition.notify_all() waits for one wake per registered sleeper, so a child
+# killed mid-wait leaves a sleeper that never wakes and the parent's next set() blocks
+# forever. Event.is_set() takes the same condition's lock, so even the read path is
+# exposed -- and is_shutting_down() is read from hot loops inside forked engine workers,
+# which this engine kills abruptly by design. The mirror is therefore a lock free shared
+# flag; see saq/engine/worker.py for the same argument applied to the worker's own
+# signals.
+#
+# Every test below bounds itself: a hanging test wedges the pytest session lock.
+#
+
+
+def _finishes_within(callback, timeout: float = 5.0) -> bool:
+    """Run callback on a daemon thread, returning True if it finished inside timeout.
+
+    Deliberately not run_bounded(): this *is* the assertion, and it has to fail rather
+    than hang. The abandoned thread is a daemon, so it cannot hold up interpreter exit.
+    """
+    finished = threading.Event()
+
+    def _run():
+        callback()
+        finished.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return finished.wait(timeout)
+
+
+def _fork_a_waiter(coordinator) -> int:
+    """Fork a child blocked in ``coordinator.wait_for_shutdown()``; returns its pid.
+
+    Raw os.fork() to match test_flag_is_visible_across_a_fork, and because the child does
+    nothing that needs multiprocessing's after-fork bookkeeping.
+    """
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # child
+        try:
+            os.close(read_fd)
+            os.write(write_fd, b"x")
+            os.close(write_fd)
+            coordinator.wait_for_shutdown()
+        finally:
+            os._exit(0)
+
+    os.close(write_fd)
+    try:
+        assert os.read(read_fd, 1) == b"x", "the child never reached the wait"
+    finally:
+        os.close(read_fd)
+
+    # the pipe only says it is about to wait, so give it a moment to actually be inside
+    time.sleep(0.5)
+    return pid
+
+
+def _kill_the_waiter(pid: int):
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+
+
+@pytest.mark.unit
+def test_request_shutdown_returns_after_a_waiting_child_was_killed(make_coordinator):
+    """The deadlock, isolated: a child killed while waiting on the mirror must not be
+    able to wedge the parent that requests shutdown."""
+    coordinator = make_coordinator(deadline_seconds=5)
+
+    _kill_the_waiter(_fork_a_waiter(coordinator))
+
+    assert _finishes_within(lambda: coordinator.request_shutdown("test")), \
+        "request_shutdown() blocked on a child killed while waiting on the mirror"
+    assert coordinator.is_shutting_down
+
+
+@pytest.mark.unit
+def test_is_shutting_down_is_not_blocked_by_a_killed_child(make_coordinator):
+    """The read path matters as much as the write: is_shutting_down() is called from hot
+    loops in forked workers, so it must never be able to block.
+
+    Unlike the test above this does not reliably fail against an mp.Event -- orphaning
+    the condition's lock is a race, not a certainty. It guards the property that makes
+    the whole subsystem safe to call from library code.
+    """
+    coordinator = make_coordinator(deadline_seconds=5)
+
+    _kill_the_waiter(_fork_a_waiter(coordinator))
+
+    answers = []
+    assert _finishes_within(lambda: answers.append(coordinator.is_shutting_down)), \
+        "is_shutting_down blocked after a child was killed"
+    assert answers == [False]
+
+
+@pytest.mark.unit
+def test_wait_for_shutdown_wakes_a_forked_child(make_coordinator):
+    """A child blocked in wait_for_shutdown() wakes when the parent requests shutdown.
+
+    The child cannot see the parent's threading.Event -- it holds a stale copy the parent
+    can never set -- so this is the shared flag doing the work.
+    """
+    coordinator = make_coordinator(deadline_seconds=5)
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # child
+        try:
+            os.close(read_fd)
+            woke = coordinator.wait_for_shutdown(15)
+            os.write(write_fd, b"1" if woke else b"0")
+            os.close(write_fd)
+        finally:
+            os._exit(0)
+
+    os.close(write_fd)
+    try:
+        # requested in the parent *after* the child is already blocked
+        time.sleep(0.5)
+        coordinator.request_shutdown("parent")
+
+        result = os.read(read_fd, 1)
+        os.waitpid(pid, 0)
+        assert result == b"1", "the forked child never woke"
+    finally:
+        os.close(read_fd)
+
+
+#
+# wait_for_shared_flag: the polling primitive both the coordinator and Worker wait on
+#
+
+
+class _FakeFlag:
+    """Stands in for a multiprocessing Value: the helper only reads ``.value``."""
+
+    def __init__(self, value: bool = False):
+        self.value = value
+
+
+@pytest.mark.unit
+def test_wait_for_shared_flag_wakes_when_the_flag_is_set():
+    flag = _FakeFlag()
+
+    def _set_soon():
+        time.sleep(0.2)
+        flag.value = True
+
+    threading.Thread(target=_set_soon, daemon=True).start()
+
+    started = time.monotonic()
+    assert wait_for_shared_flag(flag, 10) is True
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.unit
+def test_wait_for_shared_flag_times_out():
+    started = time.monotonic()
+    assert wait_for_shared_flag(_FakeFlag(), 0.5) is False
+    assert time.monotonic() - started >= 0.5
+
+
+@pytest.mark.unit
+def test_wait_for_shared_flag_with_zero_timeout_just_reads_the_flag():
+    """Worker.worker_loop's idle backoff starts at zero, so this is the common case."""
+    assert wait_for_shared_flag(_FakeFlag(False), 0) is False
+    assert wait_for_shared_flag(_FakeFlag(True), 0) is True
