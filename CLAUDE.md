@@ -44,6 +44,16 @@ There is no configured linter/formatter in the repo.
 
 IMPORTANT: Do **NOT** run multiple tests at the same time. The tests are designed to run serially.
 
+This is now enforced. `tests/session_lock.py` creates a marker file at
+`$SAQ_HOME/.pytest-running` when a session starts and removes it when the session ends
+(including on Ctrl-C and collection errors). While that file exists **no** pytest session
+may start — `pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before
+collection, before any database access and before `data_unittest/` is wiped. There is no
+bypass flag. The marker records the pid, hostname, start time and command line of the
+session that created it, and the error message says whether that process is still running or
+whether the marker was left behind by a run that was killed. In the latter case, clear it
+with `rm /opt/ace/.pytest-running`.
+
 ### The standard analysis-module test
 
 Almost every module test follows this shape — build a root, enable one module in a test analysis mode, run the engine single-threaded for one work item, reload from disk and assert:

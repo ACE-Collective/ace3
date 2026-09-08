@@ -43,6 +43,7 @@ from tests.saq.helpers import (
     stop_api_server,
 )
 from tests.saq.test_util import create_test_context
+from tests import session_lock
 
 pytest.register_assert_rewrite("tests.saq.requests")
 
@@ -621,4 +622,33 @@ def _dispatch_v2(command, method, api_key, data, params, json=None):
 def pytest_sessionstart(session):
     for dir_path in get_valid_integration_dirs():
         load_integration_component_src(dir_path)
+
+#
+# the test suite is not safe to run concurrently with itself: execute_global_setup() deletes
+# data_unittest/ and resets every unittest database. a marker file makes that constraint
+# mechanical instead of a rule people remember. see tests/session_lock.py
+#
+
+# True only if *this* process created the marker file. pytest_unconfigure runs even when
+# pytest_configure raised, so without this a blocked session would delete the live session's marker.
+SESSION_LOCK_HELD = False
+
+def pytest_configure(config):
+    global SESSION_LOCK_HELD
+
+    try:
+        session_lock.acquire()
+    except session_lock.SessionLockError as e:
+        # UsageError exits before collection, before any database access and before the
+        # data_unittest/ wipe, and prints the message without a traceback
+        raise pytest.UsageError(str(e))
+
+    SESSION_LOCK_HELD = True
+
+def pytest_unconfigure(config):
+    global SESSION_LOCK_HELD
+
+    if SESSION_LOCK_HELD:
+        session_lock.release()
+        SESSION_LOCK_HELD = False
 
