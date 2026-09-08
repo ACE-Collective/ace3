@@ -2,6 +2,7 @@
 import copy
 from dataclasses import dataclass
 import logging
+import multiprocessing
 import os
 import os.path
 import shutil
@@ -287,8 +288,42 @@ def execute_global_setup():
     # record current database settings so we can restore them prior to integration/system tests
     record_database_reset_information()
 
+def reap_stray_child_processes(test_name: str, preexisting: set):
+    """Stop any child process the finished test started and did not stop.
+
+    Only processes that appeared during the test are touched. The suite's own
+    infrastructure -- the Manager() backing the cross-process log handler in
+    tests.saq.helpers, for one -- shows up in active_children() too, and terminating that
+    breaks every later test in the session, so it is excluded by having been there before
+    the test began.
+
+    Terminate first so the child unwinds through its own shutdown path, then kill what
+    ignores that. Each one is logged: a stray child is a bug in the test that leaked it,
+    and cleaning it up silently would hide the leak along with the hang.
+    """
+    for process in multiprocessing.active_children():
+        if process in preexisting:
+            continue
+
+        logging.warning("test %s left child process %s (%s) running - terminating",
+                        test_name, process.name, process.pid)
+
+        try:
+            process.terminate()
+            process.join(5)
+
+            if process.is_alive():
+                logging.warning("child process %s did not terminate - killing", process.pid)
+                process.kill()
+                process.join(5)
+        except Exception as e:
+            logging.error("unable to reap child process %s: %s", process.pid, e)
+
 @pytest.fixture(autouse=True, scope="function")
 def global_function_setup(request):
+
+    # everything already running belongs to the suite, not to this test
+    preexisting_child_processes = set(multiprocessing.active_children())
 
     # reset emitter to default state
     reset_emitter()
@@ -367,6 +402,15 @@ def global_function_setup(request):
 
     # restore the original global runtime settings
     set_global_runtime_settings(global_runtime_settings_copy)
+
+    # reap anything the test forked and did not stop
+    #
+    # a test that starts an engine with start_nonblocking() and then fails before it gets
+    # to its os.kill() leaves that process running. multiprocessing joins every non-daemon
+    # child at interpreter exit with no timeout, so the whole session then hangs -- a five
+    # second failure presents as an unbounded hang, with the actual assertion buried in
+    # output pytest never gets to print.
+    reap_stray_child_processes(request.node.name, preexisting_child_processes)
 
     # SQLAlchemy session management
     #

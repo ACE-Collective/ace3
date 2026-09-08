@@ -132,8 +132,8 @@ def test_alert_dispositioned():
                         DISPOSITION_FALSE_POSITIVE, 
                         get_db().query(User).first().id)
 
-    # look for analysis_module_alert_disposition_analyzer to cancel the analysis
-    wait_for_log_count("stopping analysis on dispositioned alert", 1)
+    # AnalysisExecutor._check_for_alert_disposition cancels the analysis mid-module
+    assert wait_for_log_count("stopping analysis on dispositioned alert", 1)
 
     # now wait for it to stop
     assert engine_process.pid is not None
@@ -227,8 +227,16 @@ def test_alert_continue_specific_disposition():
                         DISPOSITION_DELIVERY,
                         get_db().query(User).first().id)
 
-    # look for analysis_module_alert_disposition_analyzer to cancel the analysis
-    wait_for_log_count("but continuing analysis", 1)
+    # DELIVERY is not in stop_analysis_on_dispositions, so
+    # AnalysisExecutor._check_for_alert_disposition lets the analysis run on
+    assert wait_for_log_count("but continuing analysis", 1)
+
+    # let the correlation pass finish before stopping the engine. SIGINT means the same
+    # thing as SIGTERM -- stop now, abandoning in-flight analysis so another node can pick
+    # it up (see docs/SHUTDOWN.md) -- so sending it any earlier would cancel exactly the
+    # continued analysis this test exists to check. two completions: the test_single pass
+    # that produced the detection, then the correlation pass this test is about.
+    assert wait_for_log_count("completed analysis RootAnalysis({})".format(root.uuid), 2)
 
     # now wait for it to stop
     os.kill(engine_process.pid, signal.SIGINT)
@@ -246,9 +254,10 @@ def test_alert_continue_specific_disposition():
     low_pri_analysis = observable_pause.get_and_load_analysis('LowPriorityAnalysis')
     assert low_pri_analysis
 
-    # the mode should have changed to dispositioned
-    assert alert.root_analysis.analysis_mode, ANALYSIS_MODE_DISPOSITIONED
-    # and we should have a workload entry for this as well
+    # there is deliberately no assertion on the analysis mode here. it does not change to
+    # dispositioned -- see the same note in test_alert_dispositioned -- because
+    # set_dispositions() queues the dispositioned work item directly. the workload entry
+    # below is what actually records that transition, so that is what is checked.
     get_db().close()
     assert get_db().query(Workload).filter(
         Workload.uuid == alert.uuid,

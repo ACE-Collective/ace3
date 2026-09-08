@@ -6,9 +6,10 @@ import os
 import threading
 from typing import Any, Callable
 import warnings
+import weakref
 
 import pymysql
-from sqlalchemy import create_engine, event
+from sqlalchemy import Engine, create_engine, event
 
 from saq.configuration.config import get_config
 from saq.monitor import emit_monitor
@@ -24,6 +25,26 @@ from sqlalchemy.orm.session import sessionmaker
 # databases are created lazily on first get_db() request
 _db_sessions: dict[str, scoped_session] = {}
 _db_sessions_lock = threading.RLock()
+
+# every SQLAlchemy engine this module creates, so that reset_database_after_fork() can
+# find them all. guarded by _db_sessions_lock along with _db_sessions
+_db_engines: set[Engine] = set()
+
+# every DBAPI connection opened in this process, tagged with the pid that opened it, so
+# that a forked child can neutralise the ones it inherited before anything touches them.
+# a WeakSet, so tracking a connection never keeps it alive
+_tracked_connections: weakref.WeakSet = weakref.WeakSet()
+# an RLock: _before_fork() already holds it when reset_database_after_fork() re-takes it
+_tracked_connections_lock = threading.RLock()
+
+def _track_connection(connection):
+    """Records a newly opened DBAPI connection and the pid that opened it."""
+    try:
+        connection._ace_pid = os.getpid()
+        with _tracked_connections_lock:
+            _tracked_connections.add(connection)
+    except Exception as e:
+        logging.debug("unable to track database connection: %s", e)
 
 def get_db(name: str = "ace") -> scoped_session:
     """returns the SQLAlchemy scoped session for the named database
@@ -230,6 +251,7 @@ class _database_pool:
 
     def open_new_connection(self):
         connection = pymysql.connect(**self.kwargs)
+        _track_connection(connection)
         cursor = connection.cursor()
         cursor.execute('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED')
         cursor.close()
@@ -341,13 +363,19 @@ def execute_with_db_cursor(db_name: str, target: Callable, *args, **kwargs):
 def _attach_engine_listeners(engine):
     """attaches the pool-monitoring and fork-safety event listeners to an engine
 
-    the checkout listener's pid check is what makes an engine fork-safe -- a
-    connection record created in a parent process is invalidated rather than
-    reused after a fork."""
+    the checkout listener's pid check is the backstop that keeps a connection record
+    created in a parent process from being reused after a fork. it is only a backstop:
+    it cannot see a connection that was already checked out when the fork happened, and
+    pool_pre_ping writes to the socket before it ever runs. reset_database_after_fork()
+    is what actually keeps the two processes apart."""
+
+    with _db_sessions_lock:
+        _db_engines.add(engine)
 
     @event.listens_for(engine, 'connect')
     def connect(dbapi_connection, connection_record):
         connection_record.info['pid'] = os.getpid()
+        _track_connection(dbapi_connection)
 
     @event.listens_for(engine, 'checkin')
     def checkin(dbapi_connection, connection_record):
@@ -444,3 +472,113 @@ def initialize_database():
         # this (currently) happens in unit testing
         from sqlalchemy.orm.session import close_all_sessions
         close_all_sessions()
+
+# ----------------------------------------------------------------------
+# fork safety
+# ----------------------------------------------------------------------
+
+def reset_database_after_fork():
+    """Drop every database connection inherited from the parent process.
+
+    ACE_MP_CONTEXT is the fork context, so a child starts life holding open copies of
+    the parent's MySQL sockets. If it uses one, both processes end up reading and
+    writing the same TLS stream and the record layer desynchronises -- which surfaces in
+    whichever process touches it next as::
+
+        [SSL: RECORD_LAYER_FAILURE] ... Lost connection to MySQL server during query
+
+    The checkout listener in _attach_engine_listeners() is not enough on its own. It
+    fires on checkout, and by then the socket has already been written to: pool_pre_ping
+    pings the inherited connection first, and a scoped_session is keyed by thread ident,
+    which a forked child's main thread inherits -- so a session that held an open
+    transaction across the fork hands the child a connection that was never checked out
+    in it at all.
+
+    Nothing here sends a byte to the server, and that is the whole point. A graceful
+    close writes COM_QUIT, and a checkin writes a ROLLBACK, down a connection the parent
+    is still using -- which is the damage this exists to prevent. So:
+
+    _force_close() drops this process's file descriptor and nothing else. The parent
+    still holds its own descriptor for the same socket, so the connection stays up and
+    the server is told nothing. This is the same reasoning _database_pool.close() already
+    documents. It has to happen first, before the connections become unreachable: once
+    SQLAlchemy's _finalize_fairy runs on a garbage collected connection it issues a reset
+    *and* a close on the way out, and a force closed connection makes both no-ops.
+
+    engine.dispose(close=False) is then SQLAlchemy's documented after-fork call: it swaps
+    in a fresh pool and abandons the inherited one rather than closing it.
+    registry.clear() drops the inherited Session objects the same way -- unlike
+    remove_all_sessions(), which calls Session.close() and would check a connection back
+    into the pool with a rollback on the way.
+    """
+    pid = os.getpid()
+
+    with _tracked_connections_lock:
+        inherited = [c for c in _tracked_connections if getattr(c, "_ace_pid", pid) != pid]
+        for connection in inherited:
+            _tracked_connections.discard(connection)
+
+    for connection in inherited:
+        try:
+            connection._force_close()
+        except Exception as e:
+            logging.debug("unable to force close inherited connection after fork: %s", e)
+
+    for engine in list(_db_engines):
+        try:
+            engine.dispose(close=False)
+        except Exception as e:
+            logging.debug("unable to dispose inherited engine after fork: %s", e)
+
+    for name, session in list(_db_sessions.items()):
+        if session is None:
+            continue
+
+        try:
+            session.registry.clear()
+        except Exception as e:
+            logging.debug("unable to clear inherited %s session after fork: %s", name, e)
+
+    # the raw pymysql pools go the same way. get_pool() would rebuild them lazily on its
+    # own pid check, but dropping them here means an inherited connection is never even
+    # a candidate.
+    _global_db_pools.clear()
+
+    logging.debug("reset %d inherited database connections in pid %s", len(inherited), pid)
+
+
+def _before_fork():
+    # take every registry lock across the fork. only the forking thread survives into the
+    # child, so a lock another thread held at that moment would never be released there --
+    # the child would deadlock on the first database call. holding them here means they are
+    # ours to release on both sides.
+    _db_sessions_lock.acquire()
+    _global_db_pools_lock.acquire()
+    _tracked_connections_lock.acquire()
+
+
+def _release_fork_locks():
+    _tracked_connections_lock.release()
+    _global_db_pools_lock.release()
+    _db_sessions_lock.release()
+
+
+def _after_fork_in_parent():
+    _release_fork_locks()
+
+
+def _after_fork_in_child():
+    try:
+        reset_database_after_fork()
+    finally:
+        _release_fork_locks()
+
+
+# registered once, at import, rather than called from each fork target. ACE forks the
+# engine controller, every analysis worker and every search index worker, and a barrier
+# that has to be remembered at the call site is one that eventually is not.
+os.register_at_fork(
+    before=_before_fork,
+    after_in_parent=_after_fork_in_parent,
+    after_in_child=_after_fork_in_child,
+)

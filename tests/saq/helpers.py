@@ -665,6 +665,11 @@ def insert_alert():
 def wait_for_process(process: Process):
     process.join(10)
     if process.is_alive():
+        # kill it before complaining. multiprocessing joins every non-daemon child at
+        # interpreter exit with no timeout, so a process left running here turns this
+        # failure into a hang that never reports it.
+        process.kill()
+        process.join(5)
         raise RuntimeError("engine did not stop")
 
 def reset_s3_email_archive_bucket():
