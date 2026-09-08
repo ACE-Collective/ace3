@@ -2693,10 +2693,22 @@ class IncomingWorkloadType(Base):
 class IncomingWorkload(Base):
 
     __tablename__ = 'incoming_workload'
+    __table_args__ = (
+        Index('idx_iw_node_type', 'node_id', 'type_id'),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
         primary_key=True)
+
+    # the node that collected this work. the row points at a root stored under that node's
+    # local collection incoming_dir, so only that node can deliver it -- every collector
+    # query is scoped by this column. idx_iw_node_type covers this column as its leftmost
+    # member, which also satisfies the foreign key's index requirement
+    node_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
 
     type_id: Mapped[int] = mapped_column(
         Integer,

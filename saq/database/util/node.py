@@ -468,8 +468,7 @@ def reconcile_stale_node_statuses(stale_seconds: int) -> int:
 
 def update_collector_status(node_id: int, name: str, status: str, backlog_count: int):
     """Updates the status of a collector service running on a node. The status
-    is reported to the central database so the engine's drained check and the
-    API can see it (the collection database is local to the host in production)."""
+    is reported so the engine's drained check and the API can see it."""
 
     with get_db_connection() as db:
         cursor = db.cursor()

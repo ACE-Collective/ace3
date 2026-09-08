@@ -121,7 +121,6 @@ def initialize_sql(target_dir: str, primary_database: str):
     target_path = os.path.join(target_dir, "saq.database.passwords.yaml")
     database_passwords = {
         "database_ace": { "password": user_password },
-        "database_collection": { "password": user_password },
         "database_email_archive": { "password": user_password },
         "database_brocess": { "password": user_password },
         "database_analysis_result_cache": { "password": user_password },

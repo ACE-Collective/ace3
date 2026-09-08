@@ -56,7 +56,7 @@ class GroupConfigurationLoader:
                 collection_group_config.coverage,
                 collection_group_config.full_delivery,
                 collection_group_config.company_id,
-                collection_group_config.database,
+                get_global_runtime_settings().saq_node_id,
                 target_nodes=target_nodes,
                 thread_count=collection_group_config.thread_count,
                 max_delivery_attempts=collection_group_config.max_delivery_attempts
@@ -73,7 +73,7 @@ class GroupConfigurationLoader:
         coverage: int, 
         full_delivery: bool, 
         company_id: int, 
-        database: str, 
+        node_id: int, 
         batch_size: Optional[int] = 32,
         target_node_as_company_id: Optional[int] = None,
         target_nodes: Optional[list] = None,
@@ -88,7 +88,7 @@ class GroupConfigurationLoader:
             coverage: Coverage value
             full_delivery: Whether full delivery is enabled
             company_id: Company ID
-            database: Database name
+            node_id: ID of the node this collector runs on
             batch_size: Batch size (default: 32)
             target_node_as_company_id: Target node as company ID (optional)
             target_nodes: List of target nodes (optional)
@@ -106,7 +106,7 @@ class GroupConfigurationLoader:
             coverage, 
             full_delivery, 
             company_id, 
-            database, 
+            node_id, 
             group_id, 
             self.workload_type_id, 
             self.service_shutdown_event, 

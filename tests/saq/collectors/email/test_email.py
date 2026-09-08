@@ -122,7 +122,7 @@ rule assignment: unittest {
     submit_email(str(datadir / 'pdf_attachment.email.rfc822'))
 
     # we add another node group for testing purposes
-    get_config().add_collection_group_config('qa', CollectionGroupConfig(name='qa', enabled=True, coverage=100, full_delivery=False, database='ace', company_id=1))
+    get_config().add_collection_group_config('qa', CollectionGroupConfig(name='qa', enabled=True, coverage=100, full_delivery=False, company_id=1))
     get_service_config(SERVICE_EMAIL_COLLECTOR).assignment_yara_rule_path = assignment_yara_rule_path
     collector = EmailCollectorService()
     collector.load_groups()
@@ -135,8 +135,8 @@ rule assignment: unittest {
     # assigning email /opt/ace/data_unittest/var/incoming/amc/2026010421/3ddcedc4-b314-4f5b-a751-4ea04ad32cc0 to groups unittest
     assert search_log_regex(re.compile(r'^assigning email (.+) to groups unittest$'))
 
-    # assigning 1596 to remote node group RemoteNodeGroup(name=unittest, coverage=100, full_delivery=True, company_id=1, database=ace)
-    assert search_log_regex(re.compile(r'^assigning \d+ to remote node group RemoteNodeGroup\(name=unittest, coverage=100, full_delivery=True, company_id=1, database=ace\)'))
+    # assigning 1596 to remote node group RemoteNodeGroup(name=unittest, coverage=100, full_delivery=True, company_id=1, node_id=1)
+    assert search_log_regex(re.compile(r'^assigning \d+ to remote node group RemoteNodeGroup\(name=unittest, coverage=100, full_delivery=True, company_id=1, node_id=\d+\)'))
 
 @pytest.mark.system
 def test_complete_processing(datadir):
