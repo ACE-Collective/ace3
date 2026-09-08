@@ -143,7 +143,7 @@ def ensure_collection(client: QdrantClient, model, name: Optional[str] = None) -
     """Creates the collection and its payload indexes if they do not exist. Returns the name."""
     name = name or collection_name()
     if not client.collection_exists(collection_name=name):
-        logging.info(f"creating search collection {name}")
+        logging.info("search_collection_created", extra={"collection": name})
         client.create_collection(
             collection_name=name,
             vectors_config={DENSE: models.VectorParams(size=dense_dimension(model), distance=models.Distance.COSINE)},
@@ -248,7 +248,9 @@ def index_loaded_alert(alert: Alert, *, client: Optional[QdrantClient] = None, m
     write_points(client, name, alert.uuid, points)
 
     seconds = time.time() - start
-    logging.info(f"indexed alert {alert.uuid} ({len(documents)} documents, {len(points)} points) in {seconds:.2f} seconds")
+    # DEBUG: the indexer service logs search_index_task_complete with these same counts plus
+    # the op, the worker and the queue depth; `ace search index --sync` prints its own summary
+    logging.debug(f"indexed alert {alert.uuid} ({len(documents)} documents, {len(points)} points) in {seconds:.2f} seconds")
     return IndexResult(alert_uuid=alert.uuid, document_count=len(documents), point_count=len(points), seconds=seconds, documents=documents)
 
 
@@ -256,13 +258,14 @@ def index_alert(alert_uuid: str, *, client: Optional[QdrantClient] = None, model
     """Loads and indexes one alert. A missing alert (or storage directory) is skipped, not an error."""
     alert = load_alert(alert_uuid)
     if alert is None:
-        logging.info(f"alert {alert_uuid} not found, nothing to index")
+        # DEBUG: surfaced to operators as the `skipped` field on search_index_task_complete
+        logging.debug(f"alert {alert_uuid} not found, nothing to index")
         return IndexResult(alert_uuid=alert_uuid, skipped="alert not found")
 
     try:
         root = alert.root_analysis
     except Exception as e:
-        logging.info(f"unable to load alert {alert_uuid} for indexing: {e}")
+        logging.debug(f"unable to load alert {alert_uuid} for indexing: {e}")
         return IndexResult(alert_uuid=alert_uuid, skipped=f"unable to load: {e}")
 
     if root is None:
@@ -275,7 +278,8 @@ def update_alert_payload(alert_uuid: str, *, client: Optional[QdrantClient] = No
     """Refreshes disposition/queue/tags on every point of the alert. Returns False when the alert is gone."""
     alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).one_or_none()
     if alert is None:
-        logging.info(f"alert {alert_uuid} not found, nothing to update")
+        # DEBUG: surfaced to operators as updated=False on search_index_task_complete
+        logging.debug(f"alert {alert_uuid} not found, nothing to update")
         return False
 
     client = client or get_qdrant_client()
