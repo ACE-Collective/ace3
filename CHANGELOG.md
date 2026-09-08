@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.107] - 2026-09-08
+
+- [Enhances UI around email remediation status](https://github.com/ACE-Collective/ace3/pull/535)
+- [Fixes some JS deobfuscation bugs](https://github.com/ACE-Collective/ace3/pull/534)
+- [Bumps urlfinderlib](https://github.com/ACE-Collective/ace3/pull/531)
+- [Hybrid alert search (saq/search) replacing the embedding prototype](https://github.com/ACE-Collective/ace3/pull/512)
+
 ## [3.0.106] - 2026-09-06
 
 - [Report node status so monitoring can tell a planned outage from a failure](https://github.com/ACE-Collective/ace3/pull/532)
