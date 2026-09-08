@@ -300,6 +300,7 @@ service_email_collector:
   python_class: EmailCollectorService
   description: Email Collector (AMS) - collects emails from remote AMS systems
   enabled: true
+  shutdown_deadline_seconds: 60
   workload_type: email
   delete_files: true
   # contains the rules that assigns emails to collectors
@@ -315,6 +316,7 @@ service_journal_email_collector:
   python_class: JournalEmailCollectorService
   description: Journal Email Collector - collects journal emails from a local directory or S3 bucket
   enabled: true
+  shutdown_deadline_seconds: 60
   workload_type: journal
   # source type: local or s3
   source: local
@@ -339,6 +341,7 @@ service_hunter:
   python_class: HunterService
   description: Hunter - executes searches, queries and commands on external systems
   enabled: true
+  shutdown_deadline_seconds: 60
   delete_files: true
   workload_type: hunter
 
@@ -2418,6 +2421,10 @@ service_engine:
   python_class: EngineService
   description: Analysis Correlation Engine - core analysis engine
   enabled: true
+  # the engine has the most to unwind on the way out: cancel in-flight analysis, wait for
+  # the worker pool, release this node's locks and mark the node stopped. must stay below
+  # the ace container's stop_grace_period (120s) -- see docs/SHUTDOWN.md
+  shutdown_deadline_seconds: 90
   # analysis pool settings
   # if NO analysis pools are specified then a single pool with no equal priority will be created with a size equal to the number of CPU cores
   analysis_pools: {}

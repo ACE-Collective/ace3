@@ -25,4 +25,14 @@ echo "starting ace..."
 echo
 
 # run the command passed to this script
-"$@"
+#
+# exec replaces this shell with the command so the command itself becomes PID 1 of the
+# container and receives SIGTERM directly from docker. without exec, bash remains PID 1
+# with the command as a foreground child; a non-interactive bash does not forward SIGTERM
+# to a foreground child, so the process never sees the signal and docker SIGKILLs the
+# whole container once the stop grace period expires.
+#
+# note that start_nothing.sh sources this file with no positional arguments. "$@" then
+# expands to nothing and exec becomes a no-op, so that script's own trailing loop still
+# runs as before.
+exec "$@"

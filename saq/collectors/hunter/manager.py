@@ -8,7 +8,7 @@ import time
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ExecutionMode
-from saq.error import report_exception
+from saq.error.reporting import log_loop_exception, report_exception
 from saq.git import get_commit_hash, git_dir_contains
 from saq.logging import get_transaction_id, transaction_id
 from saq.network_semaphore import NetworkSemaphoreClient
@@ -264,8 +264,7 @@ class HuntManager:
                 if not self.manager_control_event.is_set():
                     self.check_hunts()
             except Exception as e:
-                logging.error(f"uncaught exception {e}")
-                report_exception()
+                log_loop_exception(e, "uncaught exception in hunt manager loop")
 
         logging.info(f"stopped update manager for {self}")
 
@@ -326,8 +325,7 @@ class HuntManager:
                 self.wait_control_event.wait(1.0)
                 self.wait_control_event.clear()
             except Exception as e:
-                logging.error(f"uncaught exception {e}")
-                report_exception()
+                log_loop_exception(e, "uncaught exception in hunt manager loop")
                 self.manager_control_event.wait(timeout=1)
 
             if self.reload_hunts_flag:

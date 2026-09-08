@@ -34,14 +34,24 @@ Each service container in `docker-compose.yml` runs:
 /opt/ace/docker/startup/start.sh ace service start <name>
 ```
 
-`start.sh` waits for the database, then execs the `ace` CLI. The `service start` subcommand is defined in the `ace` script (`ace:528-566`) and does roughly:
+`start.sh` waits for the database, then **execs** the `ace` CLI. The `exec` matters: without it bash stays PID 1 with the Python process as a foreground child and never forwards SIGTERM, so the process is SIGKILLed by docker instead of shutting down (see `docs/SHUTDOWN.md`).
+
+The `service start` subcommand (`saq/cli/commands/service.py`) does roughly:
 
 ```python
 service = load_service_by_name(args.service)
-signal.signal(signal.SIGTERM, lambda *_: service.stop())
-service.start()        # or start_single_threaded() with --single-threaded
-service.wait()
+coordinator = get_shutdown_coordinator(deadline_seconds=...)  # from the service config
+coordinator.install_signal_handlers()                         # sets a flag; never calls stop()
+try:
+    service.start()          # or start_single_threaded() with --single-threaded
+    ...                      # block until a signal, or until the service finishes
+finally:
+    run_bounded(service.stop, ...)   # every step is bounded by the deadline
+    run_bounded(service.wait, ...)
+    os._exit(0)
 ```
+
+The process always exits inside its container's `stop_grace_period`. A service that wedges in `stop()` is abandoned rather than allowed to hold up the container.
 
 `load_service_by_name` (`saq/service.py:81`) consults the parsed config, returns a `DisabledService` placeholder if the service is disabled or not valid for the current `ACE_INSTANCE_TYPE`, and otherwise dynamically imports the configured `python_module` / `python_class` and instantiates it with no arguments.
 
@@ -174,7 +184,7 @@ docker compose up -d myservice
 docker compose logs -f myservice
 ```
 
-`SIGTERM` is wired to `service.stop()`, so `docker compose stop myservice` should shut it down cleanly. If the service is config-disabled or excluded by `instance_types`, `load_service_by_name` returns a `DisabledService` that simply blocks on a shutdown event — the container will start, log the disabled message, and idle until stopped.
+`SIGTERM` and `SIGINT` both request shutdown through the process-wide `ShutdownCoordinator`, so `docker compose stop myservice` shuts it down cleanly. A service must not install its own handlers for those signals, must not join anything without a timeout in `stop()`/`wait()`, and should check `is_shutting_down()` in any long-running loop — see `docs/SHUTDOWN.md`. Set `shutdown_deadline_seconds` in the service's config block if the default 20s is not enough. If the service is config-disabled or excluded by `instance_types`, `load_service_by_name` returns a `DisabledService` that simply blocks on a shutdown event — the container will start, log the disabled message, and idle until stopped.
 
 ---
 

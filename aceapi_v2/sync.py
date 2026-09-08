@@ -1,6 +1,7 @@
 """Utility for calling async code from synchronous Flask views."""
 
 import asyncio
+import logging
 import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
@@ -27,6 +28,28 @@ def _get_loop() -> asyncio.AbstractEventLoop:
                 thread = threading.Thread(target=_loop.run_forever, daemon=True)
                 thread.start()
     return _loop
+
+
+def shutdown_loop(timeout: float = 5.0):
+    """Stop the shared background event loop, if one was started."""
+    global _loop
+
+    with _loop_lock:
+        loop, _loop = _loop, None
+
+    if loop is None or loop.is_closed():
+        return
+
+    async def _dispose():
+        from aceapi_v2.database import dispose_engines_for_current_loop
+        await dispose_engines_for_current_loop()
+
+    try:
+        asyncio.run_coroutine_threadsafe(_dispose(), loop).result(timeout)
+    except Exception as e:
+        logging.debug("error disposing engines on the background loop: %s", e)
+
+    loop.call_soon_threadsafe(loop.stop)
 
 
 async def run_db_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:

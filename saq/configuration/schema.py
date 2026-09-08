@@ -61,6 +61,7 @@ class ServiceConfig(BaseModel):
     description: str = Field(..., description="A brief description of the service.")
     enabled: bool = Field(..., description="Controls whether the service is enabled or disabled.")
     instance_types: Optional[list[str]] = Field(default=None, description="The instance types that the service is valid for.")
+    shutdown_deadline_seconds: float = Field(default=20.0, description="How long this service may take to shut down after receiving SIGTERM. Must stay below the container stop_grace_period so the process always exits before docker escalates to SIGKILL.")
 
 class DatabaseConfig(BaseModel):
     name: str = Field(..., description="The name of the database.")

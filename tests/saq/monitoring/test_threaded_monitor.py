@@ -56,8 +56,8 @@ class TestACEThreadedMonitor:
             monitor.stop()
             monitor.wait()
 
-    @patch("saq.monitoring.threaded_monitor.report_exception")
-    def test_main_loop_catches_exception(self, mock_report):
+    @patch("saq.monitoring.threaded_monitor.log_loop_exception")
+    def test_main_loop_catches_exception(self, mock_log):
         error = RuntimeError("test error")
         monitor = ConcreteTestMonitor(frequency=0.05, execute_side_effect=error)
         try:
@@ -68,12 +68,17 @@ class TestACEThreadedMonitor:
                     break
                 threading.Event().wait(0.01)
             assert monitor.execute_count >= 2
-            mock_report.assert_called_with(error)
+            # reporting now goes through log_loop_exception, which decides between an
+            # error report and a quiet line depending on whether we are shutting down
+            mock_log.assert_called_with(error, "error in test_monitor monitor")
         finally:
             monitor.stop()
             monitor.wait()
 
-    @patch("saq.monitoring.threaded_monitor.report_exception")
+    # reporting now goes through log_loop_exception, so the error report is raised from
+    # inside saq.error.reporting rather than from this module. patched only to keep the
+    # test from writing a real error-report file; the assertion below is about the log.
+    @patch("saq.error.reporting.report_exception")
     def test_main_loop_logs_error_on_exception(self, mock_report, caplog):
         error = ValueError("something went wrong")
         monitor = ConcreteTestMonitor(name="error_monitor", frequency=0.05, execute_side_effect=error)

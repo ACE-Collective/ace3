@@ -132,6 +132,7 @@ services:
     ports:
       - "24224:24224"
     restart: unless-stopped
+    stop_grace_period: 30s
     # fluent-bit obviously cannot ship its own logs through itself. if the collector is
     # broken this is the only place that says so, so keep a bounded local copy.
     logging:
@@ -192,6 +193,7 @@ services:
       start_period: 30s
       timeout: 10s
     restart: always
+    stop_grace_period: 90s
     depends_on:
       ace-initialize:
         condition: service_completed_successfully
@@ -228,6 +230,7 @@ services:
       start_period: 30s
       timeout: 10s
     restart: always
+    stop_grace_period: 90s
     depends_on:
       ace-db:
         condition: service_healthy
@@ -256,9 +259,10 @@ services:
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/qdrant/qdrant
     hostname: ${QDRANT_HOSTNAME:-qdrant}
     restart: always
+    stop_grace_period: 60s
     entrypoint: >
       /bin/sh -c "
-      export QDRANT__SERVICE__API_KEY=$(cat /auth/passwords/qdrant) && ./entrypoint.sh
+      export QDRANT__SERVICE__API_KEY=$(cat /auth/passwords/qdrant) && exec ./entrypoint.sh
       "
     logging:
       driver: fluentd
@@ -307,6 +311,7 @@ services:
     platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
+    stop_grace_period: 30s
     logging:
       driver: fluentd
       options:
@@ -333,6 +338,7 @@ services:
     platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
+    stop_grace_period: 30s
     logging:
       driver: fluentd
       options:
@@ -366,6 +372,7 @@ services:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uwsgi --yaml etc/uwsgi_app.yaml"
     restart: always
+    stop_grace_period: 60s
     volumes: *common-volumes
     hostname: ace
     expose:
@@ -384,6 +391,7 @@ services:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uwsgi --yaml etc/uwsgi_api.yaml"
     restart: always
+    stop_grace_period: 60s
     volumes: *common-volumes
     hostname: ace
     expose:
@@ -400,8 +408,9 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       - ace
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_uvicorn:application --host 0.0.0.0 --port 3032 --workers 12 --timeout-keep-alive 300"
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_uvicorn:application --host 0.0.0.0 --port 3032 --workers 12 --timeout-keep-alive 300 --timeout-graceful-shutdown 45"
     restart: always
+    stop_grace_period: 60s
     volumes: *common-volumes
     hostname: ace
     expose:
@@ -427,8 +436,9 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     depends_on:
       - redis
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_ai_uvicorn:application --host 0.0.0.0 --port 3033 --workers 2 --timeout-keep-alive 300"
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_ai_uvicorn:application --host 0.0.0.0 --port 3033 --workers 2 --timeout-keep-alive 300 --timeout-graceful-shutdown 45"
     restart: always
+    stop_grace_period: 60s
     volumes:
       - .:/opt/ace
       - ace-data:/opt/ace/data:ro          # alert storage for download -- read-only
@@ -452,6 +462,7 @@ services:
     ports:
       - "6379:6379"
     restart: always
+    stop_grace_period: 30s
     hostname: ${REDIS_HOSTNAME:-redis}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -488,6 +499,7 @@ services:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace gui start"
     restart: always
+    stop_grace_period: 30s
     volumes: *common-volumes
     hostname: ace
     ports:
@@ -507,6 +519,7 @@ services:
         condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start network_semaphore"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     ports:
@@ -525,6 +538,7 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start git"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -541,6 +555,7 @@ services:
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start cron"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -558,6 +573,7 @@ services:
         condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start yara"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -579,6 +595,7 @@ services:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start search_indexer"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -596,6 +613,7 @@ services:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start remediation"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -613,6 +631,7 @@ services:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start external_remediation_check"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -630,6 +649,7 @@ services:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start monitoring"
     restart: always
+    stop_grace_period: 45s
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -645,6 +665,7 @@ services:
         #condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start_nothing.sh"
     restart: always
+    stop_grace_period: 10s
     volumes: *common-volumes
     hostname: ace
     cap_add:
@@ -676,6 +697,8 @@ services:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start engine"
     restart: always
+    stop_grace_period: 120s
+    init: true
     volumes: *common-volumes
     hostname: ace
     networks:
@@ -689,6 +712,7 @@ services:
     ports:
       - "5672:5672"
     restart: always
+    stop_grace_period: 60s
     hostname: ${RABBITMQ_HOSTNAME:-rabbitmq}
     entrypoint: >
       /bin/sh -c "
@@ -742,6 +766,7 @@ services:
         DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_PHISHKIT_MANAGER_IMAGE_URL:-phishkit-manager:latest}
     restart: always
+    stop_grace_period: 60s
     logging:
       driver: fluentd
       options:
@@ -793,6 +818,7 @@ services:
         DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
     image: ${ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL:-js-deobfuscator-manager:latest}
     restart: always
+    stop_grace_period: 60s
     logging:
       driver: fluentd
       options:

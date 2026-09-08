@@ -14,6 +14,14 @@ uwsgi:
   mount: /api=api_uwsgi.py
   manage-script-name: true
   harakiri: 300
+
+  # shutdown budget. die-on-term makes SIGTERM a shutdown rather than a reload; these
+  # bound how long the master waits for workers to finish before killing them, so the
+  # process always exits inside the container stop_grace_period (60s) rather than being
+  # SIGKILLed by docker. harakiri is deliberately left alone: it bounds a normal request,
+  # not shutdown.
+  reload-mercy: 45
+  worker-reload-mercy: 40
   buffer-size: 32768
 
   # without this option some libraries crash (pandas and lxml do this)

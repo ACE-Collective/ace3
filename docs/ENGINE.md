@@ -206,14 +206,17 @@ flag (consume-once) and proceeds.
 
 `Engine.main_controller_loop()` runs in the parent process:
 
-1. installs SIGHUP/SIGTERM/SIGINT handlers (they only set flags);
+1. installs the SIGHUP handler (it only sets a flag); SIGTERM and SIGINT belong to
+   the process-wide `ShutdownCoordinator` (`saq/shutdown.py`, `docs/SHUTDOWN.md`);
 2. `worker_manager.initialize_workers()` then `start_workers(execution_mode)`,
    which forks every worker and blocks until each sets its startup event;
 3. sets state `RUNNING`, node status `running`, `started_event`;
 4. loops on a 1-second `loop_control_event.wait(1.0)`:
    - `SINGLE_SHOT` / `UNTIL_COMPLETE` → `_controlled_stop()` and break immediately
      (the workers were told the mode at fork time and are already winding down);
-   - `SIGINT` → controlled stop (drain then exit); `SIGTERM` → immediate stop;
+   - shutdown requested (SIGTERM or SIGINT, which mean the same thing) → `_immediate_stop()`:
+     in-flight analysis is cancelled and requeued, workers are supervised against one
+     shared deadline, this node's locks are released and the node is marked `stopped`;
    - `node_manager.update_node_status_and_execute_primary_routines()` (§14);
    - `worker_manager.check_workers()` (§4.4);
    - `SIGHUP` → `worker_manager.restart_workers()`. Config reload is stubbed out

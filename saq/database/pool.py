@@ -51,6 +51,23 @@ def set_db(value):
     with _db_sessions_lock:
         _db_sessions["ace"] = value
 
+def _log_pool_issue(message: str, e: Exception):
+    """Log a connection-pool problem at a level that matches whether we expected it.
+
+    While shutting down these are routine -- the database container is stopping at the
+    same time as this one, so every pooled connection fails to roll back on its way out.
+    remove_all_sessions() runs in the finally of most of ACE's hot loops, so at WARNING
+    this produced several lines per connection per loop iteration per process, which is a
+    large part of what made shutdown look like a failure.
+    """
+    from saq.shutdown import is_shutting_down
+
+    if is_shutting_down():
+        logging.debug("%s (shutting down): %s", message, e)
+    else:
+        logging.warning("%s: %s", message, e)
+
+
 def remove_all_sessions():
     """remove() every registered scoped session
 
@@ -161,7 +178,7 @@ class _database_pool:
                     connection.rollback()
                 except Exception as e:
                     # if we can't rollback then toss this connection and get a new one
-                    logging.warning(f"unable to rollback connection on get_connection: {e}")
+                    _log_pool_issue("unable to rollback connection on get_connection", e)
                     self.close_connection(connection)
                     connection = self.open_new_connection()
 
@@ -186,8 +203,7 @@ class _database_pool:
         try:
             connection.rollback()
         except Exception as e:
-            logging.warning(f"unable to rollback connection on return to pool: {e}")
-            logging.warning(f"db connection ID: {connection}")
+            _log_pool_issue(f"unable to rollback connection {connection} on return to pool", e)
             self.destroy_connection(connection)
             return
 
@@ -231,7 +247,14 @@ class _database_pool:
         pass
 
     def stop(self):
-        pass
+        """Close every connection this pool owns.
+
+        Called on the way out so the database sees connections closed rather than
+        dropped. A connection that is merely abandoned leaves its transaction open on
+        the server until the server times it out, which is what left locks and row
+        locks lingering after a node went away.
+        """
+        self.clear()
 
     def clear(self):
         with self.lock:
@@ -239,7 +262,7 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    logging.error(f"unable to close database connection: {e}")
+                    _log_pool_issue("unable to close database connection", e)
 
             self.available.clear()
 
@@ -247,7 +270,7 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    logging.error(f"unable to close database connection: {e}")
+                    _log_pool_issue("unable to close database connection", e)
 
             self.in_use.clear()
             self.emit_monitors()

@@ -137,25 +137,7 @@ class DistributedNodeManager(NodeManagerInterface):
         )
 
         # clear any outstanding locks left over from a previous execution
-        # we use the lock_owner column of the locks table to determine if any locks are outstanding for this node
-        # worker lock owners are formatted as node-worker-<worker name> (see Worker._create_lock_manager)
-        # for example ace-qa2.local-worker-email-0
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
-                (get_global_runtime_settings().saq_node,),
-            )
-            result = cursor.fetchone()
-            if result:
-                logging.info(f"clearing {result[0]} locks from previous execution")
-                execute_with_retry(
-                    db,
-                    cursor,
-                    "DELETE FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
-                    (get_global_runtime_settings().saq_node,),
-                    commit=True,
-                )
+        self.clear_node_locks("previous execution")
 
         # set the is_primary flag in the database based on the environment variable
         with get_db_connection() as db:
@@ -187,6 +169,45 @@ class DistributedNodeManager(NodeManagerInterface):
 
         # warn if a multi-node cluster is running a node-local blob store
         warn_if_blob_store_not_multi_node_safe()
+
+    def clear_node_locks(self, reason: str) -> int:
+        """Delete every lock held by this node, returning how many were cleared.
+
+        We use the lock_owner column to identify them: worker lock owners are formatted
+        as node-worker-<worker name> (see Worker._create_lock_manager), for example
+        ace-qa2.local-worker-email-0.
+
+        Called twice in a node's life. At startup it clears whatever a previous run left
+        behind. At shutdown it releases what this run still holds, so the work those
+        locks were blocking becomes claimable by another node immediately instead of
+        after lock_timeout_seconds (5 minutes by default). The workload rows themselves
+        survive -- it is only the stale lock that made the work look taken.
+        """
+        try:
+            with get_db_connection() as db:
+                cursor = db.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
+                    (get_global_runtime_settings().saq_node,),
+                )
+                result = cursor.fetchone()
+                count = result[0] if result else 0
+                if count:
+                    logging.info("clearing %d locks from %s", count, reason)
+                    execute_with_retry(
+                        db,
+                        cursor,
+                        "DELETE FROM locks WHERE lock_owner LIKE CONCAT(%s, '-%%')",
+                        (get_global_runtime_settings().saq_node,),
+                        commit=True,
+                    )
+
+                return count
+        except Exception as e:
+            # a failure here is not worth an error report during shutdown: the locks
+            # expire on their own, and the primary node recovers them
+            logging.warning("unable to clear locks for this node (%s): %s", reason, e)
+            return 0
 
     def set_status(self, status: str):
         """Sets the status of this node in the database."""

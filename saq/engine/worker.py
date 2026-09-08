@@ -4,6 +4,7 @@ from multiprocessing import Process
 import os
 import shutil
 import signal
+import threading
 import time
 from typing import Optional, Union
 import uuid
@@ -34,7 +35,7 @@ from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
 from saq.environment import ACE_MP_CONTEXT, get_data_dir, get_global_runtime_settings
-from saq.error.reporting import report_exception
+from saq.error.reporting import log_loop_exception, report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
 
@@ -314,8 +315,39 @@ class Worker:
         logging.info(f"sending signal to shut down worker {self.name} when complete")
         self._controlled_shutdown_event.set()
 
+    def is_alive(self) -> bool:
+        """True if this worker's process still exists."""
+        return self.process is not None and self.process.is_alive()
+
+    def kill(self):
+        """Kill the worker process and everything it spawned.
+
+        The last resort of the shutdown escalation ladder, for a worker that ignored the
+        shutdown event past its deadline -- typically an analysis module in a CPU loop or
+        blocked on a socket with no timeout. The tree kill matters: analysis modules
+        launch external processes, and killing only the worker would orphan them.
+        """
+        if self.process is None or self.process.pid is None:
+            return
+
+        try:
+            kill_process_tree(self.process.pid, signal.SIGKILL)
+        except Exception as e:
+            logging.warning("unable to kill worker %s: %s", self.name, e)
+
+        try:
+            self.process.join(5)
+        except Exception:
+            pass
+
     def wait(self, timeout: float = 60):
-        """Wait for the worker to finish processing all work."""
+        """Wait for this one worker to finish processing all work.
+
+        NOTE: not the shutdown path. WorkerManager.supervise_shutdown() waits on the whole
+        pool against one shared deadline; calling this per worker in a loop is what used
+        to give a pool of N workers a worst case of N x 60s against a 10s container grace
+        period. Use it for a single worker in isolation, not to stop a pool.
+        """
         if self.process is None:
             logging.warning("worker has no process to wait for")
             return
@@ -333,6 +365,38 @@ class Worker:
     #
     # WORKER INTERFACE
     # ------------------------------------------------------------------------
+
+    def _start_shutdown_watcher(self):
+        """Start the thread that turns a shutdown signal into a cancelled analysis.
+
+        Runs inside the forked worker process. The shutdown events are mp.Events created
+        before the fork, so the manager setting one in the parent is visible here.
+
+        Cancellation rather than termination is the whole point: cancel_analysis() makes
+        the executor's analysis loop stop at its next check and unwind through its own
+        finally blocks, which releases the work item's lock and clears its tracking
+        record. The workload row survives, unlocked, and another node claims it
+        immediately. This reuses exactly the mechanism the lock-lost path already uses.
+        """
+        def _watch():
+            self._immediate_shutdown_event.wait()
+
+            context = self.current_execution_context
+            if context is None:
+                # idle between work items; the loop will notice the event on its own
+                return
+
+            logging.info("shutting down - cancelling in-flight analysis of %s", context.work_item)
+            try:
+                context.cancel_analysis()
+            except Exception as e:
+                logging.warning("error cancelling analysis during shutdown: %s", e)
+
+        threading.Thread(
+            target=_watch,
+            name=f"shutdown-watcher-{self.name}",
+            daemon=True,
+        ).start()
 
     def worker_loop(self, execution_mode: EngineExecutionMode, pending_failure: Optional[TrackingRecord] = None):
 
@@ -357,6 +421,17 @@ class Worker:
 
         # let the main process know we started
         self._worker_startup_event.set()
+
+        # watch for the shutdown signal from the manager and cancel whatever we are
+        # analyzing when it arrives. without this the shutdown event is only ever
+        # observed between work items, so a worker that had just claimed a long analysis
+        # kept running it until the manager gave up and SIGKILLed it -- which is what
+        # left the lock held and the workload row stranded.
+        #
+        # only for pool workers: the single-shot and until-complete modes process a
+        # bounded amount of work and exit on their own, with no manager to signal them.
+        if execution_mode == EngineExecutionMode.NORMAL:
+            self._start_shutdown_watcher()
 
         # if auto_refresh_frequency is > 0 then we record when we want to call it quits and start a new process
         if self.config.auto_refresh_frequency:
@@ -449,9 +524,10 @@ class Worker:
                     break
 
             except Exception as e:
-                logging.error("uncaught exception in worker_loop: {}".format(e))
-                report_exception()
-                time.sleep(1) # avoid spinning
+                log_loop_exception(e, "uncaught exception in worker_loop")
+                # avoid spinning, but wake immediately once we are shutting down rather
+                # than sleeping out the full second against peers that are already gone
+                self._immediate_shutdown_event.wait(1)
             finally:
                 # SQLAlchemy session management
                 remove_all_sessions()

@@ -1,5 +1,7 @@
 # vim: sw=4:ts=4:et
 
+from typing import NamedTuple
+
 #
 # database section names
 # these are used in calls to saq.database.get_db_connection
@@ -58,6 +60,31 @@ VALID_NODE_EXPECTED_STATES = [
     NODE_EXPECTED_STATE_ONLINE,
     NODE_EXPECTED_STATE_OFFLINE,
 ]
+
+# the drain and resume transitions
+
+class NodeTransition(NamedTuple):
+    to_status: str
+    from_statuses: list[str]
+    expected_state: str
+
+# a drain starts by pausing the collectors; the node advances to draining on its own
+# once every collector has flushed its backlog
+NODE_TRANSITION_DRAIN = NodeTransition(
+    to_status=NODE_STATUS_DRAINING_COLLECTORS,
+    from_statuses=[NODE_STATUS_RUNNING],
+    expected_state=NODE_EXPECTED_STATE_OFFLINE,
+)
+
+# resume from any drain phase
+NODE_TRANSITION_RESUME = NodeTransition(
+    to_status=NODE_STATUS_RUNNING,
+    from_statuses=[NODE_STATUS_DRAINING_COLLECTORS, NODE_STATUS_DRAINING, NODE_STATUS_DRAINED],
+    expected_state=NODE_EXPECTED_STATE_ONLINE,
+)
+
+# the drain is finished once the node reaches this status
+NODE_DRAIN_COMPLETE_STATUSES = [NODE_STATUS_DRAINED, NODE_STATUS_STOPPED]
 
 # 
 # instance types
