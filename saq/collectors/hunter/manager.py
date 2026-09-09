@@ -478,6 +478,14 @@ class HuntManager:
                     try:
                         self.file_manager.stage_submission(submission)
                         staged += 1
+                        # one line per root so operators can find which hunts feed a given
+                        # analysis mode (including non-alert modes like file) without joining
+                        # the aggregate queue log to description-only scheduling lines
+                        logging.info(
+                            "hunt %s (uuid=%s, type=%s) added root analysis %s mode=%s",
+                            hunt.name, hunt.uuid, hunt.type,
+                            submission.root.uuid, submission.root.analysis_mode,
+                        )
                     except Exception as e:
                         # a submission we cannot stage is one we cannot deliver. log it loudly
                         # rather than dropping it silently the way the in-memory queue used to
