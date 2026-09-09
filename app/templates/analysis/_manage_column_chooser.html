@@ -1,0 +1,22 @@
+{# The alert-list column chooser: one row per column in the analyst's order, a drag handle
+   to reorder and a checkbox to show or hide. Driven by init_column_chooser() in
+   js/manage_columns.js, which reads the list's DOM state and saves it through the API.
+   Expects `manage_column_layout` in the context (see app/user_preferences.py). Rendered
+   OUTSIDE any Datastar morph region -- the sortable binding would not survive a morph. #}
+<ul class="list-unstyled mb-1 column-chooser" data-preference-url="/api/v2/users/me/preferences/manage_columns">
+    {% for column in manage_column_layout %}
+    <li class="d-flex align-items-center py-1" data-column-id="{{ column.id }}">
+        <span class="bi bi-grip-vertical text-muted me-2 column-chooser-handle" style="cursor: grab;" title="Drag to reorder"></span>
+        <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="column_chooser_{{ column.id }}"
+                   {% if not column.hidden %}checked{% endif %}
+                   {% if column.required %}disabled title="This column is always shown"{% endif %}>
+            <label class="form-check-label" for="column_chooser_{{ column.id }}">{{ column.label }}</label>
+        </div>
+    </li>
+    {% endfor %}
+</ul>
+<div class="d-flex align-items-center">
+    <button type="button" class="btn btn-link btn-sm p-0 column-chooser-reset">Reset to default</button>
+    <small class="text-muted ms-auto column-chooser-status" aria-live="polite"></small>
+</div>

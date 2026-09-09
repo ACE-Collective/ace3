@@ -35,6 +35,7 @@ from aceapi_v2.users.schemas import (
     PermissionRead,
     UserDetail,
     UserRead,
+    UserSelfUpdate,
     UserUpdate,
 )
 
@@ -50,6 +51,29 @@ def _user_read(user: User, api_key_count: int = 0) -> UserRead:
         timezone=user.timezone,
         api_key_count=api_key_count,
     )
+
+
+async def get_user(session: AsyncSession, user_id: int) -> UserRead | None:
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    return None if user is None else _user_read(user)
+
+
+async def update_self(session: AsyncSession, user_id: int, changes: UserSelfUpdate) -> UserRead:
+    """Apply a user's edits to their own profile. Only the fields UserSelfUpdate allows can
+    change; an absent field is left alone. Raises UserNotFoundError."""
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise UserNotFoundError(user_id)
+
+    if changes.display_name is not None:
+        user.display_name = changes.display_name
+    if changes.timezone is not None:
+        user.timezone = changes.timezone
+    if changes.queue is not None:
+        user.queue = changes.queue
+
+    await session.flush()
+    return _user_read(user)
 
 
 async def list_users(session: AsyncSession, include_disabled: bool = True) -> list[User]:

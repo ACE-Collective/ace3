@@ -4,7 +4,13 @@
    expansion live in the $_sel / $_openComments signals declared on #manage_page in
    manage.html so they survive the morph. Do not bind jQuery handlers directly to
    elements in here -- use inline attributes, data-on:*, or delegated handlers.
-   See docs/GUI_DATASTAR.md. #}
+   See docs/GUI_DATASTAR.md.
+
+   The columns after the expand button and the checkbox are `manage_columns`: the
+   analyst's visible columns in their chosen order (saq/gui/manage_columns.py), each
+   rendered by the macros in _manage_columns.html. Anything JavaScript needs from a row
+   goes on the <tr> as a data attribute, never on a cell -- a cell may not be there. #}
+{% from "analysis/_manage_columns.html" import column_header, column_cell with context %}
 <div id="manage_alert_table">
 <div class="container-fluid">
     <div class="row">
@@ -23,21 +29,16 @@
                                        data-on:change="$_sel = el.checked ? JSON.parse(el.dataset.uuids) : []"/>
                             </div>
                         </th>
-                        <th><span onmousedown='set_sort_filter("Alert Date")' style="cursor:pointer;white-space: nowrap;">Date ({{ display_timezone_label }}){% if session['sort_filter'] == 'Alert Date' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        <th class="w-100"><span onmousedown='set_sort_filter("Description")' style="cursor:pointer">Alert{% if session['sort_filter'] == 'Description' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}{% if ace_config.gui.show_total_alert_count %} ({{total_alerts}}){% endif %}</span></th>
-                        <th>Remediation</th>
-                        <th><span onmousedown='set_sort_filter("Queue")' style="cursor:pointer">Queue{% if session['sort_filter'] == 'Queue' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        <th><span onmousedown='set_sort_filter("Owner")' style="cursor:pointer">Owner{% if session['sort_filter'] == 'Owner' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        {% if display_disposition %}
-                            <th><span onmousedown='set_sort_filter("Disposition")' style="cursor:pointer">Disposition{% if session['sort_filter'] == 'Disposition' %}{% if session['sort_filter_desc'] %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span></th>
-                        {% endif %}
-                        <th>Status</th>
+                        {% for column in manage_columns %}
+                        {{ column_header(column) }}
+                        {% endfor %}
                     </tr>
                 </thead>
                 <tbody>
                     {% for alert in alerts %}
-                    {# we can use this ID to modify an alert row #}
-                    <tr id="alert_row_{{alert.uuid}}" >
+                    {# we can use this ID to modify an alert row. data-status and data-insert-date
+                       feed select_event_name_candidate_from_manage_view() in ace.js #}
+                    <tr id="alert_row_{{alert.uuid}}" data-status="{{ alert.status }}" data-insert-date="{{ alert.insert_date }}">
                         <td>
                             {% include "analysis/_observable_expand_button.html" %}
                         </td>
@@ -49,56 +50,9 @@
                                 <input class="form-check-input" type="checkbox" id="cb_{{alert.uuid}}" name="detail_{{alert.uuid}}" disposition="{{ alert.disposition }}" value="{{alert.uuid}}" data-bind:_sel></input>
                             </div>
                         </td>
-                        <td style="white-space: nowrap;" title="{{alert.insert_date}}" id="alert_date_{{ alert.uuid }}">{{alert.display_insert_date_no_tz}}</td>
-                        <td class="alert-description-cell">
-                            <img src="{{alert.icon}}" width="24" height="24">
-                            <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
-                            {% if alert.event_mapping %}
-                                {% for em in alert.event_mapping %}
-                                <a class="btn btn-outline-primary btn-xs" target="_blank" href="{{ url_for('events.index', direct=em.event.id) }}">
-                                    <span class="bi bi-lightning"></span> {{ em.event.name }}
-                                </a>
-                                {% endfor %}
-                            {% endif %}
-                            {% if alert_tags[alert.uuid]|length != 0 %}
-                                {% for tag in alert_tags[alert.uuid] %}
-                                    <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name':'Tag','inverted':false,'values':['{{tag.name}}']}], 'Tag: {{tag.name}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{tag.name}}</span>
-                                {% endfor %}
-                            {% endif %}
-                            {% if comments[alert.uuid]|length != 0 %}
-                                <div class="comments-collapsible" id="comments_{{alert.uuid}}" data-class:expanded="$_openComments.includes('{{alert.uuid}}')">
-                                    {% for comment in comments[alert.uuid] %}
-                                        <br />
-                                        <span style="font-size: x-small;">
-                                            ({{ comment.user.gui_display }}) <span class="comment-text">{{ comment.comment }}</span>
-                                        </span>
-                                    {% endfor %}
-                                </div>
-                                {# hidden until init_comment_toggles() in manage_alerts.js measures that the
-                                   comment block overflows its collapsed height #}
-                                <button type="button" class="btn btn-link btn-sm p-0 comments-toggle" style="display: none; font-size: x-small;"
-                                        data-on:click="$_openComments = $_openComments.includes('{{alert.uuid}}') ? $_openComments.filter(u => u !== '{{alert.uuid}}') : [...$_openComments, '{{alert.uuid}}']"
-                                        data-text="$_openComments.includes('{{alert.uuid}}') ? 'Show less' : 'Show more'">Show more</button>
-                            {% endif %}
-                        </td>
-                        {# email remediation coverage, see saq/remediation/coverage.py; the cell is
-                           shaded by state so a remediated alert stands out while scanning the list #}
-                        {% set coverage = remediation_coverage.get(alert.uuid) %}
-                        {% if coverage and coverage.visible %}
-                        <td class="{{ coverage.cell_css_class }}" style="white-space: nowrap;" title="{{ coverage.tooltip }}">{{ coverage.status_label }}</td>
-                        {% else %}
-                        <td></td>
-                        {% endif %}
-                        <td>
-                            <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Queue","inverted":false,"values":["{{alert.queue}}"]}], "Queue: {{alert.queue}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.queue}}</span>
-                        </td>
-                        <td>
-                            <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Owner","inverted":false,"values":["{{alert.owner.gui_display}}"]}], "Owner: {{alert.owner.gui_display}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.owner.gui_display}}</span>
-                        </td>
-                        <td>
-                            <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.disposition}}</span>
-                        </td>
-                        <td id="alert_status_{{ alert.uuid }}" style="white-space: nowrap;">{{alert.status}}</td>
+                        {% for column in manage_columns %}
+                        {{ column_cell(column, alert) }}
+                        {% endfor %}
                     </tr>
                     {% if alert.uuid in search_result_mapping %}
                         {% set search_result = search_result_mapping[alert.uuid] %}
@@ -109,8 +63,7 @@
                         <tr class="search-hits">
                             <td></td>
                             <td></td>
-                            <td></td>
-                            <td colspan="6">
+                            <td colspan="{{ manage_columns|length }}">
                                 <div class="search-tier {{ tier_class.get(search_result.tier, "search-tier-weak") }}" title="relative relevance within this result set">{{ tier_label.get(search_result.tier, search_result.tier) }}</div>
                                 {% for hit in search_result.hits[:5] %}
                                 <div class="search-hit text-truncate{% if hit.kind in hit_kinds %} search-hit-{{ hit.kind }}{% endif %}" style="max-width: 100%;">

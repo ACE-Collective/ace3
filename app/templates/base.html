@@ -129,6 +129,7 @@
                             {# API keys are display-once and never recoverable, so there is no
                                "copy my key" action. Keys are minted and revoked by an admin on the
                                user management page (Admin > Users). #}
+                            <li><a class="dropdown-item" href="{{ url_for('main.preferences') }}">Preferences</a></li>
                             <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li>

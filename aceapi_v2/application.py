@@ -20,6 +20,7 @@ from aceapi_v2.secrets.router import router as secrets_router
 from aceapi_v2.threat_types.router import router as threat_types_router
 from aceapi_v2.observable_comments.router import router as observable_comments_router
 from aceapi_v2.threats.router import router as threats_router
+from aceapi_v2.user_preferences.router import router as user_preferences_router
 from aceapi_v2.users.router import router as users_router
 from saq.error.reporting import report_exception
 
@@ -79,6 +80,9 @@ def create_app() -> FastAPI:
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])
     app.include_router(users_router, prefix="/users", tags=["users"])
+    # mounted under /users/me so the URL says whose preferences these are; the router itself
+    # takes the user from the auth result
+    app.include_router(user_preferences_router, prefix="/users/me/preferences", tags=["users"])
 
     return app
 

@@ -123,6 +123,23 @@ server.
   rebind handlers that should be declarative or delegated.
 - Never interpolate unescaped user input into a Datastar attribute — expressions are
   evaluated as JavaScript. Jinja autoescaping covers the normal cases; keep it on.
+- **Rows carry data, cells are presentation.** Anything JavaScript needs from a table
+  row (the alert's status, its date) goes on the `<tr>` as a `data-*` attribute, never
+  read out of a cell by id. The analyst chooses which columns the alert list shows
+  (`saq/gui/manage_columns.py`, the `manage_columns` preference), so a cell may simply
+  not be there. `select_event_name_candidate_from_manage_view()` in `ace.js` is the
+  example: it reads `row.dataset.status` and `row.dataset.insertDate`.
+- Controls that must keep a jQuery binding (the column chooser's sortable list) live
+  outside both fragments — the manage page keeps it in the search row of `manage.html`.
+
+**Explicit refreshes.** `refresh_manage_list(detail)` in `manage_alerts.js` dispatches
+the same `ace-refresh` event the tab-focus catch-up uses, so a sort, paging or column
+change re-renders the list through the morph instead of a full page reload. The handler
+on `#manage_page` reads `evt.detail.clearSelection` and empties `$_sel` first for the
+changes the server also resets the checked rows for (sort and paging). The interval is
+still omitted during a search; the `ace-refresh` handler is not, because a
+user-initiated change re-running the search once is exactly what the reload it
+replaced did.
 
 ## The SSE + CQRS migration path
 
@@ -193,5 +210,9 @@ initial page loads — retiring it eventually becomes a small step rather than a
 
 - Bulk actions (disposition, ownership, tag, comment) patching the page in place
   instead of `window.location.replace('/ace/manage')` round trips.
-- Filter / sort / pagination changes as `@get` morphs instead of full reloads.
+- Filter changes as `@get` morphs instead of full reloads (sort, paging and column
+  changes already go through `refresh_manage_list()`).
+- Sort and page offset moving from the session to the URL, so a stream endpoint on
+  `aceapi_v2` has nothing left to read from the cookie -- see `docs/USER_PREFERENCES.md`
+  for the preference / view-state split.
 - The favicon reset-count poll in `ace.js` as a `data-on-interval` + signal patch.
