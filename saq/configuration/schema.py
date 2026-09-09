@@ -90,7 +90,6 @@ class CollectionGroupConfig(BaseModel):
     enabled: bool = Field(..., description="Controls whether the collection group is enabled or disabled.")
     coverage: int = Field(..., description="The coverage (in percentage) of the collection group, ranging from 0 to 100.")
     full_delivery: bool = Field(..., description="Guarantees delivery of all submissions to this group.")
-    database: str = Field(..., description="The database to use to find the target nodes to send submissions to.")
     company_id: int = Field(..., description="The company ID that the collection group belongs to.")
     target_nodes: Optional[list[str]] = Field(default=None, description="The target nodes to send submissions to.")
     thread_count: int = Field(default=1, description="The number of threads to use for the collection group.")

@@ -94,13 +94,6 @@ database_ace:
   username: ace-user
   password: "env:ACE_DB_PASSWORD"
 
-database_collection:
-  hostname: ace-db
-  unix_socket: ""
-  database: ace-unittest
-  username: ace-user
-  password: "env:ACE_DB_PASSWORD"
-
 database_brocess:
   hostname: ace-db
   unix_socket: ""
@@ -626,8 +619,6 @@ collection_group_default:
   enabled: false
   coverage: 100
   full_delivery: true
-  # NOTE this is what connects the collection_group to the nodes
-  database: ace
   company_id: 1
 
 collection_group_unittest:
@@ -635,7 +626,6 @@ collection_group_unittest:
   enabled: true
   coverage: 100
   full_delivery: true
-  database: ace
   company_id: 1
   target_nodes: [LOCAL]
 
@@ -644,7 +634,6 @@ collection_group_disabled:
   enabled: false
   coverage: 100
   full_delivery: true
-  database: ace
   company_id: 1
 
 # saq.default.yaml gives these modes a 5 second throttle; the test suite expects the

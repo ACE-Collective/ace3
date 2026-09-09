@@ -143,14 +143,14 @@ class TestLocalWorkloadMonitor:
 
     @patch("saq.monitoring.monitors.local_workload_monitor.emit_monitor")
     @patch("saq.monitoring.monitors.local_workload_monitor.get_db_connection")
-    def test_execute_uses_collection_database(self, mock_get_db, mock_emit):
+    def test_execute_uses_ace_database(self, mock_get_db, mock_emit):
         mock_get_db.return_value = _make_mock_db([])
 
         monitor = LocalWorkloadMonitor(name="test", frequency=1.0)
         monitor.execute()
 
-        from saq.constants import DB_COLLECTION
-        mock_get_db.assert_called_once_with(DB_COLLECTION)
+        # the collector workload lives in the main ace database, scoped by node
+        mock_get_db.assert_called_once_with()
 
     @patch("saq.monitoring.monitors.local_workload_monitor.emit_monitor")
     @patch("saq.monitoring.monitors.local_workload_monitor.get_db_connection")

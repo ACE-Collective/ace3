@@ -723,20 +723,6 @@ database_ace:
   # connections that exceed this lifetime are terminated and recreated
   max_connection_lifetime: "00:15:00"
 
-database_collection:
-  name: collection
-  hostname: ace-db
-  port: 3306
-  unix_socket: ""
-  database: ace
-  username: ace-user
-  password: "env:ACE_DB_PASSWORD"
-  ssl_ca: ssl/ca-chain.cert.pem
-  max_allowed_packet: 1073741824
-  # how long (in HH:MM:SS format) a database connecton is considered valid
-  # connections that exceed this lifetime are terminated and recreated
-  max_connection_lifetime: "00:15:00"
-
 database_brocess:
   name: brocess
   hostname: ace-db
@@ -2491,8 +2477,6 @@ collection_group_default:
   enabled: true
   coverage: 100
   full_delivery: true
-  # NOTE this is what connects the collection_group to the nodes
-  database: ace
   company_id: 1
 
 #

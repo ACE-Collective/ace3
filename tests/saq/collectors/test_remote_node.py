@@ -6,7 +6,7 @@ import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_COLLECTION
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_ACE, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE
 from saq.database.pool import execute_with_db_cursor, get_db_connection
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
@@ -79,9 +79,21 @@ def test_submit_remote(root_analysis, remote_node, mock_api_call):
     root.load()
     assert root.description == root_analysis.description
 
+def _local_node_id() -> int:
+    """Returns the id of the local node, registering it if this process has not done so yet.
+    incoming_workload rows are owned by the node that collected them, so tests need one."""
+    from saq.database import initialize_node
+
+    if get_global_runtime_settings().saq_node_id is None:
+        initialize_node()
+
+    return get_global_runtime_settings().saq_node_id
+
+
 @pytest.fixture
 def remote_node_group() -> RemoteNodeGroup:
-    with get_db_connection(DB_COLLECTION) as db:
+    node_id = _local_node_id()
+    with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute("""INSERT INTO work_distribution_groups ( name ) VALUES ( 'test' )""")
         group_id = cursor.lastrowid
@@ -89,15 +101,15 @@ def remote_node_group() -> RemoteNodeGroup:
         workload_type_id = cursor.lastrowid
         db.commit()
 
-    return RemoteNodeGroup("test", 100, True, get_global_runtime_settings().company_id, DB_COLLECTION, group_id, workload_type_id, Event())
+    return RemoteNodeGroup("test", 100, True, get_global_runtime_settings().company_id, node_id, group_id, workload_type_id, Event())
 
 
-def insert_workload_item(cursor, type_id, mode, group_id, status="READY", lock_uuid=None):
+def insert_workload_item(cursor, type_id, mode, group_id, status="READY", lock_uuid=None, node_id=None):
     """Insert a row into incoming_workload and work_distribution. Returns (work_id, work_uuid)."""
     work_uuid = str(uuid_module.uuid4())
     cursor.execute(
-        "INSERT INTO incoming_workload (type_id, mode, work) VALUES (%s, %s, %s)",
-        (type_id, mode, work_uuid),
+        "INSERT INTO incoming_workload (node_id, type_id, mode, work) VALUES (%s, %s, %s, %s)",
+        (node_id if node_id is not None else _local_node_id(), type_id, mode, work_uuid),
     )
     work_id = cursor.lastrowid
     cursor.execute(
@@ -121,7 +133,7 @@ def priority_cleanup():
 
     yield _add_priority
 
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         for mode in added_modes:
             cursor.execute(
@@ -142,7 +154,7 @@ def priority_cleanup():
 def test_fetch_query_orders_by_priority_then_id(
     remote_node_group, priority_cleanup, case_id, priorities
 ):
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
 
         for mode, priority in priorities:
@@ -237,7 +249,7 @@ def test_fetch_query_orders_by_priority_then_id(
 
 @pytest.mark.integration
 def test_fetch_query_same_priority_orders_by_id_ascending(remote_node_group):
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
 
         lock_uuid = str(uuid_module.uuid4())
@@ -277,7 +289,7 @@ def test_fetch_query_same_priority_orders_by_id_ascending(remote_node_group):
 def test_lock_query_prioritizes_higher_priority_modes(
     remote_node_group, priority_cleanup
 ):
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
 
         priority_cleanup(cursor, "mode_low_pri", 1)
@@ -367,7 +379,7 @@ WHERE
 @pytest.mark.integration
 def test_default_seed_correlation_before_analysis(remote_node_group):
     """Verify that the seed data (correlation=1) causes correlation items to be fetched before analysis items."""
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
 
         lock_uuid = str(uuid_module.uuid4())
@@ -455,8 +467,8 @@ def insert_deliverable_work_item(cursor, group, mode=ANALYSIS_MODE_ANALYSIS):
     root.save()
 
     cursor.execute(
-        "INSERT INTO incoming_workload (type_id, mode, work) VALUES (%s, %s, %s)",
-        (group.workload_type_id, mode, work_uuid),
+        "INSERT INTO incoming_workload (node_id, type_id, mode, work) VALUES (%s, %s, %s, %s)",
+        (group.node_id, group.workload_type_id, mode, work_uuid),
     )
     work_id = cursor.lastrowid
     cursor.execute(
@@ -468,7 +480,7 @@ def insert_deliverable_work_item(cursor, group, mode=ANALYSIS_MODE_ANALYSIS):
 
 def _work_distribution_row(group, work_id):
     """Returns (status, attempt_count) for the given work item."""
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute(
             "SELECT status, attempt_count FROM work_distribution WHERE group_id = %s AND work_id = %s",
@@ -479,7 +491,7 @@ def _work_distribution_row(group, work_id):
 @pytest.mark.integration
 def test_record_delivery_attempt_increments(remote_node_group):
     """each recorded failure bumps the persisted attempt counter"""
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         work_id, _ = insert_workload_item(
             cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
@@ -495,7 +507,7 @@ def test_record_delivery_attempt_increments(remote_node_group):
 @pytest.mark.integration
 def test_record_delivery_attempt_dead_letters_unknown_item(remote_node_group):
     """an item we cannot track is reported as exhausted rather than retried forever"""
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         attempts = remote_node_group.record_delivery_attempt(db, cursor, 999999999)
 
@@ -515,7 +527,7 @@ def test_delivery_retries_then_dead_letters(monkeypatch, remote_node_group):
 
     monkeypatch.setattr(RemoteNode, "submit", _always_fails)
 
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         work_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
         db.commit()
@@ -524,13 +536,13 @@ def test_delivery_retries_then_dead_letters(monkeypatch, remote_node_group):
 
     # first two passes retry and leave the item locked
     for expected_attempts in (1, 2):
-        execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+        execute_with_db_cursor(DB_ACE, remote_node_group.execute, work_lock_uuid)
         status, attempt_count = _work_distribution_row(remote_node_group, work_id)
         assert status == "LOCKED"
         assert attempt_count == expected_attempts
 
     # the third exhausts the budget and dead-letters it
-    execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+    execute_with_db_cursor(DB_ACE, remote_node_group.execute, work_lock_uuid)
     status, attempt_count = _work_distribution_row(remote_node_group, work_id)
     assert status == "ERROR"
     assert attempt_count == 3
@@ -556,7 +568,7 @@ def test_dead_lettered_item_does_not_block_following_work(monkeypatch, remote_no
 
     monkeypatch.setattr(RemoteNode, "submit", _fail_only_poison)
 
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         poison_id, poison_root_uuid = insert_deliverable_work_item(cursor, remote_node_group)
         good_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
@@ -568,7 +580,7 @@ def test_dead_lettered_item_does_not_block_following_work(monkeypatch, remote_no
 
     # drive the loop until the poison item is dead-lettered and the good item is delivered
     for _ in range(6):
-        execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, work_lock_uuid)
+        execute_with_db_cursor(DB_ACE, remote_node_group.execute, work_lock_uuid)
         if _work_distribution_row(remote_node_group, good_id)[0] == "COMPLETED":
             break
 
@@ -587,13 +599,125 @@ def test_successful_delivery_does_not_record_attempts(monkeypatch, remote_node_g
 
     monkeypatch.setattr(RemoteNode, "submit", _always_succeeds)
 
-    with get_db_connection(DB_COLLECTION) as db:
+    with get_db_connection() as db:
         cursor = db.cursor()
         work_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
         db.commit()
 
-    execute_with_db_cursor(DB_COLLECTION, remote_node_group.execute, str(uuid_module.uuid4()))
+    execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4()))
 
     status, attempt_count = _work_distribution_row(remote_node_group, work_id)
     assert status == "COMPLETED"
     assert attempt_count == 0
+
+
+#
+# cross-node isolation
+#
+# the collector workload used to live in a per-node database (database_collection) because
+# incoming_workload rows reference roots under the collecting node's local incoming_dir and
+# carried no ownership. now that the table is shared, node_id is what keeps one node from
+# claiming, erroring or unlocking another node's work.
+#
+
+def _other_node_id() -> int:
+    """Registers (or reuses) a second node that is not the local node."""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT id FROM nodes WHERE name = %s", ('test-other-node',))
+        row = cursor.fetchone()
+        if row is not None:
+            return row[0]
+
+        cursor.execute(
+            """INSERT INTO nodes ( name, location, company_id, last_update )
+               VALUES ( %s, %s, %s, NOW() )""",
+            ('test-other-node', 'test-other-node', get_global_runtime_settings().company_id))
+        db.commit()
+        return cursor.lastrowid
+
+
+@pytest.mark.integration
+def test_execute_ignores_another_nodes_work(remote_node_group):
+    """work collected by another node is invisible to this node's delivery loop
+
+    the root for that work only exists on the other node's disk, so claiming it here would
+    fail to load and mark it ERROR -- silently losing the submission"""
+    _ensure_live_any_mode_node()
+    other_node_id = _other_node_id()
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        work_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id, node_id=other_node_id)
+        db.commit()
+
+    result = execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4()))
+
+    # nothing here belongs to this node
+    assert result == NO_WORK_AVAILABLE
+
+    # and the other node's item is untouched -- not locked, not errored
+    status, attempt_count = _work_distribution_row(remote_node_group, work_id)
+    assert status == "READY"
+    assert attempt_count == 0
+
+
+@pytest.mark.integration
+def test_no_nodes_sweep_spares_another_nodes_work(remote_node_group):
+    """the full_delivery=False no-nodes sweep only errors this node's work
+
+    it used to be 'UPDATE work_distribution SET status=ERROR WHERE group_id = %s', which
+    wiped every node's queue for the group"""
+    remote_node_group.full_delivery = False
+    other_node_id = _other_node_id()
+
+    # make sure no node looks available so execute() takes the sweep path
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE nodes SET last_update = DATE_SUB(NOW(), INTERVAL 1 DAY)")
+        db.commit()
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        mine_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id)
+        theirs_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id, node_id=other_node_id)
+        db.commit()
+
+    assert execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4())) == NO_NODES_AVAILABLE
+
+    assert _work_distribution_row(remote_node_group, mine_id)[0] == "ERROR"
+    assert _work_distribution_row(remote_node_group, theirs_id)[0] == "READY"
+
+
+@pytest.mark.integration
+def test_clear_work_locks_spares_another_nodes_locks(remote_node_group):
+    """startup lock clearing must not release locks held by another node's delivery thread"""
+    other_node_id = _other_node_id()
+    other_lock = str(uuid_module.uuid4())
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        mine_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id, status="LOCKED", lock_uuid=str(uuid_module.uuid4()))
+        theirs_id, _ = insert_workload_item(
+            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
+            remote_node_group.group_id, status="LOCKED", lock_uuid=other_lock,
+            node_id=other_node_id)
+        db.commit()
+
+    remote_node_group.clear_work_locks()
+
+    assert _work_distribution_row(remote_node_group, mine_id)[0] == "READY"
+    assert _work_distribution_row(remote_node_group, theirs_id)[0] == "LOCKED"
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT lock_uuid FROM work_distribution WHERE work_id = %s", (theirs_id,))
+        assert cursor.fetchone()[0] == other_lock

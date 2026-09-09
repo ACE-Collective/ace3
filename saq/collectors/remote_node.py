@@ -15,7 +15,7 @@ from ace_api import upload
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration.config import get_config, get_engine_config
 from saq.configuration.schema import DEFAULT_MAX_DELIVERY_ATTEMPTS
-from saq.constants import ANALYSIS_MODE_CORRELATION, DB_COLLECTION, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, NODE_STATUS_RUNNING, WORK_SUBMITTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, DB_ACE, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE, NO_WORK_SUBMITTED, NODE_STATUS_RUNNING, WORK_SUBMITTED
 from saq.database import ALERT, execute_with_retry, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
@@ -157,7 +157,7 @@ class RemoteNodeGroup:
             coverage: int,
             full_delivery: bool,
             company_id: int,
-            database: str,
+            node_id: int,
             group_id: int,
             workload_type_id: int,
             shutdown_event: threading.Event,
@@ -171,7 +171,7 @@ class RemoteNodeGroup:
         assert isinstance(coverage, int) and coverage > 0 and coverage <= 100
         assert isinstance(full_delivery, bool)
         assert isinstance(company_id, int)
-        assert isinstance(database, str)
+        assert isinstance(node_id, int)
         assert isinstance(group_id, int)
         assert isinstance(workload_type_id, int)
         assert isinstance(shutdown_event, threading.Event)
@@ -195,8 +195,9 @@ class RemoteNodeGroup:
         # A company id for the primary node sharing this company data
         self.target_node_as_company_id = target_node_as_company_id
 
-        # the name of the database to query for node status
-        self.database = database
+        # the node this collector runs on. workload rows reference roots under this node's
+        # local incoming_dir, so this group only ever claims and delivers its own node's work
+        self.node_id = node_id
 
         # the id of this group in the work_distribution_groups table
         self.group_id = group_id
@@ -267,7 +268,7 @@ class RemoteNodeGroup:
         logging.info(f"starting remote node group loop ({work_lock_uuid})")
         while True:
             try:
-                result = execute_with_db_cursor(DB_COLLECTION, self.execute, work_lock_uuid)
+                result = execute_with_db_cursor(DB_ACE, self.execute, work_lock_uuid)
                 log_func = logging.info
                 if result == NO_WORK_AVAILABLE:
                     log_func = logging.debug
@@ -299,19 +300,6 @@ class RemoteNodeGroup:
             finally:
                 remove_all_sessions()
 
-    def release_work_locks(self):
-        with get_db_connection(DB_COLLECTION) as db:
-            cursor = db.cursor()
-            cursor.execute("""
-            UPDATE work_distribution SET 
-                status = 'READY', 
-                lock_uuid = NULL, 
-                lock_time = NULL 
-            WHERE 
-                status = 'LOCKED' AND group_id = %s
-            """, (self.group_id,))
-            db.commit()
-
     def record_delivery_attempt(self, db, cursor, work_id: int) -> int:
         """Increments and returns the number of failed delivery attempts for the given work item.
         Returns max_delivery_attempts if the count cannot be read, so an item we cannot track
@@ -341,9 +329,10 @@ FROM
     incoming_workload JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
 WHERE
     incoming_workload.type_id = %s
+    AND incoming_workload.node_id = %s
     AND work_distribution.group_id = %s
     AND work_distribution.status IN ( 'READY', 'LOCKED' )
-""", (self.workload_type_id, self.group_id,))
+""", (self.workload_type_id, self.node_id, self.group_id,))
             return cursor.fetchone()[0]
         except Exception as e:
             logging.warning("unable to determine pending work count for {}: {}".format(self, e))
@@ -357,9 +346,10 @@ FROM
     incoming_workload JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
 WHERE
     incoming_workload.type_id = %s
+    AND incoming_workload.node_id = %s
     AND work_distribution.group_id = %s
     AND work_distribution.status IN ( 'READY', 'LOCKED' )
-""", (self.workload_type_id, self.group_id,))
+""", (self.workload_type_id, self.node_id, self.group_id,))
         available_modes = cursor.fetchall()
         db.commit()
 
@@ -372,15 +362,14 @@ WHERE
         # flatten this out to a list of analysis modes
         available_modes = [_[0] for _ in available_modes]
 
-        # given this list of modes that need remote targets, see what is currently available
-        with get_db_connection(self.database) as node_db:
-            node_cursor = node_db.cursor()
-
-            sql = """
+        # given this list of modes that need remote targets, see what is currently available.
+        # available_modes is already materialized into a list above, so this reuses the
+        # cursor we were handed rather than opening a second connection
+        sql = """
 SELECT
-    nodes.id, 
-    nodes.name, 
-    nodes.location, 
+    nodes.id,
+    nodes.name,
+    nodes.location,
     nodes.any_mode,
     nodes.last_update,
     nodes.status,
@@ -405,48 +394,49 @@ ORDER BY
     WORKLOAD_COUNT ASC,
     nodes.last_update ASC
 """
-            where_clause = []
-            where_clause_params = []
+        where_clause = []
+        where_clause_params = []
 
-            # XXX not sure what this does
-            company_id = self.company_id
-            if self.target_node_as_company_id is not None:
-                company_id = self.target_node_as_company_id
+        # XXX not sure what this does
+        company_id = self.company_id
+        if self.target_node_as_company_id is not None:
+            company_id = self.target_node_as_company_id
 
-            where_clause.append("nodes.company_id = %s")
-            where_clause_params.append(company_id)
+        where_clause.append("nodes.company_id = %s")
+        where_clause_params.append(company_id)
 
-            where_clause.append("TIMESTAMPDIFF(SECOND, nodes.last_update, NOW()) <= %s")
-            where_clause_params.append(self.node_status_update_frequency * 2)
+        where_clause.append("TIMESTAMPDIFF(SECOND, nodes.last_update, NOW()) <= %s")
+        where_clause_params.append(self.node_status_update_frequency * 2)
 
-            # running nodes and nodes still flushing their collectors can receive new work
-            # a node in draining_collectors still accepts work so that collectors whose
-            # only eligible target is that node can flush their backlog
-            # draining, drained and stopped nodes are excluded
-            where_clause.append("nodes.status IN ( 'running', 'draining_collectors' )")
+        # running nodes and nodes still flushing their collectors can receive new work
+        # a node in draining_collectors still accepts work so that collectors whose
+        # only eligible target is that node can flush their backlog
+        # draining, drained and stopped nodes are excluded
+        where_clause.append("nodes.status IN ( 'running', 'draining_collectors' )")
 
-            param_str = ','.join(['%s' for _ in available_modes])
-            where_clause.append(f""" 
-            (
-                (nodes.any_mode AND 
-                    (node_modes_excluded.analysis_mode IS NULL 
-                     OR node_modes_excluded.analysis_mode NOT IN ( {param_str} )
-                    )
+        param_str = ','.join(['%s' for _ in available_modes])
+        where_clause.append(f""" 
+        (
+            (nodes.any_mode AND 
+                (node_modes_excluded.analysis_mode IS NULL 
+                 OR node_modes_excluded.analysis_mode NOT IN ( {param_str} )
                 )
-                OR node_modes.analysis_mode IN ( {param_str} )
-            ) """)
-            where_clause_params.extend(available_modes)
-            where_clause_params.extend(available_modes)
+            )
+            OR node_modes.analysis_mode IN ( {param_str} )
+        ) """)
+        where_clause_params.extend(available_modes)
+        where_clause_params.extend(available_modes)
 
-            # are we limiting what nodes we are sending to?
-            if self.target_nodes:
-                param_str = ','.join(['%s' for _ in self.target_nodes])
-                where_clause.append(f"nodes.name IN ( {param_str} )")
-                where_clause_params.extend(self.target_nodes)
+        # are we limiting what nodes we are sending to?
+        if self.target_nodes:
+            param_str = ','.join(['%s' for _ in self.target_nodes])
+            where_clause.append(f"nodes.name IN ( {param_str} )")
+            where_clause_params.extend(self.target_nodes)
 
-            sql = sql.format(where_clause='AND '.join([f'( {_} ) ' for _ in where_clause]))
-            node_cursor.execute(sql, tuple(where_clause_params))
-            node_status = node_cursor.fetchall()
+        sql = sql.format(where_clause='AND '.join([f'( {_} ) ' for _ in where_clause]))
+        cursor.execute(sql, tuple(where_clause_params))
+        node_status = cursor.fetchall()
+        db.commit()
 
         if not node_status:
             logging.warning("no remote nodes are avaiable for all analysis modes {} for {}".format(
@@ -456,8 +446,11 @@ ORDER BY
                 # if this node group is NOT in full_delivery mode and there are no nodes available at all
                 # then we just clear out the work queue for this group
                 # if this isn't done then the work will pile up waiting for a node to come online
-                execute_with_retry(db, cursor, "UPDATE work_distribution SET status = 'ERROR' WHERE group_id = %s",
-                                  (self.group_id,), commit=True)
+                execute_with_retry(db, cursor, """UPDATE work_distribution w
+                                                  JOIN incoming_workload i ON i.id = w.work_id
+                                                  SET w.status = 'ERROR'
+                                                  WHERE w.group_id = %s AND i.node_id = %s""",
+                                  (self.group_id, self.node_id), commit=True)
 
             return NO_NODES_AVAILABLE
 
@@ -520,6 +513,7 @@ WHERE
             LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
         WHERE
             incoming_workload.type_id = %s
+            AND incoming_workload.node_id = %s
             AND work_distribution.group_id = %s
             AND incoming_workload.mode IN ( {} )
             AND (
@@ -530,7 +524,7 @@ WHERE
             COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
         LIMIT %s ) AS t1 )
 """.format(','.join(['%s' for _ in available_modes]))
-            params = [ work_lock_uuid, self.group_id, self.workload_type_id, self.group_id ]
+            params = [ work_lock_uuid, self.group_id, self.workload_type_id, self.node_id, self.group_id ]
             params.extend(available_modes)
             params.append(self.batch_size)
 
@@ -553,10 +547,11 @@ FROM
     LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
 WHERE
     work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
+    AND incoming_workload.node_id = %s
 ORDER BY
     COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
 """
-        params = [ work_lock_uuid ]
+        params = [ work_lock_uuid, self.node_id ]
         cursor.execute(sql, tuple(params))
         work_batch = cursor.fetchall()
         db.commit()
@@ -689,22 +684,24 @@ ORDER BY
         return NO_WORK_SUBMITTED
 
     def clear_work_locks(self):
-        """Clears any work locks set with work assigned to this group."""
-        with get_db_connection(DB_COLLECTION) as db:
+        """Clears any work locks set with work assigned to this group on this node."""
+        with get_db_connection() as db:
             cursor = db.cursor()
             cursor.execute("""
-            UPDATE work_distribution SET 
-                status = 'READY', 
-                lock_uuid = NULL, 
-                lock_time = NULL 
-            WHERE 
-                status = 'LOCKED' AND group_id = %s
-            """, (self.group_id,))
+            UPDATE work_distribution w
+            JOIN incoming_workload i ON i.id = w.work_id
+            SET
+                w.status = 'READY',
+                w.lock_uuid = NULL,
+                w.lock_time = NULL
+            WHERE
+                w.status = 'LOCKED' AND w.group_id = %s AND i.node_id = %s
+            """, (self.group_id, self.node_id))
             db.commit()
 
     def __str__(self):
-        return "RemoteNodeGroup(name={}, coverage={}, full_delivery={}, company_id={}, database={})".format(
-                self.name, self.coverage, self.full_delivery, self.company_id, self.database)
+        return "RemoteNodeGroup(name={}, coverage={}, full_delivery={}, company_id={}, node_id={})".format(
+                self.name, self.coverage, self.full_delivery, self.company_id, self.node_id)
 
 def save_submission_for_review(submission: Submission):
     """Saves the given submission to data/var/collectors/error/{uuid} using pickle."""

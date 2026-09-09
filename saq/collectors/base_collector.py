@@ -139,8 +139,9 @@ class CollectorService(ACEServiceInterface):
         # persistence manager for this service
         self.persistence_manager = Persistable()
         
-        # repository for database operations
-        self.workload_repository = WorkloadRepository()
+        # repository for database operations, scoped to this node -- workload rows point at
+        # roots under this node's local incoming_dir, so only this node can deliver them
+        self.workload_repository = WorkloadRepository(get_global_runtime_settings().saq_node_id)
         self.workload_type_id = self.workload_repository.get_workload_type_id(self.config.workload_type)
         
         # file manager for file system operations
