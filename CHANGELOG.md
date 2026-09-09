@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.108] - 2026-09-09
+
+- [address various fork-related issues](https://github.com/ACE-Collective/ace3/pull/543)
+- [Prevent concurrent pytest runs with a session marker file](https://github.com/ACE-Collective/ace3/pull/542)
+- [Make database connections fork safe](https://github.com/ACE-Collective/ace3/pull/541)
+- [Add Copy Alert ID(s) button to manage [alerts] page](https://github.com/ACE-Collective/ace3/pull/540)
+- [Clean, coordinated node shutdown](https://github.com/ACE-Collective/ace3/pull/539)
+
 ## [3.0.107] - 2026-09-08
 
 - [Enhances UI around email remediation status](https://github.com/ACE-Collective/ace3/pull/535)
