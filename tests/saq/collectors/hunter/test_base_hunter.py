@@ -1133,6 +1133,44 @@ def test_execute_threaded_hunt_stamps_queued_time(manager_kwargs):
 
     assert log_count("queued 1 submissions for hunt") == 1
     assert log_count("post-processed 1 submissions for hunt") == 1
+    assert log_count(
+        f"hunt {hunt.name} (uuid={hunt.uuid}, type={hunt.type}) added root analysis "
+        f"{staged[0].root.uuid} mode={ANALYSIS_MODE_CORRELATION}"
+    ) == 1
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_logs_root_analysis_for_non_alert_mode(manager_kwargs):
+    """non-alert analysis modes still log which hunt added the root analysis"""
+    manager = HuntManager(**manager_kwargs)
+
+    class _FileModeHunt(TestHunt):
+        def execute(self):
+            self.executed = True
+            root_uuid = str(uuid4())
+            root = RootAnalysis(
+                uuid=root_uuid,
+                storage_dir=self.manager.file_manager.get_staging_tmp_path(root_uuid),
+                desc='test',
+                analysis_mode=ANALYSIS_MODE_ANALYSIS,
+                tool='test_tool',
+                tool_instance='test_tool_instance',
+                alert_type='test_type')
+            root.initialize_storage()
+            return [Submission(root)]
+
+    hunt = _FileModeHunt(manager=manager, config=default_hunt_config(
+        name='file_mode_hunt', analysis_mode=ANALYSIS_MODE_ANALYSIS))
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    staged = list(manager.file_manager.iter_staged_submissions())
+    assert len(staged) == 1
+    assert staged[0].root.analysis_mode == ANALYSIS_MODE_ANALYSIS
+    assert log_count(
+        f"hunt {hunt.name} (uuid={hunt.uuid}, type={hunt.type}) added root analysis "
+        f"{staged[0].root.uuid} mode={ANALYSIS_MODE_ANALYSIS}"
+    ) == 1
 
 class _GroupedTestHunt(TestHunt):
     """a grouped hunt that emits one submission per group value
