@@ -1,14 +1,21 @@
 from datetime import UTC, datetime
 import logging
 from queue import Empty, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
+from typing import Optional
 
 from saq.database.model import FileCollection, FileCollectionHistory
-from saq.database.pool import get_db
+from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import report_exception
+from saq.file_collection.database import get_file_collection
 from saq.file_collection.file_collector import FileCollector
 from saq.file_collection.interface import FileCollectionListener
-from saq.file_collection.types import FileCollectionWorkItem, FileCollectorResult, FileCollectorStatus
+from saq.file_collection.types import (
+    FileCollectionStatus,
+    FileCollectionWorkItem,
+    FileCollectorResult,
+    FileCollectorStatus,
+)
 
 
 class FileCollectionWorker(FileCollectionListener):
@@ -22,6 +29,9 @@ class FileCollectionWorker(FileCollectionListener):
         self.shutdown_event = Event()
         # the timeout for the work queue get operation
         self.queue_wait_timeout = 1
+        # ids of the collections we have accepted but not yet finished (queued or in progress)
+        self._pending_ids: set[int] = set()
+        self._pending_ids_lock = Lock()
 
     #
     # FileCollectionListener interface
@@ -35,7 +45,13 @@ class FileCollectionWorker(FileCollectionListener):
             )
 
         logging.info(f"received file collection request for {work_item.type} {work_item.key}")
+        with self._pending_ids_lock:
+            self._pending_ids.add(work_item.id)
         self.work_queue.put(work_item)
+
+    def pending_collection_ids(self) -> set[int]:
+        with self._pending_ids_lock:
+            return set(self._pending_ids)
 
     #
     # Worker implementation
@@ -92,11 +108,66 @@ class FileCollectionWorker(FileCollectionListener):
             except Exception as e:
                 logging.error(f"error executing work: {e}")
                 report_exception()
+            finally:
+                if work:
+                    with self._pending_ids_lock:
+                        self._pending_ids.discard(work.id)
+                    # discard the thread-local session so the next item starts from a fresh
+                    # transaction (and a fresh snapshot of the file_collection table)
+                    try:
+                        remove_all_sessions()
+                    except Exception as e:
+                        logging.error(f"error removing database connection: {e}")
+                        report_exception()
 
             if self.shutdown_event.is_set():
                 break
 
-    def collect(self, target: FileCollectionWorkItem) -> FileCollectorResult:
+    def claim(self, target: FileCollectionWorkItem) -> bool:
+        """Re-reads the database record for the work item and decides whether to collect it.
+
+        A work item can sit in the queue long enough for its database lock to time out, and a
+        service restart drops the queue entirely. Both can leave a work item that no longer
+        reflects the record: the collection may have completed in the meantime or been locked
+        again by a different collector. Returns False (and writes nothing) in those cases;
+        otherwise refreshes the lock time so the timeout counts from when work actually starts."""
+        file_collection = get_file_collection(target.id)
+        if file_collection is None:
+            logging.warning(f"file collection {target.id} for {target.type} {target.key} no longer exists")
+            get_db().rollback()
+            return False
+
+        if file_collection.status == FileCollectionStatus.COMPLETED.value:
+            logging.info(
+                f"file collection {target.id} for {target.type} {target.key} already completed "
+                f"({file_collection.result}), skipping"
+            )
+            get_db().rollback()
+            return False
+
+        if target.lock is not None and file_collection.lock != target.lock:
+            logging.info(
+                f"file collection {target.id} for {target.type} {target.key} is now locked by "
+                f"{file_collection.lock}, skipping"
+            )
+            get_db().rollback()
+            return False
+
+        if target.lock is not None:
+            update = FileCollection.__table__.update()
+            update = update.values(lock_time=datetime.now(UTC))
+            update = update.where(FileCollection.id == target.id, FileCollection.lock == target.lock)
+            get_db().execute(update)
+
+        get_db().commit()
+        return True
+
+    def collect(self, target: FileCollectionWorkItem) -> Optional[FileCollectorResult]:
+        """Collects the target and records the result. Returns None if the work item was skipped
+        because its database record was already completed or no longer locked by us."""
+        if not self.claim(target):
+            return None
+
         logging.info(
             f"STARTED collecting {target.type} {target.key} "
             f"(attempt {target.retry_count + 1}/{target.max_retries})"
