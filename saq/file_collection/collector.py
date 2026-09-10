@@ -35,6 +35,7 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
         storage_dir=alert.storage_dir,
         retry_count=file_collection.retry_count,
         max_retries=file_collection.max_retries,
+        lock=file_collection.lock,
     )
 
 
@@ -97,6 +98,13 @@ class FileCollectionCollector:
 
         self.listeners[work_item.name].handle_file_collection_request(work_item)
 
+    def pending_collection_ids(self) -> set[int]:
+        """Returns the ids of every file collection currently held by a listener (queued or in progress)."""
+        pending: set[int] = set()
+        for listener in self.listeners.values():
+            pending.update(listener.pending_collection_ids())
+        return pending
+
     def collect_work_items(self) -> list[FileCollectionWorkItem]:
         """Collects the file collection targets to process from the database.
 
@@ -131,10 +139,18 @@ class FileCollectionCollector:
 
         collection_objects = query.all()
 
+        # Skip anything a listener already holds. A worker's queue can hold an item longer than
+        # lock_timeout_seconds when collections are slow, and re-locking it here would push a
+        # duplicate copy into that queue.
+        pending_ids = self.pending_collection_ids()
+
         # Filter by per-record exponential backoff delay
         ready_for_retry = []
         now = datetime.now(UTC)
         for c in collection_objects:
+            if c.id in pending_ids:
+                continue
+
             # Calculate the required delay for this record based on its retry_count
             required_delay = calculate_backoff_delay(
                 c.retry_count,

@@ -58,3 +58,7 @@ class FileCollectionWorkItem(BaseModel):
     storage_dir: Optional[str] = Field(default=None, description="Path to the alert's storage directory for collected files.")
     retry_count: int = Field(default=0, description="Number of previous retry attempts.")
     max_retries: int = Field(default=10, description="Maximum number of retry attempts.")
+    lock: Optional[str] = Field(
+        default=None,
+        description="The lock uuid the collector placed on the database record when it handed out this work item.",
+    )
