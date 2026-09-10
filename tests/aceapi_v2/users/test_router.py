@@ -353,3 +353,53 @@ class TestHappyPath:
         assert (await session.execute(
             select(AuthUserPermission).where(AuthUserPermission.id == perm_id)
         )).scalar_one_or_none() is None
+
+
+class TestSelfService:
+    """GET/PATCH /users/me: a user's own account, no permission grant required."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client):
+        assert (await unauth_client.get("/users/me")).status_code == 401
+        assert (await unauth_client.patch("/users/me", json={"timezone": "UTC"})).status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_get_me(self, noperm_client, session: AsyncSession):
+        response = await noperm_client.get("/users/me")
+        assert response.status_code == 200
+        assert response.json()["username"] == "noperm_test"
+
+    @pytest.mark.asyncio
+    async def test_patch_me_changes_only_the_allowed_fields(self, noperm_client, session: AsyncSession):
+        response = await noperm_client.patch("/users/me", json={
+            "display_name": "  New Name ", "timezone": "America/New_York", "queue": "phishing",
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["display_name"] == "New Name"
+        assert body["timezone"] == "America/New_York"
+        assert body["queue"] == "phishing"
+
+        user = (await session.execute(select(User).where(User.username == "noperm_test"))).scalar_one()
+        await session.refresh(user)
+        assert user.display_name == "New Name"
+        assert user.timezone == "America/New_York"
+        assert user.queue == "phishing"
+
+    @pytest.mark.asyncio
+    async def test_patch_me_leaves_absent_fields_alone(self, noperm_client, session: AsyncSession):
+        assert (await noperm_client.patch("/users/me", json={"timezone": "UTC"})).status_code == 200
+        response = await noperm_client.patch("/users/me", json={"display_name": "Only Name"})
+        assert response.status_code == 200
+        assert response.json()["timezone"] == "UTC"
+
+    @pytest.mark.asyncio
+    async def test_patch_me_rejects_admin_only_fields(self, noperm_client):
+        for body in ({"username": "root"}, {"email": "x@e.com"}, {"password": "pw"}, {"enabled": False}, {"permissions": []}):
+            assert (await noperm_client.patch("/users/me", json=body)).status_code == 422, body
+
+    @pytest.mark.asyncio
+    async def test_patch_me_validates(self, noperm_client):
+        assert (await noperm_client.patch("/users/me", json={"timezone": "Mars/Olympus"})).status_code == 422
+        assert (await noperm_client.patch("/users/me", json={"display_name": "   "})).status_code == 422
+        assert (await noperm_client.patch("/users/me", json={"queue": ""})).status_code == 422

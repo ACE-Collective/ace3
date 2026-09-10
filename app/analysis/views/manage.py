@@ -36,6 +36,7 @@ from saq.gui.filter_url import (
     encode_filter_query,
 )
 from app.auth.permissions import reject_unauthenticated_datastar, require_permission
+from app.user_preferences import get_manage_columns_preference, manage_column_layout
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, GUI_DIRECTIVES
@@ -52,6 +53,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
+from saq.gui.manage_columns import MANAGE_COLUMNS_BY_ID
 from saq.remediation.coverage import get_remediation_coverage
 from saq.search.query import search_alerts, similar_alerts
 from saq.search.types import AlertSearchResult, SearchRequest
@@ -244,6 +246,19 @@ def build_manage_list_context() -> dict:
     if search_result_mapping:
         alerts = sorted(alerts, key=lambda alert: search_result_mapping[alert.uuid].rank if alert.uuid in search_result_mapping else 0)
 
+    # hide the disposition column when the analyst has narrowed to a single disposition (it
+    # would be the same value on every row). This overrides the analyst's column layout.
+    display_disposition = not _is_single_disposition_filter(effective_filters)
+
+    # The analyst's column layout (see saq/gui/manage_columns.py), read on every render --
+    # the polled refresh included -- so a change made on the preferences page shows up
+    # without a reload. The table renders exactly this list, in this order.
+    column_preference = get_manage_columns_preference()
+    manage_columns = [
+        MANAGE_COLUMNS_BY_ID[column_id] for column_id in column_preference.visible
+        if display_disposition or column_id != "disposition"
+    ]
+
     return {
         # settings
         'ace_config': get_config(),
@@ -270,10 +285,10 @@ def build_manage_list_context() -> dict:
         'remediation_coverage': remediation_coverage,
         'display_timezone_label': display_timezone_label,
         'alert_tags': alert_tags,
-        # hide the disposition column when the analyst has narrowed to a single disposition
-        # (it would be the same value on every row). The old form indexed the filter LIST
-        # as if it were a dict, so this was always True.
-        'display_disposition': not _is_single_disposition_filter(effective_filters),
+        'display_disposition': display_disposition,
+        'manage_columns': manage_columns,
+        # the column chooser's model: every column, in order, with its visibility
+        'manage_column_layout': manage_column_layout(column_preference),
         'total_alerts': total_alerts,
         'page_offset': page_offset,
 

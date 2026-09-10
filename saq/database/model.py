@@ -2552,6 +2552,47 @@ class SavedFilter(Base):
 
     user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
 
+class UserPreference(Base):
+    """One durable per-user GUI preference: a named key and its JSON value.
+
+    Preferences are the settings an analyst deliberately configures and expects to keep
+    across browsers and logins -- which columns the alert list shows, in what order. They
+    are NOT view state (sort order, page offset, the checked rows), which is transient and
+    stays in the session. Keys and their value shapes are declared in
+    aceapi_v2/user_preferences/schemas.py; nothing else writes this table."""
+
+    __tablename__ = 'user_preferences'
+    __table_args__ = (
+        UniqueConstraint('user_id', 'key', name='uq_user_preference_user_key'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    key: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False)
+
+    # the value, JSON-serialized. No native JSON column type is used anywhere in this schema
+    # -- see ExternalRemediationCheck.context_json.
+    value_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False)
+
+    # see ObservableDetection.modified_at: server_onupdate is what keeps a write's response from
+    # reporting the updated_at the row had *before* that same write bumped it.
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'),
+        server_onupdate=FetchedValue())
+
 # aliased(User) forces User's mapper to configure, which resolves User.api_keys -> AuthApiKey. These
 # must therefore come AFTER every model User has a relationship to is defined.
 Owner = aliased(User)

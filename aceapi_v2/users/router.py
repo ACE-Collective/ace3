@@ -25,6 +25,7 @@ from aceapi_v2.users.schemas import (
     UserCreate,
     UserDetail,
     UserRead,
+    UserSelfUpdate,
     UserUpdate,
 )
 
@@ -134,6 +135,39 @@ async def add_permission(
     except service.InvalidPermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": "Permission added successfully"}
+
+
+def _require_user(auth: ApiAuthResult) -> int:
+    if auth.auth_user_id is None:
+        raise HTTPException(status_code=404, detail="not authenticated as a user")
+    return auth.auth_user_id
+
+
+@router.get("/me", response_model=UserRead)
+async def get_me(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+) -> UserRead:
+    """The caller's own account. The user id comes from the auth result, not the request."""
+    user = await service.get_user(session, _require_user(auth))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@router.patch("/me", response_model=UserRead)
+async def update_me(
+    body: UserSelfUpdate,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+) -> UserRead:
+    """Edit the caller's own display name, timezone or default queue. Needs no permission
+    beyond being authenticated as a user: the admin ``user:write`` endpoints are for editing
+    OTHER accounts."""
+    try:
+        return await service.update_self(session, _require_user(auth), body)
+    except service.UserNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/me/apikeys", response_model=list[ApiKeyRead])

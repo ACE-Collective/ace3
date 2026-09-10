@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+<div class="page-header">
+    <h1>Preferences</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-5">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Profile</h5>
+            </div>
+            <div class="card-body">
+                {# every save is a PATCH to /api/v2/users/me from preferences.js #}
+                <form id="profile_form" data-api-url="/api/v2/users/me">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold" for="profile_username">Username</label>
+                        <input type="text" class="form-control" id="profile_username" value="{{ user.username }}" disabled>
+                        <div class="form-text">Username and email are set by an administrator.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold" for="profile_display_name">Display name</label>
+                        <input type="text" class="form-control" id="profile_display_name" name="display_name" value="{{ user.display_name or '' }}" maxlength="1024" required>
+                        <div class="form-text">How you appear as an alert owner and on comments.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold" for="profile_timezone">Timezone</label>
+                        <select class="form-select" id="profile_timezone" name="timezone">
+                            {% for timezone in timezones %}
+                            <option value="{{ timezone }}" {% if timezone == user.timezone %}selected{% endif %}>{{ timezone }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">Alert dates are shown in this timezone.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold" for="profile_queue">Default queue</label>
+                        <input type="text" class="form-control" id="profile_queue" name="queue" value="{{ user.queue or '' }}" maxlength="64" required>
+                        <div class="form-text">The queue the alert list's Reset filter shows.</div>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <button type="submit" class="btn btn-primary">Save profile</button>
+                        <small class="text-muted ms-3" id="profile_status" aria-live="polite"></small>
+                    </div>
+                </form>
+                <hr>
+                <a href="{{ url_for('auth.change_password') }}">Change password</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-1"></div>
+
+    <div class="col-md-5">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Alert list columns</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Drag to reorder, untick to hide. Changes are saved as you make them and apply everywhere you log in.</p>
+                {% include "analysis/_manage_column_chooser.html" %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/manage_columns.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/preferences.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}
