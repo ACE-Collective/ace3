@@ -198,3 +198,6 @@ local/
 # local docker compose overrides (auto-merged by docker compose; dev-only)
 docker-compose.override.yml
 docker-compose.override.yaml
+
+# per-session unittest database registry (see tests/unittest_database.py)
+.pytest-databases/

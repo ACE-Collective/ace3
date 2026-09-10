@@ -43,7 +43,7 @@ from tests.saq.helpers import (
     stop_api_server,
 )
 from tests.saq.test_util import create_test_context
-from tests import session_lock
+from tests import session_lock, unittest_database
 
 pytest.register_assert_rewrite("tests.saq.requests")
 
@@ -62,6 +62,21 @@ def test_context() -> AnalysisModuleContext:
 
 @pytest.fixture(autouse=True, scope="session")
 def global_setup(request):
+    # this session's own databases. the finalizer is registered before anything is created
+    # so that it runs even if provisioning or execute_global_setup() fails part way through
+    # (pytest_unconfigure drops them too, as a backstop). provisioning has to happen before
+    # execute_global_setup(): that loads the configuration, and the connection pools,
+    # flask_config's lru_cache and the SQLAlchemy engines all read the database names from
+    # it on first use and keep them.
+    request.addfinalizer(unittest_database.drop_current)
+
+    try:
+        unittest_database.provision()
+    except Exception as e:
+        # a raising session fixture would report this same traceback as an ERROR on every
+        # collected test; one message is enough
+        pytest.exit(f"unable to provision unittest databases: {e}", returncode=4)
+
     execute_global_setup()
 
     yield
@@ -625,8 +640,13 @@ def pytest_sessionstart(session):
 
 #
 # the test suite is not safe to run concurrently with itself: execute_global_setup() deletes
-# data_unittest/ and resets every unittest database. a marker file makes that constraint
-# mechanical instead of a rule people remember. see tests/session_lock.py
+# data_unittest/ and the API server tests bind a fixed port. a marker file makes that
+# constraint mechanical instead of a rule people remember. see tests/session_lock.py
+#
+# the databases are no longer shared -- each session provisions its own (see
+# tests/unittest_database.py) -- but holding the marker is also what lets a session know
+# that every set of databases recorded by an earlier one was left behind by a dead session
+# and is safe to drop.
 #
 
 # True only if *this* process created the marker file. pytest_unconfigure runs even when
@@ -649,6 +669,11 @@ def pytest_unconfigure(config):
     global SESSION_LOCK_HELD
 
     if SESSION_LOCK_HELD:
-        session_lock.release()
-        SESSION_LOCK_HELD = False
+        try:
+            # normally already done by the global_setup finalizer; this catches a session
+            # that died between provisioning and that finalizer running
+            unittest_database.drop_current()
+        finally:
+            session_lock.release()
+            SESSION_LOCK_HELD = False
 

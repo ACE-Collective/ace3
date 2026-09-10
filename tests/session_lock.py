@@ -2,14 +2,19 @@
 #
 # the ACE test suite is not safe to run more than once at a time
 #
-# tests/conftest.py::execute_global_setup() deletes and recreates $SAQ_HOME/data_unittest and
-# mass-deletes rows out of every unittest database, and global_function_setup() does it again
-# before every integration/system test. two pytest processes running at the same time therefore
-# destroy each other's state, and (with pytest-randomly shuffling order) the resulting failures
-# land somewhere unrelated and look like ordinary test bugs.
+# tests/conftest.py::execute_global_setup() deletes and recreates $SAQ_HOME/data_unittest, and
+# global_function_setup() does it again before every integration/system test; the API server
+# tests bind a fixed port. two pytest processes running at the same time therefore destroy each
+# other's state, and (with pytest-randomly shuffling order) the resulting failures land
+# somewhere unrelated and look like ordinary test bugs.
 #
 # so a session takes a marker file on the way in and drops it on the way out. while that file
 # exists no other session is allowed to start.
+#
+# the databases are not part of this any more: every session provisions its own set (see
+# tests/unittest_database.py). the marker is still what makes their cleanup safe, though --
+# a session that holds it knows that every set an earlier session recorded belongs to a
+# session that is dead.
 #
 
 import datetime
@@ -128,7 +133,7 @@ def describe_holder(path: str) -> str:
         f"the ACE test suite marker file exists: {path}",
         "",
         "the test suite is not safe to run more than once at a time -- it deletes and recreates",
-        "data_unittest/ and resets every unittest database, so concurrent runs corrupt each other.",
+        "data_unittest/ and binds a fixed API port, so concurrent runs corrupt each other.",
         "",
     ]
 

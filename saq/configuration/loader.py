@@ -5,6 +5,22 @@ from saq.configuration.yaml_parser import YAMLConfig
 from saq.environment import get_base_dir, get_global_runtime_settings
 
 
+def _load_env_config_paths(config: YAMLConfig, env_var: str) -> None:
+    """Loads each of the comma separated configuration files named by the given environment variable."""
+    if env_var not in os.environ:
+        return
+
+    for config_path in os.environ[env_var].split(","):
+        config_path = config_path.strip()
+        if not config_path:
+            continue
+
+        if not os.path.exists(config_path):
+            sys.stderr.write(f"WARNING: config path {config_path} specified in {env_var} env var does not exist\n")
+        else:
+            config.load_file(config_path)
+
+
 def load_configuration(config_paths: list[str] | None = None):
     """Unified configuration loader using YAML.
 
@@ -18,7 +34,13 @@ def load_configuration(config_paths: list[str] | None = None):
       3) Optional credential/config files
            - /docker-entrypoint-initdb.d/saq.database.passwords.yaml
       5) etc/saq.yaml or etc/saq.unittest.default.yaml (when unit testing)
+         followed, when unit testing, by the files in SAQ_UNITTEST_CONFIG_PATHS
       6) verify() and apply_path_references()
+
+    SAQ_UNITTEST_CONFIG_PATHS exists because SAQ_CONFIG_PATHS and the command line paths load
+    *before* saq.unittest.default.yaml and so cannot override anything it sets. The test suite
+    uses it to point the database settings at the databases it provisions for the session
+    (see tests/unittest_database.py).
     """
 
     default_yaml = os.path.join("etc", "saq.default.yaml")
@@ -35,16 +57,7 @@ def load_configuration(config_paths: list[str] | None = None):
             config.load_file(config_path)
 
     # add any config files specified in SAQ_CONFIG_PATHS env var (command separated)
-    if "SAQ_CONFIG_PATHS" in os.environ:
-        for config_path in os.environ["SAQ_CONFIG_PATHS"].split(","):
-            config_path = config_path.strip()
-            if not config_path:
-                continue
-
-            if not os.path.exists(config_path):
-                sys.stderr.write(f"WARNING: config path {config_path} specified in SAQ_CONFIG_PATHS env var does not exist\n")
-            else:
-                config.load_file(config_path)
+    _load_env_config_paths(config, "SAQ_CONFIG_PATHS")
 
     # and then add any specified on the command line
     for config_path in config_paths:
@@ -56,6 +69,8 @@ def load_configuration(config_paths: list[str] | None = None):
     if get_global_runtime_settings().unit_testing:
         # unit testing loads different configurations
         config.load_file(os.path.join(get_base_dir(), "etc", "saq.unittest.default.yaml"))
+        # and then any overlays on top of those (the per-session database names)
+        _load_env_config_paths(config, "SAQ_UNITTEST_CONFIG_PATHS")
 
     # optional auto-generated passwords and API keys
     db_auto_yaml = "/docker-entrypoint-initdb.d/saq.database.passwords.yaml"
