@@ -1,5 +1,5 @@
 [mysqld]
-max_connections = 1200
+max_connections = 3600
 
 # SSL settings
 ssl-ca = /opt/ace/ssl/ca-chain.cert.pem
