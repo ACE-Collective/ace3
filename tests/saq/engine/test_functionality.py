@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from glob import glob
 import json
+import logging
 from multiprocessing import cpu_count
 import os
 import re
@@ -30,7 +31,7 @@ from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
 from saq.util.uuid import get_storage_dir, workload_storage_dir
-from tests.saq.helpers import create_root_analysis, log_count, search_log, search_log_regex, track_io, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, log_count, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
 
 @pytest.mark.system
 def test_signal_TERM():
@@ -3555,8 +3556,11 @@ def test_automation_limit():
     # in this case both of them should have been analyzed
     assert len(root.get_analysis_by_type(GenericTestAnalysis)) == 2
 
-@pytest.mark.integration
-def test_missing_analysis():
+def _create_root_with_missing_analysis_module() -> tuple[RootAnalysis, str]:
+    """Runs generic_test against an observable then rewrites the saved JSON so the analysis
+    refers to an analysis class that does not exist.
+
+    Returns a tuple of the (unloaded) RootAnalysis and the uuid of the analyzed observable."""
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'test')
@@ -3567,8 +3571,6 @@ def test_missing_analysis():
     engine.configuration_manager.enable_module('generic_test', 'test_single')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # the idea here is a module was removed but it wasn't added to the deprecated analysis modules list
-    # we'll fake that by editing the JSON
     with open(root.json_path, 'r') as fp:
         analysis_json = json.load(fp)
 
@@ -3578,10 +3580,11 @@ def test_missing_analysis():
     with open(root.json_path, 'w') as fp:
         json.dump(analysis_json, fp)
 
-    # now when we try to load it we should have a missing analysis module
-    root = load_root(get_storage_dir(root.uuid))
+    return root, test_observable.uuid
 
-    test_observable = root.get_observable(test_observable.uuid)
+def _assert_unknown_analysis_loaded(root: RootAnalysis, observable_uuid: str):
+    """Asserts the UnknownAnalysis fallback is in place and still usable."""
+    test_observable = root.get_observable(observable_uuid)
     assert test_observable
     analysis = test_observable.get_and_load_analysis('saq.modules.test:DoesNotExist')
     assert isinstance(analysis, UnknownAnalysis)
@@ -3590,6 +3593,36 @@ def test_missing_analysis():
     # the class that gets loaded is different
     # but the summary should still be the same
     assert analysis.summary == str(test_observable.value)
+
+@pytest.mark.integration
+def test_missing_analysis():
+    # the idea here is a module was removed but it wasn't added to the deprecated analysis modules list
+    root, observable_uuid = _create_root_with_missing_analysis_module()
+
+    # now when we try to load it we should have a missing analysis module
+    root = load_root(get_storage_dir(root.uuid))
+    _assert_unknown_analysis_loaded(root, observable_uuid)
+
+    # since the module was not marked deprecated this indicates something is wrong, so it is an error
+    errors = search_log_condition(
+        lambda r: r.levelno == logging.ERROR and 'saq.modules.test:DoesNotExist' in r.getMessage())
+    assert errors
+
+@pytest.mark.integration
+def test_deprecated_analysis(monkeypatch):
+    # same as test_missing_analysis except the module *was* added to the deprecated analysis modules list
+    root, observable_uuid = _create_root_with_missing_analysis_module()
+
+    monkeypatch.setattr(get_config(), 'deprecated_modules', ['saq.modules.test:DoesNotExist'])
+
+    root = load_root(get_storage_dir(root.uuid))
+    _assert_unknown_analysis_loaded(root, observable_uuid)
+
+    # a deprecated module is expected to be missing so this is only logged at the debug level
+    assert search_log_condition(
+        lambda r: r.levelno == logging.DEBUG and 'saq.modules.test:DoesNotExist' in r.getMessage())
+    assert not search_log_condition(
+        lambda r: r.levelno > logging.DEBUG and 'saq.modules.test:DoesNotExist' in r.getMessage())
 
 # XXX review this
 @pytest.mark.integration

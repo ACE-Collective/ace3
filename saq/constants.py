@@ -1047,6 +1047,7 @@ CONFIG_ANALYSIS_MODULE_INSTANCE = "instance"
 CONFIG_ANALYSIS_MODULE_ENABLED = "enabled"
 
 CONFIG_DISABLED_MODULES = "disabled_modules"
+CONFIG_DEPRECATED_MODULES = "deprecated_modules"
 
 # analysis mode
 CONFIG_ANALYSIS_MODE_CLEANUP = "cleanup"

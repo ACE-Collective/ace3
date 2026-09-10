@@ -1,6 +1,8 @@
+import logging
 import os
 import pytest
 
+from saq.configuration.config import get_config
 from saq.observables.file import FileObservable
 
 @pytest.mark.unit
@@ -100,3 +102,65 @@ def test_module_path_memoized_and_instance_validated():
     # assigning instance invalidates the memo
     analysis.instance = "second"
     assert analysis.module_path == f"{base}:second"
+
+@pytest.mark.unit
+def test_load_analysis_from_module_path_success():
+    from saq.analysis.analysis import load_analysis_from_module_path
+    from saq.modules.test import GenericTestAnalysis
+
+    analysis = load_analysis_from_module_path("saq.modules.test:GenericTestAnalysis")
+    assert isinstance(analysis, GenericTestAnalysis)
+
+@pytest.mark.unit
+def test_load_analysis_from_module_path_missing_logs_error(caplog):
+    from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
+
+    caplog.set_level(logging.DEBUG)
+    analysis = load_analysis_from_module_path("saq.modules.test:DoesNotExist")
+
+    assert isinstance(analysis, UnknownAnalysis)
+    assert analysis.module_path == "saq.modules.test:DoesNotExist"
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "saq.modules.test:DoesNotExist" in errors[0].getMessage()
+
+@pytest.mark.unit
+def test_load_analysis_from_module_path_deprecated_logs_debug(caplog, monkeypatch):
+    from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
+
+    monkeypatch.setattr(get_config(), "deprecated_modules", ["saq.modules.test:DoesNotExist"])
+
+    caplog.set_level(logging.DEBUG)
+    analysis = load_analysis_from_module_path("saq.modules.test:DoesNotExist")
+
+    assert isinstance(analysis, UnknownAnalysis)
+    assert analysis.module_path == "saq.modules.test:DoesNotExist"
+
+    # a deprecated module is expected to be missing, so nothing above DEBUG is logged
+    assert not [r for r in caplog.records if r.levelno > logging.DEBUG]
+    debug_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert any("saq.modules.test:DoesNotExist" in m for m in debug_messages)
+
+@pytest.mark.unit
+def test_is_deprecated_module_path(monkeypatch):
+    from saq.analysis.analysis import is_deprecated_module_path
+
+    monkeypatch.setattr(get_config(), "deprecated_modules", [])
+    assert not is_deprecated_module_path("saq.modules.test:SomeAnalysis")
+
+    monkeypatch.setattr(get_config(), "deprecated_modules", ["saq.modules.test:SomeAnalysis"])
+    assert is_deprecated_module_path("saq.modules.test:SomeAnalysis")
+    assert not is_deprecated_module_path("saq.modules.test:OtherAnalysis")
+
+    # an entry without an :instance suffix covers every instance of that module
+    assert is_deprecated_module_path("saq.modules.test:SomeAnalysis:instance1")
+
+    # an entry with an :instance suffix covers only that instance
+    monkeypatch.setattr(get_config(), "deprecated_modules", ["saq.modules.test:SomeAnalysis:instance1"])
+    assert is_deprecated_module_path("saq.modules.test:SomeAnalysis:instance1")
+    assert not is_deprecated_module_path("saq.modules.test:SomeAnalysis:instance2")
+    assert not is_deprecated_module_path("saq.modules.test:SomeAnalysis")
+
+    # a value that is not a module path at all is not deprecated
+    assert not is_deprecated_module_path("not a module path")
