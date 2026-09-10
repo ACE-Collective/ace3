@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 import logging
 from threading import Event, Thread
 from uuid import uuid4
@@ -100,7 +99,9 @@ class RemediationCollector:
         update = Remediation.__table__.update()
         update = update.values(
             lock = lock_uuid,
-            lock_time = datetime.now(UTC),
+            # must come from the database clock: the lock timeout is evaluated server-side against
+            # NOW(), and a client-side datetime rounds up into a DATETIME(0) column
+            lock_time = func.NOW(),
             status = RemediationStatus.IN_PROGRESS.value,
         )
         update = update.where(Remediation.id.in_(target_ids))
