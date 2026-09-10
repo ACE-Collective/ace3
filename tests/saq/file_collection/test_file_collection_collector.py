@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, UTC
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from saq.constants import F_FILE_LOCATION
 from saq.database.model import FileCollection
@@ -66,6 +66,13 @@ def test_collect_single_work_item(db_alert):
     file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
     assert tasks[0].lock is not None
     assert tasks[0].lock == file_collection.lock
+
+    # the lock timestamp must never be ahead of the database clock, or the lock timeout check in
+    # collect_work_items() (which compares against NOW()) refuses to reclaim the record
+    assert get_db().execute(
+        text("SELECT lock_time <= NOW() FROM file_collection WHERE id = :id"),
+        {"id": collection_id},
+    ).scalar() == 1
 
 
 @pytest.mark.integration

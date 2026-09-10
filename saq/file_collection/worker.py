@@ -4,6 +4,8 @@ from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from typing import Optional
 
+from sqlalchemy.sql import func
+
 from saq.database.model import FileCollection, FileCollectionHistory
 from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import report_exception
@@ -155,7 +157,7 @@ class FileCollectionWorker(FileCollectionListener):
 
         if target.lock is not None:
             update = FileCollection.__table__.update()
-            update = update.values(lock_time=datetime.now(UTC))
+            update = update.values(lock_time=func.NOW())
             update = update.where(FileCollection.id == target.id, FileCollection.lock == target.lock)
             get_db().execute(update)
 

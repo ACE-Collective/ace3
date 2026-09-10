@@ -199,7 +199,9 @@ class ExternalRemediationCheckCollector:
 
         update = ExternalRemediationCheck.__table__.update().values(
             lock=lock_uuid,
-            lock_time=datetime.now(UTC),
+            # must come from the database clock: the lock timeout is evaluated server-side against
+            # NOW(), and a client-side datetime rounds up into a DATETIME(0) column
+            lock_time=func.NOW(),
             status=CheckStatus.IN_PROGRESS.value,
         ).where(ExternalRemediationCheck.id.in_(target_ids))
         get_db().execute(update)

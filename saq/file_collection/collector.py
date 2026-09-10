@@ -181,7 +181,10 @@ class FileCollectionCollector:
         update = FileCollection.__table__.update()
         update = update.values(
             lock=lock_uuid,
-            lock_time=datetime.now(UTC),
+            # the lock timeout is evaluated server-side against NOW(), so the lock timestamp has to
+            # come from the database clock too -- a client-side datetime with microseconds rounds up
+            # into a DATETIME(0) column and can land ahead of NOW(), which blocks reclaiming the row
+            lock_time=func.NOW(),
             status=FileCollectionStatus.IN_PROGRESS.value,
         )
         update = update.where(FileCollection.id.in_(target_ids))
