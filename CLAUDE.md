@@ -38,7 +38,7 @@ Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`
 
 Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
 
-**Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/conftest.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The static `ace-unittest` / `ace-unittest-2` databases created by `docker/startup/setup.sh` are no longer used by pytest, only by `make *-db-check`.
+**Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/conftest.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The old static `ace-unittest` / `ace-unittest-2` / `*-unittest` databases are no longer created or used by anything; a dev environment set up before September 2026 may still have them and they can be dropped by hand.
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
@@ -96,14 +96,14 @@ All models live in `saq/database/model.py`. The brocess models are schema-defini
 
 The `amc` database is **not** under Alembic; it is still created from the raw DDL in `sql/05-amc.sql`. The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
 
-`bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases.
+`bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
 
 Use the Makefile targets (they exec into the `dev` container from the host):
 
 ```bash
 make db-revision MESSAGE="what changed"   # autogenerate
 make db-upgrade / db-downgrade
-make db-check                             # model-vs-schema drift check
+make db-check                             # model-vs-schema drift check (builds and drops a throwaway <name>-drift-<token> database)
 make cache-db-revision MESSAGE="..." / cache-db-upgrade / cache-db-check
 make brocess-db-revision MESSAGE="..." / brocess-db-upgrade / brocess-db-check
 make db-seed
@@ -111,7 +111,7 @@ make db-seed
 
 Migrations are applied at startup by `docker/startup/setup.sh` (the `ace-setup` service), one `upgrade head` per chain.
 
-CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change.
+CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change. `bin/check_model_drift.py` builds a throwaway database, migrates it to head, compares and drops it; setting the chain's env var (`DATABASE_NAME=ace ...`) checks that existing database instead, which is what CI does.
 
 ## Configuration
 

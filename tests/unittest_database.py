@@ -69,10 +69,11 @@ DATABASE_SECTIONS: dict[str, str] = {
     "database_analysis_result_cache": "--cache",
 }
 
-# every provisioned name looks like <base>-<8 hex chars>. this is the SQL LIKE pattern for
-# that (exactly eight single-character wildcards), used to find orphans without ever
-# matching the static ace-unittest / ace-unittest-2 / amc-unittest databases.
-ORPHAN_LIKE_PATTERN = "%-unittest-________"
+# every provisioned name looks like <base>-unittest-<8 hex chars>, and the throwaway
+# databases bin/check_model_drift.py builds look like <base>-drift-<8 hex chars>. these are
+# the SQL LIKE patterns for those (exactly eight single-character wildcards pin the token
+# length), used to find databases that were left behind without a registry record.
+ORPHAN_LIKE_PATTERNS = ["%-unittest-________", "%-drift-________"]
 
 MYSQL_ER_LOCK_WAIT_TIMEOUT = 1205
 
@@ -478,8 +479,10 @@ def find_orphans() -> list[tuple[str, int]]:
 
     with superuser_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SHOW DATABASES LIKE %s", (ORPHAN_LIKE_PATTERN,))
-        candidates = [row[0] for row in cursor.fetchall() if row[0] not in registered]
+        candidates = []
+        for pattern in ORPHAN_LIKE_PATTERNS:
+            cursor.execute("SHOW DATABASES LIKE %s", (pattern,))
+            candidates.extend(row[0] for row in cursor.fetchall() if row[0] not in registered)
 
         result = []
         for name in candidates:

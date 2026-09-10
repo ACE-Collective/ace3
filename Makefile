@@ -16,7 +16,7 @@ db-seed:
 	docker compose exec dev /venv/bin/python bin/seed_database.py
 
 db-check:
-	docker compose exec -e DATABASE_NAME=ace-unittest-2 dev /venv/bin/python bin/check_model_drift.py
+	docker compose exec dev /venv/bin/python bin/check_model_drift.py
 
 cache-db-revision:
 	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini revision --autogenerate -m "$(MESSAGE)"
@@ -28,7 +28,7 @@ cache-db-downgrade:
 	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini downgrade -1
 
 cache-db-check:
-	docker compose exec -e CACHE_DATABASE_NAME=analysis-result-cache-unittest dev /venv/bin/python bin/check_model_drift.py --database cache
+	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database cache
 
 brocess-db-revision:
 	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini revision --autogenerate -m "$(MESSAGE)"
@@ -40,7 +40,7 @@ brocess-db-downgrade:
 	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini downgrade -1
 
 brocess-db-check:
-	docker compose exec -e BROCESS_DATABASE_NAME=brocess-unittest dev /venv/bin/python bin/check_model_drift.py --database brocess
+	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database brocess
 
 email-archive-db-revision:
 	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini revision --autogenerate -m "$(MESSAGE)"
@@ -52,4 +52,4 @@ email-archive-db-downgrade:
 	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini downgrade -1
 
 email-archive-db-check:
-	docker compose exec -e EMAIL_ARCHIVE_DATABASE_NAME=email-archive-unittest dev /venv/bin/python bin/check_model_drift.py --database email-archive
+	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database email-archive

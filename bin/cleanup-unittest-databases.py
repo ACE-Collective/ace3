@@ -9,7 +9,7 @@ Usage (inside the dev container):
     bin/cleanup-unittest-databases.py            # drop every registered set (unless a session is running)
     bin/cleanup-unittest-databases.py --list     # just show what is registered and what looks orphaned
     bin/cleanup-unittest-databases.py --force    # drop even if the session marker file exists
-    bin/cleanup-unittest-databases.py --orphans  # also drop databases that look like ours but have no record
+    bin/cleanup-unittest-databases.py --orphans  # also drop per-session or drift databases that have no record
 """
 
 import argparse
@@ -59,7 +59,7 @@ def main() -> int:
                 print(f"    {name}")
 
         if orphans:
-            print("databases matching the unittest naming pattern with no registry record:")
+            print("databases matching the per-session/drift naming pattern with no registry record:")
             for name, connections in orphans:
                 print(f"    {name} ({connections} open connection(s))")
 
@@ -90,7 +90,7 @@ def main() -> int:
                 logging.error("unable to drop %s: %s", name, e)
                 failed = True
     elif orphans:
-        logging.warning("%s database(s) match the unittest naming pattern but have no registry record; "
+        logging.warning("%s database(s) match the per-session/drift naming pattern but have no registry record; "
                         "use --list to see them and --orphans to drop them", len(orphans))
 
     return 1 if failed else 0
