@@ -44,18 +44,21 @@ ACE "integrations" tests are accessed through the `test_external_integration_*` 
 
 There is no configured linter/formatter in the repo.
 
-IMPORTANT: Do **NOT** run multiple tests at the same time. The tests are designed to run serially (they share `data_unittest/` and the API server port).
+**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-This is now enforced. `tests/session_lock.py` creates a marker file at
-`$SAQ_HOME/.pytest-running` when a session starts and removes it when the session ends
-(including on Ctrl-C and collection errors). While that file exists **no** pytest session
-may start — `pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before
-collection, before any database access and before `data_unittest/` is wiped. There is no
-bypass flag. The marker records the pid, hostname, start time and command line of the
-session that created it, and the error message says whether that process is still running or
-whether the marker was left behind by a run that was killed. In the latter case, clear it
-with `rm /opt/ace/.pytest-running`. Holding the marker is also what makes it safe for a
-session to drop the databases an earlier, killed session left behind.
+IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them.
+
+This is enforced. `tests/session_lock.py` creates a marker file at
+`$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
+a plain run) and removes it when the run ends (including on Ctrl-C and collection errors).
+While that file exists **no** other run may start — `pytest_configure` in `tests/conftest.py`
+fails the run with exit code 4 before collection, before any database access and before any
+data directory is wiped. There is no bypass flag. The marker records the pid, hostname, start
+time and command line of the process that created it, and the error message says whether
+that process is still running or whether the marker was left behind by a run that was killed.
+In the latter case, clear it with `rm /opt/ace/.pytest-running`. Holding the marker is also
+what makes it safe for a run to drop the databases an earlier, killed run left behind: the
+holder sweeps the registry in `pytest_configure`, before any of its workers provision.
 
 ### The standard analysis-module test
 

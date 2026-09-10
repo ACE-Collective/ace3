@@ -6,7 +6,7 @@ tests/unittest_database.py) and normally drops them itself, and the next session
 anything a killed session left behind. This is for cleaning up without starting a session.
 
 Usage (inside the dev container):
-    bin/cleanup-unittest-databases.py            # drop every registered set (unless a session is running)
+    bin/cleanup-unittest-databases.py            # drop every registered set (unless a run is in progress)
     bin/cleanup-unittest-databases.py --list     # just show what is registered and what looks orphaned
     bin/cleanup-unittest-databases.py --force    # drop even if the session marker file exists
     bin/cleanup-unittest-databases.py --orphans  # also drop per-session or drift databases that have no record
@@ -54,7 +54,7 @@ def main() -> int:
         if not registered:
             print("no registered unittest databases")
         for record in registered:
-            print(f"registered (pid {record.get('pid')} on {record.get('hostname')}, started {record.get('started')}):")
+            print(f"registered (slot {record.get('slot', '?')}, pid {record.get('pid')} on {record.get('hostname')}, started {record.get('started')}):")
             for name in record["databases"].values():
                 print(f"    {name}")
 

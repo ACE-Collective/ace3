@@ -17,6 +17,7 @@ from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_
 from saq.database.model import load_alert
 from saq.database.util.alert import ALERT
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
+from tests import unittest_session
 from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
@@ -505,7 +506,8 @@ class MemoryLogHandler(logging.Handler):
         try:
             test_log_messages.append(record)
         except Exception as e:
-            with open("logging_issues.log", "a") as fp:
+            # next to this slot's unittest log rather than in the repository root
+            with open(os.path.join(unittest_session.LOG_DIR, unittest_session.get_log_file_name("logging_issues")), "a") as fp:
                 fp.write(f"*** ERROR: unable to append record {record}: {e}\n")
 
     def clear(self):

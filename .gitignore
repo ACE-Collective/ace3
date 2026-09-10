@@ -201,3 +201,6 @@ docker-compose.override.yaml
 
 # per-session unittest database registry (see tests/unittest_database.py)
 .pytest-databases/
+
+# test suite log fallback (see tests/saq/helpers.py MemoryLogHandler)
+logging_issues*.log

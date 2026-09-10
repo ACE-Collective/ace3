@@ -16,11 +16,15 @@
 #
 # leaks: a session that dies without cleaning up (SIGKILL, container went away) leaves its
 # databases behind. every session records what it created in $SAQ_HOME/.pytest-databases/
-# *before* creating anything, and the next session drops whatever it finds there that is not
-# its own. that is safe because sessions are serialized by tests/session_lock.py: while
-# this session holds .pytest-running no other session sharing this checkout can be alive,
-# so every other registry entry belongs to a dead one. bin/cleanup-unittest-databases.py
-# does the same thing from outside a session.
+# *before* creating anything, and the next *run* drops whatever it finds there. that is
+# safe because runs are serialized by tests/session_lock.py: the process that holds
+# .pytest-running (the pytest-xdist controller, or the only process of a plain run) sweeps
+# the registry in pytest_configure, before any worker of its own has provisioned anything,
+# so at that moment every registry entry belongs to a dead session.
+# bin/cleanup-unittest-databases.py does the same thing from outside a run.
+#
+# the overlay also carries everything else that has to differ per pytest process (data
+# directory, ports, ...) -- see tests/unittest_session.py.
 #
 # all of the administrative work here (CREATE/DROP DATABASE, GRANT, migrations) runs as the
 # database superuser -- see saq/database/admin.py for where those credentials come from.
@@ -46,6 +50,7 @@ from sqlalchemy.orm.session import close_all_sessions
 from saq.database import pool
 from saq.database.admin import get_database_host, superuser_connection
 from saq.database.seed import seed_unittest
+from tests import unittest_session
 
 REGISTRY_DIRNAME = ".pytest-databases"
 OVERLAY_ENV_VAR = "SAQ_UNITTEST_CONFIG_PATHS"
@@ -170,13 +175,15 @@ def _write_registry_record(provisioned: ProvisionedDatabases) -> None:
             "hostname": socket.gethostname(),
             "started": datetime.datetime.now().isoformat(),
             "argv": sys.argv,
+            "slot": unittest_session.get_slot(),
             "grantee": provisioned.grantee,
             "databases": provisioned.databases,
         }, fp, indent=4)
 
 
 def _write_overlay(provisioned: ProvisionedDatabases) -> None:
-    overlay = {section: {"database": name} for section, name in provisioned.databases.items()}
+    overlay = unittest_session.session_overrides()
+    overlay.update({section: {"database": name} for section, name in provisioned.databases.items()})
     with open(provisioned.overlay_path, "w") as fp:
         yaml.safe_dump(overlay, fp, default_flow_style=False)
 
@@ -237,18 +244,16 @@ def _upgrade_databases(provisioned: ProvisionedDatabases) -> None:
 def provision() -> ProvisionedDatabases:
     """Creates, migrates and seeds a fresh set of databases and points the config at them.
 
-    Must be called while the session lock (tests/session_lock.py) is held and before
-    initialize_environment(): the configuration, connection pools and SQLAlchemy engines all
-    read the database names on first use and cache them. Raises UnittestDatabaseError with
-    an explanation of what is required if it cannot be done; nothing is left behind in
-    that case."""
+    Must be called before initialize_environment(): the configuration, connection pools and
+    SQLAlchemy engines all read the database names on first use and cache them. Stale
+    databases from earlier runs are not this function's business -- the process holding the
+    session lock sweeps them (sweep_stale()) before any session provisions. Raises
+    UnittestDatabaseError with an explanation of what is required if it cannot be done;
+    nothing is left behind in that case."""
     global _CURRENT
 
     if _CURRENT is not None:
         raise UnittestDatabaseError(f"unittest databases already provisioned (token {_CURRENT.token})")
-
-    # anything a previous session left behind goes first
-    sweep_stale()
 
     settings = _load_unittest_database_settings()
     token = generate_token()
@@ -449,9 +454,11 @@ def drop_registered(record: dict) -> None:
 def sweep_stale() -> list[str]:
     """Drops every registered set of databases other than this process's own.
 
-    Only call this while the session lock is held (provision() does): the lock is what
-    makes every other registry entry provably stale. Returns the names dropped. A record
-    that cannot be dropped is logged and left in place for the next attempt."""
+    Only call this from the process that holds the session lock, before any session of the
+    run has provisioned (tests/conftest.py::pytest_configure does): the lock is what makes
+    every other registry entry provably stale, and under pytest-xdist the workers' own
+    records must not exist yet. Returns the names dropped. A record that cannot be dropped
+    is logged and left in place for the next attempt."""
     dropped = []
     for record in list_registered():
         if _CURRENT is not None and record.get("token") == _CURRENT.token:
