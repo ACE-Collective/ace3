@@ -113,6 +113,20 @@ document.addEventListener("datastar-fetch", function(evt) {
     }
 });
 
+// Re-renders the alert list from the server through the same Datastar refresh path the
+// poll uses, instead of a full page reload. Pass {clearSelection: true} for a change the
+// server also resets the checked rows for (sort, paging), so the $_sel signal does not
+// re-check rows the session has forgotten. The handler lives on #manage_page in
+// manage.html.
+function refresh_manage_list(detail) {
+    var manage_page = document.getElementById("manage_page");
+    if (!manage_page) {
+        window.location.replace('/ace/manage');
+        return;
+    }
+    manage_page.dispatchEvent(new CustomEvent("ace-refresh", { detail: detail || {} }));
+}
+
 // the auto-refresh interval on #manage_page skips polling while the tab is hidden, so
 // trigger an immediate catch-up refresh when the tab becomes visible again (the modal
 // gate lives in the data-on:ace-refresh expression)
@@ -791,7 +805,7 @@ function set_sort_filter(name) {
         fetch('set_sort_filter', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
+            refresh_manage_list({ clearSelection: true });
         })
         .catch(function(err){
             alert('DOH: ' + err.message);
@@ -806,7 +820,7 @@ function set_page_offset(offset) {
         fetch('set_page_offset', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
+            refresh_manage_list({ clearSelection: true });
         })
         .catch(function(err){
             alert('DOH: ' + err.message);
@@ -839,7 +853,7 @@ function set_page_size(current_size) {
         fetch('set_page_size', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { throw new Error(resp.statusText); }
-            window.location.replace('/ace/manage');
+            refresh_manage_list({ clearSelection: true });
         })
         .catch(function(err){
             alert('DOH: ' + err.message);

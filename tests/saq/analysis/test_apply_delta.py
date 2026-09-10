@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from saq.analysis.analysis import UnknownAnalysis
 from saq.analysis.blob_store import (
     BlobNotFound,
     LocalHardlinkBlobStore,
@@ -18,6 +19,7 @@ from saq.analysis.module_execution_delta import (
     RootDiff,
 )
 from saq.analysis.root import RootAnalysis
+from saq.configuration.config import get_config
 from saq.constants import F_EMAIL_ADDRESS, F_FILE, F_FQDN, F_IP, F_URL, F_USER, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules.rdap import RdapAnalysis
 
@@ -484,6 +486,60 @@ class TestApplyDeltaRehydration:
         assert kept.details == {"sentinel": "preexisting"}
         # Diffs still applied.
         assert "replay-tag" in target.tags
+
+    @pytest.mark.unit
+    def test_missing_analysis_class_logs_error(self, tmp_path, caplog):
+        """A cached analysis whose class no longer exists falls back to
+        UnknownAnalysis. The module was not declared deprecated, so this
+        indicates a problem and is logged as an ERROR."""
+
+        root = _make_root(tmp_path)
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis_dict = {
+            "module_path": "saq.modules.rdap:DoesNotExist",
+            "details": {"x": 1},
+            "completed": True,
+            "delayed": False,
+        }
+        delta = _empty_delta(target, analysis=analysis_dict)
+
+        caplog.set_level(logging.DEBUG)
+        apply_delta(root, target, delta)
+
+        rehydrated = target.get_analysis("saq.modules.rdap:DoesNotExist")
+        assert isinstance(rehydrated, UnknownAnalysis)
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "saq.modules.rdap:DoesNotExist" in errors[0].getMessage()
+
+    @pytest.mark.unit
+    def test_deprecated_analysis_class_logs_debug(self, tmp_path, caplog, monkeypatch):
+        """Same as above except the module is declared deprecated, which
+        means the missing class is expected rather than an error."""
+
+        root = _make_root(tmp_path)
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        analysis_dict = {
+            "module_path": "saq.modules.rdap:DoesNotExist",
+            "details": {"x": 1},
+            "completed": True,
+            "delayed": False,
+        }
+        delta = _empty_delta(target, analysis=analysis_dict)
+
+        monkeypatch.setattr(get_config(), "deprecated_modules", ["saq.modules.rdap:DoesNotExist"])
+
+        caplog.set_level(logging.DEBUG)
+        apply_delta(root, target, delta)
+
+        rehydrated = target.get_analysis("saq.modules.rdap:DoesNotExist")
+        assert isinstance(rehydrated, UnknownAnalysis)
+
+        assert not [r for r in caplog.records if r.levelno > logging.DEBUG]
+        assert any(
+            "saq.modules.rdap:DoesNotExist" in r.getMessage()
+            for r in caplog.records if r.levelno == logging.DEBUG)
 
     @pytest.mark.unit
     def test_analysis_tags_rehydrated(self, tmp_path):

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -78,8 +79,192 @@ def test_worker_handle_request_queues_work():
     worker.handle_file_collection_request(work_item)
 
     assert worker.work_queue.qsize() == 1
+    assert worker.pending_collection_ids() == {1}
     queued_item = worker.work_queue.get_nowait()
     assert queued_item is work_item
+
+
+@pytest.mark.integration
+def test_worker_loop_releases_pending_id():
+    collector = MockFileCollector()
+    worker = FileCollectionWorker(collector)
+
+    collection_id = queue_file_collection(
+        collector_name="mock_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/file",
+        alert_uuid="test-alert-uuid-pending",
+    )
+
+    work_item = FileCollectionWorkItem(
+        id=collection_id,
+        name="mock_collector",
+        type=F_FILE_LOCATION,
+        key="host@/file",
+        alert_uuid="test-alert-uuid-pending",
+        storage_dir="/opt/ace/data/test-alert",
+    )
+
+    worker.handle_file_collection_request(work_item)
+    assert worker.pending_collection_ids() == {collection_id}
+
+    worker.shutdown_event.set()
+    worker.worker_loop(Mock())
+
+    assert len(collector.collect_calls) == 1
+    assert worker.pending_collection_ids() == set()
+
+
+@pytest.mark.integration
+def test_worker_collect_skips_completed_record():
+    """A queued work item whose record completed in the meantime is not collected again."""
+    collector = MockFileCollector()
+    worker = FileCollectionWorker(collector)
+
+    collection_id = queue_file_collection(
+        collector_name="mock_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/file",
+        alert_uuid="test-alert-uuid-completed",
+    )
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.status = FileCollectionStatus.COMPLETED.value
+    file_collection.result = FileCollectorStatus.SUCCESS.value
+    file_collection.collected_file_path = "/already/collected"
+    get_db().add(file_collection)
+    get_db().commit()
+
+    work_item = FileCollectionWorkItem(
+        id=collection_id,
+        name="mock_collector",
+        type=F_FILE_LOCATION,
+        key="host@/file",
+        alert_uuid="test-alert-uuid-completed",
+        storage_dir="/opt/ace/data/test-alert",
+    )
+
+    assert worker.collect(work_item) is None
+    assert collector.collect_calls == []
+
+    # the record is untouched
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.collected_file_path == "/already/collected"
+    assert file_collection.retry_count == 0
+    assert not get_db().query(FileCollectionHistory).filter(
+        FileCollectionHistory.file_collection_id == collection_id
+    ).count()
+
+
+@pytest.mark.integration
+def test_worker_collect_skips_record_locked_by_someone_else():
+    """A work item is not collected if the record has since been locked under a different uuid."""
+    collector = MockFileCollector()
+    worker = FileCollectionWorker(collector)
+
+    collection_id = queue_file_collection(
+        collector_name="mock_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/file",
+        alert_uuid="test-alert-uuid-relocked",
+    )
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.lock = "someone-else"
+    file_collection.lock_time = datetime.now(UTC)
+    file_collection.status = FileCollectionStatus.IN_PROGRESS.value
+    get_db().add(file_collection)
+    get_db().commit()
+
+    work_item = FileCollectionWorkItem(
+        id=collection_id,
+        name="mock_collector",
+        type=F_FILE_LOCATION,
+        key="host@/file",
+        alert_uuid="test-alert-uuid-relocked",
+        storage_dir="/opt/ace/data/test-alert",
+        lock="our-lock",
+    )
+
+    assert worker.collect(work_item) is None
+    assert collector.collect_calls == []
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    assert file_collection.lock == "someone-else"
+    assert file_collection.status == FileCollectionStatus.IN_PROGRESS.value
+
+
+@pytest.mark.integration
+def test_worker_collect_skips_missing_record():
+    collector = MockFileCollector()
+    worker = FileCollectionWorker(collector)
+
+    work_item = FileCollectionWorkItem(
+        id=999999,
+        name="mock_collector",
+        type=F_FILE_LOCATION,
+        key="host@/file",
+        alert_uuid="test-alert-uuid-missing",
+        storage_dir="/opt/ace/data/test-alert",
+    )
+
+    assert worker.collect(work_item) is None
+    assert collector.collect_calls == []
+
+
+@pytest.mark.integration
+def test_worker_collect_refreshes_lock_time():
+    """When the work item still owns the lock, the lock time is moved to when work starts."""
+    collector = MockFileCollector()
+    worker = FileCollectionWorker(collector)
+
+    collection_id = queue_file_collection(
+        collector_name="mock_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/file",
+        alert_uuid="test-alert-uuid-lock-refresh",
+    )
+
+    stale_lock_time = datetime.now(UTC) - timedelta(hours=1)
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.lock = "our-lock"
+    file_collection.lock_time = stale_lock_time
+    file_collection.status = FileCollectionStatus.IN_PROGRESS.value
+    get_db().add(file_collection)
+    get_db().commit()
+
+    # make the collector observe the lock time as it is while the collection is running
+    observed = {}
+
+    def observe(target):
+        row = get_db().query(FileCollection).filter(FileCollection.id == target.id).first()
+        observed["lock_time"] = row.lock_time
+        return FileCollectorResult(status=FileCollectorStatus.SUCCESS, collected_file_path="/path")
+
+    collector.collect = observe
+
+    work_item = FileCollectionWorkItem(
+        id=collection_id,
+        name="mock_collector",
+        type=F_FILE_LOCATION,
+        key="host@/file",
+        alert_uuid="test-alert-uuid-lock-refresh",
+        storage_dir="/opt/ace/data/test-alert",
+        lock="our-lock",
+    )
+
+    result = worker.collect(work_item)
+    assert result.status == FileCollectorStatus.SUCCESS
+
+    lock_time = observed["lock_time"]
+    if lock_time.tzinfo is None:
+        lock_time = lock_time.replace(tzinfo=UTC)
+    assert lock_time > stale_lock_time + timedelta(minutes=30)
+
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.lock is None
 
 
 @pytest.mark.integration

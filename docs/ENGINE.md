@@ -1350,6 +1350,39 @@ skipped. This is separate from the per-module `observable_exclusions:` under an
 `analysis_module_<name>:` block (§16.3), which uses the already-parsed
 `{o_type: [o_value]}` shape and gates only that one module.
 
+### 16.6 `deprecated_modules:`
+
+A flat top-level list of MODULE_PATH values naming analysis modules that have been
+removed from ACE:
+
+```yaml
+deprecated_modules:
+  - saq.modules.some_removed_module:SomeRemovedAnalysis
+  - saq.modules.instanced:InstancedAnalysis:instance1
+```
+
+These are MODULE_PATHs of the generated *Analysis* class
+(`python_module:AnalysisClass`, plus `:instance` for an instanced module), not
+`analysis_module_<name>` config section names. A deprecated module has had its config
+section deleted along with its code, so there is no section left to key off of.
+
+Alerts saved before the module was removed still carry its serialized Analysis. When
+`Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)
+cannot import the class it substitutes a read-only `UnknownAnalysis`, so the rest of
+the tree still loads, and logs through
+`saq.analysis.analysis.load_analysis_from_module_path`:
+
+- listed here — expected, logged at DEBUG.
+- not listed — a broken import, a renamed class, or a half-deployed integration.
+  Logged at ERROR, because analysis is silently degrading.
+
+An entry without an `:instance` suffix covers every instance of that module; an entry
+with one covers only that instance.
+
+Unrelated to `disabled_modules:` (§16.2), which stops a module that still exists from
+*running*. `deprecated_modules:` says nothing about execution — it only describes
+modules that are already gone.
+
 ---
 
 ## 17. Observability

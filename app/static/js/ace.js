@@ -355,11 +355,15 @@ function select_event_name_candidate_from_manage_view() {
     // compare all alert dates to find earliest alert
     checked_alert_uuids.forEach(function (checked_alert_uuid) {
 
-        // only consider alert event name candidates that have finished analyzing
-        let alert_analysis_status = document.getElementById(`alert_status_${checked_alert_uuid}`).innerHTML
-        if (alert_analysis_status !== "Completed") return;
+        // the row carries its status and date as data attributes so this works whatever
+        // columns the analyst has chosen to show
+        let row = document.getElementById(`alert_row_${checked_alert_uuid}`);
+        if (!row) return;
 
-        let checked_alert_date = new Date(document.getElementById(`alert_date_${checked_alert_uuid}`).title);
+        // only consider alert event name candidates that have finished analyzing
+        if (row.dataset.status !== "Completed") return;
+
+        let checked_alert_date = new Date(row.dataset.insertDate);
         // base case -- set first 'earliest_date' with first date we check
         // do this instead of initializing earliest_date with .now() to avoid browser TZ conflicts
         if (earliest_alert_uuid === "") {

@@ -1,0 +1,17 @@
+{# Shared table markup for the list pages. Import with `with context` is not needed: every
+   macro here takes what it renders as arguments. #}
+
+{# A column header that sorts the list when clicked. `sort_key` is the sort name the
+   page's sort endpoint understands (None renders a plain header); `sort_filter` and
+   `sort_filter_desc` are the current sort so the arrow lands on the right column;
+   `sort_handler` is the JavaScript function that posts the change; `col_id` tags the
+   header with data-col-id for tests and CSS. #}
+{% macro sortable_th(label, sort_key, sort_filter, sort_filter_desc, sort_handler='set_sort_filter', th_class=None, nowrap=False, col_id=None) -%}
+<th{% if th_class %} class="{{ th_class }}"{% endif %}{% if col_id %} data-col-id="{{ col_id }}"{% endif %}>
+{%- if sort_key -%}
+<span onmousedown='{{ sort_handler }}({{ sort_key|tojson }})' style="cursor:pointer;{% if nowrap %}white-space: nowrap;{% endif %}">{{ label }}{% if sort_filter == sort_key %}{% if sort_filter_desc %}&uarr;{% else %}&darr;{% endif %}{% endif %}</span>
+{%- else -%}
+{{ label }}
+{%- endif -%}
+</th>
+{%- endmacro %}

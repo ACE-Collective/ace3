@@ -2129,6 +2129,16 @@ analysis_module_dhash:
 # list of analysis modules that should be disabled globally
 disabled_modules: []
 
+# analysis modules that have been removed from ACE, by MODULE_PATH
+# (python_module:AnalysisClass, plus :instance for instanced modules).
+# Old alerts still carry the serialized Analysis of a module that no longer exists.
+# Listing the module here says "we know, this is intentional" and drops the load
+# failure to DEBUG. Anything not listed here that fails to load is logged as an ERROR.
+# NOTE this is the MODULE_PATH of the *Analysis* class, not the analysis_module_<name>
+# config section name.
+deprecated_modules:
+  - saq.modules.whois:WhoisAnalysis
+
 analysis_module_observable_detection:
   name: observable_detection
   python_module: saq.modules.observable_detection

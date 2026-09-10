@@ -1,12 +1,14 @@
+import importlib
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from saq.analysis.base_node import BaseNode
-from saq.analysis.module_path import MODULE_PATH
+from saq.analysis.module_path import MODULE_PATH, SPLIT_MODULE_PATH
 from saq.analysis.pivot_link import PivotLink
 from saq.analysis.search import search_down
 from saq.analysis.serialize.analysis_serializer import AnalysisSerializer
 from saq.analysis.summary_detail import SummaryDetail
+from saq.configuration.config import get_config
 from saq.constants import EVENT_ANALYSIS_MARKED_COMPLETED, EVENT_OBSERVABLE_ADDED
 
 if TYPE_CHECKING:
@@ -458,3 +460,34 @@ class UnknownAnalysis(Analysis):
 
     def tag_detection(self, source, event, tag):
         pass
+
+def is_deprecated_module_path(module_path: str) -> bool:
+    """Returns True if module_path refers to an analysis module that was intentionally removed from ACE."""
+    deprecated = get_config().deprecated_modules
+    if module_path in deprecated:
+        return True
+
+    # an entry without an :instance suffix deprecates every instance of that module
+    try:
+        module_name, class_name, _instance = SPLIT_MODULE_PATH(module_path)
+    except ValueError:
+        return False
+
+    return f"{module_name}:{class_name}" in deprecated
+
+def load_analysis_from_module_path(module_path: str) -> Analysis:
+    """Returns a new instance of the Analysis class referenced by module_path.
+
+    If the class cannot be loaded then an UnknownAnalysis is returned instead. That is expected for a
+    module listed in the deprecated_modules configuration (logged at DEBUG) and indicates a problem
+    for anything else (logged at ERROR)."""
+    try:
+        module_name, class_name, _instance = SPLIT_MODULE_PATH(module_path)
+        return getattr(importlib.import_module(module_name), class_name)()
+    except Exception as e:
+        if is_deprecated_module_path(module_path):
+            logging.debug("not loading deprecated analysis module %s", module_path)
+        else:
+            logging.error("unable to load analysis module %s referenced by saved analysis: %s", module_path, e)
+
+        return UnknownAnalysis(module_path)

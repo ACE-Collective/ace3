@@ -212,6 +212,10 @@ services:
     hostname: ${ACE_DB_HOST:-ace-db}
     networks:
       - ace
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   ace-db-readonly:
     platform: linux/amd64
@@ -249,6 +253,10 @@ services:
     hostname: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
     networks:
       - ace
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   qdrant:
     platform: linux/amd64

@@ -2,7 +2,8 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+import pytz
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PermissionRead(BaseModel):
@@ -129,6 +130,35 @@ class UserUpdate(BaseModel):
     enabled: bool | None = None
     permissions: list[PermissionInput] | None = None
     groups: list[int] | None = None
+
+
+class UserSelfUpdate(BaseModel):
+    """The fields a user may change on their OWN account from the preferences page. Username,
+    email, password and enablement stay with the admin endpoints (and the change-password
+    page), so this is deliberately not UserUpdate with the id removed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=1024)
+    timezone: str | None = Field(default=None, max_length=512)
+    queue: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is not None and value not in pytz.all_timezones_set:
+            raise ValueError(f"unknown timezone {value!r}")
+        return value
+
+    @field_validator("display_name", "queue")
+    @classmethod
+    def strip(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
 
 
 class GroupCreate(BaseModel):

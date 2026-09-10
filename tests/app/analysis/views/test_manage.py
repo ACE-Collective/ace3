@@ -183,7 +183,7 @@ def _search_response(alert_uuids, query="some search query", total=None):
 
 @pytest.mark.integration
 def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypatch):
-    """Auto-refresh is disabled while a search is active -- each refresh would re-run the
+    """The refresh POLL is disabled while a search is active -- each poll would re-run the
     search, and the results are a snapshot."""
     monkeypatch.setattr("app.analysis.views.manage.search_alerts", lambda request, **kwargs: _search_response([]))
 
@@ -198,7 +198,9 @@ def test_manage_page_no_auto_refresh_during_search(web_client, analyst, monkeypa
     html = response.data.decode()
 
     assert 'data-on-interval' not in html
-    assert 'data-on:ace-refresh' not in html
+    # the explicit refresh (after a sort, paging or column change) stays: a user-initiated
+    # change re-runs the search once, which is what the reload it replaced did
+    assert 'data-on:ace-refresh' in html
     assert 'id="alert-search-clear"' in html
     assert '0 matching alerts' in html
 
@@ -381,3 +383,109 @@ def test_manage_search_repages_when_offset_is_past_the_end(web_client, analyst, 
     assert response.status_code == 200
     assert only.uuid in response.data.decode()
     assert [call[0][0].offset for call in search.call_args_list] == [100, 0]
+
+
+# --- column layout -----------------------------------------------------------------------
+
+def _set_manage_columns(analyst_id, **value):
+    """Store the analyst's column layout the way the API would."""
+    from aceapi_v2.sync import run_async_with_session
+    from aceapi_v2.user_preferences import service
+    from aceapi_v2.user_preferences.schemas import PREFERENCE_KEY_MANAGE_COLUMNS
+
+    run_async_with_session(service.set_preference, analyst_id, PREFERENCE_KEY_MANAGE_COLUMNS, value)
+
+
+def _header_columns(html: str) -> list[str]:
+    import re
+    return re.findall(r'<th[^>]*data-col-id="([a-z_]+)"', html)
+
+
+def _row_columns(html: str, alert_uuid: str) -> list[str]:
+    import re
+    row = re.search(rf'<tr id="alert_row_{alert_uuid}".*?</tr>', html, re.S).group(0)
+    return re.findall(r'<td[^>]*data-col-id="([a-z_]+)"', row)
+
+
+@pytest.mark.integration
+def test_manage_table_default_columns(web_client, analyst):
+    from saq.gui.manage_columns import MANAGE_COLUMN_IDS
+
+    alert = _insert_alert('manage-columns-default', 'default columns test alert')
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    assert _header_columns(html) == list(MANAGE_COLUMN_IDS)
+    assert _row_columns(html, alert.uuid) == list(MANAGE_COLUMN_IDS)
+    # the labels the registry declares are what the header shows
+    for label in ("Date (", "Alert", "Remediation", "Queue", "Owner", "Disposition", "Status"):
+        assert label in html
+
+
+@pytest.mark.integration
+def test_manage_table_follows_the_column_preference(web_client, analyst):
+    """Hidden columns are absent from header AND rows, the order is the analyst's, and the
+    row data JavaScript needs no longer depends on a column being shown."""
+    alert = _insert_alert('manage-columns-pref', 'column preference test alert')
+    _set_manage_columns(analyst,
+        order=["status", "description", "date", "queue", "owner", "disposition", "remediation"],
+        hidden=["queue", "owner", "date"])
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    expected = ["status", "description", "disposition", "remediation"]
+    assert _header_columns(html) == expected
+    assert _row_columns(html, alert.uuid) == expected
+    assert f'id="alert_row_{alert.uuid}" data-status="' in html
+    assert 'data-insert-date="2023-01-01 00:00:00"' in html
+
+
+@pytest.mark.integration
+def test_manage_table_disposition_override_keeps_header_and_rows_aligned(web_client, analyst):
+    """Narrowing to one disposition drops the column from the rows too (it used to drop only
+    the header, leaving every row one cell wider than the header)."""
+    alert = _insert_alert('manage-columns-dispo', 'disposition override test alert')
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=[{"name": "Disposition", "inverted": False, "values": ["OPEN"]}])
+
+    html = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    assert "disposition" not in _header_columns(html)
+    assert _header_columns(html) == _row_columns(html, alert.uuid)
+
+
+@pytest.mark.integration
+def test_manage_search_hits_span_the_visible_columns(web_client, analyst, monkeypatch):
+    _insert_alert('manage-columns-search', 'search colspan test alert')
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts",
+                        lambda request, **kwargs: _search_response(['manage-columns-search']))
+    _set_manage_columns(analyst, hidden=["queue", "owner"])
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        sess['search'] = {'mode': 'query', 'query': 'colspan'}
+
+    html = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    assert len(_header_columns(html)) == 5
+    assert '<td colspan="5">' in html
+
+
+@pytest.mark.integration
+def test_manage_page_renders_the_column_chooser(web_client, analyst):
+    _set_manage_columns(analyst, hidden=["queue"])
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'id="manage_columns_dropdown"' in html
+    assert 'data-preference-url="/api/v2/users/me/preferences/manage_columns"' in html
+    assert 'js/manage_columns.js' in html
+    # the chooser reflects the stored layout: queue unticked, description locked on
+    assert 'id="column_chooser_queue"\n' in html or 'id="column_chooser_queue"' in html
+    import re
+    queue_input = re.search(r'<input[^>]*id="column_chooser_queue"[^>]*>', html).group(0)
+    assert 'checked' not in queue_input
+    description_input = re.search(r'<input[^>]*id="column_chooser_description"[^>]*>', html).group(0)
+    assert 'checked' in description_input and 'disabled' in description_input
+    # the chooser is outside the morph fragments
+    assert 'column-chooser' not in web_client.get(url_for("analysis.manage_refresh")).data.decode()

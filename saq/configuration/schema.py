@@ -679,6 +679,7 @@ class ACEConfig(BaseModel):
     custom_alerts: Optional[CustomAlertsConfig] = None
     custom_alerts_backward_compatibility: Optional[dict[str, str]] = None
     disabled_modules: Optional[list[str]] = Field(default_factory=list, description="list of analysis modules that should be disabled globally")
+    deprecated_modules: list[str] = Field(default_factory=list, description="MODULE_PATH values (python_module:AnalysisClass[:instance]) of analysis modules that have been removed from ACE; their serialized Analysis can no longer be loaded, and that is expected rather than an error")
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
     domain_generation: Optional[DomainGenerationConfig] = None

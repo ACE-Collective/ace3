@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, UTC
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from saq.constants import F_FILE_LOCATION
 from saq.database.model import FileCollection
@@ -16,9 +16,18 @@ from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkIt
 class TestFileCollectionListener(FileCollectionListener):
     def __init__(self):
         self.collections = []
+        # ids reported as still held; tests call finish() to release them
+        self.pending = set()
 
     def handle_file_collection_request(self, work_item: FileCollectionWorkItem):
         self.collections.append(work_item)
+        self.pending.add(work_item.id)
+
+    def pending_collection_ids(self) -> set[int]:
+        return set(self.pending)
+
+    def finish(self, collection_id: int):
+        self.pending.discard(collection_id)
 
 
 @pytest.mark.integration
@@ -52,6 +61,47 @@ def test_collect_single_work_item(db_alert):
     assert len(tasks) == 1
     assert tasks[0].id == collection_id
     assert tasks[0].storage_dir == db_alert.storage_dir
+
+    # the work item carries the lock that was placed on the record
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    assert tasks[0].lock is not None
+    assert tasks[0].lock == file_collection.lock
+
+    # the lock timestamp must never be ahead of the database clock, or the lock timeout check in
+    # collect_work_items() (which compares against NOW()) refuses to reclaim the record
+    assert get_db().execute(
+        text("SELECT lock_time <= NOW() FROM file_collection WHERE id = :id"),
+        {"id": collection_id},
+    ).scalar() == 1
+
+
+@pytest.mark.integration
+def test_collect_skips_items_held_by_listener(db_alert):
+    """A record whose lock has timed out is not handed out again while a listener still holds it."""
+    collector = FileCollectionCollector()
+    listener = TestFileCollectionListener()
+    collector.register_file_collection_listener("custom", listener)
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+
+    collector.shutdown_event.set()
+    collector.collection_loop()
+    assert [w.id for w in listener.collections] == [collection_id]
+
+    # the lock has (effectively) timed out but the listener still holds the item
+    collector.lock_timeout_seconds = 0
+    assert not collector.collect_work_items()
+
+    # once the listener is done with it the record is eligible again
+    listener.finish(collection_id)
+    tasks = collector.collect_work_items()
+    assert len(tasks) == 1
+    assert tasks[0].id == collection_id
 
 
 @pytest.mark.parametrize(

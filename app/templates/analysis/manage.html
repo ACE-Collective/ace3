@@ -36,6 +36,17 @@
                 <span class="bi bi-x-lg" style="margin-right:2px;"></span>
                 <span>Clear</span>
             </button>
+            {# The column chooser lives here, outside both morph fragments, so the sortable
+               binding init_column_chooser() attaches survives the poll. auto-close=outside
+               keeps the menu open while columns are toggled and dragged. #}
+            <div class="dropdown ms-2" id="manage_columns_dropdown">
+                <button type="button" class="btn btn-outline-dark dropdown-toggle text-nowrap" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose which columns the alert list shows, and in what order">
+                    <span class="bi bi-layout-three-columns"></span> Columns
+                </button>
+                <div class="dropdown-menu dropdown-menu-end p-2" style="min-width: 16rem;">
+                    {% include "analysis/_manage_column_chooser.html" %}
+                </div>
+            </div>
         </div>
     </div>
     {% if search_query %}
@@ -62,13 +73,17 @@
    client-side and are not sent with requests. The interval polls the refresh endpoint
    only while the tab is visible and no modal is open; the ace-refresh custom event
    (dispatched from manage_alerts.js when the tab becomes visible again) triggers an
-   immediate catch-up. Auto-refresh is disabled during a vector search -- re-running the
-   search every poll is expensive and the results are a snapshot. #}
+   immediate catch-up, and refresh_manage_list() dispatches it after a sort, paging or
+   column change so those never need a full page reload; a clearSelection detail empties
+   $_sel for the changes the server also forgets the checked rows for. Auto-refresh is
+   disabled during a vector search -- re-running the search every poll is expensive and
+   the results are a snapshot -- but the explicit refresh stays: a user-initiated change
+   re-runs the search once, which is what the reload it replaced did. #}
 <div id="manage_page"
      data-signals:_sel='{{ session["checked"] | tojson }}'
      data-signals:_open-comments='[]'
+     data-on:ace-refresh="evt.detail && evt.detail.clearSelection && ($_sel = []); !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      {% if not search_query and ace_config.gui.manage_auto_refresh_seconds > 0 %}
-     data-on:ace-refresh="!document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      data-on-interval__duration.{{ ace_config.gui.manage_auto_refresh_seconds }}s="!document.hidden && !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      {% endif %}>
     {% include "analysis/_manage_alert_table.html" %}
@@ -165,4 +180,12 @@
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/manage_alerts.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/manage_columns.js') }}?version={{ ACE_VERSION }}"></script>
+<script>
+    // the scripts block renders in <head>, so wait for the chooser markup to exist. A saved
+    // column change re-renders the list through the refresh path.
+    $(document).ready(function() {
+        init_column_chooser(document.querySelector("#manage_columns_dropdown .column-chooser"), function() { refresh_manage_list(); });
+    });
+</script>
 {% endblock %}
