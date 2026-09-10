@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.110] - 2026-09-10
+
+- [Add support for deprecated analysis modules](https://github.com/ACE-Collective/ace3/pull/550)
+- [Fixes issue with file collection requeuing tasks](https://github.com/ACE-Collective/ace3/pull/549)
+- [Adds user preferences UI and makes alert table columns customizable](https://github.com/ACE-Collective/ace3/pull/547)
+
 ## [3.0.109] - 2026-09-09
 
 - [log which hunts submits to which analysis mode](https://github.com/ACE-Collective/ace3/pull/546)
