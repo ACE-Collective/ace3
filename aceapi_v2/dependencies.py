@@ -167,3 +167,45 @@ def require_permission(major: str, minor: str, auth_dependency: Callable | None 
         return auth
 
     return permission_dependency
+
+
+def require_self_service(auth_dependency: Callable | None = None) -> Callable:
+    """Factory for the gate on routes that act ONLY on the caller's own account or GUI state.
+
+    Self-service routes are authorized by *being* the user (docs/USER_PREFERENCES.md): the user id
+    comes from the auth result and never from the request, so there is no id to tamper with and no
+    permission grant to check -- an analyst with no permissions at all still edits their own
+    profile and preferences.
+
+    What does still have to be enforced is the credential's scope. A scoped API key is issued for
+    one narrow machine task and names the permissions it may use; "manage my owner's account" is
+    not one of them and cannot be expressed as a (major, minor) pattern, so a scoped key is refused
+    here. Credentials that carry no scope -- a key that inherits its owner's full permissions, and
+    the GUI's session cookie -- pass. A config API key has no owner and therefore no "self" to act
+    on, so it is refused too.
+
+    Without this gate a self-service route is reachable by every authenticated credential whatever
+    its scope, which is the hole the route-coverage test in tests/saq/test_permission_catalog.py
+    exists to close.
+    """
+    if auth_dependency is None:
+        auth_dependency = get_current_auth
+
+    async def self_service_dependency(
+        auth: Annotated[ApiAuthResult, Security(auth_dependency)],
+    ) -> ApiAuthResult:
+        if auth.auth_user_id is None:
+            logging.warning(
+                f"'{auth.auth_name}' ({auth.auth_type}) is not a user; self-service route denied"
+            )
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        if auth.key_scope is not None:
+            logging.warning(
+                f"api key '{auth.auth_name}' is scoped; self-service routes are outside any scope"
+            )
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        return auth
+
+    return self_service_dependency

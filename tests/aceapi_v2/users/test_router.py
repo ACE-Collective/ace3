@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import AuthGroup, AuthUserPermission, User
+from tests.aceapi_v2.conftest import api_key_client, make_api_key
 
 pytestmark = pytest.mark.integration
 
@@ -263,8 +264,6 @@ class TestHappyPath:
         request, without being reissued. Scope is read per request, so no restart is needed."""
         from saq.database.model import AuthApiKey
         from saq.util import sha256_str
-        from tests.aceapi_v2.conftest import api_key_client, make_api_key
-
         user = await _make_user(session, "rtr_apikey_live", perms=[("user", "read")])
         plaintext = await make_api_key(session, user.id, inherit=False, scope=[("ai", "*")])
         # _make_user also minted an inherit key, so find the scoped one by its hash
@@ -397,6 +396,27 @@ class TestSelfService:
     async def test_patch_me_rejects_admin_only_fields(self, noperm_client):
         for body in ({"username": "root"}, {"email": "x@e.com"}, {"password": "pw"}, {"enabled": False}, {"permissions": []}):
             assert (await noperm_client.patch("/users/me", json=body)).status_code == 422, body
+
+    @pytest.mark.asyncio
+    async def test_scoped_key_cannot_reach_the_self_service_routes(
+        self, _override_db_session, session: AsyncSession
+    ):
+        """A scoped key names the permissions it may use; "manage my owner's account" is not one
+        of them. Regression guard: these routes shipped with no gate at all, which made them
+        reachable by every authenticated key whatever its scope."""
+        user = await _make_user(session, "rtr_scoped_self", perms=[("user", "write")])
+        plaintext = await make_api_key(
+            session, user.id, inherit=False, scope=[("user", "*"), ("alert", "*")]
+        )
+
+        async with api_key_client(plaintext) as c:
+            assert (await c.get("/users/me")).status_code == 403
+            assert (await c.patch("/users/me", json={"timezone": "UTC"})).status_code == 403
+            assert (await c.get("/users/me/apikeys")).status_code == 403
+
+        # the same user's inherit key -- no scope -- still gets through
+        async with _client_for(user) as c:
+            assert (await c.get("/users/me")).status_code == 200
 
     @pytest.mark.asyncio
     async def test_patch_me_validates(self, noperm_client):

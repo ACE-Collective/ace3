@@ -42,6 +42,20 @@ class TestAuth:
         assert (await noperm_client.get(BASE)).status_code == 200
         assert (await noperm_client.put(COLUMNS, json={"hidden": ["queue"]})).status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_scoped_key_is_denied(self, _override_db_session, session: AsyncSession):
+        """Preferences are self-service, which no (major, minor) scope can name -- so a key that
+        carries a scope cannot touch them, however broad that scope is."""
+        user = User(username="scoped_prefs", email="scoped_prefs@e.com", display_name="S", password="pw")
+        session.add(user)
+        await session.flush()
+        key = await make_api_key(session, user.id, inherit=False, scope=[("user", "*")])
+        async with api_key_client(key) as client:
+            assert (await client.get(BASE)).status_code == 403
+            assert (await client.get(COLUMNS)).status_code == 403
+            assert (await client.put(COLUMNS, json={"hidden": ["queue"]})).status_code == 403
+            assert (await client.delete(COLUMNS)).status_code == 403
+
 
 class TestDefaults:
     @pytest.mark.asyncio

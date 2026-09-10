@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.database import get_async_session
-from aceapi_v2.dependencies import get_current_auth, require_permission
+from aceapi_v2.dependencies import get_current_auth, require_permission, require_self_service
 from aceapi_v2.users import service
 from aceapi_v2.users.schemas import (
     ApiKeyCreate,
@@ -30,6 +30,10 @@ from aceapi_v2.users.schemas import (
 )
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
+
+# Gate for the /me routes below: no permission grant, but the credential must be a user
+# credential that carries no narrowing scope. See require_self_service().
+_require_self = require_self_service()
 
 
 @router.get("/management-view", response_model=ManagementView)
@@ -146,7 +150,7 @@ def _require_user(auth: ApiAuthResult) -> int:
 @router.get("/me", response_model=UserRead)
 async def get_me(
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self)],
 ) -> UserRead:
     """The caller's own account. The user id comes from the auth result, not the request."""
     user = await service.get_user(session, _require_user(auth))
@@ -159,7 +163,7 @@ async def get_me(
 async def update_me(
     body: UserSelfUpdate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self)],
 ) -> UserRead:
     """Edit the caller's own display name, timezone or default queue. Needs no permission
     beyond being authenticated as a user: the admin ``user:write`` endpoints are for editing
@@ -173,7 +177,7 @@ async def update_me(
 @router.get("/me/apikeys", response_model=list[ApiKeyRead])
 async def list_my_api_keys(
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self)],
 ) -> list[ApiKeyRead]:
     """List the *caller's own* API keys (metadata + scope only; no secret). The user id comes from
     the auth result, not the request, so there is no id to tamper with. Read-only: minting and

@@ -137,19 +137,33 @@ class TestNodeToNodeScope:
         )
 
 
-# Routes that legitimately require no permission gate: genuinely public (liveness, version, docs)
-# or self-service reads keyed off the caller's own auth identity (never another user's data).
-# Every OTHER FastAPI route must carry a require_permission dependency so that a scoped key (e.g.
-# an ai:read key) is denied -- the scope filter lives in require_permission, so an authenticated-
-# but-ungated route would be reachable by any authenticated key regardless of its scope.
+# Routes that legitimately carry no gate at all: genuinely public (liveness, version, docs).
+# Every OTHER FastAPI route must carry one of the two gates in aceapi_v2/dependencies.py so that a
+# scoped key (e.g. an ai:read key) is denied. require_permission applies the key-scope filter for
+# an ordinary permission; require_self_service applies it for routes that act only on the caller's
+# own account, which no (major, minor) scope can name and which a scoped key therefore cannot
+# reach. An authenticated-but-ungated route would be reachable by any authenticated key regardless
+# of its scope.
 _FASTAPI_PUBLIC_PATHS = {
     "/health/ping",
     "/common/ping",
     "/common/supported_api_version",
-    "/users/me/apikeys",
     "/docs",
     "/redoc",
     "/openapi.json",
+}
+
+# The whole self-service surface: every route whose authorization is "you are this user". Pinned
+# here so a new /users/me route cannot quietly land ungated -- and so an existing one cannot be
+# quietly downgraded to no gate at all.
+_SELF_SERVICE_ROUTES = {
+    ("GET", "/users/me"),
+    ("PATCH", "/users/me"),
+    ("GET", "/users/me/apikeys"),
+    ("GET", "/users/me/preferences"),
+    ("GET", "/users/me/preferences/{key}"),
+    ("PUT", "/users/me/preferences/{key}"),
+    ("DELETE", "/users/me/preferences/{key}"),
 }
 
 
@@ -171,12 +185,17 @@ def _iter_effective_routes(app):
                 yield context.path, context.original_route.methods, context.dependant
 
 
-def _dependant_has_permission_dep(dependant) -> bool:
-    """True if any (transitive) sub-dependency is the require_permission-produced gate."""
+# The inner functions produced by the two gate factories in aceapi_v2/dependencies.py. Both apply
+# the credential's scope; matching on the name keeps the walk independent of how they are wired.
+_GATE_DEPENDENCY_NAMES = frozenset({"permission_dependency", "self_service_dependency"})
+
+
+def _dependant_has_gate(dependant, names=_GATE_DEPENDENCY_NAMES) -> bool:
+    """True if any (transitive) sub-dependency is one of the named gates."""
     for sub in dependant.dependencies:
-        if getattr(sub.call, "__name__", "") == "permission_dependency":
+        if getattr(sub.call, "__name__", "") in names:
             return True
-        if _dependant_has_permission_dep(sub):
+        if _dependant_has_gate(sub, names):
             return True
     return False
 
@@ -235,7 +254,7 @@ class TestRouteCoverage:
                 route_count += 1
                 if path in public_paths:
                     continue
-                if not _dependant_has_permission_dep(dependant):
+                if not _dependant_has_gate(dependant):
                     ungated.append((app_name, sorted(methods), path))
 
         # guard against the walk going vacuous again (see _iter_effective_routes)
@@ -245,6 +264,22 @@ class TestRouteCoverage:
             "these FastAPI routes have no require_permission gate and are not on their app's "
             f"reviewed public allowlist: {sorted(ungated)}"
         )
+
+    def test_the_self_service_gate_covers_exactly_the_self_service_surface(self):
+        """require_self_service is the weaker of the two gates: it applies the credential's scope
+        but consults no permission grant, so it is only ever correct on a route whose entire
+        subject is the caller's own account. Assert both directions -- nothing else may use it,
+        and every route that should use it does (rather than carrying no gate at all)."""
+        from aceapi_v2.application import app as v2_app
+
+        gated = {
+            (method, path)
+            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for method in methods
+            if method not in ("HEAD", "OPTIONS")
+            and _dependant_has_gate(dependant, {"self_service_dependency"})
+        }
+        assert gated == _SELF_SERVICE_ROUTES
 
     def test_ai_query_routes_gate_exactly_their_backend(self):
         """POST /query/<name> must require exactly ai:<name> -- for every enabled backend."""

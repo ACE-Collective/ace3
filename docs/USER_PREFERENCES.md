@@ -27,8 +27,18 @@ calling this API from the browser (same origin, Flask session cookie), and **ren
 one through `app/user_preferences.py`, which reads it over the sync bridge.
 
 The same rule covers the profile fields a user may edit themselves: `GET`/`PATCH
-/api/v2/users/me` accepts display name, timezone and default queue. Username, email,
-password and enablement stay with the admin endpoints.
+/api/v2/users/me` accepts display name, timezone and default queue, and `GET
+/api/v2/users/me/apikeys` lists the caller's own keys. Username, email, password and
+enablement stay with the admin endpoints.
+
+These routes are gated by `require_self_service()` (`aceapi_v2/dependencies.py`) rather
+than `require_permission()`. It checks no grant -- being the user *is* the authorization --
+but it does still enforce the credential's scope: a **scoped** API key is refused, because
+"manage my owner's account" is not something a `major:minor` scope can name. Credentials
+that carry no scope pass, which is the session cookie and any key minted with `inherit`.
+Without that check a self-service route would be reachable by every authenticated key
+whatever its scope; `tests/saq/test_permission_catalog.py::TestRouteCoverage` pins the
+whole self-service surface so a new `/users/me` route cannot land ungated.
 
 ## Adding a preference
 
