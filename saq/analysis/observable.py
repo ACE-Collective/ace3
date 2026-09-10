@@ -1,7 +1,6 @@
 
 from datetime import UTC, datetime
 import hashlib
-import importlib
 import inspect
 import logging
 from typing import TYPE_CHECKING, Optional, Union
@@ -684,7 +683,7 @@ class Observable(BaseNode):
         return [a for a in self.all_analysis if isinstance(a, analysis_type)]
 
     def _load_analysis(self):
-        from saq.analysis.analysis import Analysis, UnknownAnalysis
+        from saq.analysis.analysis import Analysis, load_analysis_from_module_path
         assert isinstance(self.analysis, dict)
 
         # see the module_path property of the Analysis object
@@ -699,15 +698,7 @@ class Observable(BaseNode):
 
             assert isinstance(self.analysis[module_path], dict)
 
-            try:
-                _module_name, _class_name, _instance = SPLIT_MODULE_PATH(module_path)
-                _module = importlib.import_module(_module_name)
-                _class = getattr(_module, _class_name)
-                analysis = _class()
-
-            except Exception as e:
-                logging.warning(f'unable to load analysis: {e}')
-                analysis = UnknownAnalysis(module_path)
+            analysis = load_analysis_from_module_path(module_path)
 
             analysis.observable = self # set the source of the analysis
             # XXX this is a hack to get this working for now, revisit when serialization move out of these classes

@@ -27,7 +27,6 @@ Size discipline (design doc §A3):
 """
 
 import hashlib
-import importlib
 import json
 import logging
 import os
@@ -41,7 +40,7 @@ import zstandard
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from saq.analysis.analysis import Analysis as _Analysis, UnknownAnalysis
+from saq.analysis.analysis import Analysis as _Analysis, load_analysis_from_module_path
 from saq.analysis.blob_store import (
     REFERRER_KIND_CACHE_ROW,
     BlobNotFound,
@@ -49,7 +48,6 @@ from saq.analysis.blob_store import (
     get_blob_store,
 )
 from saq.analysis.module_execution_delta import ModuleExecutionDelta, ObservableSpec
-from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.configuration.config import get_config
 from saq.constants import DB_ANALYSIS_RESULT_CACHE, F_FILE, FILE_SUBDIR
 from saq.database.model import AnalysisResultCache
@@ -897,17 +895,7 @@ def _rehydrate_analysis(
         # analysis, idempotent diffs above still apply.
         return existing
 
-    try:
-        _module_name, _class_name, _instance = SPLIT_MODULE_PATH(module_path)
-        _module = importlib.import_module(_module_name)
-        _class = getattr(_module, _class_name)
-        analysis = _class()
-    except Exception as e:
-        logging.warning(
-            "failed to instantiate analysis for cache replay — falling back to UnknownAnalysis",
-            extra={"module_path": module_path, "error": str(e)},
-        )
-        analysis = UnknownAnalysis(module_path)
+    analysis = load_analysis_from_module_path(module_path)
 
     analysis.observable = target_observable
     analysis.file_manager = target_observable.file_manager
