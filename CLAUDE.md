@@ -22,6 +22,16 @@ bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in d
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
 
+More than one ACE stack can run on a host: `ACE_INSTANCE` (default `ace`) is the compose project
+name, and so the prefix on every container, the network and all ten named volumes. Only five host
+ports are fixed (`ACE_PORT_GUI`, `ACE_PORT_DEV_GUI`, `ACE_PORT_HTTP`, `ACE_PORT_HTTP_EXTERNAL`,
+`ACE_PORT_FLUENT_BIT`); everything else is published on an ephemeral port bound to
+`ACE_BIND_ADDRESS` (default `127.0.0.1`) — reach it with `docker compose port ace-db 3306`.
+`bin/generate-instance-env.sh <name> <offset> > .env` sets a second instance up. Never set
+`COMPOSE_PROJECT_NAME`; it overrides the project name and desynchronizes it from the volume
+names. See `docs/MULTI_INSTANCE.md`, which also covers the one-time volume rename that existing
+environments need.
+
 ## Testing
 
 Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
@@ -46,7 +56,7 @@ There is no configured linter/formatter in the repo.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them.
+IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
 
 This is enforced. `tests/session_lock.py` creates a marker file at
 `$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of

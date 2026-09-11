@@ -3019,9 +3019,10 @@ from the outline above.
   `storage_dir_from_uuid` convention (`saq/util/uuid.py:32` uses
   `uuid[0:3]`). Two-level sharding preserved for parity with the §A7
   design.
-- **No Docker Compose changes needed.** `/opt/ace/data` is already an
-  `ace-data` named volume in `docker-compose.yml:74`, so `data/blob_store/`
-  inherits persistence and the existing backup/retention story.
+- **No Docker Compose changes needed.** `/opt/ace/data` is already a
+  named volume (the `data` volume in `docker-compose.yml`, published as
+  `<instance>_data`), so `data/blob_store/` inherits persistence and the
+  existing backup/retention story.
   `initialize_volumes.sh` already chowns `/opt/ace/data` to `ace:ace`.
 
 ### ORM throughout

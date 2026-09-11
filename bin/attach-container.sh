@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# resolve everything relative to this script rather than the caller's cwd, so that the helpers
+# below find this checkout's compose project (and therefore this ACE instance) no matter where
+# the script is invoked from
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
 USER="ace"
 while getopts "u:" opt
 do

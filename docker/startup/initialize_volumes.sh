@@ -2,6 +2,42 @@
 #
 
 #
+# guard against a data volume that belongs to a different ACE instance
+#
+# ACE_INSTANCE is the compose project name, which is what prefixes every named volume, so the
+# two normally cannot disagree. They can if COMPOSE_PROJECT_NAME is set directly, since that
+# overrides the top-level name: in docker-compose.yml -- the volumes would then follow
+# COMPOSE_PROJECT_NAME while the phishkit and js-deobfuscator managers are still handed volume
+# names built from ACE_INSTANCE. Two instances writing one MySQL datadir is the worst outcome
+# available here, so stop before anything else in the stack starts.
+#
+# This service runs first (everything else depends on it) and as root, with the data volume
+# mounted, which is why the check lives here. To deliberately re-point an existing volume at a
+# new instance name, delete the marker or run `docker compose down -v` to start clean.
+#
+
+INSTANCE_MARKER=/opt/ace/data/.ace_instance
+EXPECTED_INSTANCE="${ACE_INSTANCE:-ace}"
+
+if [ -d /opt/ace/data ]
+then
+    if [ -f "${INSTANCE_MARKER}" ]
+    then
+        ACTUAL_INSTANCE="$(cat "${INSTANCE_MARKER}")"
+        if [ "${ACTUAL_INSTANCE}" != "${EXPECTED_INSTANCE}" ]
+        then
+            echo "FATAL: this data volume belongs to ACE instance '${ACTUAL_INSTANCE}', but this" >&2
+            echo "       stack is running as '${EXPECTED_INSTANCE}'. refusing to start." >&2
+            echo "       check that ACE_INSTANCE is set correctly and that COMPOSE_PROJECT_NAME is not set." >&2
+            exit 1
+        fi
+    else
+        echo "${EXPECTED_INSTANCE}" > "${INSTANCE_MARKER}"
+        chown ace:ace "${INSTANCE_MARKER}"
+    fi
+fi
+
+#
 # special handling for the phishkit volume
 #
 

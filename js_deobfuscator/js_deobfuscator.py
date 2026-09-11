@@ -5,7 +5,7 @@
 # external to ACE — it must not import from the saq namespace.
 #
 # It exposes a single Celery task `deobfuscate` that takes an input file
-# path (inside the shared ace-js-deobfuscator volume) and runs the sandbox
+# path (inside the shared js-deobfuscator volume) and runs the sandbox
 # harness inside a throwaway scanner container. The scanner container is
 # built from Dockerfile.js_deobfuscator in this same directory.
 #
@@ -22,12 +22,17 @@ from yaml import load, SafeLoader
 
 logger = logging.getLogger(__name__)
 
+# The name of the volume shared with the scanner containers this manager spawns. Compose
+# prefixes named volumes with the project name, so it varies per ACE instance and is passed in
+# as ACE_JS_DEOBFUSCATOR_VOLUME. The default is the pre-multi-instance name.
+JS_DEOBFUSCATOR_VOLUME = os.environ.get("ACE_JS_DEOBFUSCATOR_VOLUME", "ace-js-deobfuscator")
+
 
 def _run_scanner(input_path: str, output_dir: str, job_id: str, timeout: int) -> tuple:
     """Spawn the throwaway scanner container to deobfuscate a single file.
 
     `input_path` and `output_dir` both live under /js-deobfuscator, which is
-    bind-mounted via the `ace-js-deobfuscator` named volume into both this
+    bind-mounted via the JS_DEOBFUSCATOR_VOLUME named volume into both this
     manager container and the scanner container. Returns (stdout, stderr,
     returncode, output_file_path).
     """
@@ -37,7 +42,7 @@ def _run_scanner(input_path: str, output_dir: str, job_id: str, timeout: int) ->
         "run",
         "--rm",
         "--network", "none",
-        "-v", "ace-js-deobfuscator:/js-deobfuscator",
+        "-v", f"{JS_DEOBFUSCATOR_VOLUME}:/js-deobfuscator",
         os.environ.get("ACE3_JS_DEOBFUSCATOR_IMAGE_URL", "js-deobfuscator"),
         "node",
         "/opt/app/harness.js",
@@ -106,7 +111,7 @@ def ping() -> str:
 def deobfuscate(file_path: str, timeout: int = 30) -> str:
     """Run the sandbox harness against `file_path` and return the path to
     the result directory. `file_path` must already live under the shared
-    ace-js-deobfuscator volume (the client wrapper in saq/js_deobfuscator.py
+    js-deobfuscator volume (the client wrapper in saq/js_deobfuscator.py
     is responsible for copying it there first)."""
     job_id = str(uuid.uuid4())
     output_dir = f"/js-deobfuscator/output/{job_id}"

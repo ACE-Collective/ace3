@@ -50,13 +50,34 @@
 #
 # BUILD_TYPE: development | production (default: development)
 #
+# more than one ACE instance on the same host -- see docs/MULTI_INSTANCE.md
+# ACE_INSTANCE (default: ace)
+# ACE_INSTANCE_NAME (default: DEV)
+# ACE_GUI_BASE_URI
+# ACE_BIND_ADDRESS (default: 127.0.0.1)
+# ACE_PORT_FLUENT_BIT (default: 24224)
+# ACE_PORT_HTTP (default: 8443)
+# ACE_PORT_HTTP_EXTERNAL (default: 9443)
+# ACE_PORT_GUI (default: 5000)
+# ACE_PORT_DEV_GUI (default: 5001)
+#
+
+# compose project name (do not set COMPOSE_PROJECT_NAME; see docs/MULTI_INSTANCE.md)
+name: ${ACE_INSTANCE:-ace}
 
 x-common-env: &common-env
   PYTHONUTF8: "1"
   LANG: C.UTF-8
   SAQ_ENC: ${SAQ_ENC:-test}
   SAQ_CONFIG_PATHS: ${SAQ_CONFIG_PATHS:-}
-  ACE_INSTANCE_TYPE: DEV # possible values: DEV, QA, PRODUCTION
+  ACE_INSTANCE_TYPE: ${ACE_INSTANCE_TYPE:-DEV} # possible values: DEV, QA, PRODUCTION
+  # which instance this is. drives the compose project name (and so the volume names) and, via
+  # the env: markers in etc/saq.default.yaml, what the GUI calls itself and where its permalinks
+  # point. these two must always be set: etc/saq.default.yaml resolves env:VAR eagerly and a
+  # missing variable is a fatal configuration error.
+  ACE_INSTANCE: ${ACE_INSTANCE:-ace}
+  ACE_INSTANCE_NAME: ${ACE_INSTANCE_NAME:-DEV}
+  ACE_GUI_BASE_URI: ${ACE_GUI_BASE_URI:-https://localhost:5000/ACE}
   # if this node is the primary node, set this value to 1, otherwise set it to 0
   # in a standalone deployment, this should be set to 1
   ACE_IS_PRIMARY_NODE: ${ACE_IS_PRIMARY_NODE:-1}
@@ -76,14 +97,14 @@ x-common-volumes: &common-volumes
   - .:/opt/ace
   # NOTE your ssh keys are mounted read-only in all containers
   - ~/.ssh:/home/ace/.ssh:ro
-  - ace-data:/opt/ace/data
-  - ace-sql:/docker-entrypoint-initdb.d
-  - ace-sql-readonly:/ace-sql-readonly
-  - ace-auth:/auth
-  - ace-user-home:/home/ace
+  - data:/opt/ace/data
+  - sql:/docker-entrypoint-initdb.d
+  - sql-readonly:/ace-sql-readonly
+  - auth:/auth
+  - user-home:/home/ace
   - ./ssl:/opt/ace/ssl
-  - ace-phishkit:/phishkit
-  - ace-js-deobfuscator:/js-deobfuscator
+  - phishkit:/phishkit
+  - js-deobfuscator:/js-deobfuscator
   - ./signatures:/opt/ace/signatures
   - type: tmpfs
     target: /tmp
@@ -114,13 +135,13 @@ services:
     command: /bin/bash -c "/opt/ace/docker/startup/initialize_volumes.sh"
     volumes:
       - .:/opt/ace
-      - ace-data:/opt/ace/data
-      - ace-sql:/docker-entrypoint-initdb.d
-      - ace-sql-readonly:/ace-sql-readonly
+      - data:/opt/ace/data
+      - sql:/docker-entrypoint-initdb.d
+      - sql-readonly:/ace-sql-readonly
       - ./ssl:/opt/ace/ssl
-      - ace-auth:/auth
-      - ace-phishkit:/phishkit
-      - ace-js-deobfuscator:/js-deobfuscator
+      - auth:/auth
+      - phishkit:/phishkit
+      - js-deobfuscator:/js-deobfuscator
       - ./signatures:/opt/ace/signatures
     networks:
       - ace
@@ -130,7 +151,7 @@ services:
     environment: *common-env
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/fluent/fluent-bit:latest
     ports:
-      - "24224:24224"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_FLUENT_BIT:-24224}:24224"
     restart: unless-stopped
     stop_grace_period: 30s
     # fluent-bit obviously cannot ship its own logs through itself. if the collector is
@@ -148,7 +169,7 @@ services:
     user: ${SAQ_USER_ID:-1000}:${SAQ_GROUP_ID:-1000}
     volumes:
       - ./etc/fluent-bit/fluent-bit.yaml:/fluent-bit/etc/fluent-bit.yaml:ro
-      - ace-data:/data
+      - data:/data
     networks:
       - ace
 
@@ -168,7 +189,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: setup
         fluentd-async: "true"
     volumes: *common-volumes
@@ -183,7 +204,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: mysql-db-primary
         fluentd-async: "true"
     healthcheck:
@@ -202,13 +223,13 @@ services:
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: 1
     volumes:
-      - ace-db:/var/lib/mysql
-      - ace-sql:/docker-entrypoint-initdb.d
-      - ace-data:/opt/ace/data
+      - db:/var/lib/mysql
+      - sql:/docker-entrypoint-initdb.d
+      - data:/opt/ace/data
       - ./etc/mysqld/conf.d:/etc/mysql/conf.d
       - ./ssl:/opt/ace/ssl
     ports:
-      - "3306:3306"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::3306"
     hostname: ${ACE_DB_HOST:-ace-db}
     networks:
       - ace
@@ -224,7 +245,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: mysql-db-readonly
         fluentd-async: "true"
     healthcheck:
@@ -243,13 +264,13 @@ services:
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: 1
     volumes:
-      - ace-db-readonly:/var/lib/mysql
-      - ace-sql-readonly:/docker-entrypoint-initdb.d
-      - ace-data:/opt/ace/data
+      - db-readonly:/var/lib/mysql
+      - sql-readonly:/docker-entrypoint-initdb.d
+      - data:/opt/ace/data
       - ./etc/mysqld.replica/conf.d:/etc/mysql/conf.d
       - ./ssl:/opt/ace/ssl
     ports:
-      - "3307:3306"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::3306"
     hostname: ${ACE_DB_READONLY_HOST:-ace-db-readonly}
     networks:
       - ace
@@ -275,7 +296,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: qdrant
         fluentd-async: "true"
     depends_on:
@@ -284,11 +305,11 @@ services:
       fluent-bit:
         condition: service_started
     ports:
-      - "6333"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::6333"
     volumes:
-      - ace-qdrant:/qdrant/storage
+      - qdrant:/qdrant/storage
       - ./ssl:/ssl:ro
-      - ace-auth:/auth
+      - auth:/auth
     networks:
       - ace
 
@@ -307,7 +328,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: setup
         fluentd-async: "true"
     volumes: *common-volumes
@@ -323,7 +344,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: nginx
         fluentd-async: "true"
     depends_on:
@@ -338,7 +359,7 @@ services:
       - ./ssl:/opt/ace/ssl:ro
     hostname: ace-http-external
     ports:
-      - "9443:443"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_HTTP_EXTERNAL:-9443}:443"
     networks:
       - ace
 
@@ -350,7 +371,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: nginx
         fluentd-async: "true"
     depends_on:
@@ -365,7 +386,7 @@ services:
       - ./ssl:/opt/ace/ssl:ro
     hostname: ace-http
     ports:
-      - "8443:443"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_HTTP:-8443}:443"
     networks:
       - ace
 
@@ -439,6 +460,10 @@ services:
       SAQ_CONFIG_PATHS: etc/saq.ai.yaml
       SAQ_SKIP_LOCAL_SAQ_YAML: "1"
       ACE_INSTANCE_TYPE: ${ACE_INSTANCE_TYPE:-DEV}
+      # this container does not use *common-env, but it still loads etc/saq.default.yaml, whose
+      # env: markers are fatal when unset -- so these have to be repeated here
+      ACE_INSTANCE_NAME: ${ACE_INSTANCE_NAME:-DEV}
+      ACE_GUI_BASE_URI: ${ACE_GUI_BASE_URI:-https://localhost:5000/ACE}
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
       FLUENT_BIT_TAG: ace-api-ai
     image: ${ACE3_IMAGE_URL:-ace3:latest}
@@ -449,9 +474,9 @@ services:
     stop_grace_period: 60s
     volumes:
       - .:/opt/ace
-      - ace-data:/opt/ace/data:ro          # alert storage for download -- read-only
-      - ace-sql:/docker-entrypoint-initdb.d:ro   # auto-generated database passwords overlay
-      - ace-auth:/auth:ro                  # redis password; flask/node keys are neutralized by etc/saq.ai.yaml
+      - data:/opt/ace/data:ro          # alert storage for download -- read-only
+      - sql:/docker-entrypoint-initdb.d:ro   # auto-generated database passwords overlay
+      - auth:/auth:ro                  # redis password; flask/node keys are neutralized by etc/saq.ai.yaml
       - ./ssl:/opt/ace/ssl:ro
       - type: tmpfs
         target: /tmp
@@ -468,7 +493,7 @@ services:
     platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/redis:latest
     ports:
-      - "6379:6379"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::6379"
     restart: always
     stop_grace_period: 30s
     hostname: ${REDIS_HOSTNAME:-redis}
@@ -481,7 +506,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: redis
         fluentd-async: "true"
     depends_on:
@@ -492,7 +517,7 @@ services:
     # here we're loading the redis.conf that is built from the ace-setup container
     command: ["redis-server", "/auth/etc/redis/redis.conf"]
     volumes:
-      - ace-auth:/auth
+      - auth:/auth
     networks:
       - ace
 
@@ -511,7 +536,7 @@ services:
     volumes: *common-volumes
     hostname: ace
     ports:
-      - "5000:5000"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_GUI:-5000}:5000"
     networks:
       - ace
 
@@ -531,7 +556,7 @@ services:
     volumes: *common-volumes
     hostname: ace
     ports:
-      - "53559:53559"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::53559"
     networks:
       - ace
 
@@ -679,7 +704,7 @@ services:
     cap_add:
       - SYS_PTRACE
     ports:
-      - "5001:5000"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_DEV_GUI:-5001}:5000"
     networks:
       - ace
 
@@ -718,7 +743,7 @@ services:
       RABBITMQ_DEFAULT_USER: "ace3"
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq
     ports:
-      - "5672:5672"
+      - "${ACE_BIND_ADDRESS:-127.0.0.1}::5672"
     restart: always
     stop_grace_period: 60s
     hostname: ${RABBITMQ_HOSTNAME:-rabbitmq}
@@ -736,7 +761,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: rabbitmq
         fluentd-async: "true"
     depends_on:
@@ -747,7 +772,7 @@ services:
     volumes:
       - ./etc/rabbitmq/conf.d/20-logging.conf:/etc/rabbitmq/conf.d/20-logging.conf:ro
       - ./etc/rabbitmq/conf.d/30-deprecated-features.conf:/etc/rabbitmq/conf.d/30-deprecated-features.conf:ro
-      - ace-auth:/auth
+      - auth:/auth
     networks:
       - ace
 
@@ -766,6 +791,11 @@ services:
     platform: linux/amd64
     environment:
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
+      # this container shells out to `docker run` on the host daemon, so it has to be told the
+      # real (project-prefixed) name of the volume it shares with the scanners it spawns, and
+      # which instance it belongs to so its reaper only kills its own containers
+      ACE_INSTANCE: ${ACE_INSTANCE:-ace}
+      ACE_PHISHKIT_VOLUME: ${ACE_INSTANCE:-ace}_phishkit
     hostname: phishkit
     build:
       context: .
@@ -778,7 +808,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: phishkit
         fluentd-async: "true"
     depends_on:
@@ -794,9 +824,9 @@ services:
       # this is needed so that this container can create other containers
       - /var/run/docker.sock:/var/run/docker.sock
       # this volume is used to share the downloaded data between the child containers and this one
-      - ace-phishkit:/phishkit
+      - phishkit:/phishkit
       # this volume contains authentication information
-      - ace-auth:/auth
+      - auth:/auth
       - ./etc:/opt/ace/etc:ro
       # signatures volume so phishkit manager can read analyst-data config files
       - ./signatures:/opt/ace/signatures:ro
@@ -818,6 +848,9 @@ services:
     platform: linux/amd64
     environment:
       ACE3_JS_DEOBFUSCATOR_IMAGE_URL: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
+      # as with phishkit: spawns sibling containers, so it needs the real volume name
+      ACE_INSTANCE: ${ACE_INSTANCE:-ace}
+      ACE_JS_DEOBFUSCATOR_VOLUME: ${ACE_INSTANCE:-ace}_js-deobfuscator
     hostname: js-deobfuscator
     build:
       context: .
@@ -830,7 +863,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: localhost:${ACE_PORT_FLUENT_BIT:-24224}
         tag: js-deobfuscator
         fluentd-async: "true"
     depends_on:
@@ -846,32 +879,22 @@ services:
       # needed so this container can spawn sibling scanner containers
       - /var/run/docker.sock:/var/run/docker.sock
       # shared volume for passing input files and returning output
-      - ace-js-deobfuscator:/js-deobfuscator
-      - ace-auth:/auth
+      - js-deobfuscator:/js-deobfuscator
+      - auth:/auth
     networks:
       - ace
 
 volumes:
-  ace-data:
-    name: ace-data
-  ace-db:
-    name: ace-db
-  ace-db-readonly:
-    name: ace-db-readonly
-  ace-sql:
-    name: ace-sql
-  ace-sql-readonly:
-    name: ace-sql-readonly
-  ace-phishkit:
-    name: ace-phishkit
-  ace-js-deobfuscator:
-    name: ace-js-deobfuscator
-  ace-auth:
-    name: ace-auth
-  ace-qdrant:
-    name: ace-qdrant
-  ace-user-home:
-    name: ace-user-home
+  data:
+  db:
+  db-readonly:
+  sql:
+  sql-readonly:
+  phishkit:
+  js-deobfuscator:
+  auth:
+  qdrant:
+  user-home:
 
 networks:
   ace:

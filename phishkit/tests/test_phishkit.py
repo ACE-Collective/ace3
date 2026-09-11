@@ -1090,6 +1090,102 @@ class TestReapOrphans:
         mock_force.assert_not_called()
 
 
+class TestInstanceIsolation:
+    """Several ACE instances can share one docker daemon, so everything this worker does over
+    the socket has to be scoped to its own instance."""
+
+    @pytest.mark.unit
+    def test_reaper_only_lists_its_own_instances_containers(self):
+        """Without the stack filter, `docker ps` returns another instance's scanner containers
+        and the reaper kills them -- including via the shutdown sweep, which cannot fall back to
+        the worker hostname because docker-compose.yml pins `hostname: phishkit` everywhere."""
+        import phishkit
+        from phishkit import _list_phishkit_containers
+
+        result = MagicMock()
+        result.stdout = ""
+        with patch("phishkit.subprocess.run", return_value=result) as mock_run:
+            _list_phishkit_containers()
+
+        argv = mock_run.call_args[0][0]
+        assert f"label=phishkit.stack={phishkit.STACK}" in argv
+        assert "label=phishkit.job_id" in argv
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_spawned_containers_carry_the_stack_label_and_volume(
+        self, mock_sync, mock_force_stop, tmpdir
+    ):
+        """The reaper's stack filter only helps if the containers actually carry the label, and
+        the scanner only sees its input if it mounts this instance's volume."""
+        import phishkit
+        from phishkit import _run_scanner
+
+        config_data = {
+            "proxy_fallback": FULL_PROXY_FALLBACK,
+            "resource_limits": {
+                "container_memory": "1g",
+                "container_cpus": "1.5",
+                "reaper_max_age_seconds": 600,
+                "reaper_interval_seconds": 60,
+                "scanner_timeout_hint": 15,
+            },
+        }
+        config_file = tmpdir.join("phishkit_config.yaml")
+        config_file.write(yaml.dump(config_data))
+
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+
+        proc = MagicMock()
+        proc.communicate.return_value = ("ok", "")
+        proc.returncode = 0
+
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
+            _run_scanner(
+                target_args=["https://example.com"],
+                output_dir=output_dir,
+                job_id="abc-123",
+                timeout=30,
+                proxy=None,
+                proxy_fallback_to_direct=False,
+                config_path=str(config_file),
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        label_vals = [cmd[i + 1] for i, v in enumerate(cmd) if v == "--label"]
+        assert f"phishkit.stack={phishkit.STACK}" in label_vals
+        assert f"{phishkit.PHISHKIT_VOLUME}:/phishkit" in cmd
+
+    @pytest.mark.unit
+    def test_volume_name_is_read_from_the_environment(self):
+        """Compose prefixes named volumes with the project name, so the shared volume is not a
+        fixed string -- it is handed in as ACE_PHISHKIT_VOLUME."""
+        import importlib
+        import phishkit
+
+        with patch.dict(os.environ, {"ACE_PHISHKIT_VOLUME": "ace2_phishkit"}):
+            reloaded = importlib.reload(phishkit)
+            try:
+                assert reloaded.PHISHKIT_VOLUME == "ace2_phishkit"
+            finally:
+                importlib.reload(phishkit)
+
+    @pytest.mark.unit
+    def test_volume_name_defaults_to_the_legacy_name(self):
+        import importlib
+        import phishkit
+
+        env = {k: v for k, v in os.environ.items() if k != "ACE_PHISHKIT_VOLUME"}
+        with patch.dict(os.environ, env, clear=True):
+            reloaded = importlib.reload(phishkit)
+            try:
+                assert reloaded.PHISHKIT_VOLUME == "ace-phishkit"
+            finally:
+                importlib.reload(phishkit)
+
+
 class TestLoadResourceLimits:
 
     @pytest.mark.unit
