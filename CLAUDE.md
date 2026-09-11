@@ -29,8 +29,9 @@ ports are fixed (`ACE_PORT_GUI`, `ACE_PORT_DEV_GUI`, `ACE_PORT_HTTP`, `ACE_PORT_
 `ACE_BIND_ADDRESS` (default `127.0.0.1`) — reach it with `docker compose port ace-db 3306`.
 `bin/generate-instance-env.sh <name> <offset> > .env` sets a second instance up. Never set
 `COMPOSE_PROJECT_NAME`; it overrides the project name and desynchronizes it from the volume
-names. See `docs/MULTI_INSTANCE.md`, which also covers the one-time volume rename that existing
-environments need.
+names. See `docs/MULTI_INSTANCE.md`. There is no migration path for an environment created
+before this: the volume names changed, so an existing stack has to be brought down with
+`docker compose down -v` and rebuilt from empty volumes.
 
 ## Testing
 

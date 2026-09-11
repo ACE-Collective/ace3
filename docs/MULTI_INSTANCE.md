@@ -114,64 +114,52 @@ Two instances can run the suite at the same time. They do not share state:
 `CLAUDE.md`'s rule against starting more than one run at a time is about one checkout, not one
 host.
 
-## Migrating an existing environment
+## Upgrading an existing environment
 
 Before multi-instance support, the volumes carried an explicit `name:` that pinned them to
 global names (`ace-data`, `ace-db`, …). Those names are what made a second instance impossible,
-so they are now project-prefixed (`ace_data`, `ace_db`, …). **An existing checkout will come up
-with empty volumes after pulling this change** — the old data is still there, just no longer
-attached.
+so they are now project-prefixed (`ace_data`, `ace_db`, …). **There is no migration path: an
+existing environment has to be torn down and rebuilt from empty volumes.** Anything in the old
+volumes — alerts, the databases, generated passwords — is not carried forward, and the old
+volumes are left behind for you to remove.
 
 ### First, if your checkout directory is not named `ace`
 
 The project name also changes with this release. It used to come from the checkout directory, so
 a checkout in `~/dev/ace3` ran as project `ace3` — containers `ace3-dev-1`, network `ace3_ace`.
-It is now `ACE_INSTANCE`, which defaults to `ace`. **Decide which name you want before you
-migrate**, because until the two agree the checkout's own tooling is pointed at a project that
-does not exist:
+It is now `ACE_INSTANCE`, which defaults to `ace`. **This matters before you tear anything
+down**, because until the two agree the checkout's own tooling is pointed at a project that does
+not exist:
 
-- `docker compose ps`, `docker compose stop` and every `bin/` helper (`get-dev-container.sh`,
-  `exec-in-container.sh`, `attach-container.sh`, `ace-shutdown.sh`) resolve to the new project
-  and report nothing, while the old containers keep running;
+- `docker compose ps`, `docker compose down`, `docker compose stop` and every `bin/` helper
+  (`get-dev-container.sh`, `exec-in-container.sh`, `attach-container.sh`, `ace-shutdown.sh`)
+  resolve to the new project and report nothing, while the old containers keep running;
 - `docker compose up -d` builds a second, parallel set of containers instead of replacing them.
 
-The path of least surprise is to keep the name the environment already has:
+So the old stack has to be brought down under the name it was created with, which this checkout
+can no longer do for you. `docker compose ls` tells you what that name is:
+
+```bash
+docker compose -p ace3 down -v       # old project name, not this checkout's
+```
+
+If you would rather keep the name the environment already has, set it explicitly and the
+containers, network and volumes all stay under it:
 
 ```bash
 echo ACE_INSTANCE=ace3 >> .env       # whatever `docker compose ls` calls the running stack
 ```
 
-The volumes then migrate to `ace3_data`, `ace3_db`, … and the containers and network keep their
-existing names. To move to `ace` instead, stop the old project explicitly first — the checkout
-can no longer do it for you:
+### Then start clean
 
 ```bash
-docker compose -p ace3 down          # old project name, not this checkout's
-```
-
-`bin/migrate-volume-names.sh` checks for this: it refuses to run while anything is holding the
-legacy volumes, names the containers and the project they belong to, and tells you which of the
-two paths above you are on. It looks the containers up by volume rather than by project, so the
-check still works when the project name no longer matches.
-
-If the data is disposable, start clean:
-
-```bash
-docker compose down -v
+docker compose down -v               # or `-p <old project> down -v`, per above
 docker compose up --build
 ```
 
-To keep it, copy each volume across:
-
-```bash
-bin/ace-shutdown.sh --fast          # the stack must be stopped
-bin/migrate-volume-names.sh         # dry run: shows what would be copied
-bin/migrate-volume-names.sh --yes   # do it
-docker compose up -d
-```
-
-The migration only ever reads the old volumes. Once the stack comes up cleanly it prints the
-`docker volume rm` commands to reclaim the space, but does not run them.
+`docker volume ls` afterwards should show only the `<instance>_`-prefixed volumes. Any
+remaining `ace-data`, `ace-db`, … are the orphaned originals; remove them with
+`docker volume rm` to reclaim the space.
 
 ## Verifying two instances are isolated
 
