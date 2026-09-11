@@ -24,11 +24,11 @@ import magic
 
 logger = logging.getLogger(__name__)
 
-# which ACE instance this worker belongs to. several instances can share one docker daemon, so
-# every container we spawn is labelled with this and the reaper only ever looks at its own. the
+# which ACE stack this worker belongs to. several stacks can share one docker daemon, so every
+# container we spawn is labelled with this and the reaper only ever looks at its own. the
 # worker hostname cannot be used for that: docker-compose.yml pins `hostname: phishkit` on this
-# container, so every instance's manager reports the same name.
-STACK = os.environ.get("ACE_INSTANCE", "ace")
+# container, so every stack's manager reports the same name.
+STACK = os.environ.get("ACE_STACK", "ace")
 # the name of the volume we share with the scanner containers we spawn. compose prefixes named
 # volumes with the project name, so this is not a constant -- it is passed in as
 # ACE_PHISHKIT_VOLUME. the default is the pre-multi-instance name.
@@ -148,9 +148,9 @@ def _graceful_stop_container(name: str) -> None:
 
 
 def _list_phishkit_containers() -> list[dict]:
-    """Return metadata for every running scanner container spawned by *this* ACE instance.
+    """Return metadata for every running scanner container spawned by *this* ACE stack.
 
-    The stack filter matters: the docker daemon is shared with every other ACE instance on the
+    The stack filter matters: the docker daemon is shared with every other ACE stack on the
     host, so without it this returns their scanner containers too and the reaper kills them.
     """
     try:
@@ -179,10 +179,10 @@ def _list_phishkit_containers() -> list[dict]:
 
 
 def _reap_orphans(max_age_seconds: int, only_this_worker: bool = False) -> int:
-    """Kill this instance's phishkit scanner containers older than max_age_seconds.
+    """Kill this stack's phishkit scanner containers older than max_age_seconds.
 
-    Returns the count killed. Containers belonging to another ACE instance are never considered
-    -- see _list_phishkit_containers. Within one instance, only_this_worker narrows further to
+    Returns the count killed. Containers belonging to another ACE stack are never considered
+    -- see _list_phishkit_containers. Within one stack, only_this_worker narrows further to
     the containers this worker process started.
     """
     now = int(time.time())

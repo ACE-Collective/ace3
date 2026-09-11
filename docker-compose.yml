@@ -50,10 +50,9 @@
 #
 # BUILD_TYPE: development | production (default: development)
 #
-# more than one ACE instance on the same host -- see docs/MULTI_INSTANCE.md
-# ACE_INSTANCE (default: ace)
+# more than one ACE stack on the same host -- see docs/MULTI_INSTANCE.md
+# ACE_STACK (default: ace)
 # ACE_INSTANCE_NAME (default: DEV)
-# ACE_GUI_BASE_URI
 # ACE_BIND_ADDRESS (default: 127.0.0.1)
 # ACE_PORT_FLUENT_BIT (default: 24224)
 # ACE_PORT_HTTP (default: 8443)
@@ -63,7 +62,7 @@
 #
 
 # compose project name (do not set COMPOSE_PROJECT_NAME; see docs/MULTI_INSTANCE.md)
-name: ${ACE_INSTANCE:-ace}
+name: ${ACE_STACK:-ace}
 
 x-common-env: &common-env
   PYTHONUTF8: "1"
@@ -72,12 +71,11 @@ x-common-env: &common-env
   SAQ_CONFIG_PATHS: ${SAQ_CONFIG_PATHS:-}
   ACE_INSTANCE_TYPE: ${ACE_INSTANCE_TYPE:-DEV} # possible values: DEV, QA, PRODUCTION
   # which instance this is. drives the compose project name (and so the volume names) and, via
-  # the env: markers in etc/saq.default.yaml, what the GUI calls itself and where its permalinks
-  # point. these two must always be set: etc/saq.default.yaml resolves env:VAR eagerly and a
-  # missing variable is a fatal configuration error.
-  ACE_INSTANCE: ${ACE_INSTANCE:-ace}
+  # the env: marker in etc/saq.default.yaml, what the GUI calls itself. ACE_INSTANCE_NAME must
+  # always be set: etc/saq.default.yaml resolves env:VAR and a missing variable is a fatal
+  # configuration error.
+  ACE_STACK: ${ACE_STACK:-ace}
   ACE_INSTANCE_NAME: ${ACE_INSTANCE_NAME:-DEV}
-  ACE_GUI_BASE_URI: ${ACE_GUI_BASE_URI:-https://localhost:5000/ACE}
   # if this node is the primary node, set this value to 1, otherwise set it to 0
   # in a standalone deployment, this should be set to 1
   ACE_IS_PRIMARY_NODE: ${ACE_IS_PRIMARY_NODE:-1}
@@ -461,9 +459,8 @@ services:
       SAQ_SKIP_LOCAL_SAQ_YAML: "1"
       ACE_INSTANCE_TYPE: ${ACE_INSTANCE_TYPE:-DEV}
       # this container does not use *common-env, but it still loads etc/saq.default.yaml, whose
-      # env: markers are fatal when unset -- so these have to be repeated here
+      # env: markers are fatal when unset -- so this has to be repeated here
       ACE_INSTANCE_NAME: ${ACE_INSTANCE_NAME:-DEV}
-      ACE_GUI_BASE_URI: ${ACE_GUI_BASE_URI:-https://localhost:5000/ACE}
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
       FLUENT_BIT_TAG: ace-api-ai
     image: ${ACE3_IMAGE_URL:-ace3:latest}
@@ -793,9 +790,9 @@ services:
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
       # this container shells out to `docker run` on the host daemon, so it has to be told the
       # real (project-prefixed) name of the volume it shares with the scanners it spawns, and
-      # which instance it belongs to so its reaper only kills its own containers
-      ACE_INSTANCE: ${ACE_INSTANCE:-ace}
-      ACE_PHISHKIT_VOLUME: ${ACE_INSTANCE:-ace}_phishkit
+      # which stack it belongs to so its reaper only kills its own containers
+      ACE_STACK: ${ACE_STACK:-ace}
+      ACE_PHISHKIT_VOLUME: ${ACE_STACK:-ace}_phishkit
     hostname: phishkit
     build:
       context: .
@@ -849,8 +846,8 @@ services:
     environment:
       ACE3_JS_DEOBFUSCATOR_IMAGE_URL: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
       # as with phishkit: spawns sibling containers, so it needs the real volume name
-      ACE_INSTANCE: ${ACE_INSTANCE:-ace}
-      ACE_JS_DEOBFUSCATOR_VOLUME: ${ACE_INSTANCE:-ace}_js-deobfuscator
+      ACE_STACK: ${ACE_STACK:-ace}
+      ACE_JS_DEOBFUSCATOR_VOLUME: ${ACE_STACK:-ace}_js-deobfuscator
     hostname: js-deobfuscator
     build:
       context: .

@@ -2,7 +2,7 @@
 
 Two ACE stacks can run side by side on the same machine — one per branch, or a stable stack
 next to one you are breaking. Everything that separates them is derived from a single variable,
-`ACE_INSTANCE`.
+`ACE_STACK`.
 
 ## Quick start
 
@@ -30,7 +30,7 @@ With an offset of 100 the second instance's GUI is at `https://localhost:5100/ac
 
 ## How the isolation works
 
-`ACE_INSTANCE` (default `ace`) is the compose **project name**, set by the top-level `name:` key
+`ACE_STACK` (default `ace`) is the compose **project name**, set by the top-level `name:` key
 in `docker-compose.yml`. Compose derives from the project name:
 
 | | instance `ace` | instance `ace2` |
@@ -49,6 +49,19 @@ browser.
 > **Do not set `COMPOSE_PROJECT_NAME`.** It overrides the top-level `name:`, which would leave
 > the project name and the volume names disagreeing. `docker/startup/initialize_volumes.sh`
 > detects this and refuses to start rather than let two stacks share one MySQL datadir.
+
+### `ACE_STACK` is not `ACE_INSTANCE_NAME` or `ACE_INSTANCE_TYPE`
+
+Three similarly named variables that do unrelated things:
+
+| variable | what it sets | who reads it |
+|---|---|---|
+| `ACE_STACK` | the compose project name — the prefix on every container, the network and all ten volumes; also the `phishkit.stack` label and the `.ace_stack` guard marker | docker only; no ACE code reads it |
+| `ACE_INSTANCE_NAME` | `global.instance_name` | the navbar label `ACE3 (…)` and the `tool_instance` recorded on manually created alerts |
+| `ACE_INSTANCE_TYPE` | `global.instance_type` | picks the Flask config class and gates which services are allowed to run (`DEV`/`QA`/`PRODUCTION`) |
+
+They vary independently: a second dev stack is typically project `ace2`, label `DEV2`, type
+`DEV`. Only `ACE_STACK` affects docker naming, and only it needs to be unique per host.
 
 ## Ports
 
@@ -101,6 +114,19 @@ cd /opt/ace2 && make db-upgrade
 cd /opt/ace2 && bin/ace-shutdown.sh
 ```
 
+They find the stack by asking compose (`docker compose ps -q <service>`), which means they
+resolve whichever compose file that checkout would use by default. A deployment that runs its
+own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,
+for instance — points them at it by exporting `COMPOSE_FILE`:
+
+```bash
+export COMPOSE_FILE=integrations/bv_ace/docker-compose.yml
+bin/attach-container.sh
+```
+
+Compose then takes its project directory — and so its project name and its `.env` — from that
+file's directory, which is the behaviour such a deployment already has.
+
 ## Running the test suite in more than one instance
 
 Two instances can run the suite at the same time. They do not share state:
@@ -127,7 +153,7 @@ volumes are left behind for you to remove.
 
 The project name also changes with this release. It used to come from the checkout directory, so
 a checkout in `~/dev/ace3` ran as project `ace3` — containers `ace3-dev-1`, network `ace3_ace`.
-It is now `ACE_INSTANCE`, which defaults to `ace`. **This matters before you tear anything
+It is now `ACE_STACK`, which defaults to `ace`. **This matters before you tear anything
 down**, because until the two agree the checkout's own tooling is pointed at a project that does
 not exist:
 
@@ -147,7 +173,7 @@ If you would rather keep the name the environment already has, set it explicitly
 containers, network and volumes all stay under it:
 
 ```bash
-echo ACE_INSTANCE=ace3 >> .env       # whatever `docker compose ls` calls the running stack
+echo ACE_STACK=ace3 >> .env       # whatever `docker compose ls` calls the running stack
 ```
 
 ### Then start clean

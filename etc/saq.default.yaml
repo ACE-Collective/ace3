@@ -464,10 +464,6 @@ gui:
   alert_details_collapsed: false
   # Hide intel if we don't want to let people see it (public/internet ace)
   hide_intel: false
-  # the base address for the GUI (used to build ACE permalinks)
-  # supplied by docker-compose.yml (x-common-env). it has to follow the host port the GUI is
-  # published on, otherwise a second instance emits permalinks pointing at the first one.
-  base_uri: env:ACE_GUI_BASE_URI
   # default company for manual analysis (the default option from the drop down)
   # 3 == integral
   default_company_id: 0
@@ -1073,13 +1069,6 @@ service_yara:
   scan_failure_dir: scan_failures
   # how long (in seconds) a single scan is allowed to take
   default_timeout: 10
-
-# defines what we do with the malicious files we find
-malicious_files:
-  # this is where we actually store copies of the files
-  malicious_dir: malicious
-  # list of email accounts to send notifications to when new files are added
-  malicious_alert_recipients: []
 
 # observable groups
 observable_group_internal:

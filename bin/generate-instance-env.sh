@@ -88,7 +88,7 @@ cat <<EOF
 # do NOT also set COMPOSE_PROJECT_NAME -- it overrides the top-level name: in
 # docker-compose.yml and would desynchronize the project from the volume names handed to the
 # phishkit and js-deobfuscator managers.
-ACE_INSTANCE=${INSTANCE}
+ACE_STACK=${INSTANCE}
 
 # what this instance calls itself in the GUI
 ACE_INSTANCE_NAME=${INSTANCE}
@@ -105,8 +105,6 @@ ACE_PORT_HTTP_EXTERNAL=${PORT_HTTP_EXTERNAL}
 ACE_PORT_GUI=${PORT_GUI}
 ACE_PORT_DEV_GUI=${PORT_DEV_GUI}
 
-# permalinks the GUI builds must point at this instance's GUI port
-ACE_GUI_BASE_URI=https://localhost:${PORT_GUI}/ACE
 
 # per-instance image tags, so that a \`docker compose build\` here does not retag the images
 # another instance recreates from. drop these if every checkout is on the same revision and you

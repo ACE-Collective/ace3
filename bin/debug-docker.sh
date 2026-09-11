@@ -9,7 +9,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 # shellcheck disable=SC1091
 set -a; [ -f .env ] && . ./.env; set +a
 
-INSTANCE="${ACE_INSTANCE:-ace}"
+INSTANCE="${ACE_STACK:-ace}"
 
 docker run \
     -it \

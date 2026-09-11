@@ -22,7 +22,7 @@ bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in d
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
 
-More than one ACE stack can run on a host: `ACE_INSTANCE` (default `ace`) is the compose project
+More than one ACE stack can run on a host: `ACE_STACK` (default `ace`) is the compose project
 name, and so the prefix on every container, the network and all ten named volumes. Only five host
 ports are fixed (`ACE_PORT_GUI`, `ACE_PORT_DEV_GUI`, `ACE_PORT_HTTP`, `ACE_PORT_HTTP_EXTERNAL`,
 `ACE_PORT_FLUENT_BIT`); everything else is published on an ephemeral port bound to
