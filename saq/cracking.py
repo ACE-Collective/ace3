@@ -44,16 +44,20 @@ def generate_wordlist(
 
     return list(password_list)
 
-def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str) -> str:
+def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str) -> str | None:
     if not os.path.exists(hash_file):
         raise FileNotFoundError(f"hash file {hash_file} not found")
 
-    p = Popen([os.path.join(john_bin_path, 'john'), mode, hash_file], stdin=PIPE, stdout=PIPE,
+    john_bin = os.path.join(john_bin_path, 'john')
+    if not os.path.exists(john_bin):
+        raise FileNotFoundError(f"john binary {john_bin} not found")
+
+    p = Popen([john_bin, mode, hash_file], stdin=PIPE, stdout=PIPE,
               stderr=PIPE)
     _, _ = p.communicate()
 
-    p = Popen([os.path.join(john_bin_path, 'john'), f'--show', hash_file], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = p.communicate()
+    p = Popen([john_bin, '--show', hash_file], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    stdout, _ = p.communicate()
 
     password = None
     for line in stdout.decode(errors='ignore').split('\n'):
