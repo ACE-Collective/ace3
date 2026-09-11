@@ -5,15 +5,23 @@ Runs alembic autogenerate diff against a migrated database and reports
 any pending operations that would require a new migration.  Exits 0 if
 models and migrations are in sync, 1 otherwise.
 
+By default the check builds its own throwaway database (``<name>-drift-<token>``),
+migrates it to the head of the chain, compares, and drops it again, so it never
+depends on the state of any other database.  Setting the chain's environment
+variable (``DATABASE_NAME``, ``CACHE_DATABASE_NAME``, ``BROCESS_DATABASE_NAME`` or
+``EMAIL_ARCHIVE_DATABASE_NAME``) checks that existing, already-migrated database
+instead and never drops anything -- this is what CI does.
+
 Expression-based indexes (e.g. ``desc('col')``) produce false positives
 because Alembic cannot round-trip compare them.  These are filtered out
 automatically.
 
 Usage (inside dev container):
-    /venv/bin/python bin/check_model_drift.py                       # main ace DB (default)
-    /venv/bin/python bin/check_model_drift.py --database cache          # analysis cache DB
-    /venv/bin/python bin/check_model_drift.py --database brocess        # brocess DB
-    /venv/bin/python bin/check_model_drift.py --database email-archive  # email-archive DB
+    /venv/bin/python bin/check_model_drift.py                       # main ace models (default)
+    /venv/bin/python bin/check_model_drift.py --database cache          # analysis cache models
+    /venv/bin/python bin/check_model_drift.py --database brocess        # brocess models
+    /venv/bin/python bin/check_model_drift.py --database email-archive  # email-archive models
+    DATABASE_NAME=ace /venv/bin/python bin/check_model_drift.py         # check the live ace database
 
 Or via Make:
     make db-check
@@ -26,6 +34,7 @@ import argparse
 import logging
 import os
 import sys
+import uuid
 
 # Suppress noisy warnings from Alembic about expression indexes
 logging.getLogger("alembic.ddl.impl").setLevel(logging.ERROR)
@@ -37,15 +46,18 @@ logging.getLogger("alembic.ddl.impl").setLevel(logging.ERROR)
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path = [p for p in sys.path if os.path.realpath(p) != os.path.realpath(project_root)]
 
-from urllib.parse import quote_plus
-
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import Column, create_engine
 
+# bin/ is sys.path[0] when this runs as a script. upgrade_databases strips the project
+# root from sys.path again when imported, so it has to come before the root is re-added.
+from upgrade_databases import upgrade
+
 # Re-add project root so saq is importable
 sys.path.insert(0, project_root)
 
+from saq.database.admin import get_superuser_url, superuser_connection
 from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
 import saq.database.model  # noqa: F401 — populates the Base, CacheBase, BrocessBase and EmailArchiveBase metadata
 
@@ -54,38 +66,50 @@ DATABASES = {
     "ace": {
         "metadata": Base.metadata,
         "env_var": "DATABASE_NAME",
-        "default_name": "ace",
+        "base_name": "ace",
+        "chain": "ace",
         "revision_cmd": "make db-revision",
     },
     "cache": {
         "metadata": CacheBase.metadata,
         "env_var": "CACHE_DATABASE_NAME",
-        "default_name": "analysis-result-cache-unittest",
+        "base_name": "analysis-result-cache",
+        "chain": "cache",
         "revision_cmd": "make cache-db-revision",
     },
     "brocess": {
         "metadata": BrocessBase.metadata,
         "env_var": "BROCESS_DATABASE_NAME",
-        "default_name": "brocess-unittest",
+        "base_name": "brocess",
+        "chain": "brocess",
         "revision_cmd": "make brocess-db-revision",
     },
     "email-archive": {
         "metadata": EmailArchiveBase.metadata,
         "env_var": "EMAIL_ARCHIVE_DATABASE_NAME",
-        "default_name": "email-archive-unittest",
+        "base_name": "email-archive",
+        "chain": "email_archive",
         "revision_cmd": "make email-archive-db-revision",
     },
 }
 
+# the same charset and collation the real databases are created with (sql/0*.sql); the
+# comparison is only silent about column collations when the database default matches
+DATABASE_CHARSET = "utf8mb4"
+DATABASE_COLLATION = "utf8mb4_unicode_520_ci"
+LOCK_WAIT_TIMEOUT = 15
 
-def get_url(db_name: str) -> str:
-    password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
-    if not password:
-        with open("/auth/passwords/ace-superuser") as fp:
-            password = fp.read().strip()
-    password = quote_plus(password)
-    host = os.environ.get("ACE_DB_HOST", "ace-db")
-    return f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
+
+def create_throwaway_database(db_name: str) -> None:
+    with superuser_connection() as db:
+        db.cursor().execute(f"CREATE DATABASE `{db_name}` CHARACTER SET {DATABASE_CHARSET} COLLATE {DATABASE_COLLATION}")
+
+
+def drop_throwaway_database(db_name: str) -> None:
+    with superuser_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(f"SET SESSION lock_wait_timeout = {LOCK_WAIT_TIMEOUT}")
+        cursor.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
 
 
 def _expression_index_names(diffs) -> set[str]:
@@ -122,25 +146,53 @@ def _expression_index_names(diffs) -> set[str]:
     }
 
 
+def compare(db_name: str, metadata) -> list:
+    """Returns the autogenerate diff between the models and the given database."""
+    engine = create_engine(get_superuser_url(db_name))
+    try:
+        with engine.connect() as conn:
+            migration_ctx = MigrationContext.configure(conn)
+            return compare_metadata(migration_ctx, metadata)
+    finally:
+        # a pooled connection left open would hold a metadata lock against the DROP
+        engine.dispose()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     parser.add_argument(
         "--database",
         choices=list(DATABASES),
         default="ace",
-        help="which database to drift-check (default: ace)",
+        help="which models to drift-check (default: ace)",
     )
     args = parser.parse_args()
 
     cfg = DATABASES[args.database]
     metadata = cfg["metadata"]
-    db_name = os.environ.get(cfg["env_var"], cfg["default_name"])
     revision_cmd = cfg["revision_cmd"]
 
-    engine = create_engine(get_url(db_name))
-    with engine.connect() as conn:
-        migration_ctx = MigrationContext.configure(conn)
-        diffs = compare_metadata(migration_ctx, metadata)
+    # read once, up front: upgrade() sets this same variable for the migration
+    existing = os.environ.get(cfg["env_var"])
+    if existing:
+        db_name, throwaway = existing, False
+        print(f"checking existing database {db_name}")
+    else:
+        db_name, throwaway = f"{cfg['base_name']}-drift-{uuid.uuid4().hex[:8]}", True
+        print(f"checking throwaway database {db_name}")
+
+    try:
+        if throwaway:
+            create_throwaway_database(db_name)
+            upgrade(cfg["chain"], db_name)
+
+        diffs = compare(db_name, metadata)
+    finally:
+        if throwaway:
+            try:
+                drop_throwaway_database(db_name)
+            except Exception as e:
+                print(f"WARNING: unable to drop {db_name} ({e}); run bin/cleanup-unittest-databases.py --orphans")
 
     # Filter out expression-index false positives (paired add/remove)
     false_positive_indexes = _expression_index_names(diffs)

@@ -36,23 +36,29 @@ pytest tests/test_external_integration_*  # run all integration tests
 
 Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/conftest.py`; `unit` tests do not.
 
-Tests run against the `*-unittest` databases (`ace`, `brocess`, `email-archive`, plus `-unittest-2` copies) and `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
+Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
+
+**Every pytest session provisions its own databases.** `tests/unittest_database.py` creates a fresh `ace-unittest-<token>`, `brocess-unittest-<token>`, `email-archive-unittest-<token>` and `analysis-result-cache-unittest-<token>` (8 hex char token) at session start, migrates each to the head of its Alembic chain (`bin/upgrade_databases.py`), seeds the reference rows (`saq/database/seed.py`), points the config at them through `SAQ_UNITTEST_CONFIG_PATHS`, and drops them at session end. Between tests the existing row-level reset in `tests/conftest.py` is reused. This needs the `ace-superuser` credentials (`ACE_SUPERUSER_DB_USER_PASSWORD` or `/auth/passwords/ace-superuser`, see `saq/database/admin.py`); the tests themselves still connect as `ace-user`. What a session created is recorded in `$SAQ_HOME/.pytest-databases/` before anything is created, and the next session drops whatever a killed session left behind. `bin/cleanup-unittest-databases.py` does that from outside a session (`--list`, `--force`, `--orphans`). The old static `ace-unittest` / `ace-unittest-2` / `*-unittest` databases are no longer created or used by anything; a dev environment set up before September 2026 may still have them and they can be dropped by hand.
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
 There is no configured linter/formatter in the repo.
 
-IMPORTANT: Do **NOT** run multiple tests at the same time. The tests are designed to run serially.
+**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-This is now enforced. `tests/session_lock.py` creates a marker file at
-`$SAQ_HOME/.pytest-running` when a session starts and removes it when the session ends
-(including on Ctrl-C and collection errors). While that file exists **no** pytest session
-may start — `pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before
-collection, before any database access and before `data_unittest/` is wiped. There is no
-bypass flag. The marker records the pid, hostname, start time and command line of the
-session that created it, and the error message says whether that process is still running or
-whether the marker was left behind by a run that was killed. In the latter case, clear it
-with `rm /opt/ace/.pytest-running`.
+IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them.
+
+This is enforced. `tests/session_lock.py` creates a marker file at
+`$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
+a plain run) and removes it when the run ends (including on Ctrl-C and collection errors).
+While that file exists **no** other run may start — `pytest_configure` in `tests/conftest.py`
+fails the run with exit code 4 before collection, before any database access and before any
+data directory is wiped. There is no bypass flag. The marker records the pid, hostname, start
+time and command line of the process that created it, and the error message says whether
+that process is still running or whether the marker was left behind by a run that was killed.
+In the latter case, clear it with `rm /opt/ace/.pytest-running`. Holding the marker is also
+what makes it safe for a run to drop the databases an earlier, killed run left behind: the
+holder sweeps the registry in `pytest_configure`, before any of its workers provision.
 
 ### The standard analysis-module test
 
@@ -80,24 +86,27 @@ Helpers live in `tests/saq/helpers.py` (`wait_for_condition`, `wait_for_log_coun
 
 ## Databases and migrations
 
-Three Alembic chains, each with its own ini, versions dir, declarative base (`saq/database/meta.py`) and DB-name env var. Chains are kept apart purely by having disjoint `MetaData` — there are no `include_object` filters:
+Four Alembic chains, each with its own ini, versions dir, declarative base (`saq/database/meta.py`) and DB-name env var. Chains are kept apart purely by having disjoint `MetaData` — there are no `include_object` filters:
 
 | Chain | Config | Base | DB name env var |
 |---|---|---|---|
 | main ACE db | `alembic/ace.ini` | `Base` | `DATABASE_NAME` |
 | analysis result cache | `alembic/analysis_cache.ini` | `CacheBase` | `CACHE_DATABASE_NAME` |
 | brocess | `alembic/brocess.ini` | `BrocessBase` | `BROCESS_DATABASE_NAME` |
+| email archive | `alembic/email_archive.ini` | `EmailArchiveBase` | `EMAIL_ARCHIVE_DATABASE_NAME` |
 
 All models live in `saq/database/model.py`. The brocess models are schema-definition only — every actual read/write goes through raw pymysql (`saq/brocess.py`, `saq/modules/email/logging.py`, `saq/modules/email/conversation.py`).
 
-The `email-archive` and `amc` databases are **not** under Alembic; they are still created from the raw DDL in `sql/02-email-archive.sql` and `sql/05-amc.sql`.
+The `amc` database is **not** under Alembic; it is still created from the raw DDL in `sql/05-amc.sql`. The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
+
+`bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
 
 Use the Makefile targets (they exec into the `dev` container from the host):
 
 ```bash
 make db-revision MESSAGE="what changed"   # autogenerate
 make db-upgrade / db-downgrade
-make db-check                             # model-vs-schema drift check
+make db-check                             # model-vs-schema drift check (builds and drops a throwaway <name>-drift-<token> database)
 make cache-db-revision MESSAGE="..." / cache-db-upgrade / cache-db-check
 make brocess-db-revision MESSAGE="..." / brocess-db-upgrade / brocess-db-check
 make db-seed
@@ -105,7 +114,7 @@ make db-seed
 
 Migrations are applied at startup by `docker/startup/setup.sh` (the `ace-setup` service), one `upgrade head` per chain.
 
-CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change.
+CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change. `bin/check_model_drift.py` builds a throwaway database, migrates it to head, compares and drops it; setting the chain's env var (`DATABASE_NAME=ace ...`) checks that existing database instead, which is what CI does.
 
 ## Configuration
 
@@ -115,6 +124,8 @@ All configuration is YAML, layered in this order (`saq/configuration/loader.py`)
 2. integration config paths
 3. files in the `SAQ_CONFIG_PATHS` env var (comma-separated, set in `.env`)
 4. paths passed on the command line
+5. when unit testing: `etc/saq.unittest.default.yaml`, then files in `SAQ_UNITTEST_CONFIG_PATHS` (the test suite's per-session database names)
+6. `/docker-entrypoint-initdb.d/saq.database.passwords.yaml` (generated DB passwords), then `etc/saq.yaml` (dev overlay, never when unit testing)
 
 The configuration is loaded in three stages. Each YAML file is loaded with `yaml.SafeLoader` into a plain `dict`. A file may recursively pull in more files via a top-level `config:` key (list of paths or name→path map). Then each parsed dict is overlaid onto a running `YAMLConfig._data` via `deepmerge` (`saq/configuration/yaml_parser.py`). Nested dicts merge recursively, lists append, scalars/sets override. Later files win on conflicting keys. Finally, the merged dict is passed to `ACEConfig.model_validate(...)` (Pydantic models in `saq/configuration/schema.py`). The raw `YAMLConfig` is kept on `CONFIG.raw`. Unknown keys generally fail validation rather than being ignored — adding a config setting means adding it to the schema.
 

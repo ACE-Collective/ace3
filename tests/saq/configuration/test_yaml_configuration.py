@@ -5,6 +5,7 @@ import sys
 from saq.configuration import (
         YAMLConfig,
         ConfigurationException)
+from saq.configuration.loader import load_configuration
 
 import pytest
 
@@ -155,3 +156,37 @@ path:
     config.load_file(yaml_path_1)
     config.apply_path_references()
     assert temp_dir in sys.path
+@pytest.mark.unit
+def test_unittest_config_paths_overlay_wins(tmp_path, monkeypatch):
+    # SAQ_UNITTEST_CONFIG_PATHS is merged *after* etc/saq.unittest.default.yaml, which is what
+    # lets the test suite point the database settings at the databases it provisions per
+    # session. SAQ_CONFIG_PATHS is merged before it and so cannot do that.
+    early_path = str(tmp_path / 'early.yaml')
+    with open(early_path, 'w') as fp:
+        fp.write("""
+database_ace:
+  database: from-saq-config-paths
+""")
+
+    late_path = str(tmp_path / 'late.yaml')
+    with open(late_path, 'w') as fp:
+        fp.write("""
+database_ace:
+  database: from-unittest-config-paths
+""")
+
+    monkeypatch.setenv("SAQ_CONFIG_PATHS", early_path)
+    monkeypatch.setenv("SAQ_UNITTEST_CONFIG_PATHS", late_path)
+    config = load_configuration(config_paths=[])
+    assert config._data['database_ace']['database'] == 'from-unittest-config-paths'
+    # the unittest default is still merged over SAQ_CONFIG_PATHS
+    monkeypatch.delenv("SAQ_UNITTEST_CONFIG_PATHS")
+    config = load_configuration(config_paths=[])
+    assert config._data['database_ace']['database'] == 'ace-unittest'
+
+@pytest.mark.unit
+def test_unittest_config_paths_missing_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SAQ_UNITTEST_CONFIG_PATHS", str(tmp_path / 'missing.yaml'))
+    config = load_configuration(config_paths=[])
+    assert config._data['database_ace']['database'] == 'ace-unittest'
+    assert 'SAQ_UNITTEST_CONFIG_PATHS' in capsys.readouterr().err

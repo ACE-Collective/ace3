@@ -1,4 +1,8 @@
-"""Seed the database with initial reference data."""
+"""Seed the primary database with initial reference data.
+
+The seeding itself lives in saq.database.seed; this is the command line front end used by
+docker/startup/setup.sh and make db-seed.
+"""
 
 import argparse
 import os
@@ -6,142 +10,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from urllib.parse import quote_plus
-
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
-
-from saq.database.model import (
-    AnalysisModePriority,
-    AuthUserPermission,
-    Company,
-    EventPreventionTool,
-    EventRemediation,
-    EventRiskLevel,
-    EventStatus,
-    EventType,
-    EventVector,
-    Tag,
-    ThreatType,
-    User,
-)
-from saq.permissions.catalog import sync_permission_catalog
-
-
-def get_engine(db_name: str = "ace"):
-    password = os.environ.get("ACE_SUPERUSER_DB_USER_PASSWORD") or ""
-    if not password:
-        with open("/auth/passwords/ace-superuser") as fp:
-            password = fp.read().strip()
-    password = quote_plus(password)
-    host = os.environ.get("ACE_DB_HOST", "ace-db")
-    url = f"mysql+pymysql://ace-superuser:{password}@{host}:3306/{db_name}"
-    return create_engine(url)
-
-
-def _ensure(session: Session, model, unique_attr: str, values: list[str]) -> None:
-    """Insert rows if they don't already exist, matching on a unique column."""
-    existing = {v for (v,) in session.execute(select(getattr(model, unique_attr)))}
-    for value in values:
-        if value not in existing:
-            session.add(model(**{unique_attr: value}))
-
-
-def seed() -> None:
-    engine = get_engine()
-    with Session(engine) as session:
-        # Default company and tag (have explicit PKs — merge is safe)
-        session.merge(Company(id=1, name="default"))
-        session.merge(Tag(id=1, name="whitelisted"))
-
-        # System users (have explicit PKs — merge is safe)
-        session.merge(User(
-            id=1, username="ace", email="ace@localhost",
-            omniscience=0, display_name="automation",
-        ))
-        session.merge(User(
-            id=2, username="analyst",
-            password_hash="pbkdf2:sha256:150000$MeWyGorw$433cf8984d385cec417cc5081140d3ee3edba8263cd49eb979209c6fabcd56bf",
-            email="analyst@localhost", omniscience=0,
-            timezone="UTC", display_name="analyst",
-        ))
-
-        # Event reference data (auto-increment PK — use _ensure for idempotency)
-        _ensure(session, EventStatus, "value",
-                ["OPEN", "CLOSED", "IGNORE"])
-        _ensure(session, EventRemediation, "value",
-                ["not remediated", "cleaned with antivirus", "cleaned manually",
-                 "reimaged", "credentials reset", "removed from mailbox",
-                 "network block", "domain takedown", "NA", "escalated"])
-        _ensure(session, EventVector, "value",
-                ["corporate email", "webmail", "usb", "website", "unknown",
-                 "business application", "compromised website", "sms", "vpn"])
-        _ensure(session, EventRiskLevel, "value",
-                ["1", "2", "3", "0"])
-        _ensure(session, EventPreventionTool, "value",
-                ["response team", "ips", "fw", "proxy", "antivirus",
-                 "email filter", "application whitelisting", "user", "edr"])
-        _ensure(session, EventType, "value",
-                ["phish", "recon", "host compromise", "credential compromise",
-                 "web browsing", "pentest", "third party",
-                 "large number of customer records", "public media"])
-
-        # Threat types (auto-increment PK)
-        _ensure(session, ThreatType, "name",
-                ["unknown", "keylogger", "infostealer", "downloader",
-                 "botnet", "rat", "ransomware", "rootkit", "fraud",
-                 "customer threat", "wiper", "traffic direction system",
-                 "advanced persistent threat"])
-
-        # Permission catalog — seed from the authoritative code-defined catalog.
-        # prune=False so a fresh seed never removes rows another process may rely on.
-        sync_permission_catalog(session, prune=False)
-
-        # Built-in user permissions (auto-increment PK — check by unique key)
-        existing_user_perms = {
-            (uid, major, minor)
-            for uid, major, minor in session.execute(
-                select(AuthUserPermission.user_id, AuthUserPermission.major, AuthUserPermission.minor)
-            )
-        }
-        for user_id, major, minor in [(1, "*", "*"), (2, "*", "*")]:
-            if (user_id, major, minor) not in existing_user_perms:
-                session.add(AuthUserPermission(user_id=user_id, major=major, minor=minor))
-
-        # Analysis mode priority (PK is analysis_mode — merge is safe)
-        session.merge(AnalysisModePriority(analysis_mode="correlation", priority=1))
-
-        session.commit()
-    engine.dispose()
-
-
-def seed_unittest(db_name: str) -> None:
-    engine = get_engine(db_name)
-    with Session(engine) as session:
-        session.merge(Company(id=1, name="default"))
-        session.merge(AnalysisModePriority(analysis_mode="correlation", priority=1))
-        session.commit()
-    engine.dispose()
+from saq.database.seed import seed
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed the database with initial reference data.")
-    parser.add_argument(
-        "--seed-unittests",
-        action="store_true",
-        default=False,
-        help="Also seed unittest databases (ace-unittest, ace-unittest-2).",
-    )
-    parser.add_argument(
-        "--unittest-only",
-        action="store_true",
-        default=False,
-        help="Only seed the unittest databases, leaving the primary ace database alone. "
-             "Used by bin/build-unittest-database.",
-    )
-    args = parser.parse_args()
-    if not args.unittest_only:
-        seed()
-    if args.seed_unittests or args.unittest_only:
-        seed_unittest("ace-unittest")
-        seed_unittest("ace-unittest-2")
+    parser = argparse.ArgumentParser(description="Seed the primary database with initial reference data.")
+    parser.parse_args()
+    seed()

@@ -23,7 +23,9 @@ global:
     - localdomain
     - company.com
   fp_days: 0
-  data_dir: data_unittest
+  # the test suite gives every pytest process its own data_unittest/<slot> and overrides this
+  # (and the ports and paths marked below) per slot -- see tests/unittest_session.py
+  data_dir: data_unittest/main
   log_sql: false
   # the test suite asserts on analysis that is on disk mid-pass, so keep the pre-throttle
   # behavior of writing the tree after every module invocation. tests that exercise the
@@ -65,6 +67,7 @@ api:
   ssl_cert: ssl/ace.cert.pem
   ssl_key: ssl/ace.key.pem
   # listen on a different port since apache already has 443 taken (most likely)
+  # (the test suite adds the pytest-xdist worker index to this port per slot)
   listen_port: 24443
   prefix: localhost:24443
   api_key: dcef0db0-556f-44b3-9e1b-3d97b435d264
@@ -573,6 +576,7 @@ module_group_queues:
     #- analysis_cache_test
 
 service_network_semaphore:
+  # (the test suite adds the pytest-xdist worker index to these ports per slot)
   bind_address: 127.0.0.1
   bind_port: 53560
   remote_address: 127.0.0.1
@@ -781,7 +785,7 @@ test_api:
 
 storage:
   target: local
-  base_dir: data_unittest/storage
+  base_dir: data_unittest/main/storage
 
 # s3 test credentials are loaded from ace-auth mount (garage-init writes garage-test-* keys)
 # s3:

@@ -18,12 +18,13 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
 from saq.crypto import set_encryption_password
+from saq.database.admin import superuser_connection
 from saq.database.pool import get_db_connection, remove_all_sessions
 from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
-from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
 import pytest
@@ -43,7 +44,7 @@ from tests.saq.helpers import (
     stop_api_server,
 )
 from tests.saq.test_util import create_test_context
-from tests import session_lock
+from tests import session_lock, unittest_database, unittest_session
 
 pytest.register_assert_rewrite("tests.saq.requests")
 
@@ -62,6 +63,27 @@ def test_context() -> AnalysisModuleContext:
 
 @pytest.fixture(autouse=True, scope="session")
 def global_setup(request):
+    # this session's own databases. the finalizer is registered before anything is created
+    # so that it runs even if provisioning or execute_global_setup() fails part way through
+    # (pytest_unconfigure drops them too, as a backstop). provisioning has to happen before
+    # execute_global_setup(): that loads the configuration, and the connection pools,
+    # flask_config's lru_cache and the SQLAlchemy engines all read the database names from
+    # it on first use and keep them.
+    request.addfinalizer(unittest_database.drop_current)
+
+    try:
+        unittest_database.provision()
+    except Exception as e:
+        if unittest_session.is_xdist_worker(request.config):
+            # pytest.exit() inside a worker's session fixture leaves the worker's scheduled
+            # tests behind and trips an assertion in xdist's scheduler on the controller. a
+            # plain exception errors this worker's tests with the message and the run goes on.
+            raise
+
+        # a raising session fixture would report this same traceback as an ERROR on every
+        # collected test; one message is enough
+        pytest.exit(f"unable to provision unittest databases: {e}", returncode=4)
+
     execute_global_setup()
 
     yield
@@ -220,7 +242,19 @@ def execute_global_setup():
     # XXX get rid of this
     get_global_runtime_settings().unit_testing = True
 
-    data_dir = os.path.join(saq_home, "data_unittest")
+    # every pytest process (each pytest-xdist worker is one) gets its own data directory
+    # under data_unittest/, named after its slot -- see tests/unittest_session.py
+    data_dir_root = unittest_session.get_data_dir_root()
+    os.makedirs(data_dir_root, exist_ok=True)
+
+    # anything in there that is not a slot directory is left over from before the layout
+    # had slots (the data directory used to be data_unittest/ itself)
+    for entry in os.listdir(data_dir_root):
+        if not unittest_session.is_slot_name(entry):
+            entry_path = os.path.join(data_dir_root, entry)
+            shutil.rmtree(entry_path) if os.path.isdir(entry_path) else os.remove(entry_path)
+
+    data_dir = unittest_session.get_session_data_dir()
     if os.path.exists(data_dir):
         shutil.rmtree(data_dir)
 
@@ -233,7 +267,8 @@ def execute_global_setup():
         data_dir=str(data_dir),
         temp_dir=temp_dir,
         config_paths=[], 
-        logging_config_path=os.path.join(get_base_dir(), "etc", "logging_configs", "unittest_logging.yaml"), 
+        # a copy of etc/logging_configs/unittest_logging.yaml that logs to this slot's own file
+        logging_config_path=unittest_session.write_logging_config(temp_dir),
         relative_dir=None)
 
     execute_global_db_setup()
@@ -624,9 +659,12 @@ def pytest_sessionstart(session):
         load_integration_component_src(dir_path)
 
 #
-# the test suite is not safe to run concurrently with itself: execute_global_setup() deletes
-# data_unittest/ and resets every unittest database. a marker file makes that constraint
-# mechanical instead of a rule people remember. see tests/session_lock.py
+# one *run* of the test suite at a time per checkout: a run may spread over pytest-xdist
+# workers (each one its own databases, data directory, ports and log file, keyed by its
+# slot -- see tests/unittest_session.py), but two runs would collide on all of those, and
+# the stale-database sweep below is only safe when nothing else is provisioning. a marker
+# file makes that constraint mechanical instead of a rule people remember; see
+# tests/session_lock.py. under xdist the controller takes it and the workers ride on it.
 #
 
 # True only if *this* process created the marker file. pytest_unconfigure runs even when
@@ -635,6 +673,10 @@ SESSION_LOCK_HELD = False
 
 def pytest_configure(config):
     global SESSION_LOCK_HELD
+
+    if unittest_session.is_xdist_worker(config):
+        # the controller holds the lock for the whole run and has already swept
+        return
 
     try:
         session_lock.acquire()
@@ -645,10 +687,40 @@ def pytest_configure(config):
 
     SESSION_LOCK_HELD = True
 
+    if config.option.collectonly:
+        return
+
+    # a credential problem is reported once, here, rather than by every xdist worker
+    try:
+        with superuser_connection():
+            pass
+    except Exception as e:
+        raise pytest.UsageError(
+            f"the test suite needs the database superuser to provision its databases: {e}\n"
+            "ACE_SUPERUSER_DB_USER_PASSWORD or /auth/passwords/ace-superuser must hold its password "
+            "and ACE_DB_HOST must name the primary database server")
+
+    # xdist starts its workers from pytest_sessionstart, after every pytest_configure has
+    # run, so nothing of this run has provisioned yet: every registry record is stale.
+    # logging is not configured at this point, hence stderr.
+    try:
+        dropped = unittest_database.sweep_stale()
+    except Exception as e:
+        sys.stderr.write(f"WARNING: unable to sweep stale unittest databases: {e}\n")
+    else:
+        if dropped:
+            sys.stderr.write(f"dropped stale unittest databases left behind by an earlier run: {', '.join(dropped)}\n")
+
 def pytest_unconfigure(config):
     global SESSION_LOCK_HELD
 
-    if SESSION_LOCK_HELD:
-        session_lock.release()
-        SESSION_LOCK_HELD = False
+    try:
+        # normally already done by the global_setup finalizer; this catches a session that
+        # died between provisioning and that finalizer running. a no-op in the xdist
+        # controller, which never provisions.
+        unittest_database.drop_current()
+    finally:
+        if SESSION_LOCK_HELD:
+            session_lock.release()
+            SESSION_LOCK_HELD = False
 

@@ -237,7 +237,7 @@ bumps a mutation counter so the JSON writer knows to re-emit.
 > path (it recreates the table in the new database).
 
 The cache lives in its own MySQL database, `analysis-result-cache`
-(`analysis-result-cache-unittest` for tests), separate from the main `ace`
+(a per-session `analysis-result-cache-unittest-<token>` for tests), separate from the main `ace`
 schema so its multi-billion-row growth and partition churn never touch the
 operational tables. Models bind to a dedicated declarative base
 (`CacheBase`, `saq/database/meta.py`) rather than the main `Base`, and all
@@ -3397,7 +3397,7 @@ areas:
 
 **1. Separate database.** `analysis_result_cache` and `blob_refs` moved out of
 the `ace` schema into a dedicated `analysis-result-cache` database
-(`analysis-result-cache-unittest` for tests). The ORM models bind to a new
+(a per-session `analysis-result-cache-unittest-<token>` for tests). The ORM models bind to a new
 declarative base `CacheBase` (`saq/database/meta.py`) instead of the main
 `Base`, and all cache access routes through `get_db(DB_ANALYSIS_RESULT_CACHE)`
 (`DB_ANALYSIS_RESULT_CACHE = "analysis_result_cache"`, `saq/constants.py`),

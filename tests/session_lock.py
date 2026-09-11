@@ -2,14 +2,21 @@
 #
 # the ACE test suite is not safe to run more than once at a time
 #
-# tests/conftest.py::execute_global_setup() deletes and recreates $SAQ_HOME/data_unittest and
-# mass-deletes rows out of every unittest database, and global_function_setup() does it again
-# before every integration/system test. two pytest processes running at the same time therefore
-# destroy each other's state, and (with pytest-randomly shuffling order) the resulting failures
-# land somewhere unrelated and look like ordinary test bugs.
+# every pytest process owns a slot (tests/unittest_session.py) that decides its data directory
+# under $SAQ_HOME/data_unittest, its API and network semaphore ports and its log file; the
+# process deletes and recreates that data directory at session start and again before every
+# integration/system test. the slots of a pytest-xdist run are distinct, but a second run would
+# reuse them, so two runs at the same time destroy each other's state, and (with pytest-randomly
+# shuffling order) the resulting failures land somewhere unrelated and look like ordinary test
+# bugs.
 #
-# so a session takes a marker file on the way in and drops it on the way out. while that file
-# exists no other session is allowed to start.
+# so a run takes a marker file on the way in and drops it on the way out: the xdist controller,
+# or the only process of a plain run. while that file exists no other run is allowed to start.
+#
+# the databases are not part of this: every session provisions its own set (see
+# tests/unittest_database.py). the marker is still what makes their cleanup safe, though --
+# the process that holds it knows, before its own workers start, that every set an earlier
+# session recorded belongs to a session that is dead.
 #
 
 import datetime
@@ -127,8 +134,9 @@ def describe_holder(path: str) -> str:
         "",
         f"the ACE test suite marker file exists: {path}",
         "",
-        "the test suite is not safe to run more than once at a time -- it deletes and recreates",
-        "data_unittest/ and resets every unittest database, so concurrent runs corrupt each other.",
+        "the test suite is not safe to run more than once at a time -- each run deletes and",
+        "recreates its data_unittest/<slot> directories and binds fixed per-slot ports, so",
+        "concurrent runs corrupt each other. (a single run may use pytest-xdist: pytest -n auto)",
         "",
     ]
 
