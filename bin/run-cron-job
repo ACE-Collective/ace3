@@ -23,8 +23,10 @@
 #
 # Keep the module-level imports stdlib-only.
 #
+import errno
 import os
 import os.path
+import shutil
 import signal
 import socket
 import subprocess
@@ -76,6 +78,9 @@ def run_job(command: list[str], fp) -> tuple[int, Optional[str]]:
     yacron cancels the job.
     """
     try:
+        if shutil.which(command[0]) is None:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), command[0])
+
         proc = subprocess.Popen(command, stdout=fp, stderr=subprocess.STDOUT)
     except Exception as e:
         fp.write("run-cron-job: unable to execute {}: {}\n".format(command, e).encode())
