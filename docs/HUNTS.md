@@ -436,7 +436,7 @@ A summary detail has the following fields:
 - `dedup_fields` (list of strings, optional): Fields used to deduplicate summaries so the same content is not added repeatedly.
 - `required_fields` (list of strings, optional): Fields that must be present **and non-empty** in the event for the summary to be generated.
 
-> If a summary detail specifies an event field for interpolation and that event field does not exist in the event, then that summary detail is skipped for that event.
+> If a summary detail specifies an event field for interpolation and that event field does not exist in the event, then that summary detail is skipped for that event. An unrenderable `header` is the exception: the detail is added without one rather than dropped.
 
 The `format` field supports the following values:
 
