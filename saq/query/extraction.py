@@ -438,9 +438,11 @@ def process_ungrouped_summary_detail(
         if content is None:
             continue
 
+        # a header that cannot be rendered is not worth discarding content over — both
+        # grouped paths below already degrade to a headerless detail
         header_ok, header = render_sd_header(sd_config, event)
         if not header_ok:
-            continue
+            header = None
 
         if count >= sd_config.limit:
             if count == sd_config.limit:

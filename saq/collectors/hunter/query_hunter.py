@@ -554,10 +554,10 @@ class QueryHunt(Hunt):
             if content is None:
                 continue
 
-            # render header
+            # render header — one that cannot be rendered is not worth discarding content over
             header_ok, header = render_sd_header(sd_config, event)
             if not header_ok:
-                continue
+                header = None
 
             for submission in event_submission_map[event_index]:
                 sub_id = id(submission)
