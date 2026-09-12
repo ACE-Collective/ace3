@@ -24,6 +24,16 @@ import magic
 
 logger = logging.getLogger(__name__)
 
+# which ACE stack this worker belongs to. several stacks can share one docker daemon, so every
+# container we spawn is labelled with this and the reaper only ever looks at its own. the
+# worker hostname cannot be used for that: docker-compose.yml pins `hostname: phishkit` on this
+# container, so every stack's manager reports the same name.
+STACK = os.environ.get("ACE_STACK", "ace")
+# the name of the volume we share with the scanner containers we spawn. compose prefixes named
+# volumes with the project name, so this is not a constant -- it is passed in as
+# ACE_PHISHKIT_VOLUME. the default is the pre-multi-instance name.
+PHISHKIT_VOLUME = os.environ.get("ACE_PHISHKIT_VOLUME", "ace-phishkit")
+
 SHARED_CONFIG_DIR = "/phishkit/config"
 DEFAULT_CONFIG_PATH = "/opt/ace/etc/phishkit_config.yaml"
 
@@ -138,10 +148,15 @@ def _graceful_stop_container(name: str) -> None:
 
 
 def _list_phishkit_containers() -> list[dict]:
-    """Return metadata for every running scanner container labeled by phishkit."""
+    """Return metadata for every running scanner container spawned by *this* ACE stack.
+
+    The stack filter matters: the docker daemon is shared with every other ACE stack on the
+    host, so without it this returns their scanner containers too and the reaper kills them.
+    """
     try:
         result = subprocess.run(
             ["docker", "ps", "--filter", "label=phishkit.job_id",
+             "--filter", f"label=phishkit.stack={STACK}",
              "--format",
              '{{.ID}}|{{.Names}}|{{.Label "phishkit.started_at"}}|{{.Label "phishkit.worker"}}'],
             capture_output=True, text=True, timeout=10, check=False,
@@ -164,7 +179,12 @@ def _list_phishkit_containers() -> list[dict]:
 
 
 def _reap_orphans(max_age_seconds: int, only_this_worker: bool = False) -> int:
-    """Kill any phishkit scanner container older than max_age_seconds. Returns count killed."""
+    """Kill this stack's phishkit scanner containers older than max_age_seconds.
+
+    Returns the count killed. Containers belonging to another ACE stack are never considered
+    -- see _list_phishkit_containers. Within one stack, only_this_worker narrows further to
+    the containers this worker process started.
+    """
     now = int(time.time())
     this_worker = socket.gethostname()
     killed = 0
@@ -348,6 +368,7 @@ def _run_scanner(
                 "--init",
                 "--name", name,
                 "--label", f"phishkit.job_id={job_id}",
+                "--label", f"phishkit.stack={STACK}",
                 "--label", f"phishkit.worker={worker_hostname}",
                 "--label", f"phishkit.started_at={int(time.time())}",
                 "--memory", str(mem),
@@ -355,7 +376,7 @@ def _run_scanner(
                 "--cpus", str(resource_limits["container_cpus"]),
                 "--stop-timeout", "5",
                 "-v",
-                "ace-phishkit:/phishkit",
+                f"{PHISHKIT_VOLUME}:/phishkit",
                 os.environ.get("ACE3_PHISHKIT_IMAGE_URL", "phishkit"),
                 "/opt/venv/bin/python",
                 "/opt/app/scanner.py",

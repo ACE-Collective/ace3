@@ -28,6 +28,9 @@ Optionally execute `bin/attach-container.sh` to gain a shell to the containerize
 ace --help
 ```
 
+Copy `.env.example` to `.env` if you need to change any of the defaults. To run more than one
+ACE instance on the same machine, see [docs/MULTI_INSTANCE.md](docs/MULTI_INSTANCE.md).
+
 ## The Path to "3.0"
 
 - ☑ switch to YAML for configuration

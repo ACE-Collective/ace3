@@ -20,7 +20,9 @@ global:
   company_name: default
   company_id: 1
   # shows up in the GUI so you know which instance you're logged into
-  instance_name: DEV
+  # supplied by docker-compose.yml (x-common-env) so that two instances running on the same host
+  # are distinguishable; see docs/MULTI_INSTANCE.md
+  instance_name: env:ACE_INSTANCE_NAME
   # the name of this node, usually this is the fully qualified domain name
   # if this is set to AUTO then socket.getfqdn() is used
   # NOTE make sure this is actually a resolvable host name!
@@ -462,8 +464,6 @@ gui:
   alert_details_collapsed: false
   # Hide intel if we don't want to let people see it (public/internet ace)
   hide_intel: false
-  # the base address for the GUI (used to build ACE permalinks)
-  base_uri: https://localhost:5000/ACE
   # default company for manual analysis (the default option from the drop down)
   # 3 == integral
   default_company_id: 0
@@ -1069,13 +1069,6 @@ service_yara:
   scan_failure_dir: scan_failures
   # how long (in seconds) a single scan is allowed to take
   default_timeout: 10
-
-# defines what we do with the malicious files we find
-malicious_files:
-  # this is where we actually store copies of the files
-  malicious_dir: malicious
-  # list of email accounts to send notifications to when new files are added
-  malicious_alert_recipients: []
 
 # observable groups
 observable_group_internal:

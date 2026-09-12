@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# resolve everything relative to this script rather than the caller's cwd, so that
+# bin/get-dev-container.sh below finds this checkout's compose project (and therefore this ACE
+# instance) no matter where the script is invoked from
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
 USER="ace"
 INTERACTIVE=""
 TTY=""

@@ -75,7 +75,6 @@ api:
 gui:
   ssl_cert: ssl/ace.cert.pem
   ssl_key: ssl/ace.key.pem
-  base_uri: https://localhost:5000/ace
   default_company_id: 1
   core_companies: 
     - 1

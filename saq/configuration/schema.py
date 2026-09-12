@@ -248,7 +248,6 @@ class GUIConfig(BaseModel):
     matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
     hide_intel: bool = Field(..., description="hide intel if we don't want to let people see it")
-    base_uri: str = Field(..., description="the base address for the GUI (used to build ACE permalinks)")
     default_company_id: int = Field(..., description="default company for manual analysis")
     core_companies: list[int] = Field(..., description="define what companies are core companies")
     secret_key: str = Field(..., description="secret key used by flask")
@@ -337,10 +336,6 @@ class SIPYaraExportConfig(BaseModel):
     export_sources_exclude: str = Field(..., description="list of sources to exclude (defaults to none if left empty)")
     export_template_dir: str = Field(..., description="directory of template files")
     export_minimum_length: int = Field(..., description="minimum length of an indicator value that would go into a yara rule")
-
-class MaliciousFilesConfig(BaseModel):
-    malicious_dir: str = Field(..., description="directory where malicious files are stored")
-    malicious_alert_recipients: list[str] = Field(..., description="comma separated list of email accounts to send notifications to when new files are added")
 
 class CustomAlertsConfig(BaseModel):
     template_dir: str = Field(..., description="directory containing all flask views")
@@ -674,7 +669,6 @@ class ACEConfig(BaseModel):
     sip_yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_indicator_type_mapping: Optional[dict[str, str]] = None
     sip_observable_type_mappping: Optional[dict[str, str]] = None
-    malicious_files: Optional[MaliciousFilesConfig] = None
     observable_exclusions: Optional[dict[str, str]] = None
     custom_alerts: Optional[CustomAlertsConfig] = None
     custom_alerts_backward_compatibility: Optional[dict[str, str]] = None

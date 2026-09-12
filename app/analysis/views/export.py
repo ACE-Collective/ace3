@@ -285,68 +285,6 @@ def download_file():
         response = make_response(result)
         response.headers['Content-Type'] = 'text/html; charset=utf-8'
         return response
-    elif mode == 'malicious':
-        maliciousdir = os.path.join(get_base_dir(), get_config().malicious_files.malicious_dir)
-        if not os.path.isdir(maliciousdir):
-            logging.error("malicious_dir {} does not exist")
-            return "internal error (review logs)", 404
-            
-        if file_observable.sha256_hash is None:
-            if not file_observable.compute_hashes():
-                return "unable to compute file hash of {}".format(file_observable.value), 404
-
-        malicioussub = os.path.join(maliciousdir, file_observable.sha256_hash[0:2])
-        if not os.path.isdir(malicioussub):
-            try:
-                os.mkdir(malicioussub)
-            except Exception as e:
-                logging.error("unable to create dir {}: {}".format(malicioussub, str(e)))
-                report_exception()
-                return "internal error (review logs)", 404
-
-        lnname = os.path.join(malicioussub, file_observable.sha256_hash)
-        if not os.path.exists(lnname):
-            try:
-                os.symlink(full_path, lnname)
-            except Exception as e:
-                logging.error("unable to create symlink from {} to {}: {}".format(
-                    full_path, lnname, str(e)))
-                report_exception()
-                return "internal error (review logs)", 404
-
-        if not os.path.exists(lnname + ".alert"):
-            fullstoragedir = os.path.join(get_base_dir(), alert.storage_dir)
-            try:
-                os.symlink(fullstoragedir, lnname + ".alert")
-            except Exception as e:
-                logging.error("unable to create symlink from {} to {}: {}".format(
-                    fullstoragedir, lnname, str(e)))
-                report_exception()
-                return "internal error (review logs)", 404
-
-        # TODO we need to lock the alert here...
-        file_observable.add_tag("malicious")
-        alert.sync()
-
-        # who gets these alerts?
-        malicious_alert_recipients = get_config().malicious_files.malicious_alert_recipients
-
-        msg = MIMEText('{} has identified a malicious file in alert {}.\r\n\r\nACE Direct Link: {}\r\n\r\nRemote Storage: {}'.format(
-            current_user.username,
-            alert.description,
-            '{}/analysis?direct={}'.format(get_config().gui.base_uri, alert.uuid),
-            lnname))
-
-        msg['Subject'] = "malicious file detected - {}".format(os.path.basename(file_observable.value))
-        msg['From'] = get_config().smtp.mail_from
-        msg['To'] = ', '.join(malicious_alert_recipients)
-
-        with smtplib.SMTP(get_config().smtp.server) as mail:
-            mail.send_message(msg, 
-                from_addr=get_config().smtp.mail_from, 
-                to_addrs=malicious_alert_recipients)
-
-        return "analysis?direct=" + alert.uuid, 200
 
     return "", 404
 
