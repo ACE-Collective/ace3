@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.111] - 2026-09-12
+
+- [Add multi-instance support for ACE](https://github.com/ACE-Collective/ace3/pull/556)
+- [Test fixes for Macs](https://github.com/ACE-Collective/ace3/pull/555)
+- [Run the test suite under pytest-xdist](https://github.com/ACE-Collective/ace3/pull/554)
+
 ## [3.0.110] - 2026-09-10
 
 - [Add support for deprecated analysis modules](https://github.com/ACE-Collective/ace3/pull/550)
