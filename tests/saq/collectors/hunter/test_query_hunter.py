@@ -4217,6 +4217,28 @@ def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
 
 
 @pytest.mark.unit
+def test_summary_details_unrenderable_header_keeps_content(monkeypatch):
+    """A header that cannot render must not cost the analyst content that rendered fine."""
+    import saq.collectors.hunter.query_hunter
+    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+
+    hunt = default_hunt(
+        manager=MockManager(),
+        name="test_sd_header_failure",
+        group_by=None,
+        summary_details=[
+            SummaryDetailConfig(content="{{ host }}", header="Seen by {{ sensor }}"),
+        ],
+    )
+    submissions = hunt.process_query_results([{"host": "server1"}])
+    assert len(submissions) == 1
+    sd_list = submissions[0].root.summary_details
+    assert len(sd_list) == 1
+    assert sd_list[0].content == "server1"
+    assert sd_list[0].header is None
+
+
+@pytest.mark.unit
 def test_summary_details_ungrouped_limit(monkeypatch, caplog):
     """test that limit is enforced and warning is logged"""
     import saq.collectors.hunter.query_hunter
