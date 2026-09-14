@@ -52,7 +52,7 @@ class EmailArchiveInterface(Protocol):
         Returns the server_id if it already exists, or creates a new new."""
         ...
 
-    def insert_email_archive(self, db, cursor, email_hash: str) -> int:
+    def insert_email_archive(self, db, cursor, email_hash: str, insert_date: datetime) -> int:
         ...
 
     def index_email_archive(self, db, cursor, archive_id: int, field_name: str, field_value: str, insert_date: datetime):
