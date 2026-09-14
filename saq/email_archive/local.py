@@ -61,10 +61,15 @@ class EmailArchiveLocal(EmailArchiveInterface):
         assert isinstance(message_id, str)
         assert isinstance(recipients, list)
 
+        # these insert_date columns are DATETIME with no fractional seconds, and insert_date is part
+        # of the unique key used to de-duplicate. truncate here so the value we write is the value we
+        # can match on later (MySQL rounds rather than truncates)
+        insert_date = insert_date.replace(microsecond=0)
+
         hash = self.archive_email_file(file_path, message_id)
         with get_db_connection(DB_EMAIL_ARCHIVE) as db:
             cursor = db.cursor()
-            archive_id = self.insert_email_archive(db, cursor, hash)
+            archive_id = self.insert_email_archive(db, cursor, hash, insert_date)
             self.index_email_archive(db, cursor, archive_id, EMAIL_ARCHIVE_FIELD_MESSAGE_ID, message_id, insert_date)
             self.index_email_history(db, cursor, message_id, recipients, insert_date)
             db.commit()
@@ -164,11 +169,27 @@ class EmailArchiveLocal(EmailArchiveInterface):
             execute_with_retry(db, cursor, "INSERT IGNORE INTO archive_server ( hostname ) VALUES ( %s )", 
                             (hostname,), commit=True)
 
-            return cursor.lastrowid
+            server_id = cursor.lastrowid
+            if server_id:
+                return server_id
 
-    def insert_email_archive(self, db, cursor, email_hash: str) -> int:
-        execute_with_retry(db, cursor, "INSERT IGNORE INTO archive ( server_id, hash ) VALUES ( %s, UNHEX(%s) )",
-                        (self.get_email_archive_server_id(), email_hash))
+            # another process registered the same hostname between our SELECT and our INSERT, so the
+            # INSERT IGNORE was suppressed and lastrowid is 0 -- read back the row that won
+            cursor.execute("SELECT server_id FROM archive_server WHERE hostname = %s", (hostname,))
+            row = cursor.fetchone()
+            if row is None: # pragma: nocover
+                raise RuntimeError(f"unable to register email archive server {hostname}")
+
+            return row[0]
+
+    def insert_email_archive(self, db, cursor, email_hash: str, insert_date: datetime) -> int:
+        # insert_date must be passed explicitly rather than left to DEFAULT CURRENT_TIMESTAMP. the
+        # archive table is partitioned by insert_date, so MySQL requires it in every unique key --
+        # which makes it part of idx_server_id (server_id, hash, insert_date), the key this
+        # INSERT IGNORE relies on to de-duplicate. taking it from the server clock instead would make
+        # de-duplication depend on whether two calls happen to land in the same wall clock second.
+        execute_with_retry(db, cursor, "INSERT IGNORE INTO archive ( server_id, hash, insert_date ) VALUES ( %s, UNHEX(%s), %s )",
+                        (self.get_email_archive_server_id(), email_hash, insert_date))
 
         archive_id = cursor.lastrowid
 
@@ -178,8 +199,12 @@ class EmailArchiveLocal(EmailArchiveInterface):
         if archive_id:
             return archive_id
 
-        cursor.execute("SELECT archive_id FROM archive WHERE server_id = %s AND hash = UNHEX(%s)", (self.get_email_archive_server_id(), email_hash))
+        cursor.execute("SELECT archive_id FROM archive WHERE server_id = %s AND hash = UNHEX(%s) AND insert_date = %s",
+                        (self.get_email_archive_server_id(), email_hash, insert_date))
         row = cursor.fetchone()
+        if row is None: # pragma: nocover -- only if the row was dropped between the two statements
+            raise RuntimeError(f"unable to find archive entry for {email_hash} at {insert_date}")
+
         return row[0]
 
     def index_email_archive(self, db, cursor, archive_id: int, field_name: str, field_value: str, insert_date: datetime):

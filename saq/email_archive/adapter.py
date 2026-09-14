@@ -59,8 +59,8 @@ class EmailArchiveAdapter(EmailArchiveInterface):
         Returns the server_id if it already exists, or creates a new new."""
         return self._email_archive.register_email_archive(hostname, reset_server_id)
 
-    def insert_email_archive(self, db, cursor, email_hash: str) -> int:
-        return self._email_archive.insert_email_archive(db, cursor, email_hash)
+    def insert_email_archive(self, db, cursor, email_hash: str, insert_date: datetime) -> int:
+        return self._email_archive.insert_email_archive(db, cursor, email_hash, insert_date)
 
     def index_email_archive(self, db, cursor, archive_id: int, field_name: str, field_value: str, insert_date: datetime):
         return self._email_archive.index_email_archive(db, cursor, archive_id, field_name, field_value, insert_date)
