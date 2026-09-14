@@ -789,6 +789,25 @@ def test_process_summary_details_with_header():
 
 
 @pytest.mark.unit
+def test_process_summary_details_unrenderable_header_keeps_content():
+    """A header that cannot render must not cost content that rendered fine."""
+    configs = [
+        SummaryDetailConfig(content="{{ value }}", header="Seen by {{ missing }}"),
+    ]
+    results = [{"value": "test"}]
+
+    details = []
+    def add_detail(content, header, fmt):
+        details.append({"content": content, "header": header})
+
+    process_summary_details(configs, results, add_detail)
+
+    assert len(details) == 1
+    assert details[0]["content"] == "test"
+    assert details[0]["header"] is None
+
+
+@pytest.mark.unit
 def test_process_summary_details_limit():
     """Test summary detail limit enforcement."""
     configs = [

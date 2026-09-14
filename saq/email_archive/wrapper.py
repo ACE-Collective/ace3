@@ -44,8 +44,8 @@ def register_email_archive(hostname: Optional[str]=None, reset_server_id: Option
     Returns the server_id if it already exists, or creates a new new."""
     return EmailArchiveFactory.get_email_archive_interface().register_email_archive(hostname, reset_server_id)
 
-def insert_email_archive(db, cursor, email_hash: str) -> int:
-    return EmailArchiveFactory.get_email_archive_interface().insert_email_archive(db, cursor, email_hash)
+def insert_email_archive(db, cursor, email_hash: str, insert_date: datetime) -> int:
+    return EmailArchiveFactory.get_email_archive_interface().insert_email_archive(db, cursor, email_hash, insert_date)
 
 def index_email_archive(db, cursor, archive_id: int, field_name: str, field_value: str, insert_date: datetime):
     return EmailArchiveFactory.get_email_archive_interface().index_email_archive(db, cursor, archive_id, field_name, field_value, insert_date)

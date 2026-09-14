@@ -80,6 +80,19 @@ def test_duplicate(tmpdir):
     result_2 = archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], insert_date)
     assert result_1 == result_2
 
+    # the archive row is de-duplicated on (server_id, hash, insert_date), so the insert_date we pass in
+    # has to be the one that gets written -- not whatever the server clock said at insert time, which
+    # made this depend on both calls landing in the same wall clock second
+    assert result_1.insert_date.microsecond == 0
+
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*), MIN(insert_date) FROM archive")
+        count, stored_insert_date = cursor.fetchone()
+
+    assert count == 1
+    assert stored_insert_date == result_1.insert_date.replace(tzinfo=None)
+
 @pytest.mark.integration
 def test_multiple_recipients(archived_email):
     with get_db_connection(DB_EMAIL_ARCHIVE) as db:
