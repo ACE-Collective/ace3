@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.112] - 2026-09-16
+
+- [Fix accumulating [git] <defunct> zombie processes](https://github.com/ACE-Collective/ace3/pull/562)
+- [Refactor email archive insertion to include insert_date](https://github.com/ACE-Collective/ace3/pull/561)
+- [Keep summary detail content when its header cannot render](https://github.com/ACE-Collective/ace3/pull/559)
+- [updated point releases of python deps](https://github.com/ACE-Collective/ace3/pull/558)
+
 ## [3.0.111] - 2026-09-12
 
 - [Add multi-instance support for ACE](https://github.com/ACE-Collective/ace3/pull/556)
