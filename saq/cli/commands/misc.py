@@ -69,10 +69,10 @@ debug_parser = get_cli_subparsers().add_parser('debug')
 debug_parser.set_defaults(func=debug)
 
 def update_git_repos(args):
-    from saq.git import get_configured_repos, update_repo
+    from saq.git import get_configured_repos
     for repo in get_configured_repos():
-        if not args.name or repo.name in args.name:
-            update_repo(repo)
+        if not args.name or repo.config.name in args.name:
+            repo.update()
 
     sys.exit(0)
 
@@ -84,11 +84,11 @@ git_update_parser.add_argument("name", nargs="*", help="One or more repo names t
 git_update_parser.set_defaults(func=update_git_repos)
 
 def list_git_repos(args):
-    from saq.git import get_configured_repos, repo_is_up_to_date
+    from saq.git import get_configured_repos
     from tabulate import tabulate
     repos = get_configured_repos()
     table = [
-        [repo.name, repo.local_path, repo.git_url, repo.branch, repo_is_up_to_date(repo.git_url, repo.local_path, repo.branch), repo.update_frequency]
+        [repo.config.name, repo.config.local_path, repo.config.git_url, repo.config.branch, repo.repo_is_up_to_date(), repo.config.update_frequency]
         for repo in repos
     ]
     headers = ["Name", "Local Path", "Git URL", "Branch", "Up to Date", "Update Frequency"]
