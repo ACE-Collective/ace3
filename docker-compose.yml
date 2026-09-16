@@ -398,6 +398,7 @@ services:
     depends_on:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uwsgi --yaml etc/uwsgi_app.yaml"
+    init: true
     restart: always
     stop_grace_period: 60s
     volumes: *common-volumes
@@ -417,6 +418,7 @@ services:
     depends_on:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uwsgi --yaml etc/uwsgi_api.yaml"
+    init: true
     restart: always
     stop_grace_period: 60s
     volumes: *common-volumes
@@ -436,6 +438,7 @@ services:
     depends_on:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_uvicorn:application --host 0.0.0.0 --port 3032 --workers 12 --timeout-keep-alive 300 --timeout-graceful-shutdown 45"
+    init: true
     restart: always
     stop_grace_period: 60s
     volumes: *common-volumes
@@ -467,6 +470,7 @@ services:
     depends_on:
       - redis
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_ai_uvicorn:application --host 0.0.0.0 --port 3033 --workers 2 --timeout-keep-alive 300 --timeout-graceful-shutdown 45"
+    init: true
     restart: always
     stop_grace_period: 60s
     volumes:
@@ -528,6 +532,7 @@ services:
     depends_on:
       - ace
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace gui start"
+    init: true
     restart: always
     stop_grace_period: 30s
     volumes: *common-volumes
@@ -548,6 +553,7 @@ services:
       ace-setup:
         condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start network_semaphore"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -567,6 +573,7 @@ services:
       - ace
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start git"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -584,6 +591,7 @@ services:
       - ace
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start cron"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -602,6 +610,7 @@ services:
       ace-setup:
         condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start yara"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -624,6 +633,7 @@ services:
       qdrant:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start search_indexer"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -642,6 +652,7 @@ services:
       ace:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start remediation"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -660,6 +671,7 @@ services:
       ace:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start external_remediation_check"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -678,6 +690,7 @@ services:
       ace:
         condition: service_started
     command: /bin/bash -c "/opt/ace/docker/startup/start.sh ace service start monitoring"
+    init: true
     restart: always
     stop_grace_period: 45s
     volumes: *common-volumes
@@ -694,6 +707,7 @@ services:
       #ace-setup:
         #condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start_nothing.sh"
+    init: true
     restart: always
     stop_grace_period: 10s
     volumes: *common-volumes

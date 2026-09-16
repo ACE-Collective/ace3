@@ -1,18 +1,28 @@
+import ctypes
 import logging
+import multiprocessing
 import os
+import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 
 from saq.configuration import get_config
 from saq.configuration.schema import GitRepoConfig
 from saq.git import (
+    GIT_NO_DETACH_ARGS,
     GitManagerService,
     GitRepo,
+    _git_argv,
+    get_commit_hash,
     get_configured_repos,
+    get_remote_url,
+    get_repo_root,
 )
 
 
@@ -952,45 +962,116 @@ class TestRunGitCommand:
             git_command_timeout=timeout,
         ))
 
+    @staticmethod
+    def _install_mock_process(mock_popen, mock_process):
+        # _run_git_command uses Popen as a context manager so that an unexpected
+        # exception out of communicate() can't leave the child unreaped
+        mock_popen.return_value.__enter__.return_value = mock_process
+
     @patch("saq.git.subprocess.Popen")
     def test_successful_command_returns_stdout_stderr(self, mock_popen):
         mock_process = MagicMock()
         mock_process.communicate.return_value = ("output\n", "")
         mock_process.returncode = 0
-        mock_popen.return_value = mock_process
+        self._install_mock_process(mock_popen, mock_process)
 
         repo = self._make_repo()
-        stdout, stderr = repo._run_git_command(["git", "status"], "failed")
+        returncode, stdout, stderr = repo._run_git_command(["status"], "failed")
 
+        assert returncode == 0
         assert stdout == "output\n"
         assert stderr == ""
         mock_process.communicate.assert_called_once_with(timeout=30)
+
+    @patch("saq.git.subprocess.Popen")
+    def test_command_runs_in_its_own_process_group(self, mock_popen):
+        mock_process = MagicMock()
+        mock_process.communicate.return_value = ("", "")
+        mock_process.returncode = 0
+        self._install_mock_process(mock_popen, mock_process)
+
+        self._make_repo()._run_git_command(["status"], "failed")
+
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
 
     @patch("saq.git.subprocess.Popen")
     def test_nonzero_return_code_raises_runtime_error(self, mock_popen):
         mock_process = MagicMock()
         mock_process.communicate.return_value = ("", "fatal: not a git repository")
         mock_process.returncode = 1
-        mock_popen.return_value = mock_process
+        self._install_mock_process(mock_popen, mock_process)
 
         repo = self._make_repo()
 
         with pytest.raises(RuntimeError, match="command failed"):
-            repo._run_git_command(["git", "status"], "command failed")
+            repo._run_git_command(["status"], "command failed")
 
     @patch("saq.git.subprocess.Popen")
-    def test_timeout_raises_and_kills_process(self, mock_popen):
+    def test_nonzero_return_code_returned_when_check_is_false(self, mock_popen):
         mock_process = MagicMock()
+        mock_process.communicate.return_value = ("", "fatal: bad revision")
+        mock_process.returncode = 128
+        self._install_mock_process(mock_popen, mock_process)
+
+        returncode, _, stderr = self._make_repo()._run_git_command(
+            ["rev-list", "--count", "HEAD..origin/main"], "failed", check=False)
+
+        assert returncode == 128
+        assert stderr == "fatal: bad revision"
+
+    @patch("saq.git.os.getpgid", return_value=4321)
+    @patch("saq.git.os.killpg")
+    @patch("saq.git.subprocess.Popen")
+    def test_timeout_kills_the_whole_process_group(self, mock_popen, mock_killpg, mock_getpgid):
+        mock_process = MagicMock()
+        mock_process.pid = 4321
         mock_process.communicate.side_effect = [
             subprocess.TimeoutExpired(cmd="git", timeout=30),
             ("", ""),
         ]
-        mock_popen.return_value = mock_process
+        self._install_mock_process(mock_popen, mock_process)
 
         repo = self._make_repo(timeout=30)
 
         with pytest.raises(subprocess.TimeoutExpired):
-            repo._run_git_command(["git", "fetch"], "fetch failed")
+            repo._run_git_command(["fetch"], "fetch failed")
+
+        # the whole group, not just git: git forks ssh/git-remote-* helpers that
+        # inherit our pipes, and process.kill() would leave them running
+        mock_killpg.assert_called_once_with(4321, signal.SIGKILL)
+        mock_process.kill.assert_not_called()
+
+    @patch("saq.git.os.getpgid", return_value=4321)
+    @patch("saq.git.os.killpg")
+    @patch("saq.git.subprocess.Popen")
+    def test_timeout_read_after_kill_is_bounded(self, mock_popen, mock_killpg, mock_getpgid):
+        mock_process = MagicMock()
+        mock_process.pid = 4321
+        mock_process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="git", timeout=30),
+            ("", ""),
+        ]
+        self._install_mock_process(mock_popen, mock_process)
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            self._make_repo(timeout=30)._run_git_command(["fetch"], "fetch failed")
+
+        # an unbounded second read could wedge the repo thread forever
+        assert mock_process.communicate.call_args_list[1].kwargs == {"timeout": 30}
+
+    @patch("saq.git.os.getpgid", side_effect=ProcessLookupError())
+    @patch("saq.git.subprocess.Popen")
+    def test_timeout_falls_back_to_killing_the_child(self, mock_popen, mock_getpgid):
+        mock_process = MagicMock()
+        mock_process.pid = 4321
+        mock_process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="git", timeout=30),
+            ("", ""),
+        ]
+        self._install_mock_process(mock_popen, mock_process)
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            self._make_repo(timeout=30)._run_git_command(["fetch"], "fetch failed")
 
         mock_process.kill.assert_called_once()
 
@@ -1171,3 +1252,186 @@ class TestGitCommitHelpers:
         # unrelated
         other = str(tmpdir.mkdir("other_root"))
         assert not git_dir_contains(rule_dir, other)
+
+
+@pytest.mark.unit
+class TestNoDetachOptions:
+    """git's auto-maintenance daemonizes itself with setsid() at the end of every fetch,
+    pull and clone. In an ACE container that detached child is orphaned to PID 1 -- the
+    python process itself -- which never reaps it, so it piles up as [git] <defunct>.
+    Every git invocation in saq.git has to turn that off."""
+
+    def _make_repo(self):
+        return GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=3600,
+            branch="main",
+        ))
+
+    def test_git_argv_prepends_the_no_detach_options(self):
+        argv = _git_argv("-C", "/path/to/repo", "fetch", "--all")
+
+        assert argv == ["git", *GIT_NO_DETACH_ARGS, "-C", "/path/to/repo", "fetch", "--all"]
+        assert "gc.autoDetach=false" in argv
+        assert "maintenance.autoDetach=false" in argv
+
+    @patch("saq.git.subprocess.Popen")
+    def test_every_gitrepo_command_disables_detach(self, mock_popen):
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        # clone, rev-parse, checkout, fetch, status, rev-list, pull
+        mock_process.communicate.side_effect = [("", "")] * 5 + [("0\n", "")] + [("", "")]
+        mock_popen.return_value.__enter__.return_value = mock_process
+
+        repo = self._make_repo()
+        with patch.object(GitRepo, "clone_exists", return_value=True):
+            repo.clone_repo()
+            repo.get_repo_branch()
+            repo.change_repo_branch("main")
+            repo.repo_is_up_to_date()
+            repo.pull_repo()
+
+        assert len(mock_popen.call_args_list) == 7
+        for call in mock_popen.call_args_list:
+            argv = call.args[0]
+            assert argv[0] == "git"
+            assert "gc.autoDetach=false" in argv, argv
+            assert "maintenance.autoDetach=false" in argv, argv
+
+    @patch("saq.git.subprocess.run")
+    def test_every_module_helper_disables_detach(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="value\n", stderr="")
+
+        get_commit_hash("/path/to/repo")
+        get_repo_root("/path/to/repo")
+        get_remote_url("/path/to/repo")
+
+        assert len(mock_run.call_args_list) == 3
+        for call in mock_run.call_args_list:
+            argv = call.args[0]
+            assert argv[0] == "git"
+            assert "gc.autoDetach=false" in argv, argv
+            assert "maintenance.autoDetach=false" in argv, argv
+
+
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def _update_under_subreaper(config: GitRepoConfig, connection):
+    """Runs GitRepo.update() in a process that has declared itself a child subreaper, so
+    anything git detaches is reparented *here* rather than to the real init -- exactly
+    what happens to PID 1 inside an ACE container. Sends back whatever it adopted."""
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
+
+        GitRepo(config).update()
+
+        # a detached maintenance process forks, setsid()s, and its parent exits right
+        # away - give the kernel a moment to reparent it onto us
+        time.sleep(2)
+
+        adopted = []
+        for child in psutil.Process().children(recursive=True):
+            try:
+                adopted.append((child.pid, child.name(), child.status()))
+            except psutil.NoSuchProcess:
+                pass
+        connection.send(adopted)
+    except Exception as e:
+        connection.send(f"error: {e}")
+    finally:
+        connection.close()
+
+
+@pytest.mark.integration
+class TestNoOrphanedGitProcesses:
+    def test_update_leaves_nothing_behind(self, tmpdir):
+        remote_path = tmpdir.mkdir("remote_repo")
+        subprocess.run(["git", "init", "--bare"], cwd=str(remote_path), check=True)
+
+        temp_setup = tmpdir.mkdir("temp_setup")
+        subprocess.run(["git", "clone", str(remote_path), str(temp_setup)], check=True)
+        temp_setup.join("test.txt").write("initial content")
+        subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"], cwd=str(temp_setup), check=True)
+        subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
+
+        local_path = str(tmpdir.join("local_repo"))
+        subprocess.run(["git", "clone", str(remote_path), local_path], check=True)
+
+        # make sure auto maintenance has actual work to do, so this test still means
+        # something if git ever starts checking before it detaches
+        subprocess.run(["git", "config", "gc.auto", "1"], cwd=local_path, check=True)
+
+        temp_setup.join("test.txt").write("updated content")
+        subprocess.run(["git", "add", "test.txt"], cwd=str(temp_setup), check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Update commit"], cwd=str(temp_setup), check=True)
+        subprocess.run(["git", "push", "origin", "master"], cwd=str(temp_setup), check=True)
+
+        config = GitRepoConfig(
+            name="test",
+            description="test",
+            local_path=local_path,
+            git_url=str(remote_path),
+            update_frequency=3600,
+            branch="master",
+        )
+
+        context = multiprocessing.get_context("fork")
+        parent_connection, child_connection = context.Pipe()
+        process = context.Process(target=_update_under_subreaper, args=(config, child_connection))
+        process.start()
+        child_connection.close()
+
+        assert parent_connection.poll(120), "the subreaper process never reported back"
+        adopted = parent_connection.recv()
+        process.join(30)
+
+        assert not isinstance(adopted, str), adopted
+        assert adopted == [], f"git left orphaned processes behind: {adopted}"
+
+
+@pytest.mark.integration
+class TestGitCommandTimeout:
+    def test_timeout_kills_helpers_holding_the_pipes(self, tmpdir):
+        # stands in for git forking ssh / git-remote-https: a helper that inherits our
+        # stdout and stderr and outlives the process we actually kill
+        shim = tmpdir.join("fake-git")
+        pids = tmpdir.join("fake-git.pids")
+        shim.write(f"echo $$ > {pids}\nsleep 120 &\necho $! >> {pids}\nsleep 120\n")
+
+        repo = GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path="/path/to/repo",
+            git_url="https://github.com/user/repo.git",
+            update_frequency=3600,
+            branch="main",
+            git_command_timeout=1,
+        ))
+
+        started = time.monotonic()
+        # run it through bash rather than as an executable: pytest's tmpdir lives under
+        # /tmp, which is mounted noexec
+        with patch("saq.git._git_argv", side_effect=lambda *args: ["/bin/bash", str(shim), *args]):
+            with pytest.raises(subprocess.TimeoutExpired):
+                repo._run_git_command(["fetch", "--all"], "fetch failed")
+        elapsed = time.monotonic() - started
+
+        # killing only the child leaves the helper holding the write end of our pipes,
+        # so the read that follows would block until the helper exited two minutes later
+        assert elapsed < 30, f"timeout handling took {elapsed:.1f}s"
+
+        # and the helper itself has to be gone, not just orphaned
+        killed, helper = [int(line) for line in pids.read().split()]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and any(psutil.pid_exists(p) for p in (killed, helper)):
+            time.sleep(0.1)
+
+        assert not psutil.pid_exists(killed), f"{killed} survived the timeout"
+        assert not psutil.pid_exists(helper), f"helper {helper} survived the timeout"
