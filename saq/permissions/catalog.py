@@ -45,6 +45,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "review", "Review and correct alert dispositions."),
     CatalogEntry("alert", "write", "Modify alerts (disposition, tags, ownership, comments)."),
+    CatalogEntry("crash", "read", "List and download analysis-module crash reports; the archive contains the file observable the module crashed on."),
     CatalogEntry("detection", "read", "View observable-detection settings."),
     CatalogEntry("detection", "write", "Modify observable-detection settings."),
     CatalogEntry("email", "read", "Read archived email content via API/GUI."),

@@ -63,6 +63,17 @@ find -L data/stats/modules -maxdepth 2 -mindepth 2 -type d -mtime +7 -exec rm -r
 find -L data/error_reports -maxdepth 1 -type f -mtime +$DELETE_ERROR_REPORTS_OLDER_THAN -delete
 find -L data/error_reports -maxdepth 1 -mtime +$DELETE_ERROR_REPORTS_OLDER_THAN -type d -exec rm -rf '{}' \;
 
+# delete analysis module crash reports past their retention window, along with their index rows
+# (the two go together on purpose -- see `ace crash prune`). the retention window comes from
+# crash_reporting.retention_days unless --days overrides it
+ace crash prune
+
+# replicate any crash report that is not yet in shared storage, so every node can serve it.
+# no-op unless crash_reporting.replicate is set. deliberately AFTER prune: running it first would
+# upload reports that this same run is about to delete, and briefly resurrect them remotely.
+# this is the catch-up path only -- the engine replicates in the background as crashes happen
+ace crash sync
+
 # delete any archive files older than 30 days
 find data/archive -type f -mtime +30 -delete
 

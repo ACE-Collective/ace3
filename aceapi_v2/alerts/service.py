@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import tempfile
 import uuid as uuidlib
 from datetime import datetime
@@ -23,12 +22,15 @@ from saq.util import local_time
 from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import BulkAddObservableResult
+from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
 
 
-ALERT_ZIP_PASSWORD = "infected"
+# re-exported from the shared helper: this name predates it and is referenced by tests and by
+# the Flask export view
+ALERT_ZIP_PASSWORD = ZIP_PASSWORD
 
 # Name of the file added to the alert download zip (inside the "<uuid>/"
 # directory) holding the analyst comments on the alert and on its observables.
@@ -197,25 +199,11 @@ def _run_zip(dest: str, cwd: str, target: str, alert_uuid: str) -> None:
     Running against an existing archive appends to it, so the storage directory
     and the generated comments file can be added from different working
     directories while both land under the "<uuid>/" prefix.
+
+    Thin wrapper kept so this module's call sites and tests read unchanged; the
+    implementation is shared with the crash report download.
     """
-    proc = subprocess.run(
-        ["zip", "-e", "-P", ALERT_ZIP_PASSWORD, "-r", dest, "--", target],
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        logger.error(
-            "zip failed for alert %s (rc=%s): %s",
-            alert_uuid,
-            proc.returncode,
-            proc.stderr.decode(errors="replace"),
-        )
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail="failed to create alert zip")
+    add_to_encrypted_zip(dest, cwd, target, f"alert {alert_uuid}")
 
 
 def create_encrypted_alert_zip(alert_uuid: str) -> str:

@@ -95,6 +95,7 @@ fi
 
 for dir in \
     data/error_reports \
+    data/crash_reports \
     data/logs \
     data/var \
     data/scan_failures \

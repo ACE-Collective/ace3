@@ -121,9 +121,15 @@ def s3_upload_file(args) -> int:
         return 1
     
     try:
-        # Create S3 client using EC2 instance credentials
+        # Create S3 client using EC2 instance credentials.
+        # NOTE this deliberately does not go through saq.storage.s3.get_s3_client(): that would
+        # also hand it the configured endpoint and credentials, which is a different command.
+        # It borrows only the bounded timeout/retry config, so no S3 call in ACE is unbounded.
         import boto3
-        s3_client = boto3.client('s3')
+
+        from saq.storage.s3 import build_boto_config
+
+        s3_client = boto3.client('s3', config=build_boto_config())
         
         # Upload the file
         logging.info(f"Uploading {args.file} to s3://{args.bucket}/{args.key}")

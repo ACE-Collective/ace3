@@ -47,7 +47,6 @@ class EngineConfiguration:
         local_analysis_modes: Optional[list[str]] = None,
         analysis_pools: Optional[dict[str, str|int]] = None,
         pool_size_limit: Optional[int] = None,
-        copy_analysis_on_error: Optional[bool] = None,
         single_threaded_mode: bool = False,
         excluded_analysis_modes: Optional[list[str]] = None,
         target_nodes: Optional[list[str]] = None,
@@ -62,7 +61,6 @@ class EngineConfiguration:
             local_analysis_modes: list of analysis modes this engine supports
             analysis_pools: dict mapping analysis mode to pool size
             pool_size_limit: Maximum size of analysis pool if no pools defined
-            copy_analysis_on_error: Whether to save copy of RootAnalysis on error
             single_threaded_mode: Whether to run in single-threaded mode for debugging
             excluded_analysis_modes: list of analysis modes this engine does NOT support
             target_nodes: list of target nodes for this engine
@@ -107,8 +105,6 @@ class EngineConfiguration:
         self.runtime_dir = os.path.join(get_data_dir(), "var", "engine", "ace")
         
         # Feature flags
-        self.copy_analysis_on_error = self._get_copy_analysis_on_error(copy_analysis_on_error)
-        self.copy_terminated_analysis_causes = get_engine_config().copy_terminated_analysis_causes
         self.alerting_enabled = get_engine_config().alerting_enabled
         
         # Node configuration
@@ -263,13 +259,6 @@ class EngineConfiguration:
             return pool_size_limit
         
         return get_engine_config().pool_size_limit
-    
-    def _get_copy_analysis_on_error(self, copy_analysis_on_error: Optional[bool]) -> bool:
-        """Get the copy analysis on error setting."""
-        if copy_analysis_on_error is not None:
-            return copy_analysis_on_error
-        
-        return get_engine_config().copy_analysis_on_error
     
     def add_analysis_pool(self, analysis_mode: str, count: int):
         """Add an analysis pool for the given mode and count."""

@@ -22,6 +22,7 @@ except ImportError:
 
 
 from saq.configuration.config import get_config
+from saq.configuration.schema import S3Config
 from saq.storage.interface import StorageInterface
 from saq.storage.error import StorageError
 
@@ -45,6 +46,65 @@ def get_s3_credentials_from_config() -> S3Credentials:
         secret_key=get_config().s3.secret_key,
         region=get_config().s3.region)
 
+def _s3_timeouts() -> tuple:
+    """(connect_timeout, read_timeout, max_attempts) for the S3 client.
+
+    Read from ``get_config().s3`` when a self-hosted endpoint is configured. When it is not, the
+    AWS-native branch of ``get_s3_client()`` is the one running -- and that branch is taken exactly
+    *because* ``get_config().s3`` is ``None``, so there is nothing to read. It falls back to the
+    ``S3Config`` field defaults rather than a second set of literals, so the numbers are defined in
+    one place and an AWS-native deployment still gets bounded requests (it just cannot tune them;
+    talking to real AWS is the least likely case to need it).
+    """
+    s3_config = get_config().s3
+    if s3_config is not None:
+        return (s3_config.connect_timeout, s3_config.read_timeout, s3_config.max_attempts)
+
+    fields = S3Config.model_fields
+    return (
+        fields["connect_timeout"].default,
+        fields["read_timeout"].default,
+        fields["max_attempts"].default,
+    )
+
+
+def build_boto_config(signature_version: str = "s3v4") -> "BotoConfig":
+    """The botocore config every S3 client in ACE is built with.
+
+    Exists because botocore's defaults are unbounded in the way that matters: 60s connect, 60s
+    read, and *legacy* retry mode, which is 5 attempts. A black-holed endpoint -- packets dropped
+    with no RST -- can therefore hold a caller for ~300s per request, and callers include an engine
+    worker replicating a crash report while it holds a work item lock.
+
+    ``total_max_attempts`` rather than ``max_attempts``: the latter is ambiguous about whether it
+    counts the initial request, and botocore's own documentation prefers the former.
+
+    Note this bounds a single HTTP request, not a whole transfer -- uploads and downloads are
+    multipart, so a transfer issues many requests. See build_transfer_config() for the other
+    retry layer, which s3transfer keeps independently of botocore's.
+    """
+    connect_timeout, read_timeout, max_attempts = _s3_timeouts()
+    return BotoConfig(
+        signature_version=signature_version,
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
+        retries={"mode": "standard", "total_max_attempts": max_attempts},
+    )
+
+
+def build_transfer_config():
+    """s3transfer settings for upload_file/download_file.
+
+    Only ``num_download_attempts`` is set. It defaults to 5 and is a retry layer *on top of*
+    botocore's, so without this a download retries 5 x max_attempts. Everything else -- the 8MiB
+    multipart threshold and chunk size, and max_concurrency -- keeps its default, so transfer
+    behavior is otherwise untouched.
+    """
+    from boto3.s3.transfer import TransferConfig
+
+    return TransferConfig(num_download_attempts=_s3_timeouts()[2])
+
+
 def get_s3_client(region: Optional[str] = None):
     """Returns an S3 client.
 
@@ -58,7 +118,7 @@ def get_s3_client(region: Optional[str] = None):
     s3_config = get_config().s3
     if s3_config is None:
         # AWS-native path: let boto3 handle credentials via IAM roles, env vars, etc.
-        return boto3.client("s3", region_name=region)
+        return boto3.client("s3", region_name=region, config=build_boto_config())
 
     # Self-hosted S3-compatible path (e.g. MinIO, GarageHQ)
     s3_credentials = get_s3_credentials_from_config()
@@ -78,7 +138,7 @@ def get_s3_client(region: Optional[str] = None):
         aws_secret_access_key=s3_credentials.secret_key,
         region_name=s3_credentials.region,
         verify=cert_check,
-        config=BotoConfig(signature_version="s3v4"))
+        config=build_boto_config())
 
 
 class S3Storage(StorageInterface):
@@ -119,6 +179,9 @@ class S3Storage(StorageInterface):
         self.port = port
         self.secure = secure
 
+        # buckets this instance has confirmed exist; see _ensure_bucket_exists
+        self._known_buckets: set[str] = set()
+
         if not access_key or not secret_key:
             raise ValueError("access key and secret key must be provided when initializing S3Storage")
 
@@ -145,7 +208,7 @@ class S3Storage(StorageInterface):
                 aws_secret_access_key=self.secret_key,
                 region_name=region,
                 verify=verify,
-                config=BotoConfig(signature_version="s3v4"),
+                config=build_boto_config(),
             )
 
         except botocore.exceptions.BotoCoreError as e:
@@ -255,10 +318,13 @@ class S3Storage(StorageInterface):
                 raise
 
             # Download the file
+            # Config bounds s3transfer's OWN retry layer (num_download_attempts, default 5),
+            # which sits on top of botocore's -- without it a download retries 5 x max_attempts
             self.client.download_file(
                 bucket,
                 remote_path,
                 local_path_str,
+                Config=build_transfer_config(),
             )
 
             logging.info("downloaded %s/%s to %s", bucket, remote_path, local_path_str)
@@ -279,16 +345,31 @@ class S3Storage(StorageInterface):
         """
         Ensure a bucket exists, creating it if necessary.
 
+        Memoized per instance. S3Storage is a process-wide singleton that
+        get_storage_system() caches and reset_storage_system() drops in every forked child, so
+        the memo costs one head_bucket per worker process instead of one per upload, with no stale
+        state across a fork.
+
+        Only *successes* are recorded. A 403 -- the bucket exists but this credential cannot
+        head_bucket it, which is ordinary under least-privilege IAM -- is neither 404 nor
+        NoSuchBucket, so it falls through to the raise below; memoizing that would make the failure
+        permanent for the life of the process.
+
         Args:
             bucket: Name of the bucket to ensure exists
         """
+        if bucket in self._known_buckets:
+            return
+
         try:
             self.client.head_bucket(Bucket=bucket)
+            self._known_buckets.add(bucket)
         except botocore.exceptions.ClientError as e:
             error_code = e.response["Error"]["Code"]
             if error_code in ("404", "NoSuchBucket"):
                 try:
                     self.client.create_bucket(Bucket=bucket)
+                    self._known_buckets.add(bucket)
                     logging.info("created bucket: %s", bucket)
                 except botocore.exceptions.ClientError as create_err:
                     error_msg = f"failed to create bucket {bucket}: {create_err}"

@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Optional, Union
 from pathlib import Path
 
 from saq.storage.interface import StorageInterface
@@ -90,3 +90,15 @@ class StorageAdapter(StorageInterface):
         Delete an object from storage.
         """
         return self._storage.delete_object(bucket, remote_path)
+
+    def object_exists(self, bucket: str, remote_path: str) -> bool:
+        """
+        Return True if the object exists.
+        """
+        return self._storage.object_exists(bucket, remote_path)
+
+    def get_object_info(self, bucket: str, remote_path: str) -> Optional[dict]:
+        """
+        Return {"size", "last_modified", "etag", ...} for the object, or None if absent.
+        """
+        return self._storage.get_object_info(bucket, remote_path)

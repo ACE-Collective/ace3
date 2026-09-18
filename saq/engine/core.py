@@ -45,12 +45,6 @@ class EngineServiceConfig(ServiceConfig):
     # the nodes database table keeps track of all the ace nodes that are currently available
     # this settings specifies how often (in seconds) we update the table with our current information
     node_status_update_frequency: int = Field(..., description="how often (in seconds) we update the table with our current information")
-    # if this is set to yes then any analysis that fails is copied to a directory for review later (can take a lot of disk space)
-    copy_analysis_on_error: bool = Field(..., description="if this is set to yes then any analysis that fails is copied to a directory for review later")
-    # if this is set to yes then any time an analysis module fails when analyzing a file, the engine will copy that file, along with details, to a directory for review
-    copy_file_on_error: bool = Field(..., description="if this is set to yes then any time an analysis module fails when analyzing a file, the engine will copy that file, along with details, to a directory for review")
-    # make copies of files analyzed by analysis modules that ended up timing out and getting killed by the worker manager (can take a lot of disk space)
-    copy_terminated_analysis_causes: bool = Field(..., description="make copies of files analyzed by analysis modules that ended up timing out and getting killed by the worker manager")
     # in some cases you might want your work to be performed on a different hard drive; if set then new non-alert analysis will be performed in this directory (relative to SAQ_HOME)
     work_dir: Optional[str] = Field(default=None, description="in some cases you might want your work to be performed on a different hard drive; if set then new non-alert analysis will be performed in this directory (relative to SAQ_HOME)")
     # when an analyst dispositions an alert ace will stop analyzing it if the alert is in correlation mode

@@ -34,11 +34,8 @@ class StorageFactory:
         Raises:
             StorageError: If storage creation fails due to configuration issues
         """
-        global STORAGE_SYSTEM
-
-        if STORAGE_SYSTEM is not None:
-            return STORAGE_SYSTEM
-
+        # NOTE deliberately not cached here. The module-level get_storage_system() below owns the
+        # cache; this method always builds a fresh adapter.
         try:
             config = get_config()
             storage_config = config.storage
@@ -175,3 +172,32 @@ def get_storage_system() -> StorageAdapter:
 
     STORAGE_SYSTEM = StorageFactory.get_storage_system()
     return STORAGE_SYSTEM
+
+
+def reset_storage_system() -> None:
+    """Drop the cached storage adapter so the next call builds a fresh one.
+
+    The cached adapter holds a boto3 client, and a boto3 client holds a urllib3 connection pool
+    with live sockets. Those are **not fork safe**: a forked child that inherits one shares the
+    parent's TCP connections, which shows up as interleaved or truncated responses and hangs.
+
+    ACE forks its engine workers (``ACE_MP_CONTEXT = multiprocessing.get_context("fork")``), and
+    workers now touch storage to replicate crash reports, so this is registered below to run
+    automatically in every child. Tests also call it directly to keep a cached adapter from
+    leaking between them.
+
+    **Do not add logging here.** As a fork child handler this runs inside ``os.fork()``, before
+    multiprocessing's ``_bootstrap`` runs the after-forkers, so every fork-aware thread-local
+    still holds the object inherited from the parent -- a root handler that talks to another
+    process would be used over the *parent's* connection and both sides can block forever. Same
+    constraint, and same reason, as ``saq/database/pool.py::_after_fork_in_child``. Keeping this
+    function a single assignment is what makes it safe.
+    """
+    global STORAGE_SYSTEM
+    STORAGE_SYSTEM = None
+
+
+# every forked child starts with no inherited client. registering this here rather than at each
+# fork site means a future consumer of saq.storage cannot reintroduce the hazard by forking
+# somewhere new.
+os.register_at_fork(after_in_child=reset_storage_system)

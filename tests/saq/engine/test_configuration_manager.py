@@ -222,14 +222,6 @@ def test_engine_configuration_loads_from_config():
     expected_pool_size_limit = get_engine_config().pool_size_limit
     assert config.pool_size_limit == expected_pool_size_limit
 
-    # Test copy_analysis_on_error
-    expected_copy_on_error = get_engine_config().copy_analysis_on_error
-    assert config.copy_analysis_on_error == expected_copy_on_error
-
-    # Test copy_terminated_analysis_causes
-    expected_copy_terminated = get_engine_config().copy_terminated_analysis_causes
-    assert config.copy_terminated_analysis_causes == expected_copy_terminated
-
     # Test alerting_enabled
     expected_alerting_enabled = get_engine_config().alerting_enabled
     assert config.alerting_enabled == expected_alerting_enabled
@@ -452,7 +444,6 @@ def test_engine_configuration_explicit_params_override_config():
         default_analysis_mode="test_mode",
         local_analysis_modes=["test_mode", "analysis"],
         pool_size_limit=42,
-        copy_analysis_on_error=True,
         target_nodes=["test_node"],
         analysis_mode_priority="priority_mode",
     )
@@ -461,7 +452,6 @@ def test_engine_configuration_explicit_params_override_config():
     assert config.default_analysis_mode == "test_mode"
     assert config.local_analysis_modes == ["test_mode", "analysis"]
     assert config.pool_size_limit == 42
-    assert config.copy_analysis_on_error is True
     assert config.target_nodes == ["test_node"]
     assert config.analysis_mode_priority == "priority_mode"
 

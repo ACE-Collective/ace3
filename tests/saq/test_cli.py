@@ -28,6 +28,8 @@ def test_cli_commands_registered():
         "alert",
         # cache maintenance
         "cache",
+        # analysis module crash reports
+        "crash",
         # encryption
         "encryption", "enc",
         # company / misc
