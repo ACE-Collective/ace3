@@ -1,17 +1,21 @@
 # Alert Search
 
-`saq/search/` serves three needs from one index:
+`saq/search/` serves four needs from one index:
 
 1. an analyst types a loose term into the manage-page search box ("docusign invoice",
    "powershell download", "vendor mailer false positive");
-2. an analyst types a specific thing (an ip, a hash, a url, an email address, a tag, an alert
-   uuid) and expects every alert containing it, newest first;
-3. an agentic triage system asks ACE, through the AI API, "has anything like this been seen,
+2. an analyst *names* a specific thing (`ipv4:1.2.3.4`, `tag:phish`, `uuid:...`) and expects
+   every alert containing it, newest first;
+3. something asks for every alert matching a filter, with no query at all -- "every alert
+   carrying this signature uuid observable";
+4. an agentic triage system asks ACE, through the AI API, "has anything like this been seen,
    and how was it dispositioned".
 
 The design is a **hybrid**: qdrant holds a dense vector (sentence embedding) and a sparse vector
 (a lexical bag of terms) for every chunk of every document, and mysql serves exact matches over
 the columns it already indexes. The lanes are fused into one ranking *before* pagination.
+
+Which lanes run at all is decided by parsing the query (section 2).
 
 ## 1. Write path
 
@@ -59,9 +63,8 @@ encrypted-archive `email_body` analyses, and the file-backed text of `OCRAnalysi
 the cap. Because extraction reads `details` at index time, analysis-cache replays (which carry
 `details` but not `llm_context_documents`) are indexed like everything else.
 
-**Nothing is emitted for the observable graph.** The old index embedded one templated
-"X observed Y while analyzing Z" record per edge, thousands per alert, and a sentence encoder
-cannot tell `1.2.3.4` from `1.2.3.5`. Identifiers are served exactly by the lexical lane.
+**Nothing is emitted for the observable graph.** Identifiers are served exactly by the lexical
+lane; a sentence encoder cannot tell `1.2.3.4` from `1.2.3.5`.
 
 ### Chunks, vectors, payload (`chunking.py`, `sparse.py`, `model.py`, `index.py`)
 
@@ -87,20 +90,86 @@ cannot tell `1.2.3.4` from `1.2.3.5`. Identifiers are served exactly by the lexi
 - The collection name embeds the model slug and `SCHEMA_VERSION`; changing the model (or the
   layout) lands in a new collection. Run `ace search index --all` afterwards and drop the old one.
 
-## 2. Read path (`query.py`, `lexical.py`)
+## 2. Query syntax (`syntax.py`)
+
+A query is a mix of **field terms** and **free text**. Free text goes to the semantic lanes and
+nowhere else; a literal is only looked up when it was named by a term.
 
 ```
-query ──► lexical lane (mysql)   exact observable value / sha256 / tag / alert uuid (+prefix)
-      ├─► dense lane (qdrant)    cosine over the embedding, grouped by root_uuid,
-      │                          FLOORED at search.score_threshold (default 0.3)
+tag:phish                        the tag, exactly
+ipv4:10.20.30.40                 an observable, by type shorthand
+signature_id:6f3a…               ditto -- ANY registered observable type works as a prefix
+observable:url:https://evil.com  the explicit form, for values containing colons
+file:<sha256 hex>                a file observable, by content hash
+uuid:1f2e3d4c-…                  an alert uuid (a prefix of at least 8 characters also works)
+queue:default                    a narrowing filter
+disposition:DELIVERY,IGNORE      one term, values ORed
+alert_date:-7d                   a relative window (saq/util/relative_time.py)
+owner:jdoe  description:invoice  the rest of the manage-page filter vocabulary
+-tag:whitelisted                 inverted (! works too)
+tag:"vendor mailer"              quoted, for a value containing a space or a comma
+docusign invoice                 free text
+```
+
+The field names are the permanent URL slugs from `saq/gui/filter_names.py` (`FILTER_SLUGS` --
+the same ones a share link uses) plus every registered observable type
+(`saq.observables.type_hierarchy.get_all_valid_types`). Separate terms are ANDed and values
+inside one term are ORed -- except that repeating a *field* means "either", so `queue:a queue:b`
+is merged into one term rather than asking a single alert to be in two queues.
+
+**A prefix that resolves to neither is not a term.** `https://evil.com`, `C:\windows\cmd.exe`
+and `foo:bar` stay free text, verbatim.
+
+**A bare word or indicator never runs an exact lookup.** Free text goes to the semantic lanes
+only. Pasting a bare ip or hash therefore returns semantic matches (or none); the GUI and the
+CLI answer that with a "did you mean `ipv4:...`?" line (`ParsedQuery.hint()`).
+
+Two deliberate differences from `saq/gui/filter_url.py`, which encodes the same filters into a
+share link:
+
+- **Values are literal.** A link is machine-generated and percent-encodes `:`, `,` and `%`; a
+  search box is typed by hand and must not demand that. Quote instead: `url:"https://x/a,b"`.
+- **`uuid:` is the alert uuid.** `uuid` is also a registered observable type, so *that* has to
+  be written `observable:uuid:<value>`.
+
+Where each term goes:
+
+| term | applied as |
+|---|---|
+| `observable:`/`<type>:`, `tag:`, `uuid:` (not inverted) | an exact lookup in the lexical lane -- a hit, the `exact` tier, hoisted to the front |
+| `queue:`, `disposition:`, `alert_type:`, `alert_date:` | a pre-filter: a qdrant payload filter *and* a SQL condition |
+| everything else, plus any **inverted** or wildcard form of the above | a SQL filter list run through `saq/gui/filter_query.py` |
+
+Inversion and wildcards fall out of the exact lane on purpose: "alerts *without* this tag" is a
+narrowing condition, and there is no hit to report for it.
+
+A term that cannot be honored -- `alert_date:-7dd`, `ipv4:not-an-ip`, an inverted `uuid:` -- is
+an **error**, returned in `SearchResponse.errors` with nothing searched. It is never dropped:
+a dropped filter silently returns *more* alerts than were asked for.
+
+## 3. Read path (`query.py`, `lexical.py`)
+
+```
+query ──► parse (syntax.py)
+      │
+      ├─► field terms, no free text ──► LISTING: newest-first SQL, no ranking, tier = null
+      │                                 (saq/gui/filter_query.py::build_alert_query)
+      │
+      ├─► lexical lane (mysql)   exact observable (type, sha256) / tag / alert uuid (+prefix)
+      ├─► dense lane (qdrant)    cosine over the embedding of the FREE TEXT ONLY, grouped by
+      │                          root_uuid, FLOORED at search.score_threshold (default 0.3)
       └─► sparse lane (qdrant)   IDF-weighted term overlap, grouped by root_uuid
                                  (skipped when the query is only stopwords)
           payload pre-filters from the request on both qdrant lanes
           weighted RRF (lexical_weight > semantic_weight), then EXACT MATCHES FIRST in the
           lexical lane's newest-first order, everything else in fused order
-          cap at search.max_results → caller's SQL post_filter (node scoping, GUI filters)
-          → total → page slice
+          cap at search.max_results → SQL filter list → caller's post_filter (node scoping,
+          GUI filters) → total → page slice
 ```
+
+**The semantic lanes do not run without free text.** `encode_query("")` is a perfectly valid
+vector and the dense lane always has a nearest neighbour, so running them for `tag:phish` alone
+would attach unrelated alerts to an exact lookup.
 
 **The floor matters.** The dense lane always has a nearest neighbour, so without an absolute
 floor every query, including nonsense, returns the whole corpus. On the evaluation corpus junk
@@ -113,56 +182,78 @@ with per-alert `SearchHit`s (lane, kind, title, text, score), the alert's best `
 
 | tier | evidence |
 |---|---|
-| `exact` | an observable value, hash, tag or uuid matched verbatim |
+| `exact` | a field term matched an observable, tag or uuid verbatim |
 | `strong` | dense ≥ `strong_threshold` (0.55), or dense ≥ floor *and* a term in common |
 | `good` | dense ≥ floor only |
 | `weak` | a term in common, but the text is not similar |
+| `null` | a filter-only listing -- there is no evidence of a match to report |
 
-Raw cosine values are still not shown to analysts: cosine similarity is neither a probability
-nor a confidence, and the old "38%" badge taught analysts to ignore the number.
+Raw cosine values are not shown to analysts: cosine similarity is neither a probability nor a
+confidence.
 
 `similar_alerts(alert_uuid, ...)` recommends from the alert's own dense vectors (alert, analysis,
 detection, comment and context documents), excluding the alert itself.
 
 Pre-filters (`SearchFilters`): alert date ranges, alert types, dispositions, queues, tags (each
 invertible), node locations, excluded uuids. They are applied inside qdrant *and* in the lexical
-SQL, so the retrieval budget is spent on alerts the caller can see. The `post_filter` callback
-runs on the fused list before pagination and is authoritative: the GUI passes its full filter
-query, the API passes node scoping.
+SQL, so the retrieval budget is spent on alerts the caller can see. `SearchFilters.filter_list`
+carries the rest of the manage-page vocabulary in the canonical
+`[{"name", "inverted", "values"}]` shape; it has no qdrant equivalent, so it narrows in SQL --
+as the whole query on the listing path, and as a post-filter otherwise. The caller's own
+`post_filter` runs last and is authoritative: the GUI passes its full filter query, the API
+passes node scoping.
 
-## 3. Consumers
+**Observables are matched on `(type, sha256)`** -- the `i_type_sha256` unique key -- with the
+value first normalized by its own observable class (`resolve_observable_identity`).
+`email_address:Bob@Example.com` therefore matches the stored `bob@example.com`.
+
+## 4. Consumers
 
 **GUI.** `POST /ace/search` (`alert:read`) stores `{"mode": "query", "query": ...}` in the
 session; `GET /ace/search/similar/<uuid>` stores `{"mode": "similar", ...}` (the "Similar alerts"
 button on the alert page). `build_manage_list_context()` maps the effective filters to
 `SearchFilters` (`app/analysis/views/session/search_filters.py`: Alert Date, Alert Type,
-Disposition, Queue, non-wildcard Tag; the rest stay SQL-only), runs the search with the page
-size/offset, loads the page's `GUIAlert` rows and orders them by rank. Under each alert row the
+Disposition, Queue, non-wildcard Tag; the rest stay SQL-only, already enforced by the
+post-filter), runs the search with the page size/offset, loads the page's `GUIAlert` rows and orders them by rank. Under each alert row the
 table shows the tier as plain colored text (bold green for `exact`, green for `strong`, black for
 `good`, light grey for `weak`) followed by up to five hits, each a line with a kind-colored left
 rule, a muted kind label, the title and the snippet. None of this is a badge on purpose: the alert
 row directly above uses badges for tags and disposition, and a badge here read as a tag (the
-styling lives under `.search-tier*` / `.search-hit*` in `app/static/css/saq.css`). Auto-refresh is
-off during a search; Clear resets it.
+styling lives under `.search-tier*` / `.search-hit*` in `app/static/css/saq.css`). A result with
+no tier and no hits -- a filter-only listing -- gets no evidence row at all. Auto-refresh is
+off during a search; Clear resets it. Query-language errors and the "did you mean" hint are
+rendered above the result count as `search_notices`.
 
 **API v2** (`aceapi_v2/search/`, `alert:read`):
 
 ```
 POST /api/v2/search/alerts
-{"query": "docusign invoice", "filters": {"dispositions": ["DELIVERY"], "insert_date_start": "2026-06-01T00:00:00Z"}, "limit": 10}
+{"query": "docusign invoice tag:phish", "filters": {"dispositions": ["DELIVERY"], "insert_date_start": "2026-06-01T00:00:00Z"}, "limit": 10}
+
+# filters only -- a newest-first listing, every tier null. This is how you ask for every alert
+# carrying a signature's uuid observable.
+POST /api/v2/search/alerts
+{"filters": {"observables": [{"type": "signature_id", "value": "6f3a…"}]}, "limit": 50}
 
 POST /api/v2/search/similar
 {"alert_uuid": "…", "limit": 5}
 
 → {"query": "…", "total": 7, "offset": 0, "limit": 10, "lanes_used": ["lexical", "semantic"], "timings_ms": {…},
+   "errors": [],
    "results": [{"alert": {"uuid": "…", "description": "…", "alert_type": "…", "disposition": "DELIVERY",
                           "disposition_time": "…", "insert_date": "…", "owner": "…", "queue": "…", "tags": […]},
                 "rank": 1, "tier": "exact", "score": 0.033, "lanes": ["lexical"],
                 "hits": [{"lane": "lexical", "kind": "observable", "title": "ipv4", "text": "10.20.30.40", "score": 1.0}]}]}
 ```
 
-Filters: `insert_date_start/end` (timezone-aware), `alert_types`, `dispositions`, `queues`,
-`tags`, `exclude_alert_uuids`; `lanes` selects `semantic` and/or `lexical`; `include_hits`.
+`query` is optional; either it or a non-empty `filters` is required (422 otherwise). Filters:
+`insert_date_start/end` (timezone-aware), `alert_types`, `dispositions`, `queues`, `tags`,
+`exclude_alert_uuids`, `observables` (a list of `{type, value}` -- ANDed, so an alert must carry
+all of them, values normalized on the way in and 400 if one is impossible for its type), and
+`filters` (the raw `{name, inverted, values}` entries for the rest of the manage-page
+vocabulary, validated against `FILTER_NAMES`). `lanes` selects `semantic` and/or `lexical`;
+`include_hits`. `errors` is non-empty when the query language rejected something, and then
+nothing was searched.
 
 **AI API** (`aceapi_ai/search/`, permission `ai:search`): the same two routes at
 `/ai/v1/search/alerts` and `/ai/v1/search/similar`, rate limited by `ai_api.search_limits`
@@ -172,10 +263,11 @@ returned uuids). This is the RAG surface for agentic triage: each result carries
 disposition, and `GET /ai/v1/alerts/{uuid}` fetches the full tree for anything worth a closer look.
 
 **CLI.** `ace search index [-u UUID | --all | STORAGE_DIR] [--sync] [-v]`,
-`ace search query "<text>" [--lane semantic|lexical] [--limit N] [--json]`,
+`ace search query "<text or field terms>" [--lane semantic|lexical] [--limit N] [--json]`
+(exits 1 and prints the reason to stderr when the query cannot be parsed),
 `ace search similar <uuid>`, `ace search status`, `ace search reset [--yes]`.
 
-## 4. Configuration
+## 5. Configuration
 
 ```yaml
 search:
@@ -203,7 +295,7 @@ ai_api:
 
 The unittest overlay disables the service and uses the `ace3-alerts-unittest` prefix.
 
-## 5. Operations
+## 6. Operations
 
 The indexer logs one INFO line per event, with the fields in `extra={}` (see `saq/logging.py`)
 so they are searchable in Splunk rather than buried in message text. Each worker process gets
@@ -236,10 +328,12 @@ to attribute a hung worker to a specific alert.
 - Deleting an alert (`ace alert delete`, the ignored-alert cleanup) removes its points; archiving
   keeps the row and the index.
 
-## 6. Tests
+## 7. Tests
 
-- `tests/saq/search/` — unit tests for the tokenizer, chunker, extractors, index writes, filter
-  translation, fusion/tiering/pagination and the service; `test_lexical.py` runs against mysql.
+- `tests/saq/search/` — unit tests for the query language (`test_syntax.py`), the tokenizer,
+  chunker, extractors, index writes, filter translation, fusion/tiering/pagination and the
+  service; `test_lexical.py` and `test_listing.py` run against mysql. `test_lexical.py` asserts
+  that a phrase containing a word that is also a tag matches nothing in the exact lane.
 - `tests/saq/search/test_retrieval.py` (`integration`, `slow`) — the retrieval regression: eight
   synthetic alerts indexed into a throw-away collection on the real qdrant with the real model,
   a labeled query set asserting recall@3 and rank-1 for exact identifiers, similar-alert
@@ -247,4 +341,6 @@ to attribute a hung worker to a specific alert.
   model is unavailable. **Run it before and after any change to documents, chunking, the sparse
   encoder, fusion or the model.**
 - `tests/saq/engine/test_worker_search_submit.py` — the task is submitted only after the lock is released.
+- `tests/saq/gui/test_filter_query.py` — the filter query builder outside Flask, including the
+  `(type, sha256)` observable match and the inverted `EXISTS` paths.
 - `tests/aceapi_v2/search/`, `tests/aceapi_ai/test_search.py`, `tests/app/analysis/views/test_manage.py`.

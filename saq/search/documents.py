@@ -3,8 +3,8 @@
 An alert yields on the order of five to thirty documents: the alert header, one per analyst
 comment, one holding every detection description, one per text-bearing analysis (email, command
 line, extracted document text, ...) and one per llm_context_document. Nothing is emitted for the
-observable graph itself -- identifiers are served by the lexical lane straight out of mysql, and
-embedding templated "X observed Y" records is what made the previous index useless (docs/SEARCH.md).
+observable graph itself -- identifiers are served by the lexical lane straight out of mysql.
+A sentence encoder cannot tell `1.2.3.4` from `1.2.3.5` (docs/SEARCH.md).
 
 Per-analysis extraction is pluggable: register_extractor(AnalysisClass) attaches a function that
 returns the text for that analysis class. saq.search.extractors registers the built-in ones;

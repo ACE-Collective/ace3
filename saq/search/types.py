@@ -5,7 +5,7 @@ pulling in the API layer; aceapi_v2/search/schemas.py mirrors them for the wire 
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Optional
 
 LANE_SEMANTIC = "semantic"
@@ -24,7 +24,8 @@ KIND_OBSERVABLE = "observable"
 KIND_TAG = "tag"
 KIND_UUID = "uuid"
 
-# relative relevance tiers (never raw scores -- see docs/SEARCH.md)
+# relative relevance tiers (never raw scores -- see docs/SEARCH.md). A filter-only request has
+# no tier at all: it is a listing, and nothing about a listed alert is evidence of a match.
 TIER_EXACT = "exact"
 TIER_STRONG = "strong"
 TIER_GOOD = "good"
@@ -51,6 +52,16 @@ class SearchFilters:
     tags_inverted: bool = False
     locations: Optional[tuple[str, ...]] = None
     exclude_alert_uuids: tuple[str, ...] = ()
+    # The rest of the alert-management filter vocabulary (Observable, Owner, Description, ...)
+    # in the canonical [{"name", "inverted", "values"}] shape, run through saq.gui.filter_query.
+    # These narrow in SQL only -- as the whole query on the listing path, and as a post-filter
+    # when there is a query to rank. Almost everything here has no qdrant payload equivalent;
+    # the exception is a second constraint on a field already set above, which cannot be folded
+    # into these single-value-set fields and so lands here to be ANDed in SQL.
+    filter_list: tuple = ()
+    # the timezone relative date filters ("-7d", "@d") resolve in. "Today" is not the same
+    # window in Sydney as in New York, and this can run with no logged-in user.
+    timezone: Optional[tzinfo] = None
 
     def is_empty(self) -> bool:
         return not any([
@@ -61,6 +72,7 @@ class SearchFilters:
             self.tags,
             self.locations is not None,
             self.exclude_alert_uuids,
+            self.filter_list,
         ])
 
 
@@ -93,7 +105,8 @@ class AlertSearchResult:
     alert_uuid: str
     rank: int
     fused_score: float
-    tier: str
+    # None on the filter-only listing path -- see the tier note above
+    tier: Optional[str]
     hits: list[SearchHit] = field(default_factory=list)
     lanes: frozenset[str] = frozenset()
     # the evidence behind the tier: best dense cosine and best sparse (term) score of the alert
@@ -110,6 +123,10 @@ class SearchResponse:
     results: list[AlertSearchResult] = field(default_factory=list)
     lanes_used: frozenset[str] = frozenset()
     timings_ms: dict[str, int] = field(default_factory=dict)
+    # query-language problems, e.g. "alert_date:'-7dd' is not a time window". A term that
+    # cannot be honored is reported rather than dropped: dropping it would silently return
+    # MORE alerts than the analyst asked for.
+    errors: tuple[str, ...] = ()
 
     @property
     def alert_uuids(self) -> list[str]:

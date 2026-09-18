@@ -1,7 +1,7 @@
 import logging
 from flask import g, session
 from flask_login import current_user
-from sqlalchemy import distinct, func
+import pytz
 
 from app.filters import AutoTextFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
@@ -11,10 +11,10 @@ from aceapi_v2.saved_filters import service as saved_filters_service
 from aceapi_v2.saved_filters.schemas import FilterEntry, ScratchFilterWrite
 from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
-from saq.database.model import DispositionBy, Observable, ObservableMapping, ObservableRemediationMapping, Owner, RemediatedBy, Remediation, Tag, TagMapping
-from saq.database.pool import get_db
-from saq.database.util.alert import node_scope_locations
+from saq.database.model import DispositionBy, Observable, Owner, Tag
+from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
+from saq.gui.filter_query import has_filter
 
 
 def _default_filters() -> list:
@@ -51,10 +51,6 @@ def reset_pagination():
     if 'page_size' not in session:
         session['page_size'] = 50
 
-def has_filter(filters: list, name: str) -> bool:
-    """Returns True if `filters` (a filter list) contains a filter with this name."""
-    return any(_filter["name"] == name for _filter in filters or [])
-
 def hasFilter(name):
     return has_filter(session.get('filters', []), name)
 
@@ -63,24 +59,16 @@ def hasFilter(name):
 # (which would pull in flask_login). It is kept in sync with the two dicts below by
 # test_filter_names_match_get_filters.
 
+def user_timezone():
+    """The logged-in analyst's display timezone, for the date-range filters.
+
+    saq.gui.filter_query cannot read current_user -- it also runs from the API, where there
+    is no request -- so the timezone is passed in from here.
+    """
+    return pytz.timezone(current_user.timezone) if getattr(current_user, "timezone", None) else pytz.utc
+
 def create_filter(filter_name: str, inverted: bool):
-    return {
-        'Alert Date': DateRangeFilter(GUIAlert.insert_date, inverted=inverted),
-        'Alert Type': SelectFilter(GUIAlert.alert_type, inverted=inverted),
-        'Description': TextFilter(GUIAlert.description, inverted=inverted),
-        'Disposition': MultiSelectFilter(GUIAlert.disposition, nullable=False, options=VALID_DISPOSITIONS, inverted=inverted),
-        'Disposition By': SelectFilter(DispositionBy.display_name, nullable=True, inverted=inverted),
-        'Disposition Date': DateRangeFilter(GUIAlert.disposition_time, inverted=inverted),
-        'Event Date': DateRangeFilter(GUIAlert.event_time, inverted=inverted),
-        'Observable': TypeValueFilter(Observable.type, Observable.value, options=run_async(get_observable_types()), inverted=inverted),
-        'Owner': SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
-        'Queue': SelectFilter(GUIAlert.queue, inverted=inverted),
-        'Reviewed': MultiSelectFilter(GUIAlert.disposition_review, nullable=False, options=VALID_DISPOSITION_REVIEWS, inverted=inverted),
-        #'Remediated By': SelectFilter(RemediatedBy.display_name, nullable=True, inverted=inverted),
-        #'Remediated Date': DateRangeFilter(GUIAlert.removal_time, inverted=inverted),
-        #'Remediation Status': BoolFilter(Remediation.status, nullable=True, option_names=REMEDIATION_STATUS_GUI, inverted=inverted),
-        'Tag': AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True, inverted=inverted),
-    }[filter_name]
+    return filter_query.create_filter(filter_name, inverted, tz=user_timezone(), entity=GUIAlert)
 
 def getFilters():
     return {
@@ -102,46 +90,12 @@ def getFilters():
     }
 
 def build_alert_query(filters: list):
-    """Builds the GUIAlert query for a filter list: the joins those
-    filters require, the filter conditions themselves, and this node's alert visibility
-    scoping.
-
-    """
-    query = get_db().query(GUIAlert).with_labels()
-    query = query.outerjoin(Owner, GUIAlert.owner_id == Owner.id)
-    if has_filter(filters, 'Disposition By'):
-        query = query.outerjoin(DispositionBy, GUIAlert.disposition_user_id == DispositionBy.id)
-    if has_filter(filters, 'Remediated By'):
-        query = query.outerjoin(RemediatedBy, GUIAlert.removal_user_id == RemediatedBy.id)
-
-    if has_filter(filters, 'Observable') or has_filter(filters, 'Remediation Status'):
-        query = query.outerjoin(ObservableMapping)\
-            .outerjoin(Observable)\
-            .outerjoin(ObservableRemediationMapping)\
-            .outerjoin(Remediation)
-
-    if has_filter(filters, 'Tag'):
-        query = query.outerjoin(TagMapping, GUIAlert.id == TagMapping.alert_id).join(Tag, TagMapping.tag_id == Tag.id)
-
-    # apply filters
-    for filter_dict in filters:
-        _filter = create_filter(filter_dict["name"], inverted=filter_dict.get("inverted", False))
-        query = _filter.apply(query, filter_dict["values"])
-
-    # only show alerts from this node (or the configured DR node list)
-    # NOTE: this will not be necessary once alerts are stored externally
-    locations = node_scope_locations()
-    if locations is not None:
-        query = query.filter(GUIAlert.location.in_(locations))
-
-    return query
+    """The GUIAlert query for a filter list, scoped to what this node shows."""
+    return filter_query.build_alert_query(filters, entity=GUIAlert, tz=user_timezone())
 
 def count_alerts(filters: list) -> int:
-    """Returns the number of alerts matching a filter list. Counts
-    distinct alert ids because the Tag and Observable joins can produce more than one row
-    per alert."""
-    count_query = build_alert_query(filters).statement.with_only_columns(func.count(distinct(GUIAlert.id)))
-    return get_db().execute(count_query).scalar()
+    """Returns the number of alerts matching a filter list."""
+    return filter_query.count_alerts(filters, entity=GUIAlert, tz=user_timezone())
 
 def filter_special_tags(tags):
     # we don't show "special" tags in the display

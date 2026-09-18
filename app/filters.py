@@ -1,164 +1,34 @@
-import datetime
+"""Flask-side filter plumbing for the alert management page.
+
+The filter CLASSES and the query builder they feed live in `saq/gui/filter_query.py` so the
+FastAPI layer can run the same filters without a browser request; they are re-exported here
+because the GUI code and the filter-editor template refer to them by these names.
+
+What genuinely belongs to Flask -- and stays here -- is `SearchFilter`, which reads a filter
+widget's value out of `request.form` or the session.
+"""
+
 import logging
 from flask import request, session
 from flask_login import current_user
-import pytz
-from sqlalchemy import and_, or_, not_, exists
 
-from saq.database import get_db
-from saq.util.relative_time import parse_date_range
+from saq.gui.filter_query import (
+    ANY_OBSERVABLE_TYPE,
+    AutoTextFilter,
+    BoolFilter,
+    DateRangeFilter,
+    Filter,
+    MultiSelectFilter,
+    SelectFilter,
+    TextFilter,
+    TypeValueFilter,
+    build_alert_query,
+    count_alerts,
+    create_filter,
+    filter_alert_uuids,
+    has_filter,
+)
 
-# exact match, provides text input
-class Filter:
-    def __init__(self, column, nullable=False, case_sensitive=True, wildcardable=False, inverted=False):
-        self.column = column
-        self.nullable = nullable
-        self.wildcardable = wildcardable
-        self.case_sensitive = case_sensitive
-        self.inverted = inverted
-
-    def apply(self, query, values):
-        conditions = []
-        for value in values:
-            if value == 'None' and self.nullable:
-                conditions.append(self.column == None)
-            elif self.wildcardable:
-                if self.case_sensitive:
-                    conditions.append(self.column.like(value.replace('*','%')))
-                else:
-                    conditions.append(self.column.ilike(value.replace('*','%')))
-            else:
-                if self.case_sensitive:
-                    conditions.append(self.column == value)
-                else:
-                    conditions.append(self.column.ilike(value))
-
-        if self.inverted:
-            # Use EXISTS subqueries for many-to-many relationships to properly handle NOT conditions
-            if str(self.column) == "Tag.name":
-                from saq.database import TagMapping, Tag, Alert
-                subquery = exists().where(
-                    and_(
-                        TagMapping.tag_id == Tag.id,
-                        or_(*conditions)
-                    )
-                ).where(TagMapping.alert_id == Alert.id).correlate(Alert)
-                return query.filter(not_(subquery))
-            else:
-                return query.filter(not_(or_(*conditions)))
-        else:
-            return query.filter(or_(*conditions))
-
-# case insensitive contains match, provides text input
-class TextFilter(Filter):
-    def apply(self, query, values):
-        conditions = []
-        for value in values:
-            conditions.append(self.column.ilike(f"%{value}%"))
-        if self.inverted:
-            return query.filter(not_(or_(*conditions)))
-        else:
-            return query.filter(or_(*conditions))
-
-# range match, provides a date range picker
-class DateRangeFilter(Filter):
-    """Filters on a time window. Each value is either the absolute wire format
-    "MM-DD-YYYY HH:mm - MM-DD-YYYY HH:mm" that the daterangepicker writes, or a
-    Splunk-style relative range like "-7d - now" or the shorthand "-24h"."""
-
-    # Relative values are resolved HERE, on every query, and never normalized to absolute
-    # anywhere upstream -- that is what keeps a saved "Last 24h" filter meaning the last 24
-    # hours. See saq/util/relative_time.py.
-
-    def apply(self, query, values):
-        timezone = pytz.timezone(current_user.timezone) if current_user.timezone else pytz.utc
-        now = datetime.datetime.now(pytz.utc)
-
-        conditions = []
-        for value in values:
-            start, end = parse_date_range(value, now=now, tz=timezone)
-            conditions.append(and_(self.column >= start, self.column <= end))
-        if self.inverted:
-            return query.filter(not_(or_(*conditions)))
-        else:
-            return query.filter(or_(*conditions))
-
-# exact match, provides drop down menu for value selection
-class SelectFilter(Filter):
-    def __init__(self, column, nullable=False, options=None, case_sensitive=True, wildcardable=False, inverted=False):
-        super().__init__(column, nullable=nullable, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted)
-        self.options = options if options else [r[0] for r in get_db().query(self.column).order_by(self.column.asc()).distinct()]
-        if nullable and 'None' not in self.options:
-            self.options.insert(0, 'None')
-
-# exact match, provides text input with choices in dropdown while typing
-class AutoTextFilter(SelectFilter):
-    pass
-
-# exact match, allows shift/control use for selecting multipl options
-class MultiSelectFilter(SelectFilter):
-    pass
-
-# exact match, provides type drop down menu with text input for value
-class TypeValueFilter(SelectFilter):
-    def __init__(self, column, value_column, options=None, case_sensitive=True, wildcardable=False, inverted=False):
-        super().__init__(column, options=options, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted)
-        self.value_column = value_column
-        if 'Any' not in self.options:
-            self.options.insert(0, 'Any')
-
-    def apply(self, query, values):
-        conditions = []
-        for value in values:
-            if value[0] == 'Any':
-                conditions.append(self.value_column == value[1].encode('utf8', errors='ignore'))
-            else:
-                conditions.append(and_(self.column == value[0], self.value_column == value[1].encode('utf8', errors='ignore')))
-
-        if self.inverted:
-            # Use EXISTS subqueries for many-to-many relationships to properly handle NOT conditions
-            if str(self.column) == 'Observable.type':
-                from saq.database import ObservableMapping, Observable, Alert
-                subquery = exists().where(
-                    and_(
-                        ObservableMapping.observable_id == Observable.id,
-                        or_(*conditions)
-                    )
-                ).where(ObservableMapping.alert_id == Alert.id).correlate(Alert)
-                return query.filter(not_(subquery))
-            else:
-                return query.filter(not_(or_(*conditions)))
-        else:
-            return query.filter(or_(*conditions))
-
-
-# exact match, drop down menu for value selection that defaults to True, False and uses 1, 0 for querying
-# Custom menu values for True/False can be defined using arg option_names
-#       Ex. my_filter = BoolFilter(my_column, option_names={'True': 'Custom_true_value', 'False': 'Custom_false_value'})
-class BoolFilter(SelectFilter):
-    def __init__(self, column, nullable=False, option_names: dict = None, case_sensitive=True, wildcardable=False, inverted=False):
-        super().__init__(column, nullable=nullable, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted)
-        self.options = [option_names['True'], option_names['False']] if option_names else ['True', 'False']
-        if nullable:
-            self.options.insert(0, 'None')
-
-        if option_names:
-            self.option_values = {option_names['True']: 1, option_names['False']: 0}
-        else:
-            self.option_values = {'True': 1, 'Value': 0}
-
-    def apply(self, query, values):
-        conditions = []
-        for value in values:
-            if value == 'None' and self.nullable:
-                conditions.append(self.column == None)
-            else:
-                conditions.append(self.column == self.option_values[value])
-
-        if self.inverted:
-            return query.filter(not_(or_(*conditions)))
-        else:
-            return query.filter(or_(*conditions))
 
 # the types of filters we currently support
 FILTER_TYPE_CHECKBOX = 'checkbox'

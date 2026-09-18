@@ -88,6 +88,19 @@ work for a whole team:
 f=queue:$USER_QUEUE&f=reviewed:UNREVIEWED
 ```
 
+## The same slugs in the search box
+
+The manage-page search box understands these slugs too, so `queue:default` means the same
+thing typed as it does in a link (`docs/SEARCH.md`, section 2). It is a sibling grammar, not
+the same one, and it differs in three ways on purpose:
+
+- **Values are literal.** A link is generated, so it percent-encodes `:`, `,` and `%`; a search
+  box is typed, so it must not demand that. Quote instead: `url:"https://evil.com/a,b"`.
+- **`-` also inverts**, alongside `!`, because `!` is awkward in a shell.
+- **Any observable type is a prefix of its own**: `ipv4:1.2.3.4` is shorthand for
+  `observable:ipv4:1.2.3.4`, and `uuid:` means the *alert* uuid rather than the observable
+  type of that name.
+
 ## Links that outlive a filter type
 
 If a link names a filter that no longer exists, the rest of the link is applied and a
@@ -115,7 +128,15 @@ on `/set_filters`.
 
 - Grammar and codec: `saq/gui/filter_url.py`
 - Slug registry and the frozen legacy alias map: `saq/gui/filter_names.py`
+- Filter classes and the query they build: `saq/gui/filter_query.py` (Flask-free, so the search
+  API runs the same filters)
+- The search box's grammar over the same slugs: `saq/search/syntax.py`
 - Relative-time parser: `saq/util/relative_time.py`
+
+The `Observable` and `Tag` filters are **EXISTS subqueries over their mapping tables, in both
+directions**. Inverted, that is the only form that is true for an alert with no matching rows
+at all -- a `NOT` evaluated against a joined row cannot be. Non-inverted it avoids the row
+fan-out, which is what lets two `observable` filters mean "carries both".
 
 **Slugs are a permanent contract.** Never rename or repurpose one; a link written today has
 to mean the same thing in five years. Adding new slugs is fine.

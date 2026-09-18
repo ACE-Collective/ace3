@@ -3,6 +3,12 @@
 Only the filters the search index can express are mapped (they narrow the semantic lane so its
 budget is not spent on alerts the analyst cannot see); the SQL post-filter built from the full
 filter list remains authoritative for what is shown.
+
+`filter_list` is deliberately left empty. The chips that have no payload equivalent (Observable,
+Owner, Description, ...) are already enforced by that post-filter in manage.py, and populating
+it here would run the identical narrowing query a second time. What it carries instead is the
+analyst's timezone, so that a relative window typed into the search box itself -- `alert_date:-7d`
+-- means the same thing as the same window chosen from a chip.
 """
 
 import datetime
@@ -56,4 +62,5 @@ def effective_filters_to_search_filters(filters: list) -> SearchFilters:
 
     locations = node_scope_locations()
     fields["locations"] = tuple(locations) if locations is not None else None
+    fields["timezone"] = timezone
     return SearchFilters(**fields)

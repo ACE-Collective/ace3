@@ -1,90 +1,94 @@
-"""The lexical lane: exact lookups in mysql for the things an analyst types verbatim.
+"""The lexical lane: exact lookups in mysql for the things an analyst asked for by name.
 
-Observable values, file hashes, tags and alert uuids already live in indexed columns, so
-matching them there is free, never stale, and cannot be fooled by tokenization the way an
-embedding is. Every match from this lane is an exact one and is ranked above semantic
-matches by the fusion step.
+Observable values, tags and alert uuids already live in indexed columns, so matching them
+there is free, never stale, and cannot be fooled by tokenization the way an embedding is.
+Every match from this lane is an exact one and is ranked above semantic matches by the fusion
+step.
+
+What this lane looks for comes from the query language (`saq/search/syntax.py`) and nothing
+else. A literal is only searched for when the analyst wrote it as a field term.
+
+Observables are matched on `(type, sha256)`, the `i_type_sha256` unique key, with the value
+normalized by the observable's own class first (`resolve_observable_identity`).
 """
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
-from sqlalchemy import and_, not_, or_
+from sqlalchemy import and_, not_, or_, tuple_
 from sqlalchemy.orm import Query
 
 from saq.database.model import Alert, Observable, ObservableMapping, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.database.util.index import chunked, tag_key
-from saq.search.sparse import identifiers
+from saq.database.util.observable_detection import (
+    InvalidDetectionValue,
+    resolve_observable_identity,
+)
+from saq.search.syntax import (
+    FIELD_ALERT_UUID,
+    FIELD_OBSERVABLE,
+    FIELD_TAG,
+    UUID_RE,
+    parse_search_query,
+)
 from saq.search.types import KIND_OBSERVABLE, KIND_TAG, KIND_UUID, LANE_LEXICAL, SearchFilters, SearchHit
-
-HEX_RE = re.compile(r"^[a-f0-9]{32}$|^[a-f0-9]{40}$|^[a-f0-9]{64}$", re.IGNORECASE)
-UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", re.IGNORECASE)
-UUID_PREFIX_RE = re.compile(r"^[a-f0-9]{8}(-[a-f0-9]{0,4}){0,4}$", re.IGNORECASE)
-MIN_TOKEN_LENGTH = 3
-MAX_CANDIDATES = 32
 
 
 @dataclass(frozen=True)
 class LexicalCandidates:
-    """The literal values pulled out of a query, grouped by what they can match."""
+    """The literals the analyst named, in the form each lookup needs.
 
-    values: tuple[str, ...] = ()  # observable values and tag names (raw and casefolded variants)
-    hashes: tuple[str, ...] = ()  # 32/40/64 hex digests (also matched against observables.sha256)
-    uuids: tuple[str, ...] = ()  # full alert uuids
-    uuid_prefixes: tuple[str, ...] = ()
+    Observables are already resolved to their normalized `(type, value, sha256)` identity here
+    rather than in the SQL, so the caller pays the observable-class normalization once.
+    """
+
+    # (type, value, sha256) -- value is kept only so a hit can be labelled without a round trip
+    observables: tuple = ()
+    tags: tuple = ()            # casefolded, matching the tags.name collation
+    uuids: tuple = ()
+    uuid_prefixes: tuple = ()
 
     def is_empty(self) -> bool:
-        return not (self.values or self.hashes or self.uuids or self.uuid_prefixes)
+        return not (self.observables or self.tags or self.uuids or self.uuid_prefixes)
+
+
+def candidates_from_terms(terms) -> LexicalCandidates:
+    """Collects the exact field terms of a parsed query into one set of lookups."""
+    observables: list = []
+    tags: list = []
+    uuids: list = []
+    prefixes: list = []
+
+    for term in terms or ():
+        if term.field == FIELD_OBSERVABLE:
+            for observable_type, observable_value in term.values:
+                try:
+                    # The parser already normalized these, and normalization is idempotent;
+                    # resolving again is what lets a caller hand-build a FieldTerm. A value
+                    # that is impossible for its type was already reported by the parser --
+                    # skipping it here must never turn into matching everything.
+                    identity = resolve_observable_identity(observable_type, observable_value)
+                except InvalidDetectionValue:
+                    continue
+                observables.append((identity.type, identity.value, identity.value_sha256))
+        elif term.field == FIELD_TAG:
+            tags.extend(tag_key(value) for value in term.values)
+        elif term.field == FIELD_ALERT_UUID:
+            for value in term.values:
+                (uuids if UUID_RE.match(value) else prefixes).append(value.lower())
+
+    return LexicalCandidates(
+        observables=tuple(dict.fromkeys(observables)),
+        tags=tuple(dict.fromkeys(tags)),
+        uuids=tuple(dict.fromkeys(uuids)),
+        uuid_prefixes=tuple(dict.fromkeys(prefixes)),
+    )
 
 
 def parse_query(query: str) -> LexicalCandidates:
-    """Extracts every literal an analyst may be looking for from the query text."""
-    query = (query or "").strip()
-    if not query:
-        return LexicalCandidates()
-
-    raw: list[str] = []
-    # the whole query first: "invoice scan.pdf" is a file name with a space in it
-    raw.append(query)
-    raw.extend(identifiers(query))
-    raw.extend(token for token in re.split(r"\s+", query) if len(token) >= MIN_TOKEN_LENGTH)
-
-    values: list[str] = []
-    hashes: list[str] = []
-    uuids: list[str] = []
-    prefixes: list[str] = []
-    seen: set[str] = set()
-
-    for token in raw:
-        token = token.strip().strip("\"'<>()[]{},;")
-        if not token or token in seen:
-            continue
-        seen.add(token)
-
-        if UUID_RE.match(token):
-            uuids.append(token.lower())
-            continue
-
-        if UUID_PREFIX_RE.match(token) and len(token) >= 8 and "-" in token:
-            prefixes.append(token.lower())
-
-        if HEX_RE.match(token):
-            hashes.append(token.lower())
-
-        values.append(token)
-        lowered = token.lower()
-        if lowered != token:
-            values.append(lowered)
-
-    return LexicalCandidates(
-        values=tuple(values[:MAX_CANDIDATES]),
-        hashes=tuple(hashes[:MAX_CANDIDATES]),
-        uuids=tuple(uuids[:MAX_CANDIDATES]),
-        uuid_prefixes=tuple(prefixes[:MAX_CANDIDATES]),
-    )
+    """The lookups a raw query string asks for. Convenience for callers that have only text."""
+    return candidates_from_terms(parse_search_query(query).exact)
 
 
 def apply_sql_filters(query: Query, filters: SearchFilters) -> Query:
@@ -117,17 +121,17 @@ def apply_sql_filters(query: Query, filters: SearchFilters) -> Query:
     return query
 
 
-def _hit(kind: str, key: str, text: str, title: Optional[str] = None) -> SearchHit:
+def _hit(kind: str, key: str, text: str, title=None) -> SearchHit:
     return SearchHit(lane=LANE_LEXICAL, kind=kind, key=key, title=title, text=text, score=1.0)
 
 
-def lexical_search(candidates: LexicalCandidates, filters: SearchFilters, *, limit: int) -> list[tuple[str, list[SearchHit]]]:
+def lexical_search(candidates: LexicalCandidates, filters: SearchFilters, *, limit: int) -> list:
     """Alerts matching any candidate exactly, newest first, with one hit per matched thing."""
     if candidates.is_empty():
         return []
 
-    hits: dict[str, list[SearchHit]] = {}
-    dates: dict[str, object] = {}
+    hits: dict = {}
+    dates: dict = {}
 
     def record(alert_uuid: str, insert_date, hit: SearchHit) -> None:
         dates[alert_uuid] = insert_date
@@ -137,27 +141,23 @@ def lexical_search(candidates: LexicalCandidates, filters: SearchFilters, *, lim
 
     db = get_db()
 
-    # observables by value (i_obs_value is a prefix index over the BLOB; equality uses it)
-    if candidates.values or candidates.hashes:
-        byte_values = list({value.encode("utf-8", errors="ignore") for value in candidates.values})
-        for chunk in chunked(byte_values):
-            conditions = [Observable.value.in_(chunk)]
-            if candidates.hashes:
-                conditions.append(Observable.sha256.in_([bytes.fromhex(h) for h in candidates.hashes]))
-
+    # observables by (type, sha256): an exact prefix of the i_type_sha256 unique key, so the
+    # row-constructor IN becomes one index seek per pair
+    if candidates.observables:
+        keys = [(observable_type, sha256) for observable_type, _, sha256 in candidates.observables]
+        for chunk in chunked(keys):
             query = db.query(Alert.uuid, Alert.insert_date, Observable.type, Observable.value) \
                 .join(ObservableMapping, ObservableMapping.alert_id == Alert.id) \
                 .join(Observable, Observable.id == ObservableMapping.observable_id) \
-                .filter(or_(*conditions))
+                .filter(tuple_(Observable.type, Observable.sha256).in_(chunk))
             query = apply_sql_filters(query, filters).order_by(Alert.insert_date.desc()).limit(limit * 4)
             for alert_uuid, insert_date, observable_type, value in query:
                 display = value.decode("utf-8", errors="ignore") if isinstance(value, bytes) else str(value)
                 record(alert_uuid, insert_date, _hit(KIND_OBSERVABLE, f"{observable_type}:{display}", display, title=observable_type))
 
     # tags by name (tags.name is case-insensitive in the database; casefold to match)
-    if candidates.values:
-        names = list({tag_key(value) for value in candidates.values})
-        for chunk in chunked(names):
+    if candidates.tags:
+        for chunk in chunked(list(candidates.tags)):
             query = db.query(Alert.uuid, Alert.insert_date, Tag.name) \
                 .join(TagMapping, TagMapping.alert_id == Alert.id) \
                 .join(Tag, Tag.id == TagMapping.tag_id) \
