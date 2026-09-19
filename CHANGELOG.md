@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.113] - 2026-09-19
+
+- [Upgrade image to .NET 10 for de4dotEx 3.10.0 and ilspycmd 11](https://github.com/ACE-Collective/ace3/pull/568)
+- [Validate observable types on API write paths; fix permission revoke, bulk-add success reporting, and self-lockout](https://github.com/ACE-Collective/ace3/pull/567)
+- [fix issue with openapi schema on binary content](https://github.com/ACE-Collective/ace3/pull/566)
+- [Surface analysis module crashes to analysts](https://github.com/ACE-Collective/ace3/pull/565)
+- [Explicit search query syntax and filter parity in the search API](https://github.com/ACE-Collective/ace3/pull/564)
+
 ## [3.0.112] - 2026-09-16
 
 - [Fix accumulating [git] <defunct> zombie processes](https://github.com/ACE-Collective/ace3/pull/562)
