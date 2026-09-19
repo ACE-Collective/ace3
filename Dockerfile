@@ -133,20 +133,24 @@ RUN curl -fsSLk https://packages.microsoft.com/config/debian/13/packages-microso
     rm -f /tmp/packages-microsoft-prod.deb
 
 # install dotnet sdk
+# ilspycmd and de4dotEx below both run on this runtime, so their versions have
+# to ship a build for it (ilspycmd 11.x and de4dotEx 3.10.0+ are net10.0)
 RUN apt-get update && \
-    apt-get install -y dotnet-sdk-8.0
+    apt-get install -y dotnet-sdk-10.0
 
-# install ilspycmd
-RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 9.1.0.7988
+# install ilspycmd (11.x targets net10.0; 9.x was the last net8.0 release)
+RUN dotnet tool install --tool-path /opt/dotnet ilspycmd --version 11.0.0.9375
 
-# build and install de4dotEx, the maintained fork of de4dot, on .NET 8
+# build and install de4dotEx, the maintained fork of de4dot, on .NET 10
 # (the Debian de4dot package runs on Mono, whose JIT crashes under Rosetta/QEMU
 # emulation; de4dotEx keeps the original de4dot command line interface)
-# builds the latest upstream by default; set DE4DOTEX_REF to pin a tag or commit
-ARG DE4DOTEX_REF=HEAD
+# pinned to a release tag so upstream changes are adopted deliberately: when
+# bumping DE4DOTEX_REF check that the TargetFrameworks in De4DotCommon.props
+# still matches the installed SDK (3.10.0 moved from net8.0 to net10.0)
+ARG DE4DOTEX_REF=3.10.0
 RUN git clone https://github.com/GDATAAdvancedAnalytics/de4dotEx.git /usr/src/de4dotEx && \
     git -C /usr/src/de4dotEx checkout ${DE4DOTEX_REF} && \
-    dotnet publish /usr/src/de4dotEx/de4dot/de4dot.csproj -c Release -f net8.0 -o /opt/de4dotEx && \
+    dotnet publish /usr/src/de4dotEx/de4dot/de4dot.csproj -c Release -f net10.0 -o /opt/de4dotEx && \
     chmod +x /opt/de4dotEx/de4dot && \
     printf '#!/bin/sh\nexec /opt/de4dotEx/de4dot "$@"\n' > /usr/local/bin/de4dot && \
     chmod +x /usr/local/bin/de4dot && \
