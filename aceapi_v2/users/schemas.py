@@ -178,5 +178,13 @@ class PermissionGrant(BaseModel):
 
 
 class PermissionRevoke(BaseModel):
-    users: list[int] = []   # AuthUserPermission ids
-    groups: list[int] = []  # AuthGroupPermission ids
+    """The permission ROWS to delete, by auth_user_permission / auth_group_permission id.
+
+    These are not user ids and not group ids. PermissionGrant uses `users` and `groups` for those.
+    extra="forbid" rejects unknown field names.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_permission_ids: list[int] = []
+    group_permission_ids: list[int] = []

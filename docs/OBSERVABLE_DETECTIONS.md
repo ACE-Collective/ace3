@@ -68,7 +68,7 @@ type:
 time and is not part of the change-detection fingerprint, so an edit to the hierarchy alone reaches
 the collection on the next publish -- the next detection change, or an
 `ace observables export --force splunk` -- not the next export run. A type absent from the registry
-(legacy detections can carry one) exports with a self-only `type_path`.
+exports with a self-only `type_path`.
 
 A literal `*` in a value is left as a wildcard in `pattern`. A url detection with no path
 (`http://evil.com/`) therefore becomes `*evil.com*` and matches every url on that host; an analyst who

@@ -22,10 +22,32 @@ from saq.constants import F_FILE, MAX_DETECTION_VALUE_LENGTH
 from saq.database.model import ObservableDetection as DBObservableDetection, User
 from saq.database.pool import get_db
 from saq.observables.generator import create_observable
+from saq.observables.type_hierarchy import get_all_valid_types
 
 
 class InvalidDetectionValue(ValueError):
     """The given type/value pair cannot be stored as a detection."""
+
+
+class UnknownObservableType(InvalidDetectionValue):
+    """The given observable type is not in the configured registry."""
+
+
+def validate_observable_type(observable_type: str) -> None:
+    """Raises UnknownObservableType if the type is not one the registry publishes.
+
+    Deliberately not folded into resolve_observable_identity(): that helper also runs on read paths
+    (saq/search/syntax.py, saq/search/lexical.py, saq/gui/filter_query.py,
+    aceapi_v2/search/service.py) where a saved filter or a pasted share link may name a type that
+    has since been dropped from observable_types.yaml but still has rows in the observables table --
+    those have to keep matching. This guard is for write paths, which must not create new rows of a
+    type no picker can produce.
+
+    Subclassing InvalidDetectionValue is deliberate: every API boundary that already maps that to a
+    400 handles an unknown type without a second except clause.
+    """
+    if observable_type not in get_all_valid_types():
+        raise UnknownObservableType(f"{observable_type!r} is not a valid observable type")
 
 
 class DetectionIdentity(NamedTuple):
@@ -66,9 +88,13 @@ def resolve_observable_identity(observable_type: str, observable_value: str) -> 
 def resolve_detection_identity(observable_type: str, observable_value: str) -> DetectionIdentity:
     """Normalizes and validates a type/value pair into what a detection row stores.
 
-    Same as resolve_observable_identity, plus the detection storage rule: the value must fit the
-    detections table's text column, so anything longer than MAX_DETECTION_VALUE_LENGTH is rejected.
+    Same as resolve_observable_identity, plus the two rules that apply to creating a detection
+    rather than merely looking one up: the type must be one the registry publishes (an analyst
+    picker can only ever produce those, so anything else is a typo or a bad client), and the value
+    must fit the detections table's text column, so anything longer than MAX_DETECTION_VALUE_LENGTH
+    is rejected.
     """
+    validate_observable_type(observable_type)
     identity = resolve_observable_identity(observable_type, observable_value)
     if len(identity.value) > MAX_DETECTION_VALUE_LENGTH:
         raise InvalidDetectionValue(
@@ -116,10 +142,6 @@ def default_detection_expiration(observable_type: str) -> Optional[datetime]:
     """How long a new detection of this type should live, per `observable_expiration_mappings`.
 
     Returns None -- never expires -- for a type with no mapping, which is the default configuration.
-
-    This config setting used to be applied by *ingest* to every observable it indexed, which is what
-    made observables.expires_on mean two different things. Applied here it finally matches the
-    meaning its own config comment claims: how long an observable of this type lives as a detection.
     """
     return get_observable_type_expiration_time(observable_type)
 
@@ -238,9 +260,7 @@ def enable_observable_detection(observable: Observable, detection_modified_by_us
     if db_user is None:
         raise ValueError(f"User with id {detection_modified_by_user_id} not found")
 
-    # This deliberately does not touch the observables table. Creating an index row was a side
-    # effect of the old design, where the detection flag lived on that row; the observables table is
-    # owned by the ingest path.
+    # This does not touch the observables table; that table is owned by the ingest path.
     return _upsert(
         _identity_from_observable(observable),
         detection_modified_by_user_id,

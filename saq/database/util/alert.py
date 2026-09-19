@@ -138,13 +138,6 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
        :param user_id: The id of the User that is setting the disposition.
        :param user_comment: Optional comment the User is providing as part of the disposition."""
 
-    # NOTE: this used to call refresh_observable_expires_on() on a malicious disposition, which
-    # walked every observable in the alerts and issued an UPDATE per observable type (committing
-    # inside the loop) to push observables.expires_on forward. Nothing read that column except the
-    # detection cache, and detection expiration now lives in observable_detections.expires_on, set
-    # explicitly by an analyst. Silently extending an analyst-chosen expiration as a side effect of
-    # dispositioning would be wrong, so the behavior is gone rather than repointed.
-
     with get_db_connection() as db:
         c = db.cursor()
 

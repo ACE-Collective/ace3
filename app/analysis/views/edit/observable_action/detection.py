@@ -81,9 +81,7 @@ def observable_action_adjust_expiration():
         new_expiration_time = request.form.get('observable_expiration_time')
         new_expiration_time = datetime.strptime(new_expiration_time, '%Y-%m-%d %H:%M:%S')
 
-    # NOTE: this used to assign observable.expires_on on the in-memory analysis Observable, which
-    # has no such attribute and is discarded when the request ends -- so the action reported success
-    # and changed nothing. Expiration belongs to the detection, so it is written there.
+    # Expiration belongs to the detection row, not the in-memory analysis Observable.
     try:
         detection = get_observable_detection_for(observable)
         if detection is None:

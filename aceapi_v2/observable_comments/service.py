@@ -9,7 +9,10 @@ from sqlalchemy.orm import selectinload
 
 from saq.analysis.observable import Observable as AnalysisObservable
 from saq.database.model import Observable as DBObservable, ObservableComment
-from saq.database.util.observable_detection import resolve_observable_identity
+from saq.database.util.observable_detection import (
+    resolve_observable_identity,
+    validate_observable_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +22,11 @@ async def _find_or_create_observable(
 ) -> DBObservable:
     """Find an existing DB observable by type+sha256, or create one.
 
-    Raises InvalidDetectionValue if the value is not valid for the type.
+    Raises InvalidDetectionValue if the type is not in the registry, or the value is not valid for
+    the type. This path can INSERT into the shared observables table, so the type must be one a
+    picker can produce and filter.
     """
+    validate_observable_type(observable_type)
     identity = resolve_observable_identity(observable_type, observable_value)
     result = await session.execute(
         select(DBObservable).where(

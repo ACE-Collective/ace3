@@ -115,6 +115,57 @@ class TestHappyPath:
         assert user.queue == "high" and user.enabled is False
 
     @pytest.mark.asyncio
+    async def test_cannot_disable_own_account(
+        self, client: AsyncClient, session: AsyncSession, test_user: User
+    ):
+        """A disabled user fails authentication outright, so this call would lock the caller out
+        of every endpoint including the PATCH that would undo it."""
+        r = await client.patch("/users/", json={str(test_user.id): {"enabled": False}})
+        assert r.status_code == 400
+        assert "your own account" in r.json()["detail"]
+
+        session.expire_all()
+        await session.refresh(test_user)
+        assert test_user.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_self_disable_guard_does_not_apply_partial_changes(
+        self, client: AsyncClient, session: AsyncSession, test_user: User
+    ):
+        """The guard is a pre-scan, so the other user in the same request is untouched too."""
+        other = await _make_user(session, "rtr_self_disable_other", perms=[])
+        r = await client.patch("/users/", json={
+            str(other.id): {"queue": "high"},
+            str(test_user.id): {"enabled": False},
+        })
+        assert r.status_code == 400
+
+        session.expire_all()
+        await session.refresh(other)
+        assert other.queue != "high"
+
+    @pytest.mark.asyncio
+    async def test_can_still_disable_another_account(self, client: AsyncClient, session: AsyncSession):
+        user = await _make_user(session, "rtr_disable_other", perms=[])
+        r = await client.patch("/users/", json={str(user.id): {"enabled": False}})
+        assert r.status_code == 200
+        session.expire_all()
+        await session.refresh(user)
+        assert user.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_can_still_enable_own_account(
+        self, client: AsyncClient, session: AsyncSession, test_user: User
+    ):
+        """Only `enabled: false` on the caller's own id is refused; nothing else about the
+        caller's own row is."""
+        r = await client.patch("/users/", json={str(test_user.id): {"enabled": True, "queue": "high"}})
+        assert r.status_code == 200
+        session.expire_all()
+        await session.refresh(test_user)
+        assert test_user.enabled is True and test_user.queue == "high"
+
+    @pytest.mark.asyncio
     async def test_create_rejects_blank_username(self, client: AsyncClient):
         r = await client.post("/users/", json={"username": "  ", "email": "x@e.com"})
         assert r.status_code == 400
@@ -346,12 +397,61 @@ class TestHappyPath:
         )).scalar_one()
         perm_id = perm.id
 
-        revoke = await client.post("/users/permissions/delete", json={"users": [perm_id], "groups": []})
+        revoke = await client.post("/users/permissions/delete", json={
+            "user_permission_ids": [perm_id], "group_permission_ids": [],
+        })
         assert revoke.status_code == 200
         session.expire_all()
         assert (await session.execute(
             select(AuthUserPermission).where(AuthUserPermission.id == perm_id)
         )).scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
+    async def test_revoke_rejects_unknown_fields(self, client: AsyncClient, session: AsyncSession):
+        """Unknown fields such as `users` (user ids on PermissionGrant) are rejected."""
+        uid = (await _make_user(session, "rtr_unknown_field", perms=[("event", "read")])).id
+        session.expire_all()
+        perm = (await session.execute(
+            select(AuthUserPermission).where(AuthUserPermission.user_id == uid)
+        )).scalar_one()
+        perm_id = perm.id
+
+        response = await client.post("/users/permissions/delete", json={"users": [perm_id]})
+        assert response.status_code == 422
+
+        session.expire_all()
+        assert (await session.execute(
+            select(AuthUserPermission).where(AuthUserPermission.id == perm_id)
+        )).scalar_one_or_none() is not None
+
+    @pytest.mark.asyncio
+    async def test_revoke_unknown_id_is_404_and_deletes_nothing(
+        self, client: AsyncClient, session: AsyncSession
+    ):
+        """An id that matches no row must not come back as success, and must not take the ids
+        alongside it down with it."""
+        uid = (await _make_user(session, "rtr_revoke_404", perms=[("event", "read")])).id
+        session.expire_all()
+        perm = (await session.execute(
+            select(AuthUserPermission).where(AuthUserPermission.user_id == uid)
+        )).scalar_one()
+        perm_id = perm.id
+
+        response = await client.post("/users/permissions/delete", json={
+            "user_permission_ids": [perm_id, 999999], "group_permission_ids": [],
+        })
+        assert response.status_code == 404
+        assert "999999" in response.json()["detail"]
+
+        session.expire_all()
+        assert (await session.execute(
+            select(AuthUserPermission).where(AuthUserPermission.id == perm_id)
+        )).scalar_one_or_none() is not None
+
+    @pytest.mark.asyncio
+    async def test_revoke_empty_request_is_a_noop(self, client: AsyncClient):
+        response = await client.post("/users/permissions/delete", json={})
+        assert response.status_code == 200
 
 
 class TestSelfService:

@@ -94,6 +94,8 @@ async def update_users(
 ) -> dict:
     try:
         await service.update_users(session, body, actor_id=auth.auth_user_id)
+    except service.SelfDisableError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except service.UserNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"success": "Users updated successfully"}
@@ -262,9 +264,20 @@ async def revoke_api_key(
 async def delete_permission(
     body: PermissionRevoke,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> dict:
-    await service.revoke_permissions(
-        session, user_permission_ids=body.users, group_permission_ids=body.groups
-    )
+    """Delete permission ROWS by their auth_user_permission / auth_group_permission ids.
+
+    Not by user or group id -- see PermissionRevoke. Nothing is deleted unless every id names a
+    real row.
+    """
+    try:
+        await service.revoke_permissions(
+            session,
+            user_permission_ids=body.user_permission_ids,
+            group_permission_ids=body.group_permission_ids,
+            actor_id=auth.auth_user_id,
+        )
+    except service.PermissionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return {"success": "Permission deleted successfully"}

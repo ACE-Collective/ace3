@@ -115,6 +115,54 @@ class TestBulkAddObservable:
         assert "Invalid time format" in response.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_unknown_observable_type(self, client: AsyncClient):
+        """A type the registry does not publish can never succeed against any alert, so it is a
+        request-level 400 -- and no alert is locked or loaded for it."""
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": ["uuid-1"],
+            "observable_type": "not_a_real_type",
+            "observable_value": "whatever",
+        })
+        assert response.status_code == 400
+        assert "not a valid observable type" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.add_workload")
+    @patch("aceapi_v2.alerts.service.release_lock")
+    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
+    @patch("aceapi_v2.alerts.service.get_db")
+    async def test_invalid_value_is_reported_as_a_failure(
+        self,
+        mock_get_db,
+        mock_acquire_lock,
+        mock_release_lock,
+        mock_add_workload,
+        client: AsyncClient,
+    ):
+        """add_observable_by_spec returns None for a value that is impossible for its type.
+        That is reported as a per-alert failure and does not schedule a correlation pass."""
+        alert = _make_mock_alert("uuid-1")
+        alert.root_analysis.add_observable_by_spec = MagicMock(return_value=None)
+        _wire_get_db(mock_get_db, alert)
+
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": ["uuid-1"],
+            "observable_type": "ipv4",
+            "observable_value": "not-an-ip",
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success_count"] == 0
+        assert data["failed_count"] == 1
+        assert data["failed_uuids"] == ["uuid-1"]
+        assert "not a valid value for observable type ipv4" in data["failed_details"]["uuid-1"]
+
+        # nothing was written and no analysis was scheduled
+        assert not alert.sync.called
+        assert not mock_add_workload.called
+
+    @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.add_workload")
     @patch("aceapi_v2.alerts.service.release_lock")
     @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
@@ -139,7 +187,7 @@ class TestBulkAddObservable:
 
         response = await client.post("/alerts/bulk-add-observable", json={
             "alert_uuids": ["uuid-1", "uuid-2"],
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
 
@@ -151,10 +199,10 @@ class TestBulkAddObservable:
 
         # Verify observables were added to both alerts
         alert1.root_analysis.add_observable_by_spec.assert_called_once_with(
-            "domain", "evil.example.com", None
+            "fqdn", "evil.example.com", None
         )
         alert2.root_analysis.add_observable_by_spec.assert_called_once_with(
-            "domain", "evil.example.com", None
+            "fqdn", "evil.example.com", None
         )
         assert alert1.sync.called
         assert alert2.sync.called
@@ -284,7 +332,7 @@ class TestBulkAddObservable:
 
         response = await client.post("/alerts/bulk-add-observable", json={
             "alert_uuids": ["nonexistent-uuid"],
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
 
@@ -320,7 +368,7 @@ class TestBulkAddObservable:
 
         response = await client.post("/alerts/bulk-add-observable", json={
             "alert_uuids": ["uuid-1", "uuid-2"],
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
 
@@ -395,7 +443,7 @@ class TestBulkAddObservable:
 
         response = await client.post("/alerts/bulk-add-observable", json={
             "alert_uuids": ["uuid-1"],
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
 
@@ -436,7 +484,7 @@ class TestBulkAddObservable:
 
         response = await client.post("/alerts/bulk-add-observable", json={
             "alert_uuids": ["uuid-1"],
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
 

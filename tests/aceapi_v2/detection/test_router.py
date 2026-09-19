@@ -97,7 +97,7 @@ class TestPermissionGates:
 class TestCreate:
     @pytest.mark.asyncio
     async def test_create_for_a_never_seen_observable(self, client: AsyncClient):
-        """The capability the old design could not express at all."""
+        """A detection can be created for a value that has never appeared in an alert."""
         r = await client.post("/detection/", json={
             "type": "fqdn", "value": "brand-new.example.com",
             "detection_context": "from threat intel"})
@@ -125,6 +125,13 @@ class TestCreate:
         r = await client.post("/detection/", json={"type": "ipv4", "value": "notanip"})
         assert r.status_code == 400
         assert "ipv4" in r.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_is_400(self, client: AsyncClient):
+        """An unknown type is rejected before the value is considered."""
+        r = await client.post("/detection/", json={"type": "not_a_real_type", "value": "x"})
+        assert r.status_code == 400
+        assert "not a valid observable type" in r.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_duplicate_is_409(self, client: AsyncClient):

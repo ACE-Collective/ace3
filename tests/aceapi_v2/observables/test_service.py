@@ -75,7 +75,7 @@ class TestObservableIsInteresting:
         session.add(obs)
         await session.commit()
 
-        result = await observable_is_interesting(session, "domain", _sha256("test"))
+        result = await observable_is_interesting(session, "fqdn", _sha256("test"))
         assert result is False
 
 
@@ -113,7 +113,7 @@ class TestSetObservableInteresting:
     @pytest.mark.asyncio
     async def test_updates_existing_observable(self, session: AsyncSession):
         obs = Observable(
-            type="domain",
+            type="fqdn",
             sha256=_sha256("evil.com"),
             value=b"evil.com",
             is_interesting=False,
@@ -121,11 +121,11 @@ class TestSetObservableInteresting:
         session.add(obs)
         await session.commit()
 
-        await set_observable_interesting(session, "domain", "evil.com", True)
+        await set_observable_interesting(session, "fqdn", "evil.com", True)
 
         result = await session.execute(
             select(Observable).where(
-                Observable.type == "domain",
+                Observable.type == "fqdn",
                 Observable.sha256 == _sha256("evil.com"),
             )
         )
@@ -156,7 +156,7 @@ class TestGetInterestingObservablesByHashes:
             is_interesting=False,
         )
         obs3 = Observable(
-            type="domain",
+            type="fqdn",
             sha256=_sha256("evil.com"),
             value=b"evil.com",
             is_interesting=True,
@@ -171,7 +171,7 @@ class TestGetInterestingObservablesByHashes:
         assert len(result) == 2
         result_types = {(o.type, o.value) for o in result}
         assert ("ipv4", b"1.1.1.1") in result_types
-        assert ("domain", b"evil.com") in result_types
+        assert ("fqdn", b"evil.com") in result_types
 
     @pytest.mark.asyncio
     async def test_ignores_hashes_not_in_db(self, session: AsyncSession):

@@ -38,13 +38,10 @@ def test_snort_signature_observable():
 
 @pytest.mark.integration
 def test_ingest_does_not_stamp_observable_expiration(db_event):
-    """Indexing an observable no longer writes observables.expires_on.
+    """Indexing an observable does not write observables.expires_on.
 
-    It used to be set to now + observable_expiration_mappings[type] for every observable ever seen,
-    and bumped again on a malicious disposition. Nothing read it except the detection cache, which
-    meant an observable last seen a while ago carried an already-expired timestamp -- so enabling
-    detection on it produced a detection that was dead on arrival. Detection expiration now lives on
-    the detection itself (observable_detections.expires_on), where only an analyst sets it.
+    Detection expiration lives on the detection itself (observable_detections.expires_on), where
+    only an analyst sets it.
     """
     from saq.database import Alert, ALERT, Observable, ObservableMapping, User, set_dispositions
 
@@ -68,7 +65,7 @@ def test_ingest_does_not_stamp_observable_expiration(db_event):
 
         set_dispositions([root.uuid], DISPOSITION_DELIVERY, get_db().query(User).first().id)
 
-        # dispositioning malicious no longer rewrites it either
+        # dispositioning malicious does not rewrite it either
         assert current_expires_on() is None
     finally:
         del get_config().observable_expiration_mappings[F_TEST]
@@ -76,8 +73,7 @@ def test_ingest_does_not_stamp_observable_expiration(db_event):
 
 @pytest.mark.integration
 def test_observable_type_expiration_time_is_the_detection_default():
-    """The config setting now supplies a *detection's* default lifetime, which is what its own
-    description has always claimed it was."""
+    """observable_expiration_mappings is a detection's default lifetime."""
     from saq.analysis.observable import get_observable_type_expiration_time
 
     assert get_observable_type_expiration_time(F_TEST) is None

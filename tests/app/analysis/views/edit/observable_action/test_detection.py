@@ -111,7 +111,7 @@ class TestObservableActionSetForDetection:
 
     @patch('app.analysis.views.edit.observable_action.detection.get_current_alert')
     def test_enable_does_not_touch_the_observables_index(self, mock_get_alert, web_client, mock_alert, observable):
-        """Enabling used to insert an observables row as a side effect of where the flag lived."""
+        """Enabling a detection does not insert into the observables index."""
         from saq.database.model import Observable as DBObservable
 
         mock_alert.root_analysis.get_observable.return_value = observable
@@ -186,11 +186,7 @@ class TestObservableActionAdjustExpiration:
 
     @patch('app.analysis.views.edit.observable_action.detection.get_current_alert')
     def test_adjust_expiration_persists(self, mock_get_alert, web_client, mock_alert, observable):
-        """The expiration must actually reach the database.
-
-        This used to assign expires_on on the transient in-memory Observable -- which has no such
-        attribute -- and flash success having written nothing.
-        """
+        """The expiration is written to the detection row in the database."""
         create_observable_detection(TEST_TYPE, TEST_VALUE, None)
 
         mock_alert.root_analysis.get_observable.return_value = observable

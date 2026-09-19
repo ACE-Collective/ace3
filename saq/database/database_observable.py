@@ -38,8 +38,7 @@ def observable_is_set_for_detection(observable: Observable) -> bool:
     """Returns True if the observable is set for detection, False otherwise."""
     with get_db_connection() as db:
         cursor = db.cursor()
-        # NOTE: the type predicate matters. This used to match on the hash alone, so a value enabled
-        # for detection as one type reported as enabled for every type sharing that value.
+        # Match on type and hash: the same value under two types is two detections.
         cursor.execute(
             "SELECT 1 FROM observable_detections WHERE type = %s AND value_sha256 = %s",
             (observable.type, observable.sha256_bytes))

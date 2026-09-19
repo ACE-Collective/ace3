@@ -483,12 +483,10 @@ $(document).ready(function() {
     });
 
     $("#btn_remove_permissions").on('click', function() {
-        var users = get_selected_user_permission_ids();
-        var groups = get_selected_group_permission_ids();
-
+        // these are permission ROW ids, not user/group ids -- the endpoint field names match
         var json_submission = {
-            users: users,
-            groups: groups,
+            user_permission_ids: get_selected_user_permission_ids(),
+            group_permission_ids: get_selected_group_permission_ids(),
         };
 
         api_request_then_reload("POST", USERS_API + "/permissions/delete", json_submission);

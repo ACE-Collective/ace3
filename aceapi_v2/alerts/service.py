@@ -302,16 +302,20 @@ def _add_observable_to_alert(
         already_existed = alert.root_analysis.get_observable_by_spec(o_type, o_value, o_time) is not None
 
         observable = alert.root_analysis.add_observable_by_spec(o_type, o_value, o_time)
+        if observable is None:
+            # the value is impossible for this type, so nothing was added. Return a failure so
+            # it is not counted as a success, and skip the sync so a rejected spec does not
+            # schedule a correlation pass.
+            return f"{o_value!r} is not a valid value for observable type {o_type}"
 
         # track who manually added this observable and when
-        if observable and not already_existed:
+        if not already_existed:
             observable.added_by = username
             observable.added_time = local_time()
 
-        if observable and directives:
-            for directive in directives:
-                if directive in VALID_DIRECTIVES:
-                    observable.add_directive(directive)
+        for directive in directives:
+            if directive in VALID_DIRECTIVES:
+                observable.add_directive(directive)
 
         alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.sync()
