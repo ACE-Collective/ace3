@@ -45,6 +45,8 @@ pytest -m unit                            # fast, no DB/engine
 pytest tests/test_external_integration_*  # run all integration tests
 ```
 
+Use `-n auto` unless there is a technical reason not to.
+
 Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/conftest.py`; `unit` tests do not.
 
 Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).
@@ -214,6 +216,25 @@ The `docker-compose.yml` configuration is the open source default configuration.
 `phishkit/` is a browser-detonation service that lives outside the `saq` namespace and never imports it: a Celery worker (RabbitMQ broker, Redis backend) that detonates a URL or file in a throwaway Chrome/SeleniumBase container and leaves the artifacts (screenshot, DOM, captured requests and response bodies, metrics) on the shared `ace-phishkit` volume. Its behavior is configured by `etc/phishkit_config.yaml`, which is *not* part of the layered `saq.yaml` config. ACE reaches it only through `saq/phishkit.py`, a thin Celery client plus an `ace phishkit` CLI; the real consumer is `PhishkitAnalyzer` (`saq/modules/phishkit.py`, config block `analysis_module_phishkit_analyzer`), which dispatches asynchronously, polls via delayed analysis, and turns the returned artifacts and the URLs found in them into observables.
 
 Phishkit has it's own CLAUDE.md file available at `phishkit/CLAUDE.md` as needed.
+
+#### Crash reports
+
+`saq/crash_report.py` records what an analysis module was doing when it failed (`docs/CRASH_REPORTS.md`):
+one directory per crash under `data/crash_reports/YYYY/MM/DD/<crash_id>/`, carrying the traceback
+(or, for a hang, every thread's stack captured from inside the stuck process before `os._exit(1)`),
+the analysis tree, and the bytes of the file observable the module crashed on. The `crash_id` is
+logged as an `extra={}` field, so an analyst greps it and pulls the whole report from
+`GET /api/v2/crashes/{crash_id}/download` (`aceapi_v2/crashes/`, permission `crash:read`) instead of
+needing a shell on the node. Three call sites, all in the engine: the executor's per-module
+exception handler, the `AnalysisModuleMonitor` watchdog, and `Worker._handle_failed_analysis`.
+Nothing in the module may raise — it runs on paths where a failure would break analysis or hang a
+dying process. `analysis_module_crashes` is a derived index; the filesystem is authoritative. On by
+default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
+copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
+upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
+trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper.
+`report_exception()` and `data/error_reports` are a separate mechanism that still serves every
+other caller.
 
 #### Search
 

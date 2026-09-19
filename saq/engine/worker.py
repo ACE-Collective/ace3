@@ -3,18 +3,17 @@ from datetime import datetime, timedelta
 import logging
 from multiprocessing import Process
 import os
-import shutil
 import signal
 import threading
 import time
 from typing import Optional, Union
-import uuid
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_FILE, LockManagerType, WorkloadManagerType
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, LockManagerType, WorkloadManagerType
+from saq.crash_report import CRASH_TYPE_KILLED, record_module_crash
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import get_lock_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -35,14 +34,13 @@ from saq.engine.workload_manager.adapter import WorkloadManagerAdapter
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
-from saq.environment import ACE_MP_CONTEXT, get_data_dir, get_global_runtime_settings
+from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
 from saq.shutdown import wait_for_shared_flag
 
 
-from saq.observables.file import FileObservable
 from saq.util.process import kill_process_tree
 from saq.util.time import local_time
 from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
@@ -656,7 +654,18 @@ class Worker:
         logging.error(
             f"analysis module {record.module_path} "
             f"timed out analyzing {record.storage_dir} "
-            f"on pid {self.process.pid if self.process else 'unknown'}"
+            f"on pid {self.process.pid if self.process else 'unknown'}",
+            extra={
+                "crash_type": "timeout",
+                "module_path": record.module_path,
+                "root_uuid": record.root_uuid,
+                "observable_type": record.observable_type,
+                "observable_value": record.observable_value,
+                "worker_name": record.worker_name,
+                "maximum_analysis_time": record.maximum_analysis_time,
+                "module_start_time": record.module_start_time,
+                "pid": self.process.pid if self.process else None,
+            },
         )
         return True
 
@@ -693,62 +702,33 @@ class Worker:
             root = RootAnalysis(storage_dir=last_work_target)
             root.load()
 
-            if self.config.copy_terminated_analysis_causes:
-                try:
-                    failed_analysis_dir = os.path.join(
-                        get_data_dir(),
-                        "review",
-                        "failed_analysis",
-                        datetime.now().strftime("%Y"),
-                        datetime.now().strftime("%m"),
-                        datetime.now().strftime("%d"),
-                        root.uuid,
-                    )
+            # the process that died wrote nothing -- SIGKILL leaves no handler a chance -- so this
+            # is where the crash gets recorded, from the replacement worker, out of the tracking
+            # record the manager preserved
+            crash_id = record_module_crash(
+                crash_type=CRASH_TYPE_KILLED,
+                module_path=last_analysis_module.module_path,
+                root=root,
+                observable_type=last_analysis_module.observable_type,
+                observable_value=last_analysis_module.observable_value,
+                observable_uuid=last_analysis_module.observable_uuid,
+                worker_name=last_analysis_module.worker_name,
+                maximum_analysis_time=last_analysis_module.maximum_analysis_time,
+                module_start_time=last_analysis_module.module_start_time,
+            )
 
-                    os.makedirs(failed_analysis_dir, exist_ok=True)
+            # mark the analysis as failed. the crash id rides along in the error message so it
+            # ends up serialized in the alert's own tree -- an analyst looking at the alert that
+            # lost a module can get to the crash report without having to find the log line first
+            error_message = "process died unexpectedly"
+            if crash_id:
+                error_message = f"{error_message} (crash_id {crash_id})"
 
-                    # if the observable was a file then copy the file and these details so they can be reviewed
-                    if last_analysis_module.observable_type == F_FILE:
-                        # find the file observable with this value
-                        file_observable = root.find_observable(
-                            lambda _: _.type == F_FILE
-                            and _.value == last_analysis_module.observable_value
-                        )
-                        if isinstance(file_observable, FileObservable):
-                            logging.info(
-                                "copying file that failed analysis from %s to %s",
-                                file_observable.full_path,
-                                failed_analysis_dir,
-                            )
-                            shutil.copy(
-                                file_observable.full_path, failed_analysis_dir
-                            )
-
-                    target_uuid = last_analysis_module.observable_uuid or str(
-                        uuid.uuid4()
-                    )
-
-                    with open(
-                        os.path.join(failed_analysis_dir, f"details-{target_uuid}"),
-                        "w",
-                    ) as fp:
-                        fp.write(
-                            f"""root = {root.storage_dir}
-work_target = {last_work_target}
-analysis_module = {last_analysis_module}
-"""
-                        )
-                except Exception as e:
-                    logging.error(
-                        f"unable to copy file observable to review directory: {e}"
-                    )
-
-            # mark the analysis as failed
             root.set_analysis_failed(
                 last_analysis_module.module_path,
                 last_analysis_module.observable_type,
                 last_analysis_module.observable_value,
-                error_message="process died unexpectedly",
+                error_message=error_message,
             )
 
             root.save()

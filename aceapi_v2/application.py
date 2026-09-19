@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.common.router import router as common_router
+from aceapi_v2.crashes.router import router as crashes_router
 from aceapi_v2.detection.router import router as detection_router
 from aceapi_v2.events.router import router as events_router
 from aceapi_v2.health.router import router as health_router
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     app.include_router(common_router, prefix="/common", tags=["common"])
+    app.include_router(crashes_router, prefix="/crashes", tags=["crashes"])
     app.include_router(detection_router, prefix="/detection", tags=["detection"])
     app.include_router(events_router, prefix="/events", tags=["events"])
     app.include_router(health_router, prefix="/health", tags=["health"])

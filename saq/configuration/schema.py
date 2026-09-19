@@ -154,6 +154,11 @@ class S3Config(BaseModel):
     secure: bool = Field(..., description="set to use SSL")
     cert_check: bool = Field(..., description="set to validate SSL certification")
     region: Optional[str] = Field(description="s3 region")
+    # botocore's own defaults here are 60s/60s with legacy retries (5 attempts), which means a
+    # black-holed endpoint can occupy a caller for minutes per request. these bound that.
+    connect_timeout: int = Field(default=10, ge=1, description="seconds to wait for a TCP connection to the s3 endpoint before giving up. 60s (botocore's default) to establish a connection is pathological; this is the setting that bounds a black-holed endpoint")
+    read_timeout: int = Field(default=60, ge=1, description="seconds to wait for a single socket read. NOT a cap on a whole transfer: uploads and downloads are multipart (8MiB parts, up to 10 concurrent), so this is a per-part stall detector. lowering it imposes a per-stream throughput floor and can break large transfers on a slow link")
+    max_attempts: int = Field(default=3, ge=1, description="total attempts per request, including the first, under botocore's standard retry mode (which classifies retryable errors more narrowly than the legacy mode boto3 otherwise defaults to)")
 
 class RedisConfig(BaseModel):
     name: str = Field(..., description="redis name")
@@ -588,6 +593,24 @@ class AnalysisCacheConfig(BaseModel):
     local_cache_max_bytes: Optional[int] = Field(default=None, description="Optional size cap (bytes) on a node's local cache tier. When set, local maintenance evicts oldest-first until the tier is under budget. None means age-based eviction only.")
 
 
+class CrashReportingConfig(BaseModel):
+    """Configuration for analysis module crash reports (see saq/crash_report.py).
+
+    Enabled by default, including the file observable copy. Size caps bound how much a single
+    crash may write.
+    """
+    enabled: bool = Field(default=True, description="kill switch for analysis module crash reports; when false no crash report directories are written and nothing is indexed")
+    directory: str = Field(default="crash_reports", description="directory that contains analysis module crash reports (relative to DATA_DIR)")
+    copy_file: bool = Field(default=True, description="copy the contents of the file observable a module crashed on into the crash report; this is usually the artifact an analyst actually wants")
+    max_file_size: int = Field(default=100 * 1024 * 1024, description="per-file size cap (bytes) on the copied file observable; a larger file is skipped and recorded in the report's omitted list rather than silently dropped. 0 disables the cap")
+    copy_root_json: bool = Field(default=True, description="copy the root analysis tree (data.json) into the crash report; this is the tree only, never the file observables under files/ or hardcopies/")
+    max_root_json_size: int = Field(default=32 * 1024 * 1024, description="size cap (bytes) on the copied root analysis tree. 0 disables the cap")
+    retention_days: int = Field(default=30, description="number of days crash reports are kept before `ace crash prune` (run from bin/daily-maintenance.sh) removes the directory and its index row")
+    max_reports_per_module_per_root: int = Field(default=5, description="how many crash reports one module may produce for one root within a single worker process. Bounds the disk cost of a module that fails on every file in a large tree; the first few reports of a repeating failure say everything the tenth would. 0 disables the limit. The in-process timeout watchdog is exempt.")
+    replicate: bool = Field(default=False, description="replicate crash reports to shared object storage (saq.storage) so ANY node can serve a report written on any other node. Turn this on when storage.target points at storage that every node shares. Left off by default rather than inferred from storage.target: a cluster running the local backend on a shared filesystem is a legitimate deployment, and guessing would silently disable replication exactly there.")
+    storage_bucket: str = Field(default="ace-crash-reports", description="bucket crash reports are replicated into. Keep it dedicated: it holds the file observables that crashed modules, i.e. live malware.")
+
+
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
     enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
@@ -663,6 +686,7 @@ class ACEConfig(BaseModel):
     observable_types: ObservableTypesConfig = Field(default_factory=ObservableTypesConfig, description="per-observable-type configuration (inheritance, default display types, ...)")
     secrets: SecretsConfig = Field(default_factory=SecretsConfig, description="dynamic encrypted-secret (SecretRef) resolution configuration")
     analysis_cache: AnalysisCacheConfig = Field(default_factory=AnalysisCacheConfig, description="analysis result cache configuration")
+    crash_reporting: CrashReportingConfig = Field(default_factory=CrashReportingConfig, description="analysis module crash report configuration")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None

@@ -1402,6 +1402,68 @@ class MessageRouting(Base):
         DateTime,
         nullable=True)
 
+class AnalysisModuleCrash(Base):
+    """Index of the analysis module crash reports written under <data_dir>/crash_reports.
+
+    The filesystem is authoritative; this table is a derived index that exists so an analyst can
+    *find* a crash report without already knowing its id, and so the API can filter by alert,
+    module or node. The insert is best effort (saq/crash_report.py::_index_crash_report) because a
+    module crash is exactly when the database is most likely to be the thing that is unwell --
+    losing a row costs a listing, not the report, which stays retrievable by id through the glob
+    fallback in find_crash_report_dir().
+
+    There is deliberately no foreign key to alerts: a crash is recorded against the RootAnalysis
+    that was being analyzed, which very often never becomes an alert at all, and the report must
+    outlive whatever the tree turned into.
+    """
+
+    __tablename__ = 'analysis_module_crashes'
+    __table_args__ = (
+        Index('i_module_crash_uuid', 'uuid', unique=True),
+        Index('i_module_crash_insert_date', 'insert_date'),
+        Index('i_module_crash_root_uuid', 'root_uuid'),
+        Index('i_module_crash_module', 'module_path', mysql_length={'module_path': 255}),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # the crash id: an opaque uuid4, logged as crash_id= when the crash happens, and the name of
+    # the report's directory on disk
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    insert_date: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+
+    crash_type: Mapped[str] = mapped_column(
+        Enum('exception', 'timeout', 'killed'),
+        nullable=False)
+
+    # which node's disk the report is on. a crash report only ever exists on the node whose
+    # worker died, so this is what lets the API say "ask that node" instead of returning a 404
+    node: Mapped[str] = mapped_column(String(1024), nullable=False)
+
+    # the report directory, relative to the data dir
+    report_dir: Mapped[str] = mapped_column(String(1024), nullable=False)
+
+    module_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    module_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    analysis_mode: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+    root_uuid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+
+    observable_uuid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    observable_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    observable_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    exception_type: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    exception_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # whether the report carries the bytes of the file observable the module crashed on
+    has_file: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

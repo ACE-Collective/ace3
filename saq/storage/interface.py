@@ -1,4 +1,4 @@
-from typing import Protocol, Union
+from typing import Optional, Protocol, Union
 from pathlib import Path
 
 
@@ -74,5 +74,17 @@ class StorageInterface(Protocol):
     def delete_object(self, bucket: str, remote_path: str) -> bool:
         """
         Delete an object from storage.
+        """
+        ...
+
+    def object_exists(self, bucket: str, remote_path: str) -> bool:
+        """
+        Return True if the object exists.
+        """
+        ...
+
+    def get_object_info(self, bucket: str, remote_path: str) -> Optional[dict]:
+        """
+        Return {"size", "last_modified", "etag", ...} for the object, or None if absent.
         """
         ...

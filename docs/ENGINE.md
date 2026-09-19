@@ -949,7 +949,7 @@ Caught per-module in `_execute_module_analysis`:
 | `WaitForAnalysisException` | create the dependency edge and move on (§9.1) |
 | `ExcessiveFileDataSizeError` | re-raised — aborts the whole work item |
 | `AnalysisFailedException` | logged as a warning (expected on retry after a kill), fails any dependency |
-| anything else | logged as a **warning** plus `report_exception()`; the dependency (if any) is failed; with `copy_analysis_on_error` the whole storage dir is copied next to the error report; with `copy_file_on_error` a file observable is copied too |
+| anything else | logged as a **warning** (with `exc_info`) plus `report_exception()`; the dependency (if any) is failed; and an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`) |
 
 Note that a module blowing up does not fail the work item — the loop continues
 with the next module.
@@ -996,12 +996,14 @@ loop this subsystem exists to prevent. A record naming no module means the worke
 exited cleanly between modules, so there is nothing to attribute.
 
 `Worker._handle_failed_analysis(record)` loads the root at `record.storage_dir`,
-optionally copies the offending file + a `details-*` note to
-`data/review/failed_analysis/YYYY/MM/DD/<uuid>/`
-(`copy_terminated_analysis_causes`), calls
+writes an analysis module **crash report** — the offending file plus full metadata,
+reconstructed from the tracking record since the process that died wrote nothing
+(`docs/CRASH_REPORTS.md`) — calls
 `root.set_analysis_failed(module_path, obs_type, obs_value, "process died
-unexpectedly")`, saves, force-releases the lock *scoped to the lock_uuid it
-actually observes* so it can never delete a live worker's lock, and finally
+unexpectedly (crash_id ...)")` — the crash id rides along so an analyst reading the
+alert can reach the report without finding the log line first — saves,
+force-releases the lock *scoped to the lock_uuid it actually observes* so it can
+never delete a live worker's lock, and finally
 **deletes the pending file** — deleting it is the acknowledgement, so a replacement
 that dies mid-recovery leaves the attribution in place for the next one. It also
 resolves the record when `storage_dir` no longer exists, since a root that is gone
@@ -1265,7 +1267,7 @@ than per-process.
 | `default_analysis_mode` | fallback for missing/unknown modes. |
 | `local_analysis_modes` / `excluded_analysis_modes` | mode allow-list / deny-list. Mutually exclusive. |
 | `node_status_update_frequency` | heartbeat + maintenance tick, seconds. |
-| `copy_analysis_on_error` / `copy_file_on_error` / `copy_terminated_analysis_causes` | forensic copies on failure. Disk-hungry. |
+| (see the top-level `crash_reporting:` block, not an `engine:` key) | analysis module crash reports: on by default, size-capped, and reachable over the API. `docs/CRASH_REPORTS.md`. |
 | `work_dir` | scratch storage for non-alert analysis. |
 | `alert_disposition_check_frequency` | throttle for the mid-analysis disposition poll, seconds. `0` polls on every module invocation. |
 | `non_detectable_modes` | modes that never promote to an alert. |

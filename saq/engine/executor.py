@@ -2,7 +2,6 @@ from datetime import datetime, UTC
 import logging
 from operator import attrgetter
 import os
-import shutil
 import threading
 import time
 from typing import Optional
@@ -40,12 +39,16 @@ from saq.constants import (
     EVENT_OBSERVABLE_ADDED,
     EVENT_RELATIONSHIP_ADDED,
     EVENT_TAG_ADDED,
-    F_FILE,
     STATE_ANALYSIS_START_TIME,
     STATE_POST_ANALYSIS_EXECUTED,
     STATE_PRE_ANALYSIS_EXECUTED,
     STATE_TOTAL_ANALYSIS_TIME_SECONDS,
     AnalysisExecutionResult,
+)
+from saq.crash_report import (
+    CRASH_TYPE_EXCEPTION,
+    CRASH_TYPE_TIMEOUT,
+    record_module_crash,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db
@@ -132,6 +135,38 @@ class AnalysisModuleMonitor:
                     monitor_module,
                     monitor_module.maximum_analysis_time,
                 ))
+
+                # we are about to os._exit(1) out of a process whose main thread is wedged, so
+                # this is the *only* opportunity anything has to record where the module is
+                # actually stuck. the report carries every thread's stack; nothing else in ACE
+                # can produce that, because every other observer of this failure runs in a
+                # different process and only ever sees the corpse.
+                #
+                # index=False / replicate=False: both are skipped deliberately. this thread must
+                # reach os._exit(1), and an unwell database is a plausible reason for a module to
+                # be stuck in the first place -- a blocking insert would turn the watchdog into a
+                # second hung thing, and os._exit() annihilates the daemon thread replication runs
+                # on, so starting one here would be a coin flip. Neither loses the report: it stays
+                # retrievable by id through the glob fallback in find_crash_report_dir(), and
+                # `ace crash sync` replicates it to shared storage afterwards.
+                try:
+                    record_module_crash(
+                        crash_type=CRASH_TYPE_TIMEOUT,
+                        module_path=MODULE_PATH(monitor_module),
+                        module_name=monitor_module.name,
+                        root=root,
+                        observable=monitor_target.observable if monitor_target else None,
+                        maximum_analysis_time=monitor_module.maximum_analysis_time,
+                        elapsed_seconds=monitor_elapsed_time,
+                        include_thread_stacks=True,
+                        index=False,
+                        replicate=False,
+                    )
+                except Exception as crash_error:
+                    # record_module_crash does not raise, but this is the one call site where
+                    # "does not raise" failing would hang a process instead of losing a report
+                    logging.error("unable to record crash report before exit: %s", crash_error)
+
                 os._exit(1)
 
             # repeat warning every 5 seconds until we bail
@@ -1590,61 +1625,33 @@ class AnalysisExecutor:
                 work_item.dependency.increment_status()
 
         except Exception as e:
-            # this is techinically an error but it is going to happen so we log it as a warning
+            # this is techinically an error but it is going to happen so we log it as a warning.
+            # exc_info puts the traceback on this line so it is in saq.log, not only in the
+            # crash report
             logging.warning(
                 "analysis module {} failed on {} for {} reason {}".format(
                     analysis_module, work_item, root, e
-                )
+                ),
+                exc_info=True,
             )
-            error_report_path = report_exception()
+            report_exception()
+
+            # the analyst-facing record: one directory, named by a crash id that is logged,
+            # carrying the traceback, the tree and the file the module died on. see
+            # docs/CRASH_REPORTS.md
+            record_module_crash(
+                crash_type=CRASH_TYPE_EXCEPTION,
+                module_path=MODULE_PATH(analysis_module),
+                module_name=analysis_module.name,
+                root=root,
+                observable=work_item.observable,
+                exception=e,
+                maximum_analysis_time=analysis_module.maximum_analysis_time,
+            )
 
             if work_item.dependency:
                 work_item.dependency.set_status_failed("error: {}".format(e))
                 work_item.dependency.increment_status()
-
-            # if analysis failed, copy all the details to error_reports for review
-            if get_engine_config().copy_analysis_on_error:
-                error_report_stats_dir = None
-                if error_report_path and os.path.isdir(root.storage_dir):
-                    analysis_dir = "{}.ace".format(error_report_path)
-                    try:
-                        shutil.copytree(root.storage_dir, analysis_dir)
-                        logging.info(
-                            "copied analysis from {} to {} for review".format(
-                                root.storage_dir, analysis_dir
-                            )
-                        )
-                    except Exception as e:
-                        logging.error(
-                            "unable to copy from {} to {}: {}".format(
-                                root.storage_dir, analysis_dir, e
-                            )
-                        )
-
-                    try:
-                        error_report_stats_dir = os.path.join(analysis_dir, "stats")
-                        os.mkdir(error_report_stats_dir)
-                    except Exception as e:
-                        logging.error(
-                            "unable to create error reporting stats dir {}: {}".format(
-                                error_report_stats_dir, e
-                            )
-                        )
-
-            # XXX this logic should not be here
-            # were we analyzing a file when we encountered this exception?
-            if (
-                error_report_path
-                and work_item.observable is not None
-                and work_item.observable.type == F_FILE
-                and get_engine_config().copy_file_on_error
-            ):
-                target_dir = f"{error_report_path}.files"
-                try:
-                    os.makedirs(target_dir, exist_ok=True)
-                    shutil.copy(work_item.observable.full_path, target_dir)
-                except Exception as copy_error:
-                    logging.error(f"unable to copy files to {target_dir}: {copy_error}")
 
         if module_start_time:
             module_end_time = datetime.now()

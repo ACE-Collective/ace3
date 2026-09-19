@@ -1556,7 +1556,7 @@ def test_error_reporting():
     root.save()
     root.schedule()
 
-    engine = Engine(config=EngineConfiguration(copy_analysis_on_error=True))
+    engine = Engine()
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
@@ -1576,15 +1576,35 @@ def test_error_reporting():
 
     assert file_path
 
+#
+# analysis module crash reports
+#
+
+def _enum_crash_reports() -> list[str]:
+    """Every crash report id currently on disk."""
+    from saq.crash_report import get_crash_report_root_dir
+
+    root_dir = get_crash_report_root_dir()
+    if not os.path.isdir(root_dir):
+        return []
+
+    return [os.path.basename(path) for path in glob(os.path.join(root_dir, "*", "*", "*", "*"))
+            if os.path.isdir(path)]
+
+
 @pytest.mark.integration
-def test_file_error_reporting():
-    get_engine_config().copy_file_on_error = True
+def test_crash_report_on_module_exception():
+    """A module that raises leaves a crash report naming it, with no config changes."""
+    from saq.crash_report import (
+        CRASH_TYPE_EXCEPTION,
+        FILE_DIR,
+        ROOT_JSON_FILE,
+        STACK_TRACE_FILE,
+        find_crash_report_dir,
+        read_crash_report,
+    )
 
-    # remember what was already in the error reporting directory
-    def _enum_error_reporting():
-        return set(os.listdir(os.path.join(get_data_dir(), 'error_reports')))
-
-    assert len(_enum_error_reporting()) == 0
+    existing = set(_enum_crash_reports())
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
@@ -1596,30 +1616,178 @@ def test_file_error_reporting():
     root.save()
     root.schedule()
 
+    # BasicTestAnalyzer.execute_file_analysis() raises on any file observable
     engine = Engine()
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # we should have a single error report and a single storage directory in the error reporting directory
-    error_reports = _enum_error_reporting()
-    assert len(error_reports) == 2
+    new_reports = set(_enum_crash_reports()) - existing
+    assert len(new_reports) == 1
 
-    # one should be a file and the other a directory
-    file_path = None
-    dir_path = None
-    for _file in error_reports:
-        path = os.path.join(os.path.join(get_data_dir(), 'error_reports', _file))
-        if os.path.isfile(path):
-            file_path = path
-        if os.path.isdir(path):
-            dir_path = path
+    crash_id = new_reports.pop()
+    metadata = read_crash_report(crash_id)
 
-    assert file_path
-    assert dir_path
+    assert metadata['crash_type'] == CRASH_TYPE_EXCEPTION
+    assert metadata['module_name'] == 'basic_test'
+    assert 'BasicTestAnalysis' in metadata['module_path']
+    assert metadata['root_uuid'] == root.uuid
+    assert metadata['analysis_mode'] == 'test_groups'
+    assert metadata['exception_type'] == 'RuntimeError'
+    assert metadata['exception_message'] == 'testing failure case'
+    assert metadata['observable_type'] == F_FILE
+    assert metadata['complete'] is True
 
-    # check that everything we expect to exist in the dir exists
-    with open(os.path.join(dir_path, 'test.txt'), 'r') as fp:
+    crash_dir = find_crash_report_dir(crash_id)
+
+    # the traceback travels with the report, not only with the log
+    with open(os.path.join(crash_dir, STACK_TRACE_FILE)) as fp:
+        assert 'testing failure case' in fp.read()
+
+    # the tree travels with it
+    assert os.path.exists(os.path.join(crash_dir, ROOT_JSON_FILE))
+
+    # and so does the file the module actually died on
+    with open(os.path.join(crash_dir, FILE_DIR, 'test.txt')) as fp:
         assert fp.read() == 'Hello, world!'
+
+    assert metadata['file_sha256'] == observable.value
+
+
+@pytest.mark.integration
+def test_crash_report_is_indexed_in_the_database():
+    """The index is what lets an analyst find a crash from the alert instead of the logs."""
+    from saq.database.model import AnalysisModuleCrash
+    from saq.database.pool import get_db
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    target_path = root.create_file_path('test.txt')
+    with open(target_path, 'w') as fp:
+        fp.write('test')
+
+    root.add_file_observable(target_path)
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('basic_test')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    rows = get_db().query(AnalysisModuleCrash).filter(
+        AnalysisModuleCrash.root_uuid == root.uuid).all()
+
+    assert len(rows) == 1
+    assert rows[0].crash_type == 'exception'
+    assert rows[0].module_name == 'basic_test'
+    assert rows[0].has_file is True
+    assert rows[0].report_dir
+
+    # the row points at a report that is actually there
+    from saq.crash_report import find_crash_report_dir
+    assert find_crash_report_dir(rows[0].uuid, rows[0].report_dir) is not None
+
+
+@pytest.mark.integration
+def test_crash_report_disabled():
+    """The kill switch stops the subsystem writing anything at all."""
+    get_config().crash_reporting.enabled = False
+
+    existing = set(_enum_crash_reports())
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    target_path = root.create_file_path('test.txt')
+    with open(target_path, 'w') as fp:
+        fp.write('test')
+
+    root.add_file_observable(target_path)
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('basic_test')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    assert set(_enum_crash_reports()) - existing == set()
+
+
+@pytest.mark.system
+def test_crash_report_on_terminated_analysis():
+    """A module killed for running too long produces a crash report the analyst can reach.
+
+    This covers the case the user called out: the module gets stuck, the worker process is
+    killed, and until now the only record was a three-line text file in a directory nobody
+    reads. Asserts the whole loop -- the report exists, it names the module and carries the
+    file, and the crash id is written into the alert's own tree so an analyst looking at the
+    alert can get to it without finding the log line first.
+    """
+    from saq.crash_report import FILE_DIR, find_crash_report_dir, read_crash_report
+
+    get_analysis_module_config("basic_test").maximum_analysis_time = 0
+
+    existing = set(_enum_crash_reports())
+
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
+    root.initialize_storage()
+    target_path = root.create_file_path('test_worker_timeout')
+    with open(target_path, 'w') as fp:
+        fp.write('Hello, world!')
+
+    observable = root.add_file_observable(target_path)
+    root.save()
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(pool_size_limit=1))
+    engine.configuration_manager.enable_module('basic_test')
+    engine_process = engine.start_nonblocking()
+    engine.wait_for_start()
+    wait_for_log_count('detected death of', 1, 5)
+    wait_for_log_count('started worker', 2, 5)
+    assert engine_process.pid
+    os.kill(engine_process.pid, signal.SIGINT)
+    wait_for_process(engine_process)
+
+    new_reports = set(_enum_crash_reports()) - existing
+    assert new_reports
+
+    # the in-process watchdog and the manager race, so either or both kinds may be present;
+    # what matters is that the module that hung is named and its file was captured
+    reports = [read_crash_report(crash_id) for crash_id in new_reports]
+    reports = [report for report in reports if report and report.get('module_path')]
+    assert reports
+
+    for report in reports:
+        assert report['crash_type'] in ('timeout', 'killed')
+        assert 'BasicTestAnalysis' in report['module_path']
+
+    # a timeout report is the only thing in ACE that can say where a module was stuck
+    timeout_reports = [r for r in reports if r['crash_type'] == 'timeout']
+    if timeout_reports:
+        from saq.crash_report import THREAD_STACKS_FILE
+        crash_dir = find_crash_report_dir(timeout_reports[0]['crash_id'])
+        assert os.path.exists(os.path.join(crash_dir, THREAD_STACKS_FILE))
+
+    # the killed path is deterministic here: the test above waited for the manager to detect the
+    # death and start a replacement, and it is the replacement that writes this report
+    killed_reports = [r for r in reports if r['crash_type'] == 'killed']
+    assert killed_reports
+
+    # it reconstructs the file from the tracking record, without the dead process's help
+    crash_dir = find_crash_report_dir(killed_reports[0]['crash_id'])
+    with open(os.path.join(crash_dir, FILE_DIR, 'test_worker_timeout')) as fp:
+        assert fp.read() == 'Hello, world!'
+
+    # and the crash id is written into the alert's own tree, so an analyst who is looking at the
+    # alert that lost a module can reach the crash report without finding the log line first
+    root = RootAnalysis(storage_dir=get_storage_dir(root_uuid))
+    root.load()
+    observable = root.get_observable(observable.uuid)
+    from saq.modules.test import BasicTestAnalysis
+    message = root.get_analysis_failed_message(BasicTestAnalysis, observable)
+    assert message
+    assert killed_reports[0]['crash_id'] in message
+
 
 @pytest.mark.unit
 def test_record_execution_statistics_basic(tmpdir):
@@ -2671,60 +2839,6 @@ def test_timeout():
     from saq.modules.test import LowPriorityAnalysis
     analysis = observable.get_and_load_analysis(LowPriorityAnalysis)
     assert analysis
-
-@pytest.mark.system
-def test_copy_terminated_analysis_cause():
-
-    # when an analysis module times out that is analyzing a file
-    # we make a copy of that file
-
-    get_analysis_module_config("basic_test").maximum_analysis_time = 0
-    get_engine_config().copy_terminated_analysis_causes = True
-
-    root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
-    root.initialize_storage()
-    target_path = root.create_file_path('test_worker_timeout')
-    with open(target_path, 'w') as fp:
-        fp.write('Hello, world!')
-
-    observable = root.add_file_observable(target_path)
-    root.save()
-    root.schedule()
-    
-    engine = Engine(config=EngineConfiguration(pool_size_limit=1))
-    engine.configuration_manager.enable_module('basic_test')
-    engine_process = engine.start_nonblocking()
-    engine.wait_for_start()
-    # we should see it die
-    wait_for_log_count('detected death of', 1, 5)
-    # and then we should have seen two workers start
-    wait_for_log_count('started worker', 2, 5)
-    assert engine_process.pid
-    os.kill(engine_process.pid, signal.SIGINT)
-    wait_for_process(engine_process)
-
-    root = RootAnalysis(storage_dir=get_storage_dir(root.uuid))
-    root.load()
-    observable = root.get_observable(observable.uuid)
-    assert observable
-
-    # we should have copied the file now
-    failed_analysis_dir = os.path.join(get_data_dir(), 'review', 'failed_analysis', 
-            datetime.now().strftime('%Y'), 
-            datetime.now().strftime('%m'), 
-            datetime.now().strftime('%d'),
-            root.uuid)
-
-    assert os.path.isdir(failed_analysis_dir)
-    
-    # there should be a details file that uses the observable uuid in the file name
-    assert len(glob(f'{failed_analysis_dir}/details-*')) == 1
-
-    # and we should have a copy of the file
-    target_path = os.path.join(failed_analysis_dir, 'test_worker_timeout')
-    with open(target_path, 'r') as fp:
-        assert fp.read() == 'Hello, world!'
 
 @pytest.mark.system
 def test_timeout_root_flushed():

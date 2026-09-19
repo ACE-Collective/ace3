@@ -491,10 +491,11 @@ change is that the module which killed the worker is still skipped:
 `set_analysis_failed` keys on `observable_type:observable_value` rather than uuid
 (deliberately, since the crash may predate the observable reaching disk), so a
 re-created observable still matches and gate 8 fires on the retry. That property
-is what makes restart-from-scratch safe. One small regression: with no mid-pass
-write, `copy_terminated_analysis_causes` cannot find a file observable that was
-created during the lost pass, so the forensic copy silently does nothing — the
-bytes are still under `files/`, only the reference is missing.
+is what makes restart-from-scratch safe. A file observable's value *is* its sha256 and the
+file manager keeps content-addressed copies under `hardcopies/<sha256>`, so
+`saq/crash_report.py::_resolve_file_source()` finds the bytes by value even when the
+saved tree never recorded the reference. That is exactly the interesting case — the
+module died on something it had just extracted.
 
 While here, the tail of a correlation pass stopped doing two full round-trips for
 nothing. `_sync_alert_to_database` called `alert.load()`, parsing `data.json` into
@@ -805,10 +806,11 @@ resurrected, a worker file with no module is discarded, and dispatch hands out a
 record whose original worker no longer exists after the pool was resized. Two
 integration tests close the loop: a recovered record landing on the correct root by
 `root_uuid` and then being resolved, and a record for a deleted root being resolved
-rather than replayed. The three worker-death system tests in `test_functionality.py`
-(`test_failed_analysis_module`, `test_timeout`, `test_copy_terminated_analysis_cause`)
-and `test_root_save_frequency.py::test_detection_mode_restarts_from_scratch_without_looping`
-are unchanged and remain the end-to-end contract.
+rather than replayed. The worker-death system tests in `test_functionality.py`
+(`test_failed_analysis_module`, `test_timeout`,
+`test_crash_report_on_terminated_analysis`) and
+`test_root_save_frequency.py::test_detection_mode_restarts_from_scratch_without_looping`
+remain the end-to-end contract.
 
 ## 19.13 `WorkStack` could not actually hold `Analysis` — **fixed**
 

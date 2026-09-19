@@ -122,6 +122,39 @@ global:
   # leave empty to not use a proxy at all
   default_proxy:
 
+# analysis module crash reports
+# when an analysis module raises, hangs past its maximum_analysis_time, or takes its worker
+# process down with it, ACE writes one self-contained crash report directory here and logs a
+# crash_id. an analyst pulls the whole thing with GET /api/v2/crashes/<crash_id>/download
+# instead of needing a shell on the node. see saq/crash_report.py and docs/CRASH_REPORTS.md
+crash_reporting:
+  # kill switch for the whole subsystem
+  enabled: true
+  # relative to DATA_DIR; reports are date partitioned as <directory>/YYYY/MM/DD/<crash_id>/
+  directory: crash_reports
+  # copy the bytes of the file observable the module crashed on; this is normally the artifact
+  # an analyst actually wants, so it is on by default
+  copy_file: true
+  # skip (and record in the report's "omitted" list) a file observable larger than this; 0 disables the cap
+  max_file_size: 104857600
+  # copy the root analysis tree (data.json) only -- never the file observables under files/ or hardcopies/
+  copy_root_json: true
+  max_root_json_size: 33554432
+  # `ace crash prune` (run from bin/daily-maintenance.sh) removes reports older than this
+  retention_days: 30
+  # bounds the disk cost of a module that fails on every file in a large tree: after this many
+  # reports for the same module on the same root, further ones are suppressed (and the
+  # suppression is logged). the in-process timeout watchdog is exempt. 0 disables the limit
+  max_reports_per_module_per_root: 5
+  # replicate crash reports to shared object storage (see the storage: section) so that ANY node
+  # can serve a report written on any other node. without this, a report is only downloadable from
+  # the node whose worker crashed, and every other node answers 409.
+  # turn this on when storage.target points at storage that every node shares (s3, or the local
+  # backend with base_dir on a shared filesystem)
+  replicate: false
+  # keep this bucket dedicated -- it holds the file observables that crashed modules, i.e. live malware
+  storage_bucket: ace-crash-reports
+
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
   # global kill switch — set to false to stop all cache writes without touching per-module cache_ttl settings
@@ -224,6 +257,15 @@ storage:
 #   # set to validate SSL certification
 #   cert_check: false
 #   region: garage
+#   # bounds on every s3 request. botocore's own defaults are 60s/60s with legacy retries (5
+#   # attempts), which lets a black-holed endpoint hold a caller for minutes per request
+#   connect_timeout: 10
+#   # per socket read, NOT a cap on a whole transfer: transfers are multipart (8MiB parts, up to
+#   # 10 concurrent), so this detects a stalled part. lowering it imposes a per-stream throughput
+#   # floor and can break large transfers on a slow link
+#   read_timeout: 60
+#   # total attempts per request including the first, under botocore's standard retry mode
+#   max_attempts: 3
 
 # global redis settings
 redis:
@@ -2434,12 +2476,6 @@ service_engine:
   # the nodes database table keeps track of all the ace nodes that are currently available
   # this settings specifies how often (in seconds) we update the table with our current information
   node_status_update_frequency: 30
-  # if this is set to yes then any analysis that fails is copied to a directory for review later (can take a lot of disk space)
-  copy_analysis_on_error: false
-  # if this is set to yes then any time an analysis module fails when analyzing a file, the engine will copy that file, along with details, to a directory for review
-  copy_file_on_error: false
-  # make copies of files analyzed by analysis modules that ended up timing out and getting killed by the worker manager (can take a lot of disk space)
-  copy_terminated_analysis_causes: false
   # in some cases you might want your work to be performed on a different hard drive; if set then new non-alert analysis will be performed in this directory (relative to SAQ_HOME)
   #work_dir: data/work
   # when an analyst dispositions an alert ace will stop analyzing it if the alert is in correlation mode

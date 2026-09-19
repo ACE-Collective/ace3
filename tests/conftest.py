@@ -24,6 +24,7 @@ from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
+from saq.storage.factory import reset_storage_system
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
@@ -371,6 +372,11 @@ def global_function_setup(request):
     # shows up as an intermittent failure somewhere unrelated, so clear it per test rather than
     # once per session.
     clear_all_tracking()
+
+    # the storage adapter is cached in a module global, so a test that points it at its own
+    # tmpdir would otherwise hand that (now-deleted) directory to every test that ran
+    # afterwards. exactly the same hazard as the tracking files above, and the same fix.
+    reset_storage_system()
 
     # XXX we're initializing AND THEN we're resetting the database
 
