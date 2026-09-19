@@ -245,6 +245,15 @@ types:
   ipv4_full_conversation:
     description: "two F_IPV4 that were communicating formatted as src_ipv4:src_port:dest_ipv4:dest_port"
 
+  ja3:
+    description: "JA3 TLS client fingerprint hash"
+
+  ja3s:
+    description: "JA3S TLS server fingerprint hash"
+
+  jarm_hash:
+    description: "JARM TLS server fingerprint hash"
+
   mac_address:
     description: "network card mac address"
 
@@ -290,6 +299,9 @@ types:
 
   printer:
     description: "name of a printer"
+
+  process_guid:
+    description: "globally unique identifier for a process on an endpoint"
 
   scan_id:
     description: "an identifer for a scan by some remote system"

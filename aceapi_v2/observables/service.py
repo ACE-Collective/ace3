@@ -26,6 +26,7 @@ from saq.database.util.index import CHUNK_SIZE, ObservableKey, chunked, observab
 from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
+    validate_observable_type,
 )
 
 
@@ -53,8 +54,10 @@ async def set_observable_interesting(
 ) -> None:
     """Sets or clears the is_interesting flag on an observable.
 
-    Raises InvalidDetectionValue if the value is not valid for the type.
+    Raises InvalidDetectionValue if the type is not in the registry, or the value is not valid for
+    the type. Like the comment path, this can INSERT into the shared observables table.
     """
+    validate_observable_type(observable_type)
     identity = resolve_observable_identity(observable_type, observable_value)
 
     result = await session.execute(
@@ -196,6 +199,8 @@ def _normalize_pairs(
     errors: dict[int, str] = {}
     for index, pair in enumerate(pairs):
         try:
+            # an unknown type is reported per-index the same way an impossible value is
+            validate_observable_type(pair.type)
             identity = resolve_observable_identity(pair.type, pair.value)
         except InvalidDetectionValue as e:
             errors[index] = str(e)

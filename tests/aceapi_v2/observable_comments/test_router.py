@@ -62,7 +62,7 @@ class TestObservableComments:
     ):
         """Commenting on a non-existent observable should auto-create the DB row."""
         response = await client.post("/observable-comments/", json={
-            "observable_type": "domain",
+            "observable_type": "fqdn",
             "observable_value": "evil.example.com",
             "comment": "known bad domain",
         })
@@ -73,7 +73,7 @@ class TestObservableComments:
         # Verify the observable was created in DB
         result = await session.execute(
             select(Observable).where(
-                Observable.type == "domain",
+                Observable.type == "fqdn",
                 Observable.sha256 == _sha256("evil.example.com"),
             )
         )
@@ -292,6 +292,25 @@ class TestObservableComments:
         result = await session.execute(
             select(Observable).where(Observable.type == "file"))
         assert len(result.scalars().all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_comment_unknown_type_returns_400(
+        self, client: AsyncClient, session: AsyncSession
+    ):
+        """Commenting creates the observable row if it does not exist, so an unregistered type
+        would permanently pollute the shared observables table."""
+        response = await client.post("/observable-comments/", json={
+            "observable_type": "not_a_real_type",
+            "observable_value": "x",
+            "comment": "should fail",
+        })
+        assert response.status_code == 400
+        assert "not a valid observable type" in response.json()["detail"]
+
+        result = await session.execute(
+            select(Observable).where(Observable.type == "not_a_real_type")
+        )
+        assert result.scalar_one_or_none() is None
 
     @pytest.mark.asyncio
     async def test_create_comment_invalid_value_returns_400(self, client: AsyncClient):

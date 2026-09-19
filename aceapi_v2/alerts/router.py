@@ -14,6 +14,7 @@ from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, TextFileResponse, ZipFil
 from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import BulkAddObservableRequest, BulkAddObservableResult
+from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,13 @@ async def bulk_add_observable(
 
     if not body.observable_value:
         raise HTTPException(status_code=400, detail="Missing observable value")
+
+    # an unknown type can never succeed against any alert, so it is a request-level error rather
+    # than a per-alert failure -- and rejecting it here means no alert is locked or loaded for it
+    try:
+        validate_observable_type(body.observable_type)
+    except InvalidDetectionValue as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Parse time if provided
     o_time = None

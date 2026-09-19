@@ -88,7 +88,7 @@ def test_set_observable_by_type_and_value(test_client, api_client_kwargs):
 
 @pytest.mark.integration
 def test_set_observable_creates_detection_for_never_seen_value(test_client, api_client_kwargs):
-    """The capability the old design could not express: no alert has ever contained this value."""
+    """A detection can be created for a value that has never appeared in an alert."""
     _post(test_client, [{
         KEY_UPDATE_TYPE: F_FQDN,
         KEY_UPDATE_VALUE: "never-seen.example.com",

@@ -77,11 +77,7 @@ def test_for_detection_observable(test_context):
 
 @pytest.mark.integration
 def test_detection_for_a_never_seen_observable_fires(test_context, build_detection_cache):
-    """End to end: a detection added before the value was ever seen still produces a detection point.
-
-    This is the capability the old design could not express at all -- the flag lived on a row in the
-    observables index, which only existed once an alert had contained the value.
-    """
+    """End to end: a detection added before the value was ever seen still produces a detection point."""
     get_db().query(ObservableDetection).delete()
     get_db().commit()
 

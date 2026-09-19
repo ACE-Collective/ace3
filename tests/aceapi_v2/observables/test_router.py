@@ -148,6 +148,26 @@ class TestSetInteresting:
         assert db_obs.is_interesting is True
 
     @pytest.mark.asyncio
+    async def test_unknown_type_is_rejected(self, session: AsyncSession, client: AsyncClient):
+        """This endpoint INSERTs into the shared observables table, so an unregistered type would
+        leave a permanent row no picker can produce or filter."""
+        response = await client.patch(
+            "/observables/interesting",
+            json={
+                "observable_type": "not_a_real_type",
+                "observable_value": "x",
+                "is_interesting": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "not a valid observable type" in response.json()["detail"]
+
+        result = await session.execute(
+            select(Observable).where(Observable.type == "not_a_real_type")
+        )
+        assert result.scalar_one_or_none() is None
+
+    @pytest.mark.asyncio
     async def test_mark_nonexistent_observable_creates_it(
         self, session: AsyncSession, client: AsyncClient
     ):
@@ -155,7 +175,7 @@ class TestSetInteresting:
         response = await client.patch(
             "/observables/interesting",
             json={
-                "observable_type": "domain",
+                "observable_type": "fqdn",
                 "observable_value": "evil.com",
                 "is_interesting": True,
             },
@@ -164,7 +184,7 @@ class TestSetInteresting:
 
         result = await session.execute(
             select(Observable).where(
-                Observable.type == "domain",
+                Observable.type == "fqdn",
                 Observable.sha256 == _sha256("evil.com"),
             )
         )
@@ -261,7 +281,7 @@ class TestSetInteresting:
     ):
         """Marking as interesting should not change other fields like for_detection."""
         obs = Observable(
-            type="domain",
+            type="fqdn",
             sha256=_sha256("test.com"),
             value=b"test.com",
             for_detection=True,
@@ -272,7 +292,7 @@ class TestSetInteresting:
         response = await client.patch(
             "/observables/interesting",
             json={
-                "observable_type": "domain",
+                "observable_type": "fqdn",
                 "observable_value": "test.com",
                 "is_interesting": True,
             },
@@ -282,7 +302,7 @@ class TestSetInteresting:
         session.expire_all()
         result = await session.execute(
             select(Observable).where(
-                Observable.type == "domain",
+                Observable.type == "fqdn",
                 Observable.sha256 == _sha256("test.com"),
             )
         )
@@ -415,6 +435,23 @@ class TestObservableLookup:
         assert results[2]["error"] is None
         assert results[2]["found"] is True
         assert results[2]["total_alert_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_is_reported_per_pair(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """An unknown type is reported per-pair the same way an impossible value is."""
+        await _seed_mapped_alerts(session, _observable("ipv4", "198.51.100.8"), [_alert()])
+
+        response = await client.post("/observables/lookup", json=_lookup_body(
+            ("not_a_real_type", "x"),
+            ("ipv4", "198.51.100.8"),
+        ))
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert results[0]["found"] is False
+        assert "not a valid observable type" in results[0]["error"]
+        assert results[1]["found"] is True
 
     @pytest.mark.asyncio
     async def test_file_identity_and_normalized_echo(

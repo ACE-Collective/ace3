@@ -32,12 +32,7 @@ def test_observable_is_set_for_detection_not_exists():
 
 @pytest.mark.integration
 def test_observable_is_set_for_detection_requires_a_matching_type():
-    """The type predicate is load-bearing.
-
-    This used to match on the hash alone, so a value enabled for detection under one type reported
-    as enabled for every other type sharing that value -- which showed the wrong action menu in the
-    alert view.
-    """
+    """A detection matches only when type and hash both match."""
     detected = create_observable("fqdn", "shared.example.com")
     create_observable_detection(detected.type, detected.value, None)
 

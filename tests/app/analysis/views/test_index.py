@@ -615,16 +615,9 @@ def test_index_tree_display_logic(web_client, root_analysis, test_context):
 #
 # Batched detection / interesting lookups for the observable action menu.
 #
-# ObservablePresenter.available_actions used to run one "is set for detection"
-# query and one "is interesting" query every time it was read, and
-# default_observable.html reads it three times per observable node. On a real
-# alert (450 observable nodes) that was ~2,700 round-trips per page render, half
-# of them going through run_async_with_session -- a cross-thread event loop hop
-# that opens an AsyncSession and commits for a single-row SELECT.
-#
-# The view already batches both lookups (get_all_observable_detections /
-# get_interesting_observables_by_hashes), so the render must not issue any of
-# the per-observable ones.
+# The view batches both lookups (get_all_observable_detections /
+# get_interesting_observables_by_hashes), so the render must not issue any
+# per-observable queries.
 #
 
 @pytest.mark.integration
@@ -669,9 +662,8 @@ def test_index_does_not_query_per_observable_for_actions(
 def test_index_renders_detection_and_interesting_actions(
     web_client, root_analysis, test_context, monkeypatch,
 ):
-    """The batched values must drive the same menu items the per-observable
-    queries used to. Force both to True and check the 'already enabled' variants
-    render."""
+    """The batched values drive the action menu. Force both to True and check the
+    'already enabled' variants render."""
     import app.analysis.views.index as index_module
     from saq.database.util.observable_detection import ObservableDetectionSummary
 

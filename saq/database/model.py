@@ -1545,40 +1545,40 @@ class Observable(Base):
         nullable=False)
 
     #
-    # observable detection stuff moved to the `observable_detections` table
+    # unused columns: detections live in observable_detections
     #
 
-    # DEPRECATED: detection management moved to the `observable_detections` table.
+    # unused: detections live in observable_detections
     for_detection: Mapped[bool] = mapped_column(
         BOOLEAN,
         nullable=False,
         default=False,
         server_default=text('0'))
 
-    # DEPRECATED: detection management moved to the `observable_detections` table.
+    # unused: detections live in observable_detections
     expires_on: Mapped[Optional[datetime]] = mapped_column(
         DateTime,
         nullable=True)
 
-    # DEPRECATED: see the note on for_detection above.
+    # unused: detections live in observable_detections
     enabled_by: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True)
 
-    # DEPRECATED: see the note on for_detection above.
+    # unused: detections live in observable_detections
     detection_context: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
 
-    # DEPRECATED: see the note on for_detection above.
+    # unused: detections live in observable_detections
     batch_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         nullable=True,
         index=True)
 
     #
-    # end deprecated columns
+    # end unused columns
     #
 
     # an analyst annotation

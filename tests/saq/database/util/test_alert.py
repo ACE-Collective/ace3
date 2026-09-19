@@ -183,12 +183,9 @@ def test_set_dispositions_multiple_alerts():
 
 @pytest.mark.integration
 def test_set_dispositions_malicious_leaves_observable_expiration_alone():
-    """Dispositioning malicious no longer rewrites observables.expires_on.
+    """Dispositioning malicious does not rewrite observables.expires_on.
 
-    It used to call refresh_observable_expires_on(), which pushed that column forward for every
-    observable in the alert. Nothing read it except the detection cache, and detection expiration
-    now lives in observable_detections.expires_on where only an analyst sets it -- silently
-    extending an analyst's chosen expiration as a side effect of triage would be wrong.
+    Detection expiration lives in observable_detections.expires_on, where only an analyst sets it.
     """
     get_config().observable_expiration_mappings["fqdn"] = "01:00:00:00"
 

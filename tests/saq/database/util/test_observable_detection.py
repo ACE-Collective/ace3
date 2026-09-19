@@ -10,6 +10,7 @@ from saq.database.pool import get_db
 from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     ObservableDetectionSummary,
+    UnknownObservableType,
     create_observable_detection,
     delete_observable_detection,
     disable_observable_detection,
@@ -20,6 +21,7 @@ from saq.database.util.observable_detection import (
     get_observable_detections,
     resolve_detection_identity,
     set_observable_detection_expiration,
+    validate_observable_type,
     _match_observable,
 )
 from saq.database.util.sync import sync_observable
@@ -114,6 +116,37 @@ def test_resolve_detection_identity_rejects_invalid_value_for_type():
         resolve_detection_identity("ipv4", "notanip")
 
 
+@pytest.mark.unit
+def test_validate_observable_type_accepts_a_registry_type():
+    validate_observable_type("ipv4")
+
+
+@pytest.mark.unit
+def test_validate_observable_type_rejects_an_unknown_type():
+    with pytest.raises(UnknownObservableType):
+        validate_observable_type("not_a_real_type")
+
+
+@pytest.mark.unit
+def test_unknown_observable_type_is_an_invalid_detection_value():
+    """Every API boundary already maps InvalidDetectionValue to a 400, which is what lets the type
+    check reach the wire without a second except clause at each router."""
+    assert issubclass(UnknownObservableType, InvalidDetectionValue)
+
+
+@pytest.mark.integration
+def test_resolve_detection_identity_rejects_unknown_type():
+    """A type that is not in the registry cannot become a detection."""
+    with pytest.raises(UnknownObservableType):
+        resolve_detection_identity("not_a_real_type", "anything")
+
+
+@pytest.mark.integration
+def test_create_detection_rejects_unknown_type(test_user):
+    with pytest.raises(UnknownObservableType):
+        create_observable_detection("not_a_real_type", "anything", test_user.id)
+
+
 @pytest.mark.integration
 def test_resolve_detection_identity_rejects_overlong_value():
     too_long = "https://example.com/" + ("x" * MAX_DETECTION_VALUE_LENGTH)
@@ -180,7 +213,7 @@ def test_create_detection_is_idempotent_on_type_and_value(test_user):
 @pytest.mark.integration
 def test_create_detection_same_value_different_type_are_distinct(test_user):
     create_observable_detection("fqdn", "example.com", test_user.id)
-    create_observable_detection("url_domain", "example.com", test_user.id)
+    create_observable_detection("hostname", "example.com", test_user.id)
     assert get_db().query(DBObservableDetection).count() == 2
 
 
@@ -192,11 +225,7 @@ def test_create_detection_rejects_invalid_value(test_user):
 
 @pytest.mark.integration
 def test_new_detection_gets_the_configured_per_type_default_expiration(test_user):
-    """observable_expiration_mappings now means "how long a detection of this type lives".
-
-    It used to be applied by ingest to every observable it indexed, whether or not anyone wanted a
-    detection on it -- which is what made observables.expires_on mean two different things.
-    """
+    """observable_expiration_mappings is how long a new detection of this type lives."""
     get_config().observable_expiration_mappings["ipv4"] = "01:00:00:00"
     try:
         detection = create_observable_detection("ipv4", "10.10.10.10", test_user.id)
@@ -254,7 +283,7 @@ def test_delete_observable_detection(test_user):
 
 @pytest.mark.integration
 def test_enable_observable_detection_creates_no_observables_row(test_user, test_observable):
-    """Enabling used to insert into `observables` as a side effect. That table is the ingest path's."""
+    """Enabling a detection does not insert into the `observables` table."""
     detection = enable_observable_detection(test_observable, test_user.id, "manually enabled")
 
     assert detection.type == test_observable.type

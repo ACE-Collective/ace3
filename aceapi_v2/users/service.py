@@ -6,6 +6,7 @@ remain in place for the CLI and the ``@require_permission`` enforcement path; th
 the source of truth for the admin GUI + v2 API.
 """
 
+import logging
 import uuid
 
 import pytz
@@ -297,8 +298,28 @@ class UserNotFoundError(Exception):
         super().__init__(f"User {user_id} not found")
 
 
+class SelfDisableError(Exception):
+    """Raised when a caller tries to disable their own account."""
+
+
 async def update_users(session: AsyncSession, changes: dict[int, UserUpdate], actor_id: int | None = None) -> None:
-    """Port of app/auth/edit.py::edit_users. Raises UserNotFoundError if a user id is missing."""
+    """Port of app/auth/edit.py::edit_users. Raises UserNotFoundError if a user id is missing.
+
+    Raises SelfDisableError if the caller is disabling their own account. A disabled user fails
+    authentication outright, so that call locks the caller out of every endpoint including the one
+    that would undo it -- recovery needs a shell on the node (`ace user modify --enable`). The
+    check is a pre-scan rather than a test inside the loop so nothing partial lands on the session.
+
+    PATCH /users/me defends against this with its schema (UserSelfUpdate has no `enabled` field and
+    forbids extras); that is not transplantable here, because `enabled` is a legitimate field on
+    this endpoint for every OTHER user. The guard has to be identity-based.
+    """
+    if actor_id is not None:
+        own_change = changes.get(actor_id)
+        if own_change is not None and own_change.enabled is False:
+            raise SelfDisableError(
+                "you cannot disable your own account; another user with user:write must do it")
+
     edit_multiple = len(changes) > 1
 
     for user_id, upd in changes.items():
@@ -396,12 +417,39 @@ async def grant_permission(
     await session.flush()
 
 
+class PermissionNotFoundError(Exception):
+    """Raised when a revoke names permission row ids that do not exist."""
+
+
+async def _missing_ids(session: AsyncSession, model, ids: list[int]) -> list[int]:
+    """The requested ids with no row behind them, in the order they were asked for."""
+    if not ids:
+        return []
+    result = await session.execute(select(model.id).where(model.id.in_(ids)))
+    present = set(result.scalars())
+    return [permission_id for permission_id in dict.fromkeys(ids) if permission_id not in present]
+
+
 async def revoke_permissions(
     session: AsyncSession,
     *,
     user_permission_ids: list[int],
     group_permission_ids: list[int],
+    actor_id: int | None = None,
 ) -> None:
+    """Deletes the named permission rows. Raises PermissionNotFoundError if any id matches nothing.
+
+    The existence check runs first and covers the whole request, so either every named row is
+    deleted or none are.
+    """
+    missing = (
+        await _missing_ids(session, AuthUserPermission, user_permission_ids)
+        + await _missing_ids(session, AuthGroupPermission, group_permission_ids)
+    )
+    if missing:
+        raise PermissionNotFoundError(
+            "no permission rows with these ids: " + ", ".join(str(i) for i in missing))
+
     if user_permission_ids:
         await session.execute(
             delete(AuthUserPermission).where(AuthUserPermission.id.in_(user_permission_ids))
@@ -411,6 +459,11 @@ async def revoke_permissions(
             delete(AuthGroupPermission).where(AuthGroupPermission.id.in_(group_permission_ids))
         )
     await session.flush()
+
+    if user_permission_ids or group_permission_ids:
+        logging.info(
+            "AUDIT: user %s revoked user permission rows %s and group permission rows %s",
+            actor_id, user_permission_ids, group_permission_ids)
 
 
 def all_timezones() -> list[str]:
