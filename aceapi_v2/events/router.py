@@ -3,11 +3,11 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Security
-from fastapi.responses import PlainTextResponse
 
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.events import service
 from aceapi_v2.events.schemas import EventRead, ExportFormat, StatusUpdate
+from aceapi_v2.responses import CsvResponse
 from aceapi_v2.schemas.base import ListResponse
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
@@ -31,15 +31,15 @@ async def update_event_status(
     return EventRead.model_validate(event)
 
 
-@router.get("/export")
+@router.get("/export", response_class=CsvResponse)
 async def export_events(
     auth: Annotated[None, Depends(require_permission("event", "read"))],
     type: ExportFormat = ExportFormat.csv,
     event_ids: Annotated[list[int], Query(alias="checked_events[]")] = [],
-) -> PlainTextResponse:
+) -> CsvResponse:
     # ExportFormat currently only has csv; FastAPI rejects other values with 422.
     csv_text = await service.export_events_to_csv(event_ids)
-    return PlainTextResponse(content=csv_text, media_type="text/csv")
+    return CsvResponse(content=csv_text)
 
 
 # Declared after the static GET routes ("/open", "/export") so those paths are

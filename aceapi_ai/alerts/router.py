@@ -12,7 +12,6 @@ import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request, Response
-from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from aceapi_ai.audit import audit_event
@@ -20,6 +19,7 @@ from aceapi_ai.dependencies import get_current_auth
 from aceapi_v2.alerts import service
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.dependencies import require_permission
+from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, TextFileResponse, ZipFileResponse
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -64,29 +64,36 @@ async def get_alert(
     return Response(content=body, media_type="application/json", headers={"ETag": service.etag(version)})
 
 
-@router.get("/{alert_uuid}/logs")
+@router.get("/{alert_uuid}/logs", response_class=TextFileResponse)
 async def view_alert_logs(
     alert_uuid: str,
     request: Request,
     auth: Annotated[ApiAuthResult, Depends(_require_ai_alert)],
-) -> FileResponse:
+) -> TextFileResponse:
     """Return the alert's raw saq.log as text/plain."""
     audit_event("alert_logs", auth, request, alert_uuid=alert_uuid)
     log_path = await run_db_in_thread(service.resolve_alert_log_path, alert_uuid)
-    return FileResponse(log_path, media_type="text/plain; charset=utf-8", content_disposition_type="inline")
+    # FileResponse ignores the class attribute; without media_type it would guess
+    # application/octet-stream from the .log suffix
+    return TextFileResponse(log_path, media_type="text/plain; charset=utf-8", content_disposition_type="inline")
 
 
-@router.get("/{alert_uuid}/download")
+@router.get(
+    "/{alert_uuid}/download",
+    response_class=ZipFileResponse,
+    responses=ZIP_DOWNLOAD_RESPONSES,
+)
 async def download_alert(
     alert_uuid: str,
     request: Request,
     auth: Annotated[ApiAuthResult, Depends(_require_ai_alert)],
-) -> FileResponse:
+) -> ZipFileResponse:
     """Download the full alert storage directory as a zip encrypted with password 'infected'."""
     audit_event("alert_download", auth, request, alert_uuid=alert_uuid)
     zip_path = await run_db_in_thread(service.create_encrypted_alert_zip, alert_uuid)
-    return FileResponse(
+    return ZipFileResponse(
         zip_path,
+        # FileResponse ignores the class attribute; without this it guesses from the filename
         media_type="application/zip",
         filename=f"{alert_uuid}.zip",
         background=BackgroundTask(_safe_unlink, zip_path),
