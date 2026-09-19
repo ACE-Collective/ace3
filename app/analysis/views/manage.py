@@ -56,6 +56,7 @@ from saq.gui.alert import GUIAlert
 from saq.gui.manage_columns import MANAGE_COLUMNS_BY_ID
 from saq.remediation.coverage import get_remediation_coverage
 from saq.search.query import search_alerts, similar_alerts
+from saq.search.syntax import parse_search_query
 from saq.search.types import AlertSearchResult, SearchRequest
 
 
@@ -126,6 +127,7 @@ def build_manage_list_context() -> dict:
     search_spec = get_search_spec()
     search_query = None
     search_mode = None
+    search_notices: list[str] = []
     search_result_mapping: dict[str, AlertSearchResult] = {}
 
     if search_spec:
@@ -153,6 +155,15 @@ def build_manage_list_context() -> dict:
             )
 
         response = run_search(page_offset)
+        # A query the parser could not honor searched nothing at all, so the analyst has to be
+        # told why rather than shown an empty list. The "did you mean" line covers a bare
+        # indicator: it is free text, so it never runs an exact lookup.
+        search_notices = list(response.errors)
+        if not search_notices and search_mode != SEARCH_MODE_SIMILAR:
+            hint = parse_search_query(search_query).hint()
+            if hint:
+                search_notices.append(hint)
+
         total_alerts = response.total
         if page_offset >= total_alerts:
             # the page the session remembers is past the end of this result set (the search
@@ -272,6 +283,7 @@ def build_manage_list_context() -> dict:
         'date_range_filter_names': DATE_RANGE_FILTER_NAMES,
         'search_query': search_query,
         'search_mode': search_mode,
+        'search_notices': search_notices,
         'saved_filters': saved_filters,
         'quick_filters': get_quick_filter_display_data(saved_filters),
         'current_filter': get_current_filter(),

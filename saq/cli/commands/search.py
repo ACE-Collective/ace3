@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import sys
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.database.pool import get_db
@@ -84,7 +85,9 @@ def _print_response(response, as_json: bool):
     print(f"{response.total} result(s) for {response.query!r} (lanes: {', '.join(sorted(response.lanes_used))}; {response.timings_ms})")
     for result in response.results:
         description, disposition = descriptions.get(result.alert_uuid, ("?", "?"))
-        print(f"{result.rank:>3}. [{result.tier:<6}] {result.alert_uuid} {disposition} {description}")
+        # tier is None on a filter-only listing: there is no relevance to report
+        tier = result.tier or "-"
+        print(f"{result.rank:>3}. [{tier:<6}] {result.alert_uuid} {disposition} {description}")
         for hit in result.hits:
             snippet = hit.text.replace("\n", " ")[:160]
             print(f"       {hit.lane}/{hit.kind} {hit.title or ''}: {snippet}")
@@ -92,16 +95,34 @@ def _print_response(response, as_json: bool):
 
 def cli_query(args):
     from saq.search.query import search_alerts
+    from saq.search.syntax import parse_search_query
     from saq.search.types import ALL_LANES, SearchRequest
 
     lanes = frozenset([args.lane]) if args.lane else ALL_LANES
     response = search_alerts(SearchRequest(query=args.query, limit=args.limit, lanes=lanes))
+    if response.errors:
+        # nothing was searched -- exit non-zero so a script does not read "0 results" as an
+        # answer to the question it asked
+        for error in response.errors:
+            print(error, file=sys.stderr)
+        return 1
+
     _print_response(response, args.json)
+    hint = parse_search_query(args.query).hint()
+    if hint and not args.json:
+        print(hint, file=sys.stderr)
+
     return 0
 
 
 query_parser = search_sp.add_parser("query", help="Search alerts.")
-query_parser.add_argument("query", help="The search text.")
+query_parser.add_argument(
+    "query",
+    help="Free text, plus any number of field terms: tag:phish, uuid:<alert uuid>, "
+         "<observable type>:<value> (ipv4:1.2.3.4, signature_id:<uuid>), "
+         "observable:<type>:<value> for values containing colons, or a filter slug such as "
+         "queue:default or alert_date:-7d. Prefix with - to invert. A bare word or indicator "
+         "is searched semantically only.")
 query_parser.add_argument("--limit", type=int, default=20)
 query_parser.add_argument("--lane", choices=["semantic", "lexical"], default=None, help="Run only one lane.")
 query_parser.add_argument("--json", action="store_true", default=False)

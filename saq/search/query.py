@@ -1,6 +1,17 @@
-"""The read path: run the lanes, fuse them, page the fused ranking.
+"""The read path: parse the query, run the lanes, fuse them, page the fused ranking.
 
-lexical lane   mysql: exact observable / hash / tag / uuid matches (saq.search.lexical)
+The query is parsed first (saq.search.syntax). What it yields decides which lanes run at all:
+
+  field terms   tag:/uuid:/<observable type>: -> the lexical lane; queue:/alert_date:/... ->
+                pre-filters, and the rest of the alert-management filter vocabulary -> a SQL
+                post-filter
+  free text     the dense and sparse lanes -- and ONLY when there is some. An embedding of ""
+                still has a nearest neighbour, so running them on "tag:phish" alone would
+                return unrelated alerts above the floor.
+  nothing       filters but no query at all is a LISTING: plain newest-first SQL, no ranking,
+                no tiers. This is what answers "every alert carrying this signature uuid".
+
+lexical lane   mysql: exact observable / tag / uuid matches (saq.search.lexical)
 dense lane     qdrant: cosine over the embedding, with an absolute floor (search.score_threshold)
 sparse lane    qdrant: IDF-weighted term overlap (saq.search.sparse)
 
@@ -18,18 +29,26 @@ GUI filters the payload cannot express); it runs on the capped fused list before
 import logging
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from datetime import timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Optional
 
+import pytz
 from qdrant_client import QdrantClient, models
+from sqlalchemy import distinct, func
 
 from saq.configuration.config import get_config
+from saq.database.model import Alert
+from saq.database.pool import get_db
+from saq.database.util.index import tag_key
+from saq.gui.filter_query import build_alert_query, filter_alert_uuids
 from saq.qdrant_client import get_qdrant_client
 from saq.search import index
-from saq.search.lexical import lexical_search, parse_query
+from saq.search.lexical import apply_sql_filters, candidates_from_terms, lexical_search
 from saq.search.model import encode_query, load_model
 from saq.search.sparse import sparse_vector
+from saq.search.syntax import ParsedQuery, parse_search_query
+from saq.util.relative_time import RelativeTimeError, parse_date_range
 from saq.search.types import (
     KIND_ALERT,
     KIND_ANALYSIS,
@@ -341,37 +360,205 @@ def _assemble(
     )
 
 
+# parsed filter terms that have a qdrant payload field: {filter name: (values, inverted)}
+_PAYLOAD_FIELDS = {
+    "Alert Type": ("alert_types", "alert_types_inverted"),
+    "Disposition": ("dispositions", "dispositions_inverted"),
+    "Queue": ("queues", "queues_inverted"),
+}
+
+
+def _fold_date_range(entry: dict, tz) -> tuple:
+    """An Alert Date entry as (start, end) pairs, or () if it cannot be resolved."""
+    now = datetime.now(pytz.utc)
+    try:
+        return tuple(parse_date_range(value, now=now, tz=tz) for value in entry["values"])
+    except RelativeTimeError:
+        # the parser already validated these; a value that fails here would have to be
+        # timezone-dependent, and silently widening the search is worse than SQL-only
+        return ()
+
+
+def merge_parsed_filters(filters: SearchFilters, parsed: ParsedQuery) -> SearchFilters:
+    """Folds the parsed query's filter terms into the request's own filters.
+
+    They are ANDed, which is what an analyst means by typing `queue:default` on top of a filter
+    chip that already says `Disposition = OPEN`: a typed term narrows, it does not widen. The
+    parser has already merged repeats of the same field within the query, so what arrives here
+    cannot ask one alert to be in two queues.
+
+    A term that has a qdrant payload field becomes a real pre-filter rather than a SQL
+    post-filter. That is not just an optimization: the semantic lane retrieves
+    `search.semantic_limit` alerts and post-filtering throws away whatever is left, so typing
+    `queue:default` would otherwise return a fraction of what it should. It can only be folded
+    when the caller has not already set that field -- SearchFilters holds one value set per
+    field, and two different ones ANDed are not expressible there. Anything left over goes to
+    the filter list, which ANDs correctly in SQL.
+    """
+    if not parsed.filters:
+        return filters
+
+    changes: dict = {}
+    remaining: list = []
+    tz = filters.timezone or pytz.utc
+
+    for entry in parsed.filters:
+        name = entry["name"]
+        values, inverted = entry["values"], entry["inverted"]
+
+        if name in _PAYLOAD_FIELDS:
+            field, inverted_field = _PAYLOAD_FIELDS[name]
+            if not getattr(filters, field) and field not in changes:
+                changes[field] = tuple(values)
+                changes[inverted_field] = inverted
+                continue
+
+        elif name == "Tag" and not any("*" in value for value in values):
+            # a wildcard has no payload equivalent; an exact tag does
+            if not filters.tags and "tags" not in changes:
+                changes["tags"] = tuple(tag_key(value) for value in values)
+                changes["tags_inverted"] = inverted
+                continue
+
+        elif name == "Alert Date":
+            if not filters.insert_date_ranges and "insert_date_ranges" not in changes:
+                ranges = _fold_date_range(entry, tz)
+                if ranges:
+                    changes["insert_date_ranges"] = ranges
+                    changes["insert_date_inverted"] = inverted
+                    continue
+
+        remaining.append(entry)
+
+    if remaining:
+        changes["filter_list"] = tuple(filters.filter_list) + tuple(remaining)
+
+    return replace(filters, **changes) if changes else filters
+
+
+def _sql_post_filter(filters: SearchFilters, caller: Optional[PostFilter]) -> Optional[PostFilter]:
+    """Composes the filter-list narrowing with whatever the caller already asked for.
+
+    The filter list is applied here rather than inside the lanes because none of its filters
+    has a qdrant payload equivalent. It runs on the capped fused list BEFORE pagination, so
+    `total` stays honest.
+    """
+    if not filters.filter_list:
+        return caller
+
+    def post_filter(uuids: list[str]) -> list[str]:
+        # locations=None: node scoping is already in SearchFilters (and in the caller's own
+        # post_filter); asking for it again here would just repeat the same condition
+        kept = filter_alert_uuids(
+            list(filters.filter_list), uuids,
+            entity=Alert, tz=filters.timezone or pytz.utc, locations=None)
+        return caller(kept) if caller is not None else kept
+
+    return post_filter
+
+
+def filter_listing(
+    filters: SearchFilters,
+    *,
+    limit: int,
+    offset: int,
+    post_filter: Optional[PostFilter] = None,
+    timings: Optional[dict] = None,
+) -> SearchResponse:
+    """Alerts matching the filters, newest first. No query, no ranking, no tiers.
+
+    This is the answer to "every alert carrying this observable", and it is a listing rather
+    than a search on purpose: there is no evidence of relevance to report, `total` is a real
+    SQL count rather than the size of a capped fused list, and the page is a LIMIT/OFFSET
+    instead of a slice of at most `search.max_results`.
+    """
+    timings = timings if timings is not None else {}
+    start = time.time()
+
+    # locations are applied by apply_sql_filters below, from SearchFilters
+    query = build_alert_query(
+        list(filters.filter_list), entity=Alert, tz=filters.timezone or pytz.utc, locations=None)
+    query = apply_sql_filters(query, filters)
+
+    total = get_db().execute(
+        query.statement.with_only_columns(func.count(distinct(Alert.id)))).scalar() or 0
+
+    # GROUP BY rather than DISTINCT: the observable and tag joins fan out, and under
+    # ONLY_FULL_GROUP_BY mysql refuses to order a DISTINCT by a column that is not selected
+    rows = query.with_entities(Alert.uuid) \
+        .group_by(Alert.id) \
+        .order_by(Alert.insert_date.desc(), Alert.id.desc()) \
+        .limit(limit).offset(offset)
+    uuids = [row[0] for row in rows]
+
+    if post_filter is not None and uuids:
+        kept = set(post_filter(uuids))
+        uuids = [alert_uuid for alert_uuid in uuids if alert_uuid in kept]
+
+    timings["listing"] = int((time.time() - start) * 1000)
+    return SearchResponse(
+        query="",
+        total=total,
+        offset=offset,
+        limit=limit,
+        results=[
+            AlertSearchResult(alert_uuid=alert_uuid, rank=offset + index, fused_score=0.0, tier=None)
+            for index, alert_uuid in enumerate(uuids, start=1)
+        ],
+        lanes_used=frozenset(),
+        timings_ms=timings,
+    )
+
+
 def search_alerts(request: SearchRequest, *, post_filter: Optional[PostFilter] = None, client: Optional[QdrantClient] = None, model=None) -> SearchResponse:
-    """Runs the requested lanes for request.query and returns one page of the fused ranking."""
+    """Parses request.query, runs the lanes it calls for, and returns one page of results."""
     config = get_config().search
     timings: dict[str, int] = {}
     query = (request.query or "").strip()
-    if not query:
+
+    parsed = parse_search_query(query)
+    if parsed.errors:
+        # A query that cannot be honored returns nothing and says why. Searching the part we
+        # understood would quietly answer a different question than the one that was asked.
+        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit,
+                              errors=parsed.errors)
+
+    filters = merge_parsed_filters(request.filters, parsed)
+    effective_post_filter = _sql_post_filter(filters, post_filter)
+
+    if parsed.is_empty() and filters.is_empty():
         return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit)
+
+    if not parsed.text and not parsed.exact:
+        # filters only -- a listing, not a search
+        return filter_listing(filters, limit=request.limit, offset=request.offset,
+                              post_filter=post_filter, timings=timings)
 
     lexical: Optional[LaneResult] = None
     semantic: Optional[SemanticLane] = None
 
-    if LANE_LEXICAL in request.lanes:
+    if LANE_LEXICAL in request.lanes and parsed.exact:
         start = time.time()
         try:
-            lexical = lexical_search(parse_query(query), request.filters, limit=config.lexical_limit)
+            lexical = lexical_search(candidates_from_terms(parsed.exact), filters, limit=config.lexical_limit)
         except Exception as e:
             logging.error(f"lexical search failed for {query!r}: {e}")
             lexical = []
         timings[LANE_LEXICAL] = int((time.time() - start) * 1000)
 
-    if LANE_SEMANTIC in request.lanes:
+    # No free text means no query to embed. encode_query("") is a valid vector with a nearest
+    # neighbour, so running the lane anyway would attach unrelated alerts to `tag:phish`.
+    if LANE_SEMANTIC in request.lanes and parsed.text:
         start = time.time()
         try:
-            semantic = semantic_search(query, request.filters, limit=config.semantic_limit, group_size=config.semantic_group_size, client=client, model=model)
+            semantic = semantic_search(parsed.text, filters, limit=config.semantic_limit, group_size=config.semantic_group_size, client=client, model=model)
         except Exception as e:
             logging.error(f"semantic search failed for {query!r}: {e}")
             semantic = SemanticLane()
         timings[LANE_SEMANTIC] = int((time.time() - start) * 1000)
 
     return _assemble(query, lexical=lexical, semantic=semantic, limit=request.limit, offset=request.offset,
-                     include_hits=request.include_hits, post_filter=post_filter, timings=timings)
+                     include_hits=request.include_hits, post_filter=effective_post_filter, timings=timings)
 
 
 def similar_alerts(
@@ -396,4 +583,4 @@ def similar_alerts(
     timings[LANE_SEMANTIC] = int((time.time() - start) * 1000)
 
     return _assemble(f"similar:{alert_uuid}", lexical=None, semantic=semantic, limit=limit, offset=offset,
-                     include_hits=include_hits, post_filter=post_filter, timings=timings)
+                     include_hits=include_hits, post_filter=_sql_post_filter(filters, post_filter), timings=timings)

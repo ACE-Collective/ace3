@@ -54,8 +54,9 @@
                         {{ column_cell(column, alert) }}
                         {% endfor %}
                     </tr>
-                    {% if alert.uuid in search_result_mapping %}
-                        {% set search_result = search_result_mapping[alert.uuid] %}
+                    {% set search_result = search_result_mapping.get(alert.uuid) %}
+                    {# a filter-only request is a LISTING: no tier, no hits, so no evidence row #}
+                    {% if search_result and (search_result.tier or search_result.hits) %}
                         {% set tier_class = {"exact": "search-tier-exact", "strong": "search-tier-strong", "good": "search-tier-good", "weak": "search-tier-weak"} %}
                         {% set tier_label = {"exact": "Exact match", "strong": "Strong", "good": "Good", "weak": "Weak"} %}
                         {# hit.kind comes off a qdrant payload, so only a known kind reaches a class name #}
@@ -64,7 +65,7 @@
                             <td></td>
                             <td></td>
                             <td colspan="{{ manage_columns|length }}">
-                                <div class="search-tier {{ tier_class.get(search_result.tier, "search-tier-weak") }}" title="relative relevance within this result set">{{ tier_label.get(search_result.tier, search_result.tier) }}</div>
+                                {% if search_result.tier %}<div class="search-tier {{ tier_class.get(search_result.tier, "search-tier-weak") }}" title="relative relevance within this result set">{{ tier_label.get(search_result.tier, search_result.tier) }}</div>{% endif %}
                                 {% for hit in search_result.hits[:5] %}
                                 <div class="search-hit text-truncate{% if hit.kind in hit_kinds %} search-hit-{{ hit.kind }}{% endif %}" style="max-width: 100%;">
                                     <span class="search-hit-kind">{{ hit.kind }}</span>

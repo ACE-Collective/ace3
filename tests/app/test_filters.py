@@ -1,7 +1,5 @@
-"""Tests for the alert management filter classes in app/filters.py.
-
-DateRangeFilter had no coverage at all before this file, which is how the DST bug below
-survived.
+"""Tests for the alert management filter classes (saq/gui/filter_query.py, re-exported by
+app/filters.py).
 """
 
 from datetime import datetime
@@ -28,19 +26,11 @@ class _CapturingQuery:
         return self
 
 
-class _FakeUser:
-    def __init__(self, timezone):
-        self.timezone = timezone
-
-
 def _bounds(monkeypatch, value, timezone=EASTERN):
     """Apply a DateRangeFilter and pull the (start, end) datetimes back out of the
     generated SQL expression."""
-    import app.filters
-
-    monkeypatch.setattr(app.filters, "current_user", _FakeUser(timezone))
     query = _CapturingQuery()
-    DateRangeFilter(GUIAlert.insert_date).apply(query, [value])
+    DateRangeFilter(GUIAlert.insert_date, tz=pytz.timezone(timezone)).apply(query, [value])
 
     # one and_(col >= start, col <= end), possibly wrapped in an or_ of a single clause
     clause = query.conditions[0]
@@ -66,11 +56,7 @@ def _as_utc(value):
 def test_absolute_range_across_dst_boundary_uses_each_endpoint_own_offset(monkeypatch):
     """US spring-forward is 2026-03-08. A range straddling it has one endpoint in EST
     (UTC-5) and one in EDT (UTC-4), so each must be converted with the offset in effect at
-    its OWN wall clock.
-
-    The old implementation took a single offset from datetime.now() and applied it to both
-    endpoints, so exactly one of these two assertions was wrong at any time of year --
-    which half depends on the season the test runs in."""
+    its OWN wall clock."""
     start, end = _bounds(monkeypatch, "03-01-2026 12:00 - 03-15-2026 12:00")
 
     assert start == UTC.localize(datetime(2026, 3, 1, 17, 0)), "March 1 is EST (UTC-5)"

@@ -22,9 +22,34 @@ from saq.database.model import Alert, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.database.util.alert import node_scope_locations
 from saq.database.util.index import tag_key
+from saq.database.util.observable_detection import (
+    InvalidDetectionValue,
+    resolve_observable_identity,
+)
 from saq.search.query import search_alerts, similar_alerts
 from saq.search.types import SearchFilters, SearchRequest, SearchResponse
 from saq.util.uuid import is_uuid
+
+
+def to_filter_list(body: SearchFiltersBody) -> tuple:
+    """The filter-list entries this request carries, in the canonical GUI/share-link shape.
+
+    `observables` is sugar for one Observable entry per pair. The values are validated here
+    rather than deep in the query builder so an impossible value is a 400 naming the pair,
+    instead of a filter that silently matches nothing.
+    """
+    entries = [entry.model_dump() for entry in body.filters]
+
+    for pair in body.observables:
+        try:
+            identity = resolve_observable_identity(pair.type, pair.value)
+        except InvalidDetectionValue as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+        # one entry per pair: entries are ANDed, so this means "carries all of these"
+        entries.append({"name": "Observable", "inverted": False, "values": [[identity.type, identity.value]]})
+
+    return tuple(entries)
 
 
 def to_search_filters(body: SearchFiltersBody) -> SearchFilters:
@@ -44,6 +69,7 @@ def to_search_filters(body: SearchFiltersBody) -> SearchFilters:
         tags=tuple(tag_key(tag) for tag in body.tags),
         locations=tuple(locations) if locations is not None else None,
         exclude_alert_uuids=tuple(body.exclude_alert_uuids),
+        filter_list=to_filter_list(body),
     )
 
 
@@ -115,12 +141,13 @@ def to_response(response: SearchResponse) -> AlertSearchResponse:
         results=results,
         lanes_used=sorted(response.lanes_used),
         timings_ms=response.timings_ms,
+        errors=list(response.errors),
     )
 
 
 def search_alerts_sync(body: AlertSearchRequest) -> AlertSearchResponse:
     request = SearchRequest(
-        query=body.query,
+        query=body.query or "",
         filters=to_search_filters(body.filters),
         limit=body.limit,
         offset=body.offset,
