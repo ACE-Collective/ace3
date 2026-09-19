@@ -14,7 +14,6 @@ import os
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query, Security
-from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -24,6 +23,7 @@ from aceapi_v2.crashes import service
 from aceapi_v2.crashes.schemas import CrashReportDetail, CrashReportSummary
 from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
+from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, ZipFileResponse
 from aceapi_v2.schemas import ListResponse
 from saq.crash_report import CRASH_TYPES
 
@@ -77,12 +77,16 @@ async def get_crash_report(
     return await service.get_crash_report(session, crash_id)
 
 
-@router.get("/{crash_id}/download")
+@router.get(
+    "/{crash_id}/download",
+    response_class=ZipFileResponse,
+    responses=ZIP_DOWNLOAD_RESPONSES,
+)
 async def download_crash_report(
     crash_id: str,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("crash", "read"))],
-) -> FileResponse:
+) -> ZipFileResponse:
     """Download the whole crash report as a zip encrypted with password 'infected'.
 
     Encrypted because the archive contains the file observable the module crashed on.
@@ -90,8 +94,9 @@ async def download_crash_report(
     crash_dir = await service.resolve_downloadable_report(session, crash_id)
     logger.info("AUDIT: user %s downloading crash report %s", auth.auth_name, crash_id)
     zip_path = await run_in_threadpool(service.create_encrypted_crash_zip, crash_id, crash_dir)
-    return FileResponse(
+    return ZipFileResponse(
         zip_path,
+        # FileResponse ignores the class attribute; without this it guesses from the filename
         media_type="application/zip",
         filename=f"crash-{crash_id}.zip",
         background=BackgroundTask(_safe_unlink, zip_path),

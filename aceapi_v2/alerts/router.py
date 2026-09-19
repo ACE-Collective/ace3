@@ -6,11 +6,11 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, Security
-from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
+from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, TextFileResponse, ZipFileResponse
 from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import BulkAddObservableRequest, BulkAddObservableResult
@@ -88,41 +88,48 @@ async def get_alert(
     return Response(content=body, media_type="application/json", headers={"ETag": service.etag(version)})
 
 
-@router.get("/{alert_uuid}/download")
+@router.get(
+    "/{alert_uuid}/download",
+    response_class=ZipFileResponse,
+    responses=ZIP_DOWNLOAD_RESPONSES,
+)
 async def download_alert(
     alert_uuid: str,
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
-) -> FileResponse:
+) -> ZipFileResponse:
     """Download the full alert storage directory as a zip encrypted with password 'infected'."""
     logger.info("AUDIT: user %s downloading alert %s", auth.auth_name, alert_uuid)
     zip_path = await run_db_in_thread(service.create_encrypted_alert_zip, alert_uuid)
-    return FileResponse(
+    return ZipFileResponse(
         zip_path,
+        # FileResponse ignores the class attribute; without this it guesses from the filename
         media_type="application/zip",
         filename=f"{alert_uuid}.zip",
         background=BackgroundTask(_safe_unlink, zip_path),
     )
 
 
-@router.get("/{alert_uuid}/logs")
+@router.get("/{alert_uuid}/logs", response_class=TextFileResponse)
 async def view_alert_logs(
     alert_uuid: str,
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
     download: bool = False,
-) -> FileResponse:
+) -> TextFileResponse:
     """Return the alert's raw saq.log file.
 
     Default: text/plain with inline disposition (renders in browser).
     With ?download=true, served as an attachment download.
     """
     log_path = await run_db_in_thread(service.resolve_alert_log_path, alert_uuid)
+    # FileResponse ignores the class attribute; without media_type it would guess
+    # application/octet-stream from the .log suffix
     if download:
-        return FileResponse(
+        return TextFileResponse(
             log_path,
             media_type="text/plain",
             filename=f"{alert_uuid}-saq.log",
         )
-    return FileResponse(
+    return TextFileResponse(
         log_path,
         media_type="text/plain; charset=utf-8",
         content_disposition_type="inline",
