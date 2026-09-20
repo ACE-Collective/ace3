@@ -142,9 +142,21 @@ class RabbitMQConfig(BaseModel):
 class PhishkitConfig(BaseModel):
     max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
 
+class StorageBackendSpec(BaseModel):
+    """Selects and configures a pluggable storage backend.
+
+    The backend class is loaded dynamically from python_module/python_class and the
+    config dict is validated against that class's get_config_class() Pydantic model --
+    the same pattern used for analysis modules and the analysis cache blob store.
+    """
+    python_module: str = Field(..., description="Python module containing the storage backend class")
+    python_class: str = Field(..., description="storage backend class name within that module")
+    config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
+
 class StorageConfig(BaseModel):
-    target: str = Field(default="local", description="storage target: local or s3")
+    target: str = Field(default="local", description="storage target: local, s3 or custom")
     base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
+    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. Use this when the object store needs credentials the built-in s3 backend does not model (IAM instance roles, STS, etc.)")
 
 class S3Config(BaseModel):
     host: str = Field(..., description="s3-compatible storage host")

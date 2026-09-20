@@ -244,8 +244,18 @@ phishkit:
   max_file_age_days: 3
 
 storage:
+  # local, s3 or custom
   target: local
   base_dir: data/storage
+  # when target is custom, the backend class is imported from python_module/python_class and
+  # the config below is validated against that class's get_config_class() model -- the same
+  # plugin convention as analysis_cache.blob_store. use this when the object store needs
+  # credentials the built-in s3 backend does not model (IAM instance roles, STS, ...)
+  #backend:
+  #  python_module: mypackage.my_storage
+  #  python_class: MyStorage
+  #  config:
+  #    some_setting: value
 
 # s3:
 #   host: garagehq
