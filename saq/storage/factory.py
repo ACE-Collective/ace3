@@ -2,9 +2,11 @@
 Storage factory for creating and configuring storage adapters.
 
 This module provides a factory class that creates storage adapters based on
-the current configuration, supporting local filesystem and S3-compatible storage.
+the current configuration, supporting local filesystem storage, S3-compatible storage,
+and pluggable backends loaded from configuration (storage.target: custom).
 """
 
+import importlib
 import logging
 import os
 
@@ -43,6 +45,17 @@ class StorageFactory:
             if storage_config is not None:
                 target = storage_config.target
 
+            if target == "custom":
+                return StorageFactory._create_custom_storage(config)
+
+            # a backend spec paired with a built-in target is always a mistake, and a silent
+            # one is how a deployment ends up believing it is writing to shared storage while
+            # every node is still writing to its own disk
+            if storage_config is not None and storage_config.backend is not None:
+                raise StorageError(
+                    f"storage.backend is configured but storage.target is {target!r}; "
+                    "set storage.target to custom to use it")
+
             if target == "s3":
                 return StorageFactory._create_s3_storage(config)
 
@@ -55,6 +68,45 @@ class StorageFactory:
             error_msg = f"failed to create storage adapter: {str(e)}"
             logging.error(error_msg)
             raise StorageError(error_msg)
+
+    @staticmethod
+    def _create_custom_storage(config) -> StorageAdapter:
+        """Load a pluggable storage backend from storage.backend.
+
+        Mirrors _load_blob_store() in saq/analysis/blob_store.py: import the module, resolve
+        the class, validate the YAML `config:` sub-dict against the class's own Pydantic model,
+        and hand that model to the constructor as its single argument.
+
+        This exists so a deployment whose object store needs credentials the built-in s3
+        backend does not model -- an IAM instance role, STS, a signing proxy -- can supply its
+        own backend without that vendor's specifics landing in core.
+        """
+        spec = None if config.storage is None else config.storage.backend
+        if spec is None:
+            raise StorageError(
+                "storage.target is custom but storage.backend is not configured")
+
+        try:
+            module = importlib.import_module(spec.python_module)
+        except ImportError as e:
+            raise StorageError(f"unable to import storage backend module {spec.python_module}: {e}")
+
+        try:
+            cls = getattr(module, spec.python_class)
+        except AttributeError:
+            raise StorageError(
+                f"storage backend module {spec.python_module} has no class {spec.python_class}")
+
+        # StorageInterface is a plain Protocol (not runtime_checkable), so issubclass() is not
+        # available as a guard here. Requiring get_config_class() is the check that actually
+        # matters: without it there is nothing to validate the backend's config against.
+        if not hasattr(cls, "get_config_class"):
+            raise StorageError(
+                f"storage backend {spec.python_module}:{spec.python_class} does not implement "
+                "get_config_class()")
+
+        backend_config = cls.get_config_class().model_validate(spec.config)
+        return StorageAdapter(cls(backend_config))
 
     @staticmethod
     def _create_local_storage(config) -> StorageAdapter:

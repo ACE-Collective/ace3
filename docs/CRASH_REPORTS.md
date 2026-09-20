@@ -125,6 +125,28 @@ crash_reporting:
   storage_bucket: ace-crash-reports
 ```
 
+The built-in `s3` backend talks to an S3-compatible endpoint with a static access key and secret
+(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block). A deployment whose
+object store authenticates some other way — an IAM instance role, STS, a signing proxy — supplies
+its own backend instead, through the same plugin convention `analysis_cache.blob_store` uses:
+
+```yaml
+storage:
+  target: custom
+  backend:
+    python_module: mypackage.my_storage
+    python_class: MyStorage
+    config:
+      region: us-east-2
+```
+
+The class is imported, its `get_config_class()` model validates the `config:` sub-dict, and the
+resulting model is its single constructor argument. It has to implement the seven methods of
+`StorageInterface` (`saq/storage/interface.py`), and it can get all of them by subclassing
+`S3Storage` and replacing only the client. Note `S3Storage._ensure_bucket_exists()` does
+`head_bucket` and then `create_bucket` on first upload per process — a backend running under a
+least-privilege policy that denies those should override it and let the bucket be pre-created.
+
 This is an explicit opt-in rather than something inferred from `storage.target`, because a cluster
 running the local backend with `base_dir` on NFS is a perfectly good deployment — inferring would
 silently disable replication in exactly that case. The 409 names the setting, so the failure mode
