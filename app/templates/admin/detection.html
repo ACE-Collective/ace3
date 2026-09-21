@@ -17,6 +17,14 @@
             </select>
         </div>
         <div class="col">
+            <label class="form-label mb-0" for="status">Status</label>
+            <select class="form-select form-select-sm" id="status" name="status">
+                {% for s in status_choices %}
+                    <option value="{{ s.value }}" {% if s == selected_status %}selected{% endif %}>{{ s.value }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col">
             <label class="form-label mb-0" for="page_size">Per page</label>
             <select class="form-select form-select-sm" id="page_size" name="page_size">
                 {% for size in page_size_choices %}
@@ -51,7 +59,7 @@
 </style>
 
 {% macro page_url(n) -%}
-{{ url_for('admin.detection_settings', q=search or None, type=selected_type or None, page_size=page.page_size, page=n) }}
+{{ url_for('admin.detection_settings', q=search or None, type=selected_type or None, status=selected_status.value, page_size=page.page_size, page=n) }}
 {%- endmacro %}
 
 {% macro pagination() -%}
@@ -176,7 +184,10 @@
                     {% endfor %}
                 </td>
                 <td>
-                    <div class="obs-expires">{{ det.expires_on.strftime('%Y-%m-%d %H:%M:%S') if det.expires_on else 'never' }}</div>
+                    <div class="obs-expires">
+                        {{ det.expires_on.strftime('%Y-%m-%d %H:%M:%S') if det.expires_on else 'never' }}
+                        {% if det.expired %}<span class="badge bg-secondary">expired</span>{% endif %}
+                    </div>
                     <input type="text" class="form-control form-control-sm obs-expires-input" placeholder="YYYY-MM-DD HH:MM:SS">
                     <div class="mt-1">
                         <button type="button" class="btn btn-xs btn-outline-secondary btn-set-expiration">set</button>
