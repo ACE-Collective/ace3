@@ -3,13 +3,21 @@ from datetime import datetime
 import pytest
 
 from saq.analysis.root import load_root
+from saq.configuration.config import get_analysis_module_config
 from saq.constants import F_MESSAGE_ID
 from saq.database import get_db_connection
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.email.conversation import Participant, ThreadContext, record_thread
-from saq.modules.email.thread import EmailThreadAnalysis
+from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.email.thread import (
+    EmailThreadAnalysis,
+    EmailThreadAnalyzer,
+    EmailThreadSettings,
+    load_settings,
+)
 from saq.util.uuid import get_storage_dir
+from tests.saq.test_util import create_test_context
 
 # a look-a-like of example.com: "rn" reads as "m"
 LOOKALIKE_DOMAIN = "exarnple.com"
@@ -534,3 +542,120 @@ def test_thread_analysis_without_lookalikes(root_analysis):
     assert len(analysis.messages) == 1
     # nothing decisive to say, so nothing is pushed inline into the tree
     assert analysis.summary_details == []
+
+
+def _analyze_with_settings(root_analysis, message_id, config_path):
+    """Run email_thread_analyzer directly, pointed at the given settings file."""
+    observable = root_analysis.add_observable_by_spec(F_MESSAGE_ID, message_id)
+    config = get_analysis_module_config("email_thread_analyzer")
+    config.config_path = config_path
+    adapter = AnalysisModuleAdapter(EmailThreadAnalyzer(context=create_test_context(root=root_analysis),
+                                                        config=config))
+    adapter.execute_analysis(observable)
+    return observable.get_and_load_analysis(EmailThreadAnalysis)
+
+
+@pytest.mark.integration
+def test_thread_analysis_ignores_a_configured_pair(root_analysis, tmp_path):
+    _record_conversation()
+
+    # listed the other way round from how the pair is reported, and in a different case
+    settings_path = tmp_path / "email_thread_analysis.yaml"
+    settings_path.write_text(f"ignored_domain_pairs:\n  - [Example.com, {LOOKALIKE_DOMAIN}]\n")
+
+    analysis = _analyze_with_settings(root_analysis, "<t3@example.com>", str(settings_path))
+    assert analysis is not None
+
+    # the conversation is still rendered, the pair is just not called out anywhere in it
+    assert len(analysis.messages) == 3
+    assert analysis.lookalikes == []
+    assert [m["lookalike_domains_present"] for m in analysis.messages] == [[], [], []]
+    assert all(not r["is_lookalike"] for m in analysis.messages for r in m["recipients"])
+    assert analysis.summary_details == []
+
+
+@pytest.mark.integration
+def test_thread_analysis_ignoring_one_pair_leaves_the_others(root_analysis, tmp_path):
+    _record_conversation()
+
+    # example.com is ignored against an unrelated domain, not against its look-a-like
+    settings_path = tmp_path / "email_thread_analysis.yaml"
+    settings_path.write_text("ignored_domain_pairs:\n  - [example.com, company.com]\n")
+
+    analysis = _analyze_with_settings(root_analysis, "<t3@example.com>", str(settings_path))
+    assert [entry["domain"] for entry in analysis.lookalikes] == [LOOKALIKE_DOMAIN]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("config_path", ["", "etc/does_not_exist.yaml"])
+def test_thread_analysis_without_a_settings_file(root_analysis, config_path):
+    _record_conversation()
+
+    analysis = _analyze_with_settings(root_analysis, "<t3@example.com>", config_path)
+    assert [entry["domain"] for entry in analysis.lookalikes] == [LOOKALIKE_DOMAIN]
+
+
+@pytest.mark.integration
+def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_path):
+    settings_path = tmp_path / "email_thread_analysis.yaml"
+    settings_path.write_text(f"ignored_domain_pairs:\n  - [example.com, {LOOKALIKE_DOMAIN}]\n")
+
+    config = get_analysis_module_config("email_thread_analyzer")
+    config.config_path = str(settings_path)
+    analyzer = EmailThreadAnalyzer(context=create_test_context(root=root_analysis), config=config)
+    assert analyzer.settings.is_ignored_pair("example.com", LOOKALIKE_DOMAIN)
+
+    # a misspelled key is rejected rather than read as "nothing is ignored"
+    settings_path.write_text(f"ignored_pairs:\n  - [example.com, {LOOKALIKE_DOMAIN}]\n")
+    analyzer._load_settings()
+    assert analyzer.settings.is_ignored_pair("example.com", LOOKALIKE_DOMAIN)
+
+
+@pytest.mark.unit
+def test_settings_match_on_the_registrable_domain():
+    settings = EmailThreadSettings.model_validate(
+        {"ignored_domain_pairs": [["example.com", LOOKALIKE_DOMAIN]]})
+
+    assert settings.is_ignored_pair(LOOKALIKE_DOMAIN, "example.com")
+    assert settings.is_ignored_pair("mail.example.com", "eu." + LOOKALIKE_DOMAIN)
+    assert not settings.is_ignored_pair("example.com", "exannple.com")
+    assert not settings.is_ignored_pair("example.com", "example.com")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("content,expected_pairs", [
+    ("", []),
+    ("ignored_domain_pairs:\n", []),
+    ("ignored_domain_pairs: []\n", []),
+    ("ignored_domain_pairs:\n  - [a.com, b.com]\n", [("a.com", "b.com")]),
+])
+def test_load_settings(tmp_path, content, expected_pairs):
+    settings_path = tmp_path / "email_thread_analysis.yaml"
+    settings_path.write_text(content)
+
+    assert load_settings(str(settings_path)).ignored_domain_pairs == expected_pairs
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("content", [
+    "ignored_pairs: []\n",                            # unknown key
+    "ignored_domain_pairs:\n  - [a.com]\n",           # not a pair
+    "ignored_domain_pairs:\n  - [a.com, b.com, c.com]\n",
+    "ignored_domain_pairs: [\n",                      # not YAML
+])
+def test_load_settings_rejects_an_invalid_file(tmp_path, content):
+    settings_path = tmp_path / "email_thread_analysis.yaml"
+    settings_path.write_text(content)
+
+    assert load_settings(str(settings_path)) is None
+
+
+@pytest.mark.unit
+def test_load_settings_missing_file(tmp_path):
+    assert load_settings(str(tmp_path / "missing.yaml")) is None
+
+
+@pytest.mark.unit
+def test_default_settings_file_is_valid():
+    # the file the default config_path points at
+    assert load_settings("etc/email_thread_analysis.yaml").ignored_domain_pairs == []

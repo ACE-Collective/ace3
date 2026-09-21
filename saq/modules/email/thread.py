@@ -12,9 +12,12 @@
 
 import logging
 
+from functools import cached_property
 from typing import Optional, Type
 
-from pydantic import Field
+import yaml
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
@@ -22,7 +25,7 @@ from saq.analysis.presenter.analysis_presenter import (
     register_analysis_presenter,
 )
 from saq.constants import F_MESSAGE_ID, SUMMARY_DETAIL_FORMAT_MD, AnalysisExecutionResult
-from saq.domain_similarity import compare_domains, compare_local_parts
+from saq.domain_similarity import compare_domains, compare_local_parts, registrable_domain
 from saq.email import normalize_message_id
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -34,6 +37,7 @@ from saq.modules.email.conversation import (
     Conversation,
     get_conversation,
 )
+from saq.util import abs_path
 
 # Roles that mean mail actually ORIGINATED from a domain. Deliberately narrower than
 # conversation.SENDER_ROLES, which also contains reply_to: Reply-To only says where replies are
@@ -150,7 +154,90 @@ class EmailThreadAnalysis(Analysis):
         return result
 
 
-class EmailThreadAnalyzerConfig(AnalysisModuleConfig):
+class EmailThreadSettings(BaseModel):
+    """The analyst-editable settings file referenced by the module's ``config_path``.
+
+    Example::
+
+        ignored_domain_pairs:
+          - [example.com, example-group.com]
+    """
+
+    # a misspelled key would otherwise be dropped silently and the pair would keep being reported
+    model_config = ConfigDict(extra="forbid")
+
+    ignored_domain_pairs: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description="pairs of domains that are known to be related and are never reported as look-a-likes of each other")
+
+    @field_validator("ignored_domain_pairs", mode="before")
+    @classmethod
+    def _none_is_empty(cls, value):
+        # a key left with nothing under it parses as None
+        return value or []
+
+    @cached_property
+    def _ignored_pairs(self) -> set:
+        return {frozenset((registrable_domain(first), registrable_domain(second)))
+                for first, second in self.ignored_domain_pairs}
+
+    def is_ignored_pair(self, first: str, second: str) -> bool:
+        """Is this pair of domains listed in ignored_domain_pairs, in either order?
+
+        Matched on the registrable domain, which is the level compare_domains works at - so
+        ignoring a pair also covers the hosts beneath each side.
+        """
+        return frozenset((registrable_domain(first), registrable_domain(second))) in self._ignored_pairs
+
+
+def load_settings(config_path: str) -> Optional[EmailThreadSettings]:
+    """Load the settings file. Returns None when it cannot be read or does not validate."""
+    path = abs_path(config_path)
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            return EmailThreadSettings.model_validate(yaml.safe_load(fp) or {})
+    except FileNotFoundError:
+        logging.warning("email thread analysis settings not found: %s", path)
+    except Exception as e:
+        logging.error("unable to load email thread analysis settings %s: %s", path, e)
+
+    return None
+
+
+class EmailThreadSettingsConfigMixin(BaseModel):
+    """Config field for any module that honors the email thread settings file."""
+    config_path: str = Field(
+        default="etc/email_thread_analysis.yaml",
+        description="path to the analyst-editable settings file, relative to SAQ_HOME; blank disables it")
+
+
+class EmailThreadSettingsMixin:
+    """Loads and live-reloads the email thread settings file. Combine with an AnalysisModule whose
+    config includes EmailThreadSettingsConfigMixin."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._settings = EmailThreadSettings()
+        self._settings_watched = False
+
+    def _load_settings(self):
+        # a file that fails to load keeps the settings already in effect, so a bad edit does not
+        # bring back every pair the analysts have ignored
+        settings = load_settings(self.config.config_path)
+        if settings is not None:
+            self._settings = settings
+
+    @property
+    def settings(self) -> EmailThreadSettings:
+        if not self._settings_watched and self.config.config_path:
+            # watch_file loads the settings immediately and reloads them on change
+            self.watch_file(abs_path(self.config.config_path), self._load_settings)
+            self._settings_watched = True
+
+        return self._settings
+
+
+class EmailThreadAnalyzerConfig(EmailThreadSettingsConfigMixin, AnalysisModuleConfig):
     max_messages: int = Field(
         default=DEFAULT_MAX_CONVERSATION_MESSAGES,
         description="maximum number of conversation messages to assemble into the timeline")
@@ -162,7 +249,7 @@ class EmailThreadAnalyzerConfig(AnalysisModuleConfig):
         description="maximum number of recipients to list per timeline row before summarizing the rest")
 
 
-class EmailThreadAnalyzer(AnalysisModule):
+class EmailThreadAnalyzer(EmailThreadSettingsMixin, AnalysisModule):
     config: EmailThreadAnalyzerConfig
 
     @classmethod
@@ -215,7 +302,7 @@ class EmailThreadAnalyzer(AnalysisModule):
         analysis.details[KEY_LINK_DOMAINS] = conversation.link_domains
         analysis.details[KEY_THREAD_MESSAGE_COUNTS] = conversation.thread_message_counts
         analysis.details[KEY_TRUNCATED] = conversation.truncated
-        analysis.details[KEY_LOOKALIKES] = _build_lookalikes(conversation, normalized)
+        analysis.details[KEY_LOOKALIKES] = _build_lookalikes(conversation, normalized, self.settings)
         analysis.details[KEY_MESSAGES] = _build_timeline(
             conversation, normalized,
             {entry["domain"] for entry in analysis.details[KEY_LOOKALIKES]},
@@ -374,8 +461,12 @@ def _build_timeline(conversation: Conversation, anchor_message_id: str, lookalik
     return timeline
 
 
-def _build_lookalikes(conversation: Conversation, anchor_message_id: str) -> list:
+def _build_lookalikes(conversation: Conversation, anchor_message_id: str,
+                      settings: Optional[EmailThreadSettings] = None) -> list:
     """Find look-a-like domain pairs among the conversation's participants and describe each one.
+
+    a pair listed in the settings' ignored_domain_pairs is skipped entirely - no entry, and so no
+    highlighting in the timeline either.
 
     computed here rather than read off the alerting hunt so the analysis stands on its own and works
     for any email alert. this is annotation, not detection - no hunt tuning is consulted and nothing
@@ -395,6 +486,10 @@ def _build_lookalikes(conversation: Conversation, anchor_message_id: str) -> lis
         for reference in domains[i + 1:]:
             result = compare_domains(suspect, reference)
             if not result.is_similar:
+                continue
+
+            if settings and settings.is_ignored_pair(suspect, reference):
+                logging.debug("ignoring look-a-like pair %s / %s", suspect, reference)
                 continue
 
             first, second = sorted((suspect, reference),
