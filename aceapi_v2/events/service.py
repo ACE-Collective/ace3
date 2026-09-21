@@ -12,30 +12,39 @@ context.
 """
 
 from fastapi import HTTPException
+from sqlalchemy.orm import selectinload
 
 from saq.csv_builder import CSV
-from saq.database import Event, EventStatus, get_db
+from saq.database import CompanyMapping, Event, EventStatus, get_db
+from saq.database.util.event import event_list_load_options, get_event_alert_tag_names, get_event_tags
 from saq.util.uuid import is_uuid
 
 from aceapi_v2.sync import run_db_in_thread
 
 
-def _serialize_event(event: Event) -> dict:
+def _serialize_event(event: Event, tags: list[str] | None = None) -> dict:
     """Reproduce the legacy ``Event.json`` payload, normalizing ``owner``.
 
     ``Event.json`` stores ``owner`` as a ``User`` object; the legacy Flask JSON
     encoder rendered it via ``User.json``. We do the same so the response shape
     matches the legacy endpoint exactly.
     """
-    data = event.json
+    data = event.to_json(tags=tags)
     owner = data.get("owner")
     data["owner"] = owner.json if owner is not None else None
     return data
 
 
 def _get_open_events_sync() -> list[dict]:
-    open_events = get_db().query(Event).filter(Event.status.has(value="OPEN")).all()
-    return [_serialize_event(event) for event in open_events]
+    open_events = (
+        get_db()
+        .query(Event)
+        .filter(Event.status.has(value="OPEN"))
+        .options(*event_list_load_options(), selectinload(Event.companies).joinedload(CompanyMapping.company))
+        .all()
+    )
+    alert_tags = get_event_alert_tag_names([event.id for event in open_events])
+    return [_serialize_event(event, tags=alert_tags[event.id]) for event in open_events]
 
 
 def resolve_event(event_ref: int | str) -> Event:
@@ -78,7 +87,12 @@ def _set_event_status_sync(event_id: int, status_value: str) -> dict:
 
 
 def _export_events_to_csv_sync(event_ids: list[int]) -> str:
-    export_events = get_db().query(Event).filter(Event.id.in_(event_ids)).all()
+    export_events = get_db().query(Event).filter(Event.id.in_(event_ids)).options(*event_list_load_options()).all()
+    exported_ids = [event.id for event in export_events]
+    event_tags = get_event_tags(exported_ids)
+    # the tags of each event's alerts, read through EventMapping -> TagMapping at query time;
+    # nothing is written back to event_tag_mapping.
+    event_alert_tags = get_event_alert_tag_names(exported_ids)
 
     csv = CSV(
         "id",
@@ -113,10 +127,8 @@ def _export_events_to_csv_sync(event_ids: list[int]) -> str:
         threat_types = ", ".join(event.threats)
         threat_names = ", ".join(event.malware_names)
         campaign = event.campaign.name if event.campaign else ""
-        tags = ", ".join(tag.name for tag in event.tags)
-        # sorted_tags walks EventMapping -> Alert -> TagMapping at query time;
-        # nothing is written back to event_tag_mapping.
-        alert_tags = ", ".join(event.sorted_tags)
+        tags = ", ".join(tag.name for tag in event_tags[event.id])
+        alert_tags = ", ".join(event_alert_tags[event.id])
 
         csv.add_row(
             event.id,
