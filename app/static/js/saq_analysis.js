@@ -402,9 +402,29 @@ $(document).ready(function() {
     });
 
     // Handle "Jump To Analysis" links with smooth scrolling and highlight
+    // An element inside a collapsed part of the tree has no layout box, so there is
+    // nothing to scroll to until every collapsed list above it is expanded.
+    function expandCollapsedAncestors(target) {
+        $(target).parents('ul').filter(function() {
+            return this.style.display === 'none';
+        }).each(function() {
+            // the list belongs to the node before it (collapseTree skips the same optional link)
+            var owner = $(this).prev();
+            if (owner.is('a')) owner = owner.prev();
+            var icon = owner.children('.toggle-icon').first();
+            if (icon.length) {
+                collapseTree(icon[0]);
+            } else {
+                $(this).show();
+            }
+        });
+    }
+
     function scrollToAndHighlight(targetId) {
         var target = document.getElementById(targetId);
         if (!target) return;
+
+        expandCollapsedAncestors(target);
 
         var applyHighlight = function() {
             target.classList.add('jump-highlight');

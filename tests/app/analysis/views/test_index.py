@@ -343,6 +343,40 @@ class TestIndexHelperFunctions:
         assert len(node1.children) == 1
         assert node1.children[0].obj == child_obs
 
+    def test_resolve_references_leaves_one_jump_target(self, root_analysis):
+        """A node that is not visible is still rendered, so after a visible referent takes over its
+        analysis it has to become a referent itself. Otherwise the observable is displayed twice
+        under the same element id, and "Jump To Analysis" lands on whichever copy comes first."""
+        from app.analysis.views.index import TreeNode, _resolve_references
+
+        root_node = TreeNode(root_analysis)
+        test_observable = root_analysis.add_observable_by_spec(F_TEST, "resolve_test")
+        original = TreeNode(test_observable)
+        first_referent = TreeNode(test_observable)
+        second_referent = TreeNode(test_observable)
+        for node in (original, first_referent, second_referent):
+            root_node.add_child(node)
+
+        child_node = TreeNode(root_analysis.add_observable_by_spec(F_TEST, "child_resolve"))
+        original.add_child(child_node)
+        first_referent.refer_to(original)
+        second_referent.refer_to(original)
+        first_referent.visible = True
+        second_referent.visible = True
+
+        _resolve_references(root_node)
+
+        # exactly one node displays the analysis (the template gives that one the observable's id)
+        assert [node for node in root_node.children if node.reference_node is None] == [first_referent]
+        assert first_referent.children == [child_node]
+        assert child_node.parent is first_referent
+
+        # and the other two jump to it
+        assert original.reference_node is first_referent
+        assert original.children == []
+        assert second_referent.reference_node is first_referent
+        assert set(first_referent.referents) == {original, second_referent}
+
 
 @pytest.mark.integration
 def test_index_with_session_variables(web_client, root_analysis, app):
