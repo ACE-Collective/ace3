@@ -12,7 +12,8 @@ Three pieces:
 - ``gather_remediation_events()``: walks an alert's analysis tree and returns
   all events from all providers, sorted the way the UI table reads: by
   ``event_time``, then ``timestamp``, then ``target`` — all compared at the
-  whole-second precision the table displays.
+  whole-second precision the table displays. Rows for work that is still in
+  flight (``RemediationEvent.pending``) follow the events that have happened.
 
 The aggregator is intentionally tolerant: any provider exception or unparseable
 event is logged and skipped so a misbehaving integration cannot prevent the
@@ -27,6 +28,7 @@ from saq.constants import F_EMAIL_DELIVERY, parse_email_delivery
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
+    from saq.remediation.coverage import RemediationCoverage
 
 
 def _format_duration(td: timedelta) -> str:
@@ -104,6 +106,13 @@ class RemediationEvent:
     metadata: dict = field(default_factory=dict)
     """Optional platform-specific extras the UI does not rely on."""
 
+    pending: bool = False
+    """True for the row of an email that is still outstanding — ACE is still
+    removing it, or probes are still watching for a vendor action — rather than
+    something that happened. ``timestamp`` is then the last activity on that
+    work (last attempt, or when it was queued). Never serialized: a pending row
+    is rebuilt from live database state on every page load."""
+
     def __post_init__(self):
         # Different providers hand us different datetime flavors: MySQL TIMESTAMP
         # columns (e.g. RemediationHistory.insert_date) come back tz-naive, while
@@ -118,8 +127,11 @@ class RemediationEvent:
 
     @property
     def duration(self) -> Optional[timedelta]:
-        """Time elapsed between ``event_time`` and ``timestamp``."""
-        if self.event_time is None:
+        """Time elapsed between ``event_time`` and ``timestamp``.
+
+        ``None`` for a pending row: nothing has reacted to the message yet.
+        """
+        if self.event_time is None or self.pending:
             return None
         return self.timestamp - self.event_time
 
@@ -163,6 +175,7 @@ def gather_remediation_events(
     root: "RootAnalysis",
     *,
     fallback_event_time: Optional[datetime] = None,
+    coverage: Optional["RemediationCoverage"] = None,
 ) -> list[RemediationEvent]:
     """Collect every RemediationEvent for an alert.
 
@@ -175,8 +188,15 @@ def gather_remediation_events(
        this alert. ``fallback_event_time`` (typically ``alert.event_time``) is
        used as the ``event_time`` on these events because ACE doesn't store the
        email's ``received_time``.
+    3. **External remediation probes.** The events of every CONFIRMED check for
+       this alert.
+    4. **Emails still outstanding.** When the alert's ``coverage``
+       (:mod:`saq.remediation.coverage`) is passed, one pending row per email
+       that is neither remediated nor known to be gone while something is still
+       in flight for it — see :func:`pending_events_from_coverage`.
 
-    Returns events sorted by ``event_time`` ascending, then ``timestamp``
+    Pending rows sort after every event that has happened. Otherwise returns
+    events sorted by ``event_time`` ascending, then ``timestamp``
     ascending, then ``target``. Both datetimes are compared truncated to whole
     seconds — the precision the timeline table renders — so rows that display an
     identical Event Time fall through to the visible tiebreaker columns rather
@@ -236,7 +256,14 @@ def gather_remediation_events(
     except Exception:
         logging.exception("failed to gather external remediation check events; skipping")
 
-    # Sort order matches the table reading order:
+    if coverage is not None:
+        try:
+            events.extend(pending_events_from_coverage(coverage, fallback_event_time))
+        except Exception:
+            logging.exception("failed to build pending remediation rows; skipping")
+
+    # Pending rows go last: the table reads as what happened, then what is still
+    # outstanding. Within each half the order matches the table reading order:
     #   1. event_time     (the "Event Time" column — the message's received time)
     #   2. timestamp      (the "When" column — when the action happened)
     #   3. target         (the "Target" column — recipient, breaks ties when
@@ -262,8 +289,8 @@ def gather_remediation_events(
         when = _display_precision(e.timestamp)
         tail = (e.target or "", e.source or "", e.description or "")
         if e.event_time is None:
-            return (1, when, when) + tail
-        return (0, _display_precision(e.event_time), when) + tail
+            return (e.pending, 1, when, when) + tail
+        return (e.pending, 0, _display_precision(e.event_time), when) + tail
 
     events.sort(key=_sort_key)
     return events
@@ -360,3 +387,66 @@ def _gather_external_check_events(root: "RootAnalysis") -> list[RemediationEvent
     for check in checks:
         out.extend(events_from_check(check))
     return out
+
+
+def pending_events_from_coverage(
+    coverage: "RemediationCoverage",
+    fallback_event_time: Optional[datetime] = None,
+) -> list[RemediationEvent]:
+    """One pending row per email that is still outstanding.
+
+    Rows are per email (``email_delivery`` value), not per probe: an alert often
+    carries the same delivery several times over and has more than one probe
+    watching it, and the analyst's question is which *emails* are unresolved.
+    An email gets a row while something is in flight for it and nothing is
+    settled — it is not remediated (by anyone: a probe still polling a message a
+    sibling already confirmed is not an outstanding email) and ACE has not found
+    it missing from the mailbox. Those are the targets the coverage badge does
+    not count as covered, so the table and the badge agree.
+
+    ``Source`` lists who is still working on it, ``timestamp`` is the latest
+    activity among them, and ``fallback_event_time`` stands in for ``event_time``
+    because neither table records when the message was received.
+    """
+    events: list[RemediationEvent] = []
+    for target in coverage.targets:
+        if not target.pending or target.remediated or target.not_found:
+            continue
+
+        sources: list[str] = []
+        activity: list[datetime] = []
+        deadlines: list[datetime] = []
+
+        remediation = target.pending_remediation
+        if remediation is not None:
+            sources.append("ACE")
+            activity.append(remediation.update_time or remediation.insert_date)
+        for check in target.pending_checks:
+            label = check.probe_name[:1].upper() + check.probe_name[1:]
+            if label not in sources:
+                sources.append(label)
+            activity.append(check.update_time or check.insert_date)
+            deadlines.append(check.deadline)
+
+        activity = [_as_utc(t) for t in activity if t is not None]
+        deadlines = [t for t in deadlines if t is not None]
+
+        description = "Remediating" if target.remediating else "Watching"
+        if deadlines:
+            description += f" (until {max(deadlines).strftime('%Y-%m-%d %H:%M:%S')} UTC)"
+
+        events.append(RemediationEvent(
+            source=", ".join(sources),
+            event_type="remediating" if target.remediating else "watching",
+            timestamp=max(activity) if activity else datetime.now(timezone.utc),
+            description=description,
+            event_time=fallback_event_time,
+            target=target.recipient,
+            metadata={"email_delivery": target.target},
+            pending=True,
+        ))
+    return events
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt

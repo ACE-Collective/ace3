@@ -585,14 +585,20 @@ def index():
 
     domain_summary_str = create_histogram_string(domains)
 
+    # the Remediation Timeline heading carries the same coverage badge as the alert list
+    remediation_coverage = get_remediation_coverage([alert])
+
     # Aggregate remediation events from any analysis in the tree that publishes them
     # plus ACE's own email_delivery remediation attempts from the DB
-    # (see saq/remediation/timeline.py). ACE rows have no native received_time,
-    # so we pass the alert's overall event_time as a fallback. The template
-    # renders an alert-level timeline card when this list is non-empty.
+    # (see saq/remediation/timeline.py). The coverage adds a pending row for every
+    # email that is still being remediated or watched, so the table and the badge
+    # agree on what is outstanding. ACE and pending rows have no native
+    # received_time, so we pass the alert's overall event_time as a fallback. The
+    # template renders an alert-level timeline card when this list is non-empty.
     remediation_timeline_events = gather_remediation_events(
         alert.root_analysis,
         fallback_event_time=alert.root_analysis.event_time,
+        coverage=remediation_coverage.get(alert.uuid),
     )
 
     # Summarize in-flight / terminal external remediation probe activity for
@@ -602,9 +608,6 @@ def index():
     external_check_footer = summarize_alert_checks(
         get_external_checks_for_alert(alert.uuid)
     )
-
-    # the Remediation Timeline heading carries the same coverage badge as the alert list
-    remediation_coverage = get_remediation_coverage([alert])
 
     # Aggregate URL-click state from any analysis in the tree that publishes it
     # (see saq/clicker_detection/timeline.py). The template renders an alert-level

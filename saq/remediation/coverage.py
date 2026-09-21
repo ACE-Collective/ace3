@@ -89,6 +89,12 @@ class TargetCoverage:
     attempted: bool = False
     """Any remediation or probe row exists for this target at all."""
 
+    pending_checks: list = field(default_factory=list)
+    """The ``ExternalRemediationCheck`` rows still being polled for this target."""
+
+    pending_remediation: Optional[Remediation] = None
+    """ACE's latest ``Remediation`` of this target, while it has not completed."""
+
     @property
     def remediated(self) -> bool:
         return bool(self.sources)
@@ -352,6 +358,7 @@ def _apply_ace_rows(target: TargetCoverage, rows: Iterable) -> None:
     target.attempted = True
     if latest.status != RemediationStatus.COMPLETED.value:
         target.pending = True
+        target.pending_remediation = latest
         target.remediating = latest.action == RemediationAction.REMOVE.value
         return
 
@@ -372,6 +379,7 @@ def _apply_check(target: TargetCoverage, check) -> None:
     target.attempted = True
     if check.status != CheckStatus.COMPLETED.value:
         target.pending = True
+        target.pending_checks.append(check)
         return
 
     if check.result == CheckResult.CONFIRMED.value:
