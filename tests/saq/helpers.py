@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import logging
 from multiprocessing import Manager, Pipe, Process, RLock
@@ -22,6 +23,8 @@ from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 # expected values
 EV_TEST_DATE = datetime(2017, 11, 11, hour=7, minute=36, second=1, microsecond=1)
@@ -743,3 +746,20 @@ def create_staged_submission(file_manager, key=None, group_value=None, group_ass
     submission.queued_time = time.time()
     file_manager.stage_submission(submission)
     return root_uuid
+
+@contextmanager
+def count_queries():
+    """Collects every SQL statement executed inside the block, on any engine in this process.
+
+    Use it to pin a view to a query count that does not grow with the number of rows it
+    renders: run the view over two different sized data sets and compare the lengths."""
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield statements
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)

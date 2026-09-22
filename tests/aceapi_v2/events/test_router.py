@@ -24,6 +24,7 @@ from saq.database import (
     get_db,
 )
 from saq.database.model import Alert, EventMapping, EventTagMapping, Tag, TagMapping
+from tests.saq.helpers import count_queries
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +64,41 @@ def _make_event(name: str, lookups: dict, status: EventStatus) -> Event:
     return event
 
 
+def _make_tagged_events(count: int, lookups: dict, tag: Tag, name: str) -> list[Event]:
+    """Open events that each carry a tag of their own and two tagged alerts, so serializing one
+    reaches every per-event lookup."""
+    db = get_db()
+    events = []
+    for index in range(count):
+        event = _make_event(f"{name}-{index}", lookups, lookups["open_status"])
+        db.add(EventTagMapping(event_id=event.id, tag_id=tag.id))
+        for _ in range(2):
+            alert = Alert(
+                uuid=str(uuid4()),
+                location="test-location",
+                storage_dir=f"storage/{uuid4()}",
+                tool="test-tool",
+                tool_instance="test-tool-instance",
+                alert_type="test",
+            )
+            db.add(alert)
+            db.flush()
+            db.add(TagMapping(alert_id=alert.id, tag_id=tag.id))
+            db.add(EventMapping(event_id=event.id, alert_id=alert.id))
+        events.append(event)
+    db.commit()
+    return events
+
+
+async def _count_queries(client: AsyncClient, url: str, **params) -> tuple[int, object]:
+    # nothing this test loaded may satisfy a lazy load for free
+    get_db().expire_all()
+    with count_queries() as statements:
+        response = await client.get(url, params=params)
+    assert response.status_code == 200
+    return len(statements), response
+
+
 class TestOpenEvents:
     @pytest.mark.asyncio
     async def test_requires_auth(self, unauth_client: AsyncClient):
@@ -85,6 +121,24 @@ class TestOpenEvents:
         assert "closed-event" not in names
         # every returned event reports OPEN status
         assert all(e["status"] == "OPEN" for e in data["data"])
+
+    @pytest.mark.asyncio
+    async def test_query_count_does_not_grow_with_events(self, client: AsyncClient):
+        lookups = _make_lookups()
+        tag = Tag(name="mitre:T1105")
+        get_db().add(tag)
+        get_db().commit()
+
+        _make_tagged_events(2, lookups, tag, "few")
+        small, _ = await _count_queries(client, "/events/open")
+
+        _make_tagged_events(8, lookups, tag, "many")
+        large, response = await _count_queries(client, "/events/open")
+
+        events = response.json()["data"]
+        assert len(events) == 10
+        assert all(len(e["alerts"]) == 2 and e["tags"] == ["mitre:T1105"] for e in events)
+        assert large == small, f"{small} queries for 2 events, {large} for 10"
 
     @pytest.mark.asyncio
     async def test_forbidden_without_permission(self, noperm_client: AsyncClient):
@@ -247,6 +301,22 @@ class TestExportEvents:
         # header row + the seeded event's data row
         assert '"id","uuid","creation_date"' in body
         assert '"export-event"' in body
+
+    @pytest.mark.asyncio
+    async def test_query_count_does_not_grow_with_events(self, client: AsyncClient):
+        lookups = _make_lookups()
+        tag = Tag(name="mitre:T1105")
+        get_db().add(tag)
+        get_db().commit()
+
+        few = [event.id for event in _make_tagged_events(2, lookups, tag, "few")]
+        small, _ = await _count_queries(client, "/events/export", **{"type": "csv", "checked_events[]": few})
+
+        many = few + [event.id for event in _make_tagged_events(8, lookups, tag, "many")]
+        large, response = await _count_queries(client, "/events/export", **{"type": "csv", "checked_events[]": many})
+
+        assert len(response.text.splitlines()) == 11
+        assert large == small, f"{small} queries for 2 events, {large} for 10"
 
     @pytest.mark.asyncio
     async def test_exports_csv_separates_event_and_alert_tags(self, client: AsyncClient):

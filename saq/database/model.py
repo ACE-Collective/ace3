@@ -820,6 +820,11 @@ class Event(Base):
 
     @property
     def json(self):
+        return self.to_json()
+
+    def to_json(self, tags: Optional[list[str]] = None) -> dict:
+        """The json payload. sorted_tags is a query per event, so a caller serializing many
+        events passes each one's tags in (see get_event_alert_tag_names())."""
         return {
             'id': self.id,
             'uuid': self.uuid,
@@ -843,7 +848,7 @@ class Event(Base):
             'remediation': self.remediation.value,
             'risk_level': self.risk_level.value,
             'status': self.status.value,
-            'tags': self.sorted_tags,
+            'tags': self.sorted_tags if tags is None else tags,
             'type': self.type.value,
             'vector': self.vector.value,
             'wiki': self.wiki,
