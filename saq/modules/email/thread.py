@@ -139,7 +139,7 @@ class EmailThreadAnalysis(Analysis):
 
         dates = [m["date"] for m in self.messages if m["date"]]
         if dates:
-            result += f", {dates[0]} to {dates[-1]}"
+            result += f", {dates[0]} to {dates[-1]} UTC"
 
         if self.lookalikes:
             # lead with the most decisive fact rather than the count
@@ -365,7 +365,7 @@ def _build_findings(analysis: EmailThreadAnalysis) -> Optional[str]:
         # record cannot always support - see the inherited caveat below for when it provably cannot.
         presence = f"- Present on {entry['message_count']} of {entry['total_messages']} recorded messages"
         if entry["introduced_on"]:
-            presence += f"; first recorded appearance {entry['introduced_on']}"
+            presence += f"; first recorded appearance {entry['introduced_on']} UTC"
             if entry["introduced_by_address"]:
                 presence += f" on a message from {entry['introduced_by_address']}"
         lines.append(presence + ".")
@@ -630,6 +630,9 @@ def _describe_lookalike(conversation: Conversation, domain: str, counterpart: st
         # gets reported as "sent mail into this conversation" and "present on 0 of 5" at once.
         "presence_is_partial": conversation.has_unattributed_domain(domain),
         "introduced_by_address": introduced_by.from_address if introduced_by else None,
+        # the exact key an enrichment module needs to find this same message in another source
+        # and answer what the record cannot: whether anything earlier carried the domain
+        "introduced_by_message_id": introduced_by.message_id if introduced_by else None,
         "introduced_on": _format_date(
             (introduced_by.message_date or introduced_by.insert_date) if introduced_by else None),
         "first_seen_replies_to_unrecorded": first_seen_replies_to_unrecorded,
