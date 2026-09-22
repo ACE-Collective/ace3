@@ -391,11 +391,22 @@ def _resolve_references(node):
     # then we need to use the data of the refering node
     def _resolve(node):
         if node.visible and node.reference_node and not node.reference_node.visible:
-            node.children = node.reference_node.children
-            for referent in node.reference_node.referents:
+            original = node.reference_node
+            node.children = original.children
+            for child in node.children:
+                child.parent = node
+
+            for referent in original.referents:
                 referent.reference_node = node
 
+            node.referents = [referent for referent in original.referents if referent is not node]
             node.reference_node = None
+
+            # the two nodes trade places: a node that is not visible can still be rendered, and
+            # an observable's analysis is displayed (and is a jump target) exactly once
+            original.children = []
+            original.referents = []
+            original.refer_to(node)
 
     node.walk(_resolve)
 

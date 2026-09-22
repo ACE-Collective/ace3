@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 
+{# scrollspy follows the table of contents below. Only a page that has a #toc may turn it on:
+   without the target Bootstrap spies on every link in the body instead, and treats each
+   URL fragment as a CSS selector. #}
+{% block body_attribs %} data-bs-spy="scroll" data-bs-target="#toc"{% endblock %}
+
 {% block control_panel %}
 
 {% endblock %}
