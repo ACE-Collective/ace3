@@ -275,7 +275,22 @@ def test_event_page_renders_bulk_controls(web_client):
     assert "event_bulk_disposition_modal" in response.text
     assert "event_bulk_review_modal" in response.text
     # the select-all checkbox is present in the alerts table header
-    assert "event_alerts_master_checkbox" in response.text
+    assert "event-alerts-master-checkbox" in response.text
     # the checkbox carries the alert uuid used by the bulk handlers
+    assert f'data-alert-uuid="{alert.uuid}"' in response.text
+
+
+def test_manage_event_details_renders_select_all(web_client):
+    # events/event_alerts.html has a second render path: the manage page fetches it per
+    # expanded event. the select-all hook has to be a class, because an id here would be
+    # duplicated across the document as soon as two events are expanded.
+    alert = insert_alert()
+    event = _make_event_with_alert(alert)
+
+    response = web_client.get(url_for("events.manage_event_details", event_id=event.id))
+
+    assert response.status_code == 200
+    assert "event-alerts-master-checkbox" in response.text
+    assert "event_alerts_master_checkbox" not in response.text
     assert f'data-alert-uuid="{alert.uuid}"' in response.text
 

@@ -374,9 +374,11 @@ $(document).ready(function() {
         return true;
     }
 
-    // select-all checkbox in the alerts table header
-    $("#event_alerts_master_checkbox").click(function() {
-        $("input[name^='detail_']").prop('checked', $(this).prop('checked'));
+    // select-all checkbox in the alerts table header. delegated because the manage page
+    // injects this table through manage_event_details long after ready, and scoped to its own
+    // table because that page can have several expanded events on screen at once.
+    $(document).on('click', '.event-alerts-master-checkbox', function() {
+        $(this).closest('table').find("input[name^='detail_']").prop('checked', $(this).prop('checked'));
     });
 
     $("#btn-event-bulk-submit-tags").click(function() {
