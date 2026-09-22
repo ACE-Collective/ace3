@@ -459,7 +459,7 @@ def test_thread_analysis_does_not_blame_the_replier_for_an_inherited_address(roo
 
     content = analysis.summary_details[0].content
     assert "Present on 1 of 3 recorded messages" in content
-    assert "first recorded appearance 2026-08-21 09:00:00 on a message from jane.doe@example.com" in content
+    assert "first recorded appearance 2026-08-21 09:00:00 UTC on a message from jane.doe@example.com" in content
     # the old wording asserted an introduction the record cannot support
     assert "introduced" not in content
     assert "likely carried over" in content
