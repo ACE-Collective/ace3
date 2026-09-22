@@ -100,10 +100,16 @@ function toggle_alert_observables(button, alert_uuid, observables_url) {
 // filter: clicking an observable from an alert used to overwrite their filter set outright,
 // losing however long they had spent building it.
 //
+// With overlay set, the filters are laid over the one in effect instead of replacing it --
+// see overlay_temporary_filter() in app/analysis/views/session/filters.py.
+//
 // Lives in ace.js because the templates that call it render under more than one blueprint,
 // so the urls have to be passed in.
-function apply_temp_filter(filters, label, apply_url, manage_url) {
+function apply_temp_filter(filters, label, apply_url, manage_url, overlay) {
     const body = new URLSearchParams({ filters: JSON.stringify(filters), label: label });
+    if (overlay) {
+        body.set("overlay", "on");
+    }
     fetch(apply_url, { method: "POST", credentials: "same-origin", body: body })
     .then(function(resp){
         if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
@@ -114,11 +120,17 @@ function apply_temp_filter(filters, label, apply_url, manage_url) {
     });
 }
 
-function add_observable_filter(observable_type, observable_value, apply_url, manage_url) {
+// A click in the observable list under an alert row. On the alert management page it is
+// overlaid on the filter in effect: the analyst is working that list and wants the part of
+// it that shares this observable. The event pages render the same list with no filter of
+// their own to narrow, so there it replaces the filter like a pivot from inside an alert.
+// A page opts in with a data-pivot-overlay attribute around its alert table.
+function add_observable_filter(element, observable_type, observable_value, apply_url, manage_url) {
+    const overlay = $(element).closest("[data-pivot-overlay]").length > 0;
     apply_temp_filter(
         [{ name: "Observable", inverted: false, values: [[observable_type, observable_value]] }],
         "Observable " + observable_type + ":" + observable_value,
-        apply_url, manage_url);
+        apply_url, manage_url, overlay);
 }
 
 // API keys are display-once (revealed at creation, never recoverable), so there is no nav-bar
