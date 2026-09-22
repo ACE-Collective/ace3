@@ -1,8 +1,20 @@
 """Schemas for the observable-detection settings API (ACE API v2)."""
 
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel
+
+
+class DetectionStatus(StrEnum):
+    """Which detections a listing includes, by expiration.
+
+    A detection has no enabled flag: it is active for as long as it exists and has not expired,
+    which is the same test the engine applies when it loads detections.
+    """
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    ALL = "all"
 
 
 class ObservableCommentSummary(BaseModel):
@@ -22,6 +34,7 @@ class ObservableDetectionRead(BaseModel):
     type: str
     value: str
     expires_on: datetime | None = None
+    expired: bool = False
     detection_context: str | None = None
     batch_id: str | None = None
     created_by: str | None = None

@@ -3,6 +3,7 @@ from flask import render_template, request
 from app.auth.permissions import require_permission
 from app.blueprints import admin
 from aceapi_v2.detection import service
+from aceapi_v2.detection.schemas import DetectionStatus
 from aceapi_v2.sync import run_async_with_session
 
 
@@ -11,6 +12,13 @@ def _int_arg(name: str, default: int) -> int:
         return int(request.args.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def _status_arg() -> DetectionStatus:
+    try:
+        return DetectionStatus(request.args.get("status", DetectionStatus.ACTIVE))
+    except ValueError:
+        return DetectionStatus.ACTIVE
 
 
 @admin.route("/detection", methods=["GET"])
@@ -23,6 +31,7 @@ def detection_settings():
     """
     search = request.args.get("q") or None
     observable_type = request.args.get("type") or None
+    status = _status_arg()
     page = _int_arg("page", 1)
     page_size = service.clamp_page_size(_int_arg("page_size", service.DEFAULT_PAGE_SIZE))
 
@@ -30,6 +39,7 @@ def detection_settings():
         service.get_detection_page,
         search=search,
         observable_type=observable_type,
+        status=status,
         page=page,
         page_size=page_size,
     )
@@ -44,6 +54,8 @@ def detection_settings():
         observable_types=present_types,
         all_observable_types=service.list_all_observable_types(),
         selected_type=observable_type or "",
+        status_choices=list(DetectionStatus),
+        selected_status=status,
         search=search or "",
         page_size_choices=service.PAGE_SIZE_CHOICES,
     )
