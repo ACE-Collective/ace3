@@ -1,6 +1,5 @@
 import os
 
-import fakeredis
 import pytest
 
 from saq.configuration.config import get_config
@@ -11,28 +10,6 @@ from saq.database.util.observable_detection import create_observable_detection
 from saq.observables.export.manager import run_exports
 from saq.observables.export.redis_cache import FINGERPRINT_KEY, RedisObservableExport
 from tests.saq.helpers import search_log
-
-
-@pytest.fixture
-def fake_redis(monkeypatch):
-    """Backs the redis export with fakeredis, keyed by database on one shared server.
-
-    One server is the point: swapdb is a server-level command, so both databases have to live on the
-    same one for the cutover to be observable.
-    """
-    server = fakeredis.FakeServer()
-    connections = {}
-
-    def _get_connection(database, config_name=None):
-        if database not in connections:
-            connections[database] = fakeredis.FakeStrictRedis(
-                server=server, db=database, decode_responses=True)
-
-        return connections[database]
-
-    monkeypatch.setattr(
-        "saq.observables.export.redis_cache.get_redis_connection", _get_connection)
-    return _get_connection
 
 
 @pytest.fixture
