@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+import fakeredis
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 import aceapi_ai.application
+from aceapi_ai.ratelimit import rate_limiter
 from aceapi_v2.database import build_database_url, get_async_session
 from saq.database.model import User
 from tests.aceapi_v2.conftest import make_api_key
@@ -24,13 +26,38 @@ def get_app():
 
 
 @pytest.fixture(autouse=True)
-def _clear_ai_rate_limit_state():
-    """Empty the AI rate limiter's dedicated redis database so counters never leak between tests."""
-    from saq.constants import REDIS_DB_AI_RATE_LIMIT
-    from saq.redis_client import get_redis_connection
+def ai_redis(monkeypatch):
+    """Backs the AI rate limiter with fakeredis, keyed by database on one shared server.
 
-    get_redis_connection(REDIS_DB_AI_RATE_LIMIT).flushdb()
-    yield
+    REDIS_DB_AI_RATE_LIMIT is one database on a redis shared by every xdist worker and by any
+    ACE container pointed at the same server. Emptying it here -- which is what this fixture
+    used to do -- reset counters another worker was in the middle of asserting on, and wiped a
+    running AI API's rate limit state as a side effect. An in-process fake gives each test its
+    own server, so there is nothing to share and nothing to flush.
+
+    Returns the connection factory, for tests that seed limiter state directly.
+    """
+    server = fakeredis.FakeServer()
+    connections: dict[int, fakeredis.FakeStrictRedis] = {}
+
+    def _get_connection(database, config_name=None):
+        if database not in connections:
+            connections[database] = fakeredis.FakeStrictRedis(
+                server=server, db=database, decode_responses=True)
+
+        return connections[database]
+
+    # the limiter binds the name at import, so the patch has to land on its module rather than
+    # on saq.redis_client
+    monkeypatch.setattr("aceapi_ai.ratelimit.get_redis_connection", _get_connection)
+
+    # the module singleton caches its connection and its registered script for the life of the
+    # process; drop both so this test resolves through the patch above and the next one does not
+    # inherit this test's fake server
+    monkeypatch.setattr(rate_limiter, "_connection", None)
+    monkeypatch.setattr(rate_limiter, "_acquire_script", None)
+
+    return _get_connection
 
 
 def api_key_client(api_key: str) -> AsyncClient:
