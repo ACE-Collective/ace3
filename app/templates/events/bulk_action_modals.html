@@ -1,0 +1,152 @@
+{# Bulk alert operation modals for the event page. Selected alert uuids are injected as a hidden
+   "alert_uuids" field by handlers in events.js before submit. #}
+
+<div class="modal fade" id="event_bulk_tag_modal" tabindex="-1" role="dialog" aria-labelledby="event_bulk_tag_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form id="event-bulk-tag-form" class="form-horizontal" role="form" method="POST" action="{{ url_for('events.bulk_add_tag') }}">
+            <input type="hidden" name="event_id" value="{{ event.id }}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="event_bulk_tag_modal_label">Add Tag(s) to Selected Alerts</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    Enter one or more tags separated by spaces.
+                    <input class="form-control" type="text" name="tag">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-event-bulk-submit-tags">Add</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="event_bulk_tag_remove_modal" tabindex="-1" role="dialog" aria-labelledby="event_bulk_tag_remove_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form id="event-bulk-tag-remove-form" class="form-horizontal" role="form" method="POST" action="{{ url_for('events.bulk_remove_tag') }}">
+            <input type="hidden" name="event_id" value="{{ event.id }}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="event_bulk_tag_remove_modal_label">Remove Tag(s) from Selected Alerts</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    Enter one or more tags separated by spaces.
+                    <input class="form-control" type="text" name="tag">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-event-bulk-submit-tags-remove">Remove</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="event_bulk_comment_modal" tabindex="-1" role="dialog" aria-labelledby="event_bulk_comment_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <form id="event-bulk-comment-form" class="form-horizontal" role="form" method="POST" action="{{ url_for('events.bulk_add_comment') }}">
+            <input type="hidden" name="event_id" value="{{ event.id }}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h1 class="modal-title fs-5" id="event_bulk_comment_modal_label">Add Comment to Selected Alerts</h1>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <textarea class="form-control" rows="3" name="comment"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-event-bulk-submit-comment">Add Comment</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="event_bulk_disposition_modal" tabindex="-1" role="dialog" aria-labelledby="event_bulk_disposition_modal_label" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <form id="event-bulk-disposition-form" class="form-horizontal" role="form" method="POST" action="{{ url_for('events.bulk_set_disposition') }}">
+            <input type="hidden" name="event_id" value="{{ event.id }}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h4 class="modal-title fs-5" id="event_bulk_disposition_modal_label">Set Disposition for Selected Alerts</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
+                    <div class="row" style="flex: 1; display: flex;">
+                        <div class="col-md-4" style="display: flex; flex-direction: column;">
+                            {% for disposition in dispositions %}
+                                <div class="form-check">
+                                    <input type="radio" class="form-check-input" id="event_option_{{disposition}}" name="disposition" value="{{disposition}}" autocomplete="off" />
+                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="event_option_{{disposition}}">
+                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    </label>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-8" style="display: flex; flex-direction: column;">
+                            <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-event-bulk-disposition">Save</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="event_bulk_review_modal" tabindex="-1" role="dialog" aria-labelledby="event_bulk_review_modal_label" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <form id="event-bulk-review-form" class="form-horizontal" role="form" method="POST" action="{{ url_for('events.bulk_review_disposition') }}">
+            <input type="hidden" name="event_id" value="{{ event.id }}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h4 class="modal-title fs-5" id="event_bulk_review_modal_label">Review Disposition for Selected Alerts</h4>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
+                    <div class="row">
+                        <div class="col-md-12">
+                            <p class="mb-2">Is the disposition correct?</p>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="event_review_result_correct" name="review_result" value="CORRECT" autocomplete="off" checked onclick="toggle_event_review_incorrect(false);" />
+                                <label class="form-check-label" for="event_review_result_correct">Correct</label>
+                            </div>
+                            <div class="form-check">
+                                <input type="radio" class="form-check-input" id="event_review_result_incorrect" name="review_result" value="INCORRECT" autocomplete="off" onclick="toggle_event_review_incorrect(true);" />
+                                <label class="form-check-label" for="event_review_result_incorrect">Incorrect &mdash; needs correction</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row" id="event_review_incorrect_section" style="display: none; flex: 1; margin-top: 10px;">
+                        <div class="col-md-4" style="display: flex; flex-direction: column;">
+                            <p class="mb-1">Correct disposition:</p>
+                            {% for disposition in dispositions %}
+                                <div class="form-check">
+                                    <input type="radio" class="form-check-input" id="event_corrected_option_{{disposition}}" name="corrected_disposition" value="{{disposition}}" autocomplete="off" />
+                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="event_corrected_option_{{disposition}}">
+                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    </label>
+                                </div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-8" style="display: flex; flex-direction: column;">
+                            <p class="mb-1">Review comment (required):</p>
+                            <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                    <button type="button" class="btn btn-outline-primary" id="btn-event-bulk-submit-review">Save</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>

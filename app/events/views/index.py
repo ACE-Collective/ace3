@@ -5,6 +5,7 @@ from app.events.views.session import get_current_event
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
 from saq.database.model import Comment
+from saq.disposition import get_dispositions
 from saq.remediation.coverage import get_remediation_coverage
 from saq.util.ui import create_histogram_string
 
@@ -64,4 +65,5 @@ def index():
         closed_status=get_config().events.closed_status,
         comments=comments,
         remediation_coverage=remediation_coverage,
+        dispositions=get_dispositions(),
     )
