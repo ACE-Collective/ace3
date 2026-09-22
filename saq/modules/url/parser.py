@@ -94,6 +94,24 @@ class ParseURLAnalysis(Analysis):
 
         return "URL Parser: " + ", ".join(parts)
 
+def parse_url(value: str) -> URL:
+    """Returns the parsed URL, treating a value with no scheme ("yahoo.com", "yahoo.com/login",
+    "yahoo.com:8080/login") as starting at the host rather than at the path."""
+    url = URL(value)
+    if url.split_value.netloc or value.startswith("/"):
+        return url
+
+    # "yahoo.com:8080/login" splits with "yahoo.com" as the scheme; a real scheme has no dot in it
+    if url.split_value.scheme and "." not in url.split_value.scheme:
+        return url
+
+    # a leading "//" is what makes urlsplit read the host as the netloc
+    host_url = URL(f"//{value}")
+    if host_url.is_netloc_ipv4 or host_url.is_netloc_valid_tld:
+        return host_url
+
+    return url
+
 class ParseURLAnalyzer(AnalysisModule):
     """Parse the URL and add the hostname and path as observables."""
 
@@ -107,7 +125,7 @@ class ParseURLAnalyzer(AnalysisModule):
 
     def execute_analysis(self, observable) -> AnalysisExecutionResult:
         try:
-            url = URL(observable.value)
+            url = parse_url(observable.value)
 
             analysis = self.create_analysis(observable)
             assert isinstance(analysis, ParseURLAnalysis)
