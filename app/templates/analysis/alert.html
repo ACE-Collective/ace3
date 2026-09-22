@@ -223,7 +223,10 @@
             <div class="card-header">
                 {# the badge is the same email remediation coverage the alert list's Remediation
                    column shows (saq.remediation.coverage), so the two views always agree #}
-                <h5>Remediation Timeline <small class="text-muted">({{ remediation_timeline_events | length }} event{{ '' if remediation_timeline_events|length == 1 else 's' }})</small> {% include "analysis/_remediation_badge.html" %} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_timeline" aria-expanded="true" aria-controls="collapse_remediation_timeline">(hide/show)</a></h5>
+                {# pending rows (still remediating / still being watched) are not events #}
+                {% set timeline_event_count = remediation_timeline_events | rejectattr('pending') | list | length %}
+                {% set timeline_pending_count = remediation_timeline_events | selectattr('pending') | list | length %}
+                <h5>Remediation Timeline <small class="text-muted">({{ timeline_event_count }} event{{ '' if timeline_event_count == 1 else 's' }}{% if timeline_pending_count %}, {{ timeline_pending_count }} pending{% endif %})</small> {% include "analysis/_remediation_badge.html" %} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_timeline" aria-expanded="true" aria-controls="collapse_remediation_timeline">(hide/show)</a></h5>
             </div>
             <div class="card-body">
                 <div class="card-text collapse show" id="collapse_remediation_timeline">
@@ -242,13 +245,14 @@
                         </thead>
                         <tbody>
                             {% for event in remediation_timeline_events %}
-                            <tr>
+                            <tr{% if event.pending %} class="table-secondary"{% endif %}>
                                 <td>{% if event.event_time %}{{ event.event_time.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</td>
                                 <td>{{ event.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                                <td>{{ event.target or '' }}</td>
+                                {# two emails to one recipient read the same here; the tooltip says which one is outstanding #}
+                                <td{% if event.pending and event.metadata.email_delivery %} title="{{ event.metadata.email_delivery }}"{% endif %}>{{ event.target or '' }}</td>
                                 <td>{{ event.duration_display or '' }}</td>
                                 <td>{{ event.source[:1]|upper }}{{ event.source[1:] }}</td>
-                                <td>{{ event.description }}</td>
+                                <td>{% if event.pending %}<span class="badge text-bg-secondary">pending</span> {% endif %}{{ event.description }}</td>
                                 <td>{% if event.portal_url %}<a href="{{ event.portal_url }}" target="_blank" rel="noopener">open</a>{% endif %}</td>
                             </tr>
                             {% endfor %}
