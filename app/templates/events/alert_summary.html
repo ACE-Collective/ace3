@@ -7,8 +7,18 @@
             <div class="row mb-2">
                 <div class="col-md-12">
                     <button type="button" id="btn-remove-alerts" class="btn btn-outline-dark btn-sm"><span class="bi bi-x"></span> Remove Alert(s)</button>
+                    {% if has_permission('alert', 'write') %}
+                    <button type="button" id="btn-event-bulk-add-tags" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_bulk_tag_modal"><span class="bi bi-tag"></span> Add Tag(s)</button>
+                    <button type="button" id="btn-event-bulk-remove-tags" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_bulk_tag_remove_modal"><span class="bi bi-tag"></span> Remove Tag(s)</button>
+                    <button type="button" id="btn-event-bulk-add-comment" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_bulk_comment_modal"><span class="bi bi-chat-left-text"></span> Add Comment</button>
+                    <button type="button" id="btn-event-bulk-set-disposition" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_bulk_disposition_modal"><span class="bi bi-clipboard-check"></span> Set Disposition</button>
+                    {% endif %}
+                    {% if has_permission('alert', 'review') %}
+                    <button type="button" id="btn-event-bulk-review-disposition" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_bulk_review_modal"><span class="bi bi-check2-square"></span> Review Disposition</button>
+                    {% endif %}
                 </div>
             </div>
+            {% include "events/bulk_action_modals.html" %}
             <div class="row">
                 <div class="col-md-12">
                     {% include "events/event_alerts.html" %}

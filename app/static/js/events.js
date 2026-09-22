@@ -324,3 +324,112 @@ $(document).ready(function() {
         }
     });
 });
+
+function get_all_checked_alert_uuids() {
+    // returns the uuids of all checked alerts on the event page
+    var result = Array();
+    $("input[name^='detail_']").each(function() {
+        var $this = $(this);
+        if ($this.is(":checked")) {
+            var alert_uuid = $this.attr('data-alert-uuid');
+            if (alert_uuid) {
+                result.push(alert_uuid);
+            }
+        }
+    });
+    return result;
+}
+
+function get_all_checked_alert_dispositions() {
+    // returns the current disposition of all checked alerts on the event page
+    var result = Array();
+    $("input[name^='detail_']").each(function() {
+        var $this = $(this);
+        if ($this.is(":checked")) {
+            result.push($this.attr('data-alert-disposition'));
+        }
+    });
+    return result;
+}
+
+function toggle_event_review_incorrect(show) {
+    if (show) {
+        $("#event_review_incorrect_section").show();
+    } else {
+        $("#event_review_incorrect_section").hide();
+    }
+}
+
+$(document).ready(function() {
+    // injects the selected alert uuids into the given form; returns false when nothing is selected
+    function inject_selected_alert_uuids(form_selector) {
+        var uuids = get_all_checked_alert_uuids();
+        if (uuids.length == 0) {
+            alert("You must select one or more alerts.");
+            return false;
+        }
+        var form = $(form_selector);
+        form.find("input[name='alert_uuids']").remove();
+        form.append('<input type="hidden" name="alert_uuids" value="' + uuids.join(",") + '" />');
+        return true;
+    }
+
+    // select-all checkbox in the alerts table header
+    $("#event_alerts_master_checkbox").click(function() {
+        $("input[name^='detail_']").prop('checked', $(this).prop('checked'));
+    });
+
+    $("#btn-event-bulk-submit-tags").click(function() {
+        if (inject_selected_alert_uuids("#event-bulk-tag-form")) {
+            $("#event-bulk-tag-form").submit();
+        }
+    });
+
+    $("#btn-event-bulk-submit-tags-remove").click(function() {
+        if (inject_selected_alert_uuids("#event-bulk-tag-remove-form")) {
+            $("#event-bulk-tag-remove-form").submit();
+        }
+    });
+
+    $("#btn-event-bulk-submit-comment").click(function() {
+        if (inject_selected_alert_uuids("#event-bulk-comment-form")) {
+            $("#event-bulk-comment-form").submit();
+        }
+    });
+
+    $("#btn-event-bulk-disposition").click(function() {
+        if (inject_selected_alert_uuids("#event-bulk-disposition-form")) {
+            $("#event-bulk-disposition-form").submit();
+        }
+    });
+
+    // pre-select the shared disposition when every selected alert already has the same one
+    $('#event_bulk_disposition_modal').on('shown.bs.modal', function() {
+        var dispositions = get_all_checked_alert_dispositions();
+        $("#event-bulk-disposition-form input[name='disposition']").prop('checked', false);
+        var allEqual = dispositions.length > 0 && dispositions.every(function(v) { return v === dispositions[0]; });
+        if (allEqual && dispositions[0]) {
+            $("#event_option_" + dispositions[0]).prop('checked', true);
+        }
+    });
+
+    $("#btn-event-bulk-submit-review").click(function() {
+        var uuids = get_all_checked_alert_uuids();
+        if (uuids.length == 0) {
+            alert("You must select one or more alerts to review.");
+            return;
+        }
+        if ($("#event-bulk-review-form input[name='review_result']:checked").val() == "INCORRECT") {
+            if (!$("#event-bulk-review-form input[name='corrected_disposition']:checked").val()) {
+                alert("You must select the correct disposition.");
+                return;
+            }
+            if (!$("#event-bulk-review-form textarea[name='comment']").val().trim()) {
+                alert("A review comment is required when marking a disposition incorrect.");
+                return;
+            }
+        }
+        inject_selected_alert_uuids("#event-bulk-review-form");
+        $("#event-bulk-review-form").submit();
+    });
+});

@@ -1,7 +1,7 @@
 <table class="table table-bordered table-condensed">
     <tr>
         <th></th>
-        <th></th>
+        <th class="event-cell"><label><input type="checkbox" id="event_alerts_master_checkbox" title="Select all alerts"></input></label></th>
         <th><span>Date</span></th>
         <th><span>(Priority) Alert</span></th>
         <th><span>Owner</span></th>
@@ -11,7 +11,7 @@
     {% for alert in alerts %}
     <tr>
         <td>{% include "analysis/_observable_expand_button.html" %}</td>
-        <td class="event-cell"><label><input type="checkbox" name="detail_{{event.id}}_{{alert.id}}"></input></label></td>
+        <td class="event-cell"><label><input type="checkbox" name="detail_{{event.id}}_{{alert.id}}" data-alert-uuid="{{alert.uuid}}" data-alert-disposition="{{ alert.disposition if alert.disposition else '' }}"></input></label></td>
         <td style="white-space: nowrap;">{{alert.insert_date}}</td>
         <td>
             <a target="_blank" href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.priority}}) {{alert.description}}</a>
