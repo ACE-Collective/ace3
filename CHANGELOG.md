@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.115] - 2026-09-22
+
+- [Email conversation analysis enhancements](https://github.com/ACE-Collective/ace3/pull/583)
+- [addressed minor issue in pr #581](https://github.com/ACE-Collective/ace3/pull/582)
+- [Add bulk alert operations to the event page](https://github.com/ACE-Collective/ace3/pull/581)
+
 ## [3.0.114] - 2026-09-22
 
 - [Isolate the test suite's redis with fakeredis](https://github.com/ACE-Collective/ace3/pull/579)
