@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.114] - 2026-09-22
+
+- [Isolate the test suite's redis with fakeredis](https://github.com/ACE-Collective/ace3/pull/579)
+- [Makes email convo analysis configurable](https://github.com/ACE-Collective/ace3/pull/578)
+- [Properly parse url observables without a scheme](https://github.com/ACE-Collective/ace3/pull/577)
+- [Fixes some N+1 queries on Event page](https://github.com/ACE-Collective/ace3/pull/576)
+- [Add active/expired observable detection admin filter](https://github.com/ACE-Collective/ace3/pull/575)
+- [Show pending rows in Remediation Timeline](https://github.com/ACE-Collective/ace3/pull/574)
+- [Fixes for Jump to Analysis](https://github.com/ACE-Collective/ace3/pull/573)
+- [Fixes for reset and analyze CLI commands](https://github.com/ACE-Collective/ace3/pull/572)
+- [Removes Ignore button](https://github.com/ACE-Collective/ace3/pull/571)
+
 ## [3.0.113] - 2026-09-19
 
 - [Upgrade image to .NET 10 for de4dotEx 3.10.0 and ilspycmd 11](https://github.com/ACE-Collective/ace3/pull/568)
