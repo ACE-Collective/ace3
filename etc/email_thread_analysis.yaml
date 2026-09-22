@@ -1,0 +1,37 @@
+# Email thread analysis settings
+# ==============================
+# Analyst-editable settings for the email_thread_analyzer module (the "Email conversation"
+# panel and the Email Thread Analysis timeline).
+#
+# This is the committed DEFAULT and ships empty. Deployments point the module's `config_path`
+# (see analysis_module_email_thread_analyzer in saq config) at their own copy of this file,
+# which ACE live-reloads (watch_file) without a production release.
+#
+# A file that fails to parse or validate (including an unknown key) is rejected as a whole and
+# the settings already in effect stay in place; the error is logged.
+#
+# ignored_domain_pairs
+# --------------------
+# Pairs of domains that are known to be related - two domains run by one organization, a parent
+# and a subsidiary, a rebrand - and should never be reported as look-a-likes of each other.
+#
+#   - Each entry is exactly two domains. Order does not matter.
+#   - Matching is on the registrable domain, so [example.com, example-group.com] also covers
+#     mail.example.com and eu.example-group.com.
+#   - Only that pair is ignored. Either domain is still compared against every other domain in
+#     the conversation, so a real look-a-like of one of them is still reported.
+#   - An ignored pair is dropped entirely: no entry in the "Email conversation" panel and no
+#     highlighting in the timeline. This is display only and does not change what any hunt
+#     alerts on.
+#
+#   - Unconditional, like any exclusion: nothing is re-checked, so if one side of an ignored pair
+#     is later compromised the panel will still say nothing about it. List only pairs whose
+#     relationship is established, not pairs that merely looked benign in one alert.
+#
+# Example:
+#
+#   ignored_domain_pairs:
+#     - [example.com, example-group.com]
+#     - [example.org, exampleorg.net]
+
+ignored_domain_pairs: []

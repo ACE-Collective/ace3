@@ -1479,6 +1479,13 @@ analysis_module_email_thread_analyzer:
   max_threads: 50
   # maximum recipients listed per timeline row before the rest are summarized as "+N more"
   max_recipients_displayed: 8
+  # analyst-editable settings file; path is relative to SAQ_HOME and watched for live reload.
+  # deployments point this at their analyst_data copy (e.g. signatures/analyst_data/email_thread_analysis.yaml);
+  # blank disables it. the file lists domain pairs that are never reported as look-a-likes of each other:
+  #
+  #   ignored_domain_pairs:
+  #     - [example.com, example-group.com]
+  config_path: etc/email_thread_analysis.yaml
 
 analysis_module_url_email_pivot_analyzer:
   name: url_email_pivot_analyzer
