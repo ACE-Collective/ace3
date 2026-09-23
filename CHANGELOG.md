@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.116] - 2026-09-23
+
+- [Search alerts by detection point (signature uuid[:version])](https://github.com/ACE-Collective/ace3/pull/588)
+- [Limit observable disposition history to the default queue](https://github.com/ACE-Collective/ace3/pull/587)
+- [Fixes snake game on manage alerts page](https://github.com/ACE-Collective/ace3/pull/586)
+- [Adds ability for temporary filters to overlay](https://github.com/ACE-Collective/ace3/pull/585)
+
 ## [3.0.115] - 2026-09-22
 
 - [Email conversation analysis enhancements](https://github.com/ACE-Collective/ace3/pull/583)
