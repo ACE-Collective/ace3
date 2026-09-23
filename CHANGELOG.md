@@ -7,6 +7,8 @@ and this project (tries to) adheres to [Semantic Versioning](https://semver.org/
 
 ## [3.0.116] - 2026-09-23
 
+- [Index timeout crash reports via a deferred index spool](https://github.com/ACE-Collective/ace3/pull/591)
+- [Adds several bulk alert action safeguards](https://github.com/ACE-Collective/ace3/pull/590)
 - [Search alerts by detection point (signature uuid[:version])](https://github.com/ACE-Collective/ace3/pull/588)
 - [Limit observable disposition history to the default queue](https://github.com/ACE-Collective/ace3/pull/587)
 - [Fixes snake game on manage alerts page](https://github.com/ACE-Collective/ace3/pull/586)
