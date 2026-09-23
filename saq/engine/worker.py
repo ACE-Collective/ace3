@@ -13,7 +13,13 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, LockManagerType, WorkloadManagerType
-from saq.crash_report import CRASH_TYPE_KILLED, record_module_crash
+from saq.crash_report import (
+    CRASH_TYPE_KILLED,
+    CRASH_TYPE_TIMEOUT,
+    CrashReportMetadata,
+    drain_index_spool,
+    record_module_crash,
+)
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import get_lock_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -460,9 +466,17 @@ class Worker:
             logging.info("single shot mode - shutting down after completing work")
             self._controlled_shutdown.value = True
 
+        # index the crash reports that were written without a database row -- above all the
+        # timeout report the in-process watchdog writes just before os._exit(1), which is the
+        # only one carrying the stuck thread's stack. the watchdog cannot touch the database, and
+        # its exit is exactly what gets this replacement worker started, so this is the first
+        # healthy process to come along. drained *before* the killed report is recorded below, so
+        # that report can name the timeout report it is the other half of
+        indexed_crashes = drain_index_spool()
+
         # if we are replacing a worker that died mid-module, the manager handed us the
         # record of what it was doing so we can record the failure against that root
-        self._handle_failed_analysis(pending_failure)
+        self._handle_failed_analysis(pending_failure, indexed_crashes)
 
         while True:
             # is this worker shutting down?
@@ -669,13 +683,21 @@ class Worker:
         )
         return True
 
-    def _handle_failed_analysis(self, record: Optional[TrackingRecord]):
+    def _handle_failed_analysis(
+        self,
+        record: Optional[TrackingRecord],
+        indexed_crashes: Optional[list[CrashReportMetadata]] = None,
+    ):
         """Records the module that killed our predecessor so we do not run it again.
 
         Without this the replacement worker picks the same work item back up (its workload
         row was never deleted -- the finally that would have deleted it never ran), runs the
         same module, and dies again. ``record`` is supplied by the manager, which owns the
         tracking state precisely because the process that produced it is gone.
+
+        ``indexed_crashes`` are the spooled reports this worker just indexed. If one of them is
+        the watchdog's timeout report for this same root and module, its id is written into the
+        failure message next to the killed report's, since it is the one with the thread stacks.
         """
         if record is None or not record.has_module:
             return
@@ -724,6 +746,10 @@ class Worker:
             if crash_id:
                 error_message = f"{error_message} (crash_id {crash_id})"
 
+            timeout_crash_id = _find_timeout_crash_id(indexed_crashes, record)
+            if timeout_crash_id:
+                error_message = f"{error_message}; thread stacks in crash_id {timeout_crash_id}"
+
             root.set_analysis_failed(
                 last_analysis_module.module_path,
                 last_analysis_module.observable_type,
@@ -747,3 +773,18 @@ class Worker:
         except Exception as e:
             logging.error(f"unable to mark analysis as failed: {e}")
             report_exception()
+
+
+def _find_timeout_crash_id(
+    indexed_crashes: Optional[list[CrashReportMetadata]], record: TrackingRecord
+) -> Optional[str]:
+    """The id of the watchdog's timeout report for the module this record says died, if any."""
+    for metadata in reversed(indexed_crashes or []):
+        if (
+            metadata.crash_type == CRASH_TYPE_TIMEOUT
+            and metadata.root_uuid == record.root_uuid
+            and metadata.module_path == record.module_path
+        ):
+            return metadata.crash_id
+
+    return None

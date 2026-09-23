@@ -146,9 +146,10 @@ class AnalysisModuleMonitor:
                 # reach os._exit(1), and an unwell database is a plausible reason for a module to
                 # be stuck in the first place -- a blocking insert would turn the watchdog into a
                 # second hung thing, and os._exit() annihilates the daemon thread replication runs
-                # on, so starting one here would be a coin flip. Neither loses the report: it stays
-                # retrievable by id through the glob fallback in find_crash_report_dir(), and
-                # `ace crash sync` replicates it to shared storage afterwards.
+                # on, so starting one here would be a coin flip. Neither loses the report: it is
+                # spooled for indexing (a local file create), and the replacement worker this exit
+                # triggers indexes it on startup (drain_index_spool), so it shows up in the crash
+                # listing within seconds; `ace crash sync` replicates it to shared storage afterwards.
                 try:
                     record_module_crash(
                         crash_type=CRASH_TYPE_TIMEOUT,

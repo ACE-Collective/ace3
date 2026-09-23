@@ -18,6 +18,8 @@ Three kinds of crash are recorded, from three different places:
     The module blew through ``maximum_analysis_time`` and the in-process watchdog is about to
     ``os._exit(1)``. This is the only report written *from inside the stuck process*, so it is
     the only one that can say where the module was actually blocked -- see ``thread_stacks.txt``.
+    It is not indexed inline (see ``record_module_crash``); it is spooled, and the replacement
+    worker indexes it moments later -- see ``drain_index_spool``.
 
 ``killed``
     The worker manager SIGKILLed the worker. The dying process wrote nothing; the replacement
@@ -74,6 +76,12 @@ STACK_TRACE_FILE = "stack_trace.txt"
 THREAD_STACKS_FILE = "thread_stacks.txt"
 ROOT_JSON_FILE = "root.json"
 FILE_DIR = "file"
+
+# the spool of reports that are on disk but not yet in the database index, one empty file per
+# crash id. it lives under the crash report root but outside every report directory, so it never
+# shows up in a report's file inventory or archive and never touches the report mtime that
+# `ace crash prune` ages reports by
+INDEX_PENDING_DIR = "index_pending"
 
 # the serialized RootAnalysis inside a storage directory
 ROOT_DATA_FILE = "data.json"
@@ -252,6 +260,11 @@ def get_crash_report_dir(crash_id: str, when: Optional[datetime] = None) -> str:
         when.strftime("%d"),
         crash_id,
     )
+
+
+def get_index_pending_dir() -> str:
+    """The spool of crash ids whose reports still need a database index row."""
+    return os.path.join(get_crash_report_root_dir(), INDEX_PENDING_DIR)
 
 
 def find_crash_report_dir(crash_id: str, report_dir: Optional[str] = None) -> Optional[str]:
@@ -483,12 +496,14 @@ def record_module_crash(
     process from exiting, is worse than no crash report; every failure below is logged and
     swallowed.
 
-    ``index=False`` skips the database row and ``replicate=False`` skips the copy to shared
+    ``index=False`` skips the database write and ``replicate=False`` skips the copy to shared
     storage. Both are used by the in-process watchdog, which is running inside a process whose
     main thread is already wedged and which must reach ``os._exit(1)`` promptly: the database
     write could block, and ``os._exit()`` annihilates the daemon thread replication would use.
-    Neither loses the report -- the glob fallback in ``find_crash_report_dir()`` keeps it
-    retrievable locally, and ``ace crash sync`` replicates it later.
+    Neither loses the report. Instead of the row, an unindexed report gets an entry in the local
+    index spool -- a file create, the same kind of work as writing the report itself -- and a
+    healthy process indexes it later (``drain_index_spool``; the replacement worker does it
+    within seconds). ``ace crash sync`` replicates it later.
     """
     try:
         config = get_crash_reporting_config()
@@ -566,8 +581,11 @@ def record_module_crash(
         except Exception as e:
             logging.debug("unable to emit crash monitor: %s", e)
 
-        if index:
-            _index_crash_report(metadata, _relative_report_dir(crash_dir))
+        # the spool entry is written after metadata.json, so a spooled id always names a
+        # complete report. a failed inline insert is spooled too, so a row lost to an unwell
+        # database is retried rather than lost
+        if not index or not _index_crash_report(metadata, _relative_report_dir(crash_dir)):
+            _spool_for_index(crash_id)
 
         if replicate:
             _replicate_crash_report(crash_dir, crash_id)
@@ -662,21 +680,33 @@ def _copy_file_observable(root, observable, observable_type, observable_value,
         metadata.file_sha256 = _sha256_of(source)
 
 
-def _index_crash_report(metadata: CrashReportMetadata, report_dir: str):
-    """Insert the database index row. Best effort, by design.
+def _index_crash_report(metadata: CrashReportMetadata, report_dir: str,
+                        insert_date: Optional[datetime] = None) -> bool:
+    """Insert the database index row. Best effort, by design. Returns True if the row exists.
 
     The filesystem is authoritative. A crash is exactly when the database is most likely to be
     unwell -- pool exhaustion and deadlocks are among the things that get reported here -- so a
     failure to index must not lose the report. ``find_crash_report_dir()`` globs when there is
-    no row, which means the worst case of this failing is a report that cannot be *listed*, not
-    one that cannot be *fetched*.
+    no row, and the caller spools a report whose insert failed, so the worst case of this
+    failing is a report that cannot be *listed* until the spool is drained.
+
+    Idempotent: a row that already exists counts as success, because the spool can be drained
+    by more than one process at once. ``insert_date`` is passed when indexing after the fact,
+    so the listing (newest first) orders a report by when it crashed, not when it was indexed.
     """
     try:
         # imported here rather than at module level: saq.database pulls in SQLAlchemy and the
         # connection pool, and this module is imported by the engine's crash paths and by the
         # API, neither of which should pay that cost to write or read a file
+        from sqlalchemy.exc import IntegrityError
+
         from saq.database.model import AnalysisModuleCrash
         from saq.database.pool import get_db
+
+        if get_db().query(AnalysisModuleCrash.id).filter(
+            AnalysisModuleCrash.uuid == metadata.crash_id
+        ).first() is not None:
+            return True
 
         row = AnalysisModuleCrash(
             uuid=metadata.crash_id,
@@ -694,8 +724,17 @@ def _index_crash_report(metadata: CrashReportMetadata, report_dir: str):
             exception_message=metadata.exception_message,
             has_file=metadata.file_name is not None,
         )
+        if insert_date is not None:
+            row.insert_date = insert_date
+
         get_db().add(row)
-        get_db().commit()
+        try:
+            get_db().commit()
+        except IntegrityError:
+            # another drainer inserted it between our check and our commit
+            get_db().rollback()
+
+        return True
     except Exception as e:
         logging.warning("unable to index crash report %s: %s", metadata.crash_id, e)
         try:
@@ -704,6 +743,122 @@ def _index_crash_report(metadata: CrashReportMetadata, report_dir: str):
             get_db().rollback()
         except Exception:
             pass
+
+        return False
+
+
+def _spool_for_index(crash_id: str):
+    """Record that this report still needs an index row. Local disk only; never raises."""
+    try:
+        spool_dir = get_index_pending_dir()
+        os.makedirs(spool_dir, exist_ok=True)
+        _write_atomic(os.path.join(spool_dir, crash_id), "")
+    except Exception as e:
+        logging.warning("unable to spool crash report %s for indexing: %s", crash_id, e)
+
+
+def remove_from_index_spool(crash_id: str):
+    """Drop a crash id from the spool. Missing entries are fine; never raises."""
+    if not is_valid_crash_id(crash_id):
+        return
+
+    try:
+        os.unlink(os.path.join(get_index_pending_dir(), crash_id))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning("unable to remove crash report %s from the index spool: %s", crash_id, e)
+
+
+def _index_existing_report(crash_id: str, crash_dir: str, report: dict) -> Optional[CrashReportMetadata]:
+    """Index a report that is already on disk, stamped with its own crash time."""
+    metadata = CrashReportMetadata.from_dict(report)
+    insert_date = None
+    try:
+        insert_date = datetime.fromisoformat(metadata.timestamp)
+    except Exception:
+        pass
+
+    if not _index_crash_report(metadata, _relative_report_dir(crash_dir), insert_date):
+        return None
+
+    return metadata
+
+
+def index_crash_report(crash_id: str) -> Optional[CrashReportMetadata]:
+    """Index one report that is already on disk, after the fact.
+
+    Returns the metadata that was indexed (or was already indexed), or None if the report is
+    missing, incomplete, or could not be indexed. Never raises.
+    """
+    try:
+        crash_dir = find_crash_report_dir(crash_id)
+        if crash_dir is None:
+            return None
+
+        report = read_crash_report(crash_id)
+        if report is None or not report.get("complete"):
+            return None
+
+        return _index_existing_report(crash_id, crash_dir, report)
+    except Exception as e:
+        logging.warning("unable to index crash report %s: %s", crash_id, e)
+        return None
+
+
+def drain_index_spool(limit: Optional[int] = None) -> list[CrashReportMetadata]:
+    """Index every spooled crash report. Returns the metadata of each one indexed.
+
+    Called by every engine worker as it starts -- which is promptly after a timeout, because the
+    watchdog's ``os._exit(1)`` is what gets a replacement worker started -- and by
+    ``ace crash index`` as the catch-up sweep. Safe to run in several processes at once: the
+    insert is idempotent and a vanished spool entry is someone else's success.
+
+    An entry whose report is gone (pruned) or unreadable is dropped: there is nothing left that
+    could ever be indexed. An entry that fails to *index* stays, and the drain stops there: the
+    database is unwell, and the next drain will try again.
+
+    Never raises.
+    """
+    indexed = []
+    try:
+        spool_dir = get_index_pending_dir()
+        if not os.path.isdir(spool_dir):
+            return indexed
+
+        # oldest first, so a limited drain works through a backlog in crash order
+        entries = []
+        for crash_id in os.listdir(spool_dir):
+            # skips _write_atomic's .tmp siblings and anything else that is not ours
+            if not is_valid_crash_id(crash_id):
+                continue
+            try:
+                entries.append((os.path.getmtime(os.path.join(spool_dir, crash_id)), crash_id))
+            except OSError:
+                continue
+
+        for _, crash_id in sorted(entries):
+            if limit is not None and len(indexed) >= limit:
+                break
+
+            crash_dir = find_crash_report_dir(crash_id)
+            report = read_crash_report(crash_id) if crash_dir is not None else None
+            if report is None or not report.get("complete"):
+                remove_from_index_spool(crash_id)
+                continue
+
+            metadata = _index_existing_report(crash_id, crash_dir, report)
+            if metadata is None:
+                logging.warning("unable to index spooled crash report %s; will retry", crash_id)
+                break
+
+            remove_from_index_spool(crash_id)
+            indexed.append(metadata)
+
+    except Exception as e:
+        logging.warning("unable to drain the crash report index spool: %s", e)
+
+    return indexed
 
 
 def _replicate_crash_report(crash_dir: str, crash_id: str):
