@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.117] - 2026-09-23
+
+- [Add hourly maintenance job and run crash report sweep hourly](https://github.com/ACE-Collective/ace3/pull/594)
+- [upgrade urlfinderlib](https://github.com/ACE-Collective/ace3/pull/593)
+
 ## [3.0.116] - 2026-09-23
 
 - [Index timeout crash reports via a deferred index spool](https://github.com/ACE-Collective/ace3/pull/591)
