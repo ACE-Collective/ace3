@@ -67,9 +67,11 @@ path" below for how that changes.
   fragment markup.
 
 **Signals for client-only UI state.** State that must survive a morph lives in signals,
-not the DOM: checkbox selection is the `$_sel` array signal (each row checkbox has
-`data-bind:_sel` with `value="<uuid>"`, so Datastar re-applies the checked property
-after every morph), and expanded comment blocks are `$_openComments`. Conventions:
+not the DOM: checkbox selection is the `$_sel` signal, the list of checked alert uuids
+(each row checkbox has `value="<uuid>"`, a `data-on:change` that adds or removes that
+uuid, and `data-effect="el.checked = $_sel.includes(el.value)"`, so a row a refresh
+morphs in comes up checked exactly when its uuid is selected), and expanded comment
+blocks are `$_openComments`. Conventions:
 
 - Prefix client-only signals with `_` — underscore-prefixed signals are **not** sent to
   the server with `@get`/`@post` requests.
@@ -100,6 +102,13 @@ server.
   (`data-on:*`), or delegated handlers (`$(document).on('click', '.selector', ...)`).
 - Give a stable `id` to any element whose node identity matters across refreshes
   (checkboxes, cells that JS reads).
+- **Never `data-bind` a list of elements to one array signal** inside a morph region.
+  Datastar v1.0.2 binds the Nth such element to `signal.N`, where N is its position in
+  the document *when it is bound*, and never re-numbers. A row a refresh inserts above
+  existing ones takes a slot an older row already holds, so the two toggle each other
+  (the manage page's selection did exactly this whenever new alerts arrived). Key the
+  state by value instead: `data-on:change` to update the signal and `data-effect` to
+  read it, as the row checkboxes in `_manage_alert_table.html` do.
 - Client-injected nodes that the server response does not contain **get removed by the
   morph** — `data-ignore-morph` does not save them (verified against v1.0.2: it only
   suppresses morphing an element in place, and only when both the old and new element

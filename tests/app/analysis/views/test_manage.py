@@ -144,7 +144,7 @@ def test_manage_refresh_requires_login(app):
 @pytest.mark.integration
 def test_manage_page_wires_datastar(web_client, analyst):
     """The manage page loads the Datastar bundle, declares the signals on the
-    non-morphed wrapper, arms the poll, and binds the row checkboxes to $_sel."""
+    non-morphed wrapper, arms the poll, and ties the row checkboxes to $_sel by uuid."""
     alert = _insert_alert('manage-datastar-1', 'datastar wiring test alert')
 
     with web_client.session_transaction() as sess:
@@ -161,8 +161,11 @@ def test_manage_page_wires_datastar(web_client, analyst):
     assert 'data-poll-seconds="30"' in html
     # $_sel is seeded from session['checked'] so post-bulk-action restores go through the signal
     assert f'data-signals:_sel=\'["{alert.uuid}"]\'' in html
-    # checked state comes from data-bind against the signal, not a server-rendered attribute
-    assert 'data-bind:_sel' in html
+    # checked state comes from the row's uuid being in the signal, not a server-rendered
+    # attribute -- and not data-bind, which ties each checkbox to an array position that a
+    # row inserted by a refresh collides with
+    assert 'data-effect="el.checked = $_sel.includes(el.value)"' in html
+    assert 'data-bind:_sel' not in html
     assert f'value="{alert.uuid}"' in html
     assert f'id="cb_{alert.uuid}"' in html
 
