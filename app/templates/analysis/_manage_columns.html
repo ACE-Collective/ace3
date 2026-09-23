@@ -2,7 +2,11 @@
    in saq/gui/manage_columns.py. _manage_alert_table.html loops over the analyst's visible
    columns and calls these, so adding a column means: a ColumnSpec there, a branch in each
    macro here. Imported `with context` so the macros see the manage page's template
-   context (session, remediation_coverage, dispositions, ...). #}
+   context (session, remediation_coverage, dispositions, ...).
+
+   Clicking a row's tag, queue, owner or disposition narrows the list rather than replacing
+   its filter -- the trailing `true` to apply_temp_filter() overlays it on the filter in
+   effect (overlay_temporary_filter() in app/analysis/views/session/filters.py). #}
 {% from "analysis/_table_macros.html" import sortable_th %}
 
 {% macro column_header(column) -%}
@@ -31,7 +35,7 @@
     {% endif %}
     {% if alert_tags[alert.uuid]|length != 0 %}
         {% for tag in alert_tags[alert.uuid] %}
-            <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name':'Tag','inverted':false,'values':['{{tag.name}}']}], 'Tag: {{tag.name}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')">{{tag.name}}</span>
+            <span class="badge text-bg-{{tag.name | get_tag_css_class}}" style="cursor:pointer" onmousedown="apply_temp_filter([{'name':'Tag','inverted':false,'values':['{{tag.name}}']}], 'Tag: {{tag.name}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}', true)">{{tag.name}}</span>
         {% endfor %}
     {% endif %}
     {% if comments[alert.uuid]|length != 0 %}
@@ -61,15 +65,15 @@
 {% endif %}
 {%- elif column.id == 'queue' -%}
 <td data-col-id="queue">
-    <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Queue","inverted":false,"values":["{{alert.queue}}"]}], "Queue: {{alert.queue}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.queue}}</span>
+    <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Queue","inverted":false,"values":["{{alert.queue}}"]}], "Queue: {{alert.queue}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}", true)'>{{alert.queue}}</span>
 </td>
 {%- elif column.id == 'owner' -%}
 <td data-col-id="owner">
-    <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Owner","inverted":false,"values":["{{alert.owner.gui_display}}"]}], "Owner: {{alert.owner.gui_display}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.owner.gui_display}}</span>
+    <span style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Owner","inverted":false,"values":["{{alert.owner.gui_display}}"]}], "Owner: {{alert.owner.gui_display}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}", true)'>{{alert.owner.gui_display}}</span>
 </td>
 {%- elif column.id == 'disposition' -%}
 <td data-col-id="disposition">
-    <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}")'>{{alert.disposition}}</span>
+    <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}", true)'>{{alert.disposition}}</span>
 </td>
 {%- elif column.id == 'status' -%}
 <td data-col-id="status" style="white-space: nowrap;">{{alert.status}}</td>

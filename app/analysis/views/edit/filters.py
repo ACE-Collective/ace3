@@ -12,6 +12,7 @@ from app.analysis.views.session.filters import (
     get_existing_filter,
     getFilters,
     is_temporary_filter_active,
+    overlay_temporary_filter,
     reset_checked_alerts,
     reset_pagination,
     reset_sort_filter,
@@ -153,7 +154,8 @@ def select_filter(filter_uuid):
 @analysis.route('/apply_temp_filter', methods=['POST'])
 @require_permission('alert', 'read')
 def apply_temp_filter():
-    """Apply a filter WITHOUT touching the analyst's persistent selection."""
+    """Apply a filter WITHOUT touching the analyst's persistent selection. With overlay=on
+    it is laid over the filter in effect instead of replacing it."""
 
     reset_pagination()
     reset_checked_alerts()
@@ -163,7 +165,12 @@ def apply_temp_filter():
     except (ValidationError, ValueError) as e:
         return (f"That filter is not valid: {e}", 400)
 
-    apply_temporary_filter(filters, request.form.get('label') or "Modified filter")
+    label = request.form.get('label') or "Modified filter"
+    if request.form.get('overlay') == 'on':
+        overlay_temporary_filter(filters, label)
+    else:
+        apply_temporary_filter(filters, label)
+
     return ('', 204)
 
 
