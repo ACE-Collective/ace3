@@ -28,7 +28,7 @@
                 <span>Search</span>
             </button>
             <input type="text" class="form-control me-2" id="alert-search"
-                   placeholder="Search alerts: free text, or a term like tag:phish, ipv4:1.2.3.4, signature_id:..., uuid:..., queue:default"
+                   placeholder="Search alerts: free text, or a term like tag:phish, ipv4:1.2.3.4, signature_id:..., detection_point:..., uuid:..., queue:default"
                    title="Free text is matched semantically. Name a thing exactly with a term: tag:phish, uuid:&lt;alert uuid&gt;, &lt;observable type&gt;:&lt;value&gt; (ipv4:1.2.3.4), observable:&lt;type&gt;:&lt;value&gt; when the value has colons in it, or a filter such as queue:default, disposition:DELIVERY, alert_date:-7d. Prefix with - to invert, quote a value with spaces, separate ORed values with commas."
                    data-search-url="{{ url_for('analysis.search') }}" data-manage-url="{{ url_for('analysis.manage') }}"
                    {% if search_query %}value="{{ search_query | e }}"{% endif %}

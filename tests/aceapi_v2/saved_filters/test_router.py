@@ -152,6 +152,21 @@ class TestCrud:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["not-a-uuid", "6f3a1b2c-1111-2222-3333-444455556666:"])
+    async def test_rejects_bad_detection_point_value_at_write_time(self, client: AsyncClient, value):
+        response = await client.post(f"{BASE}/", json={
+            "name": "Bad Detection Point",
+            "filters": [{"name": "Detection Point", "values": [value]}]})
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_accepts_detection_point_value(self, client: AsyncClient):
+        created = await _create(
+            client, "Detection Point", filters=[{"name": "Detection Point", "inverted": False,
+                                                 "values": ["6F3A1B2C-1111-2222-3333-444455556666:v1"]}])
+        assert created["filters"][0]["values"] == ["6f3a1b2c-1111-2222-3333-444455556666:v1"]
+
+    @pytest.mark.asyncio
     async def test_accepts_relative_date_token(self, client: AsyncClient):
         created = await _create(
             client, "Relative", filters=[{"name": "Alert Date", "inverted": False, "values": ["-24h@h"]}])

@@ -106,6 +106,7 @@ queue:default                    a narrowing filter
 disposition:DELIVERY,IGNORE      one term, values ORed
 alert_date:-7d                   a relative window (saq/util/relative_time.py)
 owner:jdoe  description:invoice  the rest of the manage-page filter vocabulary
+detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (any version, or exactly <v>)
 -tag:whitelisted                 inverted (! works too)
 tag:"vendor mailer"              quoted, for a value containing a space or a comma
 docusign invoice                 free text
@@ -235,6 +236,10 @@ POST /api/v2/search/alerts
 POST /api/v2/search/alerts
 {"filters": {"observables": [{"type": "signature_id", "value": "6f3a…"}]}, "limit": 50}
 
+# every alert with a detection point from a signature -- any version, or one exact version
+POST /api/v2/search/alerts
+{"filters": {"detection_points": ["6f3a…", "9b21…:4e5d6c7"]}, "limit": 50}
+
 POST /api/v2/search/similar
 {"alert_uuid": "…", "limit": 5}
 
@@ -249,8 +254,10 @@ POST /api/v2/search/similar
 `query` is optional; either it or a non-empty `filters` is required (422 otherwise). Filters:
 `insert_date_start/end` (timezone-aware), `alert_types`, `dispositions`, `queues`, `tags`,
 `exclude_alert_uuids`, `observables` (a list of `{type, value}` -- ANDed, so an alert must carry
-all of them, values normalized on the way in and 400 if one is impossible for its type), and
-`filters` (the raw `{name, inverted, values}` entries for the rest of the manage-page
+all of them, values normalized on the way in and 400 if one is impossible for its type),
+`detection_points` (a list of `<signature uuid>[:<signature version>]` -- ORed, matched against
+the `detection_points` table; the split is at the first colon, no version means any version, and
+a malformed value is a 422), and `filters` (the raw `{name, inverted, values}` entries for the rest of the manage-page
 vocabulary, validated against `FILTER_NAMES`). `lanes` selects `semantic` and/or `lexical`;
 `include_hits`. `errors` is non-empty when the query language rejected something, and then
 nothing was searched.
