@@ -97,7 +97,8 @@ guard.
 
 The timeout path additionally passes `index=False`: it must reach `os._exit(1)`, and an unwell
 database is a plausible reason for a module to be stuck in the first place, so a blocking insert
-there would turn the watchdog into a second hung thing.
+there would turn the watchdog into a second hung thing. It spools the report for indexing instead
+(see below), so it still shows up in the listing.
 
 ## The database index
 
@@ -106,6 +107,35 @@ The insert is best effort for the reason above — a module crash is exactly whe
 most likely to be the thing that is unwell — so losing a row costs a *listing*, not a report:
 `find_crash_report_dir()` globs the date partitions when there is no row, and both the detail and
 download endpoints work without one.
+
+### Deferred indexing
+
+A report that is written without a row is not left unlisted. After `metadata.json` is written,
+`record_module_crash()` drops an empty file named by the crash id into
+`<crash_reports>/index_pending/`. It does this when `index=False` (always the case for the timeout
+watchdog) and when the inline insert fails. The file create is local disk only, the same kind of
+work as writing the report, so the watchdog can still reach `os._exit(1)` without blocking.
+
+The spool is drained by `drain_index_spool()`:
+
+- **Every engine worker, as it starts.** The watchdog's exit is what gets a replacement worker
+  started, so a `timeout` report is normally indexed within seconds. The drain runs before the
+  replacement records its `killed` report, and when it finds the `timeout` report for the same
+  root and module, it puts that crash id in the failure message written into the alert's tree
+  (`...; thread stacks in crash_id <id>`). An analyst looking at the alert is then one hop from
+  the stacks.
+- **`ace crash index`** from `bin/daily-maintenance.sh`: the catch-up for a node whose engine is
+  not running. `ace crash index --all` ignores the spool, walks every report on disk and indexes
+  anything with no row. Use it to backfill reports written before the spool existed.
+
+The insert is idempotent, so more than one process can drain the spool at the same time. A
+deferred row's `insert_date` is the crash time, not the indexing time, so the listing's
+newest-first order stays correct. An entry whose report has been pruned is dropped. An entry that
+fails to insert stays in the spool, and the drain stops, because the database is unwell and the
+next drain will retry.
+
+The spool lives outside every report directory, so it never shows up in a report's file inventory
+or archive, and never changes the directory mtime that prune uses to age reports.
 
 ## Multi-node
 
@@ -232,10 +262,11 @@ get the shape of what earlier modules produced, not their full output.
 ## Retention
 
 `ace crash prune` removes reports past `retention_days` **and their index rows together**, so
-a listing never points at a directory that is gone. With replication on it also deletes the
-shared copy, remote first and in lockstep with the local one. It runs from
-`bin/daily-maintenance.sh`. `ace crash list` and `ace crash prune --dry-run` are the
-operator's read-only views.
+a listing never points at a directory that is gone, and drops any index spool entry for them.
+With replication on it also deletes the shared copy, remote first and in lockstep with the local
+one. It runs from `bin/daily-maintenance.sh`, followed by `ace crash index` and then `ace crash
+sync`. `ace crash list`, `ace crash prune --dry-run` and `ace crash index [--all] --dry-run` are
+the operator's read-only views.
 
 ## Error reports
 

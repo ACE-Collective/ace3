@@ -7,7 +7,9 @@ from reaching os._exit(1), is worse than no crash reporter at all.
 
 import json
 import os
+import shutil
 import uuid
+from datetime import datetime
 
 import pytest
 
@@ -22,12 +24,17 @@ from saq.crash_report import (
     ROOT_JSON_FILE,
     STACK_TRACE_FILE,
     THREAD_STACKS_FILE,
+    drain_index_spool,
     find_crash_report_dir,
     get_crash_report_dir,
+    get_index_pending_dir,
+    index_crash_report,
     is_valid_crash_id,
     read_crash_report,
     record_module_crash,
 )
+from saq.database.model import AnalysisModuleCrash
+from saq.database.pool import get_db
 
 
 def _raise(message="boom"):
@@ -725,3 +732,159 @@ def test_replication_rejects_invalid_crash_id(shared_storage, tmp_path):
 
     assert replicate_report(str(tmp_path), "../../etc") is False
     assert fetch_report("not-a-crash-id", str(tmp_path)) is None
+
+
+#
+# deferred indexing: the index spool
+#
+
+
+@pytest.fixture
+def empty_spool():
+    """Start from an empty spool: unit tests elsewhere write unindexed reports and never drain."""
+    shutil.rmtree(get_index_pending_dir(), ignore_errors=True)
+    yield get_index_pending_dir()
+    shutil.rmtree(get_index_pending_dir(), ignore_errors=True)
+
+
+def _spooled():
+    spool_dir = get_index_pending_dir()
+    return set(os.listdir(spool_dir)) if os.path.isdir(spool_dir) else set()
+
+
+def _rows(crash_id):
+    get_db().expire_all()
+    return get_db().query(AnalysisModuleCrash).filter(AnalysisModuleCrash.uuid == crash_id).all()
+
+
+def _timeout_crash(root_analysis):
+    """Exactly what the in-process watchdog does."""
+    root_analysis.save()
+    return record_module_crash(
+        crash_type=CRASH_TYPE_TIMEOUT,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        maximum_analysis_time=15,
+        elapsed_seconds=16.0,
+        include_thread_stacks=True,
+        index=False,
+        replicate=False,
+    )
+
+
+@pytest.mark.integration
+def test_watchdog_report_is_spooled_then_indexed(root_analysis, empty_spool):
+    """The whole point: the timeout report, the only one with thread stacks, reaches the listing."""
+    crash_id = _timeout_crash(root_analysis)
+
+    # the watchdog itself never touches the database
+    assert crash_id in _spooled()
+    assert _rows(crash_id) == []
+
+    indexed = drain_index_spool()
+
+    assert [m.crash_id for m in indexed] == [crash_id]
+    rows = _rows(crash_id)
+    assert len(rows) == 1
+    assert rows[0].crash_type == CRASH_TYPE_TIMEOUT
+    assert rows[0].root_uuid == root_analysis.uuid
+    assert rows[0].module_path == "saq.modules.test:BasicTestAnalysis"
+    assert find_crash_report_dir(crash_id, rows[0].report_dir) is not None
+
+    # dated by when it crashed, not when it was drained, so newest-first listing stays honest
+    crashed_at = datetime.fromisoformat(read_crash_report(crash_id)["timestamp"])
+    assert abs((rows[0].insert_date - crashed_at).total_seconds()) < 2
+
+    assert crash_id not in _spooled()
+
+
+@pytest.mark.integration
+def test_drain_is_idempotent(root_analysis, empty_spool):
+    """Several workers can start at once and all drain the same spool."""
+    crash_id = _timeout_crash(root_analysis)
+
+    # already indexed by someone else, but the spool entry is still here
+    assert index_crash_report(crash_id) is not None
+    assert crash_id in _spooled()
+
+    assert [m.crash_id for m in drain_index_spool()] == [crash_id]
+    assert drain_index_spool() == []
+    assert len(_rows(crash_id)) == 1
+    assert _spooled() == set()
+
+
+@pytest.mark.integration
+def test_drain_keeps_the_entry_when_the_database_is_unwell(root_analysis, empty_spool, monkeypatch):
+    crash_id = _timeout_crash(root_analysis)
+
+    def broken_db():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("saq.database.pool.get_db", broken_db)
+
+    # never raises, and the entry stays for the next drain
+    assert drain_index_spool() == []
+    assert crash_id in _spooled()
+
+    monkeypatch.undo()
+    assert [m.crash_id for m in drain_index_spool()] == [crash_id]
+
+
+@pytest.mark.integration
+def test_failed_inline_insert_is_spooled(root_analysis, empty_spool, monkeypatch):
+    """A row lost to an unwell database at crash time is retried rather than lost."""
+    root_analysis.save()
+
+    def broken_db():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("saq.database.pool.get_db", broken_db)
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        exception=_raise(),
+        replicate=False,
+    )
+    monkeypatch.undo()
+
+    assert crash_id is not None
+    assert crash_id in _spooled()
+
+    drain_index_spool()
+    assert len(_rows(crash_id)) == 1
+
+
+@pytest.mark.integration
+def test_inline_indexed_report_is_not_spooled(root_analysis, empty_spool):
+    root_analysis.save()
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        exception=_raise(),
+        replicate=False,
+    )
+
+    assert len(_rows(crash_id)) == 1
+    assert _spooled() == set()
+
+
+@pytest.mark.unit
+def test_drain_drops_entries_for_reports_that_are_gone(empty_spool):
+    """A pruned report can never be indexed; its entry must not block the spool forever."""
+    os.makedirs(empty_spool, exist_ok=True)
+    gone = str(uuid.uuid4())
+    open(os.path.join(empty_spool, gone), "w").close()
+
+    # and things that are not crash ids (an interrupted atomic write) are left alone
+    open(os.path.join(empty_spool, f"{uuid.uuid4()}.tmp"), "w").close()
+
+    assert drain_index_spool() == []
+    assert gone not in _spooled()
+    assert len(_spooled()) == 1
+
+
+@pytest.mark.unit
+def test_drain_with_no_spool_is_a_noop(empty_spool):
+    assert drain_index_spool() == []

@@ -99,10 +99,92 @@ def cli_prune(args):
 
     if removed and not args.dry_run:
         _delete_rows(removed)
+        # a spool entry for a pruned report would only be dropped by the next drain anyway, but
+        # there is no reason to leave it for one
+        from saq.crash_report import remove_from_index_spool
+        for crash_id in removed:
+            remove_from_index_spool(crash_id)
         _remove_empty_date_dirs(root_dir)
 
     print(f"{'would prune' if args.dry_run else 'pruned'} {len(removed)} crash report(s) older than {days} days")
     return 0
+
+
+def cli_index(args):
+    """Index crash reports that are on this node's disk but not in the database.
+
+    The catch-up half of indexing. The in-process timeout watchdog never writes an index row (it
+    must not block on the database on its way to os._exit(1)), and an inline insert can fail when
+    the database is unwell; both leave the report in the index spool, which every engine worker
+    drains as it starts. This drains it too, for a node whose engine is not running.
+
+    ``--all`` does not trust the spool: it walks every report on disk and indexes whatever has no
+    row. That backfills reports written before the spool existed.
+
+    Runs whether or not replication is on, which is why it is not part of ``sync``.
+    """
+    from saq.crash_report import (
+        drain_index_spool,
+        get_crash_report_root_dir,
+        get_index_pending_dir,
+        index_crash_report,
+        is_valid_crash_id,
+    )
+
+    if not args.all:
+        if args.dry_run:
+            spool_dir = get_index_pending_dir()
+            spooled = sorted(_ for _ in os.listdir(spool_dir) if is_valid_crash_id(_)) if os.path.isdir(spool_dir) else []
+            for crash_id in spooled:
+                print(f"would index {crash_id}")
+            print(f"would index {len(spooled)} spooled crash report(s)")
+            return 0
+
+        indexed = drain_index_spool()
+        print(f"indexed {len(indexed)} spooled crash report(s)")
+        return 0
+
+    root_dir = get_crash_report_root_dir()
+    if not os.path.isdir(root_dir):
+        print("indexed 0 crash report(s)")
+        return 0
+
+    crash_ids = [os.path.basename(crash_dir) for crash_dir, _ in _iter_report_dirs(root_dir)]
+    missing = sorted(set(crash_ids) - _indexed_ids(crash_ids))
+
+    if args.dry_run:
+        for crash_id in missing:
+            print(f"would index {crash_id}")
+        print(f"would index {len(missing)} crash report(s); {len(crash_ids) - len(missing)} already indexed")
+        return 0
+
+    indexed = 0
+    for crash_id in missing:
+        if index_crash_report(crash_id) is not None:
+            indexed += 1
+        else:
+            logging.warning("unable to index crash report %s", crash_id)
+
+    # everything the spool knew about is either indexed now or was not indexable
+    drain_index_spool()
+
+    print(f"indexed {indexed} crash report(s); {len(crash_ids) - len(missing)} already indexed")
+    return 0
+
+
+def _indexed_ids(crash_ids: list[str]) -> set[str]:
+    """Which of these crash ids already have an index row."""
+    from saq.database.model import AnalysisModuleCrash
+    from saq.database.pool import get_db
+
+    result = set()
+    # chunked: a node can hold a month of reports, and an IN list that long is not kind to mysql
+    for start in range(0, len(crash_ids), 1000):
+        chunk = crash_ids[start:start + 1000]
+        rows = get_db().query(AnalysisModuleCrash.uuid).filter(AnalysisModuleCrash.uuid.in_(chunk)).all()
+        result.update(row.uuid for row in rows)
+
+    return result
 
 
 def cli_sync(args):
@@ -164,9 +246,12 @@ def _iter_report_dirs(root_dir: str):
     """Yield (path, mtime) for every YYYY/MM/DD/<crash_id> directory under root_dir.
 
     The fixed depth is what makes this safe: it can only ever match a report directory, never a
-    date level and never the root itself.
+    date level and never the root itself. Only year-named top level directories are walked, so
+    the index spool (saq.crash_report.INDEX_PENDING_DIR) is never mistaken for a date level.
     """
     for year in sorted(os.listdir(root_dir)):
+        if not (len(year) == 4 and year.isdigit()):
+            continue
         year_dir = os.path.join(root_dir, year)
         if not os.path.isdir(year_dir):
             continue
@@ -235,6 +320,20 @@ crash_prune_parser.add_argument(
     help="report what would be removed without removing anything",
 )
 crash_prune_parser.set_defaults(func=cli_prune)
+
+crash_index_parser = crash_sp.add_parser(
+    "index",
+    help="index crash reports on this node that have no database row (catch-up for the timeout watchdog)",
+)
+crash_index_parser.add_argument(
+    "--all", action="store_true", default=False,
+    help="walk every report on disk rather than only the index spool",
+)
+crash_index_parser.add_argument(
+    "--dry-run", action="store_true", default=False,
+    help="report what would be indexed without indexing anything",
+)
+crash_index_parser.set_defaults(func=cli_index)
 
 crash_sync_parser = crash_sp.add_parser(
     "sync",

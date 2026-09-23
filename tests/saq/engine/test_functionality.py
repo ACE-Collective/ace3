@@ -1768,6 +1768,18 @@ def test_crash_report_on_terminated_analysis():
         crash_dir = find_crash_report_dir(timeout_reports[0]['crash_id'])
         assert os.path.exists(os.path.join(crash_dir, THREAD_STACKS_FILE))
 
+        # and it is indexed, even though the watchdog that wrote it never touched the database:
+        # the replacement worker drained the spool on startup. without this the listing shows
+        # only the stackless killed report
+        from saq.database.model import AnalysisModuleCrash
+        from saq.database.pool import get_db
+        get_db().expire_all()
+        indexed_types = {
+            row.crash_type for row in get_db().query(AnalysisModuleCrash).filter(
+                AnalysisModuleCrash.root_uuid == root_uuid).all()
+        }
+        assert indexed_types == {'timeout', 'killed'}
+
     # the killed path is deterministic here: the test above waited for the manager to detect the
     # death and start a replacement, and it is the replacement that writes this report
     killed_reports = [r for r in reports if r['crash_type'] == 'killed']
@@ -1787,6 +1799,10 @@ def test_crash_report_on_terminated_analysis():
     message = root.get_analysis_failed_message(BasicTestAnalysis, observable)
     assert message
     assert killed_reports[0]['crash_id'] in message
+
+    # when the watchdog got its report out first, the alert also leads to the thread stacks
+    if timeout_reports:
+        assert f"thread stacks in crash_id {timeout_reports[0]['crash_id']}" in message
 
 
 @pytest.mark.unit

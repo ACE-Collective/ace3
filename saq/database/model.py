@@ -1415,7 +1415,9 @@ class AnalysisModuleCrash(Base):
     module or node. The insert is best effort (saq/crash_report.py::_index_crash_report) because a
     module crash is exactly when the database is most likely to be the thing that is unwell --
     losing a row costs a listing, not the report, which stays retrievable by id through the glob
-    fallback in find_crash_report_dir().
+    fallback in find_crash_report_dir(). A report written without a row (always the timeout
+    watchdog's, sometimes a failed insert) is spooled and indexed later by the next engine worker
+    or `ace crash index`, with insert_date set to when it crashed rather than when it was indexed.
 
     There is deliberately no foreign key to alerts: a crash is recorded against the RootAnalysis
     that was being analyzed, which very often never becomes an alert at all, and the report must
