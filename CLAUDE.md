@@ -232,7 +232,7 @@ dying process. `analysis_module_crashes` is a derived index; the filesystem is a
 default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
-trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper.
+trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `bin/hourly-maintenance.sh`).
 `report_exception()` and `data/error_reports` are a separate mechanism that still serves every
 other caller.
 

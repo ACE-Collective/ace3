@@ -12,6 +12,11 @@ jobs:
     shell: /bin/bash
     schedule: "0 5 * * *"
     concurrencyPolicy: Forbid
+  - name: hourly maintenance
+    command: /opt/ace/bin/run-cron-job hourly-maintenance /opt/ace/bin/hourly-maintenance.sh
+    shell: /bin/bash
+    schedule: "0 * * * *"
+    concurrencyPolicy: Forbid
   - name: weekly maintenance
     command: /opt/ace/bin/run-cron-job weekly-maintenance /opt/ace/bin/weekly-maintenance.sh
     shell: /bin/bash

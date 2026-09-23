@@ -140,7 +140,7 @@ crash_reporting:
   # copy the root analysis tree (data.json) only -- never the file observables under files/ or hardcopies/
   copy_root_json: true
   max_root_json_size: 33554432
-  # `ace crash prune` (run from bin/daily-maintenance.sh) removes reports older than this
+  # `ace crash prune` (run hourly from bin/hourly-maintenance.sh) removes reports older than this
   retention_days: 30
   # bounds the disk cost of a module that fails on every file in a large tree: after this many
   # reports for the same module on the same root, further ones are suppressed (and the
