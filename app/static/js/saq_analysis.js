@@ -124,6 +124,8 @@ function check_alert_meta() {
 
             if (response_owner_id !== null && response_owner_id !== local_owner_id) {
                 current_alert_owner_id = response_owner_id;
+                current_alert_owner_name = data["owner_name"];
+                current_alert_owner_enabled = true;
                 $("#alert_thief").text(data["owner_name"]);
 
                 if (data["owner_time"]) {
@@ -161,6 +163,27 @@ $(document).ready(function() {
         update_lock_ui(true);
         update_status_display(current_alert_status, true);
     }
+
+    // when another analyst owns the alert, the dialog asks before Save takes it from them
+    $('#disposition_modal').on('show.bs.modal', function() {
+        SelectionGuard.render(document.getElementById("disposition_selection_guard"), [current_alert_description()], {
+            action: "disposition",
+            submit: document.getElementById("btn-disposition"),
+        });
+    });
+
+    // the one-click FP button submits the action bar straight away: ask first when another
+    // analyst owns the alert, and send the confirmation the server needs to take it
+    $("form[data-action-bar]").on("submit", function(e) {
+        const take_owned = confirm_take_from_owner("set its disposition");
+        if (take_owned === null) {
+            e.preventDefault();
+            return;
+        }
+
+        $(this).find("input[name='take_owned']").remove();
+        $(this).append($('<input type="hidden" name="take_owned">').val(take_owned));
+    });
 
     // Triggered when the modal is shown
     $('#disposition_modal').on('shown.bs.modal', function(e) {
@@ -866,11 +889,49 @@ function filter_events_by_observable_and_status(o_type, o_value, event_status) {
     });
 }
 
+// this alert as the selection guard of the bulk actions describes one (see
+// static/js/selection_guard.js)
+function current_alert_description() {
+    return {
+        uuid: current_alert_uuid,
+        queue: current_alert_queue,
+        disposition: current_alert_disposition,
+        owner_id: current_alert_owner_id != null ? Number(current_alert_owner_id) : null,
+        owner_name: current_alert_owner_name,
+        owner_enabled: current_alert_owner_enabled,
+    };
+}
+
+// When another analyst owns this alert, asks whether to take it from them (and then do
+// `and_then`, if given). Returns the take_owned value to send ("" when nobody else owns
+// it), or null when the analyst declined.
+function confirm_take_from_owner(and_then) {
+    const alert_description = current_alert_description();
+    if (!SelectionGuard.owned_by_another(alert_description, current_user_id)) {
+        return "";
+    }
+
+    const question = "This alert is owned by " + alert_description.owner_name + ". Take it from them" + (and_then ? " and " + and_then : "") + "?";
+    if (!confirm(question)) {
+        return null;
+    }
+
+    return alert_description.uuid + ":" + alert_description.owner_id;
+}
+
 // sets the owner of the alert
 function set_owner(alert_uuid) {
+    const take_owned = confirm_take_from_owner();
+    if (take_owned === null) {
+        return;
+    }
+
     (function() {
         const params = new URLSearchParams();
         params.append('alert_uuids', alert_uuid);
+        if (take_owned) {
+            params.append('take_owned', take_owned);
+        }
         fetch('set_owner', { method: 'POST', credentials: 'same-origin', body: params })
         .then(function(resp){
             if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }

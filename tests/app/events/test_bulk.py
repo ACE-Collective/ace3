@@ -10,6 +10,7 @@ from saq.constants import (
     REVIEW_COMMENT_PREFIX,
 )
 from saq.database.model import (
+    Alert,
     Comment,
     Event,
     EventMapping,
@@ -23,6 +24,7 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
+from saq.database.util.user_management import add_user, delete_user
 from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.integration
@@ -177,6 +179,34 @@ def test_bulk_set_disposition_success(web_client):
         Comment.comment == "bulk disposition",
     ).all()
     assert len(comments) == 2
+
+
+def test_bulk_set_disposition_respects_ownership(web_client, analyst):
+    """The event page's bulk disposition goes through the same ownership check: an alert
+    another analyst owns changes only when it is taken."""
+    jane = add_user("jane_owner", "jane_owner@localhost", "Jane", "password")
+    try:
+        left_alone = insert_alert()
+        taken = insert_alert()
+        db = get_db()
+        db.query(Alert).filter(Alert.id.in_([left_alone.id, taken.id])).update({Alert.owner_id: jane.id})
+        db.commit()
+
+        response = web_client.post(url_for("events.bulk_set_disposition"), data={
+            "event_id": EVENT_ID,
+            "alert_uuids": f"{left_alone.uuid},{taken.uuid}",
+            "disposition": DISPOSITION_FALSE_POSITIVE,
+            "take_owned": f"{taken.uuid}:{jane.id}",
+        })
+
+        assert response.status_code == 302
+        db.expire_all()
+        assert db.get(Alert, left_alone.id).disposition != DISPOSITION_FALSE_POSITIVE
+        assert db.get(Alert, left_alone.id).owner_id == jane.id
+        assert db.get(Alert, taken.id).disposition == DISPOSITION_FALSE_POSITIVE
+        assert db.get(Alert, taken.id).owner_id == analyst
+    finally:
+        delete_user("jane_owner")
 
 
 def test_bulk_set_disposition_invalid_rejected(web_client):

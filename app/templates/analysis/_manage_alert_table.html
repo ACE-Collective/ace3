@@ -15,6 +15,19 @@
 <div class="container-fluid">
     <div class="row">
         <div class="col">
+            {# select-all takes the whole page, so a page mixing queues is where one analyst's
+               sweep picks up another's alerts: say so, and offer to select one queue's alerts #}
+            {% set page_queues = alerts | groupby("queue") %}
+            {% if page_queues | length > 1 %}
+            <div id="manage_queue_mix" class="alert alert-warning d-flex flex-wrap align-items-center gap-2 py-2" role="status">
+                <span><span class="bi bi-exclamation-triangle"></span> This page has alerts from {{ page_queues | length }} queues. Select only the alerts in:</span>
+                {% for queue, queue_alerts in page_queues %}
+                <button type="button" class="btn btn-sm btn-outline-dark py-0"
+                        data-uuids='{{ queue_alerts | map(attribute="uuid") | list | tojson }}'
+                        data-on:click="$_sel = JSON.parse(el.dataset.uuids)">{{ queue }} ({{ queue_alerts | length }})</button>
+                {% endfor %}
+            </div>
+            {% endif %}
             {# data-pivot-overlay: a click in an expanded row's observable list narrows this
                list rather than replacing its filter -- see add_observable_filter() in ace.js #}
             <table class="table table-hover table-condensed" data-pivot-overlay>
@@ -39,8 +52,14 @@
                 <tbody>
                     {% for alert in alerts %}
                     {# we can use this ID to modify an alert row. data-status and data-insert-date
-                       feed select_event_name_candidate_from_manage_view() in ace.js #}
-                    <tr id="alert_row_{{alert.uuid}}" data-status="{{ alert.status }}" data-insert-date="{{ alert.insert_date }}">
+                       feed select_event_name_candidate_from_manage_view() in ace.js; the queue,
+                       owner and disposition feed the selection guard of the bulk actions
+                       (selected_alert_descriptions() in manage_alerts.js) #}
+                    <tr id="alert_row_{{alert.uuid}}" data-status="{{ alert.status }}" data-insert-date="{{ alert.insert_date }}"
+                        data-queue="{{ alert.queue }}" data-disposition="{{ alert.disposition or '' }}"
+                        data-owner-id="{{ alert.owner_id if alert.owner_id is not none else '' }}"
+                        data-owner-name="{{ alert.owner.gui_display if alert.owner else '' }}"
+                        data-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}">
                         <td>
                             {% include "analysis/_observable_expand_button.html" %}
                         </td>

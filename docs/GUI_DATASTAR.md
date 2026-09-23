@@ -11,9 +11,9 @@ page (`analysis/manage.html`), whose alert list auto-refreshes in place.
 - Vendored as `app/static/js/datastar-<version>.js` (version in the filename, matching
   the `jquery-3.7.1.min.js` convention) and loaded once from `base.html` as an ES
   module. No CDN at runtime, no npm, no build step.
-- Current version: **v1.0.2**, downloaded from
-  `https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js`
-  (SHA-256 `2837d87acf6ee0ba8e4e63765926c25a98d63883b02f88be194a86b81d3fd24a`).
+- Current version: **v1.0.4**, downloaded from
+  `https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js`
+  (SHA-256 `727844adfc825ee651fb93c544a2a739986f9a21820a94524b35f0cac470cf91`).
 - To upgrade: download the new bundle to a new versioned filename, update the script tag
   in `base.html`, update this file, delete the old bundle, and re-run the manual browser
   checks on every page that uses Datastar attributes.
@@ -103,17 +103,17 @@ server.
 - Give a stable `id` to any element whose node identity matters across refreshes
   (checkboxes, cells that JS reads).
 - **Never `data-bind` a list of elements to one array signal** inside a morph region.
-  Datastar v1.0.2 binds the Nth such element to `signal.N`, where N is its position in
-  the document *when it is bound*, and never re-numbers. A row a refresh inserts above
-  existing ones takes a slot an older row already holds, so the two toggle each other
-  (the manage page's selection did exactly this whenever new alerts arrived). Key the
-  state by value instead: `data-on:change` to update the signal and `data-effect` to
-  read it, as the row checkboxes in `_manage_alert_table.html` do.
+  Datastar (v1.0.2 through v1.0.4) binds the Nth such element to `signal.N`, where N is
+  its position in the document *when it is bound*, and never re-numbers. A row a refresh
+  inserts above existing ones takes a slot an older row already holds, so the two toggle
+  each other (the manage page's selection did exactly this whenever new alerts arrived).
+  Key the state by value instead: `data-on:change` to update the signal and `data-effect`
+  to read it, as the row checkboxes in `_manage_alert_table.html` do.
 - Client-injected nodes that the server response does not contain **get removed by the
-  morph** — `data-ignore-morph` does not save them (verified against v1.0.2: it only
-  suppresses morphing an element in place, and only when both the old and new element
-  carry it; it does nothing during child reconciliation). Either avoid injecting into a
-  morph region, or keep the content in a registry and re-inject it from the
+  morph** — `data-ignore-morph` does not save them (checked against the v1.0.4 source:
+  it only suppresses morphing an element in place, and only when both the old and new
+  element carry it; it does nothing during child reconciliation). Either avoid injecting
+  into a morph region, or keep the content in a registry and re-inject it from the
   `datastar-fetch` finished hook — the expanded observable rows do the latter
   (`expanded_alert_observables` in `ace.js` + `restore_alert_observables()` in
   `manage_alerts.js`). Injected content should carry `data-ignore` so Datastar does not

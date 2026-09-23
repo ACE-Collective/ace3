@@ -15,9 +15,18 @@ from saq.constants import (
     DISPOSITION_WEAPONIZATION,
     REVIEW_COMMENT_PREFIX,
 )
-from saq.database.model import Alert, Comment, Observable, ObservableMapping, Workload
+from saq.database.model import Alert, Comment, Observable, ObservableMapping, User, Workload
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, get_alert_by_uuid, set_dispositions, set_disposition_reviews, touch_alerts
+from saq.database.util.alert import (
+    ALERT,
+    AlertOwner,
+    check_alert_ownership,
+    get_alert_by_uuid,
+    set_disposition_reviews,
+    set_dispositions,
+    take_ownership,
+    touch_alerts,
+)
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import get_malicious_dispositions
 from saq.permissions.user import add_user_permission
@@ -51,6 +60,21 @@ def test_ALERT_function():
     db_alert = db.query(Alert).filter(Alert.uuid == root_uuid).first()
     assert db_alert is not None
     assert db_alert.id == alert.id
+
+
+@pytest.mark.integration
+def test_ALERT_with_owner(two_analysts):
+    """An alert can be owned from the moment it is created."""
+    owner, _ = two_analysts
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.save()
+
+    alert = ALERT(root, owner_id=owner.id)
+
+    row = _reload(alert)
+    assert row.owner_id == owner.id
+    assert row.owner_time is not None
 
 
 @pytest.mark.integration
@@ -279,36 +303,192 @@ def test_set_dispositions_non_ignore_adds_workload():
         delete_user("testuser_workload")
 
 
-@pytest.mark.integration
-def test_set_dispositions_preserves_existing_owner():
-    """Test that existing owner is preserved when setting disposition."""
-    original_user = add_user("original_owner", "original@test.com", "Original Owner", "password123")
-    new_user = add_user("new_disposer", "new@test.com", "New Disposer", "password123")
-    add_user_permission(original_user.id, "*", "*")
-    add_user_permission(new_user.id, "*", "*")
+def _set_owner(alert, user_id):
+    db = get_db()
+    alert_obj = db.query(Alert).filter(Alert.id == alert.id).first()
+    alert_obj.owner_id = user_id
+    alert_obj.owner_time = datetime.now()
+    db.commit()
 
-    try:
-        alert = insert_alert()
-        
-        # Set initial owner
-        db = get_db()
-        alert_obj = db.query(Alert).filter(Alert.id == alert.id).first()
-        alert_obj.owner_id = original_user.id
-        alert_obj.owner_time = datetime.utcnow()
-        db.commit()
-        
-        # Set disposition with different user
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, new_user.id)
-        
-        # Verify owner remained the same, but disposer is different
-        alert_obj = db.refresh(alert_obj)
-        alert_obj = db.query(Alert).filter(Alert.id == alert.id).first()
-        assert alert_obj.owner_id == original_user.id  # Should remain original
-        assert alert_obj.disposition_user_id == new_user.id  # Should be new user
-        
-    finally:
-        delete_user("original_owner")
-        delete_user("new_disposer")
+
+def _reload(alert) -> Alert:
+    db = get_db()
+    db.expire_all()
+    return db.query(Alert).filter(Alert.id == alert.id).first()
+
+
+@pytest.fixture
+def two_analysts():
+    """An owner and another analyst who wants to change the owner's alerts."""
+    owner = add_user("original_owner", "original@test.com", "Original Owner", "password123")
+    other = add_user("new_disposer", "new@test.com", "New Disposer", "password123")
+    add_user_permission(owner.id, "*", "*")
+    add_user_permission(other.id, "*", "*")
+
+    yield owner, other
+
+    delete_user("original_owner")
+    delete_user("new_disposer")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("owner,confirmed_takes,expected", [
+    # unowned: anyone may change it
+    (AlertOwner(), {}, "permitted"),
+    # already mine
+    (AlertOwner(user_id=7, name="me"), {}, "permitted"),
+    # someone else's, not confirmed
+    (AlertOwner(user_id=3, name="Jane"), {}, "skipped"),
+    # someone else's, confirmed against the owner who has it
+    (AlertOwner(user_id=3, name="Jane"), {"a": 3}, "reassigned"),
+    # confirmed against an owner who no longer has it
+    (AlertOwner(user_id=3, name="Jane"), {"a": 4}, "skipped"),
+    # a disabled owner has nobody left to protect
+    (AlertOwner(user_id=3, name="Jane", enabled=False), {}, "reassigned"),
+])
+def test_check_alert_ownership(owner, confirmed_takes, expected):
+    result = check_alert_ownership(["a"], {"a": owner}, 7, confirmed_takes)
+
+    assert result.permitted == ([] if expected == "skipped" else ["a"])
+    assert result.reassigned == (["a"] if expected == "reassigned" else [])
+    assert result.skipped == ({"a": "Jane"} if expected == "skipped" else {})
+
+
+@pytest.mark.unit
+def test_check_alert_ownership_drops_unknown_and_duplicate_alerts():
+    owners = {"a": AlertOwner(), "b": AlertOwner()}
+    result = check_alert_ownership(["b", "missing", "a", "b"], owners, 7)
+    assert result.permitted == ["b", "a"]
+
+
+@pytest.mark.integration
+def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
+    """An alert someone else owns is not changed unless it was taken from them."""
+    owner, other = two_analysts
+    owned = insert_alert()
+    _set_owner(owned, owner.id)
+    unowned = insert_alert()
+
+    result = set_dispositions([owned.uuid, unowned.uuid], DISPOSITION_FALSE_POSITIVE, other.id, "sweeping")
+
+    assert result.permitted == [unowned.uuid]
+    assert result.skipped == {owned.uuid: "Original Owner"}
+
+    owned_row = _reload(owned)
+    assert owned_row.disposition != DISPOSITION_FALSE_POSITIVE
+    assert owned_row.owner_id == owner.id
+    # nothing else of the disposition lands on it either
+    db = get_db()
+    assert db.query(Comment).filter(Comment.uuid == owned.uuid).count() == 0
+    assert db.query(Workload).filter(Workload.uuid == owned.uuid).count() == 0
+
+    unowned_row = _reload(unowned)
+    assert unowned_row.disposition == DISPOSITION_FALSE_POSITIVE
+    assert unowned_row.owner_id == other.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_takes_confirmed_alert(two_analysts, caplog):
+    """A confirmed take changes the disposition and makes the taker the owner."""
+    owner, other = two_analysts
+    alert = insert_alert()
+    _set_owner(alert, owner.id)
+
+    with caplog.at_level(logging.INFO):
+        result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, other.id,
+                                  confirmed_takes={alert.uuid: owner.id})
+
+    assert result.permitted == [alert.uuid]
+    assert result.reassigned == [alert.uuid]
+    row = _reload(alert)
+    assert row.disposition == DISPOSITION_FALSE_POSITIVE
+    assert row.disposition_user_id == other.id
+    assert row.owner_id == other.id
+
+    record = _audit_records(caplog, "AUDIT: alert ownership taken")[0]
+    assert record.alert_uuid == alert.uuid
+    assert record.alert_owner == "original_owner"
+    assert record.new_owner == "new_disposer"
+
+
+@pytest.mark.integration
+def test_set_dispositions_ignores_stale_confirmation(two_analysts):
+    """Agreeing to take an alert from one analyst does not take it from whoever has it now."""
+    owner, other = two_analysts
+    alert = insert_alert()
+    _set_owner(alert, owner.id)
+
+    result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, other.id,
+                              confirmed_takes={alert.uuid: owner.id + 1000})
+
+    assert result.skipped == {alert.uuid: "Original Owner"}
+    assert _reload(alert).owner_id == owner.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_takes_alert_owned_by_disabled_account(two_analysts):
+    owner, other = two_analysts
+    alert = insert_alert()
+    _set_owner(alert, owner.id)
+    db = get_db()
+    db.query(User).filter(User.id == owner.id).update({User.enabled: False})
+    db.commit()
+
+    result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, other.id)
+
+    assert result.reassigned == [alert.uuid]
+    row = _reload(alert)
+    assert row.disposition == DISPOSITION_FALSE_POSITIVE
+    assert row.owner_id == other.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_changes_own_alert_without_confirmation(two_analysts):
+    owner, _ = two_analysts
+    alert = insert_alert()
+    _set_owner(alert, owner.id)
+
+    result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, owner.id)
+
+    assert result.permitted == [alert.uuid]
+    assert result.reassigned == []
+    row = _reload(alert)
+    assert row.disposition == DISPOSITION_FALSE_POSITIVE
+    assert row.owner_id == owner.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_protects_another_analysts_disposition(two_analysts):
+    """Dispositioning makes the analyst the owner, so a later sweep by someone else cannot
+    silently overwrite the disposition."""
+    owner, other = two_analysts
+    alert = insert_alert()
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, owner.id)
+
+    result = set_dispositions([alert.uuid], DISPOSITION_IGNORE, other.id)
+
+    assert result.skipped == {alert.uuid: "Original Owner"}
+    assert _reload(alert).disposition == DISPOSITION_FALSE_POSITIVE
+
+
+@pytest.mark.integration
+def test_take_ownership(two_analysts):
+    owner, other = two_analysts
+    owned = insert_alert()
+    _set_owner(owned, owner.id)
+    confirmed = insert_alert()
+    _set_owner(confirmed, owner.id)
+    unowned = insert_alert()
+
+    result = take_ownership([owned.uuid, confirmed.uuid, unowned.uuid], other.id,
+                            confirmed_takes={confirmed.uuid: owner.id})
+
+    assert result.permitted == [confirmed.uuid, unowned.uuid]
+    assert result.reassigned == [confirmed.uuid]
+    assert result.skipped == {owned.uuid: "Original Owner"}
+    assert _reload(owned).owner_id == owner.id
+    assert _reload(confirmed).owner_id == other.id
+    assert _reload(unowned).owner_id == other.id
 
 
 @pytest.mark.integration
