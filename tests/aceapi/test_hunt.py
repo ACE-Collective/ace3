@@ -1,8 +1,12 @@
 import pytest
 from unittest.mock import Mock, patch
 
+from aceapi.auth import create_api_key
 from hunt_compiler.models import CompiledHunt, EmbeddedFile
 from saq.configuration.config import get_config
+from saq.constants import TAG_HUNT_VALIDATION
+from saq.database.util.user_management import add_user, delete_user
+from saq.permissions.user import add_user_permission
 
 
 # Valid hunt YAML content for reuse in tests
@@ -895,6 +899,8 @@ def test_validate_hunt_execution_success_with_analyze_results(test_client, auth_
             mock_new_root.move.assert_called_once_with("/tmp/test-storage")
             mock_new_root.save.assert_called()
             mock_new_root.schedule.assert_called_once()
+            # whatever the validation run submits is marked as such
+            mock_new_root.add_tag.assert_called_once_with(TAG_HUNT_VALIDATION)
 
 
 @pytest.mark.integration
@@ -947,8 +953,58 @@ def test_validate_hunt_execution_success_with_create_alerts(test_client, auth_he
                 assert result.status_code == 200
                 data = result.get_json()
                 assert data["valid"] is True
-                mock_alert.assert_called_once_with(mock_new_root)
+                # a config key belongs to no analyst, so the alert has no owner
+                mock_alert.assert_called_once_with(mock_new_root, owner_id=None)
                 assert mock_new_root.analysis_mode == ANALYSIS_MODE_CORRELATION
+                mock_new_root.add_tag.assert_called_once_with(TAG_HUNT_VALIDATION)
+
+
+@pytest.mark.integration
+def test_validate_hunt_execution_create_alerts_owned_by_key_holder(test_client):
+    """An alert created with an analyst's own API key belongs to that analyst."""
+    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.analysis.root import Submission, RootAnalysis
+
+    user = add_user("hunt_tuner", "hunt_tuner@localhost", "Hunt Tuner", "password")
+    add_user_permission(user.id, "hunt", "write")
+    api_key = create_api_key(user.id, "tuning", inherit=True)
+
+    try:
+        with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+            with patch("aceapi.hunt.storage_dir_from_uuid") as mock_storage_dir:
+                with patch("aceapi.hunt.ALERT") as mock_alert:
+                    mock_storage_dir.return_value = "/tmp/test-storage"
+
+                    mock_new_root = Mock(spec=RootAnalysis)
+                    mock_new_root.json = {"uuid": "new-uuid-456"}
+                    mock_new_root.details = {}
+                    mock_new_root.uuid = "new-uuid-456"
+                    mock_root = Mock(spec=RootAnalysis)
+                    mock_root.duplicate.return_value = mock_new_root
+                    mock_submission = Mock(spec=Submission)
+                    mock_submission.root = mock_root
+
+                    mock_hunt = Mock(spec=QueryHunt)
+                    mock_hunt.execute.return_value = [mock_submission]
+                    mock_manager = Mock()
+                    mock_manager.load_hunt_from_config.return_value = mock_hunt
+                    mock_instance = mock_hunter_service.return_value
+                    mock_instance.hunt_managers = {"test": mock_manager}
+                    mock_instance.load_hunt_managers = Mock()
+
+                    payload = _make_compiled_payload(VALID_HUNT_YAML)
+                    payload["execution_arguments"] = {
+                        "start_time": "01/15/2025:10:00:00",
+                        "end_time": "01/15/2025:12:00:00",
+                        "create_alerts": True,
+                    }
+
+                    result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers={"x-ace-auth": api_key})
+
+                    assert result.status_code == 200
+                    mock_alert.assert_called_once_with(mock_new_root, owner_id=user.id)
+    finally:
+        delete_user("hunt_tuner")
 
 
 @pytest.mark.integration

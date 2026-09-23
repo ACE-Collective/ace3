@@ -1,4 +1,6 @@
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from saq.analysis.root import RootAnalysis
 from saq.constants import (
@@ -59,6 +61,80 @@ def _fetch_disposition_context(c, alert_uuids: list) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class AlertOwner:
+    """Who owns an alert, as the ownership check needs to know it."""
+    user_id: int | None = None
+    name: str | None = None
+    enabled: bool = True
+
+
+@dataclass
+class OwnershipCheck:
+    """Which of the alerts a user asked to change they may change.
+
+    An alert owned by another analyst is changed only when the user confirmed taking it
+    from that analyst. Alerts owned by a disabled account count as unowned."""
+    # the alerts that may be changed, in the order they were asked for
+    permitted: list[str] = field(default_factory=list)
+    # the permitted alerts that change hands: taken from another analyst, or owned by a
+    # disabled account
+    reassigned: list[str] = field(default_factory=list)
+    # alert uuid -> display name of the analyst who owns it, for the alerts left alone
+    skipped: dict[str, str] = field(default_factory=dict)
+
+
+def check_alert_ownership(
+    alert_uuids: list[str],
+    owners: dict[str, AlertOwner],
+    user_id: int,
+    confirmed_takes: dict[str, int] | None = None,
+) -> OwnershipCheck:
+    """Decides which of alert_uuids the user may change (see OwnershipCheck).
+
+    :param owners: the owner of each alert that exists; an alert missing from it is dropped.
+    :param confirmed_takes: alert uuid -> id of the analyst the user agreed to take it from.
+        The confirmation only counts while that analyst still owns the alert, so an alert
+        someone else took in the meantime is left alone rather than taken from them unseen."""
+    confirmed_takes = confirmed_takes or {}
+    result = OwnershipCheck()
+    for alert_uuid in dict.fromkeys(alert_uuids):
+        owner = owners.get(alert_uuid)
+        if owner is None:
+            continue
+
+        if owner.user_id is None or owner.user_id == user_id:
+            result.permitted.append(alert_uuid)
+        elif not owner.enabled or confirmed_takes.get(alert_uuid) == owner.user_id:
+            result.permitted.append(alert_uuid)
+            result.reassigned.append(alert_uuid)
+        else:
+            result.skipped[alert_uuid] = owner.name
+
+    return result
+
+
+def _fetch_alert_owners(c, alert_uuids: list) -> dict[str, AlertOwner]:
+    """Reads the owner of each alert and locks the alert rows until the transaction ends, so
+    ownership cannot change between the check and the UPDATE that relies on it."""
+    if not alert_uuids:
+        return {}
+
+    uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
+    c.execute(f"""
+              SELECT a.uuid, a.owner_id, COALESCE(o.display_name, o.username), o.enabled
+              FROM alerts a
+                  LEFT JOIN users o ON a.owner_id = o.id
+              WHERE a.uuid IN ( {uuid_placeholders} )
+              FOR UPDATE OF a""", tuple(alert_uuids))
+
+    # an owner whose users row is gone has nobody left to protect, the same as a disabled one
+    return {
+        row[0]: AlertOwner(user_id=row[1], name=row[2], enabled=bool(row[3]))
+        for row in c.fetchall()
+    }
+
+
 def _fetch_username(c, user_id: int) -> str | None:
     """Resolve a user id to a username for logging. These helpers receive an id
     rather than a User object, and the id alone is meaningless in a log."""
@@ -81,9 +157,20 @@ def _log_disposition_changes(event: str, context: dict, changed_uuids: list, **f
         logging.info(event, extra={**context[uuid], **fields})
 
 
-def ALERT(root: RootAnalysis) -> Alert:
-    """Converts the given RootAnalysis object to an Alert by inserting it into the database. Returns the (detached) Alert object."""
+def _log_ownership_taken(context: dict, taken_uuids: list, new_owner: str | None):
+    """Emit one audit line per alert taken from another analyst (or from a disabled account).
+    The context's alert_owner is who had it."""
+    for uuid in taken_uuids:
+        logging.info("AUDIT: alert ownership taken", extra={**context[uuid], "new_owner": new_owner})
+
+
+def ALERT(root: RootAnalysis, owner_id: int | None = None) -> Alert:
+    """Converts the given RootAnalysis object to an Alert by inserting it into the database. Returns the (detached) Alert object.
+       :param owner_id: When given, the id of the User who owns the alert from the moment it exists."""
     alert = Alert.create_from_root_analysis(root)
+    if owner_id is not None:
+        alert.owner_id = owner_id
+        alert.owner_time = datetime.now()
     alert.sync()
     return alert
 
@@ -131,20 +218,43 @@ def _submit_search_updates(alert_uuids, reindex: bool) -> None:
     for alert_uuid in alert_uuids:
         submit(alert_uuid)
 
-def set_dispositions(alert_uuids, disposition, user_id, user_comment=None):
+def _reassign_owner(c, alert_uuids: list, user_id: int) -> None:
+    """Makes user_id the owner of the given alerts, inside the caller's transaction."""
+    if not alert_uuids:
+        return
+
+    uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
+    c.execute(f"""UPDATE alerts SET owner_id = %s, owner_time = NOW(), version = %s
+                  WHERE uuid IN ( {uuid_placeholders} )""",
+              [user_id, new_alert_version(), *alert_uuids])
+
+def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
+
+    An alert owned by another analyst is left alone unless the user confirmed taking it, in
+    which case the user becomes its owner (see check_alert_ownership).
+
        :param alert_uuids: A list of UUIDs of Alert objects to set.
        :param disposition: The disposition to set the Alerts.
        :param user_id: The id of the User that is setting the disposition.
-       :param user_comment: Optional comment the User is providing as part of the disposition."""
+       :param user_comment: Optional comment the User is providing as part of the disposition.
+       :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
+       :returns: which alerts were dispositioned and which were left alone."""
 
     with get_db_connection() as db:
         c = db.cursor()
 
+        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), user_id, confirmed_takes)
+        alert_uuids = ownership.permitted
+        if not alert_uuids:
+            return ownership
+
         # capture what the alerts look like before the UPDATE overwrites the
-        # outgoing disposition (and before the owner back-fill below)
+        # outgoing disposition (and before the owner changes below)
         context = _fetch_disposition_context(c, alert_uuids)
         acting_username = _fetch_username(c, user_id)
+
+        _reassign_owner(c, ownership.reassigned, user_id)
 
         # update dispositions
         uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
@@ -207,6 +317,30 @@ WHERE
         disposition_user=acting_username,
         disposition_comment=user_comment,
     )
+    _log_ownership_taken(context, ownership.reassigned, acting_username)
+
+    return ownership
+
+def take_ownership(alert_uuids, user_id, confirmed_takes=None) -> OwnershipCheck:
+    """Makes the user the owner of the given alerts. An alert owned by another analyst is left
+    alone unless the user confirmed taking it (see check_alert_ownership).
+       :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
+       :returns: which alerts were taken and which were left alone."""
+    with get_db_connection() as db:
+        c = db.cursor()
+
+        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), user_id, confirmed_takes)
+        if not ownership.permitted:
+            return ownership
+
+        context = _fetch_disposition_context(c, ownership.reassigned)
+        acting_username = _fetch_username(c, user_id)
+
+        _reassign_owner(c, ownership.permitted, user_id)
+        db.commit()
+
+    _log_ownership_taken(context, ownership.reassigned, acting_username)
+    return ownership
 
 def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None, review_comment=None):
     """Utility function to record a senior analyst's review of the disposition of many Alerts at once.

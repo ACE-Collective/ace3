@@ -776,6 +776,10 @@ TEST_MODE_SINGLE_SUBMISSION = 'single_submission'
 TAG_SPECIAL = "special"
 TAG_HIDDEN = "hidden"
 
+# carried by everything a hunt validation run submits, so the alerts an analyst creates while
+# tuning a hunt can be told apart from (and filtered out of) the alerts the hunt raises in production
+TAG_HUNT_VALIDATION = "hunt_validation"
+
 #
 # env constants
 #

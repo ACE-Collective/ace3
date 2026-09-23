@@ -11,7 +11,12 @@
     {% for alert in alerts %}
     <tr>
         <td>{% include "analysis/_observable_expand_button.html" %}</td>
-        <td class="event-cell"><label><input type="checkbox" name="detail_{{event.id}}_{{alert.id}}" data-alert-uuid="{{alert.uuid}}" data-alert-disposition="{{ alert.disposition if alert.disposition else '' }}"></input></label></td>
+        {# the queue and owner feed the selection guard of the bulk disposition dialog
+           (selected_event_alert_descriptions() in events.js) #}
+        <td class="event-cell"><label><input type="checkbox" name="detail_{{event.id}}_{{alert.id}}" data-alert-uuid="{{alert.uuid}}" data-alert-disposition="{{ alert.disposition if alert.disposition else '' }}"
+            data-alert-queue="{{ alert.queue }}" data-alert-owner-id="{{ alert.owner_id if alert.owner_id is not none else '' }}"
+            data-alert-owner-name="{{ alert.owner.gui_display if alert.owner else '' }}"
+            data-alert-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}"></input></label></td>
         <td style="white-space: nowrap;">{{alert.insert_date}}</td>
         <td>
             <a target="_blank" href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.priority}}) {{alert.description}}</a>

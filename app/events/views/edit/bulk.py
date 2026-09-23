@@ -4,6 +4,7 @@ import uuid as uuidlib
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
 
+from app.alert_ownership import confirmed_takes_from_form, describe_skipped
 from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.constants import (
@@ -162,10 +163,13 @@ def bulk_set_disposition():
         return redirection
 
     try:
-        set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment)
+        ownership = set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment,
+                                     confirmed_takes=confirmed_takes_from_form(request.form))
         comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
-        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(alert_uuids)} to {disposition} {comment_clause}")
-        flash("disposition set for {} alerts".format(len(alert_uuids)))
+        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(ownership.permitted)} to {disposition} {comment_clause}")
+        message = "disposition set for {} alerts".format(len(ownership.permitted))
+        skipped = describe_skipped(ownership)
+        flash(f"{message}; {skipped}" if skipped else message)
     except Exception as e:
         flash("unable to set disposition (review error logs)")
         logging.error("unable to set disposition for {} alerts: {}".format(len(alert_uuids), e))

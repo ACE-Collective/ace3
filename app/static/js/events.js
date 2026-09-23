@@ -352,6 +352,27 @@ function get_all_checked_alert_dispositions() {
     return result;
 }
 
+// the checked alerts as the selection guard of the bulk disposition describes them (see
+// static/js/selection_guard.js), read from the data attributes on their checkboxes
+function selected_event_alert_descriptions() {
+    var result = Array();
+    $("input[name^='detail_']:checked").each(function() {
+        var data = this.dataset;
+        if (!data.alertUuid) {
+            return;
+        }
+        result.push({
+            uuid: data.alertUuid,
+            queue: data.alertQueue || "",
+            disposition: data.alertDisposition || "",
+            owner_id: data.alertOwnerId ? Number(data.alertOwnerId) : null,
+            owner_name: data.alertOwnerName || "",
+            owner_enabled: data.alertOwnerEnabled === "1",
+        });
+    });
+    return result;
+}
+
 function toggle_event_review_incorrect(show) {
     if (show) {
         $("#event_review_incorrect_section").show();
@@ -403,6 +424,19 @@ $(document).ready(function() {
         if (inject_selected_alert_uuids("#event-bulk-disposition-form")) {
             $("#event-bulk-disposition-form").submit();
         }
+    });
+
+    // show what Save will change before the dialog appears
+    $('#event_bulk_disposition_modal').on('show.bs.modal', function() {
+        SelectionGuard.render(document.getElementById("event_disposition_selection_guard"), selected_event_alert_descriptions(), {
+            action: "disposition",
+            submit: document.getElementById("btn-event-bulk-disposition"),
+            on_deselect: function(uuids) {
+                $("input[name^='detail_']").filter(function() {
+                    return uuids.includes(this.dataset.alertUuid);
+                }).prop("checked", false);
+            },
+        });
     });
 
     // pre-select the shared disposition when every selected alert already has the same one

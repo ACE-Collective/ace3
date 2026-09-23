@@ -258,6 +258,16 @@
     // the alert version this page was rendered from; check_alert_meta() compares
     // the polled value against this to detect changes made after the page loaded
     var current_alert_version = {{ alert.version | tojson }};
+    // who owns the alert, kept current by check_alert_meta(); with the queue and disposition,
+    // what the ownership confirmations need (current_alert_description() in saq_analysis.js).
+    // Set here rather than in the alert template because the page can show a sub-analysis
+    // in its place, and the toolbar that needs these is on every view.
+    var current_alert_owner_id = {{ alert.owner_id if alert.owner else "null" }};
+    var current_alert_owner_name = {{ (alert.owner.gui_display if alert.owner else None) | tojson }};
+    var current_alert_owner_enabled = {{ 'true' if alert.owner and alert.owner.enabled else 'false' }};
+    var current_alert_queue = {{ alert.queue | tojson }};
+    var current_alert_disposition = {{ alert.disposition | tojson }};
+    var current_user_id = {{ current_user.id }};
 </script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}

@@ -23,6 +23,50 @@ function get_all_checked_alerts_dispositions() {
     return result;
 }
 
+// the checked alerts as the selection guard of the bulk actions describes them (see
+// static/js/selection_guard.js), read from the data attributes on their rows
+function selected_alert_descriptions() {
+    return get_all_checked_alerts().map(function(uuid) {
+        const row = document.getElementById("alert_row_" + uuid);
+        const data = row ? row.dataset : {};
+        return {
+            uuid: uuid,
+            queue: data.queue || "",
+            disposition: data.disposition || "",
+            owner_id: data.ownerId ? Number(data.ownerId) : null,
+            owner_name: data.ownerName || "",
+            owner_enabled: data.ownerEnabled === "1",
+        };
+    });
+}
+
+// unchecks the given alerts; the selection is the $_sel signal on #manage_page
+function deselect_alerts(uuids) {
+    document.getElementById("manage_page").dispatchEvent(new CustomEvent("ace-deselect", { detail: { uuids: uuids } }));
+}
+
+// takes ownership of the given alerts; take_owned confirms taking the ones other analysts own
+function post_set_owner(alert_uuids, take_owned) {
+    const params = new URLSearchParams();
+    alert_uuids.forEach(function(uuid){ params.append('alert_uuids', uuid); });
+    if (take_owned) {
+        params.append('take_owned', take_owned);
+    }
+    fetch('set_owner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: params,
+        credentials: 'same-origin'
+    })
+    .then(function(resp){
+        if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
+        window.location.replace('/ace/manage');
+    })
+    .catch(function(err){
+        alert(err.message);
+    });
+}
+
 function setup_daterange_pickers() {
     // :not([data-relative]) keeps the picker off inputs in relative mode -- attaching it
     // there would overwrite the analyst's token with a concrete date range.
@@ -171,6 +215,15 @@ $(document).ready(function() {
     // forgotten, which is the very bug this fixes.
     $('#save_filter_modal').on('show.bs.modal', function () {
         document.getElementById('save_filter_form').reset();
+    });
+
+    // show what Save will change before the dialog appears
+    $('#disposition_modal').on('show.bs.modal', function() {
+        SelectionGuard.render(document.getElementById("disposition_selection_guard"), selected_alert_descriptions(), {
+            action: "disposition",
+            submit: document.getElementById("btn-disposition"),
+            on_deselect: deselect_alerts,
+        });
     });
 
     // Triggered when the modal is shown
@@ -581,30 +634,32 @@ $(document).ready(function() {
 
     setup_daterange_pickers();
 
+    // takes the selected alerts straight away, unless some belong to another analyst: then
+    // the dialog asks which of those to take
     $("#btn-take-ownership").click(function(e) {
-        all_alert_uuids = get_all_checked_alerts();
-        if (all_alert_uuids.length == 0) {
-            alert("You must select one or more alerts to disposition.");
+        const selected = selected_alert_descriptions();
+        if (selected.length == 0) {
+            alert("You must select one or more alerts to take ownership of.");
             return;
         }
 
-        (function() {
-            const params = new URLSearchParams();
-            all_alert_uuids.forEach(function(uuid){ params.append('alert_uuids', uuid); });
-            fetch('set_owner', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-                body: params,
-                credentials: 'same-origin'
-            })
-            .then(function(resp){
-                if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-                window.location.replace('/ace/manage');
-            })
-            .catch(function(err){
-                alert(err.message);
-            });
-        })();
+        const guard = document.getElementById("take_ownership_selection_guard");
+        if (!SelectionGuard.needs_confirmation(selected, Number(guard.dataset.currentUserId))) {
+            post_set_owner(selected.map(function(alert) { return alert.uuid; }), "");
+            return;
+        }
+
+        SelectionGuard.render(guard, selected, {
+            action: "take",
+            submit: document.getElementById("btn-take-ownership-confirm"),
+            on_deselect: deselect_alerts,
+        });
+        $("#take_ownership_modal").modal("show");
+    });
+
+    $("#btn-take-ownership-confirm").click(function(e) {
+        const guard = document.getElementById("take_ownership_selection_guard");
+        post_set_owner(get_all_checked_alerts(), SelectionGuard.take_owned(guard));
     });
 
     $("#btn-assign-ownership").click(function(e) {

@@ -8,10 +8,10 @@ from typing import Optional
 
 import pytz
 import yaml
-from flask import request
+from flask import g, request
 from pydantic import BaseModel, ValidationError
 
-from aceapi.auth import api_auth_check
+from aceapi.auth import API_AUTH_TYPE_USER, api_auth_check
 from aceapi.json import json_result
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
@@ -22,12 +22,21 @@ from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
 from saq.configuration import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, TAG_HUNT_VALIDATION
 from saq.error.remote import RemoteApiError
 from saq.database.util.alert import ALERT
 from saq.environment import get_data_dir
 from saq.logging import suppress_external_logging
 from saq.util.uuid import storage_dir_from_uuid
+
+
+def _requesting_user_id() -> Optional[int]:
+    """The ACE user behind this request, or None when it was made with a config API key."""
+    api_auth = g.get("api_auth")
+    if api_auth is not None and api_auth.auth_type == API_AUTH_TYPE_USER:
+        return api_auth.auth_user_id
+
+    return None
 
 
 def get_compiled_hunt_dir() -> str:
@@ -210,12 +219,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
                 new_root = submission.root.duplicate()
                 new_root.move(storage_dir_from_uuid(new_root.uuid))
                 new_root.queue = execution_arguments.queue
+                # whatever this becomes lands in the same lists as the hunt's production alerts
+                new_root.add_tag(TAG_HUNT_VALIDATION)
                 new_root.save()
 
                 # if we received a submission for correlation mode then we go ahead and add it to the database
                 if execution_arguments.create_alerts:
                     new_root.analysis_mode = ANALYSIS_MODE_CORRELATION
-                    ALERT(new_root)
+                    # owned by the analyst running the validation, so a bulk action by someone
+                    # else leaves it alone unless they choose to take it
+                    ALERT(new_root, owner_id=_requesting_user_id())
 
                 new_root.schedule()
                 roots.append(new_root)
