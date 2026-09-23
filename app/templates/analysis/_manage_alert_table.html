@@ -46,10 +46,16 @@
                         </td>
                         <td>
                             <div class="form-check">
-                                {# checked state comes from the $_sel array signal (seeded from
-                                   session['checked']) via data-bind, which re-applies the checked
-                                   property after every morph #}
-                                <input class="form-check-input" type="checkbox" id="cb_{{alert.uuid}}" name="detail_{{alert.uuid}}" disposition="{{ alert.disposition }}" value="{{alert.uuid}}" data-bind:_sel></input>
+                                {# $_sel is the list of checked alert uuids (seeded from session['checked']):
+                                   a click adds or removes this row's uuid, and the effect checks the box
+                                   whenever its uuid is in the list, including a row a refresh morphs in.
+                                   Not data-bind: Datastar binds a checkbox to an array signal by position
+                                   (_sel.0, _sel.1, ...), fixed when the row is inserted, so a row the poll
+                                   adds above the others shares a slot with an older row and ticking one
+                                   unticks the other. #}
+                                <input class="form-check-input" type="checkbox" id="cb_{{alert.uuid}}" name="detail_{{alert.uuid}}" disposition="{{ alert.disposition }}" value="{{alert.uuid}}"
+                                       data-on:change="$_sel = $_sel.filter(uuid => uuid !== el.value).concat(el.checked ? [el.value] : [])"
+                                       data-effect="el.checked = $_sel.includes(el.value)"></input>
                             </div>
                         </td>
                         {% for column in manage_columns %}
