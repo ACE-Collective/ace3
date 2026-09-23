@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pytest
 
-from saq.database.model import Alert, Observable, ObservableMapping
+from saq.database.model import Alert, DetectionPoint, Observable, ObservableMapping
 from saq.database.pool import get_db
 from saq.search.query import filter_listing, search_alerts
 from saq.search.types import SearchFilters, SearchRequest
@@ -134,3 +134,35 @@ class TestSearchAlertsRoutesToTheListing:
         response = search_alerts(SearchRequest(query=f"signature_id:{SIGNATURE_UUID}", limit=10))
         assert set(response.alert_uuids) == {alert.uuid for alert in alerts}
         assert all(result.tier == "exact" for result in response.results)
+
+
+class TestDetectionPointTerm:
+    """`detection_point:<uuid>[:<version>]` is a filter term, so on its own it is a listing."""
+
+    @pytest.fixture
+    def detections(self, corpus):
+        alerts, unrelated = corpus
+        db = get_db()
+        for alert, (signature_uuid, version) in zip(
+                [*alerts, unrelated],
+                [(SIGNATURE_UUID, "v1"), (SIGNATURE_UUID, "v2"), (SIGNATURE_UUID, "v2"), (OTHER_SIGNATURE_UUID, "v1")]):
+            db.add(DetectionPoint(alert_id=alert.id, description="detected", signature_uuid=signature_uuid,
+                                  signature_version=version, content_hash=hashlib.sha256(alert.uuid.encode()).hexdigest()))
+        db.commit()
+        return alerts, unrelated
+
+    def test_any_version(self, detections):
+        alerts, _ = detections
+        response = search_alerts(SearchRequest(query=f"detection_point:{SIGNATURE_UUID}", limit=10))
+        assert response.errors == ()
+        assert response.alert_uuids == [alerts[2].uuid, alerts[1].uuid, alerts[0].uuid]
+        assert all(result.tier is None for result in response.results)
+
+    def test_one_version(self, detections):
+        alerts, _ = detections
+        response = search_alerts(SearchRequest(query=f"detection_point:{SIGNATURE_UUID}:v2", limit=10))
+        assert response.alert_uuids == [alerts[2].uuid, alerts[1].uuid]
+
+    def test_bad_value_searches_nothing(self, detections):
+        response = search_alerts(SearchRequest(query="detection_point:nope", limit=10))
+        assert response.errors and response.results == []

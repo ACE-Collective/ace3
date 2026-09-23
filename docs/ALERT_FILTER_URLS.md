@@ -32,6 +32,7 @@ f = [!] <slug> : <value> [, <value> ...]
 | `disposition` | Disposition | | `queue` | Queue |
 | `disposition_by` | Disposition By | | `reviewed` | Reviewed |
 | `disposition_date` | Disposition Date | | `tag` | Tag |
+| `detection_point` | Detection Point | | | |
 
 ### Escaping
 

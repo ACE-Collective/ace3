@@ -34,7 +34,8 @@ from saq.util.uuid import is_uuid
 def to_filter_list(body: SearchFiltersBody) -> tuple:
     """The filter-list entries this request carries, in the canonical GUI/share-link shape.
 
-    `observables` is sugar for one Observable entry per pair. The values are validated here
+    `observables` is sugar for one Observable entry per pair, and `detection_points` for a
+    single Detection Point entry. The values are validated here
     rather than deep in the query builder so an impossible value is a 400 naming the pair,
     instead of a filter that silently matches nothing.
     """
@@ -48,6 +49,10 @@ def to_filter_list(body: SearchFiltersBody) -> tuple:
 
         # one entry per pair: entries are ANDed, so this means "carries all of these"
         entries.append({"name": "Observable", "inverted": False, "values": [[identity.type, identity.value]]})
+
+    # one entry for the whole list: its values are ORed, "from any of these signatures"
+    if body.detection_points:
+        entries.append({"name": "Detection Point", "inverted": False, "values": list(body.detection_points)})
 
     return tuple(entries)
 

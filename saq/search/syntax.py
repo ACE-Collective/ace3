@@ -9,6 +9,7 @@ by a field term; everything else is free text for the semantic lanes.
     observable:url:https://evil.com  the explicit form, for values containing colons
     uuid:1f2e3d4c-…                  an alert uuid (a prefix of one also works)
     queue:default                    a narrowing filter
+    detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (version)
     disposition:DELIVERY,IGNORE      one term, values ORed
     alert_date:-7d                   a relative window
     -tag:whitelisted                 inverted (! works too)
@@ -42,6 +43,7 @@ from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
 )
+from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES_BY_SLUG
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import RelativeTimeError, parse_date_range
@@ -261,7 +263,17 @@ def _observable_term(pairs: list, inverted: bool, errors: list[str]) -> Optional
 
 def _filter_term(field: str, values: list[str], inverted: bool, errors: list[str]) -> Optional[FieldTerm]:
     name = FILTER_NAMES_BY_SLUG[field]
-    if name in DATE_RANGE_FILTER_NAMES:
+    if name == "Detection Point":
+        kept = []
+        for value in values:
+            try:
+                kept.append(normalize_detection_point_value(value))
+            except ValueError as e:
+                errors.append(f"{field}:{value!r} is not a detection point: {e}")
+
+        values = kept
+
+    elif name in DATE_RANGE_FILTER_NAMES:
         now = datetime.now(pytz.utc)
         kept = []
         for value in values:

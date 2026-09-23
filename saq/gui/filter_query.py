@@ -27,6 +27,7 @@ from sqlalchemy import and_, exists, false, func, not_, or_, distinct
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
     Alert,
+    DetectionPoint,
     DispositionBy,
     Observable,
     ObservableMapping,
@@ -43,6 +44,7 @@ from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
 )
+from saq.gui.detection_point_value import parse_detection_point_value
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import parse_date_range
 
@@ -153,6 +155,41 @@ class AutoTextFilter(SelectFilter):
 class MultiSelectFilter(SelectFilter):
     pass
 
+# signature match, provides text input for "<signature uuid>[:<version>]"
+class DetectionPointFilter(Filter):
+    """Alerts carrying a detection point from a given signature, optionally one version of it.
+
+    Matched against the `detection_points` table, which has `alert_id` directly, so this is an
+    EXISTS over that table (served by `ix_detection_points_signature`) -- see the note in
+    Filter.apply for why EXISTS is the form that inverts correctly.
+    """
+
+    def _condition(self, value: str):
+        try:
+            signature_uuid, signature_version = parse_detection_point_value(value)
+        except ValueError:
+            # a stored filter or pasted share link can carry anything; an impossible value
+            # matches nothing rather than raising on every /manage load
+            return false()
+
+        if signature_version is None:
+            return DetectionPoint.signature_uuid == signature_uuid
+
+        return and_(
+            DetectionPoint.signature_uuid == signature_uuid,
+            DetectionPoint.signature_version == signature_version,
+        )
+
+    def apply(self, query, values):
+        conditions = [self._condition(value) for value in values]
+        subquery = exists().where(
+            and_(
+                DetectionPoint.alert_id == Alert.id,
+                or_(*conditions)
+            )
+        ).correlate(Alert)
+        return query.filter(not_(subquery) if self.inverted else subquery)
+
 # exact match, provides type drop down menu with text input for value
 class TypeValueFilter(SelectFilter):
     """Alerts carrying an observable of a given type and value.
@@ -256,6 +293,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
         'Alert Date': lambda: DateRangeFilter(entity.insert_date, tz=tz, inverted=inverted),
         'Alert Type': lambda: SelectFilter(entity.alert_type, inverted=inverted),
         'Description': lambda: TextFilter(entity.description, inverted=inverted),
+        'Detection Point': lambda: DetectionPointFilter(DetectionPoint.signature_uuid, inverted=inverted),
         'Disposition': lambda: MultiSelectFilter(entity.disposition, nullable=False, options=list(VALID_DISPOSITIONS), inverted=inverted),
         'Disposition By': lambda: SelectFilter(DispositionBy.display_name, nullable=True, inverted=inverted),
         'Disposition Date': lambda: DateRangeFilter(entity.disposition_time, tz=tz, inverted=inverted),

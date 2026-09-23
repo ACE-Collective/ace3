@@ -17,6 +17,7 @@ from saq.gui.filter_query import (
     AutoTextFilter,
     BoolFilter,
     DateRangeFilter,
+    DetectionPointFilter,
     Filter,
     MultiSelectFilter,
     SelectFilter,

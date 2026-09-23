@@ -66,6 +66,27 @@ class TestSearchAlerts:
             {"name": "Observable", "inverted": False, "values": [["signature_id", SIGNATURE_UUID]]},)
 
     @pytest.mark.asyncio
+    async def test_detection_points_filter(self, client: AsyncClient, monkeypatch):
+        """`detection_points` is sugar for ONE Detection Point entry (its values are ORed),
+        with the signature uuid normalized on the way in."""
+        alert = insert_alert()
+        search, _ = _stub_response(monkeypatch, [alert.uuid])
+        response = await client.post("/search/alerts", json={
+            "filters": {"detection_points": [SIGNATURE_UUID.upper(), f"{SIGNATURE_UUID}:abc:123"]}})
+        assert response.status_code == 200, response.text
+        request = search.call_args[0][0]
+        assert request.filters.filter_list == (
+            {"name": "Detection Point", "inverted": False, "values": [SIGNATURE_UUID, f"{SIGNATURE_UUID}:abc:123"]},)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["not-a-uuid", f"{SIGNATURE_UUID}:"])
+    async def test_detection_points_filter_rejects_a_bad_value(self, client: AsyncClient, value):
+        response = await client.post("/search/alerts", json={"filters": {"detection_points": [value]}})
+        assert response.status_code == 422
+        bad_entry = {"filters": {"filters": [{"name": "Detection Point", "values": [value]}]}}
+        assert (await client.post("/search/alerts", json=bad_entry)).status_code == 422
+
+    @pytest.mark.asyncio
     async def test_observable_filter_rejects_an_impossible_value(self, client: AsyncClient):
         response = await client.post("/search/alerts", json={
             "filters": {"observables": [{"type": "ipv4", "value": "not-an-ip"}]}})
