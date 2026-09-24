@@ -217,6 +217,9 @@ service_cron:
   description: ACE Cron Service - runs cron jobs
   enabled: true
   cron_config_path: etc/cron.yaml
+  # the maximum number of etc/cron/{hourly,daily,weekly} tasks (core and integration) that run
+  # at the same time when a cadence fires. defaults to the number of cpus when unset
+  # max_parallel_tasks: 4
 
 # monitor settings
 monitor:

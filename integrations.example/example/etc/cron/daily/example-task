@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# an example daily task: runs once a day alongside the core tasks in etc/cron/daily.
+# see docs/CRON.md
+echo "example integration daily task"

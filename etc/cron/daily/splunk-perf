@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+DATA_DIR=$(ace config -v global.data_dir)
+if [ -z "$DATA_DIR" ] || [ ! -d "$DATA_DIR" ]; then
+    echo "invalid data directory \"$DATA_DIR\""
+    exit 1
+fi
+
+# delete splunk performance data older than 30 days
+if [ -d "$DATA_DIR/splunk_perf" ]; then
+    find "$DATA_DIR/splunk_perf" -maxdepth 1 -mindepth 1 -type f -mtime +30 -delete
+    if [ -d "$DATA_DIR/splunk_perf/logs" ]
+    then
+        find "$DATA_DIR/splunk_perf/logs" -type f -mtime +7 -delete
+    fi
+fi

@@ -232,9 +232,13 @@ dying process. `analysis_module_crashes` is a derived index; the filesystem is a
 default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
-trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `bin/hourly-maintenance.sh`).
+trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
 `report_exception()` and `data/error_reports` are a separate mechanism that still serves every
 other caller.
+
+#### Cron
+
+Periodic maintenance is one executable per task in `etc/cron/{hourly,daily,weekly}/` (`docs/CRON.md`): `ace cron run <cadence>` (`saq/cron_tasks.py`, called by `bin/<cadence>-maintenance.sh` from `etc/cron.yaml`) runs every task, plus each enabled integration's `etc/cron/<cadence>/`, in parallel (`service_cron.max_parallel_tasks`, default cpu count), each through `bin/run-cron-job` as `<cadence>-<task>`. Tasks are unordered, so steps that depend on each other go in one script.
 
 #### Search
 

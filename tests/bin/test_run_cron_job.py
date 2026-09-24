@@ -137,7 +137,7 @@ class TestLogFile:
         assert Path(runner.log_file_path("job")).exists()
 
     def test_log_file_path_uses_slug_and_date(self, runner, tmp_path):
-        """the exact filename shape etc/logrotate.conf and daily-maintenance.sh rotate"""
+        """the exact filename shape etc/logrotate.conf and etc/cron/daily/rotate-logs rotate"""
         path = runner.log_file_path("daily-maintenance", datetime(2026, 9, 3, 5, 0, 0))
 
         assert path == str(tmp_path / "data" / "logs" / "daily-maintenance-2026-09-03.log")

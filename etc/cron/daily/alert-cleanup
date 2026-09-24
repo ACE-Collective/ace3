@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# we have special support for this in the ace command
+if [ "$(ace config -v global.instance_type)" == "PRODUCTION" ]
+then
+    ace alert cleanup >> "data/logs/cleanup_$(date '+%Y%m%d').log" 2>&1
+fi
