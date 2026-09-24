@@ -217,9 +217,14 @@ silently disable replication in exactly that case. The 409 names the setting, so
 explains its own fix.
 
 With replication on, node identity stops being an access decision: the API looks for the bytes
-locally, then in the bucket, and only then refuses. `local` in a listing changes meaning from
-"written here" to **"downloadable from here"**; `node` still says where it came from, and a detail
-response sets `remote: true` when it was served from the bucket.
+locally, then in the bucket, and only then refuses. `local` in a listing always means **"on this
+node's own disk"**. The listing does not check the bucket per row, because that would be one
+round trip per crash. So with replication on, a report that is not local *may* be downloadable,
+but only if its shared copy exists. Timeout reports are never replicated inline and only reach
+the bucket through the hourly `ace crash sync`. `GET /crashes/{crash_id}` gives the definite
+answer: a 200 carries `downloadable: true` (and `remote: true` when it was served from the
+bucket), and a report that cannot be reached from here answers 409 `wrong_node`. `node` always
+says where a report came from.
 
 Credentials are origin-scoped (`x-ace-auth` and the session cookie), so a client talks to
 whatever node it already reached. Replication is how a report stays downloadable when the
