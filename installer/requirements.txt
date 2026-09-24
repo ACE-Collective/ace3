@@ -73,6 +73,7 @@ requests
 requests-mock
 requests-ntlm
 requests-oauthlib
+requests_pkcs12
 shodan
 splunk-sdk
 SQLAlchemy

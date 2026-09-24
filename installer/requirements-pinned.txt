@@ -69,10 +69,11 @@ pytz==2026.3.post1
 PyYAML==6.0.3
 rarfile==4.5
 redis==6.4.0
-requests==2.34.2
 requests-mock==1.12.1
 requests-ntlm
 requests-oauthlib==2.0.0
+requests==2.34.2
+requests_pkcs12==1.27
 shodan==1.31.0
 splunk-sdk==3.0.1
 SQLAlchemy==2.0.52
