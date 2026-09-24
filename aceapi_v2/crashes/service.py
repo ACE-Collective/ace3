@@ -60,12 +60,13 @@ def _validate_crash_id(crash_id: str) -> None:
         raise HTTPException(status_code=400, detail="invalid crash id")
 
 
-def _row_to_summary(row: AnalysisModuleCrash, local_node: Optional[str], replicating: bool) -> CrashReportSummary:
+def _row_to_summary(row: AnalysisModuleCrash, local_node: Optional[str]) -> CrashReportSummary:
     """One listing row.
 
-    ``local`` means "downloadable from this node". With replication off that is the same thing as
-    "written here"; with it on, every replicated report is reachable from everywhere, so the two
-    stop being the same and ``node`` is what carries origin.
+    ``local`` means "on this node's own disk" -- the only reachability fact the index can answer
+    without asking the object store. With replication on, a report that is not local may still be
+    downloadable from the shared copy, or may not be yet (timeout reports only get there through
+    ``ace crash sync``); the detail endpoint is what answers that.
     """
     return CrashReportSummary(
         crash_id=row.uuid,
@@ -81,7 +82,7 @@ def _row_to_summary(row: AnalysisModuleCrash, local_node: Optional[str], replica
         exception_type=row.exception_type,
         exception_message=row.exception_message,
         has_file=bool(row.has_file),
-        local=replicating or row.node == local_node,
+        local=row.node == local_node,
     )
 
 
@@ -97,9 +98,10 @@ async def list_crash_reports(
 ) -> list[CrashReportSummary]:
     """Crash reports newest first, filtered.
 
-    Lists across all nodes -- the index is cluster-wide -- and marks each row with whether it can
-    be downloaded from *this* node. With crash_reporting.replicate on that is every row; with it
-    off, only the ones written here, and the rest say which node to ask.
+    Lists across all nodes -- the index is cluster-wide -- and marks each row with whether it is
+    on *this* node's disk. With crash_reporting.replicate off, the rest say which node to ask;
+    with it on, the rest may be served from the shared copy, and GET /crashes/{crash_id} says
+    whether one is.
     """
     query = select(AnalysisModuleCrash)
 
@@ -122,10 +124,9 @@ async def list_crash_reports(
 
     rows = (await session.execute(query)).scalars().all()
     local_node = _local_node()
-    # one config read for the whole page rather than per row; a per-row existence check against
-    # the object store would be one round trip per listed crash, which is not worth it for a flag
-    replicating = replication_enabled()
-    return [_row_to_summary(row, local_node, replicating) for row in rows]
+    # deliberately no per-row existence check against the object store: that would be one round
+    # trip per listed crash (up to 500 a page), which is not worth it for a flag
+    return [_row_to_summary(row, local_node) for row in rows]
 
 
 async def _get_row(session: AsyncSession, crash_id: str) -> Optional[AnalysisModuleCrash]:
@@ -139,7 +140,8 @@ async def get_crash_report(session: AsyncSession, crash_id: str) -> CrashReportD
     """The full metadata for one crash report.
 
     Raises 400 for a malformed id, 404 when it does not exist, and 409 when it exists on another
-    node and cannot be reached from here.
+    node and cannot be reached from here. So a report that is returned is always downloadable:
+    the 409 is the "not downloadable" answer, not a ``downloadable: false`` body.
     """
     _validate_crash_id(crash_id)
 
@@ -184,8 +186,13 @@ async def get_crash_report(session: AsyncSession, crash_id: str) -> CrashReportD
         # not say what kind of crash it was, and inventing one would be a quiet lie
         crash_type=metadata.get("crash_type") or (row.crash_type if row is not None else "unknown"),
         node=metadata.get("node") or (row.node if row is not None else None),
-        local=True,
+        local=not remote,
         remote=remote,
+        # every path that gets here found the bytes the way the download will: the local
+        # directory (read_crash_report goes through find_crash_report_dir, as does
+        # resolve_downloadable_report), or the remote metadata.json, the same object
+        # remote_report_exists checks. The unreachable case raised the 409 above.
+        downloadable=True,
         **{
             key: metadata[key]
             for key in (

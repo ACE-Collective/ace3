@@ -153,6 +153,9 @@ class TestGetCrashReport:
         assert body["exception_type"] == "RuntimeError"
         assert body["complete"] is True
         assert body["file_name"] == "malware.doc"
+        assert body["local"] is True
+        assert body["remote"] is False
+        assert body["downloadable"] is True
 
         listed = {f["path"] for f in body["files"]}
         assert METADATA_FILE in listed
@@ -340,6 +343,9 @@ class TestCrossNodeViaSharedStorage:
         assert body["crash_id"] == crash_id
         assert body["complete"] is True
         assert body["remote"] is True
+        # served, but not from this node's disk
+        assert body["local"] is False
+        assert body["downloadable"] is True
         # node still says where it came from, even though we served it
         assert body["node"] == "some-other-node"
         assert body["module_name"] == "basic_test"
@@ -392,13 +398,19 @@ class TestCrossNodeViaSharedStorage:
     async def test_remote_owned_but_not_replicated_still_409(
         self, client: AsyncClient, session: AsyncSession, shared_storage
     ):
-        """Replication on, but this particular report never made it to the bucket."""
+        """Replication on, but this particular report never made it to the bucket -- the timeout
+        report waiting on `ace crash sync`. Nothing in the listing may claim it is local."""
         import shutil
 
+        root_uuid = str(uuid.uuid4())
         crash_id = str(uuid.uuid4())
         crash_dir = _write_report(crash_id, node="some-other-node")
-        await _index(session, crash_id, crash_dir, "some-other-node")
+        await _index(session, crash_id, crash_dir, "some-other-node", root_uuid=root_uuid)
         shutil.rmtree(crash_dir)
+
+        rows = (await client.get("/crashes/", params={"root_uuid": root_uuid})).json()["data"]
+        assert len(rows) == 1
+        assert rows[0]["local"] is False
 
         response = await client.get(f"/crashes/{crash_id}")
         assert response.status_code == 409
@@ -411,10 +423,11 @@ class TestCrossNodeViaSharedStorage:
         assert (await client.get(f"/crashes/{crash_id}/download")).status_code == 409
 
     @pytest.mark.asyncio
-    async def test_listing_marks_remote_reports_reachable(
+    async def test_listing_marks_remote_reports_non_local(
         self, client: AsyncClient, session: AsyncSession, shared_storage
     ):
-        """With replication on, `local` means 'downloadable from here', not 'written here'."""
+        """With replication on, `local` still means 'on this node's disk'. The listing cannot
+        know whether the shared copy exists without a round trip per row, so it does not claim it."""
         root_uuid = str(uuid.uuid4())
         crash_id = str(uuid.uuid4())
         crash_dir = _write_report(crash_id, node="other-node")
@@ -424,7 +437,24 @@ class TestCrossNodeViaSharedStorage:
         rows = response.json()["data"]
         assert len(rows) == 1
         assert rows[0]["node"] == "other-node"
-        assert rows[0]["local"] is True
+        assert rows[0]["local"] is False
+
+    @pytest.mark.asyncio
+    async def test_local_report_with_replication_on(
+        self, client: AsyncClient, session: AsyncSession, shared_storage, local_node: str
+    ):
+        root_uuid = str(uuid.uuid4())
+        crash_id = str(uuid.uuid4())
+        crash_dir = _write_report(crash_id, node=local_node)
+        await _index(session, crash_id, crash_dir, local_node, root_uuid=root_uuid)
+
+        rows = (await client.get("/crashes/", params={"root_uuid": root_uuid})).json()["data"]
+        assert [r["local"] for r in rows] == [True]
+
+        body = (await client.get(f"/crashes/{crash_id}")).json()
+        assert body["local"] is True
+        assert body["remote"] is False
+        assert body["downloadable"] is True
 
 
 class TestWrongNodeWithoutReplication:
@@ -476,3 +506,18 @@ class TestWrongNodeWithoutReplication:
         response = await client.get("/crashes/", params={"root_uuid": root_uuid})
         rows = response.json()["data"]
         assert rows[0]["local"] is False
+
+    @pytest.mark.asyncio
+    async def test_listing_local_only_for_this_node(
+        self, client: AsyncClient, session: AsyncSession, local_node: str
+    ):
+        root_uuid = str(uuid.uuid4())
+        mine = str(uuid.uuid4())
+        theirs = str(uuid.uuid4())
+        await _index(session, mine, _write_report(mine, node=local_node), local_node,
+                     root_uuid=root_uuid)
+        await _index(session, theirs, _write_report(theirs, node="other-node"), "other-node",
+                     root_uuid=root_uuid)
+
+        rows = (await client.get("/crashes/", params={"root_uuid": root_uuid})).json()["data"]
+        assert {r["crash_id"]: r["local"] for r in rows} == {mine: True, theirs: False}
