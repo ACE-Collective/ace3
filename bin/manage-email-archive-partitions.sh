@@ -24,6 +24,7 @@ set -euo pipefail
 
 # Constants
 DB_CONFIG_FILE="/docker-entrypoint-initdb.d/mysql_defaults.root"
+SSL_CA="/opt/ace/ssl/ca-chain.cert.pem"
 DATABASE_NAME="email-archive"
 RETENTION_DAYS=30
 TABLES=("archive" "archive_index" "email_history")
@@ -45,6 +46,10 @@ command -v mysql >/dev/null 2>&1 || error_exit "mysql client not found in PATH"
 # Check if config file exists
 [[ -f "$DB_CONFIG_FILE" ]] || error_exit "Database config file not found: $DB_CONFIG_FILE"
 
+# the MySQL server presents a self-signed (ACE CA) certificate, so the client
+# must be pointed at the CA chain
+[[ -f "$SSL_CA" ]] || error_exit "SSL CA file not found: $SSL_CA"
+
 # Read database connection parameters
 DB_HOST=$(grep '^host=' "$DB_CONFIG_FILE" | cut -d'=' -f2)
 DB_USER=$(grep '^user=' "$DB_CONFIG_FILE" | cut -d'=' -f2)
@@ -58,7 +63,7 @@ log "Connecting to MariaDB at $DB_HOST as $DB_USER"
 
 # MySQL connection function
 mysql_exec() {
-    mysql -h "$DB_HOST" -u "$DB_USER" -p"$DB_PASS" -D "$DATABASE_NAME" -sN -e "$1"
+    mysql -h "$DB_HOST" -u "$DB_USER" -p"$DB_PASS" --ssl-ca="$SSL_CA" -D "$DATABASE_NAME" -sN -e "$1"
 }
 
 # Function to get week number for a given date (ISO week format)
@@ -339,9 +344,11 @@ manage_partitions() {
     # Remove leading zeros for arithmetic
     current_week=$((10#$current_week))
     
-    # Create partitions for current week, next week, and any missing weeks
-    # We'll create partitions from 4 weeks ago to 4 weeks ahead to ensure coverage
-    for week_offset in {-4..4}; do
+    # Create partitions for the current week and the next 4. Only forward: a range partition
+    # can only be split off the catchall, above every existing one, and a past week inside
+    # the retention window would be dropped above and then fail to be re-created here.
+    # Rows that landed in the catchall are split out by reorganize_catchall_partition.
+    for week_offset in {0..4}; do
         local target_date=$(date -d "$current_date +$((week_offset * 7)) days" '+%Y-%m-%d')
         local target_year=$(get_year "$target_date")
         local target_week=$(get_week_number "$target_date")
