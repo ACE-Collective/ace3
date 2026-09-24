@@ -70,6 +70,27 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
 
         return extracted_files
 
+class _MalformedActiveMime(Exception):
+    """Raised when an ActiveMime document is truncated or its fields are inconsistent."""
+    def __init__(self, offset: int, reason: str):
+        super().__init__(f"{reason} at offset {offset}")
+        self.offset = offset
+        self.reason = reason
+
+def _read_uint32(rawdoc: bytes, cursor: int) -> int:
+    """Returns the little-endian uint32 at cursor, raising _MalformedActiveMime if the buffer is too short."""
+    if cursor + 4 > len(rawdoc):
+        raise _MalformedActiveMime(cursor, f"truncated reading uint32 (buffer size {len(rawdoc)})")
+
+    return unpack('<I', rawdoc[cursor:cursor + 4])[0]
+
+def _skip(rawdoc: bytes, cursor: int, length: int) -> int:
+    """Returns cursor advanced by length, raising _MalformedActiveMime if that runs past the end of the buffer."""
+    if cursor + length > len(rawdoc):
+        raise _MalformedActiveMime(cursor, f"field of size {length} exceeds buffer size {len(rawdoc)}")
+
+    return cursor + length
+
 def parse_active_mime(file_path: str, target_path: str) -> bool:
     """Parses the given ActiveMIME document and stores the extracted data in the file specified by target_path."""
     with open(file_path, "rb") as fp:
@@ -80,44 +101,50 @@ def parse_active_mime(file_path: str, target_path: str) -> bool:
         logging.debug(f"{file_path} does not start with ActiveMime")
         return False
 
-    # Should be 01f0
-    unknown_a =  rawdoc[12:14]
+    try:
+        # Should be 01f0
+        cursor = _skip(rawdoc, 12, 2)
 
-    field_size = unpack('<I', rawdoc[14:18])[0]
-    cursor = 18
+        field_size = _read_uint32(rawdoc, cursor)
+        cursor += 4
 
-    # Should be ffffffff
-    unknown_b = rawdoc[cursor:cursor+field_size]
-    cursor += field_size
+        # Should be ffffffff
+        cursor = _skip(rawdoc, cursor, field_size)
 
-    # Should be {x}0000{y}f0
-    unknown_c = rawdoc[cursor:cursor+4]
-    cursor += 4
+        # Should be {x}0000{y}f0
+        cursor = _skip(rawdoc, cursor, 4)
 
-    compressed_size = unpack('<I', rawdoc[cursor:cursor + 4])[0]
-    cursor += 4
+        compressed_size = _read_uint32(rawdoc, cursor)
+        cursor += 4
 
-    field_size_d = unpack('<I', rawdoc[cursor:cursor+4])[0]
-    cursor += 4
+        field_size_d = _read_uint32(rawdoc, cursor)
+        cursor += 4
 
-    field_size_e = unpack('<I', rawdoc[cursor:cursor+4])[0]
-    cursor += 4
+        field_size_e = _read_uint32(rawdoc, cursor)
+        cursor += 4
 
-    # Should be 00000000 or 00000000 00000001
-    unknown_d = rawdoc[cursor:cursor + field_size_d]
-    cursor += field_size_d
+        # Should be 00000000 or 00000000 00000001
+        cursor = _skip(rawdoc, cursor, field_size_d)
 
-    vba_tail_type = unpack('<I', rawdoc[cursor:cursor + field_size_e])[0]
-    cursor += field_size_e
+        # the vba tail type is read as a uint32, so its field must be exactly 4 bytes
+        if field_size_e != 4:
+            raise _MalformedActiveMime(cursor, f"unexpected vba tail type field size {field_size_e}")
 
-    if vba_tail_type == 0:
-        has_vba_tail = True
+        vba_tail_type = _read_uint32(rawdoc, cursor)
+        cursor += field_size_e
 
-    size = unpack('<I', rawdoc[cursor:cursor + 4])[0]
-    cursor += 4
+        size = _read_uint32(rawdoc, cursor)
+        cursor += 4
 
-    compressed_data = rawdoc[cursor:]
-    data = zlib.decompress(compressed_data)
+        compressed_data = rawdoc[cursor:]
+        try:
+            data = zlib.decompress(compressed_data)
+        except zlib.error as e:
+            raise _MalformedActiveMime(cursor, f"unable to decompress: {e}")
+
+    except _MalformedActiveMime as e:
+        logging.info(f"{file_path} is a malformed ActiveMime document at offset {e.offset}: {e.reason}")
+        return False
 
     #if data[0:4].hex() == b'd0cf11e0':
         #is_ole_doc = True
