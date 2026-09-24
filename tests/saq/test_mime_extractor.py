@@ -1,4 +1,6 @@
 import os.path
+import struct
+import zlib
 
 import pytest
 
@@ -31,3 +33,76 @@ def test_parse_active_mime(datadir, tmpdir):
     result = parse_active_mime(str(datadir / "extracted-12"), target_path)
     assert result
     assert sha256(target_path) == "d82f411152bcc9fdb41523528e5139cf3367650871462debbc17f2ac654d0b06"
+
+
+SYNTHETIC_PAYLOAD = b"synthetic ole payload " * 50
+
+def _build_active_mime(payload: bytes, field_size_e: int = 4) -> bytes:
+    """Builds a minimal ActiveMime document with the same layout as a real one."""
+    compressed = zlib.compress(payload)
+    return (
+        b"ActiveMime\x00\x00"
+        + b"\x01\xf0"                              # unknown_a
+        + struct.pack("<I", 4)                     # field_size
+        + b"\xff\xff\xff\xff"                      # unknown_b
+        + b"\x00\x00\x07\xf0"                      # unknown_c
+        + struct.pack("<I", len(compressed))       # compressed_size
+        + struct.pack("<I", 4)                     # field_size_d
+        + struct.pack("<I", field_size_e)          # field_size_e
+        + b"\x00\x00\x00\x00"                      # unknown_d
+        + struct.pack("<I", 0)                     # vba_tail_type
+        + struct.pack("<I", len(payload))          # size
+        + compressed
+    )
+
+# offset of the compressed data in a blob built by _build_active_mime
+_COMPRESSED_OFFSET = 50
+
+def _parse_blob(tmpdir, blob: bytes) -> tuple[bool, str]:
+    source_path = str(tmpdir / "activemime.bin")
+    target_path = str(tmpdir / "parsed")
+    with open(source_path, "wb") as fp:
+        fp.write(blob)
+
+    return parse_active_mime(source_path, target_path), target_path
+
+@pytest.mark.unit
+def test_parse_active_mime_synthetic_valid(tmpdir):
+    result, target_path = _parse_blob(tmpdir, _build_active_mime(SYNTHETIC_PAYLOAD))
+    assert result
+    with open(target_path, "rb") as fp:
+        assert fp.read() == SYNTHETIC_PAYLOAD
+
+@pytest.mark.unit
+def test_parse_active_mime_truncated(tmpdir):
+    blob = _build_active_mime(SYNTHETIC_PAYLOAD)
+    # every prefix that still passes the ActiveMime header check
+    for length in range(len(b"ActiveMime"), len(blob)):
+        result, target_path = _parse_blob(tmpdir, blob[:length])
+        assert result is False, f"truncated at {length}"
+        assert not os.path.exists(target_path)
+
+@pytest.mark.unit
+def test_parse_active_mime_bad_field_size_e(tmpdir):
+    result, target_path = _parse_blob(tmpdir, _build_active_mime(SYNTHETIC_PAYLOAD, field_size_e=8))
+    assert result is False
+    assert not os.path.exists(target_path)
+
+@pytest.mark.unit
+@pytest.mark.parametrize("offset", [14, 30])  # field_size, field_size_d
+def test_parse_active_mime_oversized_field_sizes(tmpdir, offset):
+    blob = bytearray(_build_active_mime(SYNTHETIC_PAYLOAD))
+    blob[offset:offset + 4] = struct.pack("<I", 0xFFFFFFFF)
+    result, target_path = _parse_blob(tmpdir, bytes(blob))
+    assert result is False
+    assert not os.path.exists(target_path)
+
+@pytest.mark.unit
+def test_parse_active_mime_corrupt_compressed_tail(tmpdir):
+    blob = bytearray(_build_active_mime(SYNTHETIC_PAYLOAD))
+    assert blob[_COMPRESSED_OFFSET] == 0x78  # zlib header
+    for i in range(_COMPRESSED_OFFSET, len(blob)):
+        blob[i] ^= 0xFF
+    result, target_path = _parse_blob(tmpdir, bytes(blob))
+    assert result is False
+    assert not os.path.exists(target_path)
