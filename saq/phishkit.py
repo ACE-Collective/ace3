@@ -1,6 +1,8 @@
 import logging
 import os
 import shutil
+import threading
+import time
 import uuid
 
 from celery.exceptions import TimeoutError
@@ -18,26 +20,66 @@ def initialize_phishkit():
         "broker_url": f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}//"
     })
 
+# How long a scanner_image_id probe result is reused in this process. The image changes only on
+# deploy, so a success is good for a while; a failure is retried sooner, but not on every call:
+# each failed probe blocks the caller for the full PROBE_TIMEOUT_SECONDS.
+SCANNER_VERSION_SUCCESS_TTL_SECONDS = 600
+SCANNER_VERSION_FAILURE_TTL_SECONDS = 60
+PROBE_TIMEOUT_SECONDS = 5
+
+# (value, expires_at on the _now() clock) of the last scanner_image_id probe, or None
+_scanner_version_cache: tuple[dict, float] | None = None
+_scanner_version_lock = threading.Lock()
+
+
+def _now() -> float:
+    """Clock for the scanner version cache; tests patch this."""
+    return time.monotonic()
+
+
+def _reset_scanner_version_cache_for_tests() -> None:
+    global _scanner_version_cache
+    _scanner_version_cache = None
+
+
 def ping_phishkit() -> str:
     from phishkit.phishkit import ping as pk_ping
-    result = pk_ping.delay()
-    return result.get(timeout=5)
+    # expires: a ping nobody is waiting for any more is dropped instead of executed late
+    result = pk_ping.apply_async(expires=PROBE_TIMEOUT_SECONDS)
+    return result.get(timeout=PROBE_TIMEOUT_SECONDS)
 
 
 def get_phishkit_scanner_image() -> dict:
     from phishkit.phishkit import scanner_image_id as pk_scanner_image_id
-    result = pk_scanner_image_id.delay()
-    return result.get(timeout=5)
+    result = pk_scanner_image_id.apply_async(expires=PROBE_TIMEOUT_SECONDS)
+    return result.get(timeout=PROBE_TIMEOUT_SECONDS)
 
 
 def get_phishkit_scanner_version() -> dict:
-    """Scanner identity dict for the phishkit cache key."""
-    try:
-        value = get_phishkit_scanner_image()
-        return value if isinstance(value, dict) else {}
-    except Exception as e:
-        logging.warning("get_phishkit_scanner_version: phishkit scanner image query failed: %s", e)
-        return {}
+    """Scanner identity dict for the phishkit cache key, or {} if the worker can't be asked.
+
+    The answer is cached in this process: a result with an image_id for
+    SCANNER_VERSION_SUCCESS_TTL_SECONDS, anything else for SCANNER_VERSION_FAILURE_TTL_SECONDS.
+    The lock is held across the probe so concurrent callers wait for one probe instead of each
+    sending their own."""
+    global _scanner_version_cache
+    with _scanner_version_lock:
+        if _scanner_version_cache is not None:
+            value, expires_at = _scanner_version_cache
+            if _now() < expires_at:
+                return value
+
+        try:
+            value = get_phishkit_scanner_image()
+            if not isinstance(value, dict):
+                value = {}
+        except Exception as e:
+            logging.warning("get_phishkit_scanner_version: phishkit scanner image query failed: %s", e)
+            value = {}
+
+        ttl = SCANNER_VERSION_SUCCESS_TTL_SECONDS if value.get("image_id") else SCANNER_VERSION_FAILURE_TTL_SECONDS
+        _scanner_version_cache = (value, _now() + ttl)
+        return value
 
 def _copy_files(source_dir: str, output_dir: str) -> list[str]:
     """Copy all files from source_dir into output_dir, preserving relative paths."""

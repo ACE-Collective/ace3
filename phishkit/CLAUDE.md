@@ -22,6 +22,8 @@ Both build with the **repo root as context** (`docker build -f phishkit/Dockerfi
 
 The manager mounts `/var/run/docker.sock` and does `docker run` of the scanner image per scan. Selenium/Chrome deps exist only in the scanner image; celery/magic deps only in the manager image.
 
+The manager container runs **two celery workers**, started by `worker_launcher.py` (the image's CMD): `scan@phishkit` on the default `celery` queue (`scan_url`, `scan_file`, `maintain_files`) and `control@phishkit`, a solo pool on `CONTROL_QUEUE` (`ping`, `scanner_image_id`, routed there by `app.conf.task_routes`). ACE blocks 5 s on the control tasks, and on a shared queue they were reserved by a worker whose every slot was busy with multi-minute scans. `PHISHKIT_WORKER_ROLE` tells each process which it is; only the scan worker runs the reaper, because both share the hostname the scanner containers are labelled with. If either worker exits, the launcher stops the other and the container restarts.
+
 ## Request flow
 
 1. `saq/modules/phishkit.py` (`PhishkitAnalyzer`) gates on the `crawl`/`render` directive, then calls `saq/phishkit.py` `scan_url` / `scan_file` (async by default, polled via `delay_analysis`).
