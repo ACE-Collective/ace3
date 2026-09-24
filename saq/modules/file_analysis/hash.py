@@ -2,7 +2,7 @@ from fnmatch import fnmatch
 import logging
 import os
 from typing import Type, override
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, F_MD5, F_SHA256, R_IS_HASH_OF
 from saq.modules import AnalysisModule
@@ -64,8 +64,7 @@ class FileHashAnalysis(Analysis):
 
 class FileHashAnalyzerConfig(AnalysisModuleConfig):
     # Dynamic ignore_pattern_* and ignore_mime_type_* fields are allowed
-    class Config:
-        extra = "allow"  # Allow extra fields for dynamic ignore_pattern_* and ignore_mime_type_* options
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for dynamic ignore_pattern_* and ignore_mime_type_* options
 
 class FileHashAnalyzer(AnalysisModule):
     @classmethod

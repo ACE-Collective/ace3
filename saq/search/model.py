@@ -76,7 +76,7 @@ def load_model(model_name: Optional[str] = None):
 
 
 def dense_dimension(model) -> int:
-    return int(model.get_sentence_embedding_dimension())
+    return int(model.get_embedding_dimension())
 
 
 def max_chunk_tokens(model) -> int:

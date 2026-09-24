@@ -157,7 +157,7 @@ def edit_event():
                         get_db().add(threat)
                         get_db().flush()
             else:
-                mal = get_db().query(Malware).get(mal_id)
+                mal = get_db().get(Malware, mal_id)
 
             if mal:
                 mal_mapping = get_db().query(MalwareMapping).filter(MalwareMapping.malware_id == mal.id, MalwareMapping.event_id == event.id).one_or_none()

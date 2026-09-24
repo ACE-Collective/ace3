@@ -14,6 +14,8 @@ from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkIt
 
 
 class TestFileCollectionListener(FileCollectionListener):
+    __test__ = False
+
     def __init__(self):
         self.collections = []
         # ids reported as still held; tests call finish() to release them
