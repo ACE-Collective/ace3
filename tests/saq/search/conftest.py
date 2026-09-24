@@ -27,7 +27,7 @@ def mock_model(tokenizer):
     model = Mock()
     model.tokenizer = tokenizer
     model.max_seq_length = 256
-    model.get_sentence_embedding_dimension.return_value = 8
+    model.get_embedding_dimension.return_value = 8
 
     def encode(texts, **kwargs):
         if isinstance(texts, str):

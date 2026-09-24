@@ -1,3 +1,4 @@
+import ssl
 from typing import Optional
 
 from qdrant_client import QdrantClient
@@ -26,6 +27,9 @@ def get_qdrant_client(timeout: Optional[int] = None) -> QdrantClient:
 
     if config.use_ssl:
         kwargs["https"] = True
-        kwargs["verify"] = config.ssl_ca_path
+        kwargs["verify"] = ssl.create_default_context(cafile=config.ssl_ca_path)
+        # the client's server version probe does not use this verify setting, so against a
+        # private CA it always fails and only emits a warning
+        kwargs["check_compatibility"] = False
 
     return QdrantClient(**kwargs)

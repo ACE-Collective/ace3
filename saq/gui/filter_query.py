@@ -22,7 +22,7 @@ import datetime
 import hashlib
 
 import pytz
-from sqlalchemy import and_, exists, false, func, not_, or_, distinct
+from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, and_, exists, false, func, not_, or_, distinct
 
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
@@ -320,7 +320,7 @@ def build_alert_query(filters: list, *, entity=None, tz=None, locations=_DEFAULT
     """
     entity = entity if entity is not None else Alert
 
-    query = get_db().query(entity).with_labels()
+    query = get_db().query(entity).set_label_style(LABEL_STYLE_TABLENAME_PLUS_COL)
     query = query.outerjoin(Owner, entity.owner_id == Owner.id)
     if has_filter(filters, 'Disposition By'):
         query = query.outerjoin(DispositionBy, entity.disposition_user_id == DispositionBy.id)

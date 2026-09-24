@@ -12,6 +12,8 @@ from saq.remediation.target import RemediationTarget
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem, RemediatorStatus
 
 class TestRemediationListener(RemediationListener):
+    __test__ = False
+
     def __init__(self):
         self.remediations = []
 

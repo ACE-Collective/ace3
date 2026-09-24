@@ -79,7 +79,7 @@ class custom_submission(Submission):
         self.fail_event.set()
 
 class TestCollectorService(CollectorService):
-    pass
+    __test__ = False
 
 class TestCollector(Collector):
     __test__ = False
