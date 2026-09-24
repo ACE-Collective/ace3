@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.118] - 2026-09-24
+
+- [Eliminate warnings from the test suite](https://github.com/ACE-Collective/ace3/pull/606)
+- [Make the crash listing's local flag mean "on this node's disk"](https://github.com/ACE-Collective/ace3/pull/605)
+- [Stop phishkit calls waiting 5 s on the scanner-version probe](https://github.com/ACE-Collective/ace3/pull/604)
+- [Fix extracted-file permissions before ArchiveAnalyzer reads them](https://github.com/ACE-Collective/ace3/pull/603)
+- [Reject truncated ActiveMime input instead of raising](https://github.com/ACE-Collective/ace3/pull/602)
+- [Fix email archive partition maintenance](https://github.com/ACE-Collective/ace3/pull/601)
+- [Gate the partition maintenance scripts on ACE_IS_PRIMARY_NODE](https://github.com/ACE-Collective/ace3/pull/600)
+- [updated urlfinderlib to 0.25.5](https://github.com/ACE-Collective/ace3/pull/599)
+- [Split maintenance scripts into per-task etc/cron/{hourly,daily,weekly} directories](https://github.com/ACE-Collective/ace3/pull/598)
+- [Capture thread stacks for every module hang](https://github.com/ACE-Collective/ace3/pull/597)
+- [install ace3v2 client library in base image](https://github.com/ACE-Collective/ace3/pull/596)
+
 ## [3.0.117] - 2026-09-23
 
 - [Add hourly maintenance job and run crash report sweep hourly](https://github.com/ACE-Collective/ace3/pull/594)
