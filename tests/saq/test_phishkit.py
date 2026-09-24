@@ -9,7 +9,13 @@ import os
 
 import pytest
 
-from saq.phishkit import get_async_scan_result
+import saq.phishkit
+from saq.phishkit import (
+    SCANNER_VERSION_FAILURE_TTL_SECONDS,
+    SCANNER_VERSION_SUCCESS_TTL_SECONDS,
+    get_async_scan_result,
+    get_phishkit_scanner_version,
+)
 
 
 class FakeAsyncResult:
@@ -119,3 +125,107 @@ def test_get_async_scan_result_binds_the_phishkit_app(monkeypatch):
 
     get_async_scan_result("job-1", "/tmp/does-not-matter")
     assert captured["app"] is phishkit_app
+
+
+IMAGE = {"image_url": "phishkit:latest", "image_id": "sha256:aaa"}
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class FakeProbe:
+    """Stands in for get_phishkit_scanner_image: counts calls, returns or raises."""
+
+    def __init__(self, result=IMAGE):
+        self.calls = 0
+        self.result = result
+
+    def __call__(self):
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+    fake = FakeClock()
+    monkeypatch.setattr("saq.phishkit._now", fake)
+    yield fake
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+
+
+@pytest.mark.unit
+def test_scanner_version_success_is_cached_for_success_ttl(clock, monkeypatch):
+    probe = FakeProbe()
+    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", probe)
+
+    assert get_phishkit_scanner_version() == IMAGE
+    clock.now += SCANNER_VERSION_SUCCESS_TTL_SECONDS - 1
+    assert get_phishkit_scanner_version() == IMAGE
+    assert probe.calls == 1
+
+    clock.now += 1
+    assert get_phishkit_scanner_version() == IMAGE
+    assert probe.calls == 2
+
+
+@pytest.mark.unit
+def test_scanner_version_failure_is_cached_for_failure_ttl(clock, monkeypatch, caplog):
+    """A failed probe costs the caller the full celery timeout, so it is not repeated on every
+    call, and the warning is logged once per real probe, not once per cached answer."""
+    probe = FakeProbe(TimeoutError("The operation timed out."))
+    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", probe)
+
+    assert get_phishkit_scanner_version() == {}
+    clock.now += SCANNER_VERSION_FAILURE_TTL_SECONDS - 1
+    assert get_phishkit_scanner_version() == {}
+    assert probe.calls == 1
+    assert caplog.text.count("phishkit scanner image query failed") == 1
+
+    # the worker recovers: the next probe after the failure TTL picks it up
+    probe.result = IMAGE
+    clock.now += 1
+    assert get_phishkit_scanner_version() == IMAGE
+    assert probe.calls == 2
+    assert caplog.text.count("phishkit scanner image query failed") == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("result", [
+    {"image_url": "phishkit:latest", "image_id": None},  # the worker could not docker inspect
+    "not a dict",
+])
+def test_scanner_version_without_image_id_uses_failure_ttl(clock, monkeypatch, result):
+    probe = FakeProbe(result)
+    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", probe)
+
+    first = get_phishkit_scanner_version()
+    assert not first.get("image_id")
+    clock.now += SCANNER_VERSION_FAILURE_TTL_SECONDS
+    get_phishkit_scanner_version()
+    assert probe.calls == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("task_name", ["phishkit.phishkit.ping", "phishkit.phishkit.scanner_image_id"])
+def test_phishkit_probe_tasks_route_to_control_queue(task_name):
+    """The probes must not share a queue with scans: a scan worker with every slot busy holds a
+    reserved probe until a scan finishes, far past the client's 5 second timeout."""
+    from phishkit.phishkit import CONTROL_QUEUE, app
+
+    assert app.amqp.router.route({}, task_name)["queue"].name == CONTROL_QUEUE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("task_name", ["phishkit.phishkit.scan_url", "phishkit.phishkit.scan_file", "phishkit.phishkit.maintain_files"])
+def test_phishkit_work_tasks_stay_on_default_queue(task_name):
+    from phishkit.phishkit import CONTROL_QUEUE, app
+
+    assert app.amqp.router.route({}, task_name)["queue"].name != CONTROL_QUEUE

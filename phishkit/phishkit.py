@@ -34,6 +34,15 @@ STACK = os.environ.get("ACE_STACK", "ace")
 # ACE_PHISHKIT_VOLUME. the default is the pre-multi-instance name.
 PHISHKIT_VOLUME = os.environ.get("ACE_PHISHKIT_VOLUME", "ace-phishkit")
 
+# the queue for control-plane tasks (ping, scanner_image_id). callers wait on these for seconds,
+# while a scan can hold a pool slot for minutes, so they are served by their own worker process
+# (see worker_launcher.py) instead of queueing behind scans.
+CONTROL_QUEUE = "phishkit_control"
+# which of the two workers this process is: "scan" (the default queue) or "control"
+# (CONTROL_QUEUE). set by worker_launcher.py. only the scan worker starts scanner containers, so
+# only it reaps them.
+WORKER_ROLE = os.environ.get("PHISHKIT_WORKER_ROLE", "scan")
+
 SHARED_CONFIG_DIR = "/phishkit/config"
 DEFAULT_CONFIG_PATH = "/opt/ace/etc/phishkit_config.yaml"
 
@@ -213,6 +222,8 @@ def _reaper_loop(max_age: int, interval: int) -> None:
 
 @worker_ready.connect
 def _start_reaper(**_):
+    if WORKER_ROLE != "scan":
+        return
     cfg = _load_resource_limits()
     # Floor prevents a mistakenly-small reaper_max_age_seconds from killing jobs that just
     # barely finish on time — must be several multiples of the task timeout plus margin.
@@ -240,6 +251,10 @@ def _warm_scanner_image_cache(**_):
 
 @worker_shutting_down.connect
 def _shutdown_reaper(**_):
+    # every worker in this container shares the hostname the containers are labelled with, so a
+    # sweep from the control worker would kill the scan worker's running scans
+    if WORKER_ROLE != "scan":
+        return
     _reaper_stop.set()
     try:
         _reap_orphans(max_age_seconds=0, only_this_worker=True)
@@ -579,6 +594,15 @@ def scanner_image_id() -> dict:
     worker would ``docker run`` for a scan. 
     """
     return get_scanner_image_id()
+
+
+# keyed by the registered names rather than literals: the module is phishkit.phishkit in the
+# manager and in ACE, but plain phishkit in the test image. every other task stays on the default
+# "celery" queue.
+app.conf.task_routes = {
+    ping.name: {"queue": CONTROL_QUEUE},
+    scanner_image_id.name: {"queue": CONTROL_QUEUE},
+}
 
 # immediate subdirectories of these are aged out by maintain_files
 PHISHKIT_DATA_DIRS = ("/phishkit/input", "/phishkit/output")

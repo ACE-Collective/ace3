@@ -1485,3 +1485,48 @@ class TestScannerImageId:
             assert result["image_url"]
         finally:
             phishkit_mod._reset_scanner_image_cache_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# control queue: ping and scanner_image_id are served by their own worker
+# ---------------------------------------------------------------------------
+
+
+class TestControlQueue:
+    """ACE waits 5 s on ping/scanner_image_id. On the default queue they were reserved by a scan
+    worker whose every slot was busy with scans, and ran only once one finished."""
+
+    @pytest.mark.unit
+    def test_probe_tasks_route_to_control_queue(self):
+        import phishkit as phishkit_mod
+        for task in (phishkit_mod.ping, phishkit_mod.scanner_image_id):
+            queue = phishkit_mod.app.amqp.router.route({}, task.name)["queue"]
+            assert queue.name == phishkit_mod.CONTROL_QUEUE
+
+    @pytest.mark.unit
+    def test_work_tasks_stay_on_default_queue(self):
+        import phishkit as phishkit_mod
+        for task in (phishkit_mod.scan_url, phishkit_mod.scan_file, phishkit_mod.maintain_files):
+            queue = phishkit_mod.app.amqp.router.route({}, task.name)["queue"]
+            assert queue.name == "celery"
+
+    @pytest.mark.unit
+    def test_launcher_consumes_both_queues(self):
+        import phishkit as phishkit_mod
+        import worker_launcher
+        assert worker_launcher.CONTROL_QUEUE == phishkit_mod.CONTROL_QUEUE
+        consumed = {argv[argv.index("-Q") + 1] for argv in worker_launcher.WORKERS.values()}
+        assert consumed == {"celery", phishkit_mod.CONTROL_QUEUE}
+
+    @pytest.mark.unit
+    def test_control_worker_never_reaps(self):
+        """Both workers share the hostname the scan containers are labelled with, so a shutdown
+        sweep from the control worker would kill the scan worker's running scans."""
+        import phishkit as phishkit_mod
+        with patch.object(phishkit_mod, "WORKER_ROLE", "control"), \
+             patch.object(phishkit_mod, "_reap_orphans") as mock_reap, \
+             patch.object(phishkit_mod.threading, "Thread") as mock_thread:
+            phishkit_mod._start_reaper()
+            phishkit_mod._shutdown_reaper()
+        mock_reap.assert_not_called()
+        mock_thread.assert_not_called()
