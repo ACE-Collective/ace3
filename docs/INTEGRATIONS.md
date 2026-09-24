@@ -70,6 +70,7 @@ Follow these steps to bulid a new integration.
 1. (optional) Create a `bin` directory and include any additional executable binaries needed by your integration. Note this directory is automatically added to the PATH environment variable.
 1. (optional) Create a `tests` directory for your tests. (See Integration Tests.)
 1. Create an `etc` directory and put your configuration files in here.
+1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
 

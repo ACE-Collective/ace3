@@ -6,6 +6,11 @@
 # on tag "cron-jobs". The wrapper passes the job's exit code through unchanged.
 # Keep <slug> (first argument) stable — it names the rotated log and is the alert grouping key.
 #
+# The hourly/daily/weekly maintenance jobs run every task in etc/cron/<cadence>/ (and in each
+# enabled integration's etc/cron/<cadence>/) in parallel, each through run-cron-job as
+# <cadence>-<task>. Add a task by dropping an executable there, not by adding a job here.
+# See docs/CRON.md.
+#
 jobs:
   - name: daily maintenance
     command: /opt/ace/bin/run-cron-job daily-maintenance /opt/ace/bin/daily-maintenance.sh

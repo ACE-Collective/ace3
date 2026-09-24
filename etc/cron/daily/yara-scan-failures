@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+DATA_DIR=$(ace config -v global.data_dir)
+if [ -z "$DATA_DIR" ] || [ ! -d "$DATA_DIR" ]; then
+    echo "invalid data directory \"$DATA_DIR\""
+    exit 1
+fi
+
+# delete scan_failures older than 1 days
+SCAN_FAILURES_DIR="$DATA_DIR/$(ace config -v service_yara.scan_failure_dir)"
+[ -d "$SCAN_FAILURES_DIR" ] || exit 0
+find -L "$SCAN_FAILURES_DIR" -maxdepth 1 -mindepth 1 -type f -mtime +1 -delete

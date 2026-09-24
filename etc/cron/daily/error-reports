@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# delete error reports older than N days
+DELETE_ERROR_REPORTS_OLDER_THAN=7
+
+[ -d data/error_reports ] || exit 0
+
+find -L data/error_reports -maxdepth 1 -type f -mtime +$DELETE_ERROR_REPORTS_OLDER_THAN -delete
+find -L data/error_reports -maxdepth 1 -mtime +$DELETE_ERROR_REPORTS_OLDER_THAN -type d -exec rm -rf '{}' \;

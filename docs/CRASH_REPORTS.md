@@ -124,7 +124,7 @@ The spool is drained by `drain_index_spool()`:
   root and module, it puts that crash id in the failure message written into the alert's tree
   (`...; thread stacks in crash_id <id>`). An analyst looking at the alert is then one hop from
   the stacks.
-- **`ace crash index`** from `bin/hourly-maintenance.sh`: the hourly catch-up for a node whose engine is
+- **`ace crash index`** from `etc/cron/hourly/crash-reports`: the hourly catch-up for a node whose engine is
   not running. `ace crash index --all` ignores the spool, walks every report on disk and indexes
   anything with no row. Use it to backfill reports written before the spool existed.
 
@@ -210,7 +210,7 @@ best-effort; at most two uploads run at once per process and the rest are left t
 thread.
 
 **`ace crash sync`** is the catch-up: it lists the bucket once, compares against the local reports,
-and uploads the difference. It runs hourly from `bin/hourly-maintenance.sh` **after** `ace crash prune`, so
+and uploads the difference. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
 a run never uploads reports it is about to delete. It is stateless — it asks the bucket rather than
 tracking a marker file locally, which would have leaked into the API's file inventory, into the
 archive handed to the analyst, and (worst) would have refreshed the directory mtime that prune ages
@@ -264,7 +264,7 @@ get the shape of what earlier modules produced, not their full output.
 `ace crash prune` removes reports past `retention_days` **and their index rows together**, so
 a listing never points at a directory that is gone, and drops any index spool entry for them.
 With replication on it also deletes the shared copy, remote first and in lockstep with the local
-one. It runs hourly from `bin/hourly-maintenance.sh`, followed by `ace crash index` and then `ace crash
+one. It runs hourly from `etc/cron/hourly/crash-reports`, followed by `ace crash index` and then `ace crash
 sync`. `ace crash list`, `ace crash prune --dry-run` and `ace crash index [--all] --dry-run` are
 the operator's read-only views.
 

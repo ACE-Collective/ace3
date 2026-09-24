@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# delete phishkit input/output data older than the configured age
+ace phishkit maintain-files

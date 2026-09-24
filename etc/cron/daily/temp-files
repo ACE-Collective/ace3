@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# delete any temp files older than a day
+TEMP_DIR=$(ace config -g -v temp_dir)
+if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+    find -L "$TEMP_DIR" -maxdepth 1 -mindepth 1 -mtime +1 -user ace -print0 | xargs -0 rm -rf
+fi

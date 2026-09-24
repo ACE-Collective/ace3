@@ -283,7 +283,7 @@ def create_encrypted_crash_zip(crash_id: str, crash_dir: Optional[str]) -> str:
     storage first. That staging happens here, inside the threadpool the router already puts this
     call in, and the staging directory is torn down before returning -- so the router's existing
     single BackgroundTask(unlink, zip_path) stays the whole cleanup story. Staging under
-    get_temp_dir() also means daily-maintenance's -mtime +1 sweep is a backstop if the process
+    get_temp_dir() also means etc/cron/daily/temp-files' -mtime +1 sweep is a backstop if the process
     dies mid-request.
     """
     if not is_valid_crash_id(crash_id):
