@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import os.path
+import re
 import time
 from typing import Type
 
@@ -88,6 +89,8 @@ class BasicTestAnalyzer(AnalysisModule):
             return self.execute_analysis_worker_death(test)
         elif test.value == 'test_worker_timeout' or (test.type == F_FILE and test.file_name == "test_worker_timeout"):
             return self.execute_analysis_worker_timeout(test)
+        elif test.value == 'test_worker_gil_hang':
+            return self.execute_analysis_worker_gil_hang(test)
         elif test.value.startswith('test_action_counter'):
             return self.execute_analysis_test_action_counter(test)
         elif test.value == 'test_add_file':
@@ -167,6 +170,15 @@ class BasicTestAnalyzer(AnalysisModule):
         # CPU spin should cause Worker parent to kill it
         while True:
             pass
+
+    def execute_analysis_worker_gil_hang(self, test) -> AnalysisExecutionResult:
+        logging.info("execute_worker_gil_hang")
+
+        # catastrophic backtracking: _sre never releases the GIL, so the monitor thread is
+        # starved and only the worker manager's kill ends this. bounded (about 20 seconds on its
+        # own) so a failed kill cannot wedge the test suite
+        re.match(r"(a+)+$", "a" * 28 + "b")
+        return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_test_add_file(self, test) -> AnalysisExecutionResult:
         analysis = self.create_analysis(test)

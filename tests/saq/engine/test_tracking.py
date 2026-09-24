@@ -10,6 +10,7 @@ dies is not a reason to keep the state anywhere else -- the file outlives the pr
 """
 import json
 import os
+import re
 import time
 from unittest.mock import MagicMock, Mock, patch
 
@@ -498,6 +499,72 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
 
     # and the worker acknowledged it, so the next restart will not replay it
     assert TrackingReader().recover_pending_failures() == []
+
+
+@pytest.mark.integration
+def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
+    """The pre-kill thread dump the dead worker left in hang_stacks/<node>/<pid>.txt ends up in
+    the killed report as thread_stacks.txt, and the source file is removed once it has."""
+    from saq.constants import F_TEST
+    from saq.crash_report import (
+        CRASH_TYPE_KILLED,
+        THREAD_STACKS_FILE,
+        find_crash_report_dir,
+        get_hang_stacks_path,
+        read_crash_report,
+    )
+    from saq.engine.configuration_manager import ConfigurationManager
+    from saq.engine.engine_configuration import EngineConfiguration
+    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+    from saq.engine.worker import Worker
+
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    root_analysis.save()
+
+    dying = TrackingWriter("correlation-0")
+    dying.track_current_work_target(root_analysis)
+    with patch("saq.engine.tracking.MODULE_PATH", return_value=MODULE_PATH):
+        dying.track_current_analysis_module(_module(), observable)
+
+    pending = TrackingReader().recover_pending_failures()
+    assert len(pending) == 1
+    assert pending[0].pid is not None
+
+    # what faulthandler's dump_traceback_later left behind in the dying worker
+    stacks = (
+        "Timeout (0:00:55)!\n"
+        "Thread 0x00007f0000000001 [python] (most recent call first):\n"
+        '  File "/opt/ace/saq/modules/test.py", line 170 in execute_analysis_worker_gil_hang\n'
+    )
+    hang_path = get_hang_stacks_path(pending[0].pid)
+    os.makedirs(os.path.dirname(hang_path), exist_ok=True)
+    with open(hang_path, "w") as fp:
+        fp.write(stacks)
+
+    worker = Worker(
+        name="correlation-0",
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
+        node_manager=Mock(spec=NodeManagerInterface),
+    )
+    worker.lock_manager = MagicMock()
+    worker._handle_failed_analysis(pending[0])
+
+    # the killed report's id rides in the failure message: "process died unexpectedly (crash_id <id>)"
+    reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
+    reloaded.load()
+    message = reloaded.get_analysis_failed_message(MODULE_PATH, reloaded.get_observable(observable.uuid))
+    match = re.search(r"\(crash_id ([0-9a-f-]{36})\)", message or "")
+    assert match, f"no crash id in the failure message {message!r}"
+
+    report = read_crash_report(match.group(1))
+    assert report["crash_type"] == CRASH_TYPE_KILLED
+
+    crash_dir = find_crash_report_dir(match.group(1))
+    with open(os.path.join(crash_dir, THREAD_STACKS_FILE)) as fp:
+        assert fp.read() == stacks
+
+    assert not os.path.exists(hang_path)
 
 
 @pytest.mark.integration

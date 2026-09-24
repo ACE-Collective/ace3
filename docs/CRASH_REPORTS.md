@@ -40,17 +40,51 @@ whatever the module choked on. That is the same convention the alert download us
 |---|---|---|
 | `exception` | The module raised. | The worker that ran it, with the full traceback. |
 | `timeout` | The module blew past `maximum_analysis_time` and the in-process watchdog is about to `os._exit(1)`. | The watchdog thread, **inside the stuck process**. |
-| `killed` | The worker manager SIGKILLed the worker. | The *replacement* worker, from the `TrackingRecord` the manager preserved. |
+| `killed` | The worker manager SIGKILLed the worker. | The *replacement* worker, from the `TrackingRecord` the manager preserved and the pre-kill thread dump the dying worker wrote, when that dump landed. |
 
-The `timeout` report is written from inside the wedged process, which makes it the only thing
-in ACE that can say *where the module was stuck* — `thread_stacks.txt` carries every thread's
-stack, captured with `faulthandler` so it works even when the thread in question is blocked in
-a syscall and will never run Python again. Every other observer of a hang runs in a different
-process and only ever sees the corpse.
+The `timeout` report is written from inside the wedged process — `thread_stacks.txt` carries
+every thread's stack, captured with `faulthandler` so it works even when the thread in question
+is blocked in a syscall and will never run Python again. But the watchdog is a Python thread, and
+a module stuck in C code that never releases the GIL (catastrophic backtracking in `_sre` is the
+common one) starves it: no `timeout` report is ever written. That case is covered by the
+[pre-kill hang dump](#pre-kill-hang-dumps), which gives the `killed` report its own
+`thread_stacks.txt`.
 
 A single hang can legitimately produce both a `timeout` and a `killed` report: the in-process
 watchdog and the manager race, and whichever loses still has something to say. Correlate them by
 `root_uuid` + `module_path`.
+
+## Pre-kill hang dumps
+
+`faulthandler.dump_traceback_later()` runs its timer in a C thread that does not need the GIL,
+so it fires even while a regex holds it. Every engine worker in a managed pool (not the single
+threaded engine, which has no manager to kill it) uses one:
+
+- **Open.** As it starts, a worker opens `<crash_reports>/hang_stacks/<node>/<pid>.txt` on local
+  disk and keeps it open for its lifetime. Append mode, so a write after a truncate lands at
+  offset 0.
+- **Arm.** Right after the `AnalysisModuleMonitor` starts, the executor calls
+  `arm_hang_stack_dump(maximum_analysis_time)`. This cancels any previous timer, truncates the
+  file and arms a dump `HANG_STACK_MARGIN_SECONDS` (5) before the manager's kill is due. For a
+  limit of 10 seconds or less it arms at half the limit instead.
+- **Cancel.** When the module returns, `cancel_hang_stack_dump()` disarms the timer and truncates
+  the file. A non-empty file therefore only ever means "the module running now overran".
+- **Collect.** The replacement worker's `_handle_failed_analysis` reads
+  `hang_stacks/<node>/<dead pid>.txt` (the pid comes from the `TrackingRecord`), writes it into
+  the `killed` report as `thread_stacks.txt`, then deletes the source file. A `killed` report
+  with no dump, for example a memory kill of a module that wasn't hung, records
+  `thread_stacks.txt` in `omitted`.
+- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker, and
+  `ace crash prune`, delete files whose pid no longer exists and that are more than 10 minutes
+  old. The age guard keeps one replacement from deleting a file that another has yet to collect
+  after several workers are killed at once.
+
+The dump starts with a `Timeout (0:00:55)!` line, followed by faulthandler's usual
+`Thread 0x... (most recent call first):` blocks. The C timer thread is not a Python thread, so
+no block is marked `Current thread`. Nothing here changes `maximum_analysis_time` or how the
+manager kills a worker.
+
+When the watchdog *does* run, a hang produces both reports, and both have stacks.
 
 ## What is in a report
 
@@ -58,7 +92,7 @@ watchdog and the manager race, and whichever loses still has something to say. C
 <data_dir>/crash_reports/YYYY/MM/DD/<crash_id>/
 ├── metadata.json        # always; written last (see below)
 ├── stack_trace.txt      # exception path
-├── thread_stacks.txt    # timeout path
+├── thread_stacks.txt    # timeout path; killed path when the pre-kill dump landed
 ├── root.json            # the analysis tree (data.json), not the storage directory
 └── file/<name>          # the bytes of the file observable the module crashed on
 ```
@@ -263,6 +297,7 @@ get the shape of what earlier modules produced, not their full output.
 
 `ace crash prune` removes reports past `retention_days` **and their index rows together**, so
 a listing never points at a directory that is gone, and drops any index spool entry for them.
+It also removes stale [pre-kill hang dumps](#pre-kill-hang-dumps).
 With replication on it also deletes the shared copy, remote first and in lockstep with the local
 one. It runs hourly from `bin/hourly-maintenance.sh`, followed by `ace crash index` and then `ace crash
 sync`. `ace crash list`, `ace crash prune --dry-run` and `ace crash index [--all] --dry-run` are

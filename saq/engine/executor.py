@@ -48,6 +48,8 @@ from saq.constants import (
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     CRASH_TYPE_TIMEOUT,
+    arm_hang_stack_dump,
+    cancel_hang_stack_dump,
     record_module_crash,
 )
 from saq.database.model import Alert
@@ -1429,6 +1431,11 @@ class AnalysisExecutor:
             )
             monitor.start()
 
+            # and a pre-kill thread dump, for the hang the monitor cannot see: a module holding
+            # the GIL starves the monitor thread, but this timer runs in C and fires anyway. the
+            # replacement worker attaches the dump to the killed report (see saq/crash_report.py)
+            arm_hang_stack_dump(analysis_module.maximum_analysis_time)
+
             # we default to completed if the analysis module does not return a valid result
             analysis_result: AnalysisExecutionResult = AnalysisExecutionResult.COMPLETED
 
@@ -1557,6 +1564,7 @@ class AnalysisExecutor:
             finally:
                 # make sure we stop the monitor thread
                 monitor.stop()
+                cancel_hang_stack_dump()
 
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()

@@ -58,7 +58,14 @@ def cli_prune(args):
     """Delete crash reports older than N days, along with their index rows and shared copies."""
     from saq.configuration.config import get_config
     from saq.crash_replication import delete_report, replication_enabled
-    from saq.crash_report import get_crash_report_root_dir
+    from saq.crash_report import get_crash_report_root_dir, prune_stale_hang_stacks
+
+    # pre-kill thread dumps left by engine workers that are gone. independent of retention: a
+    # dump is collected within seconds of its worker dying or not at all. not in a dry run
+    if not args.dry_run:
+        pruned_dumps = prune_stale_hang_stacks()
+        if pruned_dumps:
+            print(f"pruned {pruned_dumps} stale hang stack dump(s)")
 
     days = args.days if args.days is not None else get_config().crash_reporting.retention_days
     if days <= 0:
