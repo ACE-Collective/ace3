@@ -36,6 +36,14 @@ order belong in **one** script — for example `hourly/crash-reports` runs `ace 
 
 A failing task does not stop the others.
 
+### Tasks that must run on one node
+
+Every node runs every task. A task that changes shared state (database DDL, a shared bucket, an
+external upload) must exit 0 unless `ACE_IS_PRIMARY_NODE` is `1`. Shell tasks check the variable
+directly, defaulting to `1` so that a single-node install needs no setting; Python code calls
+`is_primary_node()` (`saq/database/util/node.py`). `bin/manage-email-archive-partitions.sh`, run
+by `weekly/email-archive-partitions`, is an example.
+
 ## Integrations
 
 An enabled integration adds tasks by shipping the same layout in its own directory:

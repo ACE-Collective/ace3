@@ -12,6 +12,14 @@
 # - Ensures next week's partition is created
 #
 
+# partition DDL runs against the shared email archive database, so exactly one node does it.
+# defaults to primary, like is_primary_node(), so a single-node install is unaffected
+if [ "${ACE_IS_PRIMARY_NODE:-1}" != "1" ]
+then
+    echo "not the primary node -- skipping email archive partition maintenance"
+    exit 0
+fi
+
 set -euo pipefail
 
 # Constants
