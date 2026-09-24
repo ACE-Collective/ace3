@@ -17,8 +17,13 @@ from saq.crash_report import (
     CRASH_TYPE_KILLED,
     CRASH_TYPE_TIMEOUT,
     CrashReportMetadata,
+    close_hang_stacks_file,
+    discard_hang_stacks,
     drain_index_spool,
+    open_hang_stacks_file,
+    prune_stale_hang_stacks,
     record_module_crash,
+    take_hang_stacks,
 )
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import get_lock_uuid
@@ -478,6 +483,13 @@ class Worker:
         # record of what it was doing so we can record the failure against that root
         self._handle_failed_analysis(pending_failure, indexed_crashes)
 
+        # open the file the pre-kill thread dump goes to (see arm_hang_stack_dump). only with a
+        # manager: in single threaded mode nothing kills the worker, so there is nothing to
+        # pre-empt. pruning comes after the predecessor's dump was collected just above
+        if not self.config.single_threaded_mode:
+            prune_stale_hang_stacks()
+            open_hang_stacks_file()
+
         while True:
             # is this worker shutting down?
             if self.is_immediate_shutdown():
@@ -557,6 +569,11 @@ class Worker:
             finally:
                 # SQLAlchemy session management
                 remove_all_sessions()
+
+        # a clean exit leaves nothing to collect
+        if not self.config.single_threaded_mode:
+            close_hang_stacks_file()
+            discard_hang_stacks(os.getpid())
 
         logging.debug("worker {} exiting".format(os.getpid()))
 
@@ -714,6 +731,7 @@ class Worker:
                 last_work_target, last_analysis_module,
             )
             self.tracking_message_manager.resolve_pending_failure(record.root_uuid)
+            discard_hang_stacks(record.pid)
             return
 
         logging.warning(
@@ -724,9 +742,12 @@ class Worker:
             root = RootAnalysis(storage_dir=last_work_target)
             root.load()
 
-            # the process that died wrote nothing -- SIGKILL leaves no handler a chance -- so this
-            # is where the crash gets recorded, from the replacement worker, out of the tracking
-            # record the manager preserved
+            # the process that died could not write a report -- SIGKILL leaves no handler a
+            # chance -- so this is where the crash gets recorded, from the replacement worker, out
+            # of the tracking record the manager preserved, plus the thread dump the dying process
+            # wrote shortly before the kill when it got that far. that dump is the only record of
+            # where a module holding the GIL was stuck: it starves the in-process watchdog, so
+            # there is no timeout report to fall back on
             crash_id = record_module_crash(
                 crash_type=CRASH_TYPE_KILLED,
                 module_path=last_analysis_module.module_path,
@@ -737,7 +758,9 @@ class Worker:
                 worker_name=last_analysis_module.worker_name,
                 maximum_analysis_time=last_analysis_module.maximum_analysis_time,
                 module_start_time=last_analysis_module.module_start_time,
+                thread_stacks=take_hang_stacks(record.pid),
             )
+            discard_hang_stacks(record.pid)
 
             # mark the analysis as failed. the crash id rides along in the error message so it
             # ends up serialized in the alert's own tree -- an analyst looking at the alert that

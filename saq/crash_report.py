@@ -16,14 +16,22 @@ Three kinds of crash are recorded, from three different places:
 
 ``timeout``
     The module blew through ``maximum_analysis_time`` and the in-process watchdog is about to
-    ``os._exit(1)``. This is the only report written *from inside the stuck process*, so it is
-    the only one that can say where the module was actually blocked -- see ``thread_stacks.txt``.
+    ``os._exit(1)``. This is the only report written *from inside the stuck process*, at the
+    moment it is stuck -- see ``thread_stacks.txt``.
     It is not indexed inline (see ``record_module_crash``); it is spooled, and the replacement
     worker indexes it moments later -- see ``drain_index_spool``.
 
 ``killed``
-    The worker manager SIGKILLed the worker. The dying process wrote nothing; the replacement
-    worker reconstructs what it can from the ``TrackingRecord`` the manager handed it.
+    The worker manager SIGKILLed the worker. The replacement worker reconstructs what it can
+    from the ``TrackingRecord`` the manager handed it, plus the thread stacks the dying process
+    dumped shortly before the kill, when that dump landed -- see "hang stack dumps" below.
+
+A module that hangs while holding the GIL (a catastrophic regex inside ``_sre`` is the common
+one) starves the watchdog thread, so it never writes its ``timeout`` report. For that case every
+engine worker keeps a ``faulthandler.dump_traceback_later`` timer armed around each module
+execution. That timer runs in a C thread that does not need the GIL, and it dumps every thread's
+stack into ``hang_stacks/<node>/<pid>.txt`` a few seconds before the manager's kill is due. The
+replacement worker copies that file into the ``killed`` report.
 
 A hang can legitimately produce both a ``timeout`` and a ``killed`` report -- the in-process
 watchdog and the manager race, and whichever loses still has something to say. They are
@@ -44,7 +52,6 @@ without a lock. Partial evidence still beats none, so an incomplete report is st
 import faulthandler
 import glob
 import hashlib
-import io
 import json
 import logging
 import os
@@ -52,11 +59,15 @@ import re
 import shutil
 import socket
 import sys
+import tempfile
+import time
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Optional
+
+import psutil
 
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, HARDCOPY_SUBDIR
@@ -76,6 +87,19 @@ STACK_TRACE_FILE = "stack_trace.txt"
 THREAD_STACKS_FILE = "thread_stacks.txt"
 ROOT_JSON_FILE = "root.json"
 FILE_DIR = "file"
+
+# where each engine worker's pre-kill thread dump goes, one file per pid, under a per-node
+# directory: a pid only means something on the host that issued it. like the index spool it sits
+# under the crash report root but outside every report directory
+HANG_STACKS_DIR = "hang_stacks"
+
+# how long before maximum_analysis_time the pre-kill dump fires. it has to land before the
+# manager's SIGKILL, which comes at maximum_analysis_time (checked about once a second)
+HANG_STACK_MARGIN_SECONDS = 5
+
+# a hang stack file for a dead pid is only pruned once it is this old, so a worker starting up
+# cannot delete a file that another replacement worker has yet to collect
+HANG_STACKS_PRUNE_MIN_AGE_SECONDS = 600
 
 # the spool of reports that are on disk but not yet in the database index, one empty file per
 # crash id. it lives under the crash report root but outside every report directory, so it never
@@ -267,6 +291,18 @@ def get_index_pending_dir() -> str:
     return os.path.join(get_crash_report_root_dir(), INDEX_PENDING_DIR)
 
 
+def get_hang_stacks_dir() -> str:
+    """This node's directory of pre-kill thread dumps."""
+    return os.path.join(
+        get_crash_report_root_dir(), HANG_STACKS_DIR, str(get_global_runtime_settings().saq_node)
+    )
+
+
+def get_hang_stacks_path(pid: int) -> str:
+    """The pre-kill thread dump file of one engine worker process."""
+    return os.path.join(get_hang_stacks_dir(), f"{int(pid)}.txt")
+
+
 def find_crash_report_dir(crash_id: str, report_dir: Optional[str] = None) -> Optional[str]:
     """Resolve a crash id to its directory, or None.
 
@@ -396,15 +432,17 @@ def _capture_thread_stacks() -> str:
 
     ``faulthandler`` walks threads at the C level, so it works even when the thread we care
     about is blocked in a syscall and will never run Python again -- which is the whole reason
-    this is here. The pure Python fallback covers the case where faulthandler cannot write to
-    our buffer.
+    this is here. It writes to a file descriptor, not a Python stream (a ``StringIO`` makes it
+    raise ``io.UnsupportedOperation``), so the dump goes through a real temporary file and is
+    read back. The pure Python fallback covers the case where faulthandler fails anyway.
     """
-    buffer = io.StringIO()
     try:
-        faulthandler.dump_traceback(file=buffer, all_threads=True)
-        captured = buffer.getvalue()
-        if captured.strip():
-            return captured
+        with tempfile.TemporaryFile(mode="w+") as fp:
+            faulthandler.dump_traceback(file=fp, all_threads=True)
+            fp.seek(0)
+            captured = fp.read()
+            if captured.strip():
+                return captured
     except Exception as e:
         logging.debug("faulthandler could not dump tracebacks: %s", e)
 
@@ -416,6 +454,174 @@ def _capture_thread_stacks() -> str:
         return "".join(lines)
     except Exception as e:
         return f"unable to capture thread stacks: {e}\n"
+
+
+#
+# hang stack dumps
+#
+# One faulthandler.dump_traceback_later timer per process, so the state is process global. A
+# worker runs one module at a time, and arming always cancels the previous timer first.
+
+_hang_stacks_fp = None
+
+
+def open_hang_stacks_file() -> bool:
+    """Open this process's pre-kill dump file. Called once by each engine worker as it starts.
+
+    Append mode on purpose: faulthandler writes through the raw file descriptor, and O_APPEND is
+    what makes a write after ``ftruncate`` land at offset 0 instead of past a sparse hole at the
+    old offset. Never raises; returns True if the file is open.
+    """
+    global _hang_stacks_fp
+    try:
+        close_hang_stacks_file()
+        path = get_hang_stacks_path(os.getpid())
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _hang_stacks_fp = open(path, "a")
+        os.ftruncate(_hang_stacks_fp.fileno(), 0)
+        return True
+    except Exception as e:
+        logging.warning("unable to open the hang stack dump file: %s", e)
+        _hang_stacks_fp = None
+        return False
+
+
+def close_hang_stacks_file():
+    """Cancel any armed dump and close this process's dump file. Never raises."""
+    global _hang_stacks_fp
+    try:
+        faulthandler.cancel_dump_traceback_later()
+    except Exception as e:
+        logging.debug("unable to cancel the hang stack dump: %s", e)
+
+    if _hang_stacks_fp is not None:
+        try:
+            _hang_stacks_fp.close()
+        except Exception as e:
+            logging.debug("unable to close the hang stack dump file: %s", e)
+
+        _hang_stacks_fp = None
+
+
+def _hang_stack_delay(maximum_analysis_time: float) -> float:
+    """How long after a module starts the pre-kill dump fires: ``HANG_STACK_MARGIN_SECONDS``
+    before the kill, or halfway there when the limit is too short to leave that much room."""
+    if maximum_analysis_time > 2 * HANG_STACK_MARGIN_SECONDS:
+        return maximum_analysis_time - HANG_STACK_MARGIN_SECONDS
+
+    return maximum_analysis_time / 2
+
+
+def _truncate_hang_stacks_file():
+    if _hang_stacks_fp is not None:
+        os.ftruncate(_hang_stacks_fp.fileno(), 0)
+
+
+def arm_hang_stack_dump(maximum_analysis_time: Optional[float]):
+    """Arm the pre-kill thread dump for the module about to run.
+
+    The timer runs in a C thread that does not need the GIL, so it fires even while the module
+    holds it -- exactly the case where the Python watchdog thread (``AnalysisModuleMonitor``) is
+    starved and writes nothing. The file is truncated first so it only ever holds the dump of
+    the current execution. Does nothing when no dump file is open (the single threaded engine,
+    which has no manager to kill it) or when the module has no time limit. Never raises.
+    """
+    if _hang_stacks_fp is None or not maximum_analysis_time or maximum_analysis_time <= 0:
+        return
+
+    try:
+        faulthandler.cancel_dump_traceback_later()
+        _truncate_hang_stacks_file()
+        faulthandler.dump_traceback_later(
+            _hang_stack_delay(maximum_analysis_time),
+            repeat=False,
+            file=_hang_stacks_fp,
+            exit=False,
+        )
+    except Exception as e:
+        logging.warning("unable to arm the hang stack dump: %s", e)
+
+
+def cancel_hang_stack_dump():
+    """Disarm the pre-kill dump after a module returns. Never raises.
+
+    The file is truncated here too, so a dump from a module that ran long but did finish can
+    never be attached to a later, unrelated kill (a memory kill during the next module).
+    """
+    if _hang_stacks_fp is None:
+        return
+
+    try:
+        faulthandler.cancel_dump_traceback_later()
+        _truncate_hang_stacks_file()
+    except Exception as e:
+        logging.warning("unable to cancel the hang stack dump: %s", e)
+
+
+def take_hang_stacks(pid: Optional[int]) -> Optional[str]:
+    """The pre-kill thread dump a dead worker left behind, or None. Never raises."""
+    if pid is None:
+        return None
+
+    try:
+        with open(get_hang_stacks_path(pid)) as fp:
+            stacks = fp.read()
+        return stacks if stacks.strip() else None
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logging.warning("unable to read the hang stack dump of pid %s: %s", pid, e)
+        return None
+
+
+def discard_hang_stacks(pid: Optional[int]):
+    """Delete a dead worker's pre-kill dump file. Missing is fine; never raises."""
+    if pid is None:
+        return
+
+    try:
+        os.unlink(get_hang_stacks_path(pid))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning("unable to remove the hang stack dump of pid %s: %s", pid, e)
+
+
+def prune_stale_hang_stacks(min_age_seconds: float = HANG_STACKS_PRUNE_MIN_AGE_SECONDS) -> int:
+    """Delete this node's dump files whose process is gone. Returns how many. Never raises.
+
+    A file is only removed when its pid no longer exists *and* it has not been written for
+    ``min_age_seconds``: when several workers are killed at once, their replacements start in
+    some order, and the age guard keeps the first one from deleting a file the others have yet
+    to collect.
+    """
+    removed = 0
+    try:
+        hang_dir = get_hang_stacks_dir()
+        if not os.path.isdir(hang_dir):
+            return removed
+
+        cutoff = time.time() - min_age_seconds
+        for file_name in os.listdir(hang_dir):
+            pid_text, extension = os.path.splitext(file_name)
+            if extension != ".txt" or not pid_text.isdigit():
+                continue
+
+            path = os.path.join(hang_dir, file_name)
+            try:
+                if psutil.pid_exists(int(pid_text)) or os.path.getmtime(path) > cutoff:
+                    continue
+                os.unlink(path)
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logging.warning("unable to prune hang stack dump %s: %s", path, e)
+
+    except Exception as e:
+        logging.warning("unable to prune hang stack dumps: %s", e)
+
+    return removed
 
 
 def _format_exception(exception: Optional[BaseException]) -> Optional[str]:
@@ -487,6 +693,7 @@ def record_module_crash(
     module_start_time: Optional[str] = None,
     elapsed_seconds: Optional[float] = None,
     include_thread_stacks: bool = False,
+    thread_stacks: Optional[str] = None,
     index: bool = True,
     replicate: bool = True,
 ) -> Optional[str]:
@@ -495,6 +702,10 @@ def record_module_crash(
     Never raises. A crash report that can take analysis down with it, or that can stop a wedged
     process from exiting, is worse than no crash report; every failure below is logged and
     swallowed.
+
+    ``include_thread_stacks`` captures this process's threads right now (the watchdog);
+    ``thread_stacks`` is stack text captured earlier, by another process (the pre-kill dump a
+    ``killed`` report inherits from the worker that died). The first wins if both are given.
 
     ``index=False`` skips the database write and ``replicate=False`` skips the copy to shared
     storage. Both are used by the in-process watchdog, which is running inside a process whose
@@ -561,6 +772,16 @@ def record_module_crash(
 
         if include_thread_stacks:
             _write_atomic(os.path.join(crash_dir, THREAD_STACKS_FILE), _capture_thread_stacks())
+        elif thread_stacks:
+            _write_atomic(os.path.join(crash_dir, THREAD_STACKS_FILE), thread_stacks)
+        elif crash_type == CRASH_TYPE_KILLED:
+            # a killed report is only stackless when the pre-kill dump never landed (the module
+            # was not hung -- a memory kill -- or the dump could not be written); say so
+            metadata.omitted.append({
+                "what": THREAD_STACKS_FILE,
+                "reason": OMITTED_NOT_FOUND,
+                "detail": "no pre-kill thread dump was captured",
+            })
 
         _copy_root_json(root, crash_dir, config, metadata.omitted)
         _copy_file_observable(
