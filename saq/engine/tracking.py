@@ -122,6 +122,11 @@ class TrackingRecord:
     target_start_time: Optional[str] = None
     pending_failure: bool = False
 
+    # the lock the worker held on the root. whoever recovers from this worker's death may release
+    # this lock and no other: by then the root may already be locked by a live worker. None in
+    # records written before this was tracked
+    lock_uuid: Optional[str] = None
+
     # when the module started, on the monotonic clock. CLOCK_MONOTONIC is system wide on
     # linux, so the manager can compare its own reading against this one directly -- which
     # is what makes this immune to the clock steps and DST shifts that a cross process
@@ -200,7 +205,7 @@ class TrackingWriter:
         except Exception as e:
             logging.debug("unable to write tracking for %s to %s: %s", self.worker_name, self.path, e)
 
-    def track_current_work_target(self, target: Union[RootAnalysis, DelayedAnalysisRequest]):
+    def track_current_work_target(self, target: Union[RootAnalysis, DelayedAnalysisRequest], lock_uuid: Optional[str] = None):
         assert isinstance(target, (RootAnalysis, DelayedAnalysisRequest))
         # a new target implies a new analysis, so any module state is stale
         self.record = TrackingRecord(
@@ -209,6 +214,7 @@ class TrackingWriter:
             worker_name=self.worker_name,
             pid=os.getpid(),
             target_start_time=datetime.now().isoformat(),
+            lock_uuid=lock_uuid,
         )
         self._flush()
 
@@ -275,7 +281,7 @@ class NullTrackingWriter(TrackingWriter):
     def _flush(self):
         pass
 
-    def track_current_work_target(self, target: Union[RootAnalysis, DelayedAnalysisRequest]):
+    def track_current_work_target(self, target: Union[RootAnalysis, DelayedAnalysisRequest], lock_uuid: Optional[str] = None):
         pass
 
     def clear_target_tracking(self):
