@@ -180,7 +180,7 @@ Analysis caching (per-module result cache keyed on observable + module + config 
 
 ### Collectors and hunting
 
-`saq/collectors/` — collectors yield `Submission` objects and hand them to the workload. Email, SMTP, HTTP, and the **hunter** (`saq/collectors/hunter/`) which runs scheduled queries (Splunk, etc.) defined as YAML in git-backed repos. See `docs/HUNTS.md` and `docs/CORRELATION_HUNTS.md`.
+`saq/collectors/` — collectors yield `Submission` objects and hand them to the workload. Email, SMTP, HTTP, and the **hunter** (`saq/collectors/hunter/`) which runs scheduled queries (Splunk, etc.) defined as YAML in git-backed repos. See `docs/HUNTS.md` and `docs/CORRELATION_HUNTS.md`. Correlate steps are extensible from integrations: query sources and custom `command.type`s are registered through `hunter.correlation.{query_sources,command_types}` (`saq/collectors/hunter/correlation/command_types.py`, "Extending correlation hunts" in `docs/INTEGRATIONS.md`).
 
 ### Services
 
