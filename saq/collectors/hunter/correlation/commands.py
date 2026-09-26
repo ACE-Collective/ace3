@@ -14,9 +14,36 @@ from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.trace import sanitize_value
-from saq.configuration.yaml_parser import ENCRYPTED_PREFIX
 
 _jinja_env = SandboxedEnvironment()
+
+# The only variables an executable command inherits from the ACE process. The ACE environment
+# carries credentials (the encryption key, database, redis, rabbitmq and qdrant passwords), and a
+# hunt must have no path to a secret, so this list is closed rather than a denylist: anything not
+# named here, including a variable added to the container later, never reaches a hunt script.
+# Locale, timezone and temp dir keep scripts behaving normally; the proxy and CA bundle variables
+# let scripts that make outbound requests work behind an intercepting proxy. A script that needs
+# anything else gets it as a literal value in its command's `env:` block.
+EXECUTABLE_ENV_ALLOWLIST = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "PYTHONUTF8",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
 
 
 def execute_command(
@@ -47,11 +74,11 @@ def execute_command(
             relative `before` to this.
         temp_dir: Temporary directory for command execution.
         stream_query_cache: Cache for stream query results (memoization within a correlation run).
-        secrets: Decrypted secrets from the encrypted-password store. Used to scrub secret
-            values out of the cache descriptions and error messages written to logs, and
-            bound as `_secrets` when rendering an executable's `env:` block
-            See build_jinja_context.
-        config: Configuration dict for jinja context.
+        secrets: Decrypted secrets from the encrypted-password store. Used only to scrub
+            secret values out of command output, cache descriptions and error messages; never
+            rendered into anything a hunt defines. See build_jinja_context.
+        config: Configuration dict handed to a custom command type as CommandContext.config.
+            It is not bound in any hunt template.
         current_source: Name of the source that produced the current event stream;
             used to supply default `relative_time_field`/`relative_time_format` when
             the YAML omits them.
@@ -68,9 +95,9 @@ def execute_command(
     if command.type == "defined":
         return _execute_defined(command, event, events, transform_type, predefined_commands, hunt_start_time, hunt_end_time, temp_dir, stream_query_cache, secrets, config, current_source, query_recorder)
     elif command.type == "query":
-        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, config, current_source, query_recorder)
+        return _execute_query(command, event, events, transform_type, hunt_start_time, hunt_end_time, stream_query_cache, secrets, current_source, query_recorder)
     elif command.type == "executable":
-        return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
+        return _execute_executable(command, event, events, transform_type, temp_dir, secrets)
     else:
         return _execute_custom(command, event, events, transform_type, hunt_start_time, hunt_end_time, temp_dir, secrets, config)
 
@@ -113,7 +140,6 @@ def _execute_query(
     hunt_end_time: datetime.datetime,
     stream_query_cache: Optional[dict],
     secrets: dict | None = None,
-    config: dict | None = None,
     current_source: Optional[str] = None,
     query_recorder: Optional[CorrelateQueryRecorder] = None,
 ) -> str:
@@ -123,9 +149,7 @@ def _execute_query(
     # per-event queries that differ only after interpolation collapse to one cache
     # key and the first event's result is served to every later event. Rendering is
     # cheap (in-memory, no I/O) so doing it before the cache lookups is fine.
-    #
-    # `secrets` is deliberately not passed: query text is sent to a third-party data source.
-    context = build_jinja_context(event, events, config)
+    context = build_jinja_context(event, events)
     query_str = _jinja_env.from_string(command.query).render(**context)
 
     # For stream transforms, memoize the result
@@ -269,10 +293,13 @@ def _execute_executable(
     transform_type: str,
     temp_dir: str,
     secrets: dict | None = None,
-    config: dict | None = None,
 ) -> str:
-    """Execute an executable command."""
-    context = build_jinja_context(event, events, config)
+    """Execute an executable command.
+
+    The child process gets EXECUTABLE_ENV_ALLOWLIST from ACE's environment plus the command's
+    own rendered `env:` values, never the whole ACE environment.
+    """
+    context = build_jinja_context(event, events)
     timeout = parse_timespec(command.timeout)
 
     # Build args with jinja interpolation
@@ -283,25 +310,14 @@ def _execute_executable(
 
     args = [command.path] + rendered_args
 
+    env_vars = {key: os.environ[key] for key in EXECUTABLE_ENV_ALLOWLIST if key in os.environ}
+
     # Build environment variables with jinja interpolation
     rendered_env = None
-    env_vars = None
     if command.env:
         rendered_env = {}
-        env_vars = dict(os.environ)
-        env_context = build_jinja_context(event, events, config, secrets=secrets or {})
         for key, value in command.env.items():
-            rendered = _jinja_env.from_string(value).render(**env_context)
-            if ENCRYPTED_PREFIX in rendered:
-                # an `encrypted:<name>` marker survives unresolved in the raw config dict bound
-                # as `_config`, so reading a secret that way yields the marker instead of the
-                # credential.
-                raise ValueError(sanitize_value(
-                    f"env {key} of {command.path} rendered an unresolved {ENCRYPTED_PREFIX!r} "
-                    f"marker: {rendered!r}. read the secret with _secrets['<name>'] instead of "
-                    "_config.",
-                    secrets or {},
-                ))
+            rendered = _jinja_env.from_string(value).render(**context)
             rendered_env[key] = rendered
             env_vars[key] = rendered
 
@@ -342,9 +358,9 @@ def _execute_executable(
         raise RuntimeError(f"command timed out after {timeout}")
 
     # stdout is sanitized for the same reason stderr is: it becomes event data, which flows into
-    # the persisted correlation trace and into later query text sent to a data source. `env` is
-    # the one template context bound to `_secrets`, so a helper that echoes a credential it was
-    # handed -- even a badly written one -- would otherwise leak it through both channels.
+    # the persisted correlation trace and into later query text sent to a data source. A hunt
+    # never hands a script a credential, but a script can still read one on its own, so this
+    # stays as a backstop.
     stdout = sanitize_value(result.stdout, secrets or {})
 
     # Store in persistent cache
@@ -367,16 +383,6 @@ def _render_option_value(value, context: dict):
     return value
 
 
-def _find_encrypted_marker(value) -> bool:
-    if isinstance(value, str):
-        return ENCRYPTED_PREFIX in value
-    if isinstance(value, dict):
-        return any(_find_encrypted_marker(v) for v in value.values())
-    if isinstance(value, list):
-        return any(_find_encrypted_marker(v) for v in value)
-    return False
-
-
 def prepare_custom_command(
     command: CommandConfig,
     event: dict,
@@ -397,17 +403,7 @@ def prepare_custom_command(
     handler = get_command_type(command.type)
 
     if handler.render_options:
-        # `secrets` is deliberately not bound: options end up in the persisted trace, in cache
-        # descriptions and in whatever the handler sends to a third party.
-        rendered = _render_option_value(command.options, build_jinja_context(event, events, config))
-        if _find_encrypted_marker(rendered):
-            # an `encrypted:<name>` marker survives unresolved in the raw config dict bound as
-            # `_config`, so an option that reads a secret that way yields the marker.
-            raise ValueError(
-                f"options of {command.type} rendered an unresolved {ENCRYPTED_PREFIX!r} marker; "
-                "credentials are not available to options -- read them in the command type from "
-                "its integration configuration instead"
-            )
+        rendered = _render_option_value(command.options, build_jinja_context(event, events))
     else:
         rendered = command.options
 

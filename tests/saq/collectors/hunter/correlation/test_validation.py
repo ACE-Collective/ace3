@@ -12,15 +12,9 @@ from saq.collectors.hunter.correlation.command_types import (
 from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.validation import (
     check_custom_command_types,
-    check_env_for_encrypted_markers,
+    check_templates_for_removed_names,
     iter_correlate_commands,
 )
-
-CONFIG = {
-    "rapid7": {"api_key": "encrypted:rapid7.api_key"},
-    "wiz": {"client_id": "abc123"},
-}
-
 
 def _correlate(*commands) -> CorrelateConfig:
     return CorrelateConfig.model_validate({
@@ -63,96 +57,111 @@ class TestIterCorrelateCommands:
 
 
 @pytest.mark.unit
-class TestCheckEnvForEncryptedMarkers:
+class TestCheckTemplatesForRemovedNames:
 
-    def test_config_reference_to_encrypted_secret_is_rejected(self):
-        """The reported rapid7 bug, caught before the hunt ever runs."""
-        correlate = _correlate({
-            "type": "executable",
-            "path": "/x/r7.py",
-            "env": {"R7_API_KEY": "{{ _config['rapid7']['api_key'] }}"},
+    @pytest.mark.parametrize("name", ["_secrets", "_config"])
+    @pytest.mark.parametrize("command", [
+        {"type": "executable", "path": "/x/a.py", "env": {"API_KEY": "{{ NAME['vendor.api_key'] }}"}},
+        {"type": "executable", "path": "/x/a.py", "args": ["--key", "{{ NAME.vendor.api_key }}"]},
+        {"type": "query", "source": "splunk", "query": "search key={{ NAME['vendor'] }}"},
+        {"type": "lookup", "options": {"nested": {"deep": ["{{ NAME }}"]}}},
+        {"type": "defined", "name": "cmd", "arguments": {"args": ["{% if NAME %}x{% endif %}"]}},
+    ], ids=["env", "args", "query", "options", "defined_arguments"])
+    def test_command_templates_are_rejected(self, name, command):
+        command = {k: _substitute(v, name) for k, v in command.items()}
+        errors = check_templates_for_removed_names(_correlate(command), None)
+        assert len(errors) == 1
+        assert name in errors[0]
+        assert "custom command type" in errors[0]
+
+    @pytest.mark.parametrize("name", ["_secrets", "_config"])
+    def test_condition_action_and_debug_templates_are_rejected(self, name):
+        correlate = CorrelateConfig.model_validate({
+            "logic": [
+                {
+                    "when": {"type": "and", "value": [
+                        "{{ _event.x }}",
+                        {"type": "not", "value": f"{{{{ {name}.a }}}}"},
+                    ]},
+                    "execute": [{"action": {"type": "log", "log_message": "ok"}}],
+                    "else": [
+                        {
+                            "action": {"type": "log", "log_message": f"{{{{ {name}.b }}}}"},
+                            "debug": f"{{{{ {name}.c }}}}",
+                        },
+                    ],
+                },
+            ],
         })
-        errors = check_env_for_encrypted_markers(correlate, None, CONFIG)
-        assert len(errors) == 1
-        assert "R7_API_KEY" in errors[0]
-        assert "_secrets" in errors[0]
+        errors = check_templates_for_removed_names(correlate, None)
+        assert len(errors) == 3
+        assert all(name in e for e in errors)
 
-    def test_predefined_command_env_is_checked(self):
-        """Every real secret consumer is a predefined command in a shared include file."""
-        predefined = [PredefinedCommandConfig.model_validate({
-            "name": "get_r7_investigation_comments",
-            "type": "executable",
-            "path": "/x/r7.py",
-            "env": {"R7_API_KEY": "{{ _config['rapid7']['api_key'] }}"},
-        })]
-        errors = check_env_for_encrypted_markers(None, predefined, CONFIG)
-        assert len(errors) == 1
-        assert "get_r7_investigation_comments" in errors[0]
-
-    def test_secrets_reference_is_accepted(self):
+    def test_predefined_command_is_checked(self):
+        """Commands shared through an include file are checked under their own name."""
         predefined = [PredefinedCommandConfig.model_validate({
             "name": "get_r7_investigation_comments",
             "type": "executable",
             "path": "/x/r7.py",
             "env": {"R7_API_KEY": "{{ _secrets['rapid7.api_key'] }}"},
         })]
-        assert check_env_for_encrypted_markers(None, predefined, CONFIG) == []
+        errors = check_templates_for_removed_names(None, predefined)
+        assert len(errors) == 1
+        assert "get_r7_investigation_comments" in errors[0]
+        assert "_secrets" in errors[0]
 
-    def test_plaintext_config_reference_is_accepted(self):
+    def test_event_templates_are_accepted(self):
+        correlate = _correlate(
+            {"type": "executable", "path": "/x/a.py", "args": ["{{ _event.domain }}"],
+             "env": {"USER": "{{ _event['properties.userId'] }}", "MODE": "fast"}},
+            {"type": "query", "source": "splunk", "query": "search host={{ _event.host }} | stats count by {{ _events|length }}"},
+        )
+        assert check_templates_for_removed_names(correlate, None) == []
+
+    def test_a_locally_assigned_name_is_not_a_reference(self):
         correlate = _correlate({
-            "type": "executable",
-            "path": "/x/wiz.py",
-            "env": {"WIZ_CLIENT_ID": "{{ _config['wiz']['client_id']}}"},
+            "type": "executable", "path": "/x/a.py",
+            "args": ["{% set _config = _event.x %}{{ _config }}"],
         })
-        assert check_env_for_encrypted_markers(correlate, None, CONFIG) == []
+        assert check_templates_for_removed_names(correlate, None) == []
 
-    def test_marker_composed_into_a_longer_value_is_rejected(self):
-        correlate = _correlate({
-            "type": "executable",
-            "path": "/x/a.py",
-            "env": {"CERT_PATH": "/opt/ace/{{ _config['rapid7']['api_key'] }}"},
-        })
-        assert len(check_env_for_encrypted_markers(correlate, None, CONFIG)) == 1
+    def test_unrendered_fields_are_not_checked(self):
+        """`description` and `source_options` are passed as written, never rendered."""
+        predefined = [PredefinedCommandConfig.model_validate({
+            "name": "cmd",
+            "description": "do not use {{ _secrets }} here",
+            "type": "query",
+            "source": "splunk",
+            "query": "search x",
+            "source_options": {"note": "{{ _config }}"},
+        })]
+        assert check_templates_for_removed_names(None, predefined) == []
 
-    def test_hardcoded_marker_is_rejected(self):
-        correlate = _correlate({
-            "type": "executable",
-            "path": "/x/a.py",
-            "env": {"R7_API_KEY": "encrypted:rapid7.api_key"},
-        })
-        assert len(check_env_for_encrypted_markers(correlate, None, CONFIG)) == 1
+    def test_template_that_does_not_parse_is_skipped(self):
+        correlate = _correlate({"type": "executable", "path": "/x/a.py", "args": ["{{ _secrets["]})
+        assert check_templates_for_removed_names(correlate, None) == []
 
-    def test_env_referencing_event_data_is_not_reported(self):
-        """The probe context has no event data, so an unresolvable event field is not an error."""
-        correlate = _correlate({
-            "type": "executable",
-            "path": "/x/a.py",
-            "env": {"USER": "{{ _event['properties.userId'] }}"},
-        })
-        assert check_env_for_encrypted_markers(correlate, None, CONFIG) == []
-
-    def test_commands_without_env_are_skipped(self):
-        correlate = _correlate({"type": "defined", "name": "cmd"})
-        assert check_env_for_encrypted_markers(correlate, None, CONFIG) == []
+    def test_same_template_in_several_places_is_one_error(self):
+        command = {"type": "executable", "path": "/x/a.py", "env": {"K": "{{ _secrets.k }}"}}
+        assert len(check_templates_for_removed_names(_correlate(command, command), None)) == 1
 
     def test_non_correlate_hunt_is_a_no_op(self):
-        assert check_env_for_encrypted_markers(None, None, CONFIG) == []
+        assert check_templates_for_removed_names(None, None) == []
 
     def test_unparsed_config_objects_are_ignored(self):
         """A hunt type whose config exposes something other than the parsed models."""
-        assert check_env_for_encrypted_markers(MagicMock(), MagicMock(), CONFIG) == []
+        assert check_templates_for_removed_names(MagicMock(), MagicMock()) == []
 
-    def test_falls_back_to_live_config_when_none_supplied(self):
-        correlate = _correlate({
-            "type": "executable",
-            "path": "/x/r7.py",
-            "env": {"R7_API_KEY": "{{ _config['rapid7']['api_key'] }}"},
-        })
-        mock_raw = MagicMock()
-        mock_raw._data = CONFIG
-        with patch("saq.collectors.hunter.correlation.validation.get_config",
-                   return_value=MagicMock(raw=mock_raw)):
-            assert len(check_env_for_encrypted_markers(correlate)) == 1
+
+def _substitute(value, name: str):
+    """Replace the NAME placeholder in every string of a command fixture."""
+    if isinstance(value, str):
+        return value.replace("NAME", name)
+    if isinstance(value, dict):
+        return {k: _substitute(v, name) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute(v, name) for v in value]
+    return value
 
 
 class _LookupOptions(BaseModel):

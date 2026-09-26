@@ -2,21 +2,20 @@
 
 These run in the hunt validation path (`ace hunt verify` / `POST /api/hunt/validate`), not
 during normal hunt loading -- a production node should not refuse to load a hunt at startup.
-The equivalent runtime guards in `commands.py` cover what gets past here.
+What gets past here fails at runtime as a step error on the event it was evaluating.
 """
 
 from collections.abc import Iterator
-import logging
 from typing import Optional, Union
 
+from jinja2 import TemplateSyntaxError, meta
 from jinja2.sandbox import SandboxedEnvironment
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from saq.collectors.hunter.correlation.command_types import (
     get_command_type_load_errors,
     get_registered_command_types,
 )
-from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.schema import (
     BUILTIN_COMMAND_TYPES,
     CommandConfig,
@@ -26,21 +25,15 @@ from saq.collectors.hunter.correlation.schema import (
     StepConfig,
     TransformConfig,
 )
-from saq.configuration.config import get_config
-from saq.configuration.yaml_parser import ENCRYPTED_PREFIX
 
 _jinja_env = SandboxedEnvironment()
 
-# stands in for a real credential while probing an env template, so a value that legitimately
-# reads `_secrets` renders without needing the store.
-_PROBE_SECRET = "PROBE_SECRET_VALUE"
+# names that used to be bound in hunt templates and no longer are: a hunt has no path to
+# configuration or credentials (see build_jinja_context).
+REMOVED_TEMPLATE_NAMES = frozenset({"_secrets", "_config"})
 
-
-class _ProbeSecrets(dict):
-    """A `_secrets` stand-in that answers every lookup with the same placeholder."""
-
-    def __missing__(self, key):
-        return _PROBE_SECRET
+# model fields that are never rendered, so a `{{` in them is literal text rather than a template
+_UNRENDERED_FIELDS = frozenset({"description", "source_options"})
 
 
 def iter_correlate_commands(logic_steps: list[StepConfig]) -> Iterator[CommandConfig]:
@@ -59,62 +52,64 @@ def iter_correlate_commands(logic_steps: list[StepConfig]) -> Iterator[CommandCo
                 yield from iter_correlate_commands(inner.else_)
 
 
-def check_env_for_encrypted_markers(
+def _iter_strings(value) -> Iterator[str]:
+    """Yield every string leaf of a parsed hunt config value.
+
+    Walks models, dicts and lists generically so a template field added later is covered without
+    this check having to know about it.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            if name not in _UNRENDERED_FIELDS:
+                yield from _iter_strings(getattr(value, name))
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_strings(item)
+
+
+def check_templates_for_removed_names(
     correlate_config: Optional[CorrelateConfig],
     predefined_commands: Optional[list[PredefinedCommandConfig]] = None,
-    config: Optional[dict] = None,
 ) -> list[str]:
-    """Return one error string per `env:` value that renders to an unresolved secret marker.
+    """Return one error string per hunt template that reads `_secrets` or `_config`.
 
-    An `encrypted:<name>` marker survives unresolved in the raw merged config dict bound as
-    `_config`, so reading a credential that way hands the marker to the helper script instead
-    of the credential -- which fails against the vendor with an unrelated-looking auth error.
-
-    Each template is rendered rather than parsed: rendering handles composed strings and
-    dynamic indexing that a static read of the jinja expression would miss.
+    Neither is bound when a hunt renders, so such a template fails (or renders empty) on every
+    event at runtime. Reporting it here turns that into a validation error with the reason.
     """
-    if config is None:
-        try:
-            config = get_config().raw._data
-        except Exception:
-            logging.warning("unable to load config for hunt env validation", exc_info=True)
-            return []
-
-    # isinstance rather than a None check: a hunt type without a correlate block, or one whose
-    # config never parsed a `commands` list, simply has nothing to check here.
-    commands: list[Union[CommandConfig, PredefinedCommandConfig]] = []
+    sources: list[tuple[str, object]] = []
     if isinstance(correlate_config, CorrelateConfig):
-        commands.extend(iter_correlate_commands(correlate_config.logic))
+        sources.append(("correlate", correlate_config))
     if isinstance(predefined_commands, list):
-        commands.extend(c for c in predefined_commands if isinstance(c, PredefinedCommandConfig))
-    if not commands:
-        return []
-
-    context = build_jinja_context({}, [], config)
-    context["_secrets"] = _ProbeSecrets()
+        sources.extend(
+            (f"predefined command {c.name!r}", c)
+            for c in predefined_commands
+            if isinstance(c, PredefinedCommandConfig)
+        )
 
     errors = []
-    for command in commands:
-        if not command.env:
-            continue
-        label = getattr(command, "name", None) or command.path
-        for key, value in command.env.items():
-            try:
-                rendered = _jinja_env.from_string(value).render(**context)
-            except Exception as e:
-                # a render failure here is not necessarily a hunt error -- the probe context has
-                # no event data -- so it is not reported as one.
-                logging.debug("unable to probe env %s of %s: %s", key, label, e)
+    for label, source in sources:
+        for value in _iter_strings(source):
+            if not _is_template(value):
                 continue
-            if ENCRYPTED_PREFIX in rendered:
+            try:
+                names = meta.find_undeclared_variables(_jinja_env.parse(value))
+            except TemplateSyntaxError:
+                # a template that does not parse cannot render either, so it cannot read anything
+                continue
+            removed = sorted(names & REMOVED_TEMPLATE_NAMES)
+            if removed:
                 errors.append(
-                    f"command {label!r}: env {key} resolves to an unresolved "
-                    f"{ENCRYPTED_PREFIX!r} marker ({rendered!r}). Encrypted secrets are not "
-                    f"available through _config; read the secret with _secrets['<name>'] "
-                    f"instead, keyed on the encrypted-password store key name."
+                    f"{label}: template {value!r} references {', '.join(removed)}. Hunts have no "
+                    "access to secrets or configuration; a command that needs a credential must "
+                    "be a custom command type that reads it from its integration's configuration."
                 )
 
-    return errors
+    return list(dict.fromkeys(errors))
 
 
 def _is_template(value) -> bool:

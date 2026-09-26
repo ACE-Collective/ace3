@@ -338,8 +338,8 @@ class TestCorrelationIntegration:
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_config_accessible_in_jinja_condition(self, mock_secrets, mock_config):
-        """Test that _config is accessible in jinja expressions during full pipeline."""
+    def test_config_not_bound_in_jinja_condition(self, mock_secrets, mock_config):
+        """_config must not be reachable from a correlation condition: it holds credentials."""
         mock_secrets.return_value = {}
         mock_raw = MagicMock()
         mock_raw._data = {"global": {"environment": "production"}}
@@ -348,7 +348,7 @@ class TestCorrelationIntegration:
         config_data = {
             "logic": [
                 {
-                    "when": "{{ _config.global.environment == 'production' }}",
+                    "when": "{{ _config is undefined }}",
                     "execute": [{"action": "filter"}],
                 },
             ],
@@ -360,19 +360,15 @@ class TestCorrelationIntegration:
 
         events = [{"id": 1}]
         result = engine.execute(events)
-        assert len(result.events) == 0  # filtered because config matched
+        assert len(result.events) == 0  # filtered because _config is undefined
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_bound_in_executable_env(self, mock_secrets, mock_config):
-        """_secrets renders into an executable command's environment.
-
-        This is the one channel where handing a credential to a local helper process is the
-        point of the feature.
-        """
+    def test_secrets_and_config_not_bound_in_executable_env(self, mock_secrets, mock_config):
+        """No hunt template can hand a credential to a script, including `env:`."""
         mock_secrets.return_value = {"db_pass": "s3cret"}
         mock_raw = MagicMock()
-        mock_raw._data = {}
+        mock_raw._data = {"database_ace": {"password": "s3cret"}}
         mock_config.return_value = MagicMock(raw=mock_raw)
 
         config_data = {
@@ -386,7 +382,7 @@ class TestCorrelationIntegration:
                             "type": "executable",
                             "path": PYTHON,
                             "args": ["-c", "import os; print(os.environ['PROBE'])"],
-                            "env": {"PROBE": "{{ _secrets['db_pass'] }}"},
+                            "env": {"PROBE": "{{ _secrets is undefined and _config is undefined }}"},
                         },
                     },
                 },
@@ -397,12 +393,8 @@ class TestCorrelationIntegration:
             config, [], datetime.datetime.now(datetime.timezone.utc),
         )
 
-        events = [{"id": 1}]
-        result = engine.execute(events)
-        # the secret binds into env (the redaction only fires because "s3cret" was present in the
-        # output), but stdout becomes event data and is sanitized on the way out, so the raw
-        # credential never lands in the event stream / persisted trace.
-        assert result.events[0]["result"] == "***"
+        result = engine.execute([{"id": 1}])
+        assert result.events[0]["result"] == "True"
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
@@ -483,17 +475,15 @@ class TestCorrelationIntegration:
 
     @patch("saq.collectors.hunter.correlation.engine.get_config")
     @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_unresolved_encrypted_marker_in_env_is_an_error(self, mock_secrets, mock_config):
-        """An env value that renders to an `encrypted:` marker must fail the step.
-
-        Reproduces the rapid7 bug: `_config` is the pre-validation merged dict, so an
-        `encrypted:<name>` marker survives there unresolved. Rendering it into env hands
-        the literal marker to the helper script as its API key, and the only symptom is a
-        confusing auth failure against the vendor.
-        """
+    @pytest.mark.parametrize("template", [
+        "{{ _secrets['rapid7.api_key'] }}",
+        "{{ _config['rapid7']['api_key'] }}",
+    ])
+    def test_env_reading_a_credential_fails_the_step(self, mock_secrets, mock_config, template):
+        """A hunt written against the removed bindings errors instead of running the script."""
         mock_secrets.return_value = {"rapid7.api_key": "REAL_KEY"}
         mock_raw = MagicMock()
-        mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
+        mock_raw._data = {"rapid7": {"api_key": "REAL_KEY"}}
         mock_config.return_value = MagicMock(raw=mock_raw)
 
         predefined = [PredefinedCommandConfig.model_validate({
@@ -501,7 +491,7 @@ class TestCorrelationIntegration:
             "type": "executable",
             "path": PYTHON,
             "args": ["-c", "import os; print(os.environ['R7_API_KEY'])"],
-            "env": {"R7_API_KEY": "{{ _config['rapid7']['api_key'] }}"},
+            "env": {"R7_API_KEY": template},
         })]
         config = CorrelateConfig.model_validate({
             "logic": [
@@ -522,44 +512,8 @@ class TestCorrelationIntegration:
         result = engine.execute([{"id": 1}])
         event_trace = result.trace.event_traces[0]
         assert event_trace.outcome == "error"
-        assert "R7_API_KEY" in event_trace.steps[0].step.error
-
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secret_renders_into_env_via_secrets_namespace(self, mock_secrets, mock_config):
-        """`_secrets` is the supported way to get a credential into an env value."""
-        mock_secrets.return_value = {"rapid7.api_key": "REAL_KEY"}
-        mock_raw = MagicMock()
-        mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
-        mock_config.return_value = MagicMock(raw=mock_raw)
-
-        predefined = [PredefinedCommandConfig.model_validate({
-            "name": "get_r7_comments",
-            "type": "executable",
-            "path": PYTHON,
-            "args": ["-c", "import os; print(os.environ['R7_API_KEY'])"],
-            "env": {"R7_API_KEY": "{{ _secrets['rapid7.api_key'] }}"},
-        })]
-        config = CorrelateConfig.model_validate({
-            "logic": [
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "comments",
-                        "command": {"type": "defined", "name": "get_r7_comments"},
-                    },
-                },
-            ],
-        })
-        engine = CorrelationEngine(
-            config, predefined, datetime.datetime.now(datetime.timezone.utc),
-        )
-
-        result = engine.execute([{"id": 1}])
-        # env binding works (redaction fired on "REAL_KEY"), but stdout is sanitized before it
-        # becomes event data, so the credential does not leak into the stream or the trace.
-        assert result.events[0]["comments"] == "***"
+        assert "is undefined" in event_trace.steps[0].step.error
+        assert "comments" not in result.events[0]
 
     def test_splunk_hunt_omits_relative_time_field_uses_default(self):
         """End-to-end: a splunk hunt's correlate query omits relative_time_field/format

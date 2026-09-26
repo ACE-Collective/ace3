@@ -4,10 +4,10 @@ import sys
 from unittest.mock import patch
 
 import pytest
+from jinja2 import UndefinedError
 
 from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder
-from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command
-from saq.collectors.hunter.correlation.expressions import SecretLookupError
+from saq.collectors.hunter.correlation.commands import EXECUTABLE_ENV_ALLOWLIST, _resolve_time_range, execute_command
 from saq.collectors.hunter.correlation.registry import (
     QuerySource,
     clear_query_sources,
@@ -206,7 +206,7 @@ class TestExecuteCommand:
         )
         assert result.strip() == "admin"
 
-    def test_executable_with_env_inherits_os_env(self, tmpdir):
+    def test_executable_with_env_gets_path(self, tmpdir):
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
@@ -216,7 +216,7 @@ class TestExecuteCommand:
         result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
         assert result.strip() != "missing"
 
-    def test_executable_without_env_inherits_os_env(self, tmpdir):
+    def test_executable_without_env_gets_path(self, tmpdir):
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
@@ -225,97 +225,73 @@ class TestExecuteCommand:
         result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
         assert result.strip() != "missing"
 
-    def test_executable_env_reads_secret(self, tmpdir):
-        # print the length rather than the value: the secret reaches the env, but stdout is
-        # sanitized, so echoing it verbatim would redact to '***'. The length proves the env
-        # var held the real 8-char credential without depending on it surviving in output.
+    def test_executable_without_env_does_not_inherit_ace_env(self, tmpdir, monkeypatch):
+        """The ACE environment holds credentials (SAQ_ENC, database and redis passwords)."""
+        monkeypatch.setenv("ACE_TEST_SENTINEL_PASSWORD", "sentinel")
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
-            args=["-c", "import os; print(len(os.environ['API_KEY']))"],
-            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+            args=["-c", "import json, os; print(json.dumps(sorted(os.environ)))"],
         )
+        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+        keys = set(json.loads(result))
+        assert "ACE_TEST_SENTINEL_PASSWORD" not in keys
+        assert keys <= set(EXECUTABLE_ENV_ALLOWLIST)
+
+    def test_executable_with_env_sees_only_allowlist_and_its_own_keys(self, tmpdir, monkeypatch):
+        monkeypatch.setenv("ACE_TEST_SENTINEL_PASSWORD", "sentinel")
+        cmd = CommandConfig(
+            type="executable",
+            path=PYTHON,
+            args=["-c", "import json, os; print(json.dumps(sorted(os.environ)))"],
+            env={"MY_VAR": "test"},
+        )
+        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
+        keys = set(json.loads(result))
+        assert "MY_VAR" in keys
+        assert "PATH" in keys
+        assert keys <= set(EXECUTABLE_ENV_ALLOWLIST) | {"MY_VAR"}
+
+    @pytest.mark.parametrize("field", ["env", "args"])
+    @pytest.mark.parametrize("name", ["_secrets", "_config"])
+    def test_executable_templates_cannot_see_secrets_or_config(self, tmpdir, field, name):
+        template = f"{{{{ {name} is defined }}}}"
+        if field == "env":
+            cmd = CommandConfig(
+                type="executable",
+                path=PYTHON,
+                args=["-c", "import os; print(os.environ['PROBE'])"],
+                env={"PROBE": template},
+            )
+        else:
+            cmd = CommandConfig(
+                type="executable",
+                path=PYTHON,
+                args=["-c", "import sys; print(sys.argv[1])", template],
+            )
         result = execute_command(
             cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
             {"vendor.api_key": "REAL_KEY"},
+            {"vendor": {"api_key": "REAL_KEY"}},
         )
-        assert result.strip() == "8"
+        assert result.strip() == "False"
 
-    def test_executable_env_unknown_secret_raises(self, tmpdir):
-        """An unknown key must raise, not render an empty credential.
-
-        jinja's getitem swallows LookupError (and so KeyError) into Undefined, which renders
-        as "" -- exactly the silent failure this mechanism exists to prevent. Assert on the
-        raise, not on the rendered value.
-        """
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ['API_KEY'])"],
-            env={"API_KEY": "{{ _secrets['nope'] }}"},
-        )
-        with pytest.raises(SecretLookupError, match="unknown secret 'nope'"):
-            execute_command(
-                cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
-                {"vendor.api_key": "REAL_KEY"},
-            )
-
-    def test_executable_env_undecryptable_secret_raises(self, tmpdir):
-        """A None value must raise -- jinja would render it as the literal string "None"."""
+    def test_executable_env_reading_secrets_fails(self, tmpdir):
+        """A hunt written against the removed `_secrets` binding fails rather than running."""
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
             args=["-c", "import os; print(os.environ['API_KEY'])"],
             env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
         )
-        with pytest.raises(SecretLookupError, match="could not be decrypted"):
-            execute_command(
-                cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
-                {"vendor.api_key": None},
-            )
-
-    def test_executable_env_empty_secret_store_reports_itself(self, tmpdir):
-        """A failed secret export must not look like a typo'd secret name."""
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ['API_KEY'])"],
-            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
-        )
-        with pytest.raises(SecretLookupError, match="no secrets are loaded"):
-            execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
-
-    def test_executable_env_unresolved_encrypted_marker_raises(self, tmpdir):
-        """Reading a secret through `_config` yields the marker, which must not be exported."""
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ['API_KEY'])"],
-            env={"API_KEY": "{{ _config['vendor']['api_key'] }}"},
-        )
-        with pytest.raises(ValueError, match="API_KEY.*unresolved"):
+        with pytest.raises(UndefinedError):
             execute_command(
                 cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
                 {"vendor.api_key": "REAL_KEY"},
-                {"vendor": {"api_key": "encrypted:vendor.api_key"}},
-            )
-
-    def test_executable_env_marker_caught_inside_composed_value(self, tmpdir):
-        """The guard uses containment, so a marker interpolated into a longer string is caught."""
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ['CERT_PATH'])"],
-            env={"CERT_PATH": "/opt/ace/{{ _config['vendor']['cert'] }}"},
-        )
-        with pytest.raises(ValueError, match="CERT_PATH"):
-            execute_command(
-                cmd, {}, [], "event", [], local_time(), str(tmpdir), None, {},
-                {"vendor": {"cert": "encrypted:vendor.cert"}},
             )
 
     def test_executable_stderr_is_sanitized(self, tmpdir):
-        """A script that echoes its credential on the way out must not leak it into the error.
+        """A script that reads a credential on its own and echoes it must not leak it.
 
         The error message reaches the correlation trace, which is persisted into alert details
         and shown to analysts.
@@ -323,8 +299,7 @@ class TestExecuteCommand:
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
-            args=["-c", "import os, sys; sys.stderr.write(os.environ['API_KEY']); sys.exit(1)"],
-            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+            args=["-c", "import sys; sys.stderr.write('REAL_KEY'); sys.exit(1)"],
         )
         with pytest.raises(RuntimeError) as excinfo:
             execute_command(
@@ -334,7 +309,7 @@ class TestExecuteCommand:
         assert "REAL_KEY" not in str(excinfo.value)
 
     def test_executable_stdout_is_sanitized(self, tmpdir):
-        """A script that echoes its credential to stdout must not leak it into event data.
+        """A script that reads a credential on its own and prints it must not leak it.
 
         stdout becomes event data, which flows into the persisted correlation trace and into
         later query text sent to a data source -- the same exposure the stderr scrub closes.
@@ -342,8 +317,7 @@ class TestExecuteCommand:
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
-            args=["-c", "import os; print(os.environ['API_KEY'])"],
-            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+            args=["-c", "print('REAL_KEY')"],
         )
         result = execute_command(
             cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
@@ -351,6 +325,20 @@ class TestExecuteCommand:
         )
         assert "REAL_KEY" not in result
         assert "***" in result
+
+    @pytest.mark.parametrize("name", ["_secrets", "_config"])
+    def test_query_text_cannot_see_secrets_or_config(self, tmpdir, name):
+        source = MockQuerySource(results=[])
+        register_query_source("test_source", source)
+        cmd = CommandConfig(type="query", source="test_source", query=f"search probe={{{{ {name} is defined }}}}")
+        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
+             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
+            execute_command(
+                cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
+                {"vendor.api_key": "REAL_KEY"},
+                {"vendor": {"api_key": "REAL_KEY"}},
+            )
+        assert source.calls[0]["query"] == "search probe=False"
 
     def test_executable_timeout(self, tmpdir):
         cmd = CommandConfig(
