@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.118] - 2026-09-24
+
+- [Eliminate warnings from the test suite](https://github.com/ACE-Collective/ace3/pull/606)
+- [Make the crash listing's local flag mean "on this node's disk"](https://github.com/ACE-Collective/ace3/pull/605)
+- [Stop phishkit calls waiting 5 s on the scanner-version probe](https://github.com/ACE-Collective/ace3/pull/604)
+- [Fix extracted-file permissions before ArchiveAnalyzer reads them](https://github.com/ACE-Collective/ace3/pull/603)
+- [Reject truncated ActiveMime input instead of raising](https://github.com/ACE-Collective/ace3/pull/602)
+- [Fix email archive partition maintenance](https://github.com/ACE-Collective/ace3/pull/601)
+- [Gate the partition maintenance scripts on ACE_IS_PRIMARY_NODE](https://github.com/ACE-Collective/ace3/pull/600)
+- [updated urlfinderlib to 0.25.5](https://github.com/ACE-Collective/ace3/pull/599)
+- [Split maintenance scripts into per-task etc/cron/{hourly,daily,weekly} directories](https://github.com/ACE-Collective/ace3/pull/598)
+- [Capture thread stacks for every module hang](https://github.com/ACE-Collective/ace3/pull/597)
+- [install ace3v2 client library in base image](https://github.com/ACE-Collective/ace3/pull/596)
+
+## [3.0.117] - 2026-09-23
+
+- [Add hourly maintenance job and run crash report sweep hourly](https://github.com/ACE-Collective/ace3/pull/594)
+- [upgrade urlfinderlib](https://github.com/ACE-Collective/ace3/pull/593)
+
+## [3.0.116] - 2026-09-23
+
+- [Index timeout crash reports via a deferred index spool](https://github.com/ACE-Collective/ace3/pull/591)
+- [Adds several bulk alert action safeguards](https://github.com/ACE-Collective/ace3/pull/590)
+- [Search alerts by detection point (signature uuid[:version])](https://github.com/ACE-Collective/ace3/pull/588)
+- [Limit observable disposition history to the default queue](https://github.com/ACE-Collective/ace3/pull/587)
+- [Fixes snake game on manage alerts page](https://github.com/ACE-Collective/ace3/pull/586)
+- [Adds ability for temporary filters to overlay](https://github.com/ACE-Collective/ace3/pull/585)
+
+## [3.0.115] - 2026-09-22
+
+- [Email conversation analysis enhancements](https://github.com/ACE-Collective/ace3/pull/583)
+- [addressed minor issue in pr #581](https://github.com/ACE-Collective/ace3/pull/582)
+- [Add bulk alert operations to the event page](https://github.com/ACE-Collective/ace3/pull/581)
+
+## [3.0.114] - 2026-09-22
+
+- [Isolate the test suite's redis with fakeredis](https://github.com/ACE-Collective/ace3/pull/579)
+- [Makes email convo analysis configurable](https://github.com/ACE-Collective/ace3/pull/578)
+- [Properly parse url observables without a scheme](https://github.com/ACE-Collective/ace3/pull/577)
+- [Fixes some N+1 queries on Event page](https://github.com/ACE-Collective/ace3/pull/576)
+- [Add active/expired observable detection admin filter](https://github.com/ACE-Collective/ace3/pull/575)
+- [Show pending rows in Remediation Timeline](https://github.com/ACE-Collective/ace3/pull/574)
+- [Fixes for Jump to Analysis](https://github.com/ACE-Collective/ace3/pull/573)
+- [Fixes for reset and analyze CLI commands](https://github.com/ACE-Collective/ace3/pull/572)
+- [Removes Ignore button](https://github.com/ACE-Collective/ace3/pull/571)
+
+## [3.0.113] - 2026-09-19
+
+- [Upgrade image to .NET 10 for de4dotEx 3.10.0 and ilspycmd 11](https://github.com/ACE-Collective/ace3/pull/568)
+- [Validate observable types on API write paths; fix permission revoke, bulk-add success reporting, and self-lockout](https://github.com/ACE-Collective/ace3/pull/567)
+- [fix issue with openapi schema on binary content](https://github.com/ACE-Collective/ace3/pull/566)
+- [Surface analysis module crashes to analysts](https://github.com/ACE-Collective/ace3/pull/565)
+- [Explicit search query syntax and filter parity in the search API](https://github.com/ACE-Collective/ace3/pull/564)
+
 ## [3.0.112] - 2026-09-16
 
 - [Fix accumulating [git] <defunct> zombie processes](https://github.com/ACE-Collective/ace3/pull/562)

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# delete statistic directories older than N days
+DELETE_STATS_OLDER_THAN=7
+
+[ -d data/stats/modules ] || exit 0
+
+find -L data/stats/modules -maxdepth 2 -mindepth 2 -type d -mtime +$DELETE_STATS_OLDER_THAN -exec rm -rf '{}' \;

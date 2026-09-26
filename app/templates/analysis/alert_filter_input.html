@@ -24,6 +24,8 @@
                 <div style="overflow:auto;padding-left:4px;display:{% if name == filter_name %}block{% else %}none{% endif %}" name="filter_{{unique_reference}}_value_container" id="filter_{{unique_reference}}_value_container_{{name}}">
                     {% if filters[name].__class__.__name__ == 'Filter' or filters[name].__class__.__name__ == 'TextFilter' %}
                         <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" value="{% if name == filter_name %}{{value}}{% endif %}"/>
+                    {% elif filters[name].__class__.__name__ == 'DetectionPointFilter' %}
+                        <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" placeholder="signature-uuid[:version]" value="{% if name == filter_name %}{{value}}{% endif %}"/>
                     {% elif filters[name].__class__.__name__ in ['SelectFilter', 'BoolFilter'] %}
                         <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
                         {% for option in filters[name].options %}

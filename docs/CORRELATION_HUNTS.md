@@ -185,7 +185,7 @@ command:
         relative_time_format: any string value # optional
 ```
 
-Systems register with the hunter in ACE for the `source` field.
+Systems register with the hunter in ACE for the `source` field (see [Extending correlation hunts](INTEGRATIONS.md#extending-correlation-hunts)).
 
 In the case of an `event transformation`, the relative `time_range` is relative to the time of the current `event`, which is identified using the `relative_time_field` and `relative_time_format` options. `before` and `after` extend the window around that single event time.
 
@@ -269,6 +269,48 @@ rule:
                     arguments:
                         args: ["{{ _event.userId }}"] # <-- pass the value of the userId field as the single argument to the command
 ```
+
+#### custom (integration-provided) types
+
+Any other `type` names a *custom command type* that an integration registers (see
+[Extending correlation hunts](INTEGRATIONS.md#extending-correlation-hunts)). A custom type takes
+its settings under `options`, not as top-level keys next to `type`:
+
+```yaml
+command:
+    type: wiz_lookup # the name the integration registered
+    timeout: 2m # optional, as for every command
+    cache: 1d # optional, as for every command
+    options: # whatever the command type accepts
+        ip: "{{ _event.src_ip }}"
+        include_tags: true
+```
+
+- Every string in `options`, including strings nested in lists and dicts, is rendered with
+  Jinja before the command runs. `_event`, `_events` and `_config` are available and `_secrets`
+  is not. A command type gets its credentials from its own integration's configuration, so
+  credentials never belong in `options`. An option that renders to an `encrypted:` marker is an
+  error.
+- The rendered options are then validated by the command type. A template always renders to a
+  string, which the command type converts where it can (`"5"` becomes `5` for a number). A value
+  that must be a list or a dict cannot come from a template.
+- `options` is not the same thing as a query's `source_options`. `source_options` is passed to
+  the query source as written, without rendering.
+- `timeout` is handed to the command type, which is responsible for honoring it.
+- A command type that cannot be cached rejects `cache`. When a command type can be cached, the
+  cache keys on the rendered options together with the event, or the whole stream for a stream
+  transform, unless the command type says its result depends only on its options.
+- A custom type can be predefined in `commands` and referenced with `defined`. An
+  `arguments: {options: {...}}` override replaces the whole `options` dict; it does not merge
+  into it.
+- The hunt validator (`ace hunt verify`, and the signature validator through
+  `POST /api/hunt/validate`) reports two kinds of problem. It reports a type that is not
+  registered on the node, including one whose integration failed to load there. It also reports
+  options the command type rejects. A template value is only judged after rendering, at run time.
+- File paths inside `options` are not resolved relative to the hunt file, and the hunt compiler
+  does not package them.
+- Correlate-result capture and replay (`--save-correlate-results` / `--correlate-results-file`)
+  covers `query` commands only. A custom type always runs live.
 
 ### Actions
 
@@ -446,9 +488,7 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
 - The new `correlate` functionality runs in between converting an event into a submission.
     - All events are first collected and then passed to `correlate` as the event stream.
 - The final event stream that includes all transformations becomes available for observable mapping.
-- The process of "registering query commands" should work in a similar way that analysis modules are registered.
-    - There should be an internal API for registering query commands with the hunting system.
-    - There should be a way to define, through configuration, a python module and class to register.
+- Query sources (the `source` of a `query` command) and custom command types are both registered from configuration (`hunter.correlation.query_sources` and `hunter.correlation.command_types`), with a python module and class, the same way analysis modules are. See [Extending correlation hunts](INTEGRATIONS.md#extending-correlation-hunts).
 - Jinja templates have access to these variables. Event properties are accessed via `_event.property_name` or `_event['key.with.dots']` for keys that contain special characters.
 
     | Variable | What it is | Where it is bound |
@@ -457,6 +497,8 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
     | `_events` | the full event stream list | every template |
     | `_config` | the merged configuration, as a raw dict | every template |
     | `_secrets` | the decrypted credential store, keyed on store key name | an executable command's `env:` values only |
+
+    A custom command type's `options` are rendered with `_event`, `_events` and `_config`.
 - When merging by time
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.

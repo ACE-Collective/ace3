@@ -206,7 +206,8 @@ RUN python3 -m virtualenv --python=python3 /venv && \
     pip install --no-cache-dir -r /venv/python-requirements.txt && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.4 && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
-    pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu
+    pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir git+https://github.com/ACE-Collective/ace3apiv2_client.git
 
 COPY --chown=ace:ace lib /opt/ace/lib
 RUN python3 -m virtualenv --python=python3 /venv && \
@@ -280,7 +281,7 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
 
 USER root
 
-ARG ACE_VERSION=3.0.112
+ARG ACE_VERSION=3.0.118
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 

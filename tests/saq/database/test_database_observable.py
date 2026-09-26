@@ -1,5 +1,6 @@
 import pytest
 
+from saq.constants import QUEUE_DEFAULT
 from saq.database.pool import get_db, get_db_connection
 from saq.database.database_observable import observable_is_set_for_detection, upsert_observable
 from saq.database.model import ObservableDetection
@@ -292,8 +293,9 @@ def test_upsert_observable_return_type():
 # aggregate joins for one page. The two must agree.
 #
 
-def _alert_with_observables(description: str, disposition: str, observables: list):
-    """Creates a dispositioned alert carrying the given observables and returns it."""
+def _alert_with_observables(description: str, disposition: str, observables: list,
+                            queue: str = QUEUE_DEFAULT):
+    """Creates a dispositioned alert in the given queue carrying the given observables."""
     import uuid as uuid_module
 
     from saq.analysis.root import RootAnalysis
@@ -310,6 +312,7 @@ def _alert_with_observables(description: str, disposition: str, observables: lis
         alert_type="alert_type",
         desc=description,
         storage_dir=storage_dir_from_uuid(root_uuid),
+        queue=queue,
         analysis_mode=ANALYSIS_MODE_ANALYSIS)
     root.initialize_storage()
     for observable in observables:
@@ -401,3 +404,37 @@ def test_batched_disposition_history_empty_input():
     from saq.database.database_observable import get_observable_disposition_histories
 
     assert get_observable_disposition_histories([]) == {}
+
+
+@pytest.mark.integration
+def test_disposition_history_only_counts_the_default_queue():
+    """The badge summarizes the default triage queue, not every queue.
+
+    Alerts in other queues are a different population, so they must not be folded
+    into the counts the alert page's analysis tree renders.
+    """
+    from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE
+    from saq.database.database_observable import (
+        get_observable_disposition_histories,
+        get_observable_disposition_history,
+    )
+
+    both_queues = create_observable("ipv4", "192.168.60.5")
+    external_only = create_observable("ipv4", "192.168.60.6")
+
+    _alert_with_observables("default queue fp", DISPOSITION_FALSE_POSITIVE, [both_queues])
+    _alert_with_observables(
+        "external queue delivery", DISPOSITION_DELIVERY, [both_queues, external_only],
+        queue="external")
+
+    batched = get_observable_disposition_histories([both_queues, external_only])
+
+    # seen in both queues: only the default-queue alert is counted
+    expected = {DISPOSITION_FALSE_POSITIVE: 1}
+    assert dict(batched[both_queues.uuid].history) == expected
+    assert dict(get_observable_disposition_history(both_queues).history) == expected
+
+    # seen only outside the default queue: absent from the batched form, falsy from the
+    # per-observable form -- the same contract as an observable never seen at all
+    assert external_only.uuid not in batched
+    assert not get_observable_disposition_history(external_only)

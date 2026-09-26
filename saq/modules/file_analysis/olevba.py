@@ -1,7 +1,8 @@
 import logging
 import os
 from typing import Type, override
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
+from oletools.olevba import VBA_Parser, filter_vba
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.error.reporting import report_exception
@@ -88,8 +89,7 @@ class OLEVBA_AnalyzerConfig(AnalysisModuleConfig):
     threshold_autoexec: int = Field(default=1, description="Minimum threshold required for autoexec analysis type.")
     threshold_suspicious: int = Field(default=1, description="Minimum threshold required for suspicious analysis type.")
     
-    class Config:
-        extra = "allow"  # Allow extra fields for dynamic threshold_* options
+    model_config = ConfigDict(extra="allow")  # Allow extra fields for dynamic threshold_* options
 
 class OLEVBA_Analyzer_v1_2(AnalysisModule):
     @classmethod
@@ -147,7 +147,6 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
 
         analysis = self.create_analysis(_file)
 
-        from oletools.olevba3 import VBA_Parser, filter_vba
         parser = None
 
         try:

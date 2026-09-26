@@ -1,10 +1,12 @@
 """Rate limiter behavior: concurrency slots, rate/budget windows, reaper, fail-closed/open."""
 
 import time
+from types import SimpleNamespace
 
 import pytest
 import redis as redis_module
 
+import aceapi_ai.ratelimit as ratelimit_module
 from aceapi_ai.ratelimit import (
     ACQUIRE_SCRIPT,
     STALE_SLOT_GRACE_SECONDS,
@@ -16,7 +18,6 @@ from aceapi_ai.ratelimit import (
 from saq.configuration.config import get_config
 from saq.configuration.schema import AIQueryBackendLimits
 from saq.constants import REDIS_DB_AI_RATE_LIMIT
-from saq.redis_client import get_redis_connection
 
 pytestmark = pytest.mark.integration
 
@@ -54,27 +55,43 @@ class TestConcurrency:
         with limiter.concurrency_slot("b", limits):
             pass
 
-    def test_reaper_reclaims_leaked_slot(self, limiter):
+    def test_reaper_reclaims_leaked_slot(self, limiter, ai_redis):
         # a slot registered by a worker that died: present in the zset, never released
         limits = make_limits(max_concurrency=1, max_query_timeout=10)
-        connection = get_redis_connection(REDIS_DB_AI_RATE_LIMIT)
+        connection = ai_redis(REDIS_DB_AI_RATE_LIMIT)
         stale_score = time.time() - (10 + STALE_SLOT_GRACE_SECONDS) - 1
-        connection.zadd("ai-test:inflight:b", {"leaked-token": stale_score})
+        connection.zadd(f"{limiter.key_prefix}:inflight:b", {"leaked-token": stale_score})
 
         # acquire succeeds because the stale entry is reaped inside the atomic acquire
         with limiter.concurrency_slot("b", limits):
-            assert connection.zcard("ai-test:inflight:b") == 1
+            assert connection.zcard(f"{limiter.key_prefix}:inflight:b") == 1
 
-    def test_fresh_slot_is_not_reaped(self, limiter):
+    def test_fresh_slot_is_not_reaped(self, limiter, ai_redis):
         limits = make_limits(max_concurrency=1, max_query_timeout=10)
-        connection = get_redis_connection(REDIS_DB_AI_RATE_LIMIT)
-        connection.zadd("ai-test:inflight:b", {"live-token": time.time()})
+        connection = ai_redis(REDIS_DB_AI_RATE_LIMIT)
+        connection.zadd(f"{limiter.key_prefix}:inflight:b", {"live-token": time.time()})
 
         with pytest.raises(RateLimitExceeded):
             with limiter.concurrency_slot("b", limits):
                 pass
 
 
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pins the limiter's clock inside one fixed window.
+
+    check_request buckets on now // 60 and now // 3600, so a burst that straddles a boundary
+    lands in two buckets and the counter appears to reset mid-test. Patches the attribute on
+    the limiter's module rather than time.time itself, to leave the shared stdlib module alone.
+    """
+    frozen = time.time()
+    monkeypatch.setattr(ratelimit_module, "time", SimpleNamespace(time=lambda: frozen))
+    return frozen
+
+
+# not on TestConcurrency: those tests score zset entries from the real clock in the test body,
+# and the limiter has to read them on the same timeline
+@pytest.mark.usefixtures("frozen_clock")
 class TestRateAndBudget:
     def test_rate_window(self, limiter):
         limits = make_limits(requests_per_minute=2, hourly_budget=100)

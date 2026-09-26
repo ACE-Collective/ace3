@@ -1,10 +1,37 @@
-from typing import Optional, Protocol, Union
+from typing import Optional, Protocol, Type, Union
 from pathlib import Path
+
+from pydantic import BaseModel
+
+
+class StorageBackendConfig(BaseModel):
+    """Base Pydantic config for pluggable storage backends.
+
+    Backend implementations subclass this to declare their own config fields and return
+    the subclass from get_config_class(). Mirrors BlobStoreConfig in
+    saq/analysis/blob_store.py -- same plugin convention, same reason.
+    """
 
 
 class StorageInterface(Protocol):
     """Protocol defining the interface for storage operations."""
-    
+
+    @classmethod
+    def get_config_class(cls) -> Type[StorageBackendConfig]:
+        """Return the Pydantic config class used to validate this backend's config.
+
+        Only pluggable backends loaded through storage.backend need this: the factory
+        validates the YAML `config:` sub-dict against it and passes the resulting model
+        as the backend's single constructor argument. The built-in local and s3 backends
+        are constructed directly by the factory and never go through it.
+
+        Defaults to the empty base rather than an unimplemented `...`: LocalStorage and
+        S3Storage inherit from this Protocol explicitly, so an `...` body would give them
+        a method that returns None and turn a misconfiguration into an AttributeError
+        deep inside the factory.
+        """
+        return StorageBackendConfig
+
     def upload_file(
         self,
         local_path: Union[str, Path],

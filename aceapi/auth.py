@@ -146,7 +146,7 @@ def api_auth_check(major: str, minor: str):
     def decorator(func):
         @wraps(func)
         def _api_auth_check(*args, **kwargs):
-            from flask import request, abort
+            from flask import request, abort, g
             api_auth_result = verify_api_key(request.headers.get(API_HEADER_NAME, None))
             if not api_auth_result:
                 abort(403)
@@ -171,6 +171,8 @@ def api_auth_check(major: str, minor: str):
                 abort(403)
 
             logging.info("api access granted from %s type %s name %s", request.remote_addr, api_auth_result.auth_type, api_auth_result.auth_name)
+            # lets a view act on behalf of the caller, e.g. make them the owner of what it creates
+            g.api_auth = api_auth_result
             return func(*args, **kwargs)
 
         return _api_auth_check

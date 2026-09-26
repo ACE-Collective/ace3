@@ -5,4 +5,4 @@ from saq.database import User, get_db
 
 @login_manager.user_loader
 def load_user(user_id):
-    return get_db().query(User).get(int(user_id))
+    return get_db().get(User, int(user_id))

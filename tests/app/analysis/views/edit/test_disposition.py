@@ -392,3 +392,62 @@ def test_set_disposition_audit_logging(web_client, caplog):
     assert per_alert_logs[0].alert_uuid == alert.uuid
     assert per_alert_logs[0].new_disposition == DISPOSITION_FALSE_POSITIVE
     assert per_alert_logs[0].disposition_comment == "Audit test comment"
+
+@pytest.fixture
+def other_analyst():
+    """An analyst other than the logged-in one, who owns alerts."""
+    user = add_user("jane_owner", "jane_owner@localhost", "Jane", "password")
+    yield user
+    delete_user("jane_owner")
+
+
+def _owned_by(alert, user_id):
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update({Alert.owner_id: user_id})
+    db.commit()
+
+
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as sess:
+        return [message for _category, message in sess.get("_flashes", [])]
+
+
+@pytest.mark.integration
+def test_set_disposition_leaves_alert_owned_by_another_alone(web_client, other_analyst):
+    """A bulk disposition does not change alerts another analyst owns unless they are taken."""
+    owned = insert_alert()
+    _owned_by(owned, other_analyst.id)
+    unowned = insert_alert()
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": DISPOSITION_FALSE_POSITIVE,
+        "alert_uuids": f"{owned.uuid},{unowned.uuid}",
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    assert db.get(Alert, owned.id).disposition != DISPOSITION_FALSE_POSITIVE
+    assert db.get(Alert, owned.id).owner_id == other_analyst.id
+    assert db.get(Alert, unowned.id).disposition == DISPOSITION_FALSE_POSITIVE
+    assert _flashes(web_client) == ["disposition set for 1 alerts; left 1 alert owned by Jane alone"]
+
+
+@pytest.mark.integration
+def test_set_disposition_takes_confirmed_alert(web_client, analyst, other_analyst):
+    """The take_owned field is the analyst agreeing to take the alert from its owner."""
+    owned = insert_alert()
+    _owned_by(owned, other_analyst.id)
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": DISPOSITION_FALSE_POSITIVE,
+        "alert_uuid": owned.uuid,
+        "take_owned": f"{owned.uuid}:{other_analyst.id}",
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    row = db.get(Alert, owned.id)
+    assert row.disposition == DISPOSITION_FALSE_POSITIVE
+    assert row.owner_id == analyst

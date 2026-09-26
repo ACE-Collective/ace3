@@ -56,8 +56,8 @@ class TransformTrace(BaseModel):
     trace_type: Literal["transform"] = "transform"
     transform_type: str = Field(..., description="event or stream")
     method: str = Field(..., description="property, merge, or mutate")
-    command_type: str = Field(..., description="query, executable, or defined")
-    rendered_command: Optional[str] = Field(default=None, description="Rendered query string or command args (secrets stripped)")
+    command_type: str = Field(..., description="query, executable, defined, or the name of a custom command type")
+    rendered_command: Optional[str] = Field(default=None, description="Rendered query string, command args, or a custom command type's render_summary() (secrets stripped)")
     property_name: Optional[str] = Field(default=None, description="For property transforms: the property name set")
     property_value: Optional[str] = Field(default=None, description="For property transforms: truncated repr of value set")
     result_count: Optional[int] = Field(default=None, description="Number of result rows from command output")

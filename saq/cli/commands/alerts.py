@@ -11,7 +11,7 @@ from saq.cli.cli_util import display_analysis
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
 from saq.configuration import get_config
 from saq.database.pool import get_db
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.search.tasks import submit_delete_task
 from saq.util.uuid import storage_dir_from_uuid
 
@@ -197,22 +197,20 @@ import_alert_parser.set_defaults(func=import_alerts)
 
 def delete_alerts(args):
     """Completely deletes the given alerts from both the storage system and the database."""
-    import saq
-    from saq.database import Alert, DatabaseSession
+    from saq.database.model import Alert
 
     for uuid in args.uuids:
         try:
             # we do them one at a time in case one of them fails
-            session = DatabaseSession()
-            session.execute(Alert.__table__.delete().where(Alert.uuid == uuid))
-            session.commit()
-            session.close()
+            get_db().execute(Alert.__table__.delete().where(Alert.uuid == uuid))
+            get_db().commit()
             submit_delete_task(uuid)
         except Exception as e:
+            get_db().rollback()
             logging.error("unable to delete alert {0}: {1}".format(uuid, str(e)))
 
     for uuid in args.uuids:
-        storage_dir = os.path.join(saq.SAQ_HOME, get_data_dir(), get_config().global_settings.node, uuid[0:3], uuid)
+        storage_dir = os.path.join(get_base_dir(), storage_dir_from_uuid(uuid))
         if not os.path.exists(storage_dir):
             logging.warning("storage directory {0} does not exist".format(storage_dir))
             continue
@@ -231,7 +229,7 @@ delete_alert_parser.set_defaults(func=delete_alerts)
 
 def reset_alerts(args): 
     from saq.analysis.root import RootAnalysis
-    from saq.database import Alert, DatabaseSession
+    from saq.database.model import Alert
 
     for storage_dir in args.dirs:
         # get the storage directory of the alert
@@ -239,28 +237,28 @@ def reset_alerts(args):
             logging.error("storage directory {0} does not exist".format(storage_dir))
             continue
 
-        session = None
+        # alerts record their storage directory relative to SAQ_HOME
+        relative_dir = os.path.relpath(os.path.abspath(storage_dir), start=get_base_dir())
 
-        # try to load it from the database first
-        try:
-            session = DatabaseSession()
-            root = session.query(Alert).filter(Alert.storage_dir==storage_dir).one()
+        # a directory that is not an alert (yet) is reset on disk only
+        alert = get_db().query(Alert).filter(Alert.storage_dir.in_([storage_dir, relative_dir])).one_or_none()
+        if alert:
             logging.info("loaded {} from database".format(storage_dir))
-        except:
-            root = RootAnalysis()
-            root.storage_dir = storage_dir
-        finally:
-            if session:
-                session.close()
 
         try:
+            root = RootAnalysis(storage_dir=storage_dir)
             root.load()
+            root.reset()
         except Exception as e:
-            logging.error("unable to load {}: {}".format(root.storage_dir, e))
+            logging.error("unable to reset {}: {}".format(storage_dir, e))
             continue
 
-        root.reset()
-        root.save()
+        if alert:
+            # saves the root and drops the index rows of the observables the reset removed
+            alert.attach_root_analysis(root)
+            alert.sync()
+        else:
+            root.save()
 
 # reset-alerts
 reset_alert_parser = alert_sp.add_parser('reset',
@@ -340,15 +338,17 @@ add_observable_parser.add_argument('-t', '--reference-time', required=False, des
 add_observable_parser.set_defaults(func=add_observable)
 
 def reload_alerts(args):
-    from saq.database import Alert, DatabaseSession
+    from saq.database.util.alert import get_alert_by_uuid
 
-    # generate the list of alerts to reload
-    session = DatabaseSession()
     for uuid in args.uuids:
-        alert = session.query(Alert).filter(Alert.uuid == uuid).one()
-        #alert.request_correlation()
-        alert.analysis_mode = ANALYSIS_MODE_CORRELATION
-        alert.schedule()
+        alert = get_alert_by_uuid(uuid)
+        if alert is None:
+            logging.error("unknown alert {}".format(uuid))
+            continue
+
+        # the engine analyzes in the mode of the workload entry, whatever mode the root was saved with
+        alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
+        alert.root_analysis.schedule()
 
 reload_alert_parser = alert_sp.add_parser('analyze', aliases=['reload'],
     help="Force analysis (again) on one or more existing alert(s).")

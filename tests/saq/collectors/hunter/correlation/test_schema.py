@@ -383,6 +383,75 @@ class TestPredefinedCommandConfig:
         assert cmd.env == {"KEY": "value"}
 
 
+@pytest.mark.unit
+class TestCustomCommandTypeSchema:
+
+    def test_minimal_custom_command_accepted(self):
+        cmd = CommandConfig.model_validate({
+            "type": "wiz_lookup", "timeout": "2m", "cache": "1d",
+            "options": {"ip": "{{ _event.ip }}", "nested": {"a": [1, 2]}},
+        })
+        assert cmd.type == "wiz_lookup"
+        assert cmd.options == {"ip": "{{ _event.ip }}", "nested": {"a": [1, 2]}}
+
+    def test_custom_command_without_options_accepted(self):
+        assert CommandConfig.model_validate({"type": "wiz_lookup"}).options == {}
+
+    @pytest.mark.parametrize("builtin", [
+        {"type": "query", "source": "splunk", "query": "search"},
+        {"type": "executable", "path": "/bin/true"},
+        {"type": "defined", "name": "c"},
+    ])
+    def test_options_rejected_on_builtin_types(self, builtin):
+        with pytest.raises(ValidationError, match="only valid for custom command types"):
+            CommandConfig.model_validate({**builtin, "options": {"x": 1}})
+
+    def test_options_on_query_points_at_source_options(self):
+        with pytest.raises(ValidationError, match="did you mean 'source_options'"):
+            CommandConfig.model_validate({"type": "query", "source": "splunk", "query": "q", "options": {"x": 1}})
+
+    @pytest.mark.parametrize("field,value", [
+        ("source", "splunk"),
+        ("query", "search"),
+        ("time_range", {"before": "1h"}),
+        ("source_options", {"log_names": ["x"]}),
+        ("path", "/bin/true"),
+        ("stdin", False),
+        ("args", ["a"]),
+        ("env", {"K": "v"}),
+        ("files", ["f"]),
+        ("name", "c"),
+        ("arguments", {"x": 1}),
+    ])
+    def test_builtin_fields_rejected_on_custom_type(self, field, value):
+        with pytest.raises(ValidationError, match=f"does not accept \\['{field}'\\]"):
+            CommandConfig.model_validate({"type": "wiz_lookup", field: value})
+
+    @pytest.mark.parametrize("field,value", [
+        ("source", "splunk"),
+        ("path", "/bin/true"),
+        ("args", ["a"]),
+    ])
+    def test_builtin_fields_rejected_on_custom_predefined(self, field, value):
+        with pytest.raises(ValidationError, match=f"does not accept \\['{field}'\\]"):
+            PredefinedCommandConfig.model_validate({"name": "c", "type": "wiz_lookup", field: value})
+
+    def test_options_rejected_on_builtin_predefined(self):
+        with pytest.raises(ValidationError, match="only valid for custom command types"):
+            PredefinedCommandConfig.model_validate({
+                "name": "c", "type": "executable", "path": "/bin/true", "options": {"x": 1},
+            })
+
+    def test_predefined_custom_command_round_trips(self):
+        predef = PredefinedCommandConfig.model_validate({
+            "name": "c", "type": "wiz_lookup", "cache": "1d", "options": {"ip": "1.2.3.4"},
+        })
+        cmd = predef.to_command_config({"options": {"ip": "5.6.7.8"}})
+        assert cmd.type == "wiz_lookup"
+        assert cmd.cache == "1d"
+        assert cmd.options == {"ip": "5.6.7.8"}
+
+
 # Minimal payloads that satisfy each config's required fields. Used to prove
 # that a typo next to known-good fields raises a ValidationError naming the
 # extra field, not a "missing field" error.
@@ -399,6 +468,9 @@ _STRICT_PAYLOADS: list[tuple[type, dict]] = [
     (ConditionConfig, {"when": "{{ true }}", "execute": []}),
     (PredefinedCommandConfig, {"name": "c", "type": "executable", "path": "/bin/true"}),
     (CorrelateConfig, {"logic": []}),
+    # custom command types: settings belong under `options`, so a stray top-level key is still a typo
+    (CommandConfig, {"type": "wiz_lookup", "options": {"ip": "1.2.3.4"}}),
+    (PredefinedCommandConfig, {"name": "c", "type": "wiz_lookup", "options": {"ip": "1.2.3.4"}}),
 ]
 
 

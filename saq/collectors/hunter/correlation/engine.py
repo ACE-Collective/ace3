@@ -9,12 +9,13 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from saq.collectors.hunter.correlation.actions import ActionResult, execute_action
 from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder
-from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command
+from saq.collectors.hunter.correlation.commands import _resolve_time_range, execute_command, prepare_custom_command
 from saq.configuration.config import get_config
 from saq.configuration.encryption import export_encrypted_passwords
 from saq.collectors.hunter.correlation.expressions import build_jinja_context, evaluate_expression_traced
 from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import (
+    BUILTIN_COMMAND_TYPES,
     ActionConfig,
     CommandConfig,
     ConditionConfig,
@@ -473,7 +474,7 @@ class CorrelationEngine:
 
         # Build a summary of the rendered command for the trace
         transform_trace.rendered_command = sanitize_value(
-            self._render_command_summary(transform.command, event, events),
+            self._render_command_summary(transform.command, event, events, transform.type),
             self._secrets,
         )
 
@@ -616,12 +617,13 @@ class CorrelationEngine:
         command: CommandConfig,
         event: dict,
         events: list[dict],
+        transform_type: str = "event",
     ) -> Optional[str]:
         """Render a human-readable summary of the command for tracing.
 
         Renders `query` or `path + args` only -- never `env`. That omission is deliberate: env
         is the one template context bound to `_secrets`, and this summary is persisted into the
-        correlation trace.
+        correlation trace. A custom command type supplies its own via render_summary().
         """
         context = build_jinja_context(event, events, self._config)
         try:
@@ -635,6 +637,13 @@ class CorrelationEngine:
                 return f"{command.path} {' '.join(rendered_args)}".strip()
             elif command.type == "defined" and command.name:
                 return f"defined:{command.name}"
+            elif command.type not in BUILTIN_COMMAND_TYPES:
+                # no temp dir exists yet at this point; a summary has no business needing one
+                handler, command_context, options = prepare_custom_command(
+                    command, event, events, transform_type,
+                    self.hunt_start_time, self.hunt_end_time, "", self._config,
+                )
+                return handler.render_summary(command_context, options)
         except Exception:
             pass
         return None

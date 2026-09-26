@@ -27,6 +27,8 @@ class MockObservable:
 
 class TestAnalysis(Analysis):
     """Test Analysis class for serialization testing."""
+
+    __test__ = False
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

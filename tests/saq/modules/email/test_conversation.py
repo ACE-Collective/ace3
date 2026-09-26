@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,9 +7,11 @@ from saq.database import get_db_connection
 from saq.modules.email.conversation import (
     Participant,
     ThreadContext,
+    derive_thread_context,
     derive_thread_id,
     get_conversation,
     get_established_domains,
+    get_recorded_message_ids,
     get_thread_message_count,
     normalize_subject,
     parse_message_id_list,
@@ -45,6 +48,27 @@ def _context(thread_id, method, message_id, normalized_subject, participants, **
     ("no prefix here", "no prefix here"),
     ("", ""),
     (None, ""),
+    # meeting responses, invitations and auto-replies fold into the invitation's subject
+    ("Accepted: Quarterly review", "quarterly review"),
+    ("Declined: RE: Quarterly review", "quarterly review"),
+    ("Re: Tentative: Quarterly review", "quarterly review"),
+    ("Tentatively Accepted: Quarterly review", "quarterly review"),
+    ("Canceled: Quarterly review", "quarterly review"),
+    ("Cancelled: Quarterly review", "quarterly review"),
+    ("Automatic reply: Quarterly review", "quarterly review"),
+    ("Invitation: Quarterly review", "quarterly review"),
+    # Google Calendar appends the slot and the organizer; only a response loses that suffix
+    ("Accepted: Quarterly review @ Wed Aug 19, 2026 9:30pm - 10:30pm (IST) (bob@company.com)",
+     "quarterly review"),
+    ("Updated invitation: Quarterly review @ Wed Aug 19, 2026 9:30pm - 10:30pm (IST) (bob@company.com)",
+     "quarterly review"),
+    # a folded header, as the recorder actually sees it
+    ("Accepted: Quarterly review @ Wed Aug 19, 2026\n 9:30pm - 10:30pm (IST) (bob@company.com)",
+     "quarterly review"),
+    ("prices @ 9am", "prices @ 9am"),
+    # a response word without the colon is an ordinary subject
+    ("accepted terms", "accepted terms"),
+    ("Invitation to tender", "invitation to tender"),
 ])
 def test_normalize_subject(subject, expected):
     assert normalize_subject(subject) == expected
@@ -57,6 +81,46 @@ def test_parse_message_id_list():
     assert parse_message_id_list("<a@x>,\n <b@x>") == ["<a@x>", "<b@x>"]
     assert parse_message_id_list("") == []
     assert parse_message_id_list(None) == []
+
+
+def _email_analysis(**overrides):
+    """The subset of EmailAnalysis derive_thread_context reads, as a plain object."""
+    base = dict(
+        email={"log_entry": {"message_id": "<m1@example.com>", "in_reply_to": None}},
+        message_id="<m1@example.com>",
+        headers=[("Subject", "hello"), ("Date", "Thu, 27 Aug 2026 19:10:20 +0000")],
+        decoded_subject="hello",
+        subject="hello",
+        mail_from_address="jane.doe@example.com",
+        reply_to_address=None,
+        return_path=None,
+        mail_to_addresses=["bob@company.com"],
+        cc=[],
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("date_header,expected", [
+    # the sender's zone is folded into UTC: 00:40 IST is 19:10 UTC the day before
+    ("Fri, 28 Aug 2026 00:40:20 +0530", datetime(2026, 8, 27, 19, 10, 20)),
+    ("Thu, 27 Aug 2026 19:10:20 +0000", datetime(2026, 8, 27, 19, 10, 20)),
+    ("Thu, 27 Aug 2026 14:10:20 -0500", datetime(2026, 8, 27, 19, 10, 20)),
+    # no zone at all is taken as UTC
+    ("Thu, 27 Aug 2026 19:10:20", datetime(2026, 8, 27, 19, 10, 20)),
+])
+def test_derive_thread_context_records_message_date_in_utc(date_header, expected):
+    context = derive_thread_context(_email_analysis(headers=[("Date", date_header)]))
+    assert context.message_date == expected
+    # naive, so the store writes exactly these fields
+    assert context.message_date.tzinfo is None
+
+
+@pytest.mark.unit
+def test_derive_thread_context_tolerates_a_bad_date():
+    context = derive_thread_context(_email_analysis(headers=[("Date", "not a date")]))
+    assert context.message_date is None
 
 
 @pytest.mark.unit
@@ -168,6 +232,21 @@ def test_established_domains_collapse_per_message_rows():
         ("company.com", "cfo@company.com", "to"),
         ("example.com", "ceo@example.com", "from"),
     ]
+
+
+@pytest.mark.integration
+def test_recorded_message_ids_finds_a_message_in_any_thread():
+    # a calendar response: no reply headers, a subject nothing folds, so a thread of its own
+    record_thread(_context(
+        "<accept@calendar.example>", "self", "<accept@calendar.example>",
+        "accepted: quarterly review @ wed 9:30pm",
+        [Participant("tom@examp1e.com", "examp1e.com", "from"),
+         Participant("bob@company.com", "company.com", "to")]))
+
+    found = get_recorded_message_ids(["accept@calendar.example", "<never-seen@example.com>"])
+    assert found == {"<accept@calendar.example>"}
+    assert get_recorded_message_ids([]) == set()
+    assert get_recorded_message_ids([None, ""]) == set()
 
 
 def _strip_message_attribution(thread_id):

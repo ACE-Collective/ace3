@@ -10,12 +10,21 @@ dies is not a reason to keep the state anywhere else -- the file outlives the pr
 """
 import json
 import os
+import re
 import time
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from saq.analysis.root import RootAnalysis
+from saq.constants import F_TEST
+from saq.database.util.locking import acquire_lock, get_lock_uuid, release_lock
+from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.lock_manager.adapter import LockManagerAdapter
+from saq.engine.lock_manager.distributed import DistributedLockManager
+from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.worker import Worker
 from saq.engine.tracking import (
     NullTrackingWriter,
     TrackingReader,
@@ -135,6 +144,17 @@ def test_tracking_a_target_writes_the_worker_file(writer, reader):
     assert record.worker_name == "any-0"
     assert record.pid == os.getpid()
     assert not record.has_module
+
+
+@pytest.mark.unit
+def test_the_workers_lock_uuid_survives_into_the_pending_record(writer, reader):
+    """Recovery may release the dead worker's lock and no other, so the record has to say which
+    lock that was."""
+    writer.track_current_work_target(_target(), lock_uuid="dead-lock-uuid")
+    _track(writer)
+
+    pending = reader.recover_pending_failures()
+    assert [r.lock_uuid for r in pending] == ["dead-lock-uuid"]
 
 
 @pytest.mark.unit
@@ -501,6 +521,72 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
 
 
 @pytest.mark.integration
+def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
+    """The pre-kill thread dump the dead worker left in hang_stacks/<node>/<pid>.txt ends up in
+    the killed report as thread_stacks.txt, and the source file is removed once it has."""
+    from saq.constants import F_TEST
+    from saq.crash_report import (
+        CRASH_TYPE_KILLED,
+        THREAD_STACKS_FILE,
+        find_crash_report_dir,
+        get_hang_stacks_path,
+        read_crash_report,
+    )
+    from saq.engine.configuration_manager import ConfigurationManager
+    from saq.engine.engine_configuration import EngineConfiguration
+    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+    from saq.engine.worker import Worker
+
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    root_analysis.save()
+
+    dying = TrackingWriter("correlation-0")
+    dying.track_current_work_target(root_analysis)
+    with patch("saq.engine.tracking.MODULE_PATH", return_value=MODULE_PATH):
+        dying.track_current_analysis_module(_module(), observable)
+
+    pending = TrackingReader().recover_pending_failures()
+    assert len(pending) == 1
+    assert pending[0].pid is not None
+
+    # what faulthandler's dump_traceback_later left behind in the dying worker
+    stacks = (
+        "Timeout (0:00:55)!\n"
+        "Thread 0x00007f0000000001 [python] (most recent call first):\n"
+        '  File "/opt/ace/saq/modules/test.py", line 170 in execute_analysis_worker_gil_hang\n'
+    )
+    hang_path = get_hang_stacks_path(pending[0].pid)
+    os.makedirs(os.path.dirname(hang_path), exist_ok=True)
+    with open(hang_path, "w") as fp:
+        fp.write(stacks)
+
+    worker = Worker(
+        name="correlation-0",
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
+        node_manager=Mock(spec=NodeManagerInterface),
+    )
+    worker.lock_manager = MagicMock()
+    worker._handle_failed_analysis(pending[0])
+
+    # the killed report's id rides in the failure message: "process died unexpectedly (crash_id <id>)"
+    reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
+    reloaded.load()
+    message = reloaded.get_analysis_failed_message(MODULE_PATH, reloaded.get_observable(observable.uuid))
+    match = re.search(r"\(crash_id ([0-9a-f-]{36})\)", message or "")
+    assert match, f"no crash id in the failure message {message!r}"
+
+    report = read_crash_report(match.group(1))
+    assert report["crash_type"] == CRASH_TYPE_KILLED
+
+    crash_dir = find_crash_report_dir(match.group(1))
+    with open(os.path.join(crash_dir, THREAD_STACKS_FILE)) as fp:
+        assert fp.read() == stacks
+
+    assert not os.path.exists(hang_path)
+
+
+@pytest.mark.integration
 def test_a_failure_for_a_deleted_root_is_resolved_not_replayed(root_analysis):
     """A root that no longer exists can never be attributed, so the record must not be
     immortal -- otherwise it is handed to a worker again at every engine start, forever."""
@@ -525,3 +611,98 @@ def test_a_failure_for_a_deleted_root_is_resolved_not_replayed(root_analysis):
     worker._handle_failed_analysis(pending[0])
 
     assert TrackingReader().recover_pending_failures() == []
+
+
+#
+# recovery and the root's lock
+#
+
+DEAD_LOCK_UUID = "33333333-3333-3333-3333-333333333333"
+LIVE_LOCK_UUID = "44444444-4444-4444-4444-444444444444"
+
+
+def _recovering_worker() -> Worker:
+    """A replacement worker using real database locks, like a distributed engine."""
+    worker = Worker(
+        name="correlation-0",
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
+        node_manager=Mock(spec=NodeManagerInterface),
+    )
+    worker.lock_manager = LockManagerAdapter(lock_manager=DistributedLockManager(lock_owner="recovering"))
+    return worker
+
+
+def _pending_failure_for(root_analysis, lock_uuid) -> tuple[TrackingRecord, object]:
+    """Saves root_analysis with one observable and leaves a pending failure for it, as a worker
+    killed while analyzing that observable under lock_uuid would."""
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    root_analysis.save()
+
+    dying = TrackingWriter("correlation-0")
+    dying.track_current_work_target(root_analysis, lock_uuid=lock_uuid)
+    with patch("saq.engine.tracking.MODULE_PATH", return_value=MODULE_PATH):
+        dying.track_current_analysis_module(_module(), observable)
+
+    pending = TrackingReader().recover_pending_failures()
+    assert len(pending) == 1
+    return pending[0], observable
+
+
+def _is_marked_failed(root_analysis, observable) -> bool:
+    reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
+    reloaded.load()
+    return reloaded.get_analysis_failed_message(MODULE_PATH, reloaded.get_observable(observable.uuid)) is not None
+
+
+@pytest.mark.integration
+def test_recovery_never_releases_a_live_workers_lock(root_analysis):
+    """Regression: the replacement released whatever lock the root had, which was a live worker
+    analyzing it. A third worker then took the root, found no outstanding work when it finished,
+    and deleted the storage directory while the live worker was still using it."""
+    record, observable = _pending_failure_for(root_analysis, DEAD_LOCK_UUID)
+
+    # the dead worker's lock is already gone and a live worker has the root
+    assert acquire_lock(root_analysis.uuid, LIVE_LOCK_UUID, lock_owner="live")
+
+    worker = _recovering_worker()
+    assert not worker._handle_failed_analysis(record), "recovery must defer, not wait, while the root is locked"
+
+    assert get_lock_uuid(root_analysis.uuid) == LIVE_LOCK_UUID
+    assert not _is_marked_failed(root_analysis, observable), "the root was modified without its lock"
+    assert len(TrackingReader().recover_pending_failures()) == 1, "an unrecorded failure was acknowledged"
+
+    # once the live worker is done, the retry between work items records it
+    assert release_lock(root_analysis.uuid, LIVE_LOCK_UUID)
+    assert worker._handle_failed_analysis(record)
+
+    assert _is_marked_failed(root_analysis, observable)
+    assert TrackingReader().recover_pending_failures() == []
+    assert get_lock_uuid(root_analysis.uuid) is None, "recovery did not release its own lock"
+
+
+@pytest.mark.integration
+def test_recovery_releases_the_dead_workers_lock(root_analysis):
+    record, observable = _pending_failure_for(root_analysis, DEAD_LOCK_UUID)
+
+    # SIGKILL left the dead worker's lock behind
+    assert acquire_lock(root_analysis.uuid, DEAD_LOCK_UUID, lock_owner="dead")
+
+    assert _recovering_worker()._handle_failed_analysis(record)
+
+    assert _is_marked_failed(root_analysis, observable)
+    assert TrackingReader().recover_pending_failures() == []
+    assert get_lock_uuid(root_analysis.uuid) is None
+
+
+@pytest.mark.integration
+def test_a_record_without_a_lock_uuid_releases_nothing(root_analysis):
+    """Records written before the lock was tracked cannot say which lock was the dead worker's,
+    so recovery must not guess."""
+    record, observable = _pending_failure_for(root_analysis, None)
+    assert acquire_lock(root_analysis.uuid, LIVE_LOCK_UUID, lock_owner="live")
+
+    assert not _recovering_worker()._handle_failed_analysis(record)
+
+    assert get_lock_uuid(root_analysis.uuid) == LIVE_LOCK_UUID
+    assert not _is_marked_failed(root_analysis, observable)

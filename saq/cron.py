@@ -1,6 +1,6 @@
 import asyncio
 import signal
-from typing import Type
+from typing import Optional, Type
 
 from pydantic import Field
 from saq.configuration.config import get_service_config
@@ -13,6 +13,7 @@ from yacron.cron import Cron
 
 class ACECronConfig(ServiceConfig):
     cron_config_path: str = Field(..., description="the path to the cron configuration file")
+    max_parallel_tasks: Optional[int] = Field(default=None, ge=1, description="the maximum number of etc/cron/<cadence> tasks that run at the same time (see saq/cron_tasks.py). defaults to the number of cpus when unset")
 
 
 async def _run_cron(cron: Cron):

@@ -130,7 +130,7 @@
         <td class="col-md-10">
             on {{ entry.message_count }} of {{ entry.total_messages }} recorded messages
             {% if entry.introduced_on %}
-                &mdash; first recorded appearance {{ entry.introduced_on }}
+                &mdash; first recorded appearance {{ entry.introduced_on }} UTC
                 {% if entry.introduced_by_address %}on a message from <tt>{{ entry.introduced_by_address }}</tt>{% endif %}
             {% endif %}
             {% if entry.likely_inherited %}
@@ -197,7 +197,7 @@
     <thead>
         <tr>
             <th>#</th>
-            <th>Date</th>
+            <th>Date (UTC)</th>
             <th>Direction</th>
             <th>From</th>
             <th>Recipients</th>

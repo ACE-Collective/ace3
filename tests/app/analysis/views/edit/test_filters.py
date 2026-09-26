@@ -244,6 +244,124 @@ def test_editing_while_temp_is_active_refines_the_temp(web_client):
     assert after["filter_base_uuid"] == base_before
 
 
+OBSERVABLE = [{"name": "Observable", "inverted": False, "values": [["ipv4", "1.2.3.4"]]}]
+
+
+def _overlay(web_client, filters, label="Observable ipv4:1.2.3.4"):
+    return web_client.post(url_for("analysis.apply_temp_filter"),
+                           data={"filters": json.dumps(filters), "label": label, "overlay": "on"})
+
+
+def _temp_label():
+    from app.analysis.views.session.filters import get_temp_filter
+    return get_temp_filter()["label"]
+
+
+@pytest.mark.integration
+def test_overlay_pivot_narrows_the_filter_in_effect(web_client):
+    """A pivot from the observable list on the manage page: the analyst is working a list
+    (open alerts in their queue) and wants the part of it that shares an observable."""
+    _apply(web_client, QUEUE)
+    before = _state(web_client)
+
+    assert _overlay(web_client, OBSERVABLE).status_code == 204
+
+    after = _state(web_client)
+    assert after["filter_state"] == "temp"
+    assert after["filter_base_uuid"] == before["filter_base_uuid"]
+    assert after["filter_restore_uuid"] == before["filter_uuid"]
+    assert _effective(web_client) == QUEUE + OBSERVABLE
+
+
+@pytest.mark.integration
+def test_revert_after_an_overlay_restores_the_filter_without_the_observable(web_client):
+    _apply(web_client, QUEUE)
+    _overlay(web_client, OBSERVABLE)
+
+    assert web_client.post(url_for("analysis.revert_temp_filter")).status_code == 204
+    assert _effective(web_client) == QUEUE
+
+
+@pytest.mark.integration
+def test_overlay_on_a_temp_filter_builds_on_the_temp(web_client):
+    """Overlaying lays the pivot over what the analyst is looking at, and Revert still lands
+    on their real filter rather than on the first pivot."""
+    _apply(web_client, QUEUE)
+    original_uuid = _state(web_client)["filter_uuid"]
+    web_client.post(url_for("analysis.apply_temp_filter"),
+                    data={"filters": json.dumps(TAG), "label": "Tag: needs_research"})
+
+    _overlay(web_client, OBSERVABLE)
+
+    assert _effective(web_client) == TAG + OBSERVABLE
+    assert _temp_label() == "Tag: needs_research + Observable ipv4:1.2.3.4"
+    assert _state(web_client)["filter_restore_uuid"] == original_uuid
+
+
+@pytest.mark.integration
+def test_overlay_label_names_the_selected_filter(web_client):
+    _apply(web_client, QUEUE)
+    web_client.post(url_for("analysis.create_saved_filter"), data={"name": "My Queue"})
+
+    _overlay(web_client, OBSERVABLE)
+
+    assert _temp_label() == "My Queue + Observable ipv4:1.2.3.4"
+
+
+@pytest.mark.integration
+def test_overlay_label_on_an_unnamed_filter_is_the_pivot_alone(web_client):
+    _apply(web_client, QUEUE)
+
+    _overlay(web_client, OBSERVABLE)
+
+    assert _temp_label() == "Observable ipv4:1.2.3.4"
+
+
+@pytest.mark.integration
+def test_overlay_narrows_a_filter_already_in_effect(web_client):
+    """Clicking the owner of an alert in the default list (unowned or mine)."""
+    owners = [{"name": "Owner", "inverted": False, "values": ["None", "analyst"]}]
+    mine = [{"name": "Owner", "inverted": False, "values": ["analyst"]}]
+    _apply(web_client, QUEUE + owners)
+
+    _overlay(web_client, mine, label="Owner: analyst")
+
+    assert _effective(web_client) == QUEUE + mine
+
+
+@pytest.mark.integration
+def test_overlay_that_changes_nothing_leaves_the_filter_alone(web_client):
+    """The queue of an alert in a list already filtered to that queue."""
+    _apply(web_client, QUEUE)
+    before = _state(web_client)
+
+    assert _overlay(web_client, QUEUE, label="Queue: default").status_code == 204
+
+    after = _state(web_client)
+    assert after["filter_state"] == before["filter_state"] == "dirty"
+    assert after["filter_uuid"] == before["filter_uuid"]
+
+
+@pytest.mark.integration
+def test_a_pivot_without_overlay_still_replaces_the_filter(web_client):
+    """A pivot from inside an alert (or from an event page) has no list to narrow."""
+    _apply(web_client, QUEUE)
+
+    web_client.post(url_for("analysis.apply_temp_filter"),
+                    data={"filters": json.dumps(OBSERVABLE), "label": "Observable ipv4"})
+
+    assert _effective(web_client) == OBSERVABLE
+
+
+@pytest.mark.integration
+def test_overlay_rejects_an_invalid_filter(web_client):
+    _apply(web_client, QUEUE)
+    before = _state(web_client)
+
+    assert _overlay(web_client, BAD_DATE).status_code == 400
+    assert _state(web_client)["filter_uuid"] == before["filter_uuid"]
+
+
 #
 # saved filters
 #

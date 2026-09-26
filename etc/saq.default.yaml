@@ -140,7 +140,7 @@ crash_reporting:
   # copy the root analysis tree (data.json) only -- never the file observables under files/ or hardcopies/
   copy_root_json: true
   max_root_json_size: 33554432
-  # `ace crash prune` (run from bin/daily-maintenance.sh) removes reports older than this
+  # `ace crash prune` (run hourly from bin/hourly-maintenance.sh) removes reports older than this
   retention_days: 30
   # bounds the disk cost of a module that fails on every file in a large tree: after this many
   # reports for the same module on the same root, further ones are suppressed (and the
@@ -217,6 +217,9 @@ service_cron:
   description: ACE Cron Service - runs cron jobs
   enabled: true
   cron_config_path: etc/cron.yaml
+  # the maximum number of etc/cron/{hourly,daily,weekly} tasks (core and integration) that run
+  # at the same time when a cadence fires. defaults to the number of cpus when unset
+  # max_parallel_tasks: 4
 
 # monitor settings
 monitor:
@@ -244,8 +247,18 @@ phishkit:
   max_file_age_days: 3
 
 storage:
+  # local, s3 or custom
   target: local
   base_dir: data/storage
+  # when target is custom, the backend class is imported from python_module/python_class and
+  # the config below is validated against that class's get_config_class() model -- the same
+  # plugin convention as analysis_cache.blob_store. use this when the object store needs
+  # credentials the built-in s3 backend does not model (IAM instance roles, STS, ...)
+  #backend:
+  #  python_module: mypackage.my_storage
+  #  python_class: MyStorage
+  #  config:
+  #    some_setting: value
 
 # s3:
 #   host: garagehq
@@ -402,6 +415,14 @@ hunter:
       - name: splunk
         python_module: saq.collectors.hunter.correlation.sources.splunk
         python_class: SplunkQuerySource
+    # custom `command.type` values for correlate transforms. core ships none; integrations append
+    # entries here from their own saq.integration.yaml (lists append when config files merge).
+    # see "Extending correlation hunts" in docs/INTEGRATIONS.md
+    command_types: []
+    #  - name: wiz_lookup
+    #    python_module: wiz.correlation
+    #    python_class: WizLookupCommand
+    #    kwargs: {}
 
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database
@@ -1469,6 +1490,13 @@ analysis_module_email_thread_analyzer:
   max_threads: 50
   # maximum recipients listed per timeline row before the rest are summarized as "+N more"
   max_recipients_displayed: 8
+  # analyst-editable settings file; path is relative to SAQ_HOME and watched for live reload.
+  # deployments point this at their analyst_data copy (e.g. signatures/analyst_data/email_thread_analysis.yaml);
+  # blank disables it. the file lists domain pairs that are never reported as look-a-likes of each other:
+  #
+  #   ignored_domain_pairs:
+  #     - [example.com, example-group.com]
+  config_path: etc/email_thread_analysis.yaml
 
 analysis_module_url_email_pivot_analyzer:
   name: url_email_pivot_analyzer
@@ -2247,6 +2275,7 @@ tags:
   guest_wireless: fp
   pentester: fp
   new_sender: interesting
+  hunt_validation: interesting
   warning: warning
   executive: warning
   treasury: warning

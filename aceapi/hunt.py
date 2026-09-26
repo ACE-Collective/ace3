@@ -8,26 +8,39 @@ from typing import Optional
 
 import pytz
 import yaml
-from flask import request
+from flask import g, request
 from pydantic import BaseModel, ValidationError
 
-from aceapi.auth import api_auth_check
+from aceapi.auth import API_AUTH_TYPE_USER, api_auth_check
 from aceapi.json import json_result
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
+from saq.collectors.hunter.correlation.command_types import load_command_types_from_config
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
-from saq.collectors.hunter.correlation.validation import check_env_for_encrypted_markers
+from saq.collectors.hunter.correlation.validation import (
+    check_custom_command_types,
+    check_env_for_encrypted_markers,
+)
 from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
 from saq.configuration import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, TAG_HUNT_VALIDATION
 from saq.error.remote import RemoteApiError
 from saq.database.util.alert import ALERT
 from saq.environment import get_data_dir
 from saq.logging import suppress_external_logging
 from saq.util.uuid import storage_dir_from_uuid
+
+
+def _requesting_user_id() -> Optional[int]:
+    """The ACE user behind this request, or None when it was made with a config API key."""
+    api_auth = g.get("api_auth")
+    if api_auth is not None and api_auth.auth_type == API_AUTH_TYPE_USER:
+        return api_auth.auth_user_id
+
+    return None
 
 
 def get_compiled_hunt_dir() -> str:
@@ -89,10 +102,11 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     Returns:
         Flask response tuple (response, status_code).
     """
-    # ensure correlation query sources are registered before any hunt execution.
-    # mocking HunterService in tests bypasses load_hunt_managers (the other call
+    # ensure correlation query sources and custom command types are registered before any hunt
+    # execution. mocking HunterService in tests bypasses load_hunt_managers (the other call
     # site), so the validation API needs its own explicit trigger.
     load_query_sources_from_config()
+    load_command_types_from_config()
 
     try:
         hunt_type = peek_hunt_type(target_file_path)
@@ -127,6 +141,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     )
     if env_errors:
         return json_result({"valid": False, "error": "; ".join(env_errors)}), 400
+
+    # a custom command type that is not registered on this node (typo, or the integration is
+    # missing) or whose options do not validate would otherwise only surface as a per-event step
+    # error in production, which alerts every event.
+    command_type_errors = check_custom_command_types(
+        getattr(hunt_config, "correlate", None),
+        getattr(hunt_config, "_predefined_commands", None),
+    )
+    if command_type_errors:
+        return json_result({"valid": False, "error": "; ".join(command_type_errors)}), 400
 
     # are we executing the hunt?
     execution_arguments_dict = request_json.get("execution_arguments", {})
@@ -210,12 +234,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
                 new_root = submission.root.duplicate()
                 new_root.move(storage_dir_from_uuid(new_root.uuid))
                 new_root.queue = execution_arguments.queue
+                # whatever this becomes lands in the same lists as the hunt's production alerts
+                new_root.add_tag(TAG_HUNT_VALIDATION)
                 new_root.save()
 
                 # if we received a submission for correlation mode then we go ahead and add it to the database
                 if execution_arguments.create_alerts:
                     new_root.analysis_mode = ANALYSIS_MODE_CORRELATION
-                    ALERT(new_root)
+                    # owned by the analyst running the validation, so a bulk action by someone
+                    # else leaves it alone unless they choose to take it
+                    ALERT(new_root, owner_id=_requesting_user_id())
 
                 new_root.schedule()
                 roots.append(new_root)

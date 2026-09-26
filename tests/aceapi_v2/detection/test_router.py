@@ -1,6 +1,7 @@
 """Tests for the aceapi_v2 observable-detection router."""
 
 import hashlib
+from datetime import datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -150,6 +151,24 @@ class TestListAndDelete:
         body = listing.json()
         assert set(body) >= {"items", "total", "page", "page_size", "total_pages"}
         assert any(d["id"] == detection.id for d in body["items"])
+
+    @pytest.mark.asyncio
+    async def test_list_status_filter(self, client: AsyncClient, session: AsyncSession):
+        await _make_detection(session, "7.7.8.1")
+        await _make_detection(session, "7.7.8.2", expires_on=datetime(2000, 1, 1))
+
+        async def values(**params) -> set[str]:
+            listing = await client.get("/detection/", params={"search": "7.7.8.", **params})
+            assert listing.status_code == 200
+            return {d["value"] for d in listing.json()["items"]}
+
+        assert await values() == {"7.7.8.1"}
+        assert await values(status="expired") == {"7.7.8.2"}
+        assert await values(status="all") == {"7.7.8.1", "7.7.8.2"}
+
+    @pytest.mark.asyncio
+    async def test_list_unknown_status_is_422(self, client: AsyncClient):
+        assert (await client.get("/detection/", params={"status": "bogus"})).status_code == 422
 
     @pytest.mark.asyncio
     async def test_delete(self, client: AsyncClient, session: AsyncSession):

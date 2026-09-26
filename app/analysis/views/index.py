@@ -391,11 +391,22 @@ def _resolve_references(node):
     # then we need to use the data of the refering node
     def _resolve(node):
         if node.visible and node.reference_node and not node.reference_node.visible:
-            node.children = node.reference_node.children
-            for referent in node.reference_node.referents:
+            original = node.reference_node
+            node.children = original.children
+            for child in node.children:
+                child.parent = node
+
+            for referent in original.referents:
                 referent.reference_node = node
 
+            node.referents = [referent for referent in original.referents if referent is not node]
             node.reference_node = None
+
+            # the two nodes trade places: a node that is not visible can still be rendered, and
+            # an observable's analysis is displayed (and is a jump target) exactly once
+            original.children = []
+            original.referents = []
+            original.refer_to(node)
 
     node.walk(_resolve)
 
@@ -585,14 +596,20 @@ def index():
 
     domain_summary_str = create_histogram_string(domains)
 
+    # the Remediation Timeline heading carries the same coverage badge as the alert list
+    remediation_coverage = get_remediation_coverage([alert])
+
     # Aggregate remediation events from any analysis in the tree that publishes them
     # plus ACE's own email_delivery remediation attempts from the DB
-    # (see saq/remediation/timeline.py). ACE rows have no native received_time,
-    # so we pass the alert's overall event_time as a fallback. The template
-    # renders an alert-level timeline card when this list is non-empty.
+    # (see saq/remediation/timeline.py). The coverage adds a pending row for every
+    # email that is still being remediated or watched, so the table and the badge
+    # agree on what is outstanding. ACE and pending rows have no native
+    # received_time, so we pass the alert's overall event_time as a fallback. The
+    # template renders an alert-level timeline card when this list is non-empty.
     remediation_timeline_events = gather_remediation_events(
         alert.root_analysis,
         fallback_event_time=alert.root_analysis.event_time,
+        coverage=remediation_coverage.get(alert.uuid),
     )
 
     # Summarize in-flight / terminal external remediation probe activity for
@@ -602,9 +619,6 @@ def index():
     external_check_footer = summarize_alert_checks(
         get_external_checks_for_alert(alert.uuid)
     )
-
-    # the Remediation Timeline heading carries the same coverage badge as the alert list
-    remediation_coverage = get_remediation_coverage([alert])
 
     # Aggregate URL-click state from any analysis in the tree that publishes it
     # (see saq/clicker_detection/timeline.py). The template renders an alert-level

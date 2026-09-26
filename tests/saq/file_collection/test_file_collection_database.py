@@ -549,7 +549,7 @@ def test_get_file_collection_history():
     )
 
     # add history entries with explicit timestamps to ensure deterministic ordering
-    now = datetime.utcnow()
+    now = datetime.now()
     history1 = FileCollectionHistory(
         file_collection_id=collection_id,
         result=FileCollectorStatus.HOST_OFFLINE.value,

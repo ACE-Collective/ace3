@@ -19,6 +19,7 @@ pytestmark = pytest.mark.unit
 
 ALERT_UUID = "2f1e4d3c-1111-2222-3333-444455556666"
 SHA256_HEX = "ab" * 32
+SIGNATURE_UUID = "6f3a1b2c-1111-2222-3333-444455556666"
 
 
 def _exact(parsed, field):
@@ -159,6 +160,34 @@ class TestFilterTerms:
         parsed = parse_search_query(f"-uuid:{ALERT_UUID}")
         assert parsed.exact == () and parsed.filters == ()
         assert parsed.errors and "cannot be inverted" in parsed.errors[0]
+
+
+class TestDetectionPointTerms:
+    def test_uuid_alone(self):
+        parsed = parse_search_query(f"detection_point:{SIGNATURE_UUID}")
+        assert parsed.exact == () and parsed.errors == ()
+        assert _filter(parsed, "Detection Point") == [
+            {"name": "Detection Point", "inverted": False, "values": [SIGNATURE_UUID]}]
+
+    def test_uuid_and_version_split_at_the_first_colon(self):
+        parsed = parse_search_query(f"detection_point:{SIGNATURE_UUID}:abc:123")
+        assert _filter(parsed, "Detection Point")[0]["values"] == [f"{SIGNATURE_UUID}:abc:123"]
+
+    def test_uuid_is_lowercased(self):
+        parsed = parse_search_query(f"detection_point:{SIGNATURE_UUID.upper()}:V1")
+        assert _filter(parsed, "Detection Point")[0]["values"] == [f"{SIGNATURE_UUID}:V1"]
+
+    def test_values_are_ored_and_inversion_works(self):
+        parsed = parse_search_query(f"-detection_point:{SIGNATURE_UUID},{SIGNATURE_UUID}:v2")
+        entry = _filter(parsed, "Detection Point")[0]
+        assert entry["inverted"] is True
+        assert entry["values"] == [SIGNATURE_UUID, f"{SIGNATURE_UUID}:v2"]
+
+    @pytest.mark.parametrize("value", ["not-a-uuid", "6f3a1b2c", f"{SIGNATURE_UUID}:"])
+    def test_bad_value_is_an_error_not_a_dropped_filter(self, value):
+        parsed = parse_search_query(f"detection_point:{value}")
+        assert parsed.filters == ()
+        assert parsed.errors and "detection point" in parsed.errors[0]
 
 
 class TestQuoting:

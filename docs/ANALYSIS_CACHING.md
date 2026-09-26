@@ -1561,7 +1561,7 @@ Recommended cron cadence:
 
 | Job | Schedule | Purpose | Node scope |
 |-----|----------|---------|------------|
-| `analysis cache partition maintenance` (`bin/manage-analysis-result-cache-partitions.sh`) | `0 4 * * *` | Drop partitions older than `partition_retention_days`, reorganize the catchall, provision the next 7 days | single node (shared-DB DDL; the bash script has no `is_primary_node()` gate of its own, so deploy it on one node) |
+| `analysis cache partition maintenance` (`bin/manage-analysis-result-cache-partitions.sh`) | `0 4 * * *` | Drop partitions older than `partition_retention_days`, reorganize the catchall, provision the next 7 days | primary only (shared-DB DDL; the script exits 0 unless `ACE_IS_PRIMARY_NODE=1`) |
 | `analysis-cache-stats` | `*/15 * * * *` | Emit the `cache_stats` heartbeat from `INFORMATION_SCHEMA.PARTITIONS` (calls `emit_cache_stats`, which gates on `is_primary_node()`) | primary only |
 | `analysis-cache-gc` | `0 * * * *` | Delete blob bytes with zero refs older than `blob_gc_grace_seconds` (calls `blob_store.maintain_global`) | primary only |
 | `analysis-cache-local-maintenance` | `*/15 * * * *` | Evict stale/excess blobs from this node's local cache tier (calls `blob_store.maintain_local`; no-op for `LocalHardlinkBlobStore`) | every node |
@@ -1573,10 +1573,11 @@ heartbeat — which used to piggyback on the prune run — onto its own 15-minut
 
 The Python-backed global jobs (`analysis-cache-stats`, `analysis-cache-gc`)
 check `is_primary_node()` at the top and log-and-exit on non-primary nodes.
-The partition-maintenance bash script has no such gate — it issues DDL against
-the shared cache database, so it must be deployed to run on a single node
-(`concurrencyPolicy: Forbid` only prevents overlapping runs on the *same*
-node). The local maintenance job runs everywhere — its target is per-node
+The partition-maintenance bash script issues DDL against the shared cache
+database, so it makes the same check itself: it exits 0 unless
+`ACE_IS_PRIMARY_NODE` is `1` (the default, as for `is_primary_node()`).
+`concurrencyPolicy: Forbid` only prevents overlapping runs on the *same* node,
+so this gate is what keeps a multi-node cluster to one run. The local maintenance job runs everywhere — its target is per-node
 state.
 
 Not currently scheduled: a separate `prune_orphaned_blob_refs`

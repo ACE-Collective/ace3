@@ -54,7 +54,7 @@ def log_file_path(slug: str, when: Optional[datetime] = None) -> str:
 
     This reproduces exactly what the old `>> data/logs/<slug>-`date '+%Y-%m-%d'`.log`
     redirect produced, so anything reading these on the box (etc/logrotate.conf and the
-    cleanup in bin/daily-maintenance.sh) is unaffected.
+    cleanup in etc/cron/daily/rotate-logs) is unaffected.
     """
     when = when or datetime.now()
     return os.path.join(SAQ_HOME, "data", "logs", "{}-{}.log".format(slug, when.strftime("%Y-%m-%d")))

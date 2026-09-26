@@ -13,7 +13,7 @@ import re
 
 from collections import namedtuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from saq.database import execute_with_retry, get_db_connection
@@ -26,6 +26,17 @@ RE_MESSAGE_ID_TOKEN = re.compile(r"<[^<>]+>")
 # leading reply/forward prefixes to strip when normalizing a subject (re:, fwd:, fw:, aw:, sv:, tr:),
 # optionally followed by a bracketed counter such as "[2]"
 RE_SUBJECT_PREFIX = re.compile(r"^\s*(re|fwd?|aw|sv|tr)\s*(\[\d+\])?\s*:\s*", re.IGNORECASE)
+# a meeting response, invitation or auto-reply keeps the original subject behind a fixed prefix, so
+# it belongs to that subject's thread. these carry no reply headers, so the subject is the only
+# thing that can link them; without this a calendar acceptance from a look-a-like domain sits in a
+# one-message thread of its own, invisible to the conversation it answered.
+RE_RESPONSE_PREFIX = re.compile(
+    r"^\s*(accepted|declined|tentative|tentatively accepted|canceled|cancelled|"
+    r"invitation|updated invitation|automatic reply)\s*:\s*", re.IGNORECASE)
+# Google Calendar appends the slot and the organizer to a response subject:
+# "Accepted: <title> @ Wed Aug 19, 2026 9:30pm - 10:30pm (IST) (organizer@example.com)"
+# DOTALL: the subject arrives as a folded header, with a newline somewhere in the slot
+RE_RESPONSE_SUFFIX = re.compile(r"\s+@\s+.*$", re.DOTALL)
 RE_WHITESPACE = re.compile(r"\s+")
 
 # roles whose domains we score a new sender against; and the full set we record as thread participants
@@ -66,20 +77,31 @@ MessageParticipant = namedtuple("MessageParticipant", [
 
 
 def normalize_subject(subject: Optional[str]) -> str:
-    """Strip reply/forward prefixes and collapse whitespace so subjects can be matched across a thread."""
+    """Strip reply/forward and meeting-response prefixes and collapse whitespace so subjects can be
+    matched across a thread."""
     if not subject:
         return ""
 
     result = subject
-    # repeatedly strip prefixes - real-world subjects stack them ("Re: Fwd: Re: ...")
+    response = False
+    # repeatedly strip prefixes - real-world subjects stack them ("Re: Fwd: Re: ...",
+    # "Accepted: Re: ...")
     for _ in range(100):
         stripped = RE_SUBJECT_PREFIX.sub("", result, count=1)
+        if stripped == result:
+            stripped = RE_RESPONSE_PREFIX.sub("", result, count=1)
+            if stripped != result:
+                response = True
         if stripped == result:
             break
         result = stripped
     else:
         logging.error("normalize_subject: subject prefix stripping exhausted maximum iterations for subject %s", subject)
-   
+
+    # the slot suffix is only ever appended to a response, so a plain subject keeps its " @ "
+    if response:
+        result = RE_RESPONSE_SUFFIX.sub("", result, count=1)
+
     return RE_WHITESPACE.sub(" ", result).strip().lower()
 
 
@@ -277,6 +299,20 @@ def _participant(address: Optional[str], role: str) -> Optional[Participant]:
     return Participant(address=address, domain=domain, role=role)
 
 
+def _utc_naive(value: datetime) -> datetime:
+    """The same instant as a naive UTC datetime.
+
+    The store column is a plain DATETIME and the driver writes a datetime's wall-clock fields as
+    they are, dropping any offset. A Date header is written in the sender's local zone, so without
+    this a message sent at 19:10 UTC from IST is recorded as 00:40 and the timeline is ordered and
+    displayed in a mix of every correspondent's zone. A header with no zone is taken as UTC.
+    """
+    if value.tzinfo is None:
+        return value
+
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def derive_thread_context(email_analysis) -> ThreadContext:
     """Build a ThreadContext from a parsed EmailAnalysis (used identically by the recorder and the scorer)."""
     log_entry = (email_analysis.email or {}).get("log_entry") or {}
@@ -295,7 +331,7 @@ def derive_thread_context(email_analysis) -> ThreadContext:
     date_header = _header_value(email_analysis, "date")
     if date_header:
         try:
-            message_date = email.utils.parsedate_to_datetime(date_header)
+            message_date = _utc_naive(email.utils.parsedate_to_datetime(date_header))
         except (TypeError, ValueError):
             message_date = None
 
@@ -501,6 +537,26 @@ SELECT COUNT(*) FROM email_thread_message WHERE thread_id_hash = UNHEX(SHA2(%s, 
             return int(row[0]) if row[0] is not None else 0
 
         return 0
+
+
+def get_recorded_message_ids(message_ids: list) -> set:
+    """The subset of message_ids the thread store holds at all, in any thread.
+
+    Tells a message ACE never scanned apart from one it scanned but could not link to the
+    conversation it belongs to: no reply headers, and a subject the prefix rules do not fold (a
+    calendar response, for one) leave a message in a one-row thread of its own. Ids are matched on
+    the normalized form the recorder stores and returned in that form.
+    """
+    normalized = sorted({normalize_message_id(i) for i in message_ids if i})
+    if not normalized:
+        return set()
+
+    placeholders = ", ".join(["UNHEX(SHA2(%s, 256))"] * len(normalized))
+    with get_db_connection(name="brocess") as db:
+        cursor = db.cursor()
+        cursor.execute(f"""
+SELECT message_id FROM email_thread_message WHERE message_id_hash IN ({placeholders})""", normalized)
+        return {row[0] for row in cursor}
 
 
 def get_conversation(message_id: str,

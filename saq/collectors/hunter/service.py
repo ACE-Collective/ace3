@@ -7,6 +7,7 @@ from saq.analysis.root import Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.submission_file_manager import SubmissionFileManager
+from saq.collectors.hunter.correlation.command_types import load_command_types_from_config
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.manager import HuntManager
 from saq.configuration import get_config
@@ -126,6 +127,7 @@ class HunterService(ACEServiceInterface):
         logging.info("loading hunt managers")
 
         load_query_sources_from_config()
+        load_command_types_from_config()
 
         for hunt_type_config in get_config().hunt_types:
 

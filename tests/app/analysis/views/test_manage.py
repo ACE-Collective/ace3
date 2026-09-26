@@ -1,8 +1,12 @@
+import json
+import re
+
 import pytest
 from flask import url_for
 
 from saq.constants import DISPOSITION_OPEN, QUEUE_DEFAULT
 from saq.database.model import Alert
+from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 
 
@@ -144,7 +148,7 @@ def test_manage_refresh_requires_login(app):
 @pytest.mark.integration
 def test_manage_page_wires_datastar(web_client, analyst):
     """The manage page loads the Datastar bundle, declares the signals on the
-    non-morphed wrapper, arms the poll, and binds the row checkboxes to $_sel."""
+    non-morphed wrapper, arms the poll, and ties the row checkboxes to $_sel by uuid."""
     alert = _insert_alert('manage-datastar-1', 'datastar wiring test alert')
 
     with web_client.session_transaction() as sess:
@@ -154,15 +158,18 @@ def test_manage_page_wires_datastar(web_client, analyst):
     assert response.status_code == 200
     html = response.data.decode()
 
-    assert 'js/datastar-1.0.2.js' in html
+    assert 'js/datastar-1.0.4.js' in html
     # default gui.manage_auto_refresh_seconds is 30
     assert 'data-on-interval__duration.30s' in html
     # the favicon notification-dot poll follows the same cadence
     assert 'data-poll-seconds="30"' in html
     # $_sel is seeded from session['checked'] so post-bulk-action restores go through the signal
     assert f'data-signals:_sel=\'["{alert.uuid}"]\'' in html
-    # checked state comes from data-bind against the signal, not a server-rendered attribute
-    assert 'data-bind:_sel' in html
+    # checked state comes from the row's uuid being in the signal, not a server-rendered
+    # attribute -- and not data-bind, which ties each checkbox to an array position that a
+    # row inserted by a refresh collides with
+    assert 'data-effect="el.checked = $_sel.includes(el.value)"' in html
+    assert 'data-bind:_sel' not in html
     assert f'value="{alert.uuid}"' in html
     assert f'id="cb_{alert.uuid}"' in html
 
@@ -489,3 +496,36 @@ def test_manage_page_renders_the_column_chooser(web_client, analyst):
     assert 'checked' in description_input and 'disabled' in description_input
     # the chooser is outside the morph fragments
     assert 'column-chooser' not in web_client.get(url_for("analysis.manage_refresh")).data.decode()
+
+
+@pytest.mark.integration
+def test_manage_flags_a_page_that_mixes_queues(web_client, analyst):
+    """Select-all takes the whole page, so a page with more than one queue says so and
+    offers to select one queue's alerts; the rows carry what the bulk-action dialogs read."""
+    _insert_alert('queue-mix-default', 'queue mix default alert')
+    tuning = _insert_alert('queue-mix-tuning', 'queue mix tuning alert')
+    tuning.queue = 'tuning'
+    tuning.owner_id = analyst
+    get_db().commit()
+
+    web_client.post(url_for("analysis.apply_temp_filter"), data={
+        "filters": json.dumps([{"name": "Description", "inverted": False, "values": ["queue mix"]}]),
+        "label": "test"})
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'id="manage_queue_mix"' in html
+    assert 'data-uuids=\'["queue-mix-tuning"]\'' in html
+
+    row = re.search(r'<tr id="alert_row_queue-mix-tuning"[^>]*>', html).group(0)
+    assert 'data-queue="tuning"' in row
+    assert f'data-owner-id="{analyst}"' in row
+    assert 'data-owner-enabled="1"' in row
+
+
+@pytest.mark.integration
+def test_manage_does_not_flag_a_single_queue_page(web_client, analyst):
+    _insert_alert('queue-single', 'single queue alert')
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'alert_row_queue-single' in html
+    assert 'id="manage_queue_mix"' not in html

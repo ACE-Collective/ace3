@@ -23,6 +23,14 @@
 # also activates the venv and cd's to SAQ_HOME
 source /opt/ace/bin/initialize-environment.sh
 
+# partition DDL runs against the shared cache database, so exactly one node does it.
+# defaults to primary, like is_primary_node(), so a single-node install is unaffected
+if [ "${ACE_IS_PRIMARY_NODE:-1}" != "1" ]
+then
+    echo "not the primary node -- skipping analysis result cache partition maintenance"
+    exit 0
+fi
+
 set -euo pipefail
 
 # Constants

@@ -5,7 +5,7 @@ from sqlalchemy import func
 
 from saq.analysis.disposition_history import DispositionHistory
 from saq.analysis.observable import Observable
-from saq.constants import DISPOSITION_UNKNOWN
+from saq.constants import DISPOSITION_UNKNOWN, QUEUE_DEFAULT
 from saq.database.model import (
     Alert as DBAlert,
     Observable as DBObservable,
@@ -53,6 +53,9 @@ def get_observable_disposition_history(observable: Observable) -> Optional[Dispo
 
     with get_db_connection() as db:
         cursor = db.cursor()
+        # Only the default queue counts. The other queues are a different population with
+        # different triage semantics, so folding them in misrepresents how this observable
+        # has actually been dispositioned.
         cursor.execute("""
     SELECT 
         a.disposition, COUNT(*) 
@@ -63,8 +66,9 @@ def get_observable_disposition_history(observable: Observable) -> Optional[Dispo
         o.type = %s AND 
         o.sha256 = UNHEX(%s) AND
         a.alert_type != 'faqueue' AND
-        a.disposition != 'UNKNOWN'
-    GROUP BY a.disposition""", (observable.type, observable.sha256_hash))
+        a.disposition != 'UNKNOWN' AND
+        a.queue = %s
+    GROUP BY a.disposition""", (observable.type, observable.sha256_hash, QUEUE_DEFAULT))
 
         for row in cursor:
             disposition, count = row
@@ -79,9 +83,10 @@ def get_observable_disposition_histories(observables: list[Observable]) -> dict[
     history twice per rendered observable node, so on a large alert the per-observable
     form issued hundreds of 3-table aggregate joins for one page.
 
-    Observables that are whitelisted, or that appear in no dispositioned alert, are absent
-    from the result -- matching the per-observable function, which returns None for the
-    first and an empty (falsy) DispositionHistory for the second.
+    Observables that are whitelisted, or that appear in no dispositioned alert in the
+    default queue, are absent from the result -- matching the per-observable function,
+    which returns None for the first and an empty (falsy) DispositionHistory for the
+    second.
     """
     histories: dict[str, DispositionHistory] = {}
     candidates = [observable for observable in observables if not observable.whitelisted]
@@ -106,6 +111,8 @@ def get_observable_disposition_histories(observables: list[Observable]) -> dict[
         DBObservable.sha256.in_(hashes),
         DBAlert.alert_type != 'faqueue',
         DBAlert.disposition != DISPOSITION_UNKNOWN,
+        # only the default queue -- see get_observable_disposition_history()
+        DBAlert.queue == QUEUE_DEFAULT,
     ).group_by(
         DBObservable.type,
         DBObservable.sha256,

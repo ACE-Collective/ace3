@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# delete any archive files older than 30 days
+[ -d data/archive ] || exit 0
+find data/archive -type f -mtime +30 -delete

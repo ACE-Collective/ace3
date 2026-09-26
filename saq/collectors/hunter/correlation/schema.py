@@ -43,11 +43,51 @@ class TimeRangeConfig(BaseModel):
     relative_time_format: Optional[str] = Field(default=None, description="Format of the reference time field")
 
 
+# command types implemented by core. every other `type:` value is a custom command type
+# registered by an integration (see command_types.py), and these names cannot be registered.
+BUILTIN_COMMAND_TYPES = frozenset({"query", "executable", "defined"})
+
+# fields that belong to one of the built-in command types. a custom type carries its settings in
+# `options` instead, so any of these being set on one is an authoring mistake. (`name` and
+# `arguments` are the `defined` type's fields on CommandConfig, but `name` is the identifier of a
+# PredefinedCommandConfig, so each model passes its own list.)
+_BUILTIN_ONLY_FIELDS = (
+    "source", "query", "time_range", "source_options",
+    "path", "stdin", "args", "env", "files",
+)
+
+
+def _validate_options_placement(model: BaseModel, builtin_only_fields: tuple[str, ...]) -> None:
+    """Keep `options` and the built-in-only fields on the side of the type they belong to.
+
+    Compares values rather than `model_fields_set`: PredefinedCommandConfig.to_command_config()
+    round-trips through a full model_dump, which marks every field as set -- including
+    `source_options: {}` and `time_range: None` on a custom command.
+    """
+    if model.type in BUILTIN_COMMAND_TYPES:
+        if model.options:
+            hint = " (did you mean 'source_options'?)" if model.type == "query" else ""
+            raise ValueError(
+                f"'options' is only valid for custom command types, not '{model.type}'{hint}"
+            )
+        return
+
+    present = [
+        field for field in builtin_only_fields
+        if getattr(model, field) not in (None, {}, [])
+    ]
+    if present:
+        raise ValueError(
+            f"custom command type '{model.type}' does not accept {present}; "
+            "put its settings under 'options'"
+        )
+
+
 class CommandConfig(BaseModel):
     """Configuration for a transformation command."""
     model_config = {"extra": "forbid"}
 
-    type: str = Field(..., description="Command type: query, executable, defined")
+    type: str = Field(..., description="Command type: query, executable, defined, or a custom type registered by an integration")
     # This is a runaway backstop, not a routine limiter, so a short default fails a large fraction
     # of legitimate queries -- and a command error makes the event fall through to an alert, so
     # each failure can be a false positive. The correlate block's own `timeout` remains the real
@@ -72,6 +112,9 @@ class CommandConfig(BaseModel):
     name: Optional[str] = Field(default=None, description="Name of predefined command")
     arguments: Optional[dict] = Field(default=None, description="Override arguments for defined command")
 
+    # custom-type-specific fields
+    options: dict[str, Any] = Field(default_factory=dict, description="Settings for a custom command type (jinja interpolated, then validated by the type's config_class)")
+
     @model_validator(mode="after")
     def validate_command_type(self):
         if self.type == "query" and self.source is None:
@@ -80,6 +123,7 @@ class CommandConfig(BaseModel):
             raise ValueError("'path' is required for executable commands")
         if self.type == "defined" and self.name is None:
             raise ValueError("'name' is required for defined commands")
+        _validate_options_placement(self, _BUILTIN_ONLY_FIELDS + ("name", "arguments"))
         return self
 
 
@@ -221,7 +265,7 @@ class PredefinedCommandConfig(BaseModel):
 
     name: str = Field(..., description="Name of the command")
     description: Optional[str] = Field(default=None, description="Description of the command")
-    type: str = Field(..., description="Command type: query, executable")
+    type: str = Field(..., description="Command type: query, executable, or a custom type registered by an integration")
     # see CommandConfig.timeout for why this is a backstop rather than a routine limiter
     timeout: str = Field(default="10m", description="Command timeout as timespec")
     cache: Optional[str] = Field(default=None, description="Cache duration as timespec")
@@ -238,6 +282,14 @@ class PredefinedCommandConfig(BaseModel):
     args: Optional[list[str]] = Field(default=None, description="Command arguments")
     env: Optional[dict[str, str]] = Field(default=None, description="Environment variables for executable (values are jinja interpolated)")
     files: Optional[list[str]] = Field(default=None, description="Additional supporting files to include with the executable")
+
+    # custom-type-specific fields
+    options: dict[str, Any] = Field(default_factory=dict, description="Settings for a custom command type (jinja interpolated, then validated by the type's config_class)")
+
+    @model_validator(mode="after")
+    def validate_command_type(self):
+        _validate_options_placement(self, _BUILTIN_ONLY_FIELDS)
+        return self
 
     def to_command_config(self, overrides: Optional[dict] = None) -> CommandConfig:
         """Convert to a CommandConfig, applying optional overrides."""

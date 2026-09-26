@@ -54,6 +54,31 @@ def order_archive_file_list(file_list: list[str]) -> list[str]:
     # sort file_list by priority, preserving original order within each group
     return sorted(file_list, key=get_priority)
 
+
+def normalize_extracted_permissions(extracted_path: str):
+    """Makes everything under extracted_path readable by anyone (dirs 0o775, files 0o664).
+    The walk is top-down so a directory is fixed before os.walk tries to list it."""
+    try:
+        for root, dirs, files in os.walk(extracted_path):
+            for dir_name in dirs:
+                full_path = os.path.join(root, dir_name)
+                try:
+                    os.chmod(full_path, 0o775)
+                except Exception as e:
+                    logging.error("unable to adjust permissions on dir {}: {}".format(full_path, e))
+
+            for file_name in files:
+                full_path = os.path.join(root, file_name)
+                try:
+                    os.chmod(full_path, 0o664)
+                except Exception as e:
+                    logging.error("unable to adjust permissions on file {}: {}".format(full_path, e))
+
+    except Exception as e:
+        logging.error("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
+        report_exception()
+
+
 KEY_FILE_COUNT = 'file_count'
 KEY_EXTRACTED_FILES = 'extracted_files'
 
@@ -445,6 +470,9 @@ class ArchiveAnalyzer(AnalysisModule):
                 p.kill()
                 (stdout, stderr) = p.communicate()
 
+        # the extractor may have honored stored mode bits that make files unreadable to us
+        normalize_extracted_permissions(extracted_path)
+
         # files we've removed because we've hit the limit
         removed_files = []
 
@@ -521,28 +549,7 @@ class ArchiveAnalyzer(AnalysisModule):
         if len(removed_files) > 0:
             logging.info("removed {} files because we've hit the limit".format(len(removed_files)))
 
-        #
-        # adjust file permission to be readable by anyone
-        #
-
-        try:
-            for root, dirs, files in os.walk(extracted_path):
-                for _dir in dirs:
-                    full_path = os.path.join(root, _dir)
-                    try:
-                        os.chmod(full_path, 0o775)
-                    except Exception as e:
-                        logging.error("unable to adjust permissions on dir {}: {}".format(full_path, e))
-
-                for _file in files:
-                    full_path = os.path.join(root, _file)
-                    try:
-                        os.chmod(full_path, 0o664)
-                    except Exception as e:
-                        logging.error("unable to adjust permissions on file {}: {}".format(full_path, e))
-
-        except Exception as e:
-            logging.error("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
-            report_exception()
+        # safety net, normally a no-op since this already ran right after extraction
+        normalize_extracted_permissions(extracted_path)
 
         return AnalysisExecutionResult.COMPLETED

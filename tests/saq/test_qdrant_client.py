@@ -1,3 +1,5 @@
+import ssl
+
 import pytest
 from unittest.mock import patch
 
@@ -51,7 +53,10 @@ class TestGetQdrantClient:
             get_qdrant_client()
 
         assert mock_client.call_args.kwargs["https"] is True
-        assert mock_client.call_args.kwargs["verify"] == "ssl/ca-chain.cert.pem"
+        verify = mock_client.call_args.kwargs["verify"]
+        assert isinstance(verify, ssl.SSLContext)
+        assert verify.get_ca_certs()
+        assert mock_client.call_args.kwargs["check_compatibility"] is False
         assert mock_client.call_args.kwargs["api_key"] == "test-key"
 
     def test_api_key_sent_without_ssl(self, mock_qdrant_config, monkeypatch):

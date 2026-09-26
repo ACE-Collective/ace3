@@ -121,9 +121,9 @@ class _database_pool:
 
         self.database_config = get_config().get_database_config(name)
         kwargs: dict[str, Any] = {
-            'db': self.database_config.database,
+            'database': self.database_config.database,
             'user': self.database_config.username,
-            'passwd': self.database_config.password,
+            'password': self.database_config.password,
             'charset': 'utf8mb4',
         }
 

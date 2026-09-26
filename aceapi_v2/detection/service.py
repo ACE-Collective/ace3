@@ -11,7 +11,7 @@ gymnastics.
 import math
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,7 +22,9 @@ from saq.database.util.observable_detection import (
     resolve_detection_identity,
 )
 from saq.observables.type_hierarchy import get_all_valid_types
+from saq.util.time import local_time
 from aceapi_v2.detection.schemas import (
+    DetectionStatus,
     ObservableCommentSummary,
     ObservableDetectionRead,
     DetectionPage,
@@ -36,6 +38,12 @@ class DetectionAlreadyExists(Exception):
     """A detection for this type and value is already present."""
 
 
+def _now() -> datetime:
+    """The clock `expires_on` is compared against: naive UTC, the same instant the engine uses when
+    it loads the active detections (see get_active_detections_by_type)."""
+    return local_time().replace(tzinfo=None)
+
+
 def _to_read(detection: ObservableDetection, context: dict | None = None) -> ObservableDetectionRead:
     context = context or {}
     return ObservableDetectionRead(
@@ -43,6 +51,7 @@ def _to_read(detection: ObservableDetection, context: dict | None = None) -> Obs
         type=detection.type,
         value=detection.value,
         expires_on=detection.expires_on,
+        expired=detection.expires_on is not None and detection.expires_on <= _now(),
         detection_context=detection.detection_context,
         batch_id=detection.batch_id,
         created_by=detection.created_by_user.display_name if detection.created_by_user else None,
@@ -72,7 +81,11 @@ def _search_pattern(search: str) -> str:
     return f"%{_escape_like(search)}%"
 
 
-def _apply_filters(stmt, *, search: str | None, observable_type: str | None):
+def _apply_filters(stmt, *, search: str | None, observable_type: str | None, status: DetectionStatus):
+    if status == DetectionStatus.ACTIVE:
+        stmt = stmt.where(or_(ObservableDetection.expires_on.is_(None), ObservableDetection.expires_on > _now()))
+    elif status == DetectionStatus.EXPIRED:
+        stmt = stmt.where(ObservableDetection.expires_on <= _now())
     if observable_type:
         stmt = stmt.where(ObservableDetection.type == observable_type)
     if search:
@@ -111,10 +124,11 @@ async def count_detections(
     *,
     search: str | None = None,
     observable_type: str | None = None,
+    status: DetectionStatus = DetectionStatus.ACTIVE,
 ) -> int:
     stmt = _apply_filters(
         select(func.count()).select_from(ObservableDetection),
-        search=search, observable_type=observable_type,
+        search=search, observable_type=observable_type, status=status,
     )
     return int((await session.execute(stmt)).scalar_one())
 
@@ -166,6 +180,7 @@ async def list_detections(
     *,
     search: str | None = None,
     observable_type: str | None = None,
+    status: DetectionStatus = DetectionStatus.ACTIVE,
     limit: int = DEFAULT_PAGE_SIZE,
     offset: int = 0,
 ) -> list[ObservableDetectionRead]:
@@ -174,7 +189,7 @@ async def list_detections(
             selectinload(ObservableDetection.created_by_user),
             selectinload(ObservableDetection.modified_by_user),
         ),
-        search=search, observable_type=observable_type,
+        search=search, observable_type=observable_type, status=status,
     )
     # grouped by type, alphabetical by value, with `id` as a tiebreaker so pagination is
     # deterministic. `value` is a plain collatable column, so this is an ordinary sort.
@@ -191,19 +206,24 @@ async def get_detection_page(
     *,
     search: str | None = None,
     observable_type: str | None = None,
+    status: DetectionStatus = DetectionStatus.ACTIVE,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> DetectionPage:
-    """A page of detections plus the totals the UI needs. Page numbers are 1-based and clamped."""
+    """A page of detections plus the totals the UI needs. Page numbers are 1-based and clamped.
+
+    Expired detections are left out unless `status` asks for them.
+    """
     page_size = clamp_page_size(page_size)
 
-    total = await count_detections(session, search=search, observable_type=observable_type)
+    total = await count_detections(
+        session, search=search, observable_type=observable_type, status=status)
     total_pages = max(1, math.ceil(total / page_size))
     page = max(1, min(page, total_pages))
 
     items = await list_detections(
         session,
-        search=search, observable_type=observable_type,
+        search=search, observable_type=observable_type, status=status,
         limit=page_size, offset=(page - 1) * page_size,
     )
     return DetectionPage(

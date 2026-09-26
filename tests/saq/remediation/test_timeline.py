@@ -1,13 +1,16 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from saq.remediation import timeline
+from saq.remediation.coverage import assemble_coverage
 from saq.remediation.timeline import (
     RemediationEvent,
     gather_remediation_events,
+    pending_events_from_coverage,
     register_remediation_event_provider,
 )
 
@@ -653,3 +656,135 @@ class TestACEEmailRemediationEvents:
         assert len(events) == 1
         assert events[0].description == "Remediation"
         assert events[0].source == "ACE"
+
+
+# ---------------------------------------------------------------------------
+# Pending rows: one per email that is still outstanding
+# ---------------------------------------------------------------------------
+
+REAL_EMAIL = "<msg-1@example.com>|alice@example.com"
+JOURNAL_REPORT = "<journal-1@example.com>|alice@example.com"
+_ALERT = "alert-1"
+_T0 = datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc)
+
+
+def _pending_check(value, probe_name, update_time=None, insert_date=_T0, deadline=datetime(2026, 5, 13, 12, 0)):
+    return SimpleNamespace(
+        id=1, observable_value=value, probe_name=probe_name, status="IN_PROGRESS", result=None,
+        result_message=None, events_json=None, update_time=update_time, insert_date=insert_date, deadline=deadline)
+
+
+def _confirmed_check(value, probe_name):
+    events_json = (
+        '[{"source": "Vendor", "event_type": "auto_remediated", "timestamp": "2026-05-06T12:05:00Z",'
+        ' "description": "Auto-Remediated", "target": "alice@example.com"}]')
+    return SimpleNamespace(
+        id=2, observable_value=value, probe_name=probe_name, status="COMPLETED", result="CONFIRMED",
+        result_message=None, events_json=events_json, update_time=_T0, insert_date=_T0, deadline=None)
+
+
+def _ace_remediation(status="IN_PROGRESS", result=None, action="remove", insert_date=_T0, update_time=None):
+    return SimpleNamespace(status=status, result=result, action=action, insert_date=insert_date, update_time=update_time)
+
+
+def _coverage(targets, ace=None, checks=()):
+    return assemble_coverage([_ALERT], {_ALERT: set(targets)}, ace or {}, {_ALERT: list(checks)})[_ALERT]
+
+
+class TestPendingRows:
+
+    def test_one_row_per_email_not_per_probe(self):
+        last_checked = _T0 + timedelta(minutes=9)
+        coverage = _coverage([JOURNAL_REPORT], checks=[
+            _pending_check(JOURNAL_REPORT, "alpha", update_time=_T0 + timedelta(minutes=4)),
+            _pending_check(JOURNAL_REPORT, "beta", update_time=last_checked, deadline=datetime(2026, 5, 14, 12, 0)),
+        ])
+
+        events = pending_events_from_coverage(coverage, fallback_event_time=_T0)
+
+        assert len(events) == 1
+        e = events[0]
+        assert e.pending
+        assert e.source == "Alpha, Beta"
+        assert e.event_type == "watching"
+        assert e.description == "Watching (until 2026-05-14 12:00:00 UTC)"
+        assert e.target == "alice@example.com"
+        assert e.timestamp == last_checked
+        assert e.event_time == _T0
+        assert e.metadata == {"email_delivery": JOURNAL_REPORT}
+        # nothing has reacted to the message yet
+        assert e.duration_display is None
+
+    def test_email_confirmed_by_one_probe_has_no_row_while_a_sibling_still_polls(self):
+        # two emails to the same recipient: the real one is confirmed by alpha while
+        # beta still polls it; the journal report is watched by both
+        coverage = _coverage([REAL_EMAIL, JOURNAL_REPORT], checks=[
+            _confirmed_check(REAL_EMAIL, "alpha"),
+            _pending_check(REAL_EMAIL, "beta"),
+            _pending_check(JOURNAL_REPORT, "alpha"),
+            _pending_check(JOURNAL_REPORT, "beta"),
+        ])
+
+        events = pending_events_from_coverage(coverage)
+
+        assert [e.metadata["email_delivery"] for e in events] == [JOURNAL_REPORT]
+
+    def test_never_attempted_check_uses_insert_date(self):
+        coverage = _coverage([REAL_EMAIL], checks=[_pending_check(REAL_EMAIL, "alpha", insert_date=datetime(2026, 5, 6, 12, 1))])
+
+        assert pending_events_from_coverage(coverage)[0].timestamp == datetime(2026, 5, 6, 12, 1, tzinfo=timezone.utc)
+
+    def test_ace_removal_in_flight_reads_remediating(self):
+        coverage = _coverage(
+            [REAL_EMAIL],
+            ace={REAL_EMAIL: [_ace_remediation(update_time=_T0 + timedelta(minutes=2))]},
+            checks=[_pending_check(REAL_EMAIL, "alpha", update_time=_T0 + timedelta(minutes=1))],
+        )
+
+        events = pending_events_from_coverage(coverage)
+
+        assert [(e.source, e.event_type, e.timestamp) for e in events] == [
+            ("ACE, Alpha", "remediating", _T0 + timedelta(minutes=2)),
+        ]
+        assert events[0].description.startswith("Remediating (until ")
+
+    def test_failed_ace_attempt_still_watched_keeps_its_row(self):
+        coverage = _coverage(
+            [REAL_EMAIL],
+            ace={REAL_EMAIL: [_ace_remediation(status="COMPLETED", result="FAILED")]},
+            checks=[_pending_check(REAL_EMAIL, "alpha")],
+        )
+
+        assert [e.source for e in pending_events_from_coverage(coverage)] == ["Alpha"]
+
+    @pytest.mark.parametrize("ace_result", ["SUCCESS", "NOT_FOUND"])
+    def test_email_ace_settled_has_no_row(self, ace_result):
+        # removed by ACE, or not in the mailbox: nothing is outstanding even though a probe polls on
+        coverage = _coverage(
+            [REAL_EMAIL],
+            ace={REAL_EMAIL: [_ace_remediation(status="COMPLETED", result=ace_result)]},
+            checks=[_pending_check(REAL_EMAIL, "alpha")],
+        )
+
+        assert pending_events_from_coverage(coverage) == []
+
+    def test_nothing_in_flight_means_no_rows(self):
+        assert pending_events_from_coverage(_coverage([REAL_EMAIL])) == []
+
+    def test_gather_lists_pending_rows_after_later_events(self):
+        # the pending row's own timestamp is earlier than the failed attempt, and it
+        # still reads last: what happened, then what is outstanding
+        rem = _fake_remediation(id=42, key=REAL_EMAIL)
+        attempt = _fake_remediation_history(id=1, remediation_id=42, insert_date=_T0 + timedelta(minutes=30), result="FAILED")
+        coverage = _coverage([REAL_EMAIL], checks=[_pending_check(REAL_EMAIL, "alpha", update_time=_T0 + timedelta(minutes=5))])
+
+        root = _fake_root(observables=[_fake_email_delivery_observable(REAL_EMAIL)])
+        with _patch_db(remediations=[rem], history=[attempt]):
+            events = gather_remediation_events(root, fallback_event_time=_T0, coverage=coverage)
+
+        assert [(e.source, e.pending) for e in events] == [("ACE", False), ("Alpha", True)]
+
+    def test_gather_without_coverage_has_no_pending_rows(self):
+        root = _fake_root(observables=[])
+        with _patch_db(remediations=[], history=[]):
+            assert gather_remediation_events(root) == []

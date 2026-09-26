@@ -13,9 +13,19 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, LockManagerType, WorkloadManagerType
-from saq.crash_report import CRASH_TYPE_KILLED, record_module_crash
+from saq.crash_report import (
+    CRASH_TYPE_KILLED,
+    CRASH_TYPE_TIMEOUT,
+    CrashReportMetadata,
+    close_hang_stacks_file,
+    discard_hang_stacks,
+    drain_index_spool,
+    open_hang_stacks_file,
+    prune_stale_hang_stacks,
+    record_module_crash,
+    take_hang_stacks,
+)
 from saq.database.pool import remove_all_sessions
-from saq.database.util.locking import get_lock_uuid
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
@@ -91,6 +101,10 @@ class Worker:
         # this is the single object every layer below us shares for that work item, and
         # it is what _handle_lock_lost() cancels
         self.current_execution_context: Optional[EngineExecutionContext] = None
+
+        # a predecessor's failure we could not record yet because its root was locked, with the
+        # crash reports indexed at startup (see _handle_failed_analysis). retried between work items
+        self._deferred_failure: Optional[tuple[TrackingRecord, Optional[list[CrashReportMetadata]]]] = None
 
     def __str__(self):
         return f"worker {self.name}"
@@ -460,9 +474,25 @@ class Worker:
             logging.info("single shot mode - shutting down after completing work")
             self._controlled_shutdown.value = True
 
+        # index the crash reports that were written without a database row -- above all the
+        # timeout report the in-process watchdog writes just before os._exit(1), which is the
+        # only one carrying the stuck thread's stack. the watchdog cannot touch the database, and
+        # its exit is exactly what gets this replacement worker started, so this is the first
+        # healthy process to come along. drained *before* the killed report is recorded below, so
+        # that report can name the timeout report it is the other half of
+        indexed_crashes = drain_index_spool()
+
         # if we are replacing a worker that died mid-module, the manager handed us the
         # record of what it was doing so we can record the failure against that root
-        self._handle_failed_analysis(pending_failure)
+        if not self._handle_failed_analysis(pending_failure, indexed_crashes):
+            self._deferred_failure = (pending_failure, indexed_crashes)
+
+        # open the file the pre-kill thread dump goes to (see arm_hang_stack_dump). only with a
+        # manager: in single threaded mode nothing kills the worker, so there is nothing to
+        # pre-empt. pruning comes after the predecessor's dump was collected just above
+        if not self.config.single_threaded_mode:
+            prune_stale_hang_stacks()
+            open_hang_stacks_file()
 
         while True:
             # is this worker shutting down?
@@ -498,12 +528,17 @@ class Worker:
                         )
                     )
 
+                # record a predecessor's failure that had to wait for its root to be unlocked. this
+                # comes before taking new work, which may be that same root
+                if self._deferred_failure and self._handle_failed_analysis(*self._deferred_failure):
+                    self._deferred_failure = None
+
                 # Worker is responsible for tracking the work target
                 work_item = self.workload_manager.get_next_work_target()
                 executed = False
                 if work_item:
                     # Track the work target at the Worker level
-                    self.tracking_message_manager.track_current_work_target(work_item)
+                    self.tracking_message_manager.track_current_work_target(work_item, lock_uuid=self.lock_manager.lock_uuid)
 
                     try:
                         # if execute returns True it means it discovered and processed a work_item
@@ -543,6 +578,11 @@ class Worker:
             finally:
                 # SQLAlchemy session management
                 remove_all_sessions()
+
+        # a clean exit leaves nothing to collect
+        if not self.config.single_threaded_mode:
+            close_hang_stacks_file()
+            discard_hang_stacks(os.getpid())
 
         logging.debug("worker {} exiting".format(os.getpid()))
 
@@ -599,7 +639,7 @@ class Worker:
                     # then we can move it
                     self.analysis_orchestrator._relocate_storage_directory(workload_storage_dir(work_item.uuid), execution_context)
                     # and re-track to that new target location
-                    self.tracking_message_manager.track_current_work_target(work_item)
+                    self.tracking_message_manager.track_current_work_target(work_item, lock_uuid=self.lock_manager.lock_uuid)
 
                 # Use the AnalysisOrchestrator to handle the complete analysis lifecycle
                 success = self.analysis_orchestrator.orchestrate_analysis(execution_context)
@@ -669,16 +709,28 @@ class Worker:
         )
         return True
 
-    def _handle_failed_analysis(self, record: Optional[TrackingRecord]):
+    def _handle_failed_analysis(
+        self,
+        record: Optional[TrackingRecord],
+        indexed_crashes: Optional[list[CrashReportMetadata]] = None,
+    ) -> bool:
         """Records the module that killed our predecessor so we do not run it again.
 
         Without this the replacement worker picks the same work item back up (its workload
         row was never deleted -- the finally that would have deleted it never ran), runs the
         same module, and dies again. ``record`` is supplied by the manager, which owns the
         tracking state precisely because the process that produced it is gone.
+
+        ``indexed_crashes`` are the spooled reports this worker just indexed. If one of them is
+        the watchdog's timeout report for this same root and module, its id is written into the
+        failure message next to the killed report's, since it is the one with the thread stacks.
+
+        Returns False when the root is locked by someone else, in which case nothing was
+        recorded and the caller tries again later (see worker_loop). Returns True otherwise,
+        including when recording failed outright.
         """
         if record is None or not record.has_module:
-            return
+            return True
 
         last_work_target = record.storage_dir
         last_analysis_module = record
@@ -692,7 +744,27 @@ class Worker:
                 last_work_target, last_analysis_module,
             )
             self.tracking_message_manager.resolve_pending_failure(record.root_uuid)
-            return
+            discard_hang_stacks(record.pid)
+            return True
+
+        # release the lock the dead worker held, and only that one. by now another worker may
+        # have locked the root and be analyzing it: releasing *its* lock lets a third worker in
+        # alongside it, and whichever of them finishes first sees no outstanding work and deletes
+        # the storage directory out from under the other. a record written before the lock was
+        # tracked has no lock_uuid, and then we release nothing -- a lock of a dead worker still
+        # expires on its own. done once: the lock_uuid is cleared so a retry does not repeat it
+        if record.lock_uuid:
+            self.lock_manager.force_release_lock(record.root_uuid, lock_uuid=record.lock_uuid)
+            record.lock_uuid = None
+
+        # everything below loads, modifies and saves the root, so it needs the lock like any other
+        # analysis of it. one attempt, no waiting: if the root is busy we try again between work
+        # items rather than spend the worker waiting on it
+        if not self.lock_manager.acquire_lock(record.root_uuid):
+            logging.info(
+                f"root {record.root_uuid} is locked, deferring recording of failed analysis {last_analysis_module}"
+            )
+            return False
 
         logging.warning(
             f"detected failed analysis module {last_analysis_module} while analyzing {last_work_target}"
@@ -702,9 +774,12 @@ class Worker:
             root = RootAnalysis(storage_dir=last_work_target)
             root.load()
 
-            # the process that died wrote nothing -- SIGKILL leaves no handler a chance -- so this
-            # is where the crash gets recorded, from the replacement worker, out of the tracking
-            # record the manager preserved
+            # the process that died could not write a report -- SIGKILL leaves no handler a
+            # chance -- so this is where the crash gets recorded, from the replacement worker, out
+            # of the tracking record the manager preserved, plus the thread dump the dying process
+            # wrote shortly before the kill when it got that far. that dump is the only record of
+            # where a module holding the GIL was stuck: it starves the in-process watchdog, so
+            # there is no timeout report to fall back on
             crash_id = record_module_crash(
                 crash_type=CRASH_TYPE_KILLED,
                 module_path=last_analysis_module.module_path,
@@ -715,7 +790,9 @@ class Worker:
                 worker_name=last_analysis_module.worker_name,
                 maximum_analysis_time=last_analysis_module.maximum_analysis_time,
                 module_start_time=last_analysis_module.module_start_time,
+                thread_stacks=take_hang_stacks(record.pid),
             )
+            discard_hang_stacks(record.pid)
 
             # mark the analysis as failed. the crash id rides along in the error message so it
             # ends up serialized in the alert's own tree -- an analyst looking at the alert that
@@ -723,6 +800,10 @@ class Worker:
             error_message = "process died unexpectedly"
             if crash_id:
                 error_message = f"{error_message} (crash_id {crash_id})"
+
+            timeout_crash_id = _find_timeout_crash_id(indexed_crashes, record)
+            if timeout_crash_id:
+                error_message = f"{error_message}; thread stacks in crash_id {timeout_crash_id}"
 
             root.set_analysis_failed(
                 last_analysis_module.module_path,
@@ -733,12 +814,6 @@ class Worker:
 
             root.save()
 
-            # and then clear the lock on this so it can get picked up right away. release it in an
-            # ownership-aware way (scoped to the lock we actually observe) so we can never delete a
-            # lock a *different* live worker has since taken over
-            observed_lock_uuid = get_lock_uuid(root.uuid)
-            self.lock_manager.force_release_lock(root.uuid, lock_uuid=observed_lock_uuid)
-
             # only now delete the pending file. deleting it *is* the acknowledgement, and
             # doing it on the way out rather than unconditionally means a replacement that
             # itself dies during recovery leaves the attribution in place for the next one
@@ -747,3 +822,23 @@ class Worker:
         except Exception as e:
             logging.error(f"unable to mark analysis as failed: {e}")
             report_exception()
+
+        finally:
+            self.lock_manager.release_lock(record.root_uuid, ignore_lock_failure=True)
+
+        return True
+
+
+def _find_timeout_crash_id(
+    indexed_crashes: Optional[list[CrashReportMetadata]], record: TrackingRecord
+) -> Optional[str]:
+    """The id of the watchdog's timeout report for the module this record says died, if any."""
+    for metadata in reversed(indexed_crashes or []):
+        if (
+            metadata.crash_type == CRASH_TYPE_TIMEOUT
+            and metadata.root_uuid == record.root_uuid
+            and metadata.module_path == record.module_path
+        ):
+            return metadata.crash_id
+
+    return None

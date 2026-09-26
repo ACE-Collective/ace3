@@ -96,7 +96,7 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
-            logging.error("cannot find local file path for {}".format(_file))
+            logging.error(f"cannot find local file path {local_file_path}")
             return AnalysisExecutionResult.COMPLETED
 
         if os.path.getsize(local_file_path) > self.maximum_size_mb * 1024 * 1024:

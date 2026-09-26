@@ -10,7 +10,7 @@ from datetime import datetime
 import pytest
 import pytz
 
-from saq.database.model import Alert, Observable, ObservableMapping, Tag, TagMapping
+from saq.database.model import Alert, DetectionPoint, Observable, ObservableMapping, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.gui.filter_query import (
     ANY_OBSERVABLE_TYPE,
@@ -24,6 +24,7 @@ from tests.saq.helpers import insert_alert
 pytestmark = pytest.mark.integration
 
 SIGNATURE_UUID = "6f3a1b2c-1111-2222-3333-444455556666"
+OTHER_SIGNATURE_UUID = "9b21c3d4-aaaa-bbbb-cccc-ddddeeeeffff"
 
 
 def _attach(alert: Alert, observable_type: str, value: str, sha256: bytes | None = None) -> None:
@@ -53,6 +54,15 @@ def _tag(alert: Alert, name: str) -> None:
         db.add(tag)
         db.flush()
     db.add(TagMapping(tag_id=tag.id, alert_id=alert.id))
+    db.commit()
+
+
+def _detection_point(alert: Alert, signature_uuid: str, signature_version: str) -> None:
+    db = get_db()
+    content_hash = hashlib.sha256(f"{alert.id}:{signature_uuid}:{signature_version}".encode()).hexdigest()
+    db.add(DetectionPoint(alert_id=alert.id, description=f"detected by {signature_uuid}",
+                          signature_uuid=signature_uuid, signature_version=signature_version,
+                          content_hash=content_hash))
     db.commit()
 
 
@@ -132,6 +142,55 @@ class TestObservableFilter:
         out of a page they cannot leave without clearing cookies."""
         assert _uuids([{"name": "Observable", "inverted": False,
                         "values": [["ipv4", "not-an-ip"]]}]) == set()
+
+
+@pytest.fixture
+def detections():
+    """v1 and v2 of one signature on two alerts, a second signature on a third, and an alert
+    with no detection points at all."""
+    v1, v2, other, none = insert_alert(), insert_alert(), insert_alert(), insert_alert()
+    _detection_point(v1, SIGNATURE_UUID, "v1")
+    _detection_point(v2, SIGNATURE_UUID, "v2")
+    _detection_point(other, OTHER_SIGNATURE_UUID, "abc123:def")
+    return v1, v2, other, none
+
+
+def _detection_filter(*values, inverted=False):
+    return [{"name": "Detection Point", "inverted": inverted, "values": list(values)}]
+
+
+class TestDetectionPointFilter:
+    def test_uuid_alone_matches_every_version(self, detections):
+        v1, v2, _, _ = detections
+        assert _uuids(_detection_filter(SIGNATURE_UUID)) == {v1.uuid, v2.uuid}
+
+    def test_uuid_and_version_matches_that_version_only(self, detections):
+        v1, v2, _, _ = detections
+        assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:v1")) == {v1.uuid}
+        assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:v2")) == {v2.uuid}
+        assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:v3")) == set()
+
+    def test_version_splits_at_the_first_colon(self, detections):
+        _, _, other, _ = detections
+        assert _uuids(_detection_filter(f"{OTHER_SIGNATURE_UUID}:abc123:def")) == {other.uuid}
+
+    def test_uuid_is_case_insensitive(self, detections):
+        v1, v2, _, _ = detections
+        assert _uuids(_detection_filter(SIGNATURE_UUID.upper())) == {v1.uuid, v2.uuid}
+
+    def test_values_within_one_entry_are_ored(self, detections):
+        v1, _, other, _ = detections
+        assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:v1", OTHER_SIGNATURE_UUID)) == {v1.uuid, other.uuid}
+
+    def test_inverted_keeps_alerts_with_no_detection_points(self, detections):
+        v1, v2, other, none = detections
+        found = _uuids(_detection_filter(SIGNATURE_UUID, inverted=True))
+        assert {other.uuid, none.uuid}.issubset(found)
+        assert not {v1.uuid, v2.uuid} & found
+
+    def test_an_impossible_value_matches_nothing_rather_than_raising(self, detections):
+        assert _uuids(_detection_filter("not-a-uuid")) == set()
+        assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:")) == set()
 
 
 class TestOtherFilters:

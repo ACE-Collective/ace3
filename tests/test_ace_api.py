@@ -22,6 +22,9 @@ from saq.util.time import local_time, parse_event_time
 from saq.util.uuid import get_storage_dir, validate_uuid
 from tests.saq.helpers import create_root_analysis, log_count, start_api_server, stop_api_server
 
+# ace_api forces ssl_verification = False on every request
+pytestmark = pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+
 @pytest.fixture(autouse=True, scope="function")
 def api_server():
     ace_api.set_default_api_key(get_config().api.api_key)

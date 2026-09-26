@@ -4,10 +4,12 @@ from datetime import datetime
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
 
+from app.alert_ownership import confirmed_takes_from_form, describe_skipped
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.model import User, new_alert_version
 from saq.database.pool import get_db
+from saq.database.util.alert import take_ownership
 from saq.gui.alert import GUIAlert
 
 
@@ -72,6 +74,12 @@ def set_owner():
     # POST-only: this endpoint writes to the database. As a GET it let any prefetcher or
     # link scanner assign alert ownership by merely visiting a URL.
     session['checked'] = request.form.getlist('alert_uuids')
-    get_db().execute(GUIAlert.__table__.update().where(GUIAlert.uuid.in_(session['checked'])).values(owner_id=current_user.id, owner_time=datetime.now(), version=new_alert_version()))
-    get_db().commit()
+    ownership = take_ownership(session['checked'], current_user.id, confirmed_takes_from_form(request.form))
+    logging.info(f"AUDIT: user {current_user} took ownership of alerts {','.join(ownership.permitted)}")
+
+    # the page reloads after this returns, which is where the message shows
+    skipped = describe_skipped(ownership)
+    if skipped:
+        flash("took ownership of {} alerts; {}".format(len(ownership.permitted), skipped))
+
     return ('', 204)

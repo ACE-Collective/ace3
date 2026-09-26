@@ -9,6 +9,7 @@ from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import Alert, Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
 from saq.database.pool import get_db
+from saq.database.util.event import event_alerts_load_options, event_list_load_options, get_event_tags
 from saq.disposition import get_dispositions
 from saq.remediation.coverage import get_remediation_coverage
 from aceapi_v2.sync import run_async
@@ -212,7 +213,9 @@ def manage():
         else:
             query = query.order_by(User.display_name.asc())
 
-    events = query.all()
+    # the disposition filter and sort below read every event's alerts before the list can be
+    # cut down, so what a row needs is loaded for the whole list up front
+    events = query.options(*event_list_load_options()).all()
 
     # filter by disposition here since it isn't a DB column
     if filters['filter_event_disposition'].value:
@@ -221,25 +224,12 @@ def manage():
     if session['event_sort_by'] == 'disposition':
         events = sorted(events, key=lambda event: event.disposition_rank, reverse=session['event_sort_dir'])
 
+    all_event_tags = get_event_tags([event.id for event in events])
+
     # Filter by tag
-    # do this in a loop instead of list comprehension so you can compile the event_tags for display at the same time
-    # (avoids doubling DB calls)
-    all_event_tags = {}
-    if events and filters['filter_event_tag'].value:
-        for event in events.copy():
-            event_tags = event.tags
-            event_tag_values = set([tag.name for tag in event_tags])
-            filter_tags = set(filters['filter_event_tag'].value)
-
-            if not event_tag_values.isdisjoint(filter_tags):
-                all_event_tags[event.id] = event_tags
-            else:
-                events.remove(event)
-
-    # Skip any filtering by tag if there are no event tags / no tag filter selected
-    else:
-        for event in events:
-            all_event_tags[event.id] = event.tags
+    if filters['filter_event_tag'].value:
+        filter_tags = set(filters['filter_event_tag'].value)
+        events = [event for event in events if not filter_tags.isdisjoint(tag.name for tag in all_event_tags[event.id])]
 
     prevention_tools = get_db().query(EventPreventionTool).order_by(EventPreventionTool.value.asc()).all()
     risk_levels = get_db().query(EventRiskLevel).order_by(EventRiskLevel.value.asc()).all()
@@ -280,7 +270,7 @@ def manage():
 @require_permission('event', 'read')
 def manage_event_details():
     event_id = request.args['event_id']
-    event = get_db().query(Event).filter(Event.id == event_id).one()
+    event = get_db().query(Event).filter(Event.id == event_id).options(*event_alerts_load_options()).one()
 
     alerts = event.alert_objects
     alert_tags = event.showable_tags

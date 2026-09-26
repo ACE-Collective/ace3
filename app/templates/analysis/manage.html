@@ -28,7 +28,7 @@
                 <span>Search</span>
             </button>
             <input type="text" class="form-control me-2" id="alert-search"
-                   placeholder="Search alerts: free text, or a term like tag:phish, ipv4:1.2.3.4, signature_id:..., uuid:..., queue:default"
+                   placeholder="Search alerts: free text, or a term like tag:phish, ipv4:1.2.3.4, signature_id:..., detection_point:..., uuid:..., queue:default"
                    title="Free text is matched semantically. Name a thing exactly with a term: tag:phish, uuid:&lt;alert uuid&gt;, &lt;observable type&gt;:&lt;value&gt; (ipv4:1.2.3.4), observable:&lt;type&gt;:&lt;value&gt; when the value has colons in it, or a filter such as queue:default, disposition:DELIVERY, alert_date:-7d. Prefix with - to invert, quote a value with spaces, separate ORed values with commas."
                    data-search-url="{{ url_for('analysis.search') }}" data-manage-url="{{ url_for('analysis.manage') }}"
                    {% if search_query %}value="{{ search_query | e }}"{% endif %}
@@ -88,11 +88,14 @@
    $_sel for the changes the server also forgets the checked rows for. Auto-refresh is
    disabled during a vector search -- re-running the search every poll is expensive and
    the results are a snapshot -- but the explicit refresh stays: a user-initiated change
-   re-runs the search once, which is what the reload it replaced did. #}
+   re-runs the search once, which is what the reload it replaced did. The ace-deselect
+   event drops its detail.uuids from $_sel (deselect_alerts() in manage_alerts.js dispatches
+   it for the selection guard of the bulk-action dialogs). #}
 <div id="manage_page"
      data-signals:_sel='{{ session["checked"] | tojson }}'
      data-signals:_open-comments='[]'
      data-on:ace-refresh="evt.detail && evt.detail.clearSelection && ($_sel = []); !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
+     data-on:ace-deselect="$_sel = $_sel.filter(uuid => !evt.detail.uuids.includes(uuid))"
      {% if not search_query and ace_config.gui.manage_auto_refresh_seconds > 0 %}
      data-on-interval__duration.{{ ace_config.gui.manage_auto_refresh_seconds }}s="!document.hidden && !document.querySelector('.modal.show') && @get('{{ url_for('analysis.manage_refresh') }}')"
      {% endif %}>
@@ -178,6 +181,26 @@
             </div>
             <div class="modal-body" id="manage_filters_modal_body">
                 <p class="text-muted mb-0">Loading&hellip;</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# Take Ownership asks first when the selection holds alerts another analyst owns; without
+   any, the button takes them straight away (see manage_alerts.js) #}
+<div class="modal fade" id="take_ownership_modal" tabindex="-1" role="dialog" aria-labelledby="take_ownership_modal_label" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="take_ownership_modal_label">Take Ownership</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="take_ownership_selection_guard" data-current-user-id="{{ current_user.id }}"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>
+                <button type="button" class="btn btn-outline-primary" id="btn-take-ownership-confirm">Take Ownership</button>
             </div>
         </div>
     </div>

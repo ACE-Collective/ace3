@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.database.util.observable_detection import InvalidDetectionValue
@@ -13,6 +13,7 @@ from aceapi_v2.detection import service
 from aceapi_v2.detection.schemas import (
     DetectionCreate,
     DetectionPage,
+    DetectionStatus,
     ExpirationUpdate,
     ObservableDetectionRead,
     ObservableTypeOptions,
@@ -27,12 +28,14 @@ async def list_detections(
     _: Annotated[ApiAuthResult, Depends(require_permission("detection", "read"))],
     search: str | None = None,
     observable_type: str | None = None,
+    # `status` is the query parameter; the local name avoids shadowing fastapi.status
+    detection_status: Annotated[DetectionStatus, Query(alias="status")] = DetectionStatus.ACTIVE,
     page: int = 1,
     page_size: int = service.DEFAULT_PAGE_SIZE,
 ) -> DetectionPage:
     return await service.get_detection_page(
         session,
-        search=search, observable_type=observable_type,
+        search=search, observable_type=observable_type, status=detection_status,
         page=page, page_size=page_size,
     )
 

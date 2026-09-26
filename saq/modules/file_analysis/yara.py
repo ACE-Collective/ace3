@@ -481,7 +481,7 @@ class YaraScanner_v3_4(AnalysisModule):
                     if not row_id:
                         continue
 
-                    row = get_db().query(model).get(row_id)
+                    row = get_db().get(model, row_id)
                     if not row:
                         continue
 

@@ -7,7 +7,13 @@ from reaching os._exit(1), is worse than no crash reporter at all.
 
 import json
 import os
+import re
+import shutil
+import subprocess
+import sys
+import time
 import uuid
+from datetime import datetime
 
 import pytest
 
@@ -22,12 +28,27 @@ from saq.crash_report import (
     ROOT_JSON_FILE,
     STACK_TRACE_FILE,
     THREAD_STACKS_FILE,
+    _capture_thread_stacks,
+    arm_hang_stack_dump,
+    cancel_hang_stack_dump,
+    close_hang_stacks_file,
+    discard_hang_stacks,
+    drain_index_spool,
     find_crash_report_dir,
     get_crash_report_dir,
+    get_hang_stacks_dir,
+    get_hang_stacks_path,
+    get_index_pending_dir,
+    index_crash_report,
     is_valid_crash_id,
+    open_hang_stacks_file,
+    prune_stale_hang_stacks,
     read_crash_report,
     record_module_crash,
+    take_hang_stacks,
 )
+from saq.database.model import AnalysisModuleCrash
+from saq.database.pool import get_db
 
 
 def _raise(message="boom"):
@@ -135,8 +156,10 @@ def test_record_timeout_crash_captures_thread_stacks(root_analysis):
     with open(os.path.join(crash_dir, THREAD_STACKS_FILE)) as fp:
         stacks = fp.read()
 
-    # the dump names this test's own frame, which is what proves it captured live stacks
+    # the dump names this test's own frame, which is what proves it captured live stacks, and
+    # it is faulthandler's dump rather than the GIL-bound sys._current_frames() fallback
     assert "test_record_timeout_crash_captures_thread_stacks" in stacks
+    assert stacks.startswith(("Thread 0x", "Current thread 0x"))
 
     metadata = _read_metadata(crash_id)
     assert metadata["crash_type"] == CRASH_TYPE_TIMEOUT
@@ -725,3 +748,363 @@ def test_replication_rejects_invalid_crash_id(shared_storage, tmp_path):
 
     assert replicate_report(str(tmp_path), "../../etc") is False
     assert fetch_report("not-a-crash-id", str(tmp_path)) is None
+
+
+#
+# deferred indexing: the index spool
+#
+
+
+@pytest.fixture
+def empty_spool():
+    """Start from an empty spool: unit tests elsewhere write unindexed reports and never drain."""
+    shutil.rmtree(get_index_pending_dir(), ignore_errors=True)
+    yield get_index_pending_dir()
+    shutil.rmtree(get_index_pending_dir(), ignore_errors=True)
+
+
+def _spooled():
+    spool_dir = get_index_pending_dir()
+    return set(os.listdir(spool_dir)) if os.path.isdir(spool_dir) else set()
+
+
+def _rows(crash_id):
+    get_db().expire_all()
+    return get_db().query(AnalysisModuleCrash).filter(AnalysisModuleCrash.uuid == crash_id).all()
+
+
+def _timeout_crash(root_analysis):
+    """Exactly what the in-process watchdog does."""
+    root_analysis.save()
+    return record_module_crash(
+        crash_type=CRASH_TYPE_TIMEOUT,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        maximum_analysis_time=15,
+        elapsed_seconds=16.0,
+        include_thread_stacks=True,
+        index=False,
+        replicate=False,
+    )
+
+
+@pytest.mark.integration
+def test_watchdog_report_is_spooled_then_indexed(root_analysis, empty_spool):
+    """The whole point: the timeout report, the only one with thread stacks, reaches the listing."""
+    crash_id = _timeout_crash(root_analysis)
+
+    # the watchdog itself never touches the database
+    assert crash_id in _spooled()
+    assert _rows(crash_id) == []
+
+    indexed = drain_index_spool()
+
+    assert [m.crash_id for m in indexed] == [crash_id]
+    rows = _rows(crash_id)
+    assert len(rows) == 1
+    assert rows[0].crash_type == CRASH_TYPE_TIMEOUT
+    assert rows[0].root_uuid == root_analysis.uuid
+    assert rows[0].module_path == "saq.modules.test:BasicTestAnalysis"
+    assert find_crash_report_dir(crash_id, rows[0].report_dir) is not None
+
+    # dated by when it crashed, not when it was drained, so newest-first listing stays honest
+    crashed_at = datetime.fromisoformat(read_crash_report(crash_id)["timestamp"])
+    assert abs((rows[0].insert_date - crashed_at).total_seconds()) < 2
+
+    assert crash_id not in _spooled()
+
+
+@pytest.mark.integration
+def test_drain_is_idempotent(root_analysis, empty_spool):
+    """Several workers can start at once and all drain the same spool."""
+    crash_id = _timeout_crash(root_analysis)
+
+    # already indexed by someone else, but the spool entry is still here
+    assert index_crash_report(crash_id) is not None
+    assert crash_id in _spooled()
+
+    assert [m.crash_id for m in drain_index_spool()] == [crash_id]
+    assert drain_index_spool() == []
+    assert len(_rows(crash_id)) == 1
+    assert _spooled() == set()
+
+
+@pytest.mark.integration
+def test_drain_keeps_the_entry_when_the_database_is_unwell(root_analysis, empty_spool, monkeypatch):
+    crash_id = _timeout_crash(root_analysis)
+
+    def broken_db():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("saq.database.pool.get_db", broken_db)
+
+    # never raises, and the entry stays for the next drain
+    assert drain_index_spool() == []
+    assert crash_id in _spooled()
+
+    monkeypatch.undo()
+    assert [m.crash_id for m in drain_index_spool()] == [crash_id]
+
+
+@pytest.mark.integration
+def test_failed_inline_insert_is_spooled(root_analysis, empty_spool, monkeypatch):
+    """A row lost to an unwell database at crash time is retried rather than lost."""
+    root_analysis.save()
+
+    def broken_db():
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr("saq.database.pool.get_db", broken_db)
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        exception=_raise(),
+        replicate=False,
+    )
+    monkeypatch.undo()
+
+    assert crash_id is not None
+    assert crash_id in _spooled()
+
+    drain_index_spool()
+    assert len(_rows(crash_id)) == 1
+
+
+@pytest.mark.integration
+def test_inline_indexed_report_is_not_spooled(root_analysis, empty_spool):
+    root_analysis.save()
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        exception=_raise(),
+        replicate=False,
+    )
+
+    assert len(_rows(crash_id)) == 1
+    assert _spooled() == set()
+
+
+@pytest.mark.unit
+def test_drain_drops_entries_for_reports_that_are_gone(empty_spool):
+    """A pruned report can never be indexed; its entry must not block the spool forever."""
+    os.makedirs(empty_spool, exist_ok=True)
+    gone = str(uuid.uuid4())
+    open(os.path.join(empty_spool, gone), "w").close()
+
+    # and things that are not crash ids (an interrupted atomic write) are left alone
+    open(os.path.join(empty_spool, f"{uuid.uuid4()}.tmp"), "w").close()
+
+    assert drain_index_spool() == []
+    assert gone not in _spooled()
+    assert len(_spooled()) == 1
+
+
+@pytest.mark.unit
+def test_drain_with_no_spool_is_a_noop(empty_spool):
+    assert drain_index_spool() == []
+
+
+#
+# thread stacks and the pre-kill hang dump
+#
+
+
+@pytest.mark.unit
+def test_capture_thread_stacks_uses_faulthandler():
+    """faulthandler needs a real file descriptor; handed a StringIO it raised and every report
+    silently fell back to the pure Python dump."""
+    stacks = _capture_thread_stacks()
+
+    assert stacks.startswith(("Thread 0x", "Current thread 0x"))
+    assert "test_capture_thread_stacks_uses_faulthandler" in stacks
+
+
+@pytest.fixture
+def hang_stacks_file():
+    """This process's hang dump file, open, and always disarmed and removed afterwards so no
+    faulthandler timer can leak into another test."""
+    assert open_hang_stacks_file()
+    path = get_hang_stacks_path(os.getpid())
+    try:
+        yield path
+    finally:
+        close_hang_stacks_file()
+        discard_hang_stacks(os.getpid())
+
+
+def _read(path):
+    with open(path) as fp:
+        return fp.read()
+
+
+@pytest.mark.unit
+def test_armed_hang_dump_fires(hang_stacks_file):
+    """The timer fires on its own, halfway to a short maximum_analysis_time."""
+    arm_hang_stack_dump(0.4)
+    time.sleep(1.0)
+
+    # dump_traceback_later heads its dump with "Timeout (<delay>)!", then faulthandler's threads
+    stacks = _read(hang_stacks_file)
+    assert stacks.startswith("Timeout (")
+    assert "Thread 0x" in stacks
+    assert "test_armed_hang_dump_fires" in stacks
+    assert take_hang_stacks(os.getpid()) == stacks
+
+
+@pytest.mark.unit
+def test_armed_hang_dump_fires_while_the_gil_is_held(hang_stacks_file):
+    """The case this exists for: a regex in _sre holds the GIL, which starves every Python
+    thread (the watchdog), but not faulthandler's C thread."""
+    arm_hang_stack_dump(0.4)
+    # a match that runs about a second without releasing the GIL
+    re.match(r"(a+)+$", "a" * 24 + "b")
+
+    assert "test_armed_hang_dump_fires_while_the_gil_is_held" in _read(hang_stacks_file)
+
+
+@pytest.mark.unit
+def test_cancelled_hang_dump_writes_nothing(hang_stacks_file):
+    arm_hang_stack_dump(0.4)
+    cancel_hang_stack_dump()
+    time.sleep(0.6)
+
+    assert _read(hang_stacks_file) == ""
+    assert take_hang_stacks(os.getpid()) is None
+
+
+@pytest.mark.unit
+def test_rearming_replaces_the_previous_timer(hang_stacks_file):
+    arm_hang_stack_dump(0.4)
+    arm_hang_stack_dump(60)
+    time.sleep(0.6)
+
+    assert _read(hang_stacks_file) == ""
+
+
+@pytest.mark.unit
+def test_arm_and_cancel_truncate_a_previous_dump(hang_stacks_file):
+    """A dump from a module that ran long but finished never survives into the next module."""
+    arm_hang_stack_dump(0.2)
+    time.sleep(0.5)
+    assert _read(hang_stacks_file)
+
+    cancel_hang_stack_dump()
+    assert _read(hang_stacks_file) == ""
+
+    # and after a truncate the next dump starts at offset 0 rather than past a hole
+    arm_hang_stack_dump(0.2)
+    time.sleep(0.5)
+    assert _read(hang_stacks_file).startswith("Timeout (")
+
+
+@pytest.mark.unit
+def test_arm_without_a_file_or_a_limit_is_a_noop():
+    close_hang_stacks_file()
+    arm_hang_stack_dump(0.2)
+    cancel_hang_stack_dump()
+
+    assert open_hang_stacks_file()
+    try:
+        arm_hang_stack_dump(None)
+        arm_hang_stack_dump(0)
+        time.sleep(0.3)
+        assert _read(get_hang_stacks_path(os.getpid())) == ""
+    finally:
+        close_hang_stacks_file()
+        discard_hang_stacks(os.getpid())
+
+
+def _dead_pid() -> int:
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
+def _write_hang_file(pid: int, content: str = "Thread 0x1 (most recent call first):\n", age: float = 0):
+    path = get_hang_stacks_path(pid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fp:
+        fp.write(content)
+    if age:
+        then = time.time() - age
+        os.utime(path, (then, then))
+    return path
+
+
+@pytest.mark.unit
+def test_take_and_discard_hang_stacks():
+    pid = _dead_pid()
+    path = _write_hang_file(pid, "Thread 0x1 (most recent call first):\n  File \"x.py\", line 1 in f\n")
+
+    assert "x.py" in take_hang_stacks(pid)
+    discard_hang_stacks(pid)
+    assert not os.path.exists(path)
+
+    # missing is fine, and so is no pid at all
+    assert take_hang_stacks(pid) is None
+    discard_hang_stacks(pid)
+    assert take_hang_stacks(None) is None
+
+    # an empty file is a dump that never landed
+    _write_hang_file(pid, "")
+    assert take_hang_stacks(pid) is None
+    discard_hang_stacks(pid)
+
+
+@pytest.mark.unit
+def test_prune_stale_hang_stacks():
+    shutil.rmtree(get_hang_stacks_dir(), ignore_errors=True)
+
+    dead_old = _write_hang_file(_dead_pid(), age=3600)
+    dead_recent = _write_hang_file(_dead_pid())
+    alive_old = _write_hang_file(os.getpid(), age=3600)
+    not_ours = os.path.join(get_hang_stacks_dir(), "notes.txt")
+    with open(not_ours, "w") as fp:
+        fp.write("x")
+
+    try:
+        assert prune_stale_hang_stacks() == 1
+
+        assert not os.path.exists(dead_old)
+        # a replacement worker may still be about to collect this one
+        assert os.path.exists(dead_recent)
+        assert os.path.exists(alive_old)
+        assert os.path.exists(not_ours)
+    finally:
+        shutil.rmtree(get_hang_stacks_dir(), ignore_errors=True)
+
+
+@pytest.mark.unit
+def test_killed_report_carries_the_pre_kill_dump(root_analysis):
+    root_analysis.save()
+    stacks = "Thread 0x1 (most recent call first):\n  File \"m.py\", line 3 in stuck\n"
+
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_KILLED,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        thread_stacks=stacks,
+        index=False,
+    )
+
+    crash_dir = find_crash_report_dir(crash_id)
+    assert _read(os.path.join(crash_dir, THREAD_STACKS_FILE)) == stacks
+    assert not any(o["what"] == THREAD_STACKS_FILE for o in _read_metadata(crash_id)["omitted"])
+
+
+@pytest.mark.unit
+def test_killed_report_without_a_dump_says_so(root_analysis):
+    root_analysis.save()
+
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_KILLED,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        index=False,
+    )
+
+    crash_dir = find_crash_report_dir(crash_id)
+    assert not os.path.exists(os.path.join(crash_dir, THREAD_STACKS_FILE))
+    assert any(o["what"] == THREAD_STACKS_FILE for o in _read_metadata(crash_id)["omitted"])

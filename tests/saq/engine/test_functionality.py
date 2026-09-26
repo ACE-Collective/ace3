@@ -1768,6 +1768,18 @@ def test_crash_report_on_terminated_analysis():
         crash_dir = find_crash_report_dir(timeout_reports[0]['crash_id'])
         assert os.path.exists(os.path.join(crash_dir, THREAD_STACKS_FILE))
 
+        # and it is indexed, even though the watchdog that wrote it never touched the database:
+        # the replacement worker drained the spool on startup. without this the listing shows
+        # only the stackless killed report
+        from saq.database.model import AnalysisModuleCrash
+        from saq.database.pool import get_db
+        get_db().expire_all()
+        indexed_types = {
+            row.crash_type for row in get_db().query(AnalysisModuleCrash).filter(
+                AnalysisModuleCrash.root_uuid == root_uuid).all()
+        }
+        assert indexed_types == {'timeout', 'killed'}
+
     # the killed path is deterministic here: the test above waited for the manager to detect the
     # death and start a replacement, and it is the replacement that writes this report
     killed_reports = [r for r in reports if r['crash_type'] == 'killed']
@@ -1788,6 +1800,71 @@ def test_crash_report_on_terminated_analysis():
     assert message
     assert killed_reports[0]['crash_id'] in message
 
+    # when the watchdog got its report out first, the alert also leads to the thread stacks
+    if timeout_reports:
+        assert f"thread stacks in crash_id {timeout_reports[0]['crash_id']}" in message
+
+
+
+@pytest.mark.system
+def test_crash_report_on_gil_hang():
+    """A module stuck in C code that holds the GIL still leaves a report saying where.
+
+    The regex starves the in-process watchdog thread, so no timeout report is ever written; the
+    manager's SIGKILL is the only thing that ends it. The pre-kill faulthandler dump runs in a C
+    thread that does not need the GIL, and the replacement worker attaches it to the killed report.
+    """
+    from saq.crash_report import (
+        THREAD_STACKS_FILE,
+        find_crash_report_dir,
+        get_hang_stacks_dir,
+        read_crash_report,
+    )
+
+    # the dump fires at 2 seconds, the manager kills at 4, the regex alone would run ~20
+    get_analysis_module_config("basic_test").maximum_analysis_time = 4
+
+    existing = set(_enum_crash_reports())
+
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, 'test_worker_gil_hang')
+    root.save()
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(pool_size_limit=1))
+    engine.configuration_manager.enable_module('basic_test')
+    engine_process = engine.start_nonblocking()
+    engine.wait_for_start()
+    wait_for_log_count('execute_worker_gil_hang', 1, 10)
+    wait_for_log_count('detected death of', 1, 20)
+    wait_for_log_count('started worker', 2, 10)
+    wait_for_log_count('analysis module crash recorded', 1, 10)
+    assert engine_process.pid
+    os.kill(engine_process.pid, signal.SIGINT)
+    wait_for_process(engine_process)
+
+    reports = [read_crash_report(crash_id) for crash_id in set(_enum_crash_reports()) - existing]
+    reports = [r for r in reports if r and r.get('root_uuid') == root_uuid]
+
+    # the watchdog never got the GIL, so the manager's kill is the only report
+    assert [r['crash_type'] for r in reports] == ['killed']
+
+    crash_dir = find_crash_report_dir(reports[0]['crash_id'])
+    with open(os.path.join(crash_dir, THREAD_STACKS_FILE)) as fp:
+        stacks = fp.read()
+
+    assert 'Thread 0x' in stacks
+    assert 'execute_analysis_worker_gil_hang' in stacks
+
+    # the dump was collected, and the replacement worker cleaned up its own file on exit
+    hang_dir = get_hang_stacks_dir()
+    leftovers = [
+        name for name in (os.listdir(hang_dir) if os.path.isdir(hang_dir) else [])
+        if os.path.getsize(os.path.join(hang_dir, name))
+    ]
+    assert leftovers == []
 
 @pytest.mark.unit
 def test_record_execution_statistics_basic(tmpdir):

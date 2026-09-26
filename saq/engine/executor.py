@@ -48,6 +48,8 @@ from saq.constants import (
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     CRASH_TYPE_TIMEOUT,
+    arm_hang_stack_dump,
+    cancel_hang_stack_dump,
     record_module_crash,
 )
 from saq.database.model import Alert
@@ -146,9 +148,10 @@ class AnalysisModuleMonitor:
                 # reach os._exit(1), and an unwell database is a plausible reason for a module to
                 # be stuck in the first place -- a blocking insert would turn the watchdog into a
                 # second hung thing, and os._exit() annihilates the daemon thread replication runs
-                # on, so starting one here would be a coin flip. Neither loses the report: it stays
-                # retrievable by id through the glob fallback in find_crash_report_dir(), and
-                # `ace crash sync` replicates it to shared storage afterwards.
+                # on, so starting one here would be a coin flip. Neither loses the report: it is
+                # spooled for indexing (a local file create), and the replacement worker this exit
+                # triggers indexes it on startup (drain_index_spool), so it shows up in the crash
+                # listing within seconds; `ace crash sync` replicates it to shared storage afterwards.
                 try:
                     record_module_crash(
                         crash_type=CRASH_TYPE_TIMEOUT,
@@ -1428,6 +1431,11 @@ class AnalysisExecutor:
             )
             monitor.start()
 
+            # and a pre-kill thread dump, for the hang the monitor cannot see: a module holding
+            # the GIL starves the monitor thread, but this timer runs in C and fires anyway. the
+            # replacement worker attaches the dump to the killed report (see saq/crash_report.py)
+            arm_hang_stack_dump(analysis_module.maximum_analysis_time)
+
             # we default to completed if the analysis module does not return a valid result
             analysis_result: AnalysisExecutionResult = AnalysisExecutionResult.COMPLETED
 
@@ -1556,6 +1564,7 @@ class AnalysisExecutor:
             finally:
                 # make sure we stop the monitor thread
                 monitor.stop()
+                cancel_hang_stack_dump()
 
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()

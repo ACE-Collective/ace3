@@ -187,3 +187,27 @@ class TestShippedCronConfig:
         """none of these jobs are safe to overlap with themselves"""
         for job in jobs:
             assert job.get("concurrencyPolicy") == "Forbid", job["name"]
+
+
+@pytest.mark.unit
+class TestACECronConfig:
+    def _config(self, **kwargs):
+        return ACECronConfig(
+            name="cron",
+            description="cron service",
+            enabled=True,
+            python_module="saq.cron",
+            python_class="ACECronService",
+            cron_config_path="etc/cron.yaml",
+            **kwargs,
+        )
+
+    def test_max_parallel_tasks_defaults_to_unset(self):
+        assert self._config().max_parallel_tasks is None
+
+    def test_max_parallel_tasks_accepts_positive(self):
+        assert self._config(max_parallel_tasks=3).max_parallel_tasks == 3
+
+    def test_max_parallel_tasks_rejects_zero(self):
+        with pytest.raises(ValueError):
+            self._config(max_parallel_tasks=0)

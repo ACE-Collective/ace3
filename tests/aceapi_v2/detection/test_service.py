@@ -10,6 +10,7 @@ from saq.constants import MAX_DETECTION_VALUE_LENGTH
 from saq.database.model import Observable, ObservableComment, ObservableDetection, User
 from saq.database.util.observable_detection import InvalidDetectionValue
 from aceapi_v2.detection import service
+from aceapi_v2.detection.schemas import DetectionStatus
 
 pytestmark = pytest.mark.integration
 
@@ -109,6 +110,56 @@ class TestListDetections:
         results = await service.list_detections(session, search="10.9.9.9")
         assert results[0].created_by == "Det Creator"
         assert results[0].modified_by == "Det Modifier"
+
+
+class TestStatusFilter:
+    """Expired detections are hidden by default, matching what the engine treats as active."""
+
+    async def _make_set(self, session: AsyncSession) -> None:
+        await _make_detection(session, "statustype", "never.example.com")
+        await _make_detection(session, "statustype", "future.example.com", expires_on=datetime(2999, 1, 1))
+        await _make_detection(session, "statustype", "past.example.com", expires_on=datetime(2000, 1, 1))
+
+    @pytest.mark.asyncio
+    async def test_default_excludes_expired(self, session: AsyncSession):
+        await self._make_set(session)
+
+        results = await service.list_detections(session, observable_type="statustype")
+        assert [r.value for r in results] == ["future.example.com", "never.example.com"]
+        assert not any(r.expired for r in results)
+        assert await service.count_detections(session, observable_type="statustype") == 2
+
+    @pytest.mark.asyncio
+    async def test_expired_only(self, session: AsyncSession):
+        await self._make_set(session)
+
+        results = await service.list_detections(
+            session, observable_type="statustype", status=DetectionStatus.EXPIRED)
+        assert [r.value for r in results] == ["past.example.com"]
+        assert results[0].expired
+        assert await service.count_detections(
+            session, observable_type="statustype", status=DetectionStatus.EXPIRED) == 1
+
+    @pytest.mark.asyncio
+    async def test_all(self, session: AsyncSession):
+        await self._make_set(session)
+
+        results = await service.list_detections(
+            session, observable_type="statustype", status=DetectionStatus.ALL)
+        assert {r.value: r.expired for r in results} == {
+            "future.example.com": False,
+            "never.example.com": False,
+            "past.example.com": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_page_total_follows_status(self, session: AsyncSession):
+        await self._make_set(session)
+
+        assert (await service.get_detection_page(session, observable_type="statustype")).total == 2
+        page = await service.get_detection_page(
+            session, observable_type="statustype", status=DetectionStatus.ALL)
+        assert page.total == 3
 
 
 class TestObservableContext:

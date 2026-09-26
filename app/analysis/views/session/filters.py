@@ -3,7 +3,7 @@ from flask import g, session
 from flask_login import current_user
 import pytz
 
-from app.filters import AutoTextFilter, DateRangeFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
+from app.filters import AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
@@ -11,7 +11,7 @@ from aceapi_v2.saved_filters import service as saved_filters_service
 from aceapi_v2.saved_filters.schemas import FilterEntry, ScratchFilterWrite
 from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
-from saq.database.model import DispositionBy, Observable, Owner, Tag
+from saq.database.model import DetectionPoint, DispositionBy, Observable, Owner, Tag
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import has_filter
@@ -75,6 +75,7 @@ def getFilters():
         'Alert Date': DateRangeFilter(GUIAlert.insert_date),
         'Alert Type': SelectFilter(GUIAlert.alert_type),
         'Description': TextFilter(GUIAlert.description),
+        'Detection Point': DetectionPointFilter(DetectionPoint.signature_uuid),
         'Disposition': MultiSelectFilter(GUIAlert.disposition, nullable=False, options=VALID_DISPOSITIONS),
         'Disposition By': SelectFilter(DispositionBy.display_name, nullable=True),
         'Disposition Date': DateRangeFilter(GUIAlert.disposition_time),
@@ -321,6 +322,51 @@ def apply_temporary_filter(filters: list, label: str):
     session["filter_uuid"] = _write_scratch(KIND_TEMP, filters, label)
     session["filter_state"] = FILTER_STATE_TEMP
     _invalidate_effective_filters()
+
+
+def overlay_filters(base: list, overlay: list) -> list:
+    """Lay filter entries over a filter list. An entry replaces the base's entry for the
+    same filter (same name and inverted); anything else is appended."""
+
+    # The value was clicked on a row the filter in effect matched, so for a filter with one
+    # value per alert (queue, owner, disposition) replacing is exactly narrowing: Owner
+    # None|me clicked on my alert becomes Owner me. For tags and observables, where an alert
+    # has many, narrowing would be "has both" -- but the GUI holds one entry per filter name
+    # and polarity with its values ORed (resolve_saved_filter merges repeats), so a second
+    # tag or observable pivot switches to the new value. Merging the values instead would
+    # widen the list, and would make a queue/owner/disposition click do nothing at all.
+
+    result = list(base)
+    for entry in overlay:
+        index = next((i for i, e in enumerate(result)
+                      if e["name"] == entry["name"] and e["inverted"] == entry["inverted"]), None)
+        if index is None:
+            result.append(entry)
+        else:
+            result[index] = entry
+
+    return result
+
+
+def overlay_temporary_filter(filters: list, label: str):
+    """Apply a filter ON TOP OF the one in effect, as a temporary filter."""
+
+    # This is a pivot from the alert management page: a value in an expanded row's
+    # observable list, or a row's tag, queue, owner or disposition. The analyst is working a
+    # list (open alerts in their queue, say) and wants the part of it that shares that
+    # value, so everything else already in effect is kept. A pivot from inside an alert has
+    # no list to narrow and replaces the filter instead (apply_temporary_filter).
+
+    effective = get_effective_filters()
+    overlaid = overlay_filters(effective, filters)
+    if overlaid == effective:
+        # e.g. the queue of an alert in a list already filtered to that one queue; a banner
+        # and a Revert for an unchanged list would only be noise
+        return
+
+    temp = get_temp_filter()
+    base_label = temp["label"] if temp else get_current_filter()["name"]
+    apply_temporary_filter(overlaid, f"{base_label} + {label}" if base_label else label)
 
 
 def is_temporary_filter_active() -> bool:

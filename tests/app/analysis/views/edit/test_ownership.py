@@ -3,7 +3,10 @@ from unittest.mock import Mock, patch
 from flask import url_for
 from datetime import datetime
 
-from saq.database.model import User
+from saq.database.model import Alert, User
+from saq.database.pool import get_db
+from saq.database.util.user_management import add_user, delete_user
+from tests.saq.helpers import insert_alert
 
 
 @pytest.fixture
@@ -192,136 +195,102 @@ class TestAssignOwnership:
             assert sess['checked'] == ['uuid1', 'uuid2', 'uuid3']
 
 
+@pytest.fixture
+def other_analyst():
+    """An analyst other than the logged-in one, who owns alerts."""
+    user = add_user("jane_owner", "jane_owner@localhost", "Jane", "password")
+    yield user
+    delete_user("jane_owner")
+
+
+def _owned_by(alert, user_id):
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update({Alert.owner_id: user_id})
+    db.commit()
+
+
+def _owner_of(alert):
+    db = get_db()
+    db.expire_all()
+    return db.get(Alert, alert.id).owner_id
+
+
 @pytest.mark.integration
 class TestSetOwner:
     """Tests for set_owner function."""
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_get_request_rejected(self, mock_get_db, web_client, mock_db):
+    def test_set_owner_get_request_rejected(self, web_client):
         """set_owner writes to the database, so it is POST-only: a GET must change nothing."""
-        mock_get_db.return_value = mock_db
+        alert = insert_alert()
 
         response = web_client.get(url_for('analysis.set_owner'), query_string={
-            'alert_uuids': ['uuid1', 'uuid2', 'uuid3']
+            'alert_uuids': [alert.uuid]
         })
 
         assert response.status_code == 405
-        mock_db.execute.assert_not_called()
-        mock_db.commit.assert_not_called()
+        assert _owner_of(alert) is None
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_post_request(self, mock_get_db, web_client, mock_db):
-        """Test set_owner with POST request using form data."""
-        mock_get_db.return_value = mock_db
-        
+    def test_set_owner_post_request(self, web_client, analyst):
+        alerts = [insert_alert(), insert_alert()]
+
         response = web_client.post(url_for('analysis.set_owner'), data={
-            'alert_uuids': ['uuid1', 'uuid2', 'uuid3']
+            'alert_uuids': [alert.uuid for alert in alerts]
         })
-        
+
         assert response.status_code == 204
         assert response.data == b''
-        
-        # Should call execute to update alerts
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
+        for alert in alerts:
+            assert _owner_of(alert) == analyst
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_session_checked_set(self, mock_get_db, web_client, mock_db):
+    def test_set_owner_session_checked_set(self, web_client):
         """Test that session['checked'] is set correctly."""
-        mock_get_db.return_value = mock_db
-        
         with web_client.session_transaction() as sess:
-            # Ensure session is clean
             sess.pop('checked', None)
-        
+
         web_client.post(url_for('analysis.set_owner'), data={
             'alert_uuids': ['uuid1', 'uuid2']
         })
-        
+
         with web_client.session_transaction() as sess:
-            assert 'checked' in sess
             assert sess['checked'] == ['uuid1', 'uuid2']
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_empty_alert_uuids(self, mock_get_db, web_client, mock_db):
-        """Test set_owner with empty alert_uuids list."""
-        mock_get_db.return_value = mock_db
-        
-        response = web_client.post(url_for('analysis.set_owner'), data={
-            'alert_uuids': []
-        })
-        
-        assert response.status_code == 204
-        
-        # Should still call execute and commit even with empty list
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
-
-    @patch('app.analysis.views.edit.ownership.get_db')
-    @patch('app.analysis.views.edit.ownership.datetime')
-    def test_set_owner_datetime_called(self, mock_datetime, mock_get_db, web_client, mock_db):
-        """Test that datetime.now() is called for owner_time."""
-        mock_get_db.return_value = mock_db
-        mock_now = datetime(2024, 1, 15, 10, 30, 45)
-        mock_datetime.now.return_value = mock_now
-        
-        response = web_client.post(url_for('analysis.set_owner'), data={
-            'alert_uuids': ['uuid1']
-        })
-        
-        assert response.status_code == 204
-        mock_datetime.now.assert_called_once()
-
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_database_update_parameters(self, mock_get_db, web_client, mock_db):
-        """Test that database update is called with correct parameters."""
-        mock_get_db.return_value = mock_db
-        
-        # Mock the current_user to have a specific ID
-        with patch('app.analysis.views.edit.ownership.current_user') as mock_current_user:
-            mock_current_user.id = 456
-            
-            response = web_client.post(url_for('analysis.set_owner'), data={
-                'alert_uuids': ['uuid1', 'uuid2']
-            })
-            
-            assert response.status_code == 204
-            
-            # Verify that execute was called (we can't easily verify the exact SQL without more complex mocking)
-            mock_db.execute.assert_called_once()
-            mock_db.commit.assert_called_once()
-
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_no_alert_uuids_parameter(self, mock_get_db, web_client, mock_db):
-        """Test set_owner when alert_uuids parameter is not provided."""
-        mock_get_db.return_value = mock_db
-        
+    def test_set_owner_no_alert_uuids_parameter(self, web_client):
         response = web_client.post(url_for('analysis.set_owner'))
-        
         assert response.status_code == 204
-        
-        # Should still execute with empty list
-        mock_db.execute.assert_called_once()
-        mock_db.commit.assert_called_once()
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_database_error(self, mock_get_db, web_client, mock_db):
-        """Test set_owner when database operations raise an exception."""
-        mock_get_db.return_value = mock_db
-        mock_db.execute.side_effect = Exception("Database error")
-        
-        with pytest.raises(Exception, match="Database error"):
-            web_client.post(url_for('analysis.set_owner'), data={
-                'alert_uuids': ['uuid1']
-            })
+    def test_set_owner_leaves_alert_owned_by_another_alone(self, web_client, analyst, other_analyst):
+        owned = insert_alert()
+        _owned_by(owned, other_analyst.id)
+        unowned = insert_alert()
 
-    @patch('app.analysis.views.edit.ownership.get_db')
-    def test_set_owner_commit_error(self, mock_get_db, web_client, mock_db):
-        """Test set_owner when database commit raises an exception."""
-        mock_get_db.return_value = mock_db
-        mock_db.commit.side_effect = Exception("Commit error")
-        
-        with pytest.raises(Exception, match="Commit error"):
-            web_client.post(url_for('analysis.set_owner'), data={
-                'alert_uuids': ['uuid1']
-            })
+        response = web_client.post(url_for('analysis.set_owner'), data={
+            'alert_uuids': [owned.uuid, unowned.uuid]
+        })
+
+        assert response.status_code == 204
+        assert _owner_of(owned) == other_analyst.id
+        assert _owner_of(unowned) == analyst
+        with web_client.session_transaction() as sess:
+            assert [message for _, message in sess['_flashes']] == [
+                "took ownership of 1 alerts; left 1 alert owned by Jane alone"]
+
+    def test_set_owner_takes_confirmed_alert(self, web_client, analyst, other_analyst):
+        owned = insert_alert()
+        _owned_by(owned, other_analyst.id)
+
+        response = web_client.post(url_for('analysis.set_owner'), data={
+            'alert_uuids': [owned.uuid],
+            'take_owned': f"{owned.uuid}:{other_analyst.id}",
+        })
+
+        assert response.status_code == 204
+        assert _owner_of(owned) == analyst
+        with web_client.session_transaction() as sess:
+            assert '_flashes' not in sess
+
+    def test_set_owner_database_error(self, web_client):
+        with patch('app.analysis.views.edit.ownership.take_ownership', side_effect=Exception("Database error")):
+            with pytest.raises(Exception, match="Database error"):
+                web_client.post(url_for('analysis.set_owner'), data={
+                    'alert_uuids': ['uuid1']
+                })

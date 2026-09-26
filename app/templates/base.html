@@ -53,11 +53,12 @@
 
 <!-- global ACE javascript code -->
 <script src="{{ url_for('static', filename='js/ace.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/selection_guard.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/remediation.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/shortcuts.js') }}?version={{ ACE_VERSION }}"></script>
 
 <!-- Datastar (https://data-star.dev) -- declarative reactive attributes, incrementally replacing custom jQuery; see docs/GUI_DATASTAR.md -->
-<script type="module" src="{{ url_for('static', filename='js/datastar-1.0.2.js') }}?version={{ ACE_VERSION }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/datastar-1.0.4.js') }}?version={{ ACE_VERSION }}"></script>
 
 <!-- core css -->
 <!-- this needs to come last so we can do our CSS overrides -->
@@ -311,6 +312,9 @@
                             <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
                         </div>
                     </div>
+                    {# what Save will change, and the confirmation for alerts other analysts own;
+                       filled in by static/js/selection_guard.js when the dialog opens #}
+                    <div id="disposition_selection_guard" class="mt-3" data-current-user-id="{{ current_user.id }}"></div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Nevermind</button>

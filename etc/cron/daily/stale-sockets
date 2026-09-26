@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# clean up the unix sockets for the process server that are no longer being used by any process
+find -L data/var -maxdepth 1 -name '*.socket' | while read s; do if ! ( lsof -U | fgrep "$s" > /dev/null ); then rm "$s"; fi; done

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+DATA_DIR=$(ace config -v global.data_dir)
+if [ -z "$DATA_DIR" ] || [ ! -d "$DATA_DIR" ]; then
+    echo "invalid data directory \"$DATA_DIR\""
+    exit 1
+fi
+
+# get a summary of the current disk usage
+find "$DATA_DIR" -maxdepth 1 -mindepth 1 \! -name '*archive' -print0 | du -chs --files0-from=- > data/disk_usage.txt

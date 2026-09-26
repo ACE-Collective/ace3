@@ -142,9 +142,21 @@ class RabbitMQConfig(BaseModel):
 class PhishkitConfig(BaseModel):
     max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
 
+class StorageBackendSpec(BaseModel):
+    """Selects and configures a pluggable storage backend.
+
+    The backend class is loaded dynamically from python_module/python_class and the
+    config dict is validated against that class's get_config_class() Pydantic model --
+    the same pattern used for analysis modules and the analysis cache blob store.
+    """
+    python_module: str = Field(..., description="Python module containing the storage backend class")
+    python_class: str = Field(..., description="storage backend class name within that module")
+    config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
+
 class StorageConfig(BaseModel):
-    target: str = Field(default="local", description="storage target: local or s3")
+    target: str = Field(default="local", description="storage target: local, s3 or custom")
     base_dir: str = Field(default="data/storage", description="base directory for local storage (relative to SAQ_HOME)")
+    backend: Optional[StorageBackendSpec] = Field(default=None, description="pluggable storage backend, loaded when target is custom. Use this when the object store needs credentials the built-in s3 backend does not model (IAM instance roles, STS, etc.)")
 
 class S3Config(BaseModel):
     host: str = Field(..., description="s3-compatible storage host")
@@ -204,9 +216,17 @@ class QuerySourceConfig(BaseModel):
     python_class: str = Field(..., description="QuerySource subclass name within python_module")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the QuerySource subclass")
 
+class CommandTypeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="the `type:` value hunt YAMLs use for this command (e.g. 'wiz_lookup')")
+    python_module: str = Field(..., description="dotted module path containing the CorrelationCommand subclass")
+    python_class: str = Field(..., description="CorrelationCommand subclass name within python_module")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the CorrelationCommand subclass")
+
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
+    command_types: list[CommandTypeConfig] = Field(default_factory=list, description="custom correlation command types to register at hunter startup (see docs/INTEGRATIONS.md)")
 
 class HunterConfig(BaseModel):
     """top-level config for the hunting engine (distinct from service_hunter, which configures the service lifecycle)"""
@@ -605,7 +625,7 @@ class CrashReportingConfig(BaseModel):
     max_file_size: int = Field(default=100 * 1024 * 1024, description="per-file size cap (bytes) on the copied file observable; a larger file is skipped and recorded in the report's omitted list rather than silently dropped. 0 disables the cap")
     copy_root_json: bool = Field(default=True, description="copy the root analysis tree (data.json) into the crash report; this is the tree only, never the file observables under files/ or hardcopies/")
     max_root_json_size: int = Field(default=32 * 1024 * 1024, description="size cap (bytes) on the copied root analysis tree. 0 disables the cap")
-    retention_days: int = Field(default=30, description="number of days crash reports are kept before `ace crash prune` (run from bin/daily-maintenance.sh) removes the directory and its index row")
+    retention_days: int = Field(default=30, description="number of days crash reports are kept before `ace crash prune` (run hourly from etc/cron/hourly/crash-reports) removes the directory and its index row")
     max_reports_per_module_per_root: int = Field(default=5, description="how many crash reports one module may produce for one root within a single worker process. Bounds the disk cost of a module that fails on every file in a large tree; the first few reports of a repeating failure say everything the tenth would. 0 disables the limit. The in-process timeout watchdog is exempt.")
     replicate: bool = Field(default=False, description="replicate crash reports to shared object storage (saq.storage) so ANY node can serve a report written on any other node. Turn this on when storage.target points at storage that every node shares. Left off by default rather than inferred from storage.target: a cluster running the local backend on a shared filesystem is a legitimate deployment, and guessing would silently disable replication exactly there.")
     storage_bucket: str = Field(default="ace-crash-reports", description="bucket crash reports are replicated into. Keep it dedicated: it holds the file observables that crashed modules, i.e. live malware.")

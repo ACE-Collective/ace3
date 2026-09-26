@@ -36,6 +36,14 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 
+@pytest.fixture(autouse=True)
+def _reset_scanner_version_cache():
+    # get_phishkit_scanner_version memoises per process; don't let one test's probe leak into the next
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+    yield
+    saq.phishkit._reset_scanner_version_cache_for_tests()
+
+
 @pytest.mark.unit
 def test_phishkit_analysis_init():
     """Test PhishkitAnalysis initialization."""
@@ -1942,24 +1950,6 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
              and (d.analysis is None or d.analysis.get("delayed"))]
     merged = merge_module_execution_deltas(prior, delta_b)
     return analyzer, root, obs, merged
-
-
-@pytest.mark.unit
-def test_phishkit_get_scanner_version_delegates_to_worker(monkeypatch):
-    """get_phishkit_scanner_version is an un-memoized passthrough: it returns the
-    worker task's dict on each call (the id is cached on the worker side, not
-    here)."""
-    calls = []
-
-    def fake_scanner_image():
-        calls.append(1)
-        return {"image_url": "phishkit:latest", "image_id": "sha256:aaa"}
-
-    monkeypatch.setattr("saq.phishkit.get_phishkit_scanner_image", fake_scanner_image)
-    first = saq.phishkit.get_phishkit_scanner_version()
-    second = saq.phishkit.get_phishkit_scanner_version()
-    assert first == second == {"image_url": "phishkit:latest", "image_id": "sha256:aaa"}
-    assert len(calls) == 2  # no client-side memo — delegates every call
 
 
 @pytest.mark.unit

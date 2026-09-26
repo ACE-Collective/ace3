@@ -12,6 +12,7 @@ import pytest
 import app.analysis.views.session.filters as filters_mod
 from app.analysis.views.session.filters import (
     getFilters,
+    overlay_filters,
     resolve_filter_sentinels,
     resolve_saved_filter,
 )
@@ -125,3 +126,63 @@ def test_missing_inverted_key_defaults_to_false(fake_user):
 def test_empty_input(fake_user):
     assert resolve_saved_filter([]) == []
     assert resolve_saved_filter(None) == []
+
+
+#
+# overlaying a pivot on the filter in effect
+#
+
+OPEN = {"name": "Disposition", "inverted": False, "values": ["OPEN"]}
+QUEUE = {"name": "Queue", "inverted": False, "values": ["default"]}
+
+
+def _observable(*values):
+    return {"name": "Observable", "inverted": False, "values": [list(v) for v in values]}
+
+
+@pytest.mark.unit
+def test_overlay_keeps_every_entry_in_effect():
+    assert overlay_filters([OPEN, QUEUE], [_observable(("ipv4", "1.2.3.4"))]) == [
+        OPEN, QUEUE, _observable(("ipv4", "1.2.3.4"))]
+
+
+@pytest.mark.unit
+def test_overlay_narrows_a_filter_already_in_effect():
+    """The clicked row matched the filter, so its owner is one of the owners allowed;
+    replacing the entry narrows to it. Merging would change nothing."""
+    owner = {"name": "Owner", "inverted": False, "values": ["None", "analyst"]}
+    mine = {"name": "Owner", "inverted": False, "values": ["analyst"]}
+
+    assert overlay_filters([OPEN, owner, QUEUE], [mine]) == [OPEN, mine, QUEUE]
+
+
+@pytest.mark.unit
+def test_overlay_switches_to_a_second_observable():
+    """"Has both" is not expressible (one entry per filter and polarity, values ORed), and
+    ORing the new value in would widen the list, so a second pivot on the same filter
+    replaces the first."""
+    result = overlay_filters([OPEN, _observable(("ipv4", "1.2.3.4"))],
+                             [_observable(("email_address", "a@example.com"))])
+
+    assert result == [OPEN, _observable(("email_address", "a@example.com"))]
+
+
+@pytest.mark.unit
+def test_overlay_leaves_an_inverted_entry_alone():
+    """NOT observable:x and observable:y are different filters; folding one into the other
+    would invert the pivot."""
+    excluded = {"name": "Observable", "inverted": True, "values": [["ipv4", "10.0.0.1"]]}
+
+    result = overlay_filters([excluded], [_observable(("ipv4", "1.2.3.4"))])
+
+    assert result == [excluded, _observable(("ipv4", "1.2.3.4"))]
+
+
+@pytest.mark.unit
+def test_overlay_does_not_mutate_the_filter_in_effect():
+    """The base is get_effective_filters(), which is memoized for the rest of the request."""
+    base = [_observable(("ipv4", "1.2.3.4"))]
+
+    overlay_filters(base, [_observable(("ipv4", "5.6.7.8"))])
+
+    assert base == [_observable(("ipv4", "1.2.3.4"))]

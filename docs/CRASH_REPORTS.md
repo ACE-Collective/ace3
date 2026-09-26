@@ -40,17 +40,51 @@ whatever the module choked on. That is the same convention the alert download us
 |---|---|---|
 | `exception` | The module raised. | The worker that ran it, with the full traceback. |
 | `timeout` | The module blew past `maximum_analysis_time` and the in-process watchdog is about to `os._exit(1)`. | The watchdog thread, **inside the stuck process**. |
-| `killed` | The worker manager SIGKILLed the worker. | The *replacement* worker, from the `TrackingRecord` the manager preserved. |
+| `killed` | The worker manager SIGKILLed the worker. | The *replacement* worker, from the `TrackingRecord` the manager preserved and the pre-kill thread dump the dying worker wrote, when that dump landed. |
 
-The `timeout` report is written from inside the wedged process, which makes it the only thing
-in ACE that can say *where the module was stuck* — `thread_stacks.txt` carries every thread's
-stack, captured with `faulthandler` so it works even when the thread in question is blocked in
-a syscall and will never run Python again. Every other observer of a hang runs in a different
-process and only ever sees the corpse.
+The `timeout` report is written from inside the wedged process — `thread_stacks.txt` carries
+every thread's stack, captured with `faulthandler` so it works even when the thread in question
+is blocked in a syscall and will never run Python again. But the watchdog is a Python thread, and
+a module stuck in C code that never releases the GIL (catastrophic backtracking in `_sre` is the
+common one) starves it: no `timeout` report is ever written. That case is covered by the
+[pre-kill hang dump](#pre-kill-hang-dumps), which gives the `killed` report its own
+`thread_stacks.txt`.
 
 A single hang can legitimately produce both a `timeout` and a `killed` report: the in-process
 watchdog and the manager race, and whichever loses still has something to say. Correlate them by
 `root_uuid` + `module_path`.
+
+## Pre-kill hang dumps
+
+`faulthandler.dump_traceback_later()` runs its timer in a C thread that does not need the GIL,
+so it fires even while a regex holds it. Every engine worker in a managed pool (not the single
+threaded engine, which has no manager to kill it) uses one:
+
+- **Open.** As it starts, a worker opens `<crash_reports>/hang_stacks/<node>/<pid>.txt` on local
+  disk and keeps it open for its lifetime. Append mode, so a write after a truncate lands at
+  offset 0.
+- **Arm.** Right after the `AnalysisModuleMonitor` starts, the executor calls
+  `arm_hang_stack_dump(maximum_analysis_time)`. This cancels any previous timer, truncates the
+  file and arms a dump `HANG_STACK_MARGIN_SECONDS` (5) before the manager's kill is due. For a
+  limit of 10 seconds or less it arms at half the limit instead.
+- **Cancel.** When the module returns, `cancel_hang_stack_dump()` disarms the timer and truncates
+  the file. A non-empty file therefore only ever means "the module running now overran".
+- **Collect.** The replacement worker's `_handle_failed_analysis` reads
+  `hang_stacks/<node>/<dead pid>.txt` (the pid comes from the `TrackingRecord`), writes it into
+  the `killed` report as `thread_stacks.txt`, then deletes the source file. A `killed` report
+  with no dump, for example a memory kill of a module that wasn't hung, records
+  `thread_stacks.txt` in `omitted`.
+- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker, and
+  `ace crash prune`, delete files whose pid no longer exists and that are more than 10 minutes
+  old. The age guard keeps one replacement from deleting a file that another has yet to collect
+  after several workers are killed at once.
+
+The dump starts with a `Timeout (0:00:55)!` line, followed by faulthandler's usual
+`Thread 0x... (most recent call first):` blocks. The C timer thread is not a Python thread, so
+no block is marked `Current thread`. Nothing here changes `maximum_analysis_time` or how the
+manager kills a worker.
+
+When the watchdog *does* run, a hang produces both reports, and both have stacks.
 
 ## What is in a report
 
@@ -58,7 +92,7 @@ watchdog and the manager race, and whichever loses still has something to say. C
 <data_dir>/crash_reports/YYYY/MM/DD/<crash_id>/
 ├── metadata.json        # always; written last (see below)
 ├── stack_trace.txt      # exception path
-├── thread_stacks.txt    # timeout path
+├── thread_stacks.txt    # timeout path; killed path when the pre-kill dump landed
 ├── root.json            # the analysis tree (data.json), not the storage directory
 └── file/<name>          # the bytes of the file observable the module crashed on
 ```
@@ -97,7 +131,8 @@ guard.
 
 The timeout path additionally passes `index=False`: it must reach `os._exit(1)`, and an unwell
 database is a plausible reason for a module to be stuck in the first place, so a blocking insert
-there would turn the watchdog into a second hung thing.
+there would turn the watchdog into a second hung thing. It spools the report for indexing instead
+(see below), so it still shows up in the listing.
 
 ## The database index
 
@@ -106,6 +141,35 @@ The insert is best effort for the reason above — a module crash is exactly whe
 most likely to be the thing that is unwell — so losing a row costs a *listing*, not a report:
 `find_crash_report_dir()` globs the date partitions when there is no row, and both the detail and
 download endpoints work without one.
+
+### Deferred indexing
+
+A report that is written without a row is not left unlisted. After `metadata.json` is written,
+`record_module_crash()` drops an empty file named by the crash id into
+`<crash_reports>/index_pending/`. It does this when `index=False` (always the case for the timeout
+watchdog) and when the inline insert fails. The file create is local disk only, the same kind of
+work as writing the report, so the watchdog can still reach `os._exit(1)` without blocking.
+
+The spool is drained by `drain_index_spool()`:
+
+- **Every engine worker, as it starts.** The watchdog's exit is what gets a replacement worker
+  started, so a `timeout` report is normally indexed within seconds. The drain runs before the
+  replacement records its `killed` report, and when it finds the `timeout` report for the same
+  root and module, it puts that crash id in the failure message written into the alert's tree
+  (`...; thread stacks in crash_id <id>`). An analyst looking at the alert is then one hop from
+  the stacks.
+- **`ace crash index`** from `etc/cron/hourly/crash-reports`: the hourly catch-up for a node whose engine is
+  not running. `ace crash index --all` ignores the spool, walks every report on disk and indexes
+  anything with no row. Use it to backfill reports written before the spool existed.
+
+The insert is idempotent, so more than one process can drain the spool at the same time. A
+deferred row's `insert_date` is the crash time, not the indexing time, so the listing's
+newest-first order stays correct. An entry whose report has been pruned is dropped. An entry that
+fails to insert stays in the spool, and the drain stops, because the database is unwell and the
+next drain will retry.
+
+The spool lives outside every report directory, so it never shows up in a report's file inventory
+or archive, and never changes the directory mtime that prune uses to age reports.
 
 ## Multi-node
 
@@ -125,15 +189,42 @@ crash_reporting:
   storage_bucket: ace-crash-reports
 ```
 
+The built-in `s3` backend talks to an S3-compatible endpoint with a static access key and secret
+(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block). A deployment whose
+object store authenticates some other way — an IAM instance role, STS, a signing proxy — supplies
+its own backend instead, through the same plugin convention `analysis_cache.blob_store` uses:
+
+```yaml
+storage:
+  target: custom
+  backend:
+    python_module: mypackage.my_storage
+    python_class: MyStorage
+    config:
+      region: us-east-2
+```
+
+The class is imported, its `get_config_class()` model validates the `config:` sub-dict, and the
+resulting model is its single constructor argument. It has to implement the seven methods of
+`StorageInterface` (`saq/storage/interface.py`), and it can get all of them by subclassing
+`S3Storage` and replacing only the client. Note `S3Storage._ensure_bucket_exists()` does
+`head_bucket` and then `create_bucket` on first upload per process — a backend running under a
+least-privilege policy that denies those should override it and let the bucket be pre-created.
+
 This is an explicit opt-in rather than something inferred from `storage.target`, because a cluster
 running the local backend with `base_dir` on NFS is a perfectly good deployment — inferring would
 silently disable replication in exactly that case. The 409 names the setting, so the failure mode
 explains its own fix.
 
 With replication on, node identity stops being an access decision: the API looks for the bytes
-locally, then in the bucket, and only then refuses. `local` in a listing changes meaning from
-"written here" to **"downloadable from here"**; `node` still says where it came from, and a detail
-response sets `remote: true` when it was served from the bucket.
+locally, then in the bucket, and only then refuses. `local` in a listing always means **"on this
+node's own disk"**. The listing does not check the bucket per row, because that would be one
+round trip per crash. So with replication on, a report that is not local *may* be downloadable,
+but only if its shared copy exists. Timeout reports are never replicated inline and only reach
+the bucket through the hourly `ace crash sync`. `GET /crashes/{crash_id}` gives the definite
+answer: a 200 carries `downloadable: true` (and `remote: true` when it was served from the
+bucket), and a report that cannot be reached from here answers 409 `wrong_node`. `node` always
+says where a report came from.
 
 Credentials are origin-scoped (`x-ace-auth` and the session cookie), so a client talks to
 whatever node it already reached. Replication is how a report stays downloadable when the
@@ -158,7 +249,7 @@ best-effort; at most two uploads run at once per process and the rest are left t
 thread.
 
 **`ace crash sync`** is the catch-up: it lists the bucket once, compares against the local reports,
-and uploads the difference. It runs from `bin/daily-maintenance.sh` **after** `ace crash prune`, so
+and uploads the difference. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
 a run never uploads reports it is about to delete. It is stateless — it asks the bucket rather than
 tracking a marker file locally, which would have leaked into the API's file inventory, into the
 archive handed to the analyst, and (worst) would have refreshed the directory mtime that prune ages
@@ -210,10 +301,12 @@ get the shape of what earlier modules produced, not their full output.
 ## Retention
 
 `ace crash prune` removes reports past `retention_days` **and their index rows together**, so
-a listing never points at a directory that is gone. With replication on it also deletes the
-shared copy, remote first and in lockstep with the local one. It runs from
-`bin/daily-maintenance.sh`. `ace crash list` and `ace crash prune --dry-run` are the
-operator's read-only views.
+a listing never points at a directory that is gone, and drops any index spool entry for them.
+It also removes stale [pre-kill hang dumps](#pre-kill-hang-dumps).
+With replication on it also deletes the shared copy, remote first and in lockstep with the local
+one. It runs hourly from `etc/cron/hourly/crash-reports`, followed by `ace crash index` and then `ace crash
+sync`. `ace crash list`, `ace crash prune --dry-run` and `ace crash index [--all] --dry-run` are
+the operator's read-only views.
 
 ## Error reports
 

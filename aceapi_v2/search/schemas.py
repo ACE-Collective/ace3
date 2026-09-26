@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from aceapi_v2.observables.schemas import LookupPair
 from aceapi_v2.saved_filters.schemas import FilterEntry
+from saq.gui.detection_point_value import normalize_detection_point_value
 
 MAX_QUERY_LENGTH = 2000
 MAX_PAGE_SIZE = 100
@@ -33,6 +34,10 @@ class SearchFiltersBody(BaseModel):
         description="only alerts carrying ALL of these observables; the value is normalized the "
                     "same way the analysis engine normalizes it, and a file observable's value is "
                     "its content sha256 hex digest")
+    detection_points: list[str] = Field(
+        default_factory=list, max_length=MAX_FILTER_VALUES,
+        description="only alerts with a detection point from ANY of these signatures, each written "
+                    "<signature uuid>[:<signature version>]; without a version any version matches")
     filters: list[FilterEntry] = Field(
         default_factory=list, max_length=MAX_FILTER_VALUES,
         description="the rest of the alert management filter vocabulary, in the same "
@@ -46,10 +51,16 @@ class SearchFiltersBody(BaseModel):
             raise ValueError("must be timezone-aware (use an explicit UTC offset, e.g. 2026-01-01T00:00:00Z)")
         return value
 
+    @field_validator("detection_points")
+    @classmethod
+    def validate_detection_points(cls, values: list[str]) -> list[str]:
+        return [normalize_detection_point_value(value) for value in values]
+
     def is_empty(self) -> bool:
         return not any([
             self.insert_date_start, self.insert_date_end, self.alert_types, self.dispositions,
-            self.queues, self.tags, self.exclude_alert_uuids, self.observables, self.filters,
+            self.queues, self.tags, self.exclude_alert_uuids, self.observables, self.detection_points,
+            self.filters,
         ])
 
 
@@ -68,7 +79,7 @@ class AlertSearchRequest(BaseModel):
                     "A term is `tag:phish`, `uuid:<alert uuid>`, `<observable type>:<value>` "
                     "(e.g. `ipv4:1.2.3.4`, `signature_id:<uuid>`), `observable:<type>:<value>` "
                     "for values containing colons, or a filter slug such as `queue:default`, "
-                    "`disposition:DELIVERY` or `alert_date:-7d`. Prefix with `-` to invert, "
+                    "`disposition:DELIVERY`, `alert_date:-7d` or `detection_point:<signature uuid>[:<version>]`. Prefix with `-` to invert, "
                     "quote a value containing a space or comma, separate ORed values with "
                     "commas. An unrecognized prefix is ordinary text. A bare word or indicator "
                     "is searched semantically only -- it never runs an exact lookup.")

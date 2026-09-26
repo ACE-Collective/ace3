@@ -180,15 +180,29 @@ execute_hunt_parser.add_argument('--query-result-file', required=False, default=
 execute_hunt_parser.set_defaults(func=execute_hunt)
 
 def verify_hunt(args):
-    from saq.collectors.hunter import HunterCollector
-    collector = HunterCollector()
-    collector.load_hunt_managers()
+    # hunter imports are local throughout this module so parsing an unrelated `ace` subcommand
+    # never pays for loading the hunting stack
+    from saq.collectors.hunter import HunterService
+    from saq.collectors.hunter.correlation.validation import check_custom_command_types
+    hunter_service = HunterService()
+    hunter_service.load_hunt_managers()
     failed = False
-    for hunt_type, manager in collector.hunt_managers.items():
+    for hunt_type, manager in hunter_service.hunt_managers.items():
         manager.load_hunts_from_config()
-        if manager.failed_ini_files:
-            sys.stderr.write(f"ERROR: unable to load {len(manager.failed_ini_files)} {hunt_type} hunts\n")
+        if manager.failed_yaml_files:
+            sys.stderr.write(f"ERROR: unable to load {len(manager.failed_yaml_files)} {hunt_type} hunts\n")
             failed = True
+
+        # a hunt that uses a custom correlation command type this node does not have (the
+        # integration is missing or failed to load) still loads, and would alert every event
+        for hunt in manager.hunts:
+            hunt_config = getattr(hunt, "config", None)
+            for error in check_custom_command_types(
+                getattr(hunt_config, "correlate", None),
+                getattr(hunt_config, "_predefined_commands", None),
+            ):
+                sys.stderr.write(f"ERROR: {hunt_type} hunt {hunt.name}: {error}\n")
+                failed = True
 
     if failed:
         sys.exit(1)

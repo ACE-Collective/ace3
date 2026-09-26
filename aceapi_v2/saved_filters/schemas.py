@@ -6,6 +6,7 @@ from typing import Optional, Union
 import pytz
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES
 from saq.util.relative_time import parse_date_range
 
@@ -38,8 +39,14 @@ class FilterEntry(BaseModel):
     @field_validator("values")
     @classmethod
     def validate_values(cls, values: list, info) -> list:
-        """Reject an unparseable date token at WRITE time.
+        """Reject an unparseable date token or detection point value at WRITE time.
         """
+        if info.data.get("name") == "Detection Point":
+            if not all(isinstance(value, str) for value in values):
+                raise ValueError(f"detection point values must be strings, got {values!r}")
+            # normalize_detection_point_value raises ValueError, which pydantic reports
+            return [normalize_detection_point_value(value) for value in values]
+
         if info.data.get("name") not in DATE_RANGE_FILTER_NAMES:
             return values
 
