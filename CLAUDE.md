@@ -180,7 +180,7 @@ Analysis caching (per-module result cache keyed on observable + module + config 
 
 ### Collectors and hunting
 
-`saq/collectors/` — collectors yield `Submission` objects and hand them to the workload. Email, SMTP, HTTP, and the **hunter** (`saq/collectors/hunter/`) which runs scheduled queries (Splunk, etc.) defined as YAML in git-backed repos. See `docs/HUNTS.md` and `docs/CORRELATION_HUNTS.md`. Correlate steps are extensible from integrations: query sources and custom `command.type`s are registered through `hunter.correlation.{query_sources,command_types}` (`saq/collectors/hunter/correlation/command_types.py`, "Extending correlation hunts" in `docs/INTEGRATIONS.md`).
+`saq/collectors/` — collectors yield `Submission` objects and hand them to the workload. Email, SMTP, HTTP, and the **hunter** (`saq/collectors/hunter/`) which runs scheduled queries (Splunk, etc.) defined as YAML in git-backed repos. See `docs/HUNTS.md` and `docs/CORRELATION_HUNTS.md`. Correlate steps are extensible from integrations: query sources and custom `command.type`s are registered through `hunter.correlation.{query_sources,command_types}` (`saq/collectors/hunter/correlation/command_types.py`, "Extending correlation hunts" in `docs/INTEGRATIONS.md`). A `type: executable` command runs in a Landlock sandbox (`saq/collectors/hunter/correlation/sandbox.py`, "Executable sandbox" in `docs/CORRELATION_HUNTS.md`). It can read only a fixed allowlist, which contains nothing from ACE or its secrets, and it can write only its own working directory. Never widen that allowlist to make a script work. Instead, list the file the script needs under `files:`.
 
 ### Services
 

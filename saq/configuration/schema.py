@@ -223,10 +223,20 @@ class CommandTypeConfig(BaseModel):
     python_class: str = Field(..., description="CorrelationCommand subclass name within python_module")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the CorrelationCommand subclass")
 
+class ExecutableSandboxConfig(BaseModel):
+    """limits for the Landlock sandbox a correlate `type: executable` command runs in (saq/collectors/hunter/correlation/sandbox.py)"""
+    model_config = ConfigDict(extra="forbid")
+    work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
+    memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description="address space limit in bytes (RLIMIT_AS)")
+    file_size_limit: int = Field(default=256 * 1024 ** 2, gt=0, description="largest file the command may write, in bytes (RLIMIT_FSIZE)")
+    open_files_limit: int = Field(default=1024, gt=0, description="maximum open file descriptors (RLIMIT_NOFILE)")
+    max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed and the step fails")
+
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
     command_types: list[CommandTypeConfig] = Field(default_factory=list, description="custom correlation command types to register at hunter startup (see docs/INTEGRATIONS.md)")
+    executable: ExecutableSandboxConfig = Field(default_factory=ExecutableSandboxConfig, description="sandbox limits for `type: executable` commands")
 
 class HunterConfig(BaseModel):
     """top-level config for the hunting engine (distinct from service_hunter, which configures the service lifecycle)"""
