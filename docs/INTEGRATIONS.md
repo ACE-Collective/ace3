@@ -198,8 +198,8 @@ class VendorLookupCommand(CorrelationCommand):
 
 Core handles everything around the call, in this order:
 
-1. It renders every string in the hunt's `options` with Jinja. `_event`, `_events` and `_config`
-   are available; `_secrets` is never bound.
+1. It renders every string in the hunt's `options` with Jinja. Only `_event` and `_events` are
+   available. Hunts have no access to configuration or secrets.
 2. It validates the rendered dict against `config_class`.
 3. It builds a `CommandContext` and applies `cache:`.
 4. It calls `execute()`.

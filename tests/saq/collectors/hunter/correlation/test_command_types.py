@@ -217,13 +217,13 @@ class TestExecuteCustomCommand:
         handler = _EchoCommand()
         register_command_type("echo", handler)
         cmd = CommandConfig(type="echo", options={
-            "message": "hi {{ _event.user }} in {{ _config.vendor.region }}",
+            "message": "hi {{ _event.user }}",
             "count": "{{ _event.n }}",
         })
 
         output = _run(cmd, tmpdir, event={"user": "alice", "n": 2})
 
-        assert output.splitlines() == [json.dumps({"message": "hi alice in us"})] * 2
+        assert output.splitlines() == [json.dumps({"message": "hi alice"})] * 2
         context, options = handler.calls[0]
         # the rendered "2" was coerced by the config_class
         assert isinstance(options, _EchoOptions) and options.count == 2
@@ -232,6 +232,8 @@ class TestExecuteCustomCommand:
         assert context.transform_type == "event"
         assert context.timeout == datetime.timedelta(minutes=10)
         assert context.temp_dir == str(tmpdir)
+        # the handler, being integration code, still sees the configuration
+        assert context.config == {"vendor": {"region": "us"}}
 
     def test_nested_options_rendered(self, tmpdir, no_cache):
         class _Nested(BaseModel):
@@ -295,19 +297,12 @@ class TestExecuteCustomCommand:
         assert "hunter2" not in output
         assert "***" in output
 
-    def test_encrypted_marker_in_rendered_option_raises(self, tmpdir, no_cache):
-        handler = _EchoCommand()
-        register_command_type("echo", handler)
-        cmd = CommandConfig(type="echo", options={"message": "{{ _event.key }}"})
-        with pytest.raises(ValueError, match="credentials are not available to options"):
-            _run(cmd, tmpdir, event={"key": "encrypted:vendor.api_key"})
-        assert handler.calls == []
-
-    def test_secrets_not_bound_in_options(self, tmpdir, no_cache):
+    @pytest.mark.parametrize("name", ["_secrets", "_config"])
+    def test_secrets_and_config_not_bound_in_options(self, tmpdir, no_cache, name):
         register_command_type("echo", _EchoCommand())
-        cmd = CommandConfig(type="echo", options={"message": "[{{ _secrets }}]"})
+        cmd = CommandConfig(type="echo", options={"message": f"[{{{{ {name} is defined }}}}]"})
         output = _run(cmd, tmpdir, secrets={"vendor.api_key": "hunter2"})
-        assert json.loads(output) == {"message": "[]"}
+        assert json.loads(output) == {"message": "[False]"}
 
     def test_render_options_false_passes_templates_through(self, tmpdir, no_cache):
         handler = _LiteralCommand()

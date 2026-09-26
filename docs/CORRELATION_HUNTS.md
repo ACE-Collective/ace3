@@ -197,11 +197,11 @@ In either case, if no time range can be determined — an `event transformation`
 
 Executes a local binary or script.
 
-In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event), `_events` (full stream) and `_config` (the merged configuration) available.
+In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
 
 In the case of a `stream transformation`, the script is called once and passed all events in as JSONL to stdin.
 
-`env` values are interpolated too, and are the *only* templates that additionally get `_secrets` — see [Credentials in hunts](#credentials-in-hunts).
+`env` values are interpolated the same way. The script does **not** inherit ACE's environment — see [Credentials in hunts](#credentials-in-hunts).
 
 ```yaml
 command:
@@ -211,24 +211,20 @@ command:
     args: # list of arguments to pass to the command line (optional)
       - arg1
       - arg2
-    # NOTE arguments are interpolated using jinja with _event, _events and _config
+    # NOTE arguments are interpolated using jinja with _event and _events
     env:
-        SOME_SETTING: "{{ _config['vendor']['base_url'] }}"
-        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
-    # environment values are also interpolated using jinja, and are the only templates
-    # that can read _secrets
+        SOME_SETTING: "some value"
+        LOOKUP_DOMAIN: "{{ _event.domain }}"
+    # environment values are also interpolated using jinja with _event and _events
 ```
 
 #### Credentials in hunts
 
-A command that needs a credential reads it from `_secrets`, in an `env:` value:
+A hunt has no access to secrets. Hunt templates can read `_event` and `_events` and nothing else: neither the credential store nor ACE's configuration is bound. Hunt validation rejects any template that references `_secrets` or `_config`, and at runtime such a template fails as a step error.
 
-```yaml
-env:
-    VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
-```
+An executable command does not inherit ACE's environment. It gets only a fixed allowlist of variables (`PATH`, `HOME`, locale, `TZ`, `TMPDIR`, `PYTHONUTF8`, the proxy variables and the CA bundle variables; see `EXECUTABLE_ENV_ALLOWLIST` in `saq/collectors/hunter/correlation/commands.py`) plus the values in its own `env:` block.
 
-Note that the `env` block is the only place that `_secrets` can be used. Credentials are not available from `_config`, and any attempt to use a credential from it results in a validation error.
+A lookup that needs a credential belongs in a [custom command type](#custom-integration-provided-types). A custom command type is Python code in an integration, and it reads its credentials from that integration's configuration.
 
 #### defined
 
@@ -287,10 +283,9 @@ command:
 ```
 
 - Every string in `options`, including strings nested in lists and dicts, is rendered with
-  Jinja before the command runs. `_event`, `_events` and `_config` are available and `_secrets`
-  is not. A command type gets its credentials from its own integration's configuration, so
-  credentials never belong in `options`. An option that renders to an `encrypted:` marker is an
-  error.
+  Jinja before the command runs, with `_event` and `_events` available. A command type gets its
+  credentials from its own integration's configuration, so credentials never belong in
+  `options`.
 - The rendered options are then validated by the command type. A template always renders to a
   string, which the command type converts where it can (`"5"` becomes `5` for a number). A value
   that must be a list or a dict cannot come from a template.
@@ -402,8 +397,6 @@ commands:
       path: "scripts/external_lookup.py"
       cache: 1d
       args: []
-      env:
-        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
 ```
 
 These are referenced using the `defined` command type.
@@ -495,10 +488,8 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
     |---|---|---|
     | `_event` | the current event dict | every template |
     | `_events` | the full event stream list | every template |
-    | `_config` | the merged configuration, as a raw dict | every template |
-    | `_secrets` | the decrypted credential store, keyed on store key name | an executable command's `env:` values only |
 
-    A custom command type's `options` are rendered with `_event`, `_events` and `_config`.
+    Nothing else is bound: hunts have no access to configuration or secrets (see [Credentials in hunts](#credentials-in-hunts)).
 - When merging by time
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.

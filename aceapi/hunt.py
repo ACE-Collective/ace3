@@ -20,7 +20,7 @@ from saq.collectors.hunter.correlation.command_types import load_command_types_f
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.correlation.validation import (
     check_custom_command_types,
-    check_env_for_encrypted_markers,
+    check_templates_for_removed_names,
 )
 from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
@@ -131,16 +131,15 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     except ValidationError as e:
         return json_result({"valid": False, "error": f"invalid hunt config: {e}"}), 400
 
-    # catch a correlate command that tries to read an encrypted secret through _config, which
-    # renders the marker rather than the credential. the runtime guard in commands.py also
-    # covers this, but failing here means it never reaches production.
+    # catch a correlate template that reads _secrets or _config. neither is bound when a hunt
+    # renders, so it would fail on every event in production; failing here says why.
     hunt_config = getattr(hunt, "config", None)
-    env_errors = check_env_for_encrypted_markers(
+    template_errors = check_templates_for_removed_names(
         getattr(hunt_config, "correlate", None),
         getattr(hunt_config, "_predefined_commands", None),
     )
-    if env_errors:
-        return json_result({"valid": False, "error": "; ".join(env_errors)}), 400
+    if template_errors:
+        return json_result({"valid": False, "error": "; ".join(template_errors)}), 400
 
     # a custom command type that is not registered on this node (typo, or the integration is
     # missing) or whose options do not validate would otherwise only surface as a per-event step

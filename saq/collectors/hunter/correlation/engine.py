@@ -132,10 +132,9 @@ class CorrelationEngine:
         # reset source tracking so a reused engine instance starts from the hunt's primary type
         self._current_source = self.hunt_source_type
 
-        # Secrets serve two purposes: sanitize_value scrubs their values out of the correlation
-        # trace, log messages and cached-command descriptions, and they are bound as `_secrets`
-        # when rendering an executable command's `env:` block.
-        # See build_jinja_context.
+        # Secrets are loaded only so sanitize_value can scrub their values out of the correlation
+        # trace, log messages, command output and cached-command descriptions. No hunt template
+        # can read them -- see build_jinja_context.
         try:
             self._secrets = export_encrypted_passwords()
         except Exception as e:
@@ -143,10 +142,11 @@ class CorrelationEngine:
             report_exception() 
             self._secrets = {}
 
+        # handed to custom command types as CommandContext.config; never bound in a hunt template
         try:
             self._config = get_config().raw._data
         except Exception:
-            logging.error("unable to load config for correlation context", exc_info=True)
+            logging.error("unable to load config for custom command types", exc_info=True)
             self._config = {}
 
         result = CorrelationResult()
@@ -364,7 +364,7 @@ class CorrelationEngine:
 
             elif isinstance(step.step, ActionConfig):
                 try:
-                    action_result = execute_action(step.step, event, events, self._config)
+                    action_result = execute_action(step.step, event, events)
                 except Exception as e:
                     logging.error("error executing action: %s", e, exc_info=True)
                     action_trace = ActionTrace(
@@ -400,7 +400,7 @@ class CorrelationEngine:
         Raises _StepError if expression evaluation fails.
         """
         expr_result, expr_trace = evaluate_expression_traced(
-            condition.when, event, events, self._config,
+            condition.when, event, events,
         )
         # Sanitize any rendered values that may contain secrets
         if expr_trace.rendered_value is not None:
@@ -575,7 +575,7 @@ class CorrelationEngine:
         rendered_log_message = None
         if action.log_message:
             try:
-                context = build_jinja_context(event, events, self._config)
+                context = build_jinja_context(event, events)
                 rendered_log_message = sanitize_value(
                     _jinja_env.from_string(action.log_message).render(**context),
                     self._secrets,
@@ -621,11 +621,11 @@ class CorrelationEngine:
     ) -> Optional[str]:
         """Render a human-readable summary of the command for tracing.
 
-        Renders `query` or `path + args` only -- never `env`. That omission is deliberate: env
-        is the one template context bound to `_secrets`, and this summary is persisted into the
-        correlation trace. A custom command type supplies its own via render_summary().
+        Renders `query` or `path + args` only -- never `env`, which is where a hunt puts the
+        settings it hands a script, and this summary is persisted into the correlation trace. A
+        custom command type supplies its own via render_summary().
         """
-        context = build_jinja_context(event, events, self._config)
+        context = build_jinja_context(event, events)
         try:
             if command.type == "query" and command.query:
                 return _jinja_env.from_string(command.query).render(**context)
@@ -651,7 +651,7 @@ class CorrelationEngine:
     def _render_debug(self, template: str, event: dict, events: list[dict]):
         """Render and log a debug message."""
         try:
-            context = build_jinja_context(event, events, self._config)
+            context = build_jinja_context(event, events)
             message = _jinja_env.from_string(template).render(**context)
             logging.debug("correlation debug: %s", message)
         except Exception:

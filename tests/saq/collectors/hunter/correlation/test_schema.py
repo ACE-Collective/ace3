@@ -368,9 +368,9 @@ class TestPredefinedCommandConfig:
             name="lookup",
             type="executable",
             path="/usr/bin/lookup.sh",
-            env={"API_KEY": "{{ _secrets.key }}"},
+            env={"API_KEY": "{{ _event.key }}"},
         )
-        assert predef.env == {"API_KEY": "{{ _secrets.key }}"}
+        assert predef.env == {"API_KEY": "{{ _event.key }}"}
 
     def test_env_carried_to_command_config(self):
         predef = PredefinedCommandConfig(
