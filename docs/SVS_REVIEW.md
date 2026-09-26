@@ -120,7 +120,7 @@ not."* The disposition mapping (TP-2) and detection-point overrides (DP-1) are t
 approximating that. The consequence is that `FALSE_POSITIVE` alerts usually are signature FPs, but
 `AUTHORIZED` should map to TP.
 
-> **Response:**
+> **Response:** The only thing that matters to us is that we detect the attack. In ACE, the question we answer when dispositioning alerts is "Did we detect malicious activity?" So we would disposition a signature matching the encoded powershell as False Positive if we find that is what a system admin doing authorized work. Thus, the rule for Emotet maldoc hitting on Qakbot maldoc would be dispositioned as DELIVERY regardless. In regression testing, the idea is for the "detection telemetry signal generator" to take on the role of the attacker. 
 
 ### TP-2 — Classification is three-valued; reuse the existing config  `PROPOSED` · blocking
 
@@ -154,7 +154,7 @@ This needs a fix first: config and constants disagree about which dispositions e
 config. A classification map keyed by disposition name has to be validated against the
 *effective* disposition list at startup, or a typo becomes a silent "unclassified".
 
-> **Response:**
+> **Response:** I agree with the proposal. Remove AUTHORIZED and DATA_CONTROL as dispositions.
 
 ### DP-1 — Store overrides, derive effective verdicts  `PROPOSED` · blocking
 
@@ -190,7 +190,7 @@ change or a config change has to rewrite every row, and the rewrite is easy to g
 - One side effect is still needed at disposition time: capturing sample bytes before they can be
   archived (YR-5). That is capture, not labeling.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### DP-2 — "Single detection point" should be "single signature"  `PROPOSED` · blocking
 
@@ -221,7 +221,31 @@ SELECT n_sigs, n_dps_bucket, COUNT(*) AS alerts FROM (
 GROUP BY n_sigs, n_dps_bucket ORDER BY n_sigs, n_dps_bucket;
 ```
 
-> **Response:**
+> **Response:** See results below.
+
+```txt
++--------+--------------+--------+
+| n_sigs | n_dps_bucket | alerts |
++--------+--------------+--------+
+|      1 |            1 |  11206 |
+|      1 |            2 |     97 |
+|      1 |            3 |     36 |
+|      1 |            4 |      5 |
+|      1 |            5 |     18 |
+|      2 |            2 |    936 |
+|      2 |            3 |     29 |
+|      2 |            4 |     31 |
+|      2 |            5 |     42 |
+|      3 |            3 |    123 |
+|      3 |            4 |    153 |
+|      3 |            5 |    150 |
+|      4 |            4 |     70 |
+|      4 |            5 |    218 |
+|      5 |            5 |     54 |
+|      6 |            5 |     11 |
+|      7 |            5 |      6 |
++--------+--------------+--------+
+```
 
 ### DP-3 — When the alert disposition changes  `PROPOSED` · blocking
 
@@ -240,7 +264,7 @@ GROUP BY n_sigs, n_dps_bucket ORDER BY n_sigs, n_dps_bucket;
 design says no. TP-1 is the case for yes: the rule matched correctly and the activity was benign.
 If TP-1 lands on the "signature did its job" meaning, I would allow it.
 
-> **Response:**
+> **Response:** Yes, they can.
 
 ### DP-4 — YARA detection points don't say which file matched  `PROPOSED` · blocking
 
@@ -265,7 +289,7 @@ This also shows up in the GUI. Every surface that shows a detection reads the in
 (`alert.html:449-454`, the Detection Chains card). A chain that starts at a shared `yara_rule` node
 is ambiguous whenever the rule matched more than one file.
 
-> **Response:**
+> **Response:** Consider moving the detection point to the file instead. Let's also assume that existing ACE data prior to the introduction of SVS is out of scope. Only alerts created after SVS is deployed are considered by SVS.
 
 ### DP-5 — GUI for detection-point verdicts  `PROPOSED`
 
@@ -286,7 +310,7 @@ This fills the "we need to decide how this is going to work in the GUI" note.
 - **Manage page:** a filter "has unlabeled detections". This is the backlog view for anyone
   curating the corpus.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### DP-6 — Verdicts for all signature families, not only YARA  `OPEN`
 
@@ -298,7 +322,7 @@ it needs nothing extra once DP-1 exists.
 detection. It is simpler to explain ("every detection can be labeled"), and it gives Coverage
 (COV-1) a quality signal.
 
-> **Response:**
+> **Response:** Yes.
 
 ---
 
@@ -339,7 +363,7 @@ only when base ≠ head. The label then says whether the change is good or bad:
   as a regression keeps showing the same samples as *already broken on base*. That nags until
   someone retires or relabels them, which I think is the right amount of friction.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### YR-2 — Scan the whole corpus with the whole ruleset  `PROPOSED` · blocking
 
@@ -369,7 +393,7 @@ with both, then diff per `(sample, rule uuid)`.
   head scan to namespaces whose files changed. That is still correct for cases 2 and 3, because
   namespaces are the compile unit.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### YR-3 — Trigger, transport and where the report goes  `PROPOSED` · blocking
 
@@ -393,7 +417,7 @@ direction as `validate-hunt` → `POST /api/hunt/validate` today.
 I suggest failing, with an override path through the retire/relabel actions: re-running the check
 after them makes it pass.
 
-> **Response:**
+> **Response:** Disagree with 1. ACE already has credentials, and there are no forks, all works is done in the same repo. To answer the question, we should only warn. We may have a reason to push it though anyways (such as performance impact.)
 
 ### YR-4 — What a sample record must capture  `PROPOSED` · blocking
 
@@ -425,7 +449,7 @@ gap: during analysis `full_path` sees `<storage_dir>/files/<file_path>`, which c
 uuid. Any rule that filters on that prefix can't be replayed faithfully. That should be rare, but
 the report should flag rules that use `full_path`.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### YR-5 — When capture happens  `PROPOSED` · blocking
 
@@ -452,7 +476,7 @@ The file bytes and the match JSON have hard deadlines (§8, F-5):
 archive, but it stores every alert's matches, including the large majority that end up IGNORE.
 I'd stay with disposition time.
 
-> **Response:**
+> **Response:** The "survive only be accident" is a bug that needs to be addressed! `archive()` is supposed to clean up everything. Agree with the proposal.
 
 ### YR-6 — Label conflicts across alerts  `PROPOSED`
 
@@ -466,7 +490,7 @@ The design says "the sample becomes a TP sample", but a label is really per
   report and excluded from pass/fail until someone relabels it (YR-1).
 - The newest vote does not silently win, because a label flip decides pass/fail.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### YR-7 — Rules without a `uuid`  `PROPOSED`
 
@@ -479,7 +503,7 @@ would be pooled under it.
 - List uuid-less rules in the PR report as *not regression-testable*. That also gives the repos
   a nudge toward adding uuids.
 
-> **Response:**
+> **Response:** Agree with the proposal.
 
 ### YR-8 — Sample store: CAS layer, retention, access  `OPEN` · blocking
 
@@ -507,7 +531,7 @@ The design says samples go through `saq/storage`, content-addressed by sha256. S
 4. **Deletion.** A legal or privacy delete has to remove bytes and rows and be audited. Who can do
    it?
 
-> **Response:**
+> **Response:** First, let's go ahead and built a full blown abstract CAS layer for ACE. Propose designs for this idea before we continue.
 
 ### YR-9 — Isolation of PR rule compilation  `PROPOSED`
 
@@ -520,7 +544,7 @@ goes through the scanner service socket. Compile errors are a first-class report
 "namespace X failed to compile: all N rules in it are dropped". That is exactly the silent
 production failure mode YR-2 point 3 describes.
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### YR-10 — The dynamic case (`d(t(Y))`) in regression  `OPEN`
 
@@ -536,7 +560,7 @@ file's sha256 and the producing module (the detection chain already knows it:
 scanning. `saq/modules/tool_version.py` would supply tool versions, but pdftotext, olevba and the
 JS modules don't use it yet.
 
-> **Response:**
+> **Response:** Yes, I agree.
 
 ---
 
@@ -556,7 +580,7 @@ Lifecycle, markers, windows and results all belong to the execution.
 - Several runs launched together (one launcher session) can share an optional `batch_id` for
   display.
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### ART-2 — Registration API and lifecycle transitions  `PROPOSED` · blocking
 
@@ -583,7 +607,7 @@ that arrive after *Ended* but inside the attribution window are still attributed
 and recompute the result. This matters because hunt latency and engine backlog are real
 (ART-3).
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### ART-3 — Observation window length  `PROPOSED`
 
@@ -595,7 +619,7 @@ maximum over the test's expected signatures of their worst-case latency. For hun
 `frequency + time_range + offset` from the hunt config. Add a configurable slack, and apply a
 floor and a ceiling.
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### ART-4 — Marker threat model  `PROPOSED` · blocking
 
@@ -618,7 +642,7 @@ cover a marker showing up on a **production** host.
 4. **Markers are not secrets** once the test runs: they sit in telemetry. They are only valid in
    context (rule 1).
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### ART-5 — Where ACE looks for the marker  `OPEN` · blocking
 
@@ -647,7 +671,7 @@ recorded with **confidence** `marker` vs `context`, so the review screen can sho
 it to the run and leave it in the normal queue for an analyst to confirm? I lean toward routing,
 given the design decision that real TPs on test hosts are out of scope, but that is your call.
 
-> **Response:**
+> **Response:** Yes, I agree with your lean towards routing.
 
 ### ART-6 — When attribution happens and how the queue moves  `PROPOSED` · blocking
 
@@ -673,7 +697,7 @@ given the design decision that real TPs on test hosts are out of scope, but that
 **Collision to check:** modules with `valid_queues` / `invalid_queues` (`base_module.py:191-202`)
 change behavior if an alert's queue changes mid-analysis.
 
-> **Response:**
+> **Response:** Let's investigate a deeper change to ACE here. Investigate building the marker detection directly into the engine, so that the engine can detect the markers as early as possible.
 
 ### ART-7 — Alerts that mix test and non-test detections  `PROPOSED` · blocking
 
@@ -691,7 +715,7 @@ The design tracks attribution **per detection point** but routes **per alert**.
 - This mirrors the rule `_apply_detection_queue` already applies to YARA-meta queues ("if any
   plain detection exists the alert is real").
 
-> **Response:**
+> **Response:** Agree with the proposal. Let's start to keep the awareness of the analyst in mind as we start to add indicators that suggest these complex scenarios are in play. Need to keep it simple for the analyst to understand what is happening and what should be done.
 
 ### ART-8 — Hunt suppression / dedup / group_by swallow test detections  `OPEN`
 
@@ -716,7 +740,7 @@ failure.
 
 I'd do (c). (b) makes results trustworthy, and (a) explains the cases (b) can't reach.
 
-> **Response:**
+> **Response:** Agree with the proposal, but concerned with how complex that is going to be. Let's see how this one goes.
 
 ### ART-9 — Test host definition and unregistered-host handling  `PROPOSED`
 
@@ -733,7 +757,7 @@ I'd do (c). (b) makes results trustworthy, and (a) explains the cases (b) can't 
 - Should a registration with a *listed host* but an *unlisted username* also be refused and
   alerted? I'd say yes if `usernames` is set for that host.
 
-> **Response:**
+> **Response:** Yes, I agree.
 
 ### ART-10 — What happens to test alerts downstream  `OPEN`
 
@@ -752,7 +776,7 @@ Once an alert is in the test queue, several things still have to be decided:
    exactly the labeled data regression wants, and it gives YARA regression coverage of techniques.
    I lean yes.
 
-> **Response:**
+> **Response:** I've merged in main, which has some of this addressed (#2 in particular.) Review again.
 
 ### ART-11 — Technique-derived expectations are too broad  `PROPOSED` · blocking
 
@@ -777,7 +801,7 @@ Source data for derivation:
 - Expectations are checked against the signature's **enabled** state at run time: a disabled
   signature is not expected to fire.
 
-> **Response:**
+> **Response:** In my opinion, the mapping should come from actual test results. The mitre attack technique framework is too large for a human to fully comprehend and correctly categorize. So I feel as though the existing mappings in the signatures should actually just be ignored. We could surface when they differ from real test results as an option, but I feel like with a system like SVS in place, it should just be measured. If a signature cannot be measued with SVS, *then* manual application of technique makes sense I guess.
 
 ### ART-12 — Why ACE holds the ART repos, and what it parses  `PROPOSED`
 
@@ -795,7 +819,7 @@ Execution is out of scope, so ACE needs the ART repos only as a **catalog**, for
   one are skipped with a warning.
 - A GUID that disappears from the catalog keeps its historical runs.
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ### ART-13 — Launcher noise vs per-test ignores; manual (re)association  `PROPOSED`
 
@@ -810,7 +834,7 @@ Execution is out of scope, so ACE needs the ART repos only as a **catalog**, for
   - Both record who/when/why, recompute the run's result, and are reversible.
   - Disassociating moves the alert back to the queue it would otherwise have had.
 
-> **Response:**
+> **Response:** Agree with proposal.
 
 ---
 
@@ -860,7 +884,7 @@ Those have different owners.
 I'd do (a) once markers exist. The marker makes a generic probe possible, which is a strong
 argument for markers beyond attribution.
 
-> **Response:**
+> **Response:** Let's drop goal 2.
 
 ---
 
@@ -878,7 +902,7 @@ argument for markers beyond attribution.
 | CLI | `ace svs ...` |
 | Permissions (catalog + migration) | `svs:run_register`, `svs:validate`, `svs:sample_read`, `svs:sample_download`, `svs:admin` |
 
-> **Response:**
+> **Response:** Let's hold off on this until we've got the CAS layer design worked out.
 
 ### X-2 — Which ACE instance owns SVS  `OPEN`
 
@@ -889,7 +913,7 @@ for production.
 **Question:** Is that acceptable, or does a separate SVS instance get a replicated sample store?
 Replication is harder, so I'd start with production.
 
-> **Response:**
+> **Response:** That is acceptable.
 
 ### X-3 — Name collision with `lib/signature_validator`  `OPEN`
 
@@ -899,7 +923,7 @@ validation" in ACE, and it is the hunt analogue of YR-3.
 **Question:** Does SVS eventually absorb it (the same CI entry point, `validate` for hunts and YARA),
 or do they stay separate? I'd keep them separate for now and note the relationship in both docs.
 
-> **Response:**
+> **Response:** Let's keep them separate for now and note the relationship.
 
 ### X-4 — Phasing  `PROPOSED`
 
@@ -917,7 +941,7 @@ or do they stay separate? I'd keep them separate for now and note the relationsh
 Phases 1–3 carry no execution risk and exercise storage, the API trigger and reporting. Phase 4 is
 where the security questions (ART-4/6/7) have to be settled.
 
-> **Response:**
+> **Response:** Agree with proprosal.
 
 ---
 
