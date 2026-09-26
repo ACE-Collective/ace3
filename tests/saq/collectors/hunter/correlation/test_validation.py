@@ -2,8 +2,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pydantic import BaseModel
+
+from saq.collectors.hunter.correlation.command_types import (
+    CorrelationCommand,
+    clear_command_types,
+    register_command_type,
+)
 from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.validation import (
+    check_custom_command_types,
     check_env_for_encrypted_markers,
     iter_correlate_commands,
 )
@@ -145,3 +153,123 @@ class TestCheckEnvForEncryptedMarkers:
         with patch("saq.collectors.hunter.correlation.validation.get_config",
                    return_value=MagicMock(raw=mock_raw)):
             assert len(check_env_for_encrypted_markers(correlate)) == 1
+
+
+class _LookupOptions(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    ip: str
+    limit: int = 10
+
+
+class _LookupCommand(CorrelationCommand):
+    config_class = _LookupOptions
+
+    def execute(self, context, options):
+        return ""
+
+
+class _LiveCommand(CorrelationCommand):
+    cacheable = False
+
+    def execute(self, context, options):
+        return ""
+
+
+@pytest.fixture
+def custom_types():
+    clear_command_types()
+    register_command_type("lookup", _LookupCommand())
+    register_command_type("live", _LiveCommand())
+    yield
+    clear_command_types()
+
+
+@pytest.mark.unit
+class TestCheckCustomCommandTypes:
+
+    def test_valid_custom_command(self, custom_types):
+        correlate = _correlate({"type": "lookup", "cache": "1d", "options": {"ip": "{{ _event.ip }}"}})
+        assert check_custom_command_types(correlate) == []
+
+    def test_builtin_commands_are_ignored(self, custom_types):
+        correlate = _correlate(
+            {"type": "query", "source": "not_even_registered", "query": "q"},
+            {"type": "executable", "path": "/bin/true"},
+        )
+        assert check_custom_command_types(correlate) == []
+
+    def test_unknown_type_is_reported_with_known_types(self, custom_types):
+        errors = check_custom_command_types(_correlate({"type": "lookpu"}))
+        assert len(errors) == 1
+        assert "unknown command type 'lookpu'" in errors[0]
+        assert "live, lookup" in errors[0]
+
+    def test_load_failure_is_reported(self, custom_types):
+        with patch("saq.collectors.hunter.correlation.validation.get_command_type_load_errors",
+                   return_value={"broken": "RuntimeError: no api key"}):
+            errors = check_custom_command_types(_correlate({"type": "broken"}))
+        assert errors == ["command 'broken': command type 'broken' failed to load on this node: RuntimeError: no api key"]
+
+    def test_bad_options_are_reported(self, custom_types):
+        errors = check_custom_command_types(_correlate({"type": "lookup", "options": {"ipp": "1.2.3.4"}}))
+        assert any("options.ip" in e and "Field required" in e for e in errors)
+        assert any("options.ipp" in e for e in errors)
+
+    def test_template_in_typed_field_is_tolerated(self, custom_types):
+        """ "{{ _event.n }}" is not an int yet; it is judged after rendering, at run time."""
+        correlate = _correlate({"type": "lookup", "options": {"ip": "x", "limit": "{{ _event.n }}"}})
+        assert check_custom_command_types(correlate) == []
+
+    def test_literal_bad_value_in_typed_field_is_reported(self, custom_types):
+        correlate = _correlate({"type": "lookup", "options": {"ip": "x", "limit": "lots"}})
+        errors = check_custom_command_types(correlate)
+        assert len(errors) == 1
+        assert "options.limit" in errors[0]
+
+    def test_options_on_type_without_config_class_are_reported(self, custom_types):
+        errors = check_custom_command_types(_correlate({"type": "live", "options": {"x": 1}}))
+        assert errors == ["command 'live': command type 'live' takes no options, got ['x']"]
+
+    def test_cache_on_uncacheable_type_is_reported(self, custom_types):
+        errors = check_custom_command_types(_correlate({"type": "live", "cache": "1h"}))
+        assert errors == ["command 'live': command type 'live' is not cacheable; remove 'cache'"]
+
+    def test_predefined_custom_command_is_checked(self, custom_types):
+        predefined = [PredefinedCommandConfig.model_validate({
+            "name": "ip_lookup", "type": "lookup", "options": {"limit": 5},
+        })]
+        errors = check_custom_command_types(None, predefined)
+        assert len(errors) == 1
+        assert errors[0].startswith("predefined command 'ip_lookup': options.ip")
+
+    def test_defined_arguments_are_applied_before_checking(self, custom_types):
+        """A predefined command may leave a required option for each reference to supply."""
+        predefined = [PredefinedCommandConfig.model_validate({
+            "name": "ip_lookup", "type": "lookup", "options": {"ip": "placeholder"},
+        })]
+        correlate = _correlate({
+            "type": "defined", "name": "ip_lookup",
+            "arguments": {"options": {"limit": 5}},
+        })
+        errors = check_custom_command_types(correlate, predefined)
+        # arguments.options replaced the whole dict, which dropped `ip`
+        assert len(errors) == 1
+        assert errors[0].startswith("defined command 'ip_lookup': options.ip")
+
+    def test_unargumented_defined_reference_is_not_double_reported(self, custom_types):
+        predefined = [PredefinedCommandConfig.model_validate({"name": "gone", "type": "lookpu"})]
+        correlate = _correlate({"type": "defined", "name": "gone"}, {"type": "defined", "name": "gone"})
+        assert len(check_custom_command_types(correlate, predefined)) == 1
+
+    def test_nested_commands_are_checked(self, custom_types):
+        correlate = CorrelateConfig.model_validate({"logic": [{
+            "when": "{{ true }}",
+            "execute": [{"transform": {"method": "property", "property_name": "a",
+                                       "command": {"type": "nope"}}}],
+        }]})
+        assert len(check_custom_command_types(correlate)) == 1
+
+    def test_non_correlate_hunt_is_a_no_op(self, custom_types):
+        assert check_custom_command_types(None, None) == []
+        assert check_custom_command_types(MagicMock(), MagicMock()) == []

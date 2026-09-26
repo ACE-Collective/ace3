@@ -415,6 +415,14 @@ hunter:
       - name: splunk
         python_module: saq.collectors.hunter.correlation.sources.splunk
         python_class: SplunkQuerySource
+    # custom `command.type` values for correlate transforms. core ships none; integrations append
+    # entries here from their own saq.integration.yaml (lists append when config files merge).
+    # see "Extending correlation hunts" in docs/INTEGRATIONS.md
+    command_types: []
+    #  - name: wiz_lookup
+    #    python_module: wiz.correlation
+    #    python_class: WizLookupCommand
+    #    kwargs: {}
 
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database

@@ -1597,3 +1597,97 @@ def test_validate_hunt_accepts_env_reading_secret_via_secrets(test_client, auth_
 
     assert result.status_code == 200
     assert result.get_json()["valid"] is True
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - custom correlation command types
+# =============================================================================
+
+def _hunt_with_custom_command(command: dict):
+    """A mocked hunt whose correlate block runs one command."""
+    from types import SimpleNamespace
+
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    hunt = Mock()
+    hunt.config = SimpleNamespace(
+        correlate=CorrelateConfig.model_validate({"logic": [{"transform": {
+            "method": "property", "property_name": "p", "command": command,
+        }}]}),
+        _predefined_commands=[],
+    )
+    return hunt
+
+
+def _validate_mocked_hunt(test_client, auth_headers, hunt):
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_manager.load_hunt_from_config.return_value = hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        return test_client.post(
+            HUNT_VALIDATE_URL,
+            json=_make_compiled_payload(VALID_HUNT_YAML),
+            headers=auth_headers
+        )
+
+
+@pytest.fixture
+def registered_echo_command_type():
+    """Registers an `echo` command type, keeping the endpoint's own loader from clearing it."""
+    from pydantic import BaseModel
+
+    from saq.collectors.hunter.correlation.command_types import (
+        CorrelationCommand,
+        clear_command_types,
+        register_command_type,
+    )
+
+    class _EchoOptions(BaseModel):
+        model_config = {"extra": "forbid"}
+        message: str
+
+    class _EchoCommand(CorrelationCommand):
+        config_class = _EchoOptions
+
+        def execute(self, context, options):
+            return options.message
+
+    clear_command_types()
+    register_command_type("echo", _EchoCommand())
+    with patch("aceapi.hunt.load_command_types_from_config"):
+        yield
+    clear_command_types()
+
+
+@pytest.mark.integration
+def test_validate_hunt_rejects_unregistered_custom_command_type(test_client, auth_headers, registered_echo_command_type):
+    """A typo'd or missing custom type would otherwise error (and so alert) on every event."""
+    result = _validate_mocked_hunt(test_client, auth_headers, _hunt_with_custom_command({"type": "ecoh"}))
+
+    assert result.status_code == 400
+    data = result.get_json()
+    assert data["valid"] is False
+    assert "unknown command type 'ecoh'" in data["error"]
+
+
+@pytest.mark.integration
+def test_validate_hunt_rejects_bad_custom_command_options(test_client, auth_headers, registered_echo_command_type):
+    result = _validate_mocked_hunt(test_client, auth_headers, _hunt_with_custom_command(
+        {"type": "echo", "options": {"mesage": "typo"}}
+    ))
+
+    assert result.status_code == 400
+    assert "options.mesage" in result.get_json()["error"]
+
+
+@pytest.mark.integration
+def test_validate_hunt_accepts_registered_custom_command_type(test_client, auth_headers, registered_echo_command_type):
+    result = _validate_mocked_hunt(test_client, auth_headers, _hunt_with_custom_command(
+        {"type": "echo", "options": {"message": "{{ _event.user }}"}}
+    ))
+
+    assert result.status_code == 200
+    assert result.get_json()["valid"] is True

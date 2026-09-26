@@ -30,3 +30,15 @@ module_group_correlation:
   name: correlation
   modules:
     - example
+
+# a custom correlation command type: hunts can now use `command: {type: example_echo, options: ...}`
+# in a correlate transform. this list is appended to core's (lists append when config files merge),
+# so do not repeat core's entries here. see "Extending correlation hunts" in docs/INTEGRATIONS.md
+hunter:
+  correlation:
+    command_types:
+      - name: example_echo
+        python_module: example.correlation
+        python_class: ExampleEchoCommand
+        # passed to the constructor
+        kwargs: {}

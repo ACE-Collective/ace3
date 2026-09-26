@@ -216,9 +216,17 @@ class QuerySourceConfig(BaseModel):
     python_class: str = Field(..., description="QuerySource subclass name within python_module")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the QuerySource subclass")
 
+class CommandTypeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="the `type:` value hunt YAMLs use for this command (e.g. 'wiz_lookup')")
+    python_module: str = Field(..., description="dotted module path containing the CorrelationCommand subclass")
+    python_class: str = Field(..., description="CorrelationCommand subclass name within python_module")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the CorrelationCommand subclass")
+
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
+    command_types: list[CommandTypeConfig] = Field(default_factory=list, description="custom correlation command types to register at hunter startup (see docs/INTEGRATIONS.md)")
 
 class HunterConfig(BaseModel):
     """top-level config for the hunting engine (distinct from service_hunter, which configures the service lifecycle)"""

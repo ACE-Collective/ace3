@@ -16,8 +16,12 @@ from aceapi.json import json_result
 from aceapi.blueprints import hunt_bp
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from saq.analysis.root import RootAnalysis
+from saq.collectors.hunter.correlation.command_types import load_command_types_from_config
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
-from saq.collectors.hunter.correlation.validation import check_env_for_encrypted_markers
+from saq.collectors.hunter.correlation.validation import (
+    check_custom_command_types,
+    check_env_for_encrypted_markers,
+)
 from saq.collectors.hunter.loader import peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
@@ -98,10 +102,11 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     Returns:
         Flask response tuple (response, status_code).
     """
-    # ensure correlation query sources are registered before any hunt execution.
-    # mocking HunterService in tests bypasses load_hunt_managers (the other call
+    # ensure correlation query sources and custom command types are registered before any hunt
+    # execution. mocking HunterService in tests bypasses load_hunt_managers (the other call
     # site), so the validation API needs its own explicit trigger.
     load_query_sources_from_config()
+    load_command_types_from_config()
 
     try:
         hunt_type = peek_hunt_type(target_file_path)
@@ -136,6 +141,16 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     )
     if env_errors:
         return json_result({"valid": False, "error": "; ".join(env_errors)}), 400
+
+    # a custom command type that is not registered on this node (typo, or the integration is
+    # missing) or whose options do not validate would otherwise only surface as a per-event step
+    # error in production, which alerts every event.
+    command_type_errors = check_custom_command_types(
+        getattr(hunt_config, "correlate", None),
+        getattr(hunt_config, "_predefined_commands", None),
+    )
+    if command_type_errors:
+        return json_result({"valid": False, "error": "; ".join(command_type_errors)}), 400
 
     # are we executing the hunt?
     execution_arguments_dict = request_json.get("execution_arguments", {})

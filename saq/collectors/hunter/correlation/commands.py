@@ -8,6 +8,7 @@ from typing import Optional
 from jinja2.sandbox import SandboxedEnvironment
 
 from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder, get_cached_result, set_cached_result
+from saq.collectors.hunter.correlation.command_types import CommandContext, CorrelationCommand, get_command_type
 from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.registry import get_query_source
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
@@ -71,7 +72,7 @@ def execute_command(
     elif command.type == "executable":
         return _execute_executable(command, event, events, transform_type, temp_dir, secrets, config)
     else:
-        raise ValueError(f"unknown command type: {command.type!r}")
+        return _execute_custom(command, event, events, transform_type, hunt_start_time, hunt_end_time, temp_dir, secrets, config)
 
 
 def _execute_defined(
@@ -353,3 +354,119 @@ def _execute_executable(
         set_cached_result(cache_args, stdout, ttl, secrets)
 
     return stdout
+
+
+def _render_option_value(value, context: dict):
+    """Render every string leaf of an options value, recursing through dicts and lists."""
+    if isinstance(value, str):
+        return _jinja_env.from_string(value).render(**context)
+    if isinstance(value, dict):
+        return {k: _render_option_value(v, context) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render_option_value(v, context) for v in value]
+    return value
+
+
+def _find_encrypted_marker(value) -> bool:
+    if isinstance(value, str):
+        return ENCRYPTED_PREFIX in value
+    if isinstance(value, dict):
+        return any(_find_encrypted_marker(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_find_encrypted_marker(v) for v in value)
+    return False
+
+
+def prepare_custom_command(
+    command: CommandConfig,
+    event: dict,
+    events: list[dict],
+    transform_type: str,
+    hunt_start_time: datetime.datetime,
+    hunt_end_time: datetime.datetime,
+    temp_dir: str,
+    config: dict | None = None,
+) -> tuple[CorrelationCommand, CommandContext, object]:
+    """Resolve a custom command's handler, render and validate its options, and build its context.
+
+    Shared by execution and by the engine's trace summary so both see identical options.
+    Rendering happens before validation (so a `config_class` can declare real types and let
+    pydantic coerce the rendered strings) and before any cache lookup (so the cache keys on the
+    question actually asked, not the shared template -- see _execute_query).
+    """
+    handler = get_command_type(command.type)
+
+    if handler.render_options:
+        # `secrets` is deliberately not bound: options end up in the persisted trace, in cache
+        # descriptions and in whatever the handler sends to a third party.
+        rendered = _render_option_value(command.options, build_jinja_context(event, events, config))
+        if _find_encrypted_marker(rendered):
+            # an `encrypted:<name>` marker survives unresolved in the raw config dict bound as
+            # `_config`, so an option that reads a secret that way yields the marker.
+            raise ValueError(
+                f"options of {command.type} rendered an unresolved {ENCRYPTED_PREFIX!r} marker; "
+                "credentials are not available to options -- read them in the command type from "
+                "its integration configuration instead"
+            )
+    else:
+        rendered = command.options
+
+    if handler.config_class is not None:
+        options = handler.config_class.model_validate(rendered)
+    elif rendered:
+        raise ValueError(f"command type {command.type} does not take options, got {sorted(rendered)}")
+    else:
+        options = {}
+
+    context = CommandContext(
+        command_type=command.type,
+        event=event,
+        events=events,
+        transform_type=transform_type,
+        hunt_start_time=hunt_start_time,
+        hunt_end_time=hunt_end_time,
+        timeout=parse_timespec(command.timeout),
+        temp_dir=temp_dir,
+        config=config or {},
+    )
+    return handler, context, options
+
+
+def _execute_custom(
+    command: CommandConfig,
+    event: dict,
+    events: list[dict],
+    transform_type: str,
+    hunt_start_time: datetime.datetime,
+    hunt_end_time: datetime.datetime,
+    temp_dir: str,
+    secrets: dict | None = None,
+    config: dict | None = None,
+) -> str:
+    """Execute a command type registered by an integration (see command_types.py)."""
+    handler, context, options = prepare_custom_command(
+        command, event, events, transform_type, hunt_start_time, hunt_end_time, temp_dir, config,
+    )
+
+    cache_args = None
+    if command.cache and handler.cacheable:
+        cache_args = {**handler.cache_key(context, options), "type": command.type}
+        cached = get_cached_result(cache_args, secrets)
+        if cached is not None:
+            return cached
+
+    output = handler.execute(context, options)
+    if not isinstance(output, str):
+        raise TypeError(
+            f"command type {command.type} returned {type(output).__name__}, expected str"
+        )
+
+    # sanitized for the same reason executable stdout is: it becomes event data, which flows into
+    # the persisted correlation trace and into later query text sent to a data source.
+    output = sanitize_value(output, secrets or {})
+
+    if cache_args is not None:
+        ttl = int(parse_timespec(command.cache).total_seconds())
+        set_cached_result(cache_args, output, ttl, secrets)
+
+    return output
