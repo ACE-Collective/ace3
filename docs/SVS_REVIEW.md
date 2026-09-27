@@ -23,7 +23,7 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
   round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8`, round 6 at `1a5d620e` and round 7 at
-  `020f51cc` and round 8 at `16377057`, all with no code changes. §9 collects the code facts that
+  `020f51cc` and round 8 at `16377057` and round 9 at `88657eaa`, all with no code changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -33,7 +33,19 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 8 at a glance: management and reporting are settled, apart from two new items.** Every
+**Round 9 at a glance: one item open.** RPT-7 is AGREED: test alerts are left out of search and
+"similar alerts" by default, but not out of the export listing. MGT-8 is WITHDRAWN, following your
+answer that test failures are debugged from logs, outside ACE. **MGT-9** (PROPOSED) turns that into
+a rule, and needs your answer:
+- which log records SVS must write, all carrying `svs_run`;
+- one small core change: the hunt completion log line gets structured fields;
+- trimming MGT-5 to match: keep the run event log, drop marker sightings as a table, drop hunt
+  replay.
+
+`docs/SVS.md` has RPT-7 folded in, with MGT-9's scope marked as open.
+
+**Round 8 at a glance (superseded by round 9): management and reporting are settled, apart from two
+new items.** Every
 round-7 item is AGREED. MGT-4 is agreed as a read-only view: ACE neither recommends nor queues
 tests, and both options are withdrawn. The agreed items are folded into `docs/SVS.md` as Parts 5
 and 6. Two new items are PROPOSED, both non-blocking:
@@ -131,10 +143,11 @@ drafts, especially the four gap-fills listed in X-6's round-6 reply.
 | MGT-2 | The run page: one run, everything about it | no | AGREED (r8) |
 | MGT-3 | Lifecycle gaps: canceled and failed runs, ownership | yes | AGREED (r8); *Close* also on Ended runs |
 | MGT-4 | The Tests screen: deciding what to run next | no | AGREED (r8): read-only view; (a) and (b) withdrawn |
-| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | AGREED (r8); replay runs in `service_svs`; hunt history in MGT-8 |
+| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | AGREED (r8); trimmed by MGT-9 if agreed |
 | MGT-6 | Permissions for operators and readers | no | AGREED (r8) |
 | MGT-7 | One SVS area, one pattern | no | AGREED (r8) |
-| MGT-8 | Record hunt executions | no | PROPOSED (r8): (b), a core `hunt_executions` table |
+| MGT-8 | Record hunt executions | no | WITHDRAWN (r9): debug from logs; see MGT-9 |
+| MGT-9 | Logs are the debugging interface | no | PROPOSED (r9); trims MGT-5 |
 | **Reporting** *(§8a, round 7)* | | | |
 | RPT-1 | API parity: every screen is a client of the API | yes | AGREED (r8) |
 | RPT-2 | What the API exposes (incl. core alert and detection-point queries) | yes | AGREED (r8); alerts endpoint is a phase-0 PR |
@@ -142,7 +155,7 @@ drafts, especially the four gap-fills listed in X-6's round-6 reply.
 | RPT-4 | Keep history that would otherwise be lost | yes | AGREED (r8): including verdict history |
 | RPT-5 | Who can pull what | no | AGREED (r8) |
 | RPT-6 | Document the data, not the reports | no | AGREED (r8): `docs/SVS_API.md` |
-| RPT-7 | Overlap with alert search and the AI API | no | PROPOSED (r8); question on excluding test alerts from search |
+| RPT-7 | Overlap with alert search and the AI API | no | AGREED (r9): tests excluded from search by default, not from export |
 
 ---
 
@@ -2797,7 +2810,7 @@ The examples double as integration tests of the API, so a change that breaks the
 > documents core endpoints (alerts, detection points) as well as SVS ones. `docs/SVS.md` links to
 > it.
 
-### MGT-8 — Record hunt executions  `PROPOSED`  *(new, round 8)*
+### MGT-8 — Record hunt executions  `WITHDRAWN` (r9): replaced by MGT-9  *(new, round 8)*
 
 MGT-5's debug panel needs to answer "did the expected hunt run over this run's window, and did it
 succeed?". The hunter can't answer that today (F-31): each execution overwrites
@@ -2826,7 +2839,67 @@ window, but hunt-health reporting might want longer.
 
 > **Response:** Let me revise my opinion on this. We currently rely on logs to troubleshoot issues. I see this as no different. Each ACE site installation may have completely different logging setup, so it doesn't make sense to try to solve the troubleshooting (for this) in ACE. So, let's focus more on making sure that the logging data we generate is sufficient for debugging, but then rely on external tooling outside the scope of SVS for debugging test failures.
 
-### RPT-7 — Overlap with alert search and the AI API  `PROPOSED`  *(new, round 8)*
+> **Round 9 (reviewer):** Withdrawn. No `hunt_executions` table, in core or in SVS. The principle
+> behind your answer reaches further than this item: it also covers parts of MGT-5 that were agreed
+> in round 8. MGT-9 states the principle and proposes what follows from it.
+
+### MGT-9 — Logs are the debugging interface  `PROPOSED`  *(new, round 9)*
+
+Your MGT-8 answer, as a rule: **debugging a test failure happens in the site's own log tooling, from
+the logs ACE writes. SVS doesn't build debugging tools.** Every site's logging differs, and ACE
+already works this way for everything else. What SVS owes the operator is logs that are *sufficient*.
+
+**1. What "sufficient" means.** ACE already has the convention: the message text describes the
+event, and `extra={}` carries the fields. The text formatter renders them as `key=value` in
+`saq.log`, and the fluent formatter promotes them to top-level Splunk fields (`saq/logging.py`,
+`iter_extra_fields`). `crash_id` works this way today (`docs/CRASH_REPORTS.md`). The proposal:
+**every SVS log record carries `svs_run` (the run UUID), and `svs_test` (the test GUID) and
+`svs_marker` wherever they are known.** One search on `svs_run=…` then returns everything ACE did
+about a run, across services and nodes.
+
+**2. The records SVS must write** (INFO unless noted):
+
+| Event | Fields beyond the run's own |
+|---|---|
+| Every lifecycle transition, including timers | `from_state`, `to_state`, `actor` |
+| Every launcher call | `launcher`, the call, its outcome; a refused registration at WARNING, with the caller |
+| Every router decision on an alert, at both stages | `alert_uuid`, `stage`, `decision` (routed / partial / none / not moved because owned or closed), `queue`, `confidence` |
+| Every marker sighting, agreeing or not | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window); a mismatch at WARNING |
+| Every attribution written or removed | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+| Result computed | per-status counts; one DEBUG record per signature |
+| Missing expected signature | `signature_uuid`, `signature_family`, `possibly_suppressed` |
+
+**3. One core change, the hunt completion record.** The per-execution line
+(`base_hunter.py:607`, *completed hunt … status=… duration=…*) is the record an operator needs
+for "did the expected hunt run over the window?". Today it keeps its fields in the message text and
+lacks the two that matter here. It becomes a record with `extra={}`: `hunt_uuid`, `hunt_name`,
+`hunt_type`, `status`, `query_start`, `query_end` (after the offset is applied), `result_count`,
+`submission_count`, `duration_ms`. It's a small change, useful to every site, and it replaces MGT-8
+completely. The hunter doesn't know about runs, and it doesn't need to: the operator searches hunt
+records by `hunt_uuid` and the run's window.
+
+**4. The logs are a contract.** The table in (2) goes in `docs/SVS.md` next to the field names, and
+a test asserts that each lifecycle record carries its fields, so a refactor can't silently drop
+them.
+
+**5. What this means for MGT-5**, which was agreed in round 8, before this principle:
+
+| MGT-5 piece | Proposal | Why |
+|---|---|---|
+| Run event log (`svs_run_events`) | **Keep** | It isn't a debugging tool. It is the run's history: the run page's timeline, the reason for a close, and RPT-3's change feed for disassociations. Logs expire and aren't queryable through the API. |
+| Marker sightings table | **Drop**; they become the log records above | Pure diagnosis. `svs_marker` on the WARNING record answers "why `MARKER MISMATCH`?" in the site's own tooling. |
+| Hunt replay, `svs:hunt_replay`, `svs.replay` | **Drop** | It's a debugging tool, and it runs SIEM queries from the GUI. `ace hunt execute <hunt> -s … -e …` still exists for whoever needs it. |
+| "Missing YARA: links to captured files" | **Keep** | It's navigation to data ACE already shows, not a tool. |
+| The run page's *Debug* section | **Becomes *Logs*** | It shows the run's search keys (`svs_run`, `svs_marker`, targets, window) ready to copy. |
+
+**Question:** agree with (5)? And one option in the spirit of the rule: an optional
+`svs.log_search_url` template (for example `https://splunk.example/…?q=svs_run={run_uuid}`) that
+turns the *Logs* section into a link. It's config only, off by default, and ACE never queries it.
+I'd include it, because it costs one config key and saves every operator a copy-paste.
+
+> **Response:** Yes, agree.
+
+### RPT-7 — Overlap with alert search and the AI API  `AGREED`  *(new, round 8)*
 
 You asked how RPT-2's alerts endpoint overlaps with the alert search available in the AI API. There
 are three surfaces, and two of them share one implementation:
@@ -2875,14 +2948,27 @@ that correctly, but an agent summarizing "seen 4 times, all true positives" migh
 
 > **Response:** Yes, agree.
 
+> **Round 9 (reviewer):** Recorded. The details:
+> - **Where:** in `saq/search/query.py`, so all four callers get it: the manage-page search box,
+>   `POST /api/v2/search/*`, `POST /ai/v1/search/*` and `ace search`. A request whose `queues`
+>   filter is empty excludes `svs.queue`. A request that names the SVS queue gets it.
+> - **What's left out is counted:** each response carries `excluded_test_alerts`, so "no earlier
+>   alerts" can't hide "3 earlier test alerts". The GUI search shows it as a line with a toggle, and
+>   `ace search` gets `--include-tests`.
+> - **The indexer is unchanged.** Test alerts are still indexed, so including them costs nothing.
+> - **The export listing (`GET /api/v2/alerts`) does *not* exclude them.** A reporting pull wants
+>   everything, filtered by the caller. Only the "have we seen this before?" surfaces default to
+>   excluding tests, the same split ART-10 made for prevalence.
+> - It's a visible change for analysts, so it goes in *What changes for analysts* (phase 4).
+
 ### Phasing impact (for X-4 once agreed)
 
 | Phase | Adds |
 |---|---|
-| 0 | `GET /api/v2/alerts` and `alerts.updated_at` (RPT-2, RPT-3, RPT-7); saved filters keyed by screen (MGT-1); `hunt_executions`, if MGT-8 (b) |
+| 0 | `GET /api/v2/alerts` and `alerts.updated_at` (RPT-2, RPT-3, RPT-7); saved filters keyed by screen (MGT-1); structured hunt completion record (MGT-9) |
 | 1 | The detection-points endpoints; verdict history (RPT-2, RPT-4) |
 | 2, 3 | Samples and Validations tabs, with their list APIs (MGT-7, RPT-2) |
-| 4 | Runs and Tests screens, the run page, ownership, *Close*, event log, marker sightings, hunt replay, the run APIs, the reviewed-result snapshot, SVS queue excluded from search (MGT-1 to MGT-6, RPT-2, RPT-4, RPT-7) |
+| 4 | Runs and Tests screens, the run page, ownership, *Close*, event log, SVS log records, the run APIs, the reviewed-result snapshot, SVS queue excluded from search (MGT-1 to MGT-6, MGT-9, RPT-2, RPT-4, RPT-7) |
 | 5 | Coverage history snapshots and the coverage and worklist APIs (RPT-2, RPT-4) |
 
 ---
@@ -3256,3 +3342,5 @@ settled yet.
 | 7 | reviewer | Reopened at your request for management and reporting (new §8a, at `020f51cc`). New: MGT-1 to MGT-7 (Runs screen, run page, lifecycle gaps with *Close* and run ownership, Tests screen, debugging, permissions, one SVS area) and RPT-1 to RPT-6 (API parity, what the API exposes, bulk export, history, access, data docs). Found: alerts of canceled/failed runs are never closed (MGT-3); `aceapi_v2` has no alert query and no detection-point API (RPT-2). New code facts F-28 to F-32. |
 | 7 | author | Agreed to every round-7 item. MGT-3: *Close* also on Ended runs. MGT-4: read-only view, no recommending. RPT-2: phase-0 PR, plus a question about the AI API's alert search. RPT-4: including verdict history (commit `16377057`). |
 | 8 | reviewer | Recorded the round-7 answers: 13 items AGREED; MGT-4's (a) and (b) withdrawn. Final run lifecycle in MGT-3. F-31 verified (no hunt execution history; nothing guards ad-hoc execution), so hunt replay runs in `service_svs` and hunt history became MGT-8. F-28 corrected: search already lists alerts, and `build_alert_query()` is already free of the Flask session. New: MGT-8 (core `hunt_executions`), RPT-7 (search / AI API overlap, test alerts left out of search by default). Folded the agreed items into `docs/SVS.md` (Parts 5 and 6, data model, permissions, phases, *What changes for analysts*). |
+| 8 | author | MGT-8 revised: debug test failures from logs with the site's own tooling, not in ACE. RPT-7 agreed (commit `88657eaa`). |
+| 9 | reviewer | MGT-8 WITHDRAWN. RPT-7 AGREED, with details: excluded in `saq/search/query.py`, an `excluded_test_alerts` count, export listing unaffected. New: MGT-9, the logging contract (`svs_run` on every record, the required records, the hunt completion line with structured fields), which proposes keeping the event log and dropping marker sightings and hunt replay from MGT-5. `docs/SVS.md` updated for RPT-7 and MGT-8. |
