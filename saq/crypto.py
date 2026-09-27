@@ -2,16 +2,46 @@
 #
 # cryptography functions used by ACE
 #
+# Two on-disk formats exist for files. Both are AES-256-GCM with a random 12-byte nonce and the
+# 16-byte tag at the tail, and both are produced by the same code path (encrypt_stream):
+#
+#   v0  <Q original_size> || nonce(12) || ciphertext || tag(16)
+#       No magic, no key id, header not authenticated. This is what every file written before the
+#       v1 format existed looks like (email archive .gz.e, stream archives, msoffice .e archives),
+#       and it is STILL what encrypt() writes by default: a lot of that data is read across nodes,
+#       and a node running older code cannot read v1, so switching the default is a deliberate
+#       later step once every node runs code that understands v1.
+#
+#   v1  b"ACE-GCM" || version(1) || key_id(8) || <Q original_size> || nonce(12) || ciphertext || tag(16)
+#       The whole 36-byte header is bound as authenticated data. The key id is a fingerprint of the
+#       data key, which is what makes rotating that key possible later without re-encrypting
+#       everything at once. Opt-in through format_version; the CAS (saq/cas) writes v1.
+#
+# Detection is unambiguous: a v0 file starts with a little-endian size, so its byte 7 is 0x00 for
+# any file smaller than 2**56 bytes; a v1 file has the magic there and a nonzero version byte.
+#
+# decrypt() never releases plaintext before the tag verifies: it decrypts into a temp file next to
+# the target and renames only after finalize() succeeds. decrypt_stream() has the same contract in
+# stream form -- it raises before returning on a bad tag, so the caller must write into something
+# private and publish it only after a normal return.
+#
+# encrypt_chunk / decrypt_chunk use the v0 layout in memory. That layout is persisted in the
+# database (the wrapped data key in `config`, every row of `encrypted_passwords`) and must not change.
+#
 
+from dataclasses import dataclass
 from getpass import getpass
+import hashlib
 import io
 import logging
+import os
 import os.path
 import struct
+import tempfile
 
-from typing import Optional, Union
+from typing import BinaryIO, Optional, Union
 
-import os
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -28,6 +58,19 @@ CONFIG_KEY_ENCRYPTION_SALT = 'encryption-salt'
 CONFIG_KEY_ENCRYPTION_VERIFICATION = 'encryption-verification'
 CONFIG_KEY_ENCRYPTION_ITERATIONS = 'encryption-iterations'
 
+# file format constants (see the module docstring)
+FORMAT_V0 = 0
+FORMAT_V1 = 1
+MAGIC = b"ACE-GCM"
+NONCE_SIZE = 12
+TAG_SIZE = 16
+KEY_ID_SIZE = 8              # raw bytes in the v1 header; the string form is its hex (16 chars)
+_SIZE_FIELD = struct.Struct('<Q')
+V0_HEADER_SIZE = _SIZE_FIELD.size + NONCE_SIZE                                   # 20
+V1_HEADER_SIZE = len(MAGIC) + 1 + KEY_ID_SIZE + _SIZE_FIELD.size + NONCE_SIZE    # 36
+_DETECT_SIZE = len(MAGIC) + 1                                                    # 8: enough to tell v0 from v1
+_KEY_ID_DOMAIN = b"ace-key-id:"
+
 class PasswordNotSetError(Exception):
     """Thrown when an attempt is made to load the encryption key but it has not been set."""
     pass
@@ -35,6 +78,38 @@ class PasswordNotSetError(Exception):
 class InvalidPasswordError(Exception):
     """Thrown when an invalid password is provided."""
     pass
+
+class CryptoError(Exception):
+    """Base class for errors while reading or writing encrypted data."""
+    pass
+
+class IntegrityError(CryptoError):
+    """The data failed authentication (bad tag, truncated, or a size that does not match the header)."""
+    pass
+
+class UnsupportedFormatError(CryptoError):
+    """The data carries the v1 magic but a version this code does not understand."""
+    pass
+
+class KeyMismatchError(CryptoError):
+    """The data was encrypted with a different key than the one available (by key id)."""
+    def __init__(self, header_key_id: str, current_key_id: str):
+        super().__init__(f"data was encrypted with key {header_key_id} but the loaded key is {current_key_id}")
+        self.header_key_id = header_key_id
+        self.current_key_id = current_key_id
+
+@dataclass(frozen=True)
+class EncryptResult:
+    key_id: str            # fingerprint of the key the data was encrypted with (also for v0, where it is not stored)
+    size: int              # plaintext bytes
+    stored_size: int       # bytes written: header + ciphertext + tag
+    format_version: int
+
+@dataclass(frozen=True)
+class DecryptResult:
+    key_id: Optional[str]  # None for v0, which carries no key id
+    size: int              # plaintext bytes written
+    format_version: int
 
 def is_encryption_initialized() -> bool:
     """Returns True if encryption has been initialized."""
@@ -137,7 +212,11 @@ def set_encryption_password(password, old_password=None, key=None):
 
 def _get_password(password: Optional[Union[bytes, str]]=None) -> bytes:
     if password is None:
-        return get_global_runtime_settings().encryption_key
+        key = get_global_runtime_settings().encryption_key
+        if key is None:
+            raise PasswordNotSetError("the system encryption key is not loaded")
+
+        return key
 
     if isinstance(password, str):
         digest = hashes.Hash(hashes.SHA256())
@@ -149,33 +228,177 @@ def _get_password(password: Optional[Union[bytes, str]]=None) -> bytes:
 
     return password
 
-def encrypt(source_path, target_path, password=None):
-    """Encrypts the given file at source_path with the given password and saves the results in target_path.
-       Uses AES-GCM for authenticated encryption. If password is None then the global encryption key is used.
-       The header format is: <Q original_size> || <12-byte nonce> || <ciphertext> || <16-byte tag>."""
+def _key_id_raw(key: bytes) -> bytes:
+    # a domain-separated fingerprint of the key. 64 bits of sha256(prefix || key) does not help
+    # recover a 256-bit random key, and it needs no stored state: every node that has the key
+    # computes the same id.
+    return hashlib.sha256(_KEY_ID_DOMAIN + key).digest()[:KEY_ID_SIZE]
 
-    password = _get_password(password)
-    nonce = os.urandom(12)  # Recommended nonce size for GCM
-    cipher = Cipher(algorithms.AES(password), modes.GCM(nonce))
+def get_key_id(password: Optional[Union[bytes, str]]=None) -> str:
+    """Returns the key id (16 hex chars) of the given key, or of the system key when password is None.
+       This is what the v1 header carries and what cas_objects.key_id records."""
+    return _key_id_raw(_get_password(password)).hex()
+
+def encrypt_stream(src: BinaryIO, dst: BinaryIO, *, size: Optional[int]=None, password=None,
+                   format_version: int=FORMAT_V1) -> EncryptResult:
+    """Encrypts everything readable from src into dst. If password is None then the system key is used.
+
+       size is the number of plaintext bytes and must be known before anything is written, because
+       it is part of the (authenticated, for v1) header. If it is not given, src must be seekable.
+       A source that yields a different number of bytes than size is an error, and dst is garbage.
+
+       format_version selects the on-disk layout (see the module docstring). v1 is the default here;
+       encrypt() defaults to v0 for the sake of existing consumers."""
+
+    if format_version not in (FORMAT_V0, FORMAT_V1):
+        raise ValueError(f"unknown format version {format_version}")
+
+    key = _get_password(password)
+    if size is None:
+        if not src.seekable():
+            raise ValueError("size is required when src is not seekable")
+
+        position = src.tell()
+        src.seek(0, io.SEEK_END)
+        size = src.tell() - position
+        src.seek(position)
+
+    nonce = os.urandom(NONCE_SIZE)
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
     encryptor = cipher.encryptor()
-    file_size = os.path.getsize(source_path)
+
+    if format_version == FORMAT_V1:
+        header = MAGIC + bytes([FORMAT_V1]) + _key_id_raw(key) + _SIZE_FIELD.pack(size) + nonce
+        encryptor.authenticate_additional_data(header)
+    else:
+        header = _SIZE_FIELD.pack(size) + nonce
+
+    dst.write(header)
+    written = 0
+    while True:
+        chunk = src.read(CHUNK_SIZE)
+        if not chunk:
+            break
+
+        written += len(chunk)
+        dst.write(encryptor.update(chunk))
+
+    if written != size:
+        raise ValueError(f"source yielded {written} bytes but size was given as {size}")
+
+    encryptor.finalize()
+    dst.write(encryptor.tag)
+    return EncryptResult(
+        key_id=_key_id_raw(key).hex(),
+        size=size,
+        stored_size=len(header) + size + TAG_SIZE,
+        format_version=format_version)
+
+def _read_exactly(src: BinaryIO, count: int) -> bytes:
+    data = b''
+    while len(data) < count:
+        chunk = src.read(count - len(data))
+        if not chunk:
+            break
+
+        data += chunk
+
+    return data
+
+def decrypt_stream(src: BinaryIO, dst: BinaryIO, *, password=None) -> DecryptResult:
+    """Decrypts src (v0 or v1) into dst. If password is None then the system key is used.
+
+       CONTRACT: dst receives plaintext as it is produced, and the tag is only checked at the end.
+       This function raises IntegrityError before returning if the tag does not verify, so dst must
+       be something private (a temp file, a hashing sink) that the caller only publishes after a
+       normal return. decrypt() is the path-based wrapper that does exactly that.
+
+       src does not need to be seekable: the tail tag is found with a 16-byte lookahead."""
+
+    key = _get_password(password)
+    prefix = _read_exactly(src, _DETECT_SIZE)
+    if len(prefix) < _DETECT_SIZE:
+        raise IntegrityError("encrypted data is truncated (shorter than a header)")
+
+    if prefix[:len(MAGIC)] == MAGIC and prefix[len(MAGIC)] != 0:
+        format_version = prefix[len(MAGIC)]
+        if format_version != FORMAT_V1:
+            raise UnsupportedFormatError(f"unsupported encrypted file format version {format_version}")
+
+        rest = _read_exactly(src, V1_HEADER_SIZE - _DETECT_SIZE)
+        if len(rest) < V1_HEADER_SIZE - _DETECT_SIZE:
+            raise IntegrityError("encrypted data is truncated (shorter than a v1 header)")
+
+        header = prefix + rest
+        header_key_id = header[_DETECT_SIZE:_DETECT_SIZE + KEY_ID_SIZE]
+        expected_key_id = _key_id_raw(key)
+        if not hmac.compare_digest(header_key_id, expected_key_id):
+            raise KeyMismatchError(header_key_id.hex(), expected_key_id.hex())
+
+        offset = _DETECT_SIZE + KEY_ID_SIZE
+        expected_size = _SIZE_FIELD.unpack_from(header, offset)[0]
+        nonce = header[offset + _SIZE_FIELD.size:]
+        key_id = header_key_id.hex()
+    else:
+        format_version = FORMAT_V0
+        rest = _read_exactly(src, V0_HEADER_SIZE - _DETECT_SIZE)
+        if len(rest) < V0_HEADER_SIZE - _DETECT_SIZE:
+            raise IntegrityError("encrypted data is truncated (shorter than a v0 header)")
+
+        header = prefix + rest
+        # the v0 size field is not authenticated and GCM has no padding, so the ciphertext length
+        # already is the plaintext length: the field is not used for anything
+        expected_size = None
+        nonce = header[_SIZE_FIELD.size:]
+        key_id = None
+
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
+    decryptor = cipher.decryptor()
+    if format_version == FORMAT_V1:
+        decryptor.authenticate_additional_data(header)
+
+    # everything after the header is ciphertext except the last TAG_SIZE bytes, which we only know
+    # we have reached when the source runs dry, so keep TAG_SIZE bytes of lookahead
+    pending = b''
+    written = 0
+    while True:
+        chunk = src.read(CHUNK_SIZE)
+        if not chunk:
+            break
+
+        pending += chunk
+        if len(pending) > TAG_SIZE:
+            ciphertext, pending = pending[:-TAG_SIZE], pending[-TAG_SIZE:]
+            plaintext = decryptor.update(ciphertext)
+            written += len(plaintext)
+            dst.write(plaintext)
+
+    if len(pending) < TAG_SIZE:
+        raise IntegrityError("encrypted data is truncated (no authentication tag)")
+
+    try:
+        plaintext = decryptor.finalize_with_tag(pending)
+    except InvalidTag as e:
+        raise IntegrityError("authentication tag verification failed") from e
+
+    if plaintext:
+        written += len(plaintext)
+        dst.write(plaintext)
+
+    if expected_size is not None and written != expected_size:
+        raise IntegrityError(f"decrypted {written} bytes but the header says {expected_size}")
+
+    return DecryptResult(key_id=key_id, size=written, format_version=format_version)
+
+def encrypt(source_path, target_path, password=None, *, format_version: int=FORMAT_V0) -> EncryptResult:
+    """Encrypts the file at source_path with the given password and saves the result at target_path.
+       Uses AES-GCM for authenticated encryption. If password is None then the system key is used.
+       Writes the v0 layout unless format_version says otherwise (see the module docstring for why)."""
 
     with open(source_path, 'rb') as fp_in:
         with open(target_path, 'wb') as fp_out:
-            # Write header: original size and nonce
-            fp_out.write(struct.pack('<Q', file_size))
-            fp_out.write(nonce)
-
-            # Stream encrypt the file contents
-            while True:
-                chunk = fp_in.read(CHUNK_SIZE)
-                if len(chunk) == 0:
-                    break
-                fp_out.write(encryptor.update(chunk))
-
-            # Finalize and write authentication tag
-            encryptor.finalize()
-            fp_out.write(encryptor.tag)
+            return encrypt_stream(fp_in, fp_out, size=os.path.getsize(source_path), password=password,
+                                  format_version=format_version)
 
 def encrypt_chunk(chunk, password=None):
     """Encrypts the given chunk of data and returns the encrypted chunk.
@@ -196,40 +419,31 @@ def encrypt_chunk(chunk, password=None):
     result = struct.pack('<Q', original_size) + nonce + ciphertext + tag
     return result
 
-def decrypt(source_path, target_path=None, password=None):
-    """Decrypts the given file at source_path and writes plaintext to target_path.
-       Expects AES-GCM format: <Q original_size> || <12-byte nonce> || <ciphertext> || <16-byte tag>."""
+def decrypt(source_path, target_path=None, password=None) -> DecryptResult:
+    """Decrypts the file at source_path (v0 or v1) and writes the plaintext to target_path, or over
+       source_path itself when target_path is None. Nothing is visible at target_path until the
+       authentication tag has verified: plaintext goes to a temp file in the same directory, which
+       is renamed into place on success and removed on any failure."""
 
-    password = _get_password(password)
-    with open(source_path, 'rb') as fp_in:
-        total_size = os.path.getsize(source_path)
-        original_size = struct.unpack('<Q', fp_in.read(struct.calcsize('Q')))[0]
-        nonce = fp_in.read(12)
+    if target_path is None:
+        target_path = source_path
 
-        # Read authentication tag from end of file
-        fp_in.seek(total_size - 16)
-        tag = fp_in.read(16)
+    target_dir = os.path.dirname(os.path.abspath(target_path))
+    fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix='.dec-')
+    try:
+        with open(source_path, 'rb') as fp_in:
+            with os.fdopen(fd, 'wb') as fp_out:
+                result = decrypt_stream(fp_in, fp_out, password=password)
 
-        # Prepare to read ciphertext only (exclude header and tag)
-        ciphertext_length = total_size - struct.calcsize('Q') - 12 - 16
-        fp_in.seek(struct.calcsize('Q') + 12)
+        os.replace(temp_path, target_path)
+        return result
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
 
-        cipher = Cipher(algorithms.AES(password), modes.GCM(nonce, tag))
-        decryptor = cipher.decryptor()
-
-        with open(target_path, 'wb') as fp_out:
-            remaining = ciphertext_length
-            while remaining > 0:
-                to_read = CHUNK_SIZE if remaining > CHUNK_SIZE else remaining
-                chunk = fp_in.read(to_read)
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                fp_out.write(decryptor.update(chunk))
-
-            # Finalize and truncate to original size
-            decryptor.finalize()
-            fp_out.truncate(original_size)
+        raise
 
 def decrypt_chunk(chunk, password=None):
     """Decrypts an AES-GCM encrypted chunk produced by encrypt_chunk.

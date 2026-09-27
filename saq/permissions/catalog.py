@@ -29,8 +29,10 @@ class CatalogEntry:
 #
 # `admin:read` is the umbrella gate for the /admin GUI area; it is enforced by the admin blueprint's
 # before_request guard (app/admin/views/access.py:24) rather than a require_permission decorator, so
-# it has no decorator call site. `ai:read` is enforced by the out-of-repo AI container. Every other
-# entry has at least one in-repo enforcement site.
+# it has no decorator call site. `ai:read` is enforced by the out-of-repo AI container. `cas:hold`
+# and `cas:purge` have no in-repo enforcement site yet: `ace cas hold|purge` record --actor without
+# checking, and the entries exist so an API surface can enforce them without a catalog migration
+# (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
 PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("admin", "read", "Access the administration area (individual actions require their own permissions)."),
     # The ai: major gates the AI investigation API (aceapi_ai). ai:alert (alert reads: the alert and
@@ -45,6 +47,8 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("alert", "read", "Read alert data, submissions, status, and files via API/GUI."),
     CatalogEntry("alert", "review", "Review and correct alert dispositions."),
     CatalogEntry("alert", "write", "Modify alerts (disposition, tags, ownership, comments)."),
+    CatalogEntry("cas", "hold", "Place and release legal holds on content-addressed storage objects (docs/CAS.md); an object under legal hold cannot be purged."),
+    CatalogEntry("cas", "purge", "Force-delete a content-addressed storage object across its holds; audited in cas_purges."),
     CatalogEntry("crash", "read", "List and download analysis-module crash reports; the archive contains the file observable the module crashed on."),
     CatalogEntry("detection", "read", "View observable-detection settings."),
     CatalogEntry("detection", "write", "Modify observable-detection settings."),

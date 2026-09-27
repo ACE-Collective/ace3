@@ -236,6 +236,21 @@ trip still does not belong on the crash path), and `ace crash sync` is the catch
 `report_exception()` and `data/error_reports` are a separate mechanism that still serves every
 other caller.
 
+#### Content-addressed storage
+
+`saq/cas/` stores immutable bytes by sha256 in *pools*, each a named policy for backend, encryption
+and retention (`docs/CAS.md`): `get_cas().pool(name).put(src, hold=Hold(kind, id))`, `open`,
+`materialize`, `release`, `purge`. The index tables `cas_objects`, `cas_holds` and `cas_purges`
+(main chain) are authoritative for what exists; backends (`local`, or a custom class) are dumb byte
+stores that only the orphan sweep ever lists. `put` and `hold` lock the object row `FOR UPDATE`, and
+GC flips an unheld object to `deleting` with one conditional UPDATE before removing it, in batches
+of primary keys, never an unbounded DELETE. Only `saq/cas/index.py` writes the index tables, and
+every CAS operation runs in its own private session, never on the caller's `get_db()` session.
+Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticated header); plain
+`encrypt()` still writes the v0 format because existing encrypted data is read across nodes.
+`ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
+`retention: ttl` and an S3 backend are designed but not built; the config rejects both.
+
 #### Cron
 
 Periodic maintenance is one executable per task in `etc/cron/{hourly,daily,weekly}/` (`docs/CRON.md`): `ace cron run <cadence>` (`saq/cron_tasks.py`, called by `bin/<cadence>-maintenance.sh` from `etc/cron.yaml`) runs every task, plus each enabled integration's `etc/cron/<cadence>/`, in parallel (`service_cron.max_parallel_tasks`, default cpu count), each through `bin/run-cron-job` as `<cadence>-<task>`. Tasks are unordered, so steps that depend on each other go in one script.

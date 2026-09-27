@@ -23,6 +23,7 @@ from sqlalchemy import (
     Enum,
     FetchedValue,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -1469,6 +1470,109 @@ class AnalysisModuleCrash(Base):
 
     # whether the report carries the bytes of the file observable the module crashed on
     has_file: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+
+
+class CASObject(Base):
+    """One object in a content-addressed storage pool (docs/CAS.md).
+
+    This table is authoritative for which objects exist: backends are dumb byte stores, and GC and
+    existence checks read here and never list a bucket. Keyed by (pool, digest) where the digest is
+    the lowercase hex sha256 of the plaintext, so dedup happens within a pool.
+
+    state is 'present' or 'deleting'. GC flips a candidate to deleting with one conditional UPDATE
+    (state = 'present' AND no live hold) before it deletes the bytes and then the row; put() and
+    hold() lock the row FOR UPDATE, so taking a hold and the GC flip serialize on it. A put() that
+    finds deleting waits for the row to go and re-uploads.
+
+    Only saq/cas/index.py writes this table.
+    """
+
+    __tablename__ = 'cas_objects'
+    __table_args__ = (
+        # the GC candidate scan: present objects of one pool whose last hold activity is old
+        Index('i_cas_objects_gc', 'pool', 'state', 'last_held_at'),
+    )
+
+    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
+    digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
+    # plaintext bytes
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # bytes in the backend (larger than size for encrypted pools: header + tag)
+    stored_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # saq.crypto key id the object was encrypted with; NULL for plaintext pools
+    key_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    state: Mapped[str] = mapped_column(
+        Enum('present', 'deleting'),
+        nullable=False,
+        server_default=text("'present'"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+    # bumped by put, hold and release; the grace period for held pools counts from here. set
+    # explicitly by the CAS (no server default) so an insert that forgets it fails loudly.
+    last_held_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # when `ace cas verify` last re-hashed the bytes and found them intact
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class CASHold(Base):
+    """An explicit reference that keeps a CAS object alive (docs/CAS.md).
+
+    Keyed by (pool, digest, holder_kind, holder_id) with no timestamp in the key, so repeating a
+    hold is idempotent (blob_refs gets this wrong). A hold with expires_at NULL never expires; a
+    legal hold is holder_kind 'legal_hold' with no expiry, and purge refuses while one exists.
+
+    The composite foreign key cascades, so deleting the object row removes its (expired) holds in
+    the same statement. InnoDB takes a shared lock on the parent row when a child is inserted;
+    that is safe only because the CAS always locks the parent FOR UPDATE first. Only
+    saq/cas/index.py writes this table.
+    """
+
+    __tablename__ = 'cas_holds'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['pool', 'digest'],
+            ['cas_objects.pool', 'cas_objects.digest'],
+            name='fk_cas_holds_object',
+            ondelete='CASCADE'),
+        # "everything held by this holder", e.g. releasing every hold of one capture record
+        Index('i_cas_holds_holder', 'pool', 'holder_kind', 'holder_id'),
+    )
+
+    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
+    digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
+    holder_kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+
+class CASPurge(Base):
+    """Audit row for a forced deletion of a CAS object across its holds (docs/CAS.md).
+
+    purge is the only way to delete an object that is still held. It records who did it and why;
+    the object and hold rows themselves are gone.
+    """
+
+    __tablename__ = 'cas_purges'
+    __table_args__ = (
+        Index('i_cas_purges_object', 'pool', 'digest'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pool: Mapped[str] = mapped_column(String(64), nullable=False)
+    digest: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    purged_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
 
 
 class Nodes(Base):

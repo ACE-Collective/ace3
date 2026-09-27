@@ -23,7 +23,7 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
   round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8`, round 6 at `1a5d620e` and round 7 at
-  `020f51cc` and round 8 at `16377057` and round 9 at `88657eaa`, all with no code changes. §9 collects the code facts that
+  `020f51cc` and round 8 at `16377057`, round 9 at `88657eaa` and round 10 at `de465399`, all with no code changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -33,7 +33,13 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 9 at a glance: one item open.** RPT-7 is AGREED: test alerts are left out of search and
+**Round 10 at a glance: nothing open.** MGT-9 is AGREED: test failures are debugged from ACE's logs
+in the site's own tooling, under a logging contract (`svs_run` on every SVS record). MGT-5 is
+trimmed to match, and `svs.log_search_url` is added. Every item in §8a is now AGREED or WITHDRAWN,
+and `docs/SVS.md` carries all of it (Parts 5 and 6). This file goes back to being the frozen decision
+record (X-6).
+
+**Round 9 at a glance (superseded by round 10): one item open.** RPT-7 is AGREED: test alerts are left out of search and
 "similar alerts" by default, but not out of the export listing. MGT-8 is WITHDRAWN, following your
 answer that test failures are debugged from logs, outside ACE. **MGT-9** (PROPOSED) turns that into
 a rule, and needs your answer:
@@ -143,11 +149,11 @@ drafts, especially the four gap-fills listed in X-6's round-6 reply.
 | MGT-2 | The run page: one run, everything about it | no | AGREED (r8) |
 | MGT-3 | Lifecycle gaps: canceled and failed runs, ownership | yes | AGREED (r8); *Close* also on Ended runs |
 | MGT-4 | The Tests screen: deciding what to run next | no | AGREED (r8): read-only view; (a) and (b) withdrawn |
-| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | AGREED (r8); trimmed by MGT-9 if agreed |
+| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | AGREED (r8); trimmed by MGT-9 (r10): event log kept; sightings and replay dropped |
 | MGT-6 | Permissions for operators and readers | no | AGREED (r8) |
 | MGT-7 | One SVS area, one pattern | no | AGREED (r8) |
 | MGT-8 | Record hunt executions | no | WITHDRAWN (r9): debug from logs; see MGT-9 |
-| MGT-9 | Logs are the debugging interface | no | PROPOSED (r9); trims MGT-5 |
+| MGT-9 | Logs are the debugging interface | no | AGREED (r10), with `svs.log_search_url`; trims MGT-5 |
 | **Reporting** *(§8a, round 7)* | | | |
 | RPT-1 | API parity: every screen is a client of the API | yes | AGREED (r8) |
 | RPT-2 | What the API exposes (incl. core alert and detection-point queries) | yes | AGREED (r8); alerts endpoint is a phase-0 PR |
@@ -2843,7 +2849,7 @@ window, but hunt-health reporting might want longer.
 > behind your answer reaches further than this item: it also covers parts of MGT-5 that were agreed
 > in round 8. MGT-9 states the principle and proposes what follows from it.
 
-### MGT-9 — Logs are the debugging interface  `PROPOSED`  *(new, round 9)*
+### MGT-9 — Logs are the debugging interface  `AGREED`  *(new, round 9)*
 
 Your MGT-8 answer, as a rule: **debugging a test failure happens in the site's own log tooling, from
 the logs ACE writes. SVS doesn't build debugging tools.** Every site's logging differs, and ACE
@@ -2898,6 +2904,14 @@ turns the *Logs* section into a link. It's config only, off by default, and ACE 
 I'd include it, because it costs one config key and saves every operator a copy-paste.
 
 > **Response:** Yes, agree.
+
+> **Round 10 (reviewer):** Recorded, with the trim of MGT-5 in (5) and the optional
+> `svs.log_search_url` (null by default; `{run_uuid}` is substituted). In `docs/SVS.md`:
+> - Part 5's *Debugging a run* now states the rule.
+> - A new *Logging contract* subsection holds the record table and the hunt completion record.
+> - `svs_marker_sightings`, `svs_hunt_replays`, `svs:hunt_replay`, `svs.replay` and the
+>   `marker-sightings` endpoint are removed.
+> - The structured hunt completion record is a phase-0 core PR.
 
 ### RPT-7 — Overlap with alert search and the AI API  `AGREED`  *(new, round 8)*
 
@@ -3344,3 +3358,5 @@ settled yet.
 | 8 | reviewer | Recorded the round-7 answers: 13 items AGREED; MGT-4's (a) and (b) withdrawn. Final run lifecycle in MGT-3. F-31 verified (no hunt execution history; nothing guards ad-hoc execution), so hunt replay runs in `service_svs` and hunt history became MGT-8. F-28 corrected: search already lists alerts, and `build_alert_query()` is already free of the Flask session. New: MGT-8 (core `hunt_executions`), RPT-7 (search / AI API overlap, test alerts left out of search by default). Folded the agreed items into `docs/SVS.md` (Parts 5 and 6, data model, permissions, phases, *What changes for analysts*). |
 | 8 | author | MGT-8 revised: debug test failures from logs with the site's own tooling, not in ACE. RPT-7 agreed (commit `88657eaa`). |
 | 9 | reviewer | MGT-8 WITHDRAWN. RPT-7 AGREED, with details: excluded in `saq/search/query.py`, an `excluded_test_alerts` count, export listing unaffected. New: MGT-9, the logging contract (`svs_run` on every record, the required records, the hunt completion line with structured fields), which proposes keeping the event log and dropping marker sightings and hunt replay from MGT-5. `docs/SVS.md` updated for RPT-7 and MGT-8. |
+| 9 | author | MGT-9 agreed, including the MGT-5 trim and `svs.log_search_url` (commit `de465399`). |
+| 10 | reviewer | MGT-9 AGREED and folded into `docs/SVS.md` (the debugging rule, the logging contract, the hunt completion record; sightings, replay and their permission, table, endpoint and config removed). Fixed a sentence split in Part 6 by the round-9 edit. **§8a closed; this file is frozen again.** |

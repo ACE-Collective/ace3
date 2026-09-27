@@ -155,6 +155,41 @@ crash_reporting:
   # keep this bucket dedicated -- it holds the file observables that crashed modules, i.e. live malware
   storage_bucket: ace-crash-reports
 
+# content-addressed storage (docs/CAS.md): immutable bytes identified by sha256, in pools that each
+# set their own backend, encryption and retention. the database index (cas_objects, cas_holds) is
+# authoritative for which objects exist; GC never lists the backend. every value below is the default.
+cas:
+  # local-backend pools live under <DATA_DIR>/<local_root>/<pool> unless the pool sets root
+  local_root: cas
+  # every deletion from the index runs in primary-key order, this many rows per short transaction,
+  # with a pause between batches -- never one unbounded DELETE (see "Operating constraints" in docs/CAS.md)
+  gc_batch_size: 500
+  gc_batch_pause_seconds: 0.5
+  # held pools: an object outlives its last hold by this long before `ace cas gc` may delete it
+  default_grace_seconds: 86400
+  # `ace cas orphans` only removes backend bytes without an index row once they are older than this
+  orphan_grace_seconds: 86400
+  # objects per pool that `ace cas verify` re-hashes per run
+  verify_sample_size: 1000
+  # how long a put() waits for GC to finish deleting an object it wants to write again
+  put_deleting_wait_seconds: 30
+  # node-local cache of verified plaintext copies used by materialize()/open() for objects that
+  # cannot be hardlinked straight out of the backend (encrypted pools, non-local backends)
+  read_cache:
+    dir: cas_cache
+    max_bytes: 10737418240
+  # pools by name. none are defined by default; the consumer that needs one adds it.
+  pools: {}
+  # example: the SVS sample pool (docs/SVS.md). encrypted with the system key, kept while a capture
+  # record holds it. backend: local is fine for a single-node instance; a multi-node deployment needs
+  # shared: true, which requires a backend every node can reach (not implemented yet).
+  #  svs_samples:
+  #    backend: local          # local | custom (python_module/python_class/config under `custom`)
+  #    encryption: system      # none | system
+  #    retention: held         # held | permanent  (ttl is reserved, not implemented)
+  #    grace_seconds: 86400
+  #    shared: false
+
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
   # global kill switch — set to false to stop all cache writes without touching per-module cache_ttl settings

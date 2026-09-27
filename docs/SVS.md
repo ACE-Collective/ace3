@@ -1,6 +1,7 @@
 # Signature Validation System (SVS)
 
-> **Status: agreed design, not implemented (2026-09-27).** This is the design of record.
+> **Status: agreed design, not implemented (2026-09-27; Parts 5 and 6 added in review rounds 8–10).**
+> This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
 > reasoning and the alternatives that were rejected. SVS stores its samples in the CAS
@@ -250,7 +251,20 @@ The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Ev
 | `POST /runs/{id}/cancel` | any non-terminal → **Canceled** | Launcher or analyst. |
 | (timer) | Started → **Ended** | At `started_at + observation window`; the result is computed. |
 | (timer) | Created → **Error** | `start` was never called within the configured time. |
-| (analyst) | Ended → **Reviewed** | Sign-off; Coverage counts only Reviewed runs. |
+| (analyst) | Ended → **Reviewed** | Sign-off; Coverage counts only Reviewed runs. See Part 5 for its preconditions. |
+| (analyst) | Ended, Canceled, Error → **Closed** | Discards the run: its alerts are closed, nothing is learned from it. A reason is required on an Ended run. [MGT-3] |
+| (timer) | Canceled, Error → **Closed** | When the attribution window ends. Ended runs always wait for a person. |
+
+**Cancel stops the run, not attribution.** The test may have run anyway, so a canceled run keeps
+attributing inside its attribution window. Otherwise its markers would surface as
+`MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts. [MGT-3]
+
+**A reviewed run can change.** A late alert or a manual association after sign-off flags the run
+*changed since review*, and it returns to the operator's *Needs attention* list. The result as
+signed off is kept (Part 6). [MGT-2, RPT-4]
+
+**Runs have an owner**, with the same model as alerts, including the confirmation for taking one
+from another person. Reviewing a run takes it if nobody owns it. [MGT-3]
 
 **Registration against a non-test host,** or an unlisted user on a host that lists `usernames`, is
 **refused with 403**. It also creates an alert in the default queue through the normal submission
@@ -369,13 +383,13 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
 ### Test alerts downstream
 
 - **Disposition `SIMULATED`, class tp, ranked below `GRAYWARE` for event roll-up.** SVS sets it when
-  a run is *Reviewed*, on the run's fully attributed alerts. [D-16]
+  a run is *Reviewed* or *Closed*, on the run's fully attributed alerts. [D-16, MGT-3]
   - It is `analyst_selectable: false`: not in any modal, and rejected server-side.
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
     and report them.
 - **Ignored detections are benign.** A run's ignored detections (launcher noise) get FP overrides
-  when the run is dispositioned.
+  when the run is reviewed or closed.
 - **YARA TP samples come for free.** Because `SIMULATED` is tp, YARA hits in reviewed runs become
   TP samples through the normal capture.
 - **Test alerts stay out of observable history and prevalence.** Both count only the `default`
@@ -458,6 +472,213 @@ technique is undetected; the drill-down shows which tests and signatures cover i
 release used for names and roll-up is pinned in config. Revoked or renamed techniques are mapped on
 upgrade.
 
+## Part 5 — Operating SVS
+
+Someone owns the test program: they launch runs (outside ACE), watch them, review results, cancel
+what went wrong and debug what didn't fire. What to run next is the team's decision, made with
+whatever logic it uses. ACE shows the facts, and neither recommends nor queues tests. [MGT-4]
+
+### One SVS area
+
+One *SVS* navigation entry, with tabs **Runs**, **Tests**, **Validations**, **Samples**,
+**Coverage** and **Worklist**. Every tab follows the alert manage page's pattern [MGT-7]:
+- a filtered, sortable, paged list, with its own filter registry in the manage page's
+  `{name, inverted, values}` shape, saved filters and share URLs;
+- export, which is the API (Part 6);
+- a detail page per row.
+
+`saved_filters` gains a `screen` column (`alerts`, `svs_runs`, `svs_tests`, ...), so there is one
+saved-filter system for every screen. [MGT-1]
+
+### Runs
+
+`/ace/svs/runs` lists runs. [MGT-1]
+- **Columns:** state; test name, GUID and technique; targets; launcher and batch; created, started
+  and ended times; time left while *Started*; a result summary (expected hits *n*/*m*, missing,
+  possibly suppressed, candidates, late); alert count by confidence; owner; reviewer.
+- **Filters:** state; test; technique, including its parents; target; launcher; batch; date ranges;
+  *has missing / possibly suppressed / candidates / late / context-only*; owner; reviewer; *has open
+  alerts*.
+- **Default view, *Needs attention*:** Ended and not reviewed, Error, Created past its start
+  timeout, reviewed runs *changed since review*, and terminal runs that still hold open alerts.
+  Its count is shown on the navigation entry.
+- **Bulk actions:** take ownership, cancel, close, export. Review is never a bulk action.
+- **Batches.** `batch_id` is a label, not a table. It is a filter and a group-by, and a grouped
+  batch shows one summary row (runs by state, expected hits, missing).
+
+### The run page
+
+`/ace/svs/runs/{run_uuid}` is the run review from Part 3, and the operator's screen (ART-14).
+[MGT-2]
+1. **Header:** test, technique, GUID and catalog commit; a timeline strip with the observation and
+   attribution windows; marker; targets; launcher, batch, `extra`; owner.
+2. **Result:** one row per signature (hit, missing, possibly suppressed, candidate, ignored), with
+   that signature's recent history on this test.
+3. **Attributed alerts:** SVS status, confidence, *late*, attributed detections, whether associated
+   by hand.
+4. **Candidates:** accept or reject each one; per-test and global ignores.
+5. **Logs:** the run's search keys, or a link (below).
+6. **Comments.**
+7. **Event log.**
+
+**Review has preconditions.** *Mark reviewed* is enabled only when every candidate is decided and
+every context-only (`TEST?`) attribution has been kept or marked *not a test*, because review sets
+`SIMULATED`. While a run is *Started*, the page refreshes and shows alerts as they are attributed.
+
+### Tests
+
+`/ace/svs/tests` is a **read-only** view of the ART catalog and its history, one row per test.
+[MGT-4]
+- **Columns:** technique; name; platforms; repository; test state; last run; last reviewed run;
+  number of runs; expected signatures; missing in the last *n* runs.
+- **Test state:** *never run*, *awaiting review*, *no expectations*, *validated*, *failing*, *stale*
+  (with the same meanings as in Part 4).
+- **Sort and filters:** the default sort is technique, then name. There is no suggested order.
+- **The detail page:** the test's description, commands and input arguments from the catalog, its
+  expectations and ignores, and its run history.
+
+### Debugging a run
+
+**Test failures are debugged from ACE's logs, in the site's own log tooling.** SVS doesn't build
+debugging tools. Every site's logging is different, and ACE already works this way for everything
+else. What SVS owes the operator is logs that are sufficient. [MGT-9]
+
+**The run page's *Logs* section** shows the run's search keys, ready to copy: `svs_run`,
+`svs_marker`, the targets and the window. If `svs.log_search_url` is set, for example
+`https://splunk.example/…?q=svs_run={run_uuid}`, the section is also a link. ACE never queries it.
+
+**Missing YARA signatures** link to the files captured from the run's alerts.
+
+**The run event log** (`svs_run_events`) is the run's history, not a debugging tool. It has one
+append-only row per:
+- state transition;
+- launcher call, with its payload;
+- attribution (including *late* ones) and manual association or disassociation;
+- candidate decision;
+- review or close, with the reason.
+
+Each row records its actor and time. The run page renders it as a timeline, it holds the reason
+for a close, and it is the run's change feed (Part 6). [MGT-5]
+
+### Logging contract
+
+ACE's convention applies: the message text describes the event, and `extra={}` carries the fields.
+`saq.log` renders them as `key=value`, and the fluent formatter makes them top-level Splunk fields
+(`saq/logging.py`, as `crash_id` does). **Every SVS record carries `svs_run`**, plus `svs_test` and
+`svs_marker` wherever they are known, so one search on `svs_run=…` returns everything ACE did about
+a run, across services and nodes. [MGT-9]
+
+| Event | Level | Fields beyond the run's own |
+|---|---|---|
+| Lifecycle transition, including timers | INFO | `from_state`, `to_state`, `actor` |
+| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome (and the caller on refusal) |
+| Router decision on an alert, at both stages | INFO | `alert_uuid`, `stage`, `decision` (routed / partial / none / not moved because owned or closed), `queue`, `confidence` |
+| Marker sighting, agreeing or not | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window) |
+| Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+| Result computed | INFO, plus DEBUG per signature | per-status counts |
+| Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
+
+**The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
+*completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
+becomes a record with `extra={}`: `hunt_uuid`, `hunt_name`, `hunt_type`, `status`, `query_start`,
+`query_end` (after the offset is applied), `result_count`, `submission_count`, `duration_ms`. The
+hunter knows nothing of runs; the operator searches by `hunt_uuid` and the run's window.
+
+A test asserts that each record in the table carries its fields. The table is a contract, and a
+refactor can't silently drop them.
+
+## Part 6 — Data access and reporting
+
+ACE doesn't impose a reporting structure. Every test, detection and alert fact can be downloaded,
+and reports are built outside ACE. [RPT-1]
+
+### Rules
+
+- **Every SVS screen reads through a public `aceapi_v2` endpoint.** Anything a screen shows can be
+  fetched with the same filters, and a screen with no endpoint behind it is a bug.
+- **A filter is the same object in the GUI and the API.** List endpoints take the screen's filter
+  list and its share-URL encoding.
+- **Export in the GUI is the API:** CSV, JSON or NDJSON of the current list, or *Copy API URL*.
+- **SVS ships screens for operating, not reports.** A reporting need the API can't meet is fixed by
+  adding data to the API.
+- **Identifiers are stable and public:** run UUID, test GUID, signature UUID, technique ID, alert
+  UUID, detection `content_hash`, sample `sha256`, validation UUID.
+
+### Endpoints
+
+**Core ACE.** These are changes to ACE itself, not only to SVS. [RPT-2, RPT-7]
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/alerts` | Full alert rows (uuid, times, queue, disposition and disposition user, owner, company, tags, `updated_at`, detection count, SVS status). It takes the manage page's filters and share-URL encoding, with the same node scoping. |
+| `GET /api/v2/detection-points` | Detection points with effective verdict, verdict source, signature UUID and family, alert UUID and node identity. Filters: signature, family, alert date, queue, verdict, source, has override. |
+| `GET /api/v2/alerts/{uuid}/detection-points` | The same, for one alert |
+
+`GET /api/v2/alerts` shares its filter vocabulary and SQL path (`build_alert_query()`,
+`apply_sql_filters()`) with the alert search listing, and differs in pager and row shape. It
+returns test alerts like any other; filtering them out is the caller's choice. It is not added to
+the AI API, which stays small and rate-limited for agents. `/api/v2/detection` is
+observable-detection settings, a different thing, which is why this one is `detection-points`.
+
+**Alert search leaves test alerts out by default.** `saq/search/query.py` excludes `svs.queue`
+whenever a request doesn't filter on queues. That covers the search box, `POST /api/v2/search/*`,
+`POST /ai/v1/search/*` and `ace search`. Each response counts what it left out
+(`excluded_test_alerts`); naming the SVS queue, the GUI toggle or `ace search --include-tests`
+brings them back. This is the same split as prevalence (Part 3): "have we seen this before?" means
+real alerts. [RPT-7]
+
+**SVS** (`/api/v2/svs/…`, list and detail for each):
+- `runs`, and for each run `results` (live and as reviewed), `attributions` and `events`;
+- `tests`;
+- `expectations` and `ignores`;
+- `validations` and their results;
+- `samples` and their labels (metadata only);
+- `coverage`, `coverage/history`;
+- `worklist`.
+
+### Mechanics
+
+[RPT-3]
+- **Keyset pagination** with an opaque cursor over a stable order, never OFFSET. NDJSON streams the
+  whole result.
+- **Formats:** JSON pages, NDJSON, and CSV for flat lists. Nested data is its own endpoint.
+- **Incremental pulls with `changed_since`:**
+  - every SVS table has `updated_at`;
+  - `alerts` gains `updated_at`, set wherever `alerts.version` rotates (`Alert.sync()`,
+    `touch_alerts()`), because the version token is random and can't be ordered;
+  - deletions and disassociations appear in the run event log and the sample deletion audit.
+- **Schemas** are versioned through the OpenAPI document. Renaming or removing a field is a breaking
+  change and goes in the changelog.
+
+### History kept for reports
+
+These can't be rebuilt later, so they are recorded from day one. [RPT-4]
+1. **A run's result as signed off**, kept alongside the live result.
+2. **Daily coverage snapshots.** `etc/cron/daily/svs-coverage-snapshot` writes one row per
+   technique × state per day.
+3. **Verdict history.** `detection_point_verdict_history` is append-only:
+   `(alert_id, content_hash, old_verdict, new_verdict, user_id, changed_at)`. It is written in the
+   same transaction as each change, including *Confirm*.
+
+### Access
+
+[RPT-5]
+- **A reporting key is read-only:** an automation user with the `*_read` permissions and
+  `alert:read`.
+- **File contents never come out of a reporting endpoint.** Sample, file and email bytes stay behind
+  their download permissions.
+- **Alert data is scoped as in the GUI.** SVS data is global.
+
+### Documentation
+
+`docs/SVS_API.md` is written with the endpoints. [RPT-6] It holds:
+- a data dictionary, in particular the fields whose meaning comes from this design;
+- the joins between resources;
+- three worked examples, which also run as API tests:
+  - per-signature FP rate over 90 days;
+  - test pass rate per month;
+  - technique coverage over time.
+
 ## Changes to ACE outside SVS
 
 Several agreed changes are general-purpose and ship as their own PRs:
@@ -472,6 +693,11 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | Alert-router registry, `move_alert_to_queue` | Part 3 | ART-15 |
 | CAS (`saq/cas/`) | Sample storage, and later every byte store | `docs/CAS.md` |
 | `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes | Prerequisites for the CAS | F-13, F-18 to F-20 |
+| `GET /api/v2/alerts` and `alerts.updated_at` | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7 |
+| `GET /api/v2/detection-points` and verdict history | No detection-point API exists | RPT-2, RPT-4 |
+| `saved_filters.screen` | Saved filters for screens other than the manage page | MGT-1 |
+| Alert search excludes the SVS queue by default | Test alerts would dominate "similar alerts" | RPT-7 |
+| The hunt completion log line carries structured fields | Debugging a missing hunt detection from the site's logs | MGT-9 |
 
 ## Data model (sketch)
 
@@ -491,12 +717,27 @@ tables are on the main chain.
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / unexpected / ignored |
 | `svs_technique_worklist` | Declared-vs-measured flags and their resolution |
+| `svs_run_events` | Append-only run event log (Part 5) |
+| `svs_coverage_snapshots` | Daily technique × state rows (Part 6) |
+| `detection_point_verdict_history` | Append-only verdict changes (Part 6; core) |
+
+`svs_runs` also carries an owner and a reviewer, and `svs_run_results` carries the result as
+reviewed next to the live one. Every SVS table has `updated_at`.
 
 ## Permissions
 
-`svs:run_register`, `svs:validate`, `svs:sample_read`, `svs:sample_download`, `svs:admin`; plus
-`cas:purge` and `cas:hold` from the CAS. Each is added to `saq/permissions/catalog.py` with a
-seeding migration.
+| Permission | Grants |
+|---|---|
+| `svs:run_register` | The launcher's run lifecycle calls |
+| `svs:validate` | Requesting a YARA validation (the CI key) |
+| `svs:run_read` | Runs and Tests screens, run pages, coverage, and their read APIs [MGT-6] |
+| `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association [MGT-6] |
+| `svs:validation_read` | Validation reports and their APIs [MGT-6] |
+| `svs:sample_read`, `svs:sample_download` | Sample metadata; sample bytes |
+| `svs:admin` | Retiring and deleting samples, global ignores, configuration |
+
+Plus `cas:purge` and `cas:hold` from the CAS. Each is added to `saq/permissions/catalog.py` with a
+seeding migration. A reporting key gets the `*_read` permissions and `alert:read`.
 
 ## Configuration (sketch)
 
@@ -517,6 +758,7 @@ svs:
     start_timeout_minutes: 30
     observation_window: {slack_minutes: 30, floor_minutes: 60, ceiling_hours: 72}
     attribution_extra_hours: 24
+  log_search_url: null              # e.g. "https://splunk.example/...?q=svs_run={run_uuid}"
   yara:
     repositories: [signatures]      # git_repo_<name> sections SVS may validate
     scan_timeout_seconds: 1800
@@ -534,12 +776,12 @@ Every value here is illustrative. The schema rejects unknown keys.
 
 | Phase | Contents |
 |---|---|
-| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool |
-| **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources; the GUI |
-| **2: YARA capture** | The capture module and the sample browser |
-| **3: YARA validation** | API, mirror clones, isolated scanning, the report and its actions; CI in one signature repo |
-| **4: runs** | Registration, test hosts, markers, the alert-router registry and `move_alert_to_queue`, `SIMULATED`, SVS statuses, the run review with learned expectations, the ART catalog |
-| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin |
+| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool; `GET /api/v2/alerts` with `alerts.updated_at`; `saved_filters.screen`; the structured hunt completion record |
+| **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
+| **2: YARA capture** | The capture module; the Samples tab and its API |
+| **3: YARA validation** | API, mirror clones, isolated scanning, the report and its actions; the Validations tab; CI in one signature repo |
+| **4: runs** | Registration, test hosts, markers, the alert-router registry and `move_alert_to_queue`, `SIMULATED`, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
+| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
 `CHANGELOG.md`.
@@ -599,6 +841,33 @@ test alerts, show smaller numbers.
   (**treat as suspicious and investigate**).
 - An alert you own is never moved. If something was wrongly treated as a test, use *Disassociate
   from run*.
+
+**Test runs have their own screens** (detection engineers and whoever runs the test program;
+phase 4).
+- *SVS → Runs* lists every run, like the alert manage page, with a *Needs attention* view.
+- Each run has a page with its result, alerts, candidates and an event log.
+- A test that didn't fire is debugged from ACE's logs in your usual log tool. Every SVS log line
+  carries `svs_run`, and the run page shows the search keys, or a link if your site configures one.
+- *SVS → Tests* shows every catalog test and how it has fared. It doesn't suggest what to run; that
+  stays the team's call.
+- Runs have owners, as alerts do.
+
+**Alerts from canceled, failed or discarded runs are closed as `SIMULATED` too** (analysts,
+operators; phase 4). A canceled run still claims its alerts, so they don't reach the normal queue
+as `MARKER MISMATCH`. Closing a run, by hand or when its attribution window ends, closes its
+alerts without learning anything from it.
+
+**All alert, detection and test data can be pulled through the API** (anyone who builds reports;
+phases 0–5).
+- New read endpoints list alerts and detections with their verdicts, and every SVS screen has an
+  endpoint behind it. Each takes the same filters as the screen, and *Export* on any list is that
+  endpoint.
+- ACE doesn't ship fixed reports. `docs/SVS_API.md` explains the data and has worked examples.
+- Ask for a read-only reporting key rather than using a personal one.
+
+**Search leaves test alerts out unless you ask for them** (analysts; phase 4). Alert search and
+"similar alerts" skip alerts from test runs. The results say how many were skipped, and one toggle
+brings them back. [RPT-7]
 
 **Archived false-positive alerts really delete their extracted files** (admins; phase 0). Files
 that came with the alert are kept. The GUI already couldn't open extracted files after archive.

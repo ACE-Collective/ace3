@@ -1,9 +1,12 @@
 # Content-Addressed Storage (CAS)
 
-> **Status: agreed design, not implemented.** It was settled during the SVS design review
-> (`docs/SVS_REVIEW.md` §7). Bracketed IDs such as `[CAS-4]` point at the item there that records
-> the reasoning. The first consumer is SVS (`docs/SVS.md`). This document ships with the phase-0
-> CAS PR and becomes the reference for `saq/cas/`.
+> **Status: implemented in `saq/cas/`** for the `held` and `permanent` retention modes with the
+> `local` and `custom` backends. Deferred, and recorded below where they apply: the `ttl` mode
+> (the config schema accepts the word and rejects it as not implemented; no `cas_touches` table,
+> no partition task) and an object-store (S3) backend (`backend:` accepts `local | custom`). The
+> design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
+> `[CAS-4]` point at the item there that records the reasoning. The first consumer is SVS
+> (`docs/SVS.md`).
 
 ACE stores a lot of immutable bytes: file observables, extracted payloads, cached analysis blobs,
 archived email, crash evidence. Today that happens in several independent places, each with its
@@ -58,19 +61,37 @@ pool.purge(digest, reason="…", actor=user)   # forced delete across holds, aud
 - **`put` is atomic and idempotent.** Content is hashed while it is written. If the caller passes
   the digest it expects, a mismatch fails the `put`. `put(..., hold=…)` takes the hold in the same
   step, so there is no window between "exists" and "reference" (the analysis cache's current race,
-  see [F-21]).
+  see [F-21]). `src` may be a path (hashed in place, not copied), bytes, or a readable stream
+  (spooled to a temp file while hashing).
+- **Holds are idempotent and renewable.** Repeating a hold is a no-op; repeating it with a new
+  `expires_at` replaces the old one. `release` returns whether a hold was actually removed and
+  restarts the object's grace period. `Hold.legal(id)` is the legal hold.
+- **`hold` on a `deleting` object raises `ObjectDeleting`**; the caller should `put` the content
+  again instead (which waits for the deletion to finish and re-uploads).
 - **`open` and `materialize` never hand out unverified bytes.** For encrypted pools the GCM tag is
   checked before release; for plaintext pools the sha256 is.
 - **`purge` is the only way to delete an object that is still held.** It is audited in
-  `cas_purges`, requires `cas:purge`, and refuses while a legal hold exists. The legal hold has to
-  be released first, by someone with `cas:hold`. [CAS-4]
+  `cas_purges` and refuses while a legal hold exists. The legal hold has to be released first.
+  The library records the actor it is given; enforcing `cas:purge` and `cas:hold` is the caller's
+  job (an API surface). `ace cas purge|hold` take `--actor` and do not check permissions. [CAS-4]
+
+The package: `saq/cas/pool.py` is the API (`CASPool`), `index.py` holds every statement against
+the index tables and nothing else writes them, `backend.py` the backend protocol and the local
+backend, `cache.py` the read cache, `crypto` work is in `saq/crypto.py`, and `registry.py` the
+process-wide `get_cas()` (rebuilt after fork and by `reset_cas()` in tests). Errors are in
+`saq/cas/errors.py`: `ObjectNotFound`, `DigestMismatch`, `IntegrityError`, `ObjectDeleting`,
+`LegalHoldActive`, `PoolNotFound`, `CASConfigError`.
+
+Every operation runs in a private database session on the main engine (`index.transaction()`),
+never on the thread-shared `get_db()` session: a `put` from an analysis module must not commit or
+roll back the caller's transaction.
 
 ## Retention modes and churn
 
 | Mode | An object lives while… | Churn | Index layout | Example |
 |---|---|---|---|---|
 | `held` | it has a live hold, plus `grace` | low | `cas_objects` + `cas_holds`, main DB | SVS samples |
-| `ttl` | it was *touched* within `ttl`; holds optional | high | `cas_objects` + day-partitioned `cas_touches`, in the pool's own DB | analysis cache (future) |
+| `ttl` | it was *touched* within `ttl`; holds optional | high | `cas_objects` + day-partitioned `cas_touches`, in the pool's own DB | analysis cache (future). **Not implemented**: the config schema rejects `retention: ttl` until the load test below has run |
 | `permanent` | always; only `purge` deletes | — | `cas_objects` | reference sets, if ever needed |
 
 [CAS-4, CAS-7]
@@ -94,11 +115,24 @@ the shape:
 `held` pools keep their index in the main ACE database. A `ttl` pool names its own database chain,
 so a high-churn index never shares locks with alert inserts. [CAS-7]
 
+As built (`saq/database/model.py`, migration `56cafaed6b55`): `cas_objects` has the index
+`(pool, state, last_held_at)` for the GC candidate scan; `cas_holds` has a composite foreign key
+to `cas_objects` with `ON DELETE CASCADE`, so deleting the object row removes its expired holds in
+the same statement, plus the index `(pool, holder_kind, holder_id)`; `cas_purges` has an
+autoincrement id. `cas_touches` does not exist yet (`ttl` is deferred). The `cas:hold` and
+`cas:purge` permissions are seeded by migration `61b26390b94e`.
+
 ## Lifecycle
 
-**`put`.** Write the bytes to the backend first, then insert the `cas_objects` row and the hold in
-one transaction. A crash in between leaves orphan bytes, which the orphan sweep finds. It never
-leaves a row pointing at nothing.
+**`put`.** One transaction: `INSERT IGNORE` the `cas_objects` row, lock it `FOR UPDATE`, and
+**while holding the lock** write the bytes if the backend does not have them, then take the hold
+and bump `last_held_at`. The bytes are written under the row lock rather than before the
+transaction (a small change from the design) because that is the only order that is safe against
+a GC pass that removed the bytes between an unlocked "already there" check and the row insert.
+The crash property is the same: a crash before the commit leaves orphan bytes, which the orphan
+sweep finds, and never a row pointing at nothing. Two first-time puts of one digest serialize on
+the `INSERT IGNORE` (the second blocks on the first's row until it commits, then finds the bytes
+present).
 
 **GC.** For `held` pools:
 1. A candidate is a `present` object with no live hold and `last_held_at < now - grace`.
@@ -108,16 +142,30 @@ leaves a row pointing at nothing.
 3. Delete the bytes, then the row.
 
 `put` and `hold` lock the object row (`SELECT … FOR UPDATE`). A `put` that finds `deleting` waits
-for the row to go and re-uploads. Taking a hold and the GC flip therefore serialize on one row.
-[CAS-4]
+for the row to go (polling, up to `cas.put_deleting_wait_seconds`) and re-uploads. Taking a hold
+and the GC flip therefore serialize on one row. [CAS-4]
+
+Two more steps in every GC run, as built: it first **resumes** objects a previous run or a purge
+left in `deleting` (deletes the bytes, then the row), and it finishes by **pruning expired hold
+rows** in batches, because an expired hold on an object that still has another live hold would
+otherwise stay forever. The candidate scan already excludes objects with a live hold, so a dry
+run's count is what a real run would delete; the conditional flip repeats the check.
+
+A reader that opens an object between the flip and the byte delete may find the bytes gone and
+get `ObjectNotFound`. That is the accepted race; a hardlinked `materialize` destination keeps
+its inode either way.
 
 For `ttl` pools, expiry drops `cas_touches` partitions older than `ttl`, the same way the email
 archive and `blob_refs` are pruned. GC then removes `cas_objects` rows that have no touch left.
 
 **Orphans.** `ace cas orphans` lists the backend occasionally and removes bytes that have no row,
-older than `grace`. This is the only operation that lists a bucket.
+older than `cas.orphan_grace_seconds`. This is the only operation that lists a bucket. Keys the CAS
+would not have written are reported and left alone; the local backend's leftover temp files are
+swept at the same time.
 
-**Verify.** `ace cas verify` re-hashes a sample of objects and records `verified_at`.
+**Verify.** `ace cas verify` re-hashes a sample of objects (`cas.verify_sample_size`, from a random
+starting point in digest order) and records `verified_at`. A corrupt or missing object is logged,
+makes the command exit 2, and is never deleted.
 
 ## Operating constraints
 
@@ -141,13 +189,20 @@ under GC. [CAS-7, CAS-8]
 
 - **Per pool:** `none` or `system`. `system` reuses `saq/crypto.py`'s AES-256-GCM with the single
   system data key. [CAS-5]
-- **Two fixes to `saq/crypto` come first** (a phase-0 PR):
-  1. **Verify before release.** `decrypt()` currently writes plaintext to its target before the
-     GCM tag is checked (`saq/crypto.py:199-233`). The CAS decrypts to a temp file and renames it
-     only after verification.
-  2. **A versioned header with a key id**, bound as authenticated data. This makes rotating the
-     system key possible later without re-encrypting everything at once. Files in the old format
-     (the email archive's `.gz.e`) must keep decrypting.
+- **Two fixes to `saq/crypto` came with it** (`saq/crypto.py`, see its module docstring):
+  1. **Verify before release.** `decrypt()` decrypts to a temp file next to the target and renames
+     it only after the GCM tag verifies; on failure nothing is left behind. `decrypt_stream()` is
+     the stream form the CAS uses, with the contract that the destination is private until it
+     returns.
+  2. **A versioned header with a key id**, bound as authenticated data: the v1 format
+     (`ACE-GCM`, version, an 8-byte fingerprint of the data key, size, nonce). This makes rotating
+     the system key possible later without re-encrypting everything at once; multi-key decryption
+     itself is not built (a key id mismatch raises `KeyMismatchError`). Files in the old v0
+     format keep decrypting, and **`encrypt()` still writes v0 by default**: a lot of existing
+     encrypted data (the email archive's `.gz.e`, stream archives) is read across nodes, and a
+     node on older code cannot read v1, so the default only flips once every node runs code that
+     understands v1. The CAS asks for v1 explicitly (`encrypt_stream(..., format_version=1)`).
+     The in-memory chunk format (`encrypt_chunk`), which is persisted in the database, is unchanged.
 - **Dedup still works.** The digest is of the plaintext. Each pool writes a digest once, so the
   random nonce doesn't defeat dedup.
 - **Object names are plain** (`<sha[:2]>/<sha[2:4]>/<sha>`). A reader who can list the bucket
@@ -161,62 +216,87 @@ The CAS has its own small backend protocol rather than widening `saq/storage`: [
 
 ```python
 class CASBackend(Protocol):
+    node_local: ClassVar[bool]                                 # a shared pool refuses a node-local backend
     def write(self, key: str, stream: BinaryIO) -> None: ...   # atomic; if-absent
+    def exists(self, key: str) -> bool: ...                    # put re-checks the bytes under the row lock
     def open(self, key: str) -> ContextManager[BinaryIO]: ...
-    def delete(self, key: str) -> None: ...
-    def iter_keys(self, prefix: str = "") -> Iterator[str]: ...
+    def delete(self, key: str) -> None: ...                    # missing is not an error
+    def iter_entries(self, prefix: str = "") -> Iterator[BackendEntry]: ...   # (key, size, mtime)
     # optional capability
     def link(self, key: str, dest: str) -> bool: ...          # hardlink; local + plaintext only
 ```
 
+Two small changes from the design sketch: `iter_keys` became `iter_entries`, yielding size and
+mtime, because the orphan sweep needs the age and every object store's list call returns both
+anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/backend.py`)
+
 - **Local.** Temp file, `fsync`, `rename` within the same directory, under
-  `<root>/<pool>/<sha[:2]>/<sha[2:4]>/<sha>`. Supports `link`, which keeps the analysis cache's
-  hardlink trick available.
-- **S3.** Uses `saq.storage.s3.get_s3_client()`, which honors `s3.secure`, `s3.cert_check` and
-  `s3.region` (the storage factory currently does not, see [F-13]).
+  `<root>/<pool>/<sha[:2]>/<sha[2:4]>/<sha>` where `<root>` is `cas.local_root` (or the pool's
+  `root`), relative to the data directory. Supports `link`, which keeps the analysis cache's
+  hardlink trick available: a plaintext object in a local pool is verified by re-hashing and then
+  hardlinked out (`materialize`) or read in place (`open`), with no copy.
+- **S3.** Not implemented yet. When it is, it uses `saq.storage.s3.get_s3_client()`, which honors
+  `s3.secure`, `s3.cert_check` and `s3.region` (the storage factory currently does not, see
+  [F-13]).
   - Conditional writes (`If-None-Match: *`) avoid redundant uploads. Where the object store
     doesn't support them, a redundant upload of identical content is harmless, because the index
     decides existence.
 - **Custom.** `python_module` / `python_class` / `config`, following the pattern `saq/storage` and
-  the analysis cache already use.
-- **Sharing between nodes.** A pool declared `shared: true` refuses a node-local backend at config
-  validation.
-- **Read cache.** `materialize` from a remote backend goes through a bounded node-local LRU
-  directory, because most tools (YARA included) need a file path.
+  the analysis cache already use. The class declares `node_local` and `get_config_class()`.
+- **Sharing between nodes.** A pool declared `shared: true` refuses the `local` backend at config
+  validation, and a custom backend that says `node_local` when the pool is built.
+- **Read cache.** `materialize` and `open` of anything that cannot be hardlinked out of the backend
+  (encrypted pools, non-local backends) go through a bounded node-local LRU directory
+  (`cas.read_cache`), because most tools (YARA included) need a file path. The verified plaintext
+  is produced once and hardlinked (or copied) to each destination. `max_bytes: 0` disables it.
 
 ## Configuration
 
 ```yaml
 cas:
+  local_root: cas                  # local pools live under <DATA_DIR>/cas/<pool>
   gc_batch_size: 500
+  gc_batch_pause_seconds: 0.5
+  default_grace_seconds: 86400
+  orphan_grace_seconds: 86400
+  verify_sample_size: 1000
+  put_deleting_wait_seconds: 30
   read_cache:
-    dir: data/cas_cache
+    dir: cas_cache                 # relative to DATA_DIR
     max_bytes: 10737418240
   pools:
     svs_samples:
-      backend: s3            # local | s3 | custom {python_module, python_class, config}
-      bucket: ace-svs-samples
+      backend: local         # local | custom {python_module, python_class, config} under `custom`
       encryption: system     # none | system
-      retention: held        # held | ttl | permanent
+      retention: held        # held | permanent   (ttl is reserved and rejected)
       grace_seconds: 86400
-      shared: true
+      shared: false          # true requires a backend that is not node-local
 ```
 
-The schema goes in `saq/configuration/schema.py` and rejects unknown keys like the rest of the
-config.
+The schema (`CASConfig`, `CASPoolConfig` in `saq/configuration/schema.py`) rejects unknown keys
+explicitly (`extra="forbid"`; most of the rest of the config silently ignores them). Paths are
+relative to the data directory, like `crash_reporting.directory`, which is what gives every test
+slot its own store. `etc/saq.default.yaml` carries the defaults and a commented `svs_samples`
+example; nothing defines a pool out of the box.
 
 ## Permissions, CLI, cron
 
-- **Permissions:** `cas:purge` and `cas:hold` (legal holds), added to `saq/permissions/catalog.py`
-  with a seeding migration.
-- **CLI:** `ace cas pools | stat | get | verify | gc | purge | hold | orphans`.
+- **Permissions:** `cas:purge` and `cas:hold` (legal holds), in `saq/permissions/catalog.py`
+  with the seeding migration `61b26390b94e`. Nothing in the repo enforces them yet; they exist so
+  an API surface can, without a catalog migration.
+- **CLI** (`saq/cli/commands/cas.py`): `ace cas pools | stat | get | gc | verify | orphans |
+  purge | hold add | hold release`. `gc`, `verify` and `orphans` take `--pool`, `--dry-run` and
+  `--force`; `purge` and `hold` take `--actor`, which is recorded, not checked. `verify` exits 2
+  when an object is corrupt or missing.
 - **Cron:**
   - `etc/cron/hourly/cas-gc`;
   - `etc/cron/weekly/cas-verify` and `cas-orphans`;
-  - for `ttl` pools, a partition-management task shaped like
+  - for `ttl` pools, when they exist, a partition-management task shaped like
     `bin/manage-email-archive-partitions.sh`.
 
-  All of them run on the primary node only (`ACE_IS_PRIMARY_NODE`).
+  All of them run on the primary node only: the commands exit 0 without doing anything unless
+  `ACE_IS_PRIMARY_NODE` is `1` (`is_primary_node()`), and `--force` overrides that for a dry run
+  from another node.
 
 ## Consumers
 
@@ -233,14 +313,27 @@ Only step 1 is in scope now. [CAS-8]
 
 ## Prerequisites (phase 0)
 
-These are fixed before or alongside the CAS PR, and are useful on their own:
-- `saq/storage/factory.py:166` hardcodes `secure=False`; `S3Storage.object_exists` reports False on
-  any error, including 403; the local backend isn't atomic. [F-13, F-18, F-19]
-- The two `saq/crypto` fixes above. [F-20]
+- The two `saq/crypto` fixes above shipped with the CAS. [F-20]
+- The `saq/storage` defects are separate and still open: `saq/storage/factory.py:166` hardcodes
+  `secure=False`; `S3Storage.object_exists` reports False on any error, including 403; the local
+  backend isn't atomic. The CAS does not use `saq/storage`, so they do not block it.
+  [F-13, F-18, F-19]
 
 ## Left for implementation
 
-These are not design questions. The implementing PR picks them and records them here:
-- the batch size and pause, and the default grace;
-- read-cache sizing;
-- whether the S3/MinIO deployment in use supports conditional writes.
+These were not design questions; the implementation picked them:
+- GC batch size 500, pause 0.5 s between batches (`cas.gc_batch_size`,
+  `cas.gc_batch_pause_seconds`); default grace 24 h; orphan grace 24 h; verify sample 1000 objects
+  per pool per run; a `put` waits up to 30 s for a `deleting` object.
+- Read cache 10 GiB under `<DATA_DIR>/cas_cache`, evicted oldest-first by mtime. Its size
+  accounting walks the directory on each fill, which is fine at that scale and would not be for
+  millions of entries.
+- Conditional writes are moot until an object-store backend exists; the index decides existence
+  either way.
+
+Still open, for the pools that need them:
+- the `ttl` mode (`cas_touches`, its own database chain, the partition task) and the load test
+  that gates it;
+- the S3 backend, needed before any pool can be `shared: true`;
+- multi-key decryption once the system key is ever rotated (the key id in every v1 header and
+  `cas_objects.key_id` is the hook).

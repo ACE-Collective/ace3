@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# garbage-collect the content-addressed storage pools (docs/CAS.md): delete objects that have had
+# no live hold for longer than their pool's grace period, in small batches, then prune expired
+# hold rows. the command itself exits 0 without doing anything unless ACE_IS_PRIMARY_NODE is 1,
+# because the index and the pools' backends are shared state.
+ace cas gc
