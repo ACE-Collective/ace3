@@ -279,6 +279,36 @@ hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceil
 The launcher's contract is to put the marker where the technique's process telemetry will show it:
 an input argument, a file name, or a trailing shell comment on the executor command.
 
+**Injecting it without forking Atomic Red Team.** Both forms work against the unmodified upstream
+repository.
+- **Input arguments** go through `Invoke-AtomicTest -InputArgs`, which substitutes `#{name}` as
+  plain text. Keys a test doesn't declare are silently dropped. About 58% of tests have a string,
+  path or URL argument that reaches the command, but that is an upper bound: many of those name an
+  input file, URL or registry key that must stay as it is. Only output names and free text are
+  safe to change.
+- **The trailing comment** has no hook in `Invoke-AtomicRedTeam`, which reads the test's YAML from
+  `-PathToAtomicsFolder`. For each run, the launcher writes a copy of the test's YAML with the
+  comment appended to `executor.command` into a temporary atomics folder, links `src/` and `bin/`
+  back to upstream, and points `-PathToAtomicsFolder` at the copy. The copy is regenerated from
+  upstream on every run, and `auto_generated_guid` is unchanged, so it still matches the catalog.
+
+The runner turns a multi-line command into one process, so the comment goes at the end of the
+whole command, in the form its executor needs:
+
+| Executor | How the runner runs it | Trailing comment |
+|---|---|---|
+| `command_prompt` | `cmd.exe /c "line1 & line2 …"` | `& REM svs-…` |
+| `sh`, `bash` | `sh -c "line1; line2 …"` | `# svs-…` |
+| `powershell` | `powershell.exe "& {<script>}"` | `<# svs-… #>`. A `#` line comment would comment out the closing `}` and break the test. |
+| `manual` | not executed | none |
+
+**What a trailing comment reaches:**
+- **The executor's own process** always carries it in its command line.
+- **Its direct children** carry it only as `ParentCommandLine`, when the telemetry records that.
+- **PowerShell** also carries it in script-block logging (event 4104).
+- **Grandchildren, and file, registry, network and authentication events,** never carry it, and
+  fall back to `context`.
+
 ### Attribution and routing
 
 Attribution runs inside the engine, through a **core alert-router registry**. This is a change to
