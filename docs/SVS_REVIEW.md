@@ -23,7 +23,7 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
   round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8`, round 6 at `1a5d620e` and round 7 at
-  `020f51cc`, all with no code changes. §9 collects the code facts that
+  `020f51cc` and round 8 at `16377057`, all with no code changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -33,7 +33,21 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 7 at a glance: reopened for management and reporting.** You asked for a run management
+**Round 8 at a glance: management and reporting are settled, apart from two new items.** Every
+round-7 item is AGREED. MGT-4 is agreed as a read-only view: ACE neither recommends nor queues
+tests, and both options are withdrawn. The agreed items are folded into `docs/SVS.md` as Parts 5
+and 6. Two new items are PROPOSED, both non-blocking:
+- **MGT-8.** Verifying F-31 showed that the hunter keeps no execution history, so MGT-5 can't say
+  whether an expected hunt ran. I recommend a core `hunt_executions` table.
+- **RPT-7** answers your question about the AI API's alert search. The search listing and the
+  export listing should share one filter vocabulary and one SQL path, with different pagers. The
+  AI API stays small. And I propose that test alerts be left out of "have we seen this before?"
+  searches by default.
+
+Two corrections from this round: F-28 missed that search already lists alerts, and
+`build_alert_query()` was already free of the Flask session (RPT-2).
+
+**Round 7 at a glance (superseded by round 8): reopened for management and reporting.** You asked for a run management
 screen modeled on the alert manage page, and for every test, detection and alert fact to be
 downloadable through the API. That is new scope, not a reversed decision, so it gets its own
 section, §8a, with 13 new items, all PROPOSED: **MGT-1 to MGT-7** (the operator's screens and
@@ -113,20 +127,22 @@ drafts, especially the four gap-fills listed in X-6's round-6 reply.
 | X-5 | Keep a list of what the SOC must be told | no | AGREED (r5); the list is §11 |
 | X-6 | The review is done: where the design goes next | no | AGREED (r6): `docs/SVS.md`, `docs/CAS.md` drafted |
 | **Management** *(§8a, round 7)* | | | |
-| MGT-1 | A run management screen, modeled on the alert manage page | no | PROPOSED; question on saved filters |
-| MGT-2 | The run page: one run, everything about it | no | PROPOSED |
-| MGT-3 | Lifecycle gaps: canceled and failed runs, ownership | yes | PROPOSED; question on closing Ended runs |
-| MGT-4 | The Tests screen: deciding what to run next | no | PROPOSED: (a) recommend only; (b) run requests deferred |
-| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | PROPOSED; question on replay |
-| MGT-6 | Permissions for operators and readers | no | PROPOSED |
-| MGT-7 | One SVS area, one pattern | no | PROPOSED |
+| MGT-1 | A run management screen, modeled on the alert manage page | no | AGREED (r8); saved filters keyed by screen |
+| MGT-2 | The run page: one run, everything about it | no | AGREED (r8) |
+| MGT-3 | Lifecycle gaps: canceled and failed runs, ownership | yes | AGREED (r8); *Close* also on Ended runs |
+| MGT-4 | The Tests screen: deciding what to run next | no | AGREED (r8): read-only view; (a) and (b) withdrawn |
+| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | AGREED (r8); replay runs in `service_svs`; hunt history in MGT-8 |
+| MGT-6 | Permissions for operators and readers | no | AGREED (r8) |
+| MGT-7 | One SVS area, one pattern | no | AGREED (r8) |
+| MGT-8 | Record hunt executions | no | PROPOSED (r8): (b), a core `hunt_executions` table |
 | **Reporting** *(§8a, round 7)* | | | |
-| RPT-1 | API parity: every screen is a client of the API | yes | PROPOSED |
-| RPT-2 | What the API exposes (incl. core alert and detection-point queries) | yes | PROPOSED; question on the alerts endpoint |
-| RPT-3 | Bulk export mechanics | no | PROPOSED |
-| RPT-4 | Keep history that would otherwise be lost | yes | PROPOSED; question on verdict history |
-| RPT-5 | Who can pull what | no | PROPOSED |
-| RPT-6 | Document the data, not the reports | no | PROPOSED |
+| RPT-1 | API parity: every screen is a client of the API | yes | AGREED (r8) |
+| RPT-2 | What the API exposes (incl. core alert and detection-point queries) | yes | AGREED (r8); alerts endpoint is a phase-0 PR |
+| RPT-3 | Bulk export mechanics | no | AGREED (r8) |
+| RPT-4 | Keep history that would otherwise be lost | yes | AGREED (r8): including verdict history |
+| RPT-5 | Who can pull what | no | AGREED (r8) |
+| RPT-6 | Document the data, not the reports | no | AGREED (r8): `docs/SVS_API.md` |
+| RPT-7 | Overlap with alert search and the AI API | no | PROPOSED (r8); question on excluding test alerts from search |
 
 ---
 
@@ -2313,7 +2329,7 @@ different questions:
 | **Runs** | one execution | "What is running, what needs review, what broke?" | MGT-1, MGT-2 |
 | **Tests** | one atomic from the catalog | "What should we run next?" | MGT-4 |
 
-### MGT-1 — A run management screen, modeled on the alert manage page  `PROPOSED`
+### MGT-1 — A run management screen, modeled on the alert manage page  `AGREED`
 
 The manage page is the pattern analysts already know, and its filter machinery is reusable: filters
 are validated against a registry (`saq/gui/filter_names.py`), stored per user in `saved_filters`,
@@ -2363,7 +2379,12 @@ and it has to be decided before phase 4.
 
 > **Response:** Agree with proposal.
 
-### MGT-2 — The run page: one run, everything about it  `PROPOSED`
+> **Round 8 (reviewer):** Recorded, including the question: `saved_filters` gets a `screen`
+> column (`alerts` for every existing row, then `svs_runs`, `svs_tests`, ...), and each screen has
+> its own filter registry next to `saq/gui/filter_names.py`. It's a phase-0 core change, because
+> the migration touches every existing saved filter.
+
+### MGT-2 — The run page: one run, everything about it  `AGREED`
 
 ART-14 already put everything that isn't the analyst's business on the run review. This item
 gives that screen a shape, a URL (`/ace/svs/runs/{run_uuid}`) and a review workflow.
@@ -2402,7 +2423,9 @@ as it was at sign-off is kept (RPT-4).
 
 > **Response:** Agree with proposal.
 
-### MGT-3 — Lifecycle gaps: canceled and failed runs, ownership  `PROPOSED` · blocking
+> **Round 8 (reviewer):** Recorded.
+
+### MGT-3 — Lifecycle gaps: canceled and failed runs, ownership  `AGREED` · blocking
 
 Filling in the operator's actions showed three things ART-2 doesn't settle.
 
@@ -2449,7 +2472,24 @@ way to discard a run, and the alternative is reviewing it and rejecting every ca
 
 > **Response:** Agree with proposal and "yes" to allowing close on an "ended" run as well.
 
-### MGT-4 — The Tests screen: deciding what to run next  `PROPOSED`
+> **Round 8 (reviewer):** Recorded, with *Close* allowed on *Ended* runs too. The final lifecycle:
+>
+> | From | Action | To |
+> |---|---|---|
+> | Created | `start` / start timeout | Started / Error |
+> | Started | `executed` with an error / cancel / observation window ends | Error / Canceled / Ended |
+> | Ended | review | Reviewed |
+> | Ended | close (a bad run: wrong target, broken image) | Closed |
+> | Canceled, Error (after `start`) | close, or the attribution window ends | Closed |
+> | Reviewed | late alert or manual association | Reviewed, flagged *changed since review* |
+>
+> *Close* on an *Ended* run behaves exactly as on a canceled one: the run's alerts become
+> `SIMULATED` and nothing is learned from it. It asks for a reason, which goes in the event log
+> (MGT-5), because a closed Ended run is a result someone chose to discard. The automatic close
+> at the end of the attribution window applies only to Canceled and Error runs. An Ended run
+> waits for a person, since it needs a decision (review or close).
+
+### MGT-4 — The Tests screen: deciding what to run next  `AGREED: read-only view; (a) and (b) WITHDRAWN`
 
 ACE doesn't run tests, but it holds everything needed to decide which one to run next: the
 catalog (ART-12), every run, the expectations, and the per-rule `content_hash` of each expected
@@ -2486,7 +2526,18 @@ from ACE. The API shape above can stay reserved.
 
 > **Response:** Agree with the proposal to view existing tests. Do not agree with "recommending", that is up to the team entirely, and they may have custom logic they want to use. So this would be a read-only view into the available tests.
 
-### MGT-5 — Debugging a run: event log, marker sightings, hunt replay  `PROPOSED`
+> **Round 8 (reviewer):** Recorded. The Tests screen is a read-only view of the catalog and its
+> history. Both (a) and (b) are withdrawn rather than deferred: choosing what to run belongs to the
+> team and whatever logic they use, and ACE doesn't propose or queue anything. The
+> `run-requests` endpoint shape is dropped, not reserved. What changes in the item as written:
+> - **The test state stays.** It is a fact about the test (never run, failing, stale, ...), and it
+>   is also what a team's own selection logic would read through the API (RPT-2 `tests`).
+> - **No "run these next" ordering and no *Needs attention* default.** The default sort is
+>   technique, then name, and every sort and filter is the user's choice.
+> - The item's title keeps "deciding what to run next" for the record. The screen informs that
+>   decision; it doesn't make it.
+
+### MGT-5 — Debugging a run: event log, marker sightings, hunt replay  `AGREED`; hunt history moved to MGT-8
 
 When an expected signature is *missing*, the operator's question is *why*, and D-4 means SVS can't
 answer it by itself. It can collect what the operator needs to answer it.
@@ -2521,7 +2572,21 @@ ad-hoc execution, if there is one. Acceptable?
 
 > **Response:** Agree with proposal.
 
-### MGT-6 — Permissions for operators and readers  `PROPOSED`
+> **Round 8 (reviewer):** Recorded. I checked the two things the item left open, and both came
+> back negative:
+> - **The hunter keeps no execution history** (F-31, now verified). It persists only
+>   `last_executed_time` and, for query hunts, `last_end_time`, as key-value rows that each run
+>   overwrites. `record_hunt_exception()` is an empty method. What happened on each execution
+>   exists only as a log line. So "did the hunt run over the window, and did it fail?" can't be
+>   answered today. That needs a decision of its own: **MGT-8**.
+> - **Nothing guards ad-hoc execution.** `ace hunt execute` has no lock or rate limit. Replay
+>   therefore runs as a job in `service_svs`, not in the web request: one replay at a time per
+>   hunt, a small global concurrency cap (`svs.replay.max_concurrent`, default 2), and the hunt's
+>   own query timeout. The result is kept with the run, so a second click shows it instead of
+>   querying again. The limiter pattern in `aceapi_ai/ratelimit.py` is the model if a per-user
+>   rate is ever needed.
+
+### MGT-6 — Permissions for operators and readers  `AGREED`
 
 The agreed permissions (X-1) cover the launcher (`svs:run_register`), CI (`svs:validate`) and
 samples, and leave everything an operator does under `svs:admin`. That makes "can read test
@@ -2541,7 +2606,9 @@ reporting API key gets only the `*_read` permissions, plus `alert:read` (RPT-5).
 
 > **Response:** Agree with proposal.
 
-### MGT-7 — One SVS area, one pattern  `PROPOSED`
+> **Round 8 (reviewer):** Recorded.
+
+### MGT-7 — One SVS area, one pattern  `AGREED`
 
 The design already implies four more screens: validation reports, the sample browser, coverage,
 and the declared-vs-measured worklist. If each is designed on its own, they'll end up with four
@@ -2555,7 +2622,9 @@ not yet looked at).
 
 > **Response:** Agree with proposal.
 
-### RPT-1 — API parity: every screen is a client of the API  `PROPOSED` · blocking
+> **Round 8 (reviewer):** Recorded.
+
+### RPT-1 — API parity: every screen is a client of the API  `AGREED` · blocking
 
 This is your philosophy, stated as a rule the implementation can be held to.
 
@@ -2579,7 +2648,9 @@ This is your philosophy, stated as a rule the implementation can be held to.
 
 > **Response:** Agree with propsoal.
 
-### RPT-2 — What the API exposes  `PROPOSED` · blocking
+> **Round 8 (reviewer):** Recorded.
+
+### RPT-2 — What the API exposes  `AGREED` · blocking; overlap with search in RPT-7
 
 Your request covers test, detection and alert data. SVS's own data is new and easy. Alert and
 detection data is where the gap is, and it is a gap in core ACE, not in SVS: `aceapi_v2` can fetch
@@ -2622,7 +2693,19 @@ exist in a plan elsewhere that I haven't seen?
 
 > **Response:** Agree with proposal, and agree is a phase-0 PR. Also review the existing alert search capability available in the "ace ai api". How does that overlap with this?
 
-### RPT-3 — Bulk export mechanics  `PROPOSED`
+> **Round 8 (reviewer):** Recorded as a phase-0 PR. Two corrections to what I wrote, both
+> found while looking at the search APIs you asked about:
+> - **F-28 was incomplete.** `aceapi_v2` *can* list alerts: `POST /api/v2/search/alerts` with
+>   filters and no query is a plain newest-first listing (`saq/search/query.py::filter_listing`),
+>   using the manage page's filter vocabulary. It's shaped as a search, though, not for export.
+> - **My question's premise was wrong.** `build_alert_query()` has already been moved out of the
+>   Flask session, into `saq/gui/filter_query.py`, with node scoping as a parameter. The search
+>   listing already calls it.
+>
+> Both make the phase-0 PR smaller. How the new endpoint relates to search, and whether the AI API
+> gets it, is RPT-7.
+
+### RPT-3 — Bulk export mechanics  `AGREED`
 
 Report builders pull everything, repeatedly. The list endpoints need to be built for that from the
 start.
@@ -2646,7 +2729,11 @@ start.
 
 > **Response:** Agree with proposal.
 
-### RPT-4 — Keep history that would otherwise be lost  `PROPOSED` · blocking
+> **Round 8 (reviewer):** Recorded. RPT-7 adds one reason the alerts listing can't simply be the
+> search listing: search pages with LIMIT/OFFSET over a newest-first order, which is exactly the
+> skip-and-repeat problem keyset pagination avoids.
+
+### RPT-4 — Keep history that would otherwise be lost  `AGREED: (1), (2) and (3)` · blocking
 
 A lot of SVS is computed when read: effective verdicts, run results (recomputed on late alerts and
 relabels), coverage states. That is right for correctness, but a report about the past can't be
@@ -2669,7 +2756,13 @@ rather than with alerts, so it stays small. Include it, or leave it until someon
 
 > **Response:** Agree with proposal, and I'm OK with including (3) as well.
 
-### RPT-5 — Who can pull what  `PROPOSED`
+> **Round 8 (reviewer):** Recorded, with (3). `detection_point_verdict_history` is append-only:
+> `(alert_id, content_hash, old_verdict, new_verdict, user_id, changed_at)`, written in the same
+> transaction as the change to `detection_point_verdicts`. *Confirm* (DP-5) also writes a row,
+> with an unchanged verdict, because upgrading `inherited_multi` to `explicit` is a label change
+> that matters to reports.
+
+### RPT-5 — Who can pull what  `AGREED`
 
 Bulk read APIs raise the stakes of a leaked key. Two rules keep that bounded:
 - **A reporting key is read-only.** It belongs to an automation user with the `*_read`
@@ -2683,7 +2776,9 @@ Bulk read APIs raise the stakes of a leaked key. Two rules keep that bounded:
 
 > **Response:** Agree with proposal.
 
-### RPT-6 — Document the data, not the reports  `PROPOSED`
+> **Round 8 (reviewer):** Recorded.
+
+### RPT-6 — Document the data, not the reports  `AGREED`
 
 Since ACE won't ship the reports, the data has to explain itself.
 
@@ -2698,14 +2793,96 @@ The examples double as integration tests of the API, so a change that breaks the
 
 > **Response:** Agree with proposal.
 
+> **Round 8 (reviewer):** Recorded. It becomes its own document, `docs/SVS_API.md`, because it
+> documents core endpoints (alerts, detection points) as well as SVS ones. `docs/SVS.md` links to
+> it.
+
+### MGT-8 — Record hunt executions  `PROPOSED`  *(new, round 8)*
+
+MGT-5's debug panel needs to answer "did the expected hunt run over this run's window, and did it
+succeed?". The hunter can't answer that today (F-31): each execution overwrites
+`last_executed_time` / `last_end_time`, the failure hook `record_hunt_exception()` does nothing, and
+the only trace of an execution is its log line.
+
+**Options:**
+- **(a) SVS records only what it needs.** While a run is open, `service_svs` watches the persistence
+  rows of the run's expected hunts and records each change. That's cheap and contained, but it is
+  polling. It sees an execution only as a changed timestamp, with no status, no result count and no
+  error. And it misses executions that happen between two polls.
+- **(b) A core `hunt_executions` table**, written by the hunter in the `finally` block that already
+  logs each execution: `(hunt uuid, hunt name, type, started, completed, query window start/end,
+  status, result count, error)`. `record_hunt_exception()` finally does something. Retention is
+  bounded and pruned without an unbounded `DELETE` (D-18's lesson): for example 500 hunts every 10
+  minutes is about 72,000 rows a day, so the table is partitioned by day and old partitions are
+  dropped.
+
+**I recommend (b).** Only (b) gives status and errors, which are what distinguish "the hunt failed"
+from "the hunt ran and found nothing". It's also useful without SVS: hunt health, hunts that
+silently stopped running, execution time trends. That makes it another phase-0 PR, and its rows
+are one more resource for RPT-2 (`GET /api/v2/hunts/executions`).
+
+**Question:** (b), and is 30 days of retention enough? The run page needs only the attribution
+window, but hunt-health reporting might want longer.
+
+> **Response:** Let me revise my opinion on this. We currently rely on logs to troubleshoot issues. I see this as no different. Each ACE site installation may have completely different logging setup, so it doesn't make sense to try to solve the troubleshooting (for this) in ACE. So, let's focus more on making sure that the logging data we generate is sufficient for debugging, but then rely on external tooling outside the scope of SVS for debugging test failures.
+
+### RPT-7 — Overlap with alert search and the AI API  `PROPOSED`  *(new, round 8)*
+
+You asked how RPT-2's alerts endpoint overlaps with the alert search available in the AI API. There
+are three surfaces, and two of them share one implementation:
+
+| Surface | What it is | Pagination | Row | Guard |
+|---|---|---|---|---|
+| `POST /api/v2/search/alerts` | Hybrid search (docs/SEARCH.md). **With filters and no query, a newest-first listing** (`filter_listing`) | LIMIT/OFFSET, page ≤ 100; ranked results capped at `search.max_results` (500) | `AlertSummaryOut`: uuid, description, type, tool, queue, disposition and time, insert date, owner, location, tags | `alert:read` |
+| `POST /ai/v1/search/alerts` | **The same v2 service**, wrapped for agents: per-backend rate limit and concurrency slot, a timeout, and an audit record of every request, in a container that has no encryption capability | same | same | `ai:search` |
+| `GET /api/v2/alerts` (RPT-2, proposed) | An export listing | keyset cursor, NDJSON streaming | the full alert row: plus company, event time, disposition user, `updated_at`, detection count, SVS status | `alert:read` |
+
+**What they share, and should keep sharing.** One filter vocabulary: the listing already accepts
+`FilterEntry` lists (the manage page's `{name, inverted, values}`) and adds observables and
+detection points by signature UUID. One SQL path: `build_alert_query()` plus `apply_sql_filters()`.
+The new endpoint must not grow a third way to filter alerts.
+
+**Why the export listing isn't just the search listing:**
+- **Pagination.** OFFSET over a newest-first list skips or repeats rows while alerts arrive (RPT-3).
+  That's fine for "show me the first page"; for a report builder pulling 200,000 rows, it's wrong.
+- **Shape.** Search results carry `rank`, `tier`, `score`, `lanes` and `hits`, all meaningless in a
+  listing, and a summary row that is too thin for reporting.
+- **Purpose.** The AI API's guard is built for an agent making a few requests. A reporting job is
+  the opposite load: few clients, whole-table pulls.
+
+**Proposal:**
+1. **`GET /api/v2/alerts` is built on the listing's internals, not beside them.**
+   `filter_listing` is split into a query builder (the filters and scoping) and a pager. Search keeps
+   its offset pager; the new endpoint uses a keyset pager and the full row. Both accept the same
+   filter body (`SearchFiltersBody`), and the new endpoint also accepts the manage page's share-URL
+   encoding.
+2. **The AI API doesn't get the export listing.** It stays small, audited and rate-limited for
+   agents (its own module docstring calls it "deliberately small"). Reporting uses `aceapi_v2` with
+   a reporting key (RPT-5). If an agent later needs detection points, that's a separate, narrow
+   addition to the AI API under its own guard.
+3. **Test alerts in "have we seen this before?".** This is the overlap that matters most for SVS.
+   `POST /…/search/similar` exists so an agent or analyst can ask "have we seen this before, and
+   what did we decide?". Once SVS runs, the most similar alert to a real Mimikatz execution will
+   often be a test run of the same atomic, dispositioned `SIMULATED` (class tp). ART-10 already
+   keeps test alerts out of prevalence and disposition history for the same reason. I propose that
+   search and similar exclude the SVS queue **by default** on both APIs. Each response then carries
+   a count of the test alerts left out, and a request that names the SVS queue explicitly (or the
+   GUI search, with a toggle) still finds them.
+
+**Question:** do you agree with excluding test alerts by default in (3)? The alternative is to
+leave them in and rely on the `SIMULATED` disposition shown in each result. An analyst would read
+that correctly, but an agent summarizing "seen 4 times, all true positives" might not.
+
+> **Response:** Yes, agree.
+
 ### Phasing impact (for X-4 once agreed)
 
 | Phase | Adds |
 |---|---|
-| 0 | `GET /api/v2/alerts` and `alerts.updated_at` (RPT-2, RPT-3); saved filters keyed by screen (MGT-1) |
-| 1 | The detection-points endpoints; verdict history, if chosen (RPT-2, RPT-4) |
+| 0 | `GET /api/v2/alerts` and `alerts.updated_at` (RPT-2, RPT-3, RPT-7); saved filters keyed by screen (MGT-1); `hunt_executions`, if MGT-8 (b) |
+| 1 | The detection-points endpoints; verdict history (RPT-2, RPT-4) |
 | 2, 3 | Samples and Validations tabs, with their list APIs (MGT-7, RPT-2) |
-| 4 | Runs and Tests screens, the run page, ownership, *Close*, event log, marker sightings, hunt replay, the run APIs, the reviewed-result snapshot (MGT-1 to MGT-6, RPT-2, RPT-4) |
+| 4 | Runs and Tests screens, the run page, ownership, *Close*, event log, marker sightings, hunt replay, the run APIs, the reviewed-result snapshot, SVS queue excluded from search (MGT-1 to MGT-6, RPT-2, RPT-4, RPT-7) |
 | 5 | Coverage history snapshots and the coverage and worklist APIs (RPT-2, RPT-4) |
 
 ---
@@ -2828,6 +3005,12 @@ SVS happens.
   The only bulk alert export is Flask's `/export_alerts_to_csv` (`app/analysis/views/export.py:113`),
   which runs `build_alert_query(get_effective_filters())` over the *session's* filters with fixed
   columns. The legacy `aceapi` has no alert query either (RPT-2).
+  **Round 8 correction:** `POST /api/v2/search/alerts` with filters and no query is a newest-first
+  alert listing (`saq/search/query.py:460`, `filter_listing`) over the manage-page filter
+  vocabulary, paged by LIMIT/OFFSET with pages of at most 100. `POST /ai/v1/search/alerts` calls the
+  same service (`aceapi_ai/search/service.py`) under a rate limiter and an audit log. And
+  `build_alert_query()` is already independent of the Flask session (`saq/gui/filter_query.py:314`,
+  with node scoping as a parameter). See RPT-7.
 - **F-29 There is no detection-point API.** `aceapi_v2/detection/` manages *observable-detection*
   settings (expiration, types), not `detection_points` rows. The name is taken (RPT-2).
 - **F-30 Manage-page filters are reusable data.** `saq/gui/filter_names.py` is the registry of
@@ -2835,10 +3018,14 @@ SVS happens.
   `{name, inverted, values}` shape for the modal, the API and share URLs alike; `saved_filters`
   (`saq/database/model.py:2528`) stores them per user, with `kind` separating scratch from named
   filters. Nothing says which screen a filter belongs to (MGT-1).
-- **F-31 (unverified) Hunt execution history.** `ace hunt execute <hunt> -s <start> -e <end>`
+- **F-31 Hunt execution history.** `ace hunt execute <hunt> -s <start> -e <end>`
   (`saq/cli/commands/hunt.py:158`) runs a hunt over an arbitrary window without submitting alerts
-  unless asked. Whether the hunter keeps a record of *past* executions (as opposed to the time of the
-  last one) has not been checked (MGT-5).
+  unless asked. **Verified in round 8: there is no execution history.** Each execution overwrites
+  the `last_executed_time` persistence row (`saq/collectors/hunter/base_hunter.py:379-397`, written
+  in the execution's `finally` at `:607`), and query hunts overwrite `last_end_time`
+  (`query_hunter.py:253-273`). `record_hunt_exception()` (`base_hunter.py:785`) is an empty method.
+  An execution's status and duration exist only in its log line. Nothing guards concurrent ad-hoc
+  execution (MGT-5, MGT-8).
 - **F-32 `alerts.version` is not orderable.** `touch_alerts()` (`saq/database/util/alert.py:181`) and
   `Alert.sync()` rotate it to a new random token, which is what the v2 ETag uses. There is no
   `updated_at` on `alerts`; the only timestamps are per field (`insert_date`, `disposition_time`,
@@ -3067,3 +3254,5 @@ settled yet.
 | 5 | author | X-6 approved: draft the design documents (commit `1a5d620e`). |
 | 6 | reviewer | Drafted `docs/SVS.md` (the consolidated design, including §11 as *What changes for analysts*) and `docs/CAS.md`; added a pointer to `docs/SVS_INITIAL.md`. Four gap-fills listed in X-6. **Review closed; this file is frozen as the decision record.** |
 | 7 | reviewer | Reopened at your request for management and reporting (new §8a, at `020f51cc`). New: MGT-1 to MGT-7 (Runs screen, run page, lifecycle gaps with *Close* and run ownership, Tests screen, debugging, permissions, one SVS area) and RPT-1 to RPT-6 (API parity, what the API exposes, bulk export, history, access, data docs). Found: alerts of canceled/failed runs are never closed (MGT-3); `aceapi_v2` has no alert query and no detection-point API (RPT-2). New code facts F-28 to F-32. |
+| 7 | author | Agreed to every round-7 item. MGT-3: *Close* also on Ended runs. MGT-4: read-only view, no recommending. RPT-2: phase-0 PR, plus a question about the AI API's alert search. RPT-4: including verdict history (commit `16377057`). |
+| 8 | reviewer | Recorded the round-7 answers: 13 items AGREED; MGT-4's (a) and (b) withdrawn. Final run lifecycle in MGT-3. F-31 verified (no hunt execution history; nothing guards ad-hoc execution), so hunt replay runs in `service_svs` and hunt history became MGT-8. F-28 corrected: search already lists alerts, and `build_alert_query()` is already free of the Flask session. New: MGT-8 (core `hunt_executions`), RPT-7 (search / AI API overlap, test alerts left out of search by default). Folded the agreed items into `docs/SVS.md` (Parts 5 and 6, data model, permissions, phases, *What changes for analysts*). |
