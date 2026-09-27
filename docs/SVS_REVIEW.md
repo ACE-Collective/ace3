@@ -22,7 +22,7 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
   start. Non-blocking items can be settled during implementation.
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
-  round 2. Round 4 is at `e68985eb`, also with no code changes. §9 collects the code facts that
+  round 2. Round 4 is at `e68985eb` and round 5 at `a7f9d9e8`, also with no code changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -32,20 +32,12 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 4 at a glance.** A correction first: round 3 listed DP-2, DP-4, YR-3 and ART-8 as
-unanswered. You had answered all four in plain text, and my search only found quoted
-`> **Response:**` lines. They are all handled now. Settled this round: DP-4, YR-3 (a), ART-8 (a),
-ART-10, ART-16 (a) and CAS-7. Two of your answers reopen something:
-
-1. **DP-2, which is now the most consequential open item.** Your data shows that **37% of TP
-   alerts with a YARA hit have more than one signature**. Under the current rule, every YARA sample
-   on those alerts stays unlabeled unless an analyst takes the optional step. I propose changing the
-   default (options (a) and (b) in the item).
-2. **DP-3.** Your answer ("the analyst made a mistake") means a TP verdict on an FP alert isn't a
-   real case. It is a wrong alert disposition, and the fix belongs there. I propose reverting the
-   round-2 amendment that let overrides beat an FP alert.
-
-Also still open: X-5 and the §11 list (no response yet).
+**Round 5 at a glance.** Your four answers settle everything that was open. DP-2 (b), the DP-3
+revert, blocking `SIMULATED` changes (ART-10) and X-5 are AGREED. Every blocking item is now
+AGREED, DEFERRED or SUPERSEDED. DP-2 and DP-3 together fix the final verdict model (DP-2's round 5
+reply). The one new item, **X-6**, proposes how to turn this review into a design of record
+(`docs/SVS.md`, `docs/CAS.md`) and lists the phase-0 PRs that can start now. It asks one question:
+should I draft `docs/SVS.md`?
 
 | ID | Topic | Blocking | Status |
 |---|---|---|---|
@@ -53,9 +45,9 @@ Also still open: X-5 and the §11 list (no response yet).
 | TP-1 | What "True Positive" means for a signature | yes | AGREED (r2) |
 | TP-2 | TP/FP classification is three-valued; reuse existing config | yes | AGREED (r2) |
 | TP-3 | Classify the borderline dispositions | yes | AGREED (r3) |
-| DP-1 | Store verdict overrides, derive effective verdicts | yes | AGREED (r2); the DP-3 amendment may be reverted (r4) |
-| DP-2 | Which detections inherit a TP alert's verdict | yes | PROPOSED (r4: data says change the default) |
-| DP-3 | Behavior when the alert disposition changes | yes | PROPOSED (r4: revert TP-on-FP overrides) |
+| DP-1 | Store verdict overrides, derive effective verdicts | yes | AGREED; final formula in DP-2 (r5) |
+| DP-2 | Which detections inherit a TP alert's verdict | yes | AGREED (r5): (b), inherit TP with a verdict source |
+| DP-3 | Behavior when the alert disposition changes | yes | AGREED (r5): round-2 amendment reverted |
 | DP-4 | YARA detection points: move to the file | yes | AGREED (r3) |
 | DP-5 | GUI for detection-point verdicts | no | AGREED (r2) |
 | DP-6 | Verdicts for all signature families, not only YARA | no | AGREED (r2) |
@@ -82,7 +74,7 @@ Also still open: X-5 and the §11 list (no response yet).
 | ART-7 | Alerts that mix test and non-test detections | yes | AGREED (r2) |
 | ART-8 | Hunt suppression / dedup / group_by swallow test detections | no | AGREED (r3): (a) now, (b) deferred |
 | ART-9 | Test host definition and unregistered-host handling | no | AGREED (r2) |
-| ART-10 | What happens to test alerts downstream | no | AGREED (r4): `SIMULATED`, not selectable; one small question |
+| ART-10 | What happens to test alerts downstream | no | AGREED (r5): `SIMULATED`, not selectable, changes blocked |
 | ART-11 | Expectations come from measurement, not declared techniques | yes | AGREED (r3); meta key moved to ART-16 |
 | ART-12 | Why ACE holds the ART repos, and what it parses | no | AGREED (r2) |
 | ART-13 | Launcher noise vs per-test ignores; manual (re)association | no | AGREED (r2) |
@@ -106,7 +98,8 @@ Also still open: X-5 and the §11 list (no response yet).
 | X-2 | Which ACE instance owns SVS | no | AGREED (r2) |
 | X-3 | Name collision with `lib/signature_validator` | no | AGREED (r2) |
 | X-4 | Phasing | no | AGREED (r2), revised for CAS |
-| X-5 | Keep a list of what the SOC must be told | no | PROPOSED, waiting; the list is §11 |
+| X-5 | Keep a list of what the SOC must be told | no | AGREED (r5); the list is §11 |
+| X-6 | The review is done: where the design goes next *(new r5)* | no | PROPOSED |
 
 ---
 
@@ -318,7 +311,7 @@ change or a config change has to rewrite every row, and the rewrite is easy to g
 >    ignores which node the detection sits on (DP-7), which has to be fixed before the first
 >    override is written.
 
-### DP-2 — "Single detection point" should be "single signature"  `PROPOSED` · blocking
+### DP-2 — "Single detection point" should be "single signature"  `AGREED: (b)` · blocking
 
 *(Round 4: widened to "which detections inherit a TP alert's verdict". See the round 4 reply.)*
 
@@ -483,7 +476,36 @@ GROUP BY n_sigs, n_dps_bucket ORDER BY n_sigs, n_dps_bucket;
 
 > **Response:** Agree with (b).
 
-### DP-3 — When the alert disposition changes  `PROPOSED` · blocking
+> **Round 5 (reviewer):** Recorded as D-6 (final). Together with the DP-3 revert, this fixes the
+> verdict model. Each effective verdict now has a **source**, which is stored with the sample
+> labels and shown in the GUI:
+>
+> ```
+> effective(dp) =
+>     NULL                        if class(alert.disposition) is unclassified
+>     FP   (inherited)            if class(alert.disposition) == FP        # overrides masked
+>     override (explicit)         if an override row exists                # TP alerts only
+>     TP   (inherited_single)     if the alert has one signature
+>     TP   (inherited_multi)      otherwise
+> ```
+>
+> What each piece touches:
+> - **DP-1:** the formula above replaces both earlier versions.
+> - **DP-5 (GUI):** for a TP alert with several signatures, the verdict section of the disposition
+>   modal stays **collapsed**, with a one-line summary: *"3 signatures inherit TP. Mark any that
+>   were noise."* Expanding it shows each detection pre-set to TP; flipping one writes an FP
+>   override. A **Confirm** action upgrades `inherited_multi` to `explicit` TP without changing the
+>   value. That is the only case where a TP override means anything, and it is optional.
+> - **YR-1 (report):** a regression on an `inherited_multi` sample goes in its own band, *"regression
+>   on an unconfirmed label"*, below confirmed regressions. Resolving it offers *confirm label*
+>   (the regression is real), *relabel FP*, or *retire for this rule*.
+> - **YR-6 (conflicts):** the precedence is `explicit` > `inherited_single` > `inherited_multi`.
+>   A conflict exists only between votes of the *same* strength. For example, an
+>   `inherited_multi` TP loses to an `inherited_single` FP from another alert, and the loss is
+>   shown rather than hidden.
+> - **DP-2's original single-signature rule** disappears; the source distinguishes the cases now.
+
+### DP-3 — When the alert disposition changes  `AGREED: reverted` · blocking
 
 "The same logic is applied again" needs three precise rules. Under DP-1 they are:
 
@@ -534,6 +556,14 @@ If TP-1 lands on the "signature did its job" meaning, I would allow it.
 > **Question:** Revert as proposed?
 
 > **Response:** I misunderstood this one. Agree with the revert.
+
+> **Round 5 (reviewer):** Reverted. The final formula is in DP-2's round-5 reply. For the record:
+> - On an FP alert every verdict is FP, and the GUI offers no TP override there. Its chip says
+>   *"FP (from alert). If the alert was wrong, correct its disposition."* That links to the review
+>   modal for users with `alert:review`, and to the disposition modal otherwise.
+> - Rules 1–3 as written in round 1 stand unchanged.
+> - My round-2 question read TP-1 the way I had first framed it ("did the signature do its job"),
+>   and that framing was superseded. The misunderstanding was mine to prevent.
 
 ### DP-4 — YARA detection points: move to the file  `AGREED` · blocking
 
@@ -1325,6 +1355,17 @@ Once an alert is in the test queue, several things still have to be decided:
 > queue, where no analyst looks.
 
 > **Response:** Agree with your suggestion.
+
+> **Round 5 (reviewer):** Recorded. For a `SIMULATED` alert:
+> - The disposition and review modals show *"Part of test run R. To treat this as a real alert,
+>   use Disassociate from run."* in place of the disposition list, with that action as the button.
+> - The server rejects any disposition change on a `SIMULATED` alert that doesn't come from SVS.
+>   This is the same enforcement point as "not selectable" (round 4).
+> - Bulk disposition from the manage page skips `SIMULATED` alerts and reports them as skipped. The
+>   bulk-safeguard pattern from PR #590 (`describe_skipped` in `app/alert_ownership.py`) already
+>   reports skipped alerts this way.
+>
+> S-7 is updated.
 
 ### ART-11 — Expectations come from measurement, not declared techniques  `AGREED` · blocking
 
@@ -2128,7 +2169,7 @@ where the security questions (ART-4/6/7) have to be settled.
 >   validation against the config (ART-10). It fits naturally there, because TP-2/TP-3 already move
 >   the disposition list into config.
 
-### X-5 — Keep a list of what the SOC must be told  `PROPOSED`  *(new, round 3)*
+### X-5 — Keep a list of what the SOC must be told  `AGREED`  *(new, round 3)*
 
 This is your TP-3 request, turned into a process. Many decisions here change what an analyst sees
 or what their choices *mean*: a disposition now labels training data, counts come only from the
@@ -2148,6 +2189,45 @@ language, at the moment they take effect, not as a design doc.
   conversation, not just a release note.
 
 > **Response:** Agree with proposal.
+
+> **Round 5 (reviewer):** In effect from this round: S-1, S-3 and S-7 are updated and no longer
+> pending. One practical addition: once implementation starts, §11 should move with the design
+> into its long-lived home (X-6), because this review file stops being updated at that point.
+
+### X-6 — The review is done: where the design goes next  `PROPOSED`  *(new, round 5)*
+
+With this round, every blocking item is AGREED, DEFERRED or SUPERSEDED. What's left is turning a
+2,500-line discussion into documents people can build from and read later. The agreed content is
+spread across round replies, which is right for arguing and wrong for implementing.
+
+**Proposal:**
+1. **`docs/SVS.md`: the consolidated design.** It is written from §10's decisions and the final
+   state of each item, not from the discussion. Sections: concepts (verdicts, samples, runs,
+   markers); the three subsystems; data model; APIs; GUI; configuration; phases. It replaces
+   `SVS_INITIAL.md` as the design of record. `SVS_INITIAL.md` stays as the original brief, with a
+   pointer at the top.
+2. **`docs/CAS.md`: the CAS design** (§7, CAS-7's operating constraints, D-14, D-18). It is written
+   with the phase-0 CAS PR, as agreed in CAS-2.
+3. **§11 moves into `docs/SVS.md`** as its "What changes for analysts" section, and each phase's PR
+   quotes from there (X-5).
+4. **This file is frozen** as the decision record. It stays in the repo, so every decision in
+   `docs/SVS.md` can cite the item that made it (`[DP-2]`), and the reasoning stays one grep away.
+5. **A phase-0 work list**: the standalone PRs that can start now, independent of each other.
+
+| PR | Items | Notes |
+|---|---|---|
+| Fix `archive()`: free derived hardcopies, keep root files in subfolders | YR-11 | Two tests; S-8 |
+| Disposition clean-up: remove 6, config as the single list, classification map, `analyst_selectable`, server-side validation | TP-2, TP-3, ART-10 | S-2; `SIMULATED` itself comes in phase 4 |
+| Prevalence counts only the default queue | ART-10 | S-6; the same shape as #587 |
+| `saq/storage` defects: TLS, 403 vs missing, atomic local writes | F-13, F-18, F-19 | Crash replication benefits |
+| `saq/crypto`: verify before release, versioned header with key id | CAS-5 | Old `.gz.e` files must still decrypt |
+| CAS core with the SVS pool | CAS-1 to CAS-7 | Writes `docs/CAS.md` |
+| Detection identity includes the node | DP-7 | Must land before any verdict is written (phase 1) |
+
+**Question:** Should I draft `docs/SVS.md` next? The alternative is that you fold the decisions
+into `SVS_INITIAL.md` yourself.
+
+> **Response:** Move forward with drafting the design documents.
 
 ---
 
@@ -2282,10 +2362,14 @@ as you like; the source item is in brackets.
 - **D-5** YARA regression is static only. The dynamic case (`d(t(Y))`) is covered by test
   execution. [YR-10]
 - **D-6** Only analyst-set detection-point verdicts are stored. Effective verdicts are derived when
-  read. Any detection of any signature family can be labeled. *(Pending DP-3, round 4: on an FP
-  alert every verdict is FP, and a wrong FP is fixed by correcting the alert's disposition. Pending
-  DP-2, round 4: under (b), every detection on a TP-class alert inherits TP, and multi-signature
-  inheritance is recorded as a weaker source.)* [DP-1, DP-2, DP-3, DP-6]
+  read. Any detection of any signature family can be labeled.
+  - On an FP alert every verdict is FP. A wrong FP is fixed by correcting the alert's disposition,
+    not by overriding a detection.
+  - On a TP alert every detection inherits TP. The source is `inherited_single` or
+    `inherited_multi`, depending on how many signatures the alert has, and analysts mark the noisy
+    ones FP.
+  - Explicit verdicts outrank inherited ones, and `inherited_multi` labels are reported
+    separately. [DP-1, DP-2, DP-3, DP-6]
 - **D-7** A YARA validation compares each sample's label with its scan result under the PR's base
   and head rulesets. The whole corpus is scanned with the whole ruleset. Results warn and never
   block. The signature repo's CI starts a validation through the API; ACE fetches the rules itself
@@ -2330,9 +2414,11 @@ as you like; the source item is in brackets.
 **Other lines in `SVS_INITIAL.md` that the agreed items contradict:**
 - The **goals** list: remove the second bullet (D-4).
 - *"If an ACE alert is dispositioned as False Positive, then all detection points are also
-  dispositioned as False Positive"*: add "unless an analyst set that detection explicitly" (D-6).
-- *"If an ACE alert has a single detection point…"*: becomes "a single signature" if DP-2 is
-  accepted.
+  dispositioned as False Positive"*: **stands as written** (the DP-3 revert, round 5). The round-2
+  note to add "unless an analyst set that detection explicitly" is withdrawn.
+- *"If an ACE alert has a single detection point…"* and *"…the detection points are left empty
+  (NULL)"*: replaced by D-6. Every detection on a TP alert inherits TP, with the source recorded
+  (DP-2 (b)). NULL now happens only on unclassified alerts.
 - *"ACE will have the ability to assign a disposition to a detection point"*: it is a TP/FP
   *verdict*, not one of the alert dispositions (D-6). The wording matters, because the GUI will
   use it.
@@ -2356,9 +2442,8 @@ settled yet.
   - `IGNORE`, `REVIEWED` and `UNKNOWN` record nothing either way.
 - **What to do:** choose `FALSE_POSITIVE` only when there really was no malicious activity. Don't
   use `REVIEWED` or `IGNORE` to avoid making the call, because then the detections teach nothing.
-- *(Pending DP-2.)* If (b) is chosen, a real-attack disposition grades **every** detection on the
-  alert as good, including alerts where several signatures fired. Marking the noisy ones (S-3)
-  becomes the one extra habit to learn.
+- A real-attack disposition grades **every** detection on the alert as good, including alerts
+  where several signatures fired. Marking the noisy ones (S-3) is the one extra habit to learn.
 - **When:** phase 1. [TP-1, TP-2, TP-3, D-1, D-15]
 
 **S-2 Six unused dispositions are removed.**
@@ -2376,9 +2461,12 @@ settled yet.
   inherited or set explicitly.
 - **When to use it:** a real attack where one of the signatures that fired was noise, such as a
   generic rule on a harmless logo in a phishing email. Mark that one FP.
-- **When not to use it** *(pending DP-3)*: if the whole alert was dispositioned wrong, correct the
-  alert's disposition; don't grade detections to compensate. On a `FALSE_POSITIVE` alert, every
-  detection is FP.
+- **When not to use it:** if the whole alert was dispositioned wrong, correct the alert's
+  disposition; don't grade detections to compensate. On a `FALSE_POSITIVE` alert, every detection
+  is FP, and the page points you to the disposition instead.
+- **Confirm (optional):** on an alert where several signatures fired, *Confirm* marks the inherited
+  TPs as checked by a person. Confirmed labels carry more weight when signature changes are tested
+  (S-5).
 - **When:** phase 1. [DP-1, DP-3, DP-5, DP-6]
 
 **S-4 YARA hits appear on the file.**
@@ -2397,7 +2485,9 @@ settled yet.
   - improvements;
   - scan-time changes.
 
-  It only warns and never blocks a merge. Rules without a `uuid` can't be checked.
+  It only warns and never blocks a merge. Rules without a `uuid` can't be checked. Regressions on
+  files whose grade was only inherited from a multi-signature alert are listed separately, as
+  *"check the label first"*.
 - **What to do:** read the report in ACE before merging. If a regression is intended, retire or
   relabel the sample there so the report stops showing it.
 - **How it arrives:** the repo's CI requests the validation from ACE and posts a summary comment
@@ -2417,7 +2507,8 @@ settled yet.
 **S-7 Alerts from red-team test runs get their own queue and badge.**
 - **Who:** analysts.
 - **What changes:** alerts caused by a registered test go to a test queue with the disposition
-  `SIMULATED`. Only ACE sets that disposition; it isn't in the disposition menu. If an alert was
+  `SIMULATED`. Only ACE sets that disposition. It isn't in the disposition menu, and a
+  `SIMULATED` alert's disposition can't be changed by hand (bulk actions skip it). If an alert was
   wrongly treated as a test, use *Disassociate from run*, which sends it back for normal triage.
   An alert shows at most one of four badges:
   - `TEST`: nothing to do.
@@ -2471,3 +2562,5 @@ settled yet.
 | 3 | reviewer | 15 more items AGREED: TP-3, DP-7, YR-11, ART-10, ART-11, ART-14, ART-15, COV-1, CAS-1 to CAS-6, X-1, and the CAS-8 deferral confirmed. CAS-7 revised after reviewing email-archive pruning (no unbounded DELETE; partitioned touch tables for high-churn pools; a GC load test gates the analysis-cache migration). New: ART-16 (manual-mapping meta key), X-5 and §11 (SOC communication list, S-1 to S-11), decisions D-13 to D-17. |
 | 3 | author | Answers to TP-3's follow-ups, DP-2 (follow-up query results), the DP-3 example, ART-10, ART-16 (a) and CAS-7. Earlier plain-text answers to DP-2, DP-4, YR-3 and ART-8 reformatted as quoted responses (commit `e68985eb`). X-5 and §11 not yet answered. |
 | 4 | reviewer | **Correction:** round 3 wrongly reported DP-2, DP-4, YR-3 and ART-8 as unanswered, because its search matched only quoted responses. AGREED: DP-4, YR-3 (a), ART-8 (a) with a revisit trigger, ART-10 (`SIMULATED`, server-side enforced), ART-16 (a), CAS-7. Reopened: DP-2, where the data shows 37% of TP YARA alerts are multi-signature, so it proposes inherit-TP-by-default (b); and DP-3, which proposes reverting TP-on-FP overrides. D-6, D-7, D-16 and D-17 updated; D-18 to D-20 added; S-1, S-3, S-4, S-5, S-7 and S-9 updated. |
+| 4 | author | DP-2 (b), the DP-3 revert, blocking changes to `SIMULATED` alerts (ART-10), X-5 agreed (commit `a7f9d9e8`). |
+| 5 | reviewer | All four recorded. Final verdict model with sources (`explicit`, `inherited_single`, `inherited_multi`) in DP-2, propagated to DP-1, DP-5, YR-1 and YR-6. D-6 finalized; S-1, S-3, S-5 and S-7 no longer pending. Every blocking item is closed. New: X-6 (consolidate into `docs/SVS.md` / `docs/CAS.md`, freeze this file, phase-0 PR list). |
