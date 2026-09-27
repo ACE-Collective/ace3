@@ -1,5 +1,9 @@
 # Design Idea
 
+> **This is the original brief, kept for history.** The agreed design is `docs/SVS.md`, and the
+> reasoning behind each decision is in `docs/SVS_REVIEW.md`. Where this brief and `docs/SVS.md`
+> disagree, `docs/SVS.md` is current.
+
 We are going to design the Signature Validation System (SVS) for ACE.
 
 The SVS will be a new subsystem of ACE that is designed to 

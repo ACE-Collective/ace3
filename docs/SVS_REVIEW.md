@@ -22,7 +22,8 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
   start. Non-blocking items can be settled during implementation.
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
-  round 2. Round 4 is at `e68985eb` and round 5 at `a7f9d9e8`, also with no code changes. §9 collects the code facts that
+  round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8` and round 6 at `1a5d620e`, all with no code
+  changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -32,12 +33,12 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 5 at a glance.** Your four answers settle everything that was open. DP-2 (b), the DP-3
-revert, blocking `SIMULATED` changes (ART-10) and X-5 are AGREED. Every blocking item is now
-AGREED, DEFERRED or SUPERSEDED. DP-2 and DP-3 together fix the final verdict model (DP-2's round 5
-reply). The one new item, **X-6**, proposes how to turn this review into a design of record
-(`docs/SVS.md`, `docs/CAS.md`) and lists the phase-0 PRs that can start now. It asks one question:
-should I draft `docs/SVS.md`?
+**Round 6 at a glance: the review is closed.** Every item is AGREED, DEFERRED or SUPERSEDED.
+The design of record is now **`docs/SVS.md`**, with **`docs/CAS.md`** for the storage layer, both
+drafted this round (X-6). `docs/SVS_INITIAL.md` is kept as the original brief, with a pointer at the
+top. This file is frozen as the decision record. It stays the place to look up *why* something was
+decided, and gets a new item only when a decision is reversed. Waiting on you: review the two
+drafts, especially the four gap-fills listed in X-6's round-6 reply.
 
 | ID | Topic | Blocking | Status |
 |---|---|---|---|
@@ -99,7 +100,7 @@ should I draft `docs/SVS.md`?
 | X-3 | Name collision with `lib/signature_validator` | no | AGREED (r2) |
 | X-4 | Phasing | no | AGREED (r2), revised for CAS |
 | X-5 | Keep a list of what the SOC must be told | no | AGREED (r5); the list is §11 |
-| X-6 | The review is done: where the design goes next *(new r5)* | no | PROPOSED |
+| X-6 | The review is done: where the design goes next | no | AGREED (r6): `docs/SVS.md`, `docs/CAS.md` drafted |
 
 ---
 
@@ -2194,7 +2195,7 @@ language, at the moment they take effect, not as a design doc.
 > pending. One practical addition: once implementation starts, §11 should move with the design
 > into its long-lived home (X-6), because this review file stops being updated at that point.
 
-### X-6 — The review is done: where the design goes next  `PROPOSED`  *(new, round 5)*
+### X-6 — The review is done: where the design goes next  `AGREED`  *(new, round 5)*
 
 With this round, every blocking item is AGREED, DEFERRED or SUPERSEDED. What's left is turning a
 2,500-line discussion into documents people can build from and read later. The agreed content is
@@ -2228,6 +2229,34 @@ spread across round replies, which is right for arguing and wrong for implementi
 into `SVS_INITIAL.md` yourself.
 
 > **Response:** Move forward with drafting the design documents.
+
+> **Round 6 (reviewer):** Done:
+> - **`docs/SVS.md`**: the consolidated design, written from the final state of every item rather
+>   than from the discussion.
+>   - Parts 1–4 cover labels, YARA regression, test execution and coverage.
+>   - It then covers the changes to ACE outside SVS, a data-model sketch, permissions, a config
+>     sketch, the phases, and a *What changes for analysts* section, which is §11 rewritten as prose
+>     for its long-term home.
+>   - Every decision cites its item here (`[DP-2]`, `[D-6]`).
+> - **`docs/CAS.md`**: the CAS design from §7, with CAS-7's operating constraints and the
+>   email-archive pruning history as the reason for them. CAS-2 said this doc would ship with the
+>   CAS PR; it is drafted now, as you asked, and the PR finalizes it.
+> - **`docs/SVS_INITIAL.md`**: a three-line pointer at the top, saying the brief is kept for
+>   history and `docs/SVS.md` is current. Nothing else in it was changed.
+>
+> Consolidating surfaced four small things that were never explicitly decided. The drafts fill them
+> in as follows. Each is easy to change:
+> 1. **The SVS queue name is `svs`**, configurable (`svs.queue`).
+> 2. **Validations are limited to listed repositories** (`svs.yara.repositories`), so the API can't
+>    be pointed at an arbitrary configured git repo.
+> 3. **A run whose `start` is never called goes to *Error*** after `svs.runs.start_timeout_minutes`.
+>    ART-2 said "N minutes"; the draft uses 30.
+> 4. **`svs:sample_read` / `svs:sample_download` gate the sample browser and downloads.** YR-8's
+>    access question moved to the CAS, and these two permissions had no item of their own.
+>
+> **This file is now frozen** (X-6 item 4), apart from answering review comments on the two drafts.
+> Changes to the design go into `docs/SVS.md` / `docs/CAS.md` directly, citing a new item here only
+> when a decision is reversed.
 
 ---
 
@@ -2564,3 +2593,5 @@ settled yet.
 | 4 | reviewer | **Correction:** round 3 wrongly reported DP-2, DP-4, YR-3 and ART-8 as unanswered, because its search matched only quoted responses. AGREED: DP-4, YR-3 (a), ART-8 (a) with a revisit trigger, ART-10 (`SIMULATED`, server-side enforced), ART-16 (a), CAS-7. Reopened: DP-2, where the data shows 37% of TP YARA alerts are multi-signature, so it proposes inherit-TP-by-default (b); and DP-3, which proposes reverting TP-on-FP overrides. D-6, D-7, D-16 and D-17 updated; D-18 to D-20 added; S-1, S-3, S-4, S-5, S-7 and S-9 updated. |
 | 4 | author | DP-2 (b), the DP-3 revert, blocking changes to `SIMULATED` alerts (ART-10), X-5 agreed (commit `a7f9d9e8`). |
 | 5 | reviewer | All four recorded. Final verdict model with sources (`explicit`, `inherited_single`, `inherited_multi`) in DP-2, propagated to DP-1, DP-5, YR-1 and YR-6. D-6 finalized; S-1, S-3, S-5 and S-7 no longer pending. Every blocking item is closed. New: X-6 (consolidate into `docs/SVS.md` / `docs/CAS.md`, freeze this file, phase-0 PR list). |
+| 5 | author | X-6 approved: draft the design documents (commit `1a5d620e`). |
+| 6 | reviewer | Drafted `docs/SVS.md` (the consolidated design, including §11 as *What changes for analysts*) and `docs/CAS.md`; added a pointer to `docs/SVS_INITIAL.md`. Four gap-fills listed in X-6. **Review closed; this file is frozen as the decision record.** |
