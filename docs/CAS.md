@@ -79,8 +79,10 @@ The package: `saq/cas/pool.py` is the API (`CASPool`), `index.py` holds every st
 the index tables and nothing else writes them, `backend.py` the backend protocol and the local
 backend, `cache.py` the read cache, `crypto` work is in `saq/crypto.py`, and `registry.py` the
 process-wide `get_cas()` (rebuilt after fork and by `reset_cas()` in tests). Errors are in
-`saq/cas/errors.py`: `ObjectNotFound`, `DigestMismatch`, `IntegrityError`, `ObjectDeleting`,
-`LegalHoldActive`, `PoolNotFound`, `CASConfigError`.
+`saq/cas/errors.py`: `ObjectNotFound`, `DigestMismatch`, `IntegrityError` (and its subclass
+`KeyMismatch`, for an object encrypted under a different system key than the loaded one),
+`ObjectDeleting`, `LegalHoldActive`, `PoolNotFound`, `CASConfigError`. `health.py` computes what
+the monitors report (see Observability).
 
 Every operation runs in a private database session on the main engine (`index.transaction()`),
 never on the thread-shared `get_db()` session: a `put` from an analysis module must not commit or
@@ -164,8 +166,9 @@ would not have written are reported and left alone; the local backend's leftover
 swept at the same time.
 
 **Verify.** `ace cas verify` re-hashes a sample of objects (`cas.verify_sample_size`, from a random
-starting point in digest order) and records `verified_at`. A corrupt or missing object is logged,
-makes the command exit 2, and is never deleted.
+starting point in digest order) and records `verified_at`. A corrupt, wrong-key or missing object is
+logged, makes the command exit 2, and is never deleted. Wrong-key objects are counted apart from
+corrupt ones: the bytes may well be intact, and the fix is the key, not the object.
 
 ## Operating constraints
 
@@ -261,6 +264,7 @@ cas:
   orphan_grace_seconds: 86400
   verify_sample_size: 1000
   put_deleting_wait_seconds: 30
+  gc_overdue_seconds: 7200         # see Observability
   read_cache:
     dir: cas_cache                 # relative to DATA_DIR
     max_bytes: 10737418240
@@ -285,18 +289,67 @@ example; nothing defines a pool out of the box.
   with the seeding migration `61b26390b94e`. Nothing in the repo enforces them yet; they exist so
   an API surface can, without a catalog migration.
 - **CLI** (`saq/cli/commands/cas.py`): `ace cas pools | stat | get | gc | verify | orphans |
-  purge | hold add | hold release`. `gc`, `verify` and `orphans` take `--pool`, `--dry-run` and
-  `--force`; `purge` and `hold` take `--actor`, which is recorded, not checked. `verify` exits 2
-  when an object is corrupt or missing.
+  node-stats | purge | hold add | hold release`. `gc`, `verify` and `orphans` take `--pool`,
+  `--dry-run` and `--force`; `purge` and `hold` take `--actor`, which is recorded, not checked.
+  `gc`, `verify` and `orphans` exit 2 when anything failed: `gc` when an object's bytes could not
+  be deleted, `verify` when an object is corrupt, under the wrong key or missing, and any of them
+  when a pool raised (the other pools still run).
 - **Cron:**
   - `etc/cron/hourly/cas-gc`;
+  - `etc/cron/hourly/cas-node-stats`, which runs on **every** node (it describes the node);
   - `etc/cron/weekly/cas-verify` and `cas-orphans`;
   - for `ttl` pools, when they exist, a partition-management task shaped like
     `bin/manage-email-archive-partitions.sh`.
 
-  All of them run on the primary node only: the commands exit 0 without doing anything unless
+  All the others run on the primary node only: the commands exit 0 without doing anything unless
   `ACE_IS_PRIMARY_NODE` is `1` (`is_primary_node()`), and `--force` overrides that for a dry run
   from another node.
+
+## Observability
+
+Everything below goes through the monitor emitter (`saq/monitor.py`) onto the `monitoring`
+fluent-bit tag, so it lands in `data/logs/monitoring*` with every field intact. The `extra={}`
+fields on CAS log lines reach a structured sink, but the local `ace-*` log files render only the
+message text, so the monitor records are the place to look. Definitions are in
+`saq/monitor_definitions.py`.
+
+| Path | From | One record per |
+|---|---|---|
+| `cas.pool` | `CASPoolMonitor`, monitoring service, every 300 s | pool |
+| `cas.node` | `ace cas node-stats`, hourly cron on every node | read cache, and local-backend pool, on that node |
+| `cas.gc`, `cas.verify`, `cas.orphans` | `CASPool.gc/verify/orphans` | pool per run (`dry_run` says whether anything changed) |
+| `error.cas_integrity` | the read path (`open`, `materialize`, `verify`) | failure |
+
+- **`cas.pool`** (`saq/cas/health.py`, `pool_health()`): `objects_present`, `objects_deleting`,
+  `size_bytes`, `stored_bytes`, `holds_live`, `holds_expired`, `legal_holds`, `objects_held`,
+  `never_verified`, `verified_last_7d`, `purges_last_24h`, `gc_overdue`, and the pool's
+  `configured`/`backend`/`encryption`/`retention`. A pool that has rows but is no longer
+  configured is reported with `configured: false`. The index is shared, so the record describes
+  the cluster and carries no `node`.
+  - **`gc_overdue`** is the one to alert on. It counts present, unheld objects further past their
+    grace than `cas.gc_overdue_seconds` (default two hourly runs), in held pools (`null`
+    otherwise). It stays above zero when GC keeps failing, and also when GC runs nowhere: the
+    maintenance commands exit 0 on a node that is not the primary, so if no node has
+    `ACE_IS_PRIMARY_NODE=1` every cron record says success.
+  - `objects_deleting` that stays above zero across samples is a deletion GC keeps failing to
+    finish (each attempt also logs an ERROR).
+- **`cas.node`** (`node_stats()`): `kind: read_cache` with `entries`, `bytes`, `max_bytes`; and
+  `kind: pool` per local-backend pool. Both carry `path`, `fs_free_bytes` and `fs_total_bytes` of
+  the filesystem underneath (measured at the nearest existing directory), and `node`.
+- **Run records** are the run's stats dataclass (`GCStats`, `VerifyStats`, `OrphanStats`) plus
+  `node` and `duration_seconds`; verify's `failures` is capped at 20 digests
+  (`failures_truncated`). GC on a `permanent` pool emits nothing, because nothing runs.
+- **`error.cas_integrity`** carries `pool`, `digest`, `operation`, `failure`, `error`, and for a
+  key mismatch `stored_key_id` / `loaded_key_id`. It is emitted alongside an ERROR log line
+  (`cas_pool`, `cas_digest`, `cas_operation`, `cas_failure` in `extra`), by the CAS itself, so a
+  failure is reported whether or not the caller logs the exception. `failure` is one of:
+  - `digest_mismatch`: plaintext bytes hash to something else (corruption or tampering);
+  - `authentication`: an encrypted object failed its GCM tag or header check (the same);
+  - `key_mismatch`: encrypted under another system key; raised as `KeyMismatch`. A configuration
+    problem, not corruption;
+  - `missing_bytes`: the index row is `present` but the backend has no bytes. The index and the
+    backend disagree. A reader that loses the accepted race with GC or purge (the row is
+    `deleting` or gone) is not reported.
 
 ## Consumers
 

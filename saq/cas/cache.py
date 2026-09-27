@@ -80,6 +80,11 @@ class ReadCache:
     def total_bytes(self) -> int:
         return sum(size for _, size, _ in self._entries())
 
+    def usage(self) -> tuple[int, int]:
+        """(entries, bytes) currently cached."""
+        entries = self._entries()
+        return len(entries), sum(size for _, size, _ in entries)
+
     def _hit(self, path: str) -> bool:
         if not os.path.isfile(path):
             return False

@@ -44,6 +44,16 @@ class IntegrityError(CASError):
     failure for an encrypted pool). No plaintext was released."""
 
 
+class KeyMismatch(IntegrityError):
+    """An encrypted object was written under a different system key than the one loaded. The bytes
+    may be intact: this is a key configuration problem, not corruption, and is reported as such."""
+
+    def __init__(self, message: str, stored_key_id: str, loaded_key_id: str):
+        super().__init__(message)
+        self.stored_key_id = stored_key_id
+        self.loaded_key_id = loaded_key_id
+
+
 class ObjectDeleting(CASError):
     """The object is being deleted by GC or purge. A hold cannot be taken on it; put() waits for
     the row to go and re-uploads, and raises this only when that wait times out."""

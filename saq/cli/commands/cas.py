@@ -2,11 +2,13 @@
 
 ``gc``, ``verify`` and ``orphans`` are the maintenance verbs the cron tasks under etc/cron run.
 They change shared state (the index, a pool's backend), so they exit 0 without doing anything on a
-node that is not the primary unless --force is given. ``purge`` and ``hold`` record who acted
-(--actor) in cas_purges / cas_holds but do not check permissions: the cas:purge and cas:hold
-catalog entries exist for an API surface to enforce.
+node that is not the primary unless --force is given; they exit 2 when anything failed.
+``node-stats`` is the one cron verb that runs on every node, since it describes the node.
+``purge`` and ``hold`` record who acted (--actor) in cas_purges / cas_holds but do not check
+permissions: the cas:purge and cas:hold catalog entries exist for an API surface to enforce.
 """
 
+import logging
 import os
 
 from saq.cli.cli_main import get_cli_subparsers
@@ -42,6 +44,21 @@ def _selected_pools(args):
         print("no cas pools are configured (cas.pools)")
 
     return pools
+
+
+def _run_per_pool(verb: str, pools, run) -> bool:
+    """Run run(pool) for each pool. A pool that raises is logged and reported, and the rest still
+    run: one pool's failure must not hide the others' results. Returns False if any pool raised."""
+    ok = True
+    for pool in pools:
+        try:
+            run(pool)
+        except Exception as e:
+            logging.error(f"cas {verb} failed", extra={"cas_pool": pool.name, "error": str(e)}, exc_info=True)
+            print(f"{pool.name}: error: {e}")
+            ok = False
+
+    return ok
 
 
 def _add_maintenance_arguments(parser):
@@ -160,21 +177,27 @@ get_parser.set_defaults(func=cli_get)
 #
 
 def cli_gc(args):
-    """Garbage-collect held pools: delete objects that have outlived their last hold by the grace period."""
+    """Garbage-collect held pools: delete objects that have outlived their last hold by the grace
+    period. Exits 2 if any object could not be deleted or any pool failed."""
     if not _primary_or_forced(args, "gc"):
         return 0
 
-    for pool in _selected_pools(args):
+    errors = 0
+
+    def run(pool):
+        nonlocal errors
         stats = pool.gc(dry_run=args.dry_run)
         if stats.skipped:
             print(f"{pool.name}: retention {pool.retention}, nothing to collect")
-            continue
+            return
 
+        errors += stats.errors
         print(f"{pool.name}: {'would delete' if args.dry_run else 'deleted'} {stats.candidates if args.dry_run else stats.deleted} "
               f"object(s), {stats.bytes_reclaimed} bytes, resumed {stats.resumed}, skipped {stats.skipped_held} "
               f"(held since the scan), pruned {stats.expired_holds_pruned} expired hold(s), {stats.errors} error(s)")
 
-    return 0
+    ok = _run_per_pool("gc", _selected_pools(args), run)
+    return 0 if ok and not errors else 2
 
 
 gc_parser = cas_sp.add_parser("gc", help="Delete objects that no longer have a live hold (held pools).")
@@ -187,20 +210,25 @@ gc_parser.set_defaults(func=cli_gc)
 #
 
 def cli_verify(args):
-    """Re-hash a sample of objects per pool. Exits 2 if any object is corrupt or missing."""
+    """Re-hash a sample of objects per pool. Exits 2 if any object is corrupt, encrypted under the
+    wrong key or missing, or any pool failed."""
     if not _primary_or_forced(args, "verify"):
         return 0
 
     failed = False
-    for pool in _selected_pools(args):
+
+    def run(pool):
+        nonlocal failed
         stats = pool.verify(sample_size=args.sample, dry_run=args.dry_run)
-        print(f"{pool.name}: checked {stats.checked}, intact {stats.verified}, corrupt {stats.mismatched}, missing {stats.missing}")
+        print(f"{pool.name}: checked {stats.checked}, intact {stats.verified}, corrupt {stats.mismatched}, "
+              f"wrong key {stats.key_mismatch}, missing {stats.missing}")
         for digest in stats.failures:
             print(f"  FAILED {pool.name}/{digest}")
 
         failed = failed or bool(stats.failures)
 
-    return 2 if failed else 0
+    ok = _run_per_pool("verify", _selected_pools(args), run)
+    return 2 if failed or not ok else 0
 
 
 verify_parser = cas_sp.add_parser("verify", help="Re-hash a sample of objects and record verified_at.")
@@ -214,24 +242,53 @@ verify_parser.set_defaults(func=cli_verify)
 #
 
 def cli_orphans(args):
-    """Remove backend bytes that have no index row and are older than the grace period."""
+    """Remove backend bytes that have no index row and are older than the grace period. Exits 2 if
+    any pool failed."""
     if not _primary_or_forced(args, "orphans"):
         return 0
 
-    for pool in _selected_pools(args):
+    def run(pool):
         stats = pool.orphans(grace_seconds=args.grace, dry_run=args.dry_run)
         print(f"{pool.name}: scanned {stats.scanned}, orphaned {stats.orphaned}, "
               f"{'would delete' if args.dry_run else 'deleted'} {stats.deleted} ({stats.bytes_reclaimed} bytes), "
               f"{stats.skipped_within_grace} within grace, {stats.unparseable} unrecognized key(s), "
               f"{stats.temp_files_removed} temp file(s) removed")
 
-    return 0
+    return 0 if _run_per_pool("orphans", _selected_pools(args), run) else 2
 
 
 orphans_parser = cas_sp.add_parser("orphans", help="Remove backend bytes that have no index row (the only operation that lists a backend).")
 _add_maintenance_arguments(orphans_parser)
 orphans_parser.add_argument("--grace", type=int, default=None, help="Seconds an orphan must be older than (default: cas.orphan_grace_seconds).")
 orphans_parser.set_defaults(func=cli_orphans)
+
+
+#
+# node-stats
+#
+
+def cli_node_stats(args):
+    """Report this node's read cache and the free space under its local-backend pools, as cas.node
+    monitor records. Runs on every node: it describes the node, not shared state."""
+    from saq.cas.health import node_stats
+    from saq.monitor import emit_monitor
+    from saq.monitor_definitions import MONITOR_CAS_NODE
+
+    for record in node_stats():
+        emit_monitor(MONITOR_CAS_NODE, record)
+        free = record["fs_free_bytes"]
+        free_text = f"{free} bytes free" if free is not None else "free space unknown"
+        if record["kind"] == "read_cache":
+            print(f"read cache {record['path']}: {record['entries']} entries, {record['bytes']} of "
+                  f"{record['max_bytes']} bytes, {free_text}")
+        else:
+            print(f"pool {record['pool']} {record['path']}: {free_text}")
+
+    return 0
+
+
+node_stats_parser = cas_sp.add_parser("node-stats", help="Emit this node's read cache and disk space as cas.node monitor records.")
+node_stats_parser.set_defaults(func=cli_node_stats)
 
 
 #

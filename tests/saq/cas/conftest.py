@@ -41,3 +41,22 @@ def age_object(pool: CASPool, digest: str, seconds: int) -> None:
 
 def backend_path(pool: CASPool, digest: str) -> str:
     return pool.backend.path(pool.key(digest))
+
+
+@pytest.fixture
+def cas_emitted(monkeypatch) -> list[tuple[str, dict]]:
+    """Every monitor record the CAS emits, as (path, data), in order."""
+    records = []
+
+    def emit(monitor, data, identifier=None):
+        records.append((monitor.path, data))
+        return True
+
+    monkeypatch.setattr("saq.cas.pool.emit_monitor", emit)
+    # the CLI imports emit_monitor inside its command functions
+    monkeypatch.setattr("saq.monitor.emit_monitor", emit)
+    return records
+
+
+def records_for(records: list[tuple[str, dict]], path: str) -> list[dict]:
+    return [data for record_path, data in records if record_path == path]

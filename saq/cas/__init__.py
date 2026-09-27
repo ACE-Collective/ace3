@@ -16,6 +16,7 @@ from saq.cas.errors import (
     DigestMismatch,
     IntegrityError,
     InvalidDigest,
+    KeyMismatch,
     LegalHoldActive,
     ObjectDeleting,
     ObjectNotFound,
@@ -27,7 +28,7 @@ from saq.cas.registry import CAS, get_cas, reset_cas
 
 __all__ = [
     "BackendError", "BackendKeyNotFound", "CAS", "CASConfigError", "CASError", "CASPool",
-    "DigestMismatch", "GCStats", "Hold", "IntegrityError", "InvalidDigest", "LEGAL_HOLD_KIND",
+    "DigestMismatch", "GCStats", "Hold", "IntegrityError", "InvalidDigest", "KeyMismatch", "LEGAL_HOLD_KIND",
     "LegalHoldActive", "ObjectDeleting", "ObjectNotFound", "ObjectStat", "OrphanStats",
     "PoolNotFound", "VerifyStats", "get_cas", "reset_cas",
 ]

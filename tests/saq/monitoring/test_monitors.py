@@ -3,12 +3,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from saq.cas import get_cas
 from saq.database import get_db_connection
 from saq.monitoring.monitors.distributed_workload_monitor import DistributedWorkloadMonitor
 from saq.monitoring.monitors.local_workload_monitor import LocalWorkloadMonitor
 from saq.monitoring.monitors.distributed_delayed_analysis_monitor import DistributedDelayedAnalysisMonitor
 from saq.monitoring.monitors.distributed_locks_monitor import DistributedLocksMonitor
 from saq.monitoring.monitors.node_status_monitor import NodeStatusMonitor
+from saq.monitoring.monitors.cas_pool_monitor import CASPoolMonitor
 from saq.monitoring.threaded_monitor import ACEThreadedMonitor
 
 
@@ -599,3 +601,18 @@ class TestNodeStatusMonitorQueries:
         emitted = self._emitted_by_node(mock_emit)["email-scanner-1"]
         assert emitted["node"] == "email-scanner-1"
         assert emitted["location"] == "email-scanner-1"
+
+
+@pytest.mark.integration
+class TestCASPoolMonitor:
+    @patch("saq.monitoring.monitors.cas_pool_monitor.emit_monitor")
+    def test_emits_one_record_per_pool(self, mock_emit):
+        get_cas().pool("test_plain").put(b"monitored")
+
+        CASPoolMonitor(name="test", frequency=1.0).execute()
+
+        emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
+        assert {c[0][0].path for c in mock_emit.call_args_list} == {"cas.pool"}
+        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent"}
+        assert emitted["test_plain"]["objects_present"] == 1
+        assert emitted["test_plain"]["size_bytes"] == len(b"monitored")

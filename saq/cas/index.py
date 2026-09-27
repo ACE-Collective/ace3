@@ -12,7 +12,7 @@ import secrets
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from sqlalchemy import delete, exists, func, or_, select, text, tuple_, update
+from sqlalchemy import case, delete, exists, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
@@ -176,6 +176,59 @@ def pool_summaries(session: Session) -> list[tuple[str, int, int, int]]:
                func.coalesce(func.sum(CASObject.stored_size), 0))
         .group_by(CASObject.pool)
         .order_by(CASObject.pool))]
+
+
+#
+# health (read-only aggregates for the cas.pool monitor, saq/cas/health.py)
+#
+# each is one grouped scan of its table. that is cheap at the size of a held pool; a high-churn ttl
+# pool will need counts kept some other way before these run against it.
+#
+
+def object_summaries(session: Session, verified_within_seconds: int) -> list[tuple]:
+    """(pool, state, count, total size, total stored_size, never verified, verified within
+    verified_within_seconds) per pool and state."""
+    return [tuple(row) for row in session.execute(
+        select(CASObject.pool, CASObject.state, func.count(),
+               func.coalesce(func.sum(CASObject.size), 0),
+               func.coalesce(func.sum(CASObject.stored_size), 0),
+               func.coalesce(func.sum(case((CASObject.verified_at.is_(None), 1), else_=0)), 0),
+               func.coalesce(func.sum(case((CASObject.verified_at >= _cutoff(verified_within_seconds), 1), else_=0)), 0))
+        .group_by(CASObject.pool, CASObject.state)
+        .order_by(CASObject.pool, CASObject.state))]
+
+
+def hold_summaries(session: Session) -> list[tuple]:
+    """(pool, live holds, expired holds, legal holds, objects with at least one live hold) per pool."""
+    live = _live_hold()
+    return [tuple(row) for row in session.execute(
+        select(CASHold.pool,
+               func.coalesce(func.sum(case((live, 1), else_=0)), 0),
+               func.coalesce(func.sum(case((live, 0), else_=1)), 0),
+               func.coalesce(func.sum(case((CASHold.holder_kind == LEGAL_HOLD_KIND, 1), else_=0)), 0),
+               func.count(func.distinct(case((live, CASHold.digest), else_=None))))
+        .group_by(CASHold.pool)
+        .order_by(CASHold.pool))]
+
+
+def count_gc_candidates(session: Session, pool: str, older_than_seconds: int) -> int:
+    """How many objects gc_candidates would return with older_than_seconds as the grace: present,
+    unheld, and last held longer ago than that."""
+    live = exists().where(CASHold.pool == CASObject.pool, CASHold.digest == CASObject.digest, _live_hold())
+    return session.execute(
+        select(func.count()).select_from(CASObject)
+        .where(CASObject.pool == pool,
+               CASObject.state == STATE_PRESENT,
+               CASObject.last_held_at < _cutoff(older_than_seconds),
+               ~live)).scalar()
+
+
+def purge_counts_since(session: Session, seconds: int) -> dict[str, int]:
+    """Purges per pool within the last seconds."""
+    return {pool: count for pool, count in session.execute(
+        select(CASPurge.pool, func.count())
+        .where(CASPurge.purged_at >= _cutoff(seconds))
+        .group_by(CASPurge.pool))}
 
 
 #

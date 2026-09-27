@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# report this node's content-addressed storage read cache and the free space under its local-backend
+# pools as cas.node monitor records (docs/CAS.md, "Observability"). runs on every node, unlike the
+# other cas tasks: it describes the node, not shared state.
+ace cas node-stats

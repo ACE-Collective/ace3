@@ -1,5 +1,6 @@
 import hashlib
 import io
+import logging
 import os
 import threading
 import time
@@ -13,6 +14,7 @@ from saq.cas import (
     Hold,
     IntegrityError,
     InvalidDigest,
+    KeyMismatch,
     LegalHoldActive,
     ObjectDeleting,
     ObjectNotFound,
@@ -24,7 +26,10 @@ from saq.database.model import CASPurge
 from saq.database.pool import get_db
 from saq.environment import get_data_dir, get_temp_dir
 
-from tests.saq.cas.conftest import age_object, backend_path
+from saq.cas.pool import VerifyStats
+from saq.monitor_definitions import MONITOR_CAS_VERIFY
+
+from tests.saq.cas.conftest import age_object, backend_path, records_for
 
 pytestmark = pytest.mark.integration
 
@@ -169,14 +174,16 @@ def test_put_waits_for_a_deleting_object_then_reuploads(plain_pool, payload):
         assert fp.read() == payload
 
 
-def test_put_gives_up_on_a_deleting_object(plain_pool, payload, monkeypatch):
+def test_put_gives_up_on_a_deleting_object(plain_pool, payload, monkeypatch, caplog):
     digest = plain_pool.put(payload)
     with index.transaction() as session:
         index.set_deleting_forced(session, plain_pool.name, digest)
 
     monkeypatch.setattr(plain_pool.cas_config, "put_deleting_wait_seconds", 0.2)
-    with pytest.raises(ObjectDeleting):
+    with caplog.at_level(logging.WARNING), pytest.raises(ObjectDeleting):
         plain_pool.put(payload)
+
+    assert any(r.levelno == logging.WARNING and getattr(r, "cas_digest", None) == digest for r in caplog.records)
 
 
 #
@@ -567,3 +574,152 @@ def test_orphans(plain_pool, payload):
     stats = plain_pool.orphans(grace_seconds=0)
     assert stats.deleted == 1
     assert not os.path.exists(new_path)
+
+
+#
+# observability (docs/CAS.md, "Observability")
+#
+
+def _corrupt(path: str, offset: int) -> None:
+    data = bytearray(open(path, "rb").read())
+    data[offset] ^= 0x01
+    open(path, "wb").write(bytes(data))
+
+
+def _integrity_errors(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == logging.ERROR and hasattr(r, "cas_failure")]
+
+
+def test_corrupt_plaintext_is_reported(plain_pool, payload, cas_emitted, caplog):
+    digest = plain_pool.put(payload)
+    _corrupt(backend_path(plain_pool, digest), len(payload) // 2)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(IntegrityError):
+        with plain_pool.open(digest):
+            pass
+
+    [record] = records_for(cas_emitted, "error.cas_integrity")
+    assert (record["pool"], record["digest"], record["operation"], record["failure"]) == \
+        ("test_plain", digest, "open", "digest_mismatch")
+    [log] = _integrity_errors(caplog)
+    assert (log.cas_pool, log.cas_digest, log.cas_operation, log.cas_failure) == ("test_plain", digest, "open", "digest_mismatch")
+
+
+def test_corrupt_encrypted_is_reported(enc_pool, payload, dest_dir, cas_emitted, caplog):
+    digest = enc_pool.put(payload)
+    _corrupt(backend_path(enc_pool, digest), V1_HEADER_SIZE + 10)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(IntegrityError) as raised:
+        enc_pool.materialize(digest, os.path.join(dest_dir, "corrupt.out"))
+
+    assert not isinstance(raised.value, KeyMismatch)
+    [record] = records_for(cas_emitted, "error.cas_integrity")
+    assert (record["operation"], record["failure"]) == ("materialize", "authentication")
+    assert [log.cas_failure for log in _integrity_errors(caplog)] == ["authentication"]
+
+
+def test_wrong_key_is_reported_as_a_key_mismatch(enc_pool, payload, cas_emitted, caplog):
+    digest = enc_pool.put(payload)
+    with open(backend_path(enc_pool, digest), "wb") as fp:
+        encrypt_stream(io.BytesIO(payload), fp, size=len(payload), password="not the system key", format_version=FORMAT_V1)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(KeyMismatch) as raised:
+        with enc_pool.open(digest):
+            pass
+
+    assert raised.value.loaded_key_id == get_key_id()
+    assert raised.value.stored_key_id != get_key_id()
+    [record] = records_for(cas_emitted, "error.cas_integrity")
+    assert record["failure"] == "key_mismatch"
+    assert (record["stored_key_id"], record["loaded_key_id"]) == (raised.value.stored_key_id, get_key_id())
+    [log] = _integrity_errors(caplog)
+    assert log.cas_failure == "key_mismatch" and log.cas_loaded_key_id == get_key_id()
+
+
+def test_missing_bytes_under_a_present_row_is_reported(plain_pool, payload, cas_emitted, caplog):
+    digest = plain_pool.put(payload)
+    os.unlink(backend_path(plain_pool, digest))
+
+    with caplog.at_level(logging.ERROR), pytest.raises(ObjectNotFound):
+        with plain_pool.open(digest):
+            pass
+
+    [record] = records_for(cas_emitted, "error.cas_integrity")
+    assert record["failure"] == "missing_bytes"
+    assert [log.cas_failure for log in _integrity_errors(caplog)] == ["missing_bytes"]
+
+
+def test_missing_bytes_under_a_deleting_row_is_the_accepted_race(plain_pool, payload, cas_emitted, caplog):
+    digest = plain_pool.put(payload)
+    with index.transaction() as session:
+        index.set_deleting_forced(session, plain_pool.name, digest)
+
+    os.unlink(backend_path(plain_pool, digest))
+    with caplog.at_level(logging.ERROR), pytest.raises(ObjectNotFound):
+        with plain_pool.open(digest):
+            pass
+
+    assert records_for(cas_emitted, "error.cas_integrity") == []
+    assert _integrity_errors(caplog) == []
+
+
+def test_verify_counts_a_key_mismatch_apart_from_corruption(enc_pool, payload, cas_emitted):
+    digest = enc_pool.put(payload)
+    with open(backend_path(enc_pool, digest), "wb") as fp:
+        encrypt_stream(io.BytesIO(payload), fp, size=len(payload), password="not the system key", format_version=FORMAT_V1)
+
+    stats = enc_pool.verify()
+    assert (stats.checked, stats.verified, stats.mismatched, stats.key_mismatch, stats.missing) == (1, 0, 0, 1, 0)
+    assert stats.failures == [digest]
+
+    [integrity] = records_for(cas_emitted, "error.cas_integrity")
+    assert (integrity["operation"], integrity["failure"]) == ("verify", "key_mismatch")
+    [run] = records_for(cas_emitted, "cas.verify")
+    assert (run["pool"], run["key_mismatch"], run["failures"], run["failures_truncated"]) == \
+        ("test_encrypted", 1, [digest], False)
+
+
+def test_maintenance_runs_emit_one_record_each(plain_pool, perm_pool, payload, cas_emitted):
+    digest = plain_pool.put(payload)
+    age_object(plain_pool, digest, GRACE + 60)
+
+    plain_pool.gc(dry_run=True)
+    plain_pool.gc()
+    perm_pool.gc()       # permanent: nothing runs, nothing is emitted
+    plain_pool.verify()
+    plain_pool.orphans()
+
+    dry_run, real = records_for(cas_emitted, "cas.gc")
+    assert (dry_run["pool"], dry_run["dry_run"], dry_run["candidates"], dry_run["deleted"]) == ("test_plain", True, 1, 0)
+    assert (real["dry_run"], real["deleted"], real["bytes_reclaimed"], real["errors"]) == (False, 1, len(payload), 0)
+    assert "node" in real and real["duration_seconds"] >= 0
+
+    [verify] = records_for(cas_emitted, "cas.verify")
+    assert (verify["pool"], verify["checked"], verify["failures"]) == ("test_plain", 0, [])
+    [orphans] = records_for(cas_emitted, "cas.orphans")
+    assert (orphans["pool"], orphans["scanned"], orphans["deleted"]) == ("test_plain", 0, 0)
+
+
+def test_gc_delete_failure_is_counted_and_reported(plain_pool, payload, cas_emitted, caplog, monkeypatch):
+    digest = plain_pool.put(payload)
+    age_object(plain_pool, digest, GRACE + 60)
+
+    def fail(key):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(plain_pool.backend, "delete", fail)
+    with caplog.at_level(logging.ERROR):
+        stats = plain_pool.gc()
+
+    assert (stats.deleted, stats.errors) == (0, 1)
+    assert plain_pool.stat(digest).state == "deleting"      # the next run's resume step retries
+    assert any(getattr(r, "cas_digest", None) == digest and r.levelno == logging.ERROR for r in caplog.records)
+    [run] = records_for(cas_emitted, "cas.gc")
+    assert run["errors"] == 1
+
+
+def test_verify_record_caps_its_failure_list(plain_pool, cas_emitted):
+    stats = VerifyStats(pool=plain_pool.name, dry_run=False, failures=[f"{i:064x}" for i in range(25)])
+    plain_pool._emit_run(MONITOR_CAS_VERIFY, stats, time.monotonic())
+    [run] = records_for(cas_emitted, "cas.verify")
+    assert len(run["failures"]) == 20 and run["failures_truncated"] is True

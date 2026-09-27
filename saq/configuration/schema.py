@@ -698,6 +698,7 @@ class CASConfig(BaseModel):
     orphan_grace_seconds: int = Field(default=24 * 3600, ge=0, description="`ace cas orphans` only removes backend bytes with no index row once they are older than this, so an in-flight put is never mistaken for an orphan")
     verify_sample_size: int = Field(default=1000, ge=1, description="how many objects per pool `ace cas verify` re-hashes per run when --sample is not given")
     put_deleting_wait_seconds: float = Field(default=30.0, ge=0, description="how long a put() waits for GC to finish removing an object it found in the deleting state before giving up, after which it re-uploads")
+    gc_overdue_seconds: int = Field(default=2 * 3600, ge=0, description="the cas.pool monitor counts an unheld object as gc_overdue once it is this long past its pool's grace period. With the hourly `ace cas gc` a count that stays above zero means GC is not running on any node, or is failing")
     read_cache: CASReadCacheConfig = Field(default_factory=CASReadCacheConfig, description="node-local read cache for materialize()/open()")
     pools: dict[str, CASPoolConfig] = Field(default_factory=dict, description="pools by name; the name is the cas_objects.pool key and part of every backend key, so it must match " + CAS_POOL_NAME_PATTERN)
 

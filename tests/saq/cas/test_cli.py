@@ -11,6 +11,7 @@ from saq.cli.commands.cas import (
     cli_get,
     cli_hold_add,
     cli_hold_release,
+    cli_node_stats,
     cli_orphans,
     cli_pools,
     cli_purge,
@@ -20,7 +21,7 @@ from saq.cli.commands.cas import (
 from saq.database.model import CASPurge
 from saq.database.pool import get_db
 
-from tests.saq.cas.conftest import age_object, backend_path
+from tests.saq.cas.conftest import age_object, backend_path, records_for
 
 pytestmark = pytest.mark.integration
 
@@ -112,6 +113,41 @@ def test_verify_exit_code(plain_pool, capsys):
     assert cli_verify(_maint(pool="test_plain")) == 2
     assert f"FAILED test_plain/{digest}" in capsys.readouterr().out
     assert plain_pool.exists(digest)
+
+
+def test_gc_exits_2_when_bytes_cannot_be_deleted(plain_pool, monkeypatch, capsys):
+    digest = plain_pool.put(PAYLOAD)
+    age_object(plain_pool, digest, 3600 + 60)
+
+    def fail(key):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(plain_pool.backend, "delete", fail)
+    assert cli_gc(_maint(pool="test_plain")) == 2
+    assert "1 error(s)" in capsys.readouterr().out
+
+
+def test_a_failing_pool_does_not_hide_the_others(plain_pool, enc_pool, monkeypatch, capsys):
+    plain_pool.put(PAYLOAD)
+
+    def fail(**kwargs):
+        raise RuntimeError("index unavailable")
+
+    for verb, command in (("verify", cli_verify), ("orphans", cli_orphans), ("gc", cli_gc)):
+        monkeypatch.setattr(enc_pool, verb, fail)
+        assert command(_maint()) == 2
+        out = capsys.readouterr().out
+        assert "test_encrypted: error: index unavailable" in out
+        assert "test_plain:" in out and "test_permanent:" in out
+
+
+def test_node_stats(cas_emitted, capsys):
+    assert cli_node_stats(Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "read cache" in out and "pool test_plain" in out
+    records = records_for(cas_emitted, "cas.node")
+    assert {record["kind"] for record in records} == {"read_cache", "pool"}
+    assert len(records) == 4
 
 
 def test_orphans(plain_pool, capsys):

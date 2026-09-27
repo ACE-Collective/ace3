@@ -173,6 +173,9 @@ cas:
   verify_sample_size: 1000
   # how long a put() waits for GC to finish deleting an object it wants to write again
   put_deleting_wait_seconds: 30
+  # the cas.pool monitor reports an unheld object as gc_overdue once it is this far past its grace
+  # period. GC runs hourly, so the default is two missed runs
+  gc_overdue_seconds: 7200
   # node-local cache of verified plaintext copies used by materialize()/open() for objects that
   # cannot be hardlinked straight out of the backend (encrypted pools, non-local backends)
   read_cache:
@@ -633,6 +636,13 @@ service_monitoring:
       python_module: saq.monitoring.monitors.node_status_monitor
       python_class: NodeStatusMonitor
       frequency: 30
+    # index state of every content-addressed storage pool (docs/CAS.md, "Observability"). a
+    # distributed monitor like the ones above. each sample aggregates over the cas tables, which is
+    # cheap at the size of a held pool; a high-churn ttl pool will need something cheaper
+    cas_pools:
+      python_module: saq.monitoring.monitors.cas_pool_monitor
+      python_class: CASPoolMonitor
+      frequency: 300
 
 service_network_semaphore:
   name: network_semaphore
