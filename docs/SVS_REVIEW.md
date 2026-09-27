@@ -22,8 +22,8 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
   start. Non-blocking items can be settled during implementation.
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
   merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
-  round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8` and round 6 at `1a5d620e`, all with no code
-  changes. §9 collects the code facts that
+  round 2. Round 4 is at `e68985eb`, round 5 at `a7f9d9e8`, round 6 at `1a5d620e` and round 7 at
+  `020f51cc`, all with no code changes. §9 collects the code facts that
   the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
 - §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
@@ -33,7 +33,18 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 
 ## 1. Status board
 
-**Round 6 at a glance: the review is closed.** Every item is AGREED, DEFERRED or SUPERSEDED.
+**Round 7 at a glance: reopened for management and reporting.** You asked for a run management
+screen modeled on the alert manage page, and for every test, detection and alert fact to be
+downloadable through the API. That is new scope, not a reversed decision, so it gets its own
+section, §8a, with 13 new items, all PROPOSED: **MGT-1 to MGT-7** (the operator's screens and
+workflow) and **RPT-1 to RPT-6** (data access). Four are blocking. Worth reading first:
+- **MGT-3** finds a real gap in ART-2: alerts from canceled or failed runs are never closed.
+- **RPT-2** finds that the alert and detection half of the request is a *core* gap: `aceapi_v2`
+  can't list alerts and has no detection-point API at all.
+
+`docs/SVS.md` is not changed until these are settled.
+
+**Round 6 at a glance (superseded by round 7): the review is closed.** Every item is AGREED, DEFERRED or SUPERSEDED.
 The design of record is now **`docs/SVS.md`**, with **`docs/CAS.md`** for the storage layer, both
 drafted this round (X-6). `docs/SVS_INITIAL.md` is kept as the original brief, with a pointer at the
 top. This file is frozen as the decision record. It stays the place to look up *why* something was
@@ -101,6 +112,21 @@ drafts, especially the four gap-fills listed in X-6's round-6 reply.
 | X-4 | Phasing | no | AGREED (r2), revised for CAS |
 | X-5 | Keep a list of what the SOC must be told | no | AGREED (r5); the list is §11 |
 | X-6 | The review is done: where the design goes next | no | AGREED (r6): `docs/SVS.md`, `docs/CAS.md` drafted |
+| **Management** *(§8a, round 7)* | | | |
+| MGT-1 | A run management screen, modeled on the alert manage page | no | PROPOSED; question on saved filters |
+| MGT-2 | The run page: one run, everything about it | no | PROPOSED |
+| MGT-3 | Lifecycle gaps: canceled and failed runs, ownership | yes | PROPOSED; question on closing Ended runs |
+| MGT-4 | The Tests screen: deciding what to run next | no | PROPOSED: (a) recommend only; (b) run requests deferred |
+| MGT-5 | Debugging a run: event log, marker sightings, hunt replay | no | PROPOSED; question on replay |
+| MGT-6 | Permissions for operators and readers | no | PROPOSED |
+| MGT-7 | One SVS area, one pattern | no | PROPOSED |
+| **Reporting** *(§8a, round 7)* | | | |
+| RPT-1 | API parity: every screen is a client of the API | yes | PROPOSED |
+| RPT-2 | What the API exposes (incl. core alert and detection-point queries) | yes | PROPOSED; question on the alerts endpoint |
+| RPT-3 | Bulk export mechanics | no | PROPOSED |
+| RPT-4 | Keep history that would otherwise be lost | yes | PROPOSED; question on verdict history |
+| RPT-5 | Who can pull what | no | PROPOSED |
+| RPT-6 | Document the data, not the reports | no | PROPOSED |
 
 ---
 
@@ -2260,6 +2286,430 @@ into `SVS_INITIAL.md` yourself.
 
 ---
 
+## 8a. Management and reporting  *(new, round 7)*
+
+Your round-7 request reopens the review for two needs the design only touches in passing:
+
+- **Management.** Someone owns the test program. They start runs, watch them, review the
+  results, decide what to run next, cancel what went wrong, and debug what didn't fire. Today the
+  design gives that person one screen, the *run review* (ART-14), and nothing to find the run to
+  review.
+- **Reporting.** Your stated philosophy is that ACE doesn't impose a reporting structure. All test,
+  detection and alert data is downloadable through the API, and people build their own reports.
+  The design lists a handful of endpoints (registration, validation) and no read side at all.
+
+X-6 froze this file except for reversed decisions. This is new scope rather than a reversal, so
+it gets its own section and IDs: **MGT-** for the operator's workflow, **RPT-** for data access.
+Nothing here reverses an agreed item. Where an item fills a gap in one (MGT-3 fills ART-2's), it
+says so. Code facts are F-28 to F-32 in §9, checked at `020f51cc`.
+
+**A terminology note first.** Under ART-1 a *test* is an Atomic Red Team atomic and a *run* is one
+execution of it. What you describe ("see, filter and manage tests, then clicking on each test gives
+us a view into that test") is a list of **runs**. Both screens are needed, and they answer
+different questions:
+
+| Screen | One row is | Answers | Item |
+|---|---|---|---|
+| **Runs** | one execution | "What is running, what needs review, what broke?" | MGT-1, MGT-2 |
+| **Tests** | one atomic from the catalog | "What should we run next?" | MGT-4 |
+
+### MGT-1 — A run management screen, modeled on the alert manage page  `PROPOSED`
+
+The manage page is the pattern analysts already know, and its filter machinery is reusable: filters
+are validated against a registry (`saq/gui/filter_names.py`), stored per user in `saved_filters`,
+and shared as self-describing URLs (`saq/gui/filter_url.py`). [F-30]
+
+**Proposal:** `/ace/svs/runs`, a paged, sortable list of runs.
+
+```
+┌ Runs ─────────────────────────────────────────── [Needs attention ▾] [Filters] [Export ▾] ┐
+│ ☐ State     Test                              Technique   Target         Started    Result       Owner │
+│ ☐ ENDED     Mimikatz sekurlsa::logonpasswords T1003.001   lab-win10-01   09-27 14:02  3/4 · 1 cand  —     │
+│ ☐ STARTED   Encoded PowerShell                T1059.001   lab-win10-02   09-27 14:10  (41 min left)  —     │
+│ ☐ ERROR     Scheduled task persistence        T1053.005   lab-win10-01   09-27 13:40  exit 1         alice │
+│ ☐ REVIEWED  Certutil download                 T1105       lab-win10-01   09-26 16:22  4/4 ✓          bob   │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Columns:** state; test name, GUID and technique; targets; launcher and batch; created, started
+and ended times; time left in the observation window while *Started*; a result summary (expected
+hit *n*/*m*, *missing*, *possibly suppressed*, new *candidates*, *late* arrivals); alert count, split
+by confidence (marker / context); owner; reviewer.
+
+**Filters**, from a run filter registry of their own, in the same `{name, inverted, values}` shape:
+- state; test; technique, including its parents (a filter on T1059 matches T1059.001);
+- target host; launcher; batch;
+- created, started, ended and reviewed date ranges;
+- result: *has missing*, *has possibly suppressed*, *has candidates*, *has late alerts*, *has
+  context-only attributions*;
+- owner; reviewer; *has open alerts* (see MGT-3).
+
+**Default view: *Needs attention*.** Ended and not reviewed, Error, Created past its start timeout,
+and terminal runs that still hold open alerts. Its count goes on the SVS navigation entry.
+
+**Bulk actions:** take ownership, cancel, close (MGT-3), and export (RPT-1). Review is never a bulk
+action, because it means deciding candidates one test at a time (MGT-2).
+
+**Batches.** `batch_id` is already accepted by `POST /runs` and does nothing. Make it a filter and a
+group-by: grouped, each batch shows one summary row (runs by state, expected hits over expected,
+missing) that expands into its runs. A launcher that runs a campaign of 50 tests then gets a
+progress bar for free. No batch table is needed; the batch is only a label.
+
+**Question:** does the saved-filter mechanism generalize to more than one screen? `saved_filters`
+has a `kind` column, but it distinguishes scratch from named filters, not which page a filter
+belongs to. I'd add a `screen` column (`alerts`, `svs_runs`, later `svs_tests`) and one filter
+registry per screen, rather than build a second saved-filter system. That is a small core change
+and it has to be decided before phase 4.
+
+> **Response:** Agree with proposal.
+
+### MGT-2 — The run page: one run, everything about it  `PROPOSED`
+
+ART-14 already put everything that isn't the analyst's business on the run review. This item
+gives that screen a shape, a URL (`/ace/svs/runs/{run_uuid}`) and a review workflow.
+
+**Proposal, top to bottom:**
+
+1. **Header.** Test name, technique, GUID and catalog commit; state and a timeline strip
+   (created → started → executed → ended → reviewed), with the observation and attribution windows
+   drawn on it; marker; targets; launcher, batch and the launcher's `extra`; owner.
+2. **Result.** One row per signature: *hit*, *missing*, *missing, possibly suppressed*,
+   *candidate*, *ignored*. Each row links to the alerts and detections behind it, and carries this
+   test's recent history for that signature (for example `✓✓✗✓✓`), so flakiness is visible where the
+   decision is made (ART-11).
+3. **Attributed alerts.** A small alert list: each alert's SVS status (ART-14), confidence, *late*,
+   the detections attributed, and whether it was associated by hand.
+4. **Candidates.** Accept or reject each one (ART-11). Global and per-test ignore actions sit here
+   too (ART-13).
+5. **Debug** (MGT-5), for runs with *missing* rows or errors.
+6. **Comments**, as on alerts.
+7. **Event log** (MGT-5): every transition, launcher call, attribution and operator action, in
+   order.
+
+**Review is a sign-off with preconditions.** *Mark reviewed* is enabled only when every candidate
+is accepted or rejected, and every context-only (`TEST?`) attribution has been left as is or
+marked *not a test*. Reviewing takes ownership if nobody holds it. Reviewing is what sets
+`SIMULATED` on the run's alerts (ART-10), so it shouldn't be possible with decisions left open.
+
+**Live while it runs.** While a run is *Started*, the page refreshes like the manage page does and
+shows alerts as they are attributed. That is the "is it working?" view for the person who just
+launched the test.
+
+**A reviewed run can change.** A late alert inside the attribution window, or a manual
+association, can change the result after sign-off. The page then shows *"changed since review:
+1 late alert"*, and the run appears in *Needs attention* until someone re-reviews it. The result
+as it was at sign-off is kept (RPT-4).
+
+> **Response:** Agree with proposal.
+
+### MGT-3 — Lifecycle gaps: canceled and failed runs, ownership  `PROPOSED` · blocking
+
+Filling in the operator's actions showed three things ART-2 doesn't settle.
+
+**1. Alerts from canceled and failed runs are never closed.** `SIMULATED` is set when a run is
+*Reviewed* (ART-10), and only *Ended* runs can be reviewed. A run canceled or failed *after*
+`start` has windows, so its alerts are attributed and routed to the SVS queue, and then nothing
+ever dispositions them. They sit `OPEN` in the SVS queue indefinitely.
+
+**2. What *Cancel* means for attribution isn't stated.** A launcher cancels because something went
+wrong, and the test may well have run. If attribution stopped at cancel, the test's alerts would
+fall back to the normal queue, and every marker in them would read as `MARKER MISMATCH`, which is
+exactly the loud signal analysts are told to investigate.
+
+**3. Runs have no owner.** With more than one operator, two people review the same run, or nobody
+does.
+
+**Proposal:**
+- **Cancel stops the run, not attribution.** A canceled run keeps attributing inside its
+  attribution window, so its alerts still land in the SVS queue with a `TEST` badge. The result
+  isn't computed.
+- **A new terminal action, *Close*,** for *Canceled* and *Error* runs, from the run page or in bulk.
+  It sets `SIMULATED` on the run's fully attributed alerts and FP on ignored detections, as
+  *Reviewed* does. It does **not** compute a result, learn expectations or count toward coverage.
+  The state becomes **Closed**. A timer closes runs automatically when their attribution window
+  ends, so nothing depends on someone remembering.
+- **Error before `start`** (the start timeout) has no windows and so no alerts, so it needs no
+  closing. It still shows in *Needs attention* once, so a broken launcher is noticed.
+- **Runs get an owner**, with the same model and the same "take from another analyst" confirmation
+  as alerts (`app/alert_ownership.py`). Nobody owns a run until someone takes it or reviews it.
+
+The revised transitions, with changes in bold:
+
+| From | Action | To |
+|---|---|---|
+| Created | `start` / timer | Started / Error |
+| Started | `executed` error / cancel / timer | Error / Canceled / Ended |
+| Ended | review | Reviewed |
+| **Canceled, Error (after start)** | **close / attribution window ends** | **Closed** |
+| **Reviewed** | **late alert or association** | **Reviewed, flagged *changed since review*** |
+
+**Question:** should *Close* be allowed on an *Ended* run as well, for a run the operator knows is
+bad (the wrong target, a broken image) and doesn't want learned from? I'd say yes. It is the honest
+way to discard a run, and the alternative is reviewing it and rejecting every candidate.
+
+> **Response:** Agree with proposal and "yes" to allowing close on an "ended" run as well.
+
+### MGT-4 — The Tests screen: deciding what to run next  `PROPOSED`
+
+ACE doesn't run tests, but it holds everything needed to decide which one to run next: the
+catalog (ART-12), every run, the expectations, and the per-rule `content_hash` of each expected
+signature (the input to *stale*, COV-1).
+
+**Proposal:** `/ace/svs/tests`, one row per catalog test, with the same list, filter and export
+machinery as MGT-1.
+- **Columns:** technique; name; platforms; repository; the test's state; its last run and last
+  reviewed run; number of runs; expected signatures; *missing* in the last *n* runs.
+- **Test state**, one per row, derived from the COV-1 technique states:
+  - *never run*;
+  - *awaiting review*: it has runs, and none of them is reviewed;
+  - *no expectations*: reviewed, with every candidate rejected;
+  - *validated*;
+  - *failing*: the last reviewed run had a *missing*;
+  - *stale*: validated, but an expected signature or the test itself has changed since.
+- **Filters:** state, technique (with parents), platform, repository, *last run older than*, and
+  the technique's coverage state. *Stale* and *failing* first is the natural "run these next" view.
+- **Row actions:** open the test (its description, commands and input arguments from the catalog,
+  its expectations and ignores, and its run history), and open its runs in MGT-1.
+
+**Question: should ACE also queue runs for the launcher?**
+- **(a) Recommend only.** The screen and its export (RPT-1) are the operator's to-do list, and the
+  operator tells the launcher what to run by whatever means the site uses.
+- **(b) A request queue.** The operator selects tests and targets and clicks *Request run*. The
+  launcher polls `GET /svs/run-requests?launcher=…` and registers each run with its `request_id`,
+  so the request shows as fulfilled. ACE still never executes anything, which keeps D-12 and the
+  out-of-scope line intact. But it becomes the place where the operator drives the program, and a
+  launcher that doesn't poll leaves requests hanging.
+
+I lean **(a) for the first version and (b) deferred**. (a) is already useful, (b) is a contract every
+site's launcher has to implement, and we'll know after a few months whether operators want to drive
+from ACE. The API shape above can stay reserved.
+
+> **Response:** Agree with the proposal to view existing tests. Do not agree with "recommending", that is up to the team entirely, and they may have custom logic they want to use. So this would be a read-only view into the available tests.
+
+### MGT-5 — Debugging a run: event log, marker sightings, hunt replay  `PROPOSED`
+
+When an expected signature is *missing*, the operator's question is *why*, and D-4 means SVS can't
+answer it by itself. It can collect what the operator needs to answer it.
+
+**Proposal:**
+1. **A run event log** (`svs_run_events`): an append-only row for every state transition, every
+   launcher call (with its payload), every attribution (`late` included), every manual association
+   and disassociation, every candidate decision and every close or review, each with its actor and
+   time. The run page renders it as a timeline. It also serves RPT-3 as a change feed.
+2. **Marker sightings.** The router (ART-15) already resolves every marker it finds. It records each
+   sighting, agreeing or not: the alert, the scan point (observable, details, analysis output, file
+   content), and why it didn't agree when it didn't (unknown run, other host, outside window). That
+   turns *"why did this alert get `MARKER MISMATCH`?"* and *"did any telemetry carry the marker at
+   all?"* into a lookup instead of a search.
+3. **Per missing hunt signature:**
+   - whether the hunt executed over the run's window, and any errors it logged (F-31: what the
+     hunter records about past executions has to be checked; if it keeps only the last execution,
+     SVS records executions of expected hunts while a run is open);
+   - the suppression note from ART-8;
+   - **Replay:** run the hunt over the run's window without submitting alerts, the equivalent of
+     `ace hunt execute <hunt> -s … -e …`, and show whether the results include the target host or
+     the marker. That is the manual version of the telemetry question D-4 dropped. *Rows that
+     include the target but didn't alert* means the signature logic; *no rows at all* points to the
+     data, or to a query that never ran.
+4. **Per missing YARA signature:** there is nothing to replay. The run page links the files ACE
+   captured from the run's alerts, so the operator can check whether the expected file ever
+   arrived.
+
+**Question:** replay executes a query against the SIEM from a button in the GUI. It needs its own
+permission (MGT-6), and the same rate limit or single-flight guard the hunter already uses for
+ad-hoc execution, if there is one. Acceptable?
+
+> **Response:** Agree with proposal.
+
+### MGT-6 — Permissions for operators and readers  `PROPOSED`
+
+The agreed permissions (X-1) cover the launcher (`svs:run_register`), CI (`svs:validate`) and
+samples, and leave everything an operator does under `svs:admin`. That makes "can read test
+results" the same permission as "can change the SVS configuration".
+
+**Proposal:** add
+
+| Permission | Grants |
+|---|---|
+| `svs:run_read` | The Runs and Tests screens, run pages, coverage, and the read APIs behind them (RPT-2) |
+| `svs:run_manage` | Take ownership, cancel, close, review, decide candidates, ignores, manual association |
+| `svs:hunt_replay` | Hunt replay from a run page (MGT-5) |
+| `svs:validation_read` | Validation reports and their APIs; the CI key keeps only `svs:validate` |
+
+`svs:admin` keeps the rest: retiring and deleting samples, global ignores, and configuration. A
+reporting API key gets only the `*_read` permissions, plus `alert:read` (RPT-5).
+
+> **Response:** Agree with proposal.
+
+### MGT-7 — One SVS area, one pattern  `PROPOSED`
+
+The design already implies four more screens: validation reports, the sample browser, coverage,
+and the declared-vs-measured worklist. If each is designed on its own, they'll end up with four
+different filter bars and four different ideas of export.
+
+**Proposal:** one *SVS* entry in the navigation, with tabs: **Runs**, **Tests**, **Validations**,
+**Samples**, **Coverage**, **Worklist**. Every tab is the same two-level pattern: a filtered list
+(MGT-1's machinery, its own filter registry, saved filters, share URLs, export) and a detail page
+per row. Validations get the same *Needs attention* default (reports with regressions or new FPs
+not yet looked at).
+
+> **Response:** Agree with proposal.
+
+### RPT-1 — API parity: every screen is a client of the API  `PROPOSED` · blocking
+
+This is your philosophy, stated as a rule the implementation can be held to.
+
+**Proposal:**
+- **Every SVS screen reads through a public `aceapi_v2` endpoint**, and anything a screen shows can
+  be fetched with the same filters. A screen with no endpoint behind it is a bug. (This is also
+  what CLAUDE.md already asks of new work: API in `aceapi_v2`, Flask as the consumer through
+  `run_async_with_session()`.)
+- **A list filter is the same object in both places.** Every list endpoint accepts the screen's
+  filter list (the `{name, inverted, values}` entries) and the screen's share-URL encoding, so a
+  filter built in the GUI can be pasted into a script and return the same rows.
+- ***Export* in the GUI is the API.** The export menu offers the current list as CSV, JSON or NDJSON,
+  and *Copy API URL*, which is the same request for a script to make.
+- **SVS ships screens for operating, not reports.** There is no report builder, no scheduled PDF
+  and no dashboard beyond the coverage view. Reports are built outside ACE from the API. A
+  reporting need that the API can't meet is an API bug, fixed by adding data, not by adding a
+  report.
+- **Identifiers are stable and public**, so downstream data joins cleanly: run UUID (not the
+  integer key), test GUID, signature UUID, technique ID, alert UUID, detection `content_hash`,
+  sample `sha256`, validation UUID.
+
+> **Response:** Agree with propsoal.
+
+### RPT-2 — What the API exposes  `PROPOSED` · blocking
+
+Your request covers test, detection and alert data. SVS's own data is new and easy. Alert and
+detection data is where the gap is, and it is a gap in core ACE, not in SVS: `aceapi_v2` can fetch
+one alert by UUID, but it can't list or query alerts, and it has no detection-point endpoint at
+all. The only bulk alert export is the Flask manage page's CSV, which uses the session's filters
+and fixed columns. [F-28, F-29]
+
+**Proposal, core (not SVS):**
+
+| Endpoint | Returns | Phase |
+|---|---|---|
+| `GET /api/v2/alerts` | Alert rows (database state, not the analysis tree): uuid, times, queue, disposition, owner, company, tags, SVS status. Takes the manage page's filter list and share-URL encoding and applies the same node scoping (`node_scope_locations()`). | 0, its own PR |
+| `GET /api/v2/detection-points` | Detection points with their effective verdict and verdict source (DP-1, DP-2), signature UUID and family, alert UUID, node identity (DP-7). Filters: signature, family, alert date, queue, verdict, source, has override. | 1 |
+| `GET /api/v2/alerts/{uuid}/detection-points` | The same, for one alert. | 1 |
+
+The name `detection-points` is deliberate: `/api/v2/detection` is already taken by
+observable-detection settings, which is a different thing (F-29).
+
+**Proposal, SVS** (`/api/v2/svs/…`, list and detail for each):
+
+| Resource | Contents |
+|---|---|
+| `runs` | Everything on the Runs screen and the run page header |
+| `runs/{uuid}/results` | Per-signature results, live and as reviewed (RPT-4) |
+| `runs/{uuid}/attributions` | Per-detection attribution rows |
+| `runs/{uuid}/events`, `runs/{uuid}/marker-sightings` | MGT-5 |
+| `tests` | The catalog with test state (MGT-4) |
+| `expectations`, `ignores` | Current expectations and ignore lists |
+| `validations`, `validations/{uuid}/results` | YARA validation reports, per `(sample, rule)` |
+| `samples`, `samples/{sha256}/labels` | Capture metadata and labels; bytes stay behind `svs:sample_download` |
+| `coverage`, `coverage/history` | Technique states now, and over time (RPT-4) |
+| `worklist` | Declared-vs-measured items and resolutions |
+
+The per-signature TP/FP counts DP-6 promised come from `detection-points`, filtered and grouped
+downstream. SVS doesn't need an endpoint of its own for them.
+
+**Question:** `GET /api/v2/alerts` is a real core addition. It reuses `build_alert_query()` but
+needs it separated from the Flask session. Do you want it as a phase-0 PR, or does it already
+exist in a plan elsewhere that I haven't seen?
+
+> **Response:** Agree with proposal, and agree is a phase-0 PR. Also review the existing alert search capability available in the "ace ai api". How does that overlap with this?
+
+### RPT-3 — Bulk export mechanics  `PROPOSED`
+
+Report builders pull everything, repeatedly. The list endpoints need to be built for that from the
+start.
+
+**Proposal:**
+- **Keyset pagination** with an opaque cursor over a stable sort (the row's id), not offsets, so a
+  long pull doesn't skip or repeat rows while new ones arrive. Pages are capped. NDJSON streams the
+  whole result without paging.
+- **Formats:** JSON (a page plus its `next` cursor), NDJSON, and CSV for the lists that are flat.
+  Nested data (a run's results, an alert's detections) is its own endpoint, so CSV never has to
+  flatten a tree.
+- **Incremental pulls with `changed_since`.** Every SVS table gets `updated_at`, which is cheap
+  because they are all new. Deleted and disassociated rows appear in the run event log (MGT-5) and
+  a sample deletion audit, so a mirror can apply deletes as well as inserts.
+- **Alerts can't do `changed_since` yet.** `alerts.version` changes on every change, but it is a
+  random token, not orderable (F-32). An `alerts.updated_at`, set in the same two places the version
+  rotates (`Alert.sync()` and `touch_alerts()`), makes it possible. It's a small core change that
+  goes with the alerts endpoint.
+- **Schemas are versioned** through the OpenAPI document FastAPI generates for `aceapi_v2`. Adding a
+  field is fine; renaming or removing one is a breaking change and is noted in the changelog.
+
+> **Response:** Agree with proposal.
+
+### RPT-4 — Keep history that would otherwise be lost  `PROPOSED` · blocking
+
+A lot of SVS is computed when read: effective verdicts, run results (recomputed on late alerts and
+relabels), coverage states. That is right for correctness, but a report about the past can't be
+rebuilt from data that only describes the present. If these aren't recorded from day one, they're
+gone:
+
+1. **A run's result as reviewed.** Store the result at sign-off, alongside the live one
+   (`svs_run_results` gets an `as_reviewed` flag, or a separate snapshot table). A report of "tests
+   passing per month" needs what the reviewer signed, not what the run looks like today.
+2. **Coverage over time.** A daily cron task (`etc/cron/daily/svs-coverage-snapshot`) writes
+   technique × state rows for that day. That is a few thousand small rows a day, and it is the only
+   way to chart coverage going up or down.
+3. **Verdict history.** `detection_point_verdicts` holds the current explicit verdict (DP-1), so
+   an FP flipped back to TP leaves no trace. An append-only history row per change (who, when, old,
+   new) lets a report show label churn per signature, and shows that a regression report was run
+   against a label that later changed.
+
+**Question:** (1) and (2) are cheap and I'd call them required. (3) grows with analyst activity
+rather than with alerts, so it stays small. Include it, or leave it until someone asks?
+
+> **Response:** Agree with proposal, and I'm OK with including (3) as well.
+
+### RPT-5 — Who can pull what  `PROPOSED`
+
+Bulk read APIs raise the stakes of a leaked key. Two rules keep that bounded:
+- **A reporting key is read-only.** It belongs to an automation user with the `*_read`
+  permissions (MGT-6) and `alert:read`, and nothing else, like the CI key (YR-3).
+- **Bytes never come out of a reporting endpoint.** Samples, alert files and email content stay
+  behind their existing download permissions (`svs:sample_download`, the alert download endpoint).
+  Reporting endpoints carry hashes, names, paths and metadata. The CI response keeps its narrower
+  rule (counts, rule names and UUIDs only).
+- **Scoping follows the GUI.** The alerts and detection-points endpoints apply the same node scoping
+  as the manage page. SVS data is global, as coverage is (COV-1).
+
+> **Response:** Agree with proposal.
+
+### RPT-6 — Document the data, not the reports  `PROPOSED`
+
+Since ACE won't ship the reports, the data has to explain itself.
+
+**Proposal:** a *Reporting* section in `docs/SVS.md` (or its own `docs/SVS_API.md`):
+- a data dictionary for every exported field, in particular those whose meaning comes from the
+  design: verdict source, confidence, *late*, *possibly suppressed*, test and coverage states;
+- the joins between resources (run → attributions → detection points → alerts);
+- three worked examples, as `curl` plus a short script: per-signature FP rate over 90 days, test
+  pass rate per month, technique coverage over time.
+
+The examples double as integration tests of the API, so a change that breaks them fails the build.
+
+> **Response:** Agree with proposal.
+
+### Phasing impact (for X-4 once agreed)
+
+| Phase | Adds |
+|---|---|
+| 0 | `GET /api/v2/alerts` and `alerts.updated_at` (RPT-2, RPT-3); saved filters keyed by screen (MGT-1) |
+| 1 | The detection-points endpoints; verdict history, if chosen (RPT-2, RPT-4) |
+| 2, 3 | Samples and Validations tabs, with their list APIs (MGT-7, RPT-2) |
+| 4 | Runs and Tests screens, the run page, ownership, *Close*, event log, marker sightings, hunt replay, the run APIs, the reviewed-result snapshot (MGT-1 to MGT-6, RPT-2, RPT-4) |
+| 5 | Coverage history snapshots and the coverage and worklist APIs (RPT-2, RPT-4) |
+
+---
+
 ## 9. Code facts this review relies on
 
 These are verified against the checkout. Items marked **(defect)** are worth fixing whether or not
@@ -2373,6 +2823,27 @@ SVS happens.
   callers, and all of them go through it (ART-15).
 - **F-27 `valid_queues` / `invalid_queues`** are set only in `etc/saq.unittest.default.yaml`, on
   disabled test modules.
+- **F-28 `aceapi_v2` can't list alerts** (checked at `020f51cc`). `aceapi_v2/alerts/router.py` has
+  `GET /{alert_uuid}`, `/{alert_uuid}/download`, `/{alert_uuid}/logs` and `POST /bulk-add-observable`.
+  The only bulk alert export is Flask's `/export_alerts_to_csv` (`app/analysis/views/export.py:113`),
+  which runs `build_alert_query(get_effective_filters())` over the *session's* filters with fixed
+  columns. The legacy `aceapi` has no alert query either (RPT-2).
+- **F-29 There is no detection-point API.** `aceapi_v2/detection/` manages *observable-detection*
+  settings (expiration, types), not `detection_points` rows. The name is taken (RPT-2).
+- **F-30 Manage-page filters are reusable data.** `saq/gui/filter_names.py` is the registry of
+  filter names; `aceapi_v2/saved_filters/schemas.py::FilterEntry` validates the
+  `{name, inverted, values}` shape for the modal, the API and share URLs alike; `saved_filters`
+  (`saq/database/model.py:2528`) stores them per user, with `kind` separating scratch from named
+  filters. Nothing says which screen a filter belongs to (MGT-1).
+- **F-31 (unverified) Hunt execution history.** `ace hunt execute <hunt> -s <start> -e <end>`
+  (`saq/cli/commands/hunt.py:158`) runs a hunt over an arbitrary window without submitting alerts
+  unless asked. Whether the hunter keeps a record of *past* executions (as opposed to the time of the
+  last one) has not been checked (MGT-5).
+- **F-32 `alerts.version` is not orderable.** `touch_alerts()` (`saq/database/util/alert.py:181`) and
+  `Alert.sync()` rotate it to a new random token, which is what the v2 ETag uses. There is no
+  `updated_at` on `alerts`; the only timestamps are per field (`insert_date`, `disposition_time`,
+  `owner_time`, `review_time`, `removal_time`, ...), so "alerts changed since *t*" can't be asked
+  (RPT-3).
 
 ---
 
@@ -2595,3 +3066,4 @@ settled yet.
 | 5 | reviewer | All four recorded. Final verdict model with sources (`explicit`, `inherited_single`, `inherited_multi`) in DP-2, propagated to DP-1, DP-5, YR-1 and YR-6. D-6 finalized; S-1, S-3, S-5 and S-7 no longer pending. Every blocking item is closed. New: X-6 (consolidate into `docs/SVS.md` / `docs/CAS.md`, freeze this file, phase-0 PR list). |
 | 5 | author | X-6 approved: draft the design documents (commit `1a5d620e`). |
 | 6 | reviewer | Drafted `docs/SVS.md` (the consolidated design, including §11 as *What changes for analysts*) and `docs/CAS.md`; added a pointer to `docs/SVS_INITIAL.md`. Four gap-fills listed in X-6. **Review closed; this file is frozen as the decision record.** |
+| 7 | reviewer | Reopened at your request for management and reporting (new §8a, at `020f51cc`). New: MGT-1 to MGT-7 (Runs screen, run page, lifecycle gaps with *Close* and run ownership, Tests screen, debugging, permissions, one SVS area) and RPT-1 to RPT-6 (API parity, what the API exposes, bulk export, history, access, data docs). Found: alerts of canceled/failed runs are never closed (MGT-3); `aceapi_v2` has no alert query and no detection-point API (RPT-2). New code facts F-28 to F-32. |
