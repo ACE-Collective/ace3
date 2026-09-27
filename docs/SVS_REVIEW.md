@@ -21,41 +21,50 @@ A working review of `docs/SVS_INITIAL.md`. We both edit this file, and each revi
 - **Blocking** means the item has to be settled before implementation of that subsystem can
   start. Non-blocking items can be settled during implementation.
 - Code references are to this checkout: round 1 at `ec3cab18`, round 2 at `6967686c` (after the
-  merge of `main`), both 2026-09-26. §9 collects the code facts that the items rely on.
+  merge of `main`), both 2026-09-26. Round 3 (2026-09-27) is at `654df8dc`; no code changed since
+  round 2. §9 collects the code facts that the items rely on.
 - §10 holds decision text ready to paste into the *Design Decisions* list of `SVS_INITIAL.md`.
+- §11 is the standing list of what the SOC needs to be told (X-5). Settling an item that changes
+  anything analysts or detection engineers see includes updating it.
 
 ---
 
 ## 1. Status board
 
-**Round 2 at a glance.** 26 items settled and one deferred. Seven items changed direction after your answers:
-TP-1, DP-3, DP-4, YR-3, ART-6, ART-11 and COV-1. There is one new section, §7 (the CAS layer you
-asked for in YR-8), and six new items: DP-7, YR-11, ART-14, ART-15, and CAS-1 to CAS-8. The items
-that need you this round:
+**Round 3 at a glance.** Nearly everything you answered is now settled. Round 3 adds §11
+(*What the SOC needs to be told*, your TP-3 request) and two new items: ART-16 (which signature
+meta key carries a manual technique mapping) and X-5 (keeping the SOC list up to date). CAS-7 was
+revised after reviewing the email-archive pruning history, as you asked. Waiting on you:
 
-1. **CAS-2**: pick a CAS design.
-2. **ART-15**: approve the alert-router approach to engine-level marker detection.
-3. **ART-11**: confirm the measured-expectations model and where manual technique mappings live.
-4. **TP-2 / TP-3**: classify the borderline dispositions.
-5. **YR-3**: CI-triggered or ACE-polled validation.
+1. **ART-16**: the manual-mapping meta key. Your ART-11 answer and the earlier "ignore the existing
+   mappings" can't both hold if the key is the existing `mitre_attack`.
+2. **ART-10**: name and behavior of the custom test disposition.
+3. **CAS-7**: check the revised pruning constraints.
+4. **Carried over from round 2, unanswered:**
+   - **YR-3**: CI-triggered or ACE-polled validation.
+   - **DP-4**: the revised "move to the file" proposal.
+   - **DP-2**: accept, and run the follow-up query.
+   - **ART-8**: the staged approach.
+   - **DP-3**: an example, non-blocking.
+5. **§11**: check that the SOC list is complete, and that it is the right list.
 
 | ID | Topic | Blocking | Status |
 |---|---|---|---|
 | **Foundations** | | | |
 | TP-1 | What "True Positive" means for a signature | yes | AGREED (r2) |
 | TP-2 | TP/FP classification is three-valued; reuse existing config | yes | AGREED (r2) |
-| TP-3 | Classify the borderline dispositions *(new r2)* | yes | OPEN |
+| TP-3 | Classify the borderline dispositions | yes | AGREED (r3) |
 | DP-1 | Store verdict overrides, derive effective verdicts | yes | AGREED (r2), amended by DP-3 |
-| DP-2 | "Single detection point" should be "single signature" | yes | PROPOSED (r2: data reviewed) |
-| DP-3 | Behavior when the alert disposition changes | yes | AGREED (r2), one question |
-| DP-4 | YARA detection points: move to the file | yes | PROPOSED (r2: revised) |
+| DP-2 | "Single detection point" should be "single signature" | yes | PROPOSED, waiting since r2 |
+| DP-3 | Behavior when the alert disposition changes | yes | AGREED (r2); non-blocking question open |
+| DP-4 | YARA detection points: move to the file | yes | PROPOSED (r2 revision), waiting |
 | DP-5 | GUI for detection-point verdicts | no | AGREED (r2) |
 | DP-6 | Verdicts for all signature families, not only YARA | no | AGREED (r2) |
-| DP-7 | Detection identity must include the node it sits on *(new r2)* | yes | PROPOSED |
+| DP-7 | Detection identity must include the node it sits on | yes | AGREED (r3) |
 | **YARA static regression** | | | |
 | YR-1 | Define "difference" and "baseline" | yes | AGREED (r2) |
 | YR-2 | Scan the whole corpus with the whole ruleset | yes | AGREED (r2) |
-| YR-3 | Trigger, transport and where the report goes | yes | PROPOSED (r2: revised) |
+| YR-3 | Trigger, transport and where the report goes | yes | PROPOSED (r2 revision); (a)/(b) question open |
 | YR-4 | What a sample record must capture | yes | AGREED (r2) |
 | YR-5 | When capture happens | yes | AGREED (r2) |
 | YR-6 | Label conflicts across alerts | no | AGREED (r2) |
@@ -63,40 +72,42 @@ that need you this round:
 | YR-8 | Sample store: CAS layer, retention, access | yes | superseded by §7 (CAS-*) |
 | YR-9 | Isolation of PR rule compilation | no | AGREED (r2) |
 | YR-10 | The dynamic case (`d(t(Y))`) in regression | no | DEFERRED (r2) |
-| YR-11 | `archive()` must actually free derived files *(new r2)* | no | PROPOSED |
+| YR-11 | `archive()` must actually free derived files | no | AGREED (r3); its own PR, before SVS |
 | **Test execution (Atomic Red Team)** | | | |
 | ART-1 | Terminology: *test* vs *run* | no | AGREED (r2) |
 | ART-2 | Registration API and lifecycle transitions | yes | AGREED (r2) |
 | ART-3 | Observation window length | no | AGREED (r2) |
 | ART-4 | Marker threat model | yes | AGREED (r2) |
-| ART-5 | Where ACE looks for the marker | yes | AGREED (r2); the "where" moves into ART-15 |
+| ART-5 | Where ACE looks for the marker | yes | AGREED (r2); the "where" is in ART-15 |
 | ART-6 | When attribution happens and how the queue moves | yes | superseded by ART-15 |
 | ART-7 | Alerts that mix test and non-test detections | yes | AGREED (r2) |
-| ART-8 | Hunt suppression / dedup / group_by swallow test detections | no | PROPOSED (r2: staged) |
+| ART-8 | Hunt suppression / dedup / group_by swallow test detections | no | PROPOSED (r2: staged), waiting |
 | ART-9 | Test host definition and unregistered-host handling | no | AGREED (r2) |
-| ART-10 | What happens to test alerts downstream | no | OPEN (r2: narrowed) |
-| ART-11 | Expectations come from measurement, not declared techniques | yes | PROPOSED (r2: rewritten) |
+| ART-10 | What happens to test alerts downstream | no | AGREED (r3); one question on the new disposition |
+| ART-11 | Expectations come from measurement, not declared techniques | yes | AGREED (r3); meta key moved to ART-16 |
 | ART-12 | Why ACE holds the ART repos, and what it parses | no | AGREED (r2) |
 | ART-13 | Launcher noise vs per-test ignores; manual (re)association | no | AGREED (r2) |
-| ART-14 | Keep the analyst's view simple: one SVS status per alert *(new r2)* | yes | PROPOSED |
-| ART-15 | Engine-native marker detection through an alert-router registry *(new r2)* | yes | PROPOSED |
+| ART-14 | Keep the analyst's view simple: one SVS status per alert | yes | AGREED (r3) |
+| ART-15 | Engine-native marker detection through an alert-router registry | yes | AGREED (r3) |
+| ART-16 | Which meta key carries a manual technique mapping *(new r3)* | yes | OPEN |
 | **Coverage** | | | |
-| COV-1 | The Coverage subsystem | yes | OPEN (r2: strawman revised) |
+| COV-1 | The Coverage subsystem | yes | AGREED (r3); tenant question defaulted |
 | COV-2 | Goal 2 (telemetry exists) has no mechanism | yes | AGREED (r2): goal 2 dropped |
-| **Content-addressed storage (new r2)** | | | |
-| CAS-1 | Scope and consumers | yes | PROPOSED |
-| CAS-2 | Three candidate designs | yes | OPEN |
-| CAS-3 | Data model and API (design C) | yes | PROPOSED |
-| CAS-4 | Retention, holds, GC correctness | yes | PROPOSED |
-| CAS-5 | Encryption and object naming | yes | OPEN |
-| CAS-6 | Backends and the relationship to `saq/storage` | yes | OPEN |
-| CAS-7 | Where the CAS index lives | no | PROPOSED |
-| CAS-8 | Migrating the existing byte stores | no | DEFERRED |
+| **Content-addressed storage** | | | |
+| CAS-1 | Scope and consumers | yes | AGREED (r3) |
+| CAS-2 | Three candidate designs | yes | AGREED (r3): design C |
+| CAS-3 | Data model and API (design C) | yes | AGREED (r3) |
+| CAS-4 | Retention, holds, GC correctness | yes | AGREED (r3) |
+| CAS-5 | Encryption and object naming | yes | AGREED (r3): plain names, one system key |
+| CAS-6 | Backends and the relationship to `saq/storage` | yes | AGREED (r3): (b) |
+| CAS-7 | Where the CAS index lives, and how it is pruned | no | PROPOSED (r3: revised after pruning review) |
+| CAS-8 | Migrating the existing byte stores | no | DEFERRED (r3 confirmed): SVS first |
 | **Cross-cutting** | | | |
-| X-1 | Placement in the codebase and permissions | no | DEFERRED (r2): until CAS settles |
+| X-1 | Placement in the codebase and permissions | no | AGREED (r3) |
 | X-2 | Which ACE instance owns SVS | no | AGREED (r2) |
 | X-3 | Name collision with `lib/signature_validator` | no | AGREED (r2) |
 | X-4 | Phasing | no | AGREED (r2), revised for CAS |
+| X-5 | Keep a list of what the SOC must be told *(new r3)* | no | PROPOSED; the list is §11 |
 
 ---
 
@@ -216,7 +227,7 @@ config. A classification map keyed by disposition name has to be validated again
 >   config? I'd remove them, and make the config the single source of the disposition list, with
 >   the constants kept only for the names code refers to. That is folded into TP-3.
 
-### TP-3 — Classify the borderline dispositions  `OPEN` · blocking  *(new, round 2)*
+### TP-3 — Classify the borderline dispositions  `AGREED` · blocking  *(new, round 2)*
 
 Under TP-1's definition, most dispositions classify themselves. A few need your call. Here is my
 proposed default map for `disposition_classification`; anything absent is unclassified:
@@ -235,6 +246,25 @@ proposed default map for `disposition_classification`; anything absent is unclas
 restore them?
 
 > **Response:** Classify GRAYWARE and POLICY_VIOLATION as `tp`. Remove the four hidden ones. I'm making an important decision here on behalf of our whole SOC that needs to be sure to be communicated. So let's keep track of the most important decisions we're making to make sure everyone understands (what needs to be clearly communicated to the rest of the team that is using this system?)
+
+> **Round 3 (reviewer):** Recorded:
+> - `GRAYWARE` and `POLICY_VIOLATION` classify as **tp**.
+> - The four hidden constants (`INSIDER_DATA_CONTROL`, `INSIDER_DATA_EXFIL`, `APPROVED_BUSINESS`,
+>   `APPROVED_PERSONAL`) are removed.
+> - Together with TP-2, that makes the config the only list of dispositions.
+> - The custom test disposition from ART-10 joins the map as **tp**.
+>
+> The final map:
+>
+> | Class | Dispositions |
+> |---|---|
+> | tp | `GRAYWARE`, `POLICY_VIOLATION`, `RECONNAISSANCE`, `WEAPONIZATION`, `DELIVERY`, `EXPLOITATION`, `INSTALLATION`, `COMMAND_AND_CONTROL`, `EXFIL`, `DAMAGE`, and the ART-10 test disposition |
+> | fp | `FALSE_POSITIVE` |
+> | unclassified | `OPEN`, `IGNORE`, `UNKNOWN`, `REVIEWED` |
+>
+> On communicating this: agreed, and it applies beyond this item. §11 is now a standing list of
+> what the SOC has to be told, written for analysts and detection engineers rather than for us.
+> This classification is its first entry (S-1). X-5 proposes how we keep the list current.
 
 ### DP-1 — Store overrides, derive effective verdicts  `AGREED` · blocking
 
@@ -379,7 +409,7 @@ GROUP BY n_sigs, n_dps_bucket ORDER BY n_sigs, n_dps_bucket;
 >   step in the disposition modal *expanded by default* for TP alerts with a YARA detection. It
 >   would still be skippable.
 
-**Response:** Here are the results for that.
+> **Response:** See results below.
 
 ```txt
 +------+--------+----------+--------+
@@ -429,6 +459,8 @@ If TP-1 lands on the "signature did its job" meaning, I would allow it.
 > practice? My guess is something like this: the alert as a whole was a false alarm, but one of its
 > detections hit genuinely malicious content, such as a real but stale sample. An example would let
 > DP-5 explain the case in one sentence instead of making it look like a contradiction.
+
+> **Response:** It just means the analyst made a mistake. They set an alert to FP and then later realized they were wrong. Let me know if I'm not understanding your question.
 
 ### DP-4 — YARA detection points: move to the file  `PROPOSED` · blocking
 
@@ -498,7 +530,7 @@ is ambiguous whenever the rule matched more than one file.
 > `details`. The capture module (YR-5) acts only on detections that have them, so no date cutoff
 > or flag is needed.
 
-Revised proposal accepted.
+> **Response:** Revised proposal accepted.
 
 ### DP-5 — GUI for detection-point verdicts  `AGREED`
 
@@ -536,7 +568,7 @@ detection. It is simpler to explain ("every detection can be labeled"), and it g
 > **Round 2 (reviewer):** Recorded. Labeling every family makes the row-collapsing problem in F-1
 > matter for all detections, not only YARA ones. That is DP-7.
 
-### DP-7 — Detection identity must include the node it sits on  `PROPOSED` · blocking  *(new, round 2)*
+### DP-7 — Detection identity must include the node it sits on  `AGREED` · blocking  *(new, round 2)*
 
 `content_hash = sha256(signature_uuid, description, details)`. It does not include the node the
 detection sits on (F-1). With verdicts on every detection (DP-6), that means one verdict silently
@@ -684,7 +716,7 @@ after them makes it pass.
 >
 > I'd do (a) if the signature repos already run CI, and (b) if they don't. Which is it?
 
-Let's go with (a) here.
+> **Response:** Let's go with (a) here.
 
 ### YR-4 — What a sample record must capture  `AGREED` · blocking
 
@@ -840,7 +872,7 @@ JS modules don't use it yet.
 > **Round 2 (reviewer):** Recorded as D-5: the first version's YARA regression is static only, and
 > the dynamic case is covered by test execution.
 
-### YR-11 — `archive()` must actually free derived files  `PROPOSED`  *(new, round 2)*
+### YR-11 — `archive()` must actually free derived files  `AGREED`  *(new, round 2)*
 
 This is your YR-5 bug, analyzed. Two defects are in the same code path (`RootAnalysis.archive`,
 `saq/analysis/root.py:750-777`; `archive_files`, `local_file_manager.py:239-277`):
@@ -869,6 +901,11 @@ This is your YR-5 bug, analyzed. Two defects are in the same code path (`RootAna
 This stands on its own. It could ship as its own PR before SVS.
 
 > **Response:** Agree with proposal, and agree with it standing along as it's own PR before SVS.
+
+> **Round 3 (reviewer):** Recorded. It has one visible effect, which goes on the SOC list (S-8):
+> after the fix, an archived FP alert's derived files are really gone from disk. Analysts couldn't
+> open them through the GUI after archive anyway, because the `files/` link was already removed.
+> But anyone who pulled bytes from `hardcopies/` on disk will find them gone.
 
 ---
 
@@ -1079,7 +1116,7 @@ I'd do (c). (b) makes results trustworthy, and (a) explains the cases (b) can't 
 >
 > Status: PROPOSED as (a) now, (b) DEFERRED.
 
-Understood. Let's with with (a) for now, with notes to later revisit (b) once we've got this running and have data to review.
+> **Response:** Understood. Let's with with (a) for now, with notes to later revisit (b) once we've got this running and have data to review.
 
 ### ART-9 — Test host definition and unregistered-host handling  `AGREED`
 
@@ -1098,7 +1135,7 @@ Understood. Let's with with (a) for now, with notes to later revisit (b) once we
 
 > **Response:** Yes, I agree.
 
-### ART-10 — What happens to test alerts downstream  `OPEN`
+### ART-10 — What happens to test alerts downstream  `AGREED`
 
 Once an alert is in the test queue, several things still have to be decided:
 
@@ -1148,7 +1185,33 @@ Once an alert is in the test queue, several things still have to be decided:
 
 > **Response:** Prevalence should get the same default-queue rule. Disagree with proposal. The disposition doesn't matter here. In a normal alert, the disposition serves two purposes: it defines FP vs TP vs ignored, and in the case of TP, it *also* defines how far into the kill chain the attack was successful. We don't really need to measure that here, so a custom disposition for this is fine.
 
-### ART-11 — Expectations come from measurement, not declared techniques  `PROPOSED` · blocking
+> **Round 3 (reviewer):** Both accepted.
+>
+> **Prevalence gets the default-queue rule.** It is a small standalone change in the style of
+> PR #587: `_alert_predicates` in `aceapi_v2/observables/service.py:236-250` gains
+> `Alert.queue == QUEUE_DEFAULT`. It changes the numbers analysts see for *every* non-default queue,
+> not only SVS's, so it goes on the SOC list (S-6).
+>
+> **A custom disposition for test alerts.** Your reasoning is right: the kill-chain stage is
+> meaningless for a simulation, and a dedicated value makes test alerts identifiable forever, even
+> after a queue move. For concreteness:
+> - **Name.** I suggest `SIMULATED`. It says what happened, not which subsystem did it, and still
+>   reads correctly if a test alert is found months later. `SVS_TEST` is the alternative.
+> - **Class:** tp (TP-3). This is what makes ART-10 #3 work: YR-5 captures a Reviewed run's YARA
+>   hits as TP samples without special-casing.
+> - **Set by:** SVS, when a run is *Reviewed*, on the run's fully attributed alerts. Ignored
+>   detections get FP overrides as before.
+> - **Rank and CSS:** it needs a `disposition_rank` entry for event roll-up. I'd rank it below
+>   `GRAYWARE`, so that a test alert never raises an event's disposition above a real one.
+>
+> **Question:** Should `SIMULATED` be selectable in the normal disposition modal, or set only by
+> SVS? I'd hide it from the modal. An analyst who thinks an alert is a test uses ART-13's
+> *associate with run*, which sets it through the run review. Otherwise the disposition could
+> appear on alerts that no run accounts for.
+
+> **Response:** Agree with proposal, and agree that it should not be selectable in the GUI.
+
+### ART-11 — Expectations come from measurement, not declared techniques  `AGREED` · blocking
 
 *(Round 1 title: "Technique-derived expectations are too broad". Rewritten in round 2 after your
 answer. The round 1 text stays below for the record.)*
@@ -1224,6 +1287,53 @@ Source data for derivation:
 
 > **Response:** The manual mappings should live in the signature's meta (b). The manual mapping becomes the explicit flag, so if it ends up actually getting measured later, it should be brought to the analysts attention that a signature was manually marked but showed up in a test.
 
+> **Round 3 (reviewer):** Accepted: manual mappings live in signature meta, and a manual mapping *is*
+> the "unmeasurable" flag. That removes question 2, since there is no separate flag to maintain.
+>
+> **Surfacing "manually mapped, but measured".** A signature with a manual mapping that fires in a
+> Reviewed run is flagged in that **run review**, not on the alert (ART-14 keeps SVS off the alert
+> page). The flag reads: *"Signature S carries a manual mapping to T1234 but was measured in test
+> X (T5678). Remove the manual mapping, or keep it if it covers a technique no test reaches."* The
+> same list appears in the coverage hygiene report until it is resolved.
+>
+> Once a signature is measured, its manual mapping could be ignored, as "measurement wins" suggests,
+> or unioned with the measured techniques. I suggest **union, flagged**: the manual mapping keeps
+> counting until someone removes it. A measurement proves the signature detects T5678. It doesn't
+> prove the manual claim about T1234 wrong, since no test may reach T1234.
+>
+> One thing needs settling first: *which* meta key. That is ART-16, because it interacts with your
+> round-1 answer.
+
+### ART-16 — Which meta key carries a manual technique mapping  `OPEN` · blocking  *(new, round 3)*
+
+Two of your answers pull in different directions, depending on the key:
+- **ART-11, round 1:** *"the existing mappings in the signatures should actually just be ignored."*
+- **ART-11, round 2:** *"manual mappings should live in the signature's meta … The manual mapping
+  becomes the explicit flag."*
+
+If the manual mapping reuses the **existing** key (`mitre_attack` in YARA meta; `mitre:` tags in
+hunts), every signature that has one today becomes "manually mapped, unmeasurable" on day one. So
+the mappings you wanted ignored would count after all, and every one of them would also be flagged
+the first time it is measured.
+
+**Options:**
+- **(a) Reuse the existing keys.** Accept that today's tags become manual mappings, and clean them
+  up through the "manually mapped but measured" flag as tests arrive. No repo changes.
+- **(b) A new, SVS-specific key** that means "a person asserts this technique and SVS can't measure
+  it". For example `svs_technique = "T1566.001"` in YARA meta, and `svs_techniques: [...]` in hunt
+  YAML.
+  - Existing `mitre_attack` / `mitre:` stay what they are today: descriptive tags that SVS ignores,
+    and that feed only the declared-vs-measured hygiene diff.
+  - Adding the new key is a deliberate act, so it really is the explicit flag you described.
+
+**I recommend (b).** It is the only option that honors both answers, and "this signature is
+unmeasurable" is a stronger claim than "this is about T1566", so it deserves its own word. The
+inventory loaders (`saq/signatures/loaders/yara.py`, `hunt.py`) read the new key next to the
+existing ones. `HuntConfig` rejects unknown keys (`saq/collectors/hunter/base_hunter.py:66-67`), so the new hunt
+field has to be added there before any hunt can use it.
+
+> **Response:** I was going back and forth on that. Let's go with (a).
+
 ### ART-12 — Why ACE holds the ART repos, and what it parses  `AGREED`
 
 Execution is out of scope, so ACE needs the ART repos only as a **catalog**, for four things:
@@ -1257,7 +1367,7 @@ Execution is out of scope, so ACE needs the ART repos only as a **catalog**, for
 
 > **Response:** Agree with proposal.
 
-### ART-14 — Keep the analyst's view simple: one SVS status per alert  `PROPOSED` · blocking  *(new, round 2)*
+### ART-14 — Keep the analyst's view simple: one SVS status per alert  `AGREED` · blocking  *(new, round 2)*
 
 Your ART-7 point, made concrete. SVS adds several situations an analyst could meet (routed,
 partially attributed, context-only, marker mismatch, suppressed). Each one shown as its own
@@ -1284,7 +1394,7 @@ Rules that keep it simple:
 
 > **Response:** Agree with proposal.
 
-### ART-15 — Engine-native marker detection through an alert-router registry  `PROPOSED` · blocking  *(new, round 2)*
+### ART-15 — Engine-native marker detection through an alert-router registry  `AGREED` · blocking  *(new, round 2)*
 
 This replaces ART-6. It is the investigation you asked for there.
 
@@ -1359,11 +1469,16 @@ is worse than leaving it.
 
 > **Response:** Agree with proposal. Answers to questions: 1) Yes. 2) Yes. 3) Yes, open from day one.
 
+> **Round 3 (reviewer):** Recorded as D-13. Opening it from day one means the `alert_routers:`
+> config schema and the `AlertRouter` interface are public API. They get a section in
+> `docs/INTEGRATIONS.md` next to "Extending correlation hunts", and the example integration gets a
+> trivial router, so the contract is tested from outside core.
+
 ---
 
 ## 6. Coverage
 
-### COV-1 — The Coverage subsystem  `OPEN` · blocking
+### COV-1 — The Coverage subsystem  `AGREED` · blocking
 
 Coverage is one of the three subsystems in the Design Decisions, and goal 3 depends on it, but the
 design doesn't describe it. A strawman, to react to:
@@ -1417,6 +1532,14 @@ design doesn't describe it. A strawman, to react to:
 
 > **Response:** Agree with proposal.
 
+> **Round 3 (reviewer):** Recorded. Two follow-ups:
+> - **Tenant question.** It went unanswered, so I'm recording a default: **coverage is global, not
+>   per company**. Test hosts are one lab, and splitting results by `company_id` would need test
+>   hosts per company. Say so if that's wrong.
+> - **ART-11 round 3 changes one state.** Manual mappings now union with measured ones and are
+>   flagged. A technique covered *only* by a manual mapping stays **manual**, even if the signature
+>   was measured for other techniques. That matches the table as written.
+
 ### COV-2 — Goal 2 (the telemetry exists) has no mechanism  `AGREED: goal 2 dropped` · blocking
 
 Goal 2 is *"validate the telemetry that signatures are designed to match is actually generated in
@@ -1467,7 +1590,7 @@ it should move to its own `docs/CAS.md`, and SVS will refer to it.
 There are four independent sha256-keyed stores, three retention mechanisms and one encryption
 scheme, and nothing in ACE can keep a byte "until I say so".
 
-### CAS-1 — Scope and consumers  `PROPOSED` · blocking
+### CAS-1 — Scope and consumers  `AGREED` · blocking
 
 - **Goal:** one subsystem that all ACE code uses to store **immutable bytes by content**. Policy is
   set per use: retention, encryption, backend, and sharing between nodes. Lifecycle is correct: no
@@ -1483,7 +1606,7 @@ scheme, and nothing in ACE can keep a byte "until I say so".
 
 > **Response:** Agree with proposal.
 
-### CAS-2 — Three candidate designs  `OPEN` · blocking
+### CAS-2 — Three candidate designs  `AGREED: C` · blocking
 
 | | **A. Thin library on `saq/storage`** | **B. Promote the analysis-cache `BlobStore`** | **C. New `saq/cas/`: pools + holds** |
 |---|---|---|---|
@@ -1499,7 +1622,11 @@ different policy arrives. The analysis cache (TTL, high volume, plaintext, hardl
 
 > **Response:** Agree with C.
 
-### CAS-3 — Data model and API (design C)  `PROPOSED` · blocking
+> **Round 3 (reviewer):** Recorded as D-14. With CAS-1 to CAS-6 agreed, the CAS is designed well
+> enough to move out of this review. I suggest writing `docs/CAS.md` as part of the CAS PR (phase 0),
+> with this section as its source, and leaving a pointer here.
+
+### CAS-3 — Data model and API (design C)  `AGREED` · blocking
 
 **Tables** (main DB; CAS-7):
 - `cas_objects(pool, digest CHAR(64), size, stored_size, key_id NULL, created_at, last_held_at,
@@ -1548,7 +1675,7 @@ cas:
 
 > **Response:** Agree with proposal.
 
-### CAS-4 — Retention, holds, GC correctness  `PROPOSED` · blocking
+### CAS-4 — Retention, holds, GC correctness  `AGREED` · blocking
 
 **Retention modes** (per pool):
 
@@ -1583,7 +1710,7 @@ row pointing at nothing. GC itself never lists the bucket.
 
 > **Response:** Agree with proposal. 1) Yes, require hold to be released. 2) Agree with permission.
 
-### CAS-5 — Encryption and object naming  `OPEN` · blocking
+### CAS-5 — Encryption and object naming  `AGREED` · blocking
 
 - **Per pool:** `none`, or `system`, which reuses `saq/crypto.py`'s AES-256-GCM with the system
   data key.
@@ -1611,7 +1738,17 @@ row pointing at nothing. GC itself never lists the bucket.
 
 > **Response:** Plain is fine, and one system key is also fine.
 
-### CAS-6 — Backends and the relationship to `saq/storage`  `OPEN` · blocking
+> **Round 3 (reviewer):** Recorded: plain object names and the single system key. The two
+> `saq/crypto` fixes weren't questioned and stay in scope:
+> - **Verify before release** is a correctness fix that stands on its own.
+> - **The key-id header** is still worth having with one key, because it is what makes rotating
+>   that key possible later without re-encrypting everything in one go. It costs a few bytes per
+>   object.
+>
+> Both are backwards-compatible if the header carries a version and old-format files keep
+> decrypting. The email archive's existing `.gz.e` files depend on that.
+
+### CAS-6 — Backends and the relationship to `saq/storage`  `AGREED: (b)` · blocking
 
 **Options:**
 - **(a) Build CAS backends on `saq/storage`.** Extend `StorageInterface` with stream put/get,
@@ -1644,7 +1781,7 @@ defects (F-13, F-18, F-19) should be fixed regardless, since crash replication u
 
 > **Response:** Agree with (b).
 
-### CAS-7 — Where the CAS index lives  `PROPOSED`
+### CAS-7 — Where the CAS index lives, and how it is pruned  `PROPOSED`
 
 **Proposal:** the main ACE DB (`Base` chain) for the first version.
 - SVS rows (samples, verdicts) live there, and joins from a sample to its `cas_objects` row are
@@ -1654,6 +1791,61 @@ defects (F-13, F-18, F-19) should be fixed regardless, since crash replication u
   names it). The decision about which chain is deferred until that migration.
 
 > **Response:** Agree with proposal, however, take a note to measure performance on large CAS stores with regards to pruning. In the past we stored email archive reference data in the database, and when we went to prune it, the operation would take forever and block inserts. We switched to a more complicated pruning which solved that issue. Review that before you decide to agree with my agreement of your proposal.
+
+> **Round 3 (reviewer):** Reviewed. Your instinct is right, and it changes the proposal, though not
+> for SVS's own pool.
+>
+> **What the email archive does now** (`bin/manage-email-archive-partitions.sh`, fixed in
+> PR #601). `archive`, `archive_index` and `email_history` are `PARTITION BY RANGE COLUMNS(insert_date)`
+> with one partition per ISO week plus a `p_catchall`. A weekly cron drops whole partitions older
+> than 30 days (`ALTER TABLE … DROP PARTITION`) and creates the next weeks ahead. The analysis cache
+> does the same with daily partitions for `blob_refs`
+> (`bin/manage-analysis-result-cache-partitions.sh`).
+>
+> **Why that works:** dropping a partition is a metadata operation. It takes no row locks, writes
+> no undo log, and doesn't block inserts. The `DELETE … WHERE insert_date < cutoff` it replaced
+> locked and logged every row it touched, for as long as it ran, which is what blocked inserts.
+>
+> **What that means for the CAS:**
+> 1. **Partition dropping only fits time-based expiry.** It works when everything older than X goes.
+>    A `held` pool expires by *reference*: an object goes when its last hold is released, whenever
+>    that is. So `held` pools can't prune by dropping partitions. They need row deletes, which is the
+>    pattern that hurt before.
+> 2. **The difference is churn.** SVS samples are low volume (thousands to tens of thousands) and
+>    nearly permanent, so a GC pass deletes a handful of rows. The email archive deleted millions of
+>    rows a week. The analysis cache, the likely second CAS consumer (CAS-8), is closer to the
+>    email archive than to SVS.
+>
+> **Revised proposal:**
+> - **No unbounded `DELETE`, ever.** CAS GC deletes in primary-key order, in batches of at most N
+>   rows (say 500), one short transaction per batch, with a pause between batches. The "flip to
+>   `deleting`" step in CAS-4 already works one object at a time, so this is a rule for the sweep
+>   loop, not a redesign. A code-review rule for the CAS module says the same.
+> - **Pools declare a churn class**, and the class decides the index layout:
+>   - **`held` pools (low churn), such as SVS:** tables in the main DB as proposed. Batched row
+>     deletes.
+>   - **`ttl` pools (high churn), such as the analysis cache:** an **append-only, day-partitioned
+>     touch table** (`INSERT IGNORE (day, digest)`) instead of updating `last_held_at` on every use.
+>     Expiry drops old partitions, exactly like the email archive and `blob_refs`. GC then removes
+>     `cas_objects` rows that have no touch left, in batches. These tables live in the pool's own
+>     chain (the cache DB for the analysis cache), never the main DB, so any lock contention stays
+>     away from alert inserts.
+>   - This also avoids a hot-row problem: a `ttl` pool that updated `last_held_at` on every cache
+>     hit would turn each read into a write on a shared row.
+> - **MariaDB constraints to design around.** A partitioned table must include the partition column
+>   in every unique key, and it can't have foreign keys. So `cas_touches` has no FK to
+>   `cas_objects`, and its key is `(day, pool, digest)`.
+> - **Measure before migrating** (your note, made a gate). Before the analysis cache moves to the CAS
+>   (CAS-8 step 3), run a load test: a synthetic pool at production cache volume (millions of objects,
+>   a day of churn), with GC running while a writer inserts at peak rate. Record insert latency with
+>   and without GC. Nothing migrates until insert latency is flat under GC. I've added this to the
+>   CAS-8 plan.
+>
+> For the SVS pool this changes nothing except the batched-delete rule. The partitioned design
+> matters from the first high-churn pool on, and it is recorded now so that the SVS-first
+> implementation doesn't bake in a layout that has to be undone.
+
+> **Response:** Agree with your revised proposal.
 
 ### CAS-8 — Migrating the existing byte stores  `DEFERRED`
 
@@ -1671,11 +1863,18 @@ risk:
 
 > **Response:** Agree with proposal, but, let's keep our effort focused on SVS right now.
 
+> **Round 3 (reviewer):** Agreed. Only the SVS pool is built now. Two things from this round are
+> recorded so they aren't lost when the migration starts:
+> - **The analysis-cache migration (step 3) is gated on the GC load test** in CAS-7.
+> - **Step 2 (YARA `qa_dir`) is the cheapest follow-on.** It is the only existing store that holds
+>   live malware in plaintext with no cleanup. That's a reason to do it right after SVS, not a
+>   reason to do it now.
+
 ---
 
 ## 8. Cross-cutting
 
-### X-1 — Placement in the codebase and permissions  `DEFERRED`
+### X-1 — Placement in the codebase and permissions  `AGREED`
 
 | Piece | Where |
 |---|---|
@@ -1695,6 +1894,13 @@ risk:
 > legal-hold permission (CAS-4).
 
 > **Response:** I now agree with the proposal.
+
+> **Round 3 (reviewer):** Recorded. The placement table plus the round-2 additions give the full
+> list:
+> - **Core:** the alert-router registry, `move_alert_to_queue`, `saq/cas/`.
+> - **SVS:** tables, `service_svs`, `aceapi_v2/svs/`, modules, GUI, `ace svs`.
+> - **Permissions:** `svs:run_register`, `svs:validate`, `svs:sample_read`, `svs:sample_download`,
+>   `svs:admin`, `cas:purge`, and a legal-hold permission (`cas:hold`).
 
 ### X-2 — Which ACE instance owns SVS  `AGREED`
 
@@ -1760,6 +1966,38 @@ where the security questions (ART-4/6/7) have to be settled.
 >
 > The hard ordering constraint is DP-7 before the first verdict write. Everything else is
 > preference.
+
+> **Round 3 (reviewer):** Small additions from this round:
+> - **Phase 0** gains the prevalence default-queue change (ART-10), a PR the size of #587. The
+>   disposition clean-up now also removes the four hidden constants (TP-3).
+> - **Phase 1** now also reads the ART-16 meta key in the signature loaders, if (b) is chosen. That
+>   is cheap, and it lets detection engineers start marking unmeasurable signatures before runs
+>   exist.
+> - **Phase 4** adds the `SIMULATED` disposition (ART-10) and the public `alert_routers:` contract
+>   (ART-15, D-13).
+> - **Each phase's PR description carries its §11 entries**, so the SOC hears about a change in
+>   the release that makes it (X-5).
+
+### X-5 — Keep a list of what the SOC must be told  `PROPOSED`  *(new, round 3)*
+
+This is your TP-3 request, turned into a process. Many decisions here change what an analyst sees
+or what their choices *mean*: a disposition now labels training data, counts come only from the
+default queue, and some alerts move to a test queue. Those need to reach the team in plain
+language, at the moment they take effect, not as a design doc.
+
+**Proposal:**
+- **§11 is the standing list.** One entry per change the SOC will notice, written for the reader
+  who didn't take part in the design. Each entry says who is affected, what changes, what they
+  should do differently, and when (the phase). Design IDs are in brackets for us, not for them.
+- **An entry is added in the same edit that settles the decision.** Whoever marks an item AGREED
+  adds or updates its §11 entry if it changes anything visible.
+- **An entry is delivered with the PR that makes it true.** Each phase's PR description quotes its
+  entries, and they go in the release notes (`CHANGELOG.md`). When SVS ships, the list becomes the
+  SVS section of the analyst docs.
+- **Entries marked ★ change the meaning of something analysts already do.** Those deserve a
+  conversation, not just a release note.
+
+> **Response:**
 
 ---
 
@@ -1904,8 +2142,7 @@ as you like; the source item is in brackets.
   are excluded from results. Rules without a uuid are not regression-testable. [YR-4 to YR-7]
 - **D-9** *(replaces "Test-to-signature mapping is derived first from declared techniques, and then
   hand-edited mappings")* Test-to-signature expectations are **learned from reviewed test runs**
-  and confirmed by an analyst. Signature technique tags are ignored except, possibly, for
-  signatures SVS cannot measure (ART-11 Q1). [ART-11]
+  and confirmed by an analyst. For how technique mappings work, see D-17. [ART-11]
 - **D-10** A *test* is an atomic definition; a *run* is one registered execution with its own
   lifecycle and marker. A marker only counts when it agrees with the run's targets and window.
   Context-only attribution also routes. An alert with any non-test detection stays in the normal
@@ -1913,6 +2150,21 @@ as you like; the source item is in brackets.
 - **D-11** SVS and `lib/signature_validator` stay separate, and each doc notes the relationship.
   [X-3]
 - **D-12** SVS runs against production ACE. [X-2]
+- **D-13** Alert queue routing becomes a core, pluggable alert-router registry. Routers run
+  before insert (inside `ALERT()`) and after each analysis pass. The registry is open to
+  integrations from day one. SVS's marker detection is one router. An alert that an analyst already
+  owns is never moved. [ART-15]
+- **D-14** ACE gets a general content-addressed store (`saq/cas/`) built on pools and holds. SVS
+  samples are its first pool; the other byte stores migrate later. [CAS-1 to CAS-6]
+- **D-15** Dispositions classify as follows. **tp:** `GRAYWARE`, `POLICY_VIOLATION`, the
+  kill-chain set, and the test disposition. **fp:** `FALSE_POSITIVE`. **Unclassified:**
+  `OPEN`, `IGNORE`, `UNKNOWN`, `REVIEWED`. The four hidden constants are removed. [TP-3]
+- **D-16** Alerts from test runs get a dedicated disposition (`SIMULATED`, name pending). They count
+  as TP. They are excluded from observable disposition history and from prevalence, which both
+  count only the default queue. [ART-10]
+- **D-17** Technique mappings are measured from test runs. A manual mapping in signature meta is
+  the explicit "SVS can't measure this" flag. A manually mapped signature that shows up in a test is
+  flagged for review. [ART-11, ART-16]
 
 **Other lines in `SVS_INITIAL.md` that the agreed items contradict:**
 - The **goals** list: remove the second bullet (D-4).
@@ -1926,10 +2178,124 @@ as you like; the source item is in brackets.
 
 ---
 
-## 11. Round log
+## 11. What the SOC needs to be told  *(new, round 3)*
+
+This is the standing list from X-5, written for the analysts and detection engineers who use ACE,
+not for us. Each entry says who is affected, what changes, what to do differently, and when it
+takes effect. ★ marks a change to the *meaning* of something people already do. Those deserve a
+conversation, not just a release note. Entries marked *(pending)* depend on an item that isn't
+settled yet.
+
+**S-1 ★ Your disposition now also grades the detections.**
+- **Who:** analysts, SOC leads.
+- **What changes:** besides closing the alert, the disposition you pick now tells ACE whether its
+  detections were good or bad, and that record is used to test future signature changes.
+  - `FALSE_POSITIVE` means none of the detections found malicious activity.
+  - `GRAYWARE`, `POLICY_VIOLATION` and every kill-chain disposition mean they did.
+  - `IGNORE`, `REVIEWED` and `UNKNOWN` record nothing either way.
+- **What to do:** choose `FALSE_POSITIVE` only when there really was no malicious activity. Don't
+  use `REVIEWED` or `IGNORE` to avoid making the call, because then the detections teach nothing.
+- **When:** phase 1. [TP-1, TP-2, TP-3, D-1, D-15]
+
+**S-2 Six unused dispositions are removed.**
+- **Who:** SOC leads, ACE admins, anyone with reports or scripts that name dispositions.
+- **What changes:** `AUTHORIZED`, `DATA_CONTROL`, `INSIDER_DATA_CONTROL`, `INSIDER_DATA_EXFIL`,
+  `APPROVED_BUSINESS` and `APPROVED_PERSONAL` go away. None of them could actually be selected in
+  the GUI, so no triage workflow changes.
+- **What to do:** update any report, dashboard or script that refers to them.
+- **When:** phase 0. [TP-2, TP-3]
+
+**S-3 You can grade individual detections.**
+- **Who:** analysts.
+- **What changes:** each detection on an alert can be marked TP or FP. This is optional: by
+  default a detection follows the alert's disposition. The alert page shows whether a verdict is
+  inherited or set explicitly.
+- **When to use it:** a real attack where one of the signatures that fired was noise (mark that one
+  FP), or, rarely, a false alarm where one detection still hit something genuinely malicious (mark
+  that one TP). Your explicit verdict always wins over the alert's disposition.
+- **When:** phase 1. [DP-1, DP-3, DP-5, DP-6]
+
+**S-4 YARA hits appear on the file** *(pending DP-4)*.
+- **Who:** analysts.
+- **What changes:** in the alert tree, a YARA detection (the fire icon) sits on the file that
+  matched, rather than on a separate `yara_rule` node, and the YARA results under the file are
+  always shown. With several matched files, each file's detection chain is now exact.
+- **When:** phase 1. [DP-4]
+
+**S-5 ★ Every YARA pull request gets a validation report.**
+- **Who:** detection engineers.
+- **What changes:** a YARA PR is checked against every file analysts have graded (S-1, S-3). The
+  report lists:
+  - **regressions:** files graded as real detections that no longer match;
+  - **new false positives:** files graded FP that newly match;
+  - improvements;
+  - scan-time changes.
+
+  It only warns and never blocks a merge. Rules without a `uuid` can't be checked.
+- **What to do:** read the report in ACE before merging. If a regression is intended, retire or
+  relabel the sample there so the report stops showing it.
+- **When:** phase 3. [YR-1 to YR-7, YR-3 pending the trigger question]
+
+**S-6 ★ "Seen before" numbers count only the default queue.**
+- **Who:** analysts.
+- **What changes:**
+  - An observable's disposition history already counts only alerts in the `default` queue (ACE
+    3.0.116, PR #587).
+  - Its prevalence (how often it was seen) will do the same.
+  - The numbers for observables seen mostly in other queues get smaller. That includes test
+    alerts, which then stop inflating them.
+- **When:** phase 0. [ART-10, D-16]
+
+**S-7 Alerts from red-team test runs get their own queue and badge.**
+- **Who:** analysts.
+- **What changes:** alerts caused by a registered test go to a test queue with the disposition
+  `SIMULATED`. Name pending: ART-10. An alert shows at most one of four badges:
+  - `TEST`: nothing to do.
+  - `TEST?`: nothing to do unless it looks wrong. One click marks it *not a test*.
+  - `PARTIAL TEST`: triage the non-test detections as usual; the test ones are greyed out.
+  - `MARKER MISMATCH`: **treat as suspicious and investigate.**
+
+  An alert you already own is never moved out from under you.
+- **When:** phase 4. [ART-7, ART-14, ART-15, D-13, D-16]
+
+**S-8 Archived false-positive alerts really delete their extracted files.**
+- **Who:** ACE admins, and anyone who retrieves files from the storage directory on disk.
+- **What changes:** when an FP alert is archived (after `fp_days`, default 30), files extracted
+  during analysis are now removed from disk. The files that came with the alert are kept. The GUI
+  already couldn't open them after archive, so analysts see no difference.
+- **When:** phase 0. [YR-11]
+
+**S-9 ★ ATT&CK coverage is measured, not declared.**
+- **Who:** detection engineers, SOC leads.
+- **What changes:**
+  - Which techniques a signature covers now comes from test runs.
+  - The `mitre_attack` meta and `mitre:` tags in the signature repos no longer count toward
+    coverage. They appear only in a "declared vs measured" clean-up report.
+  - For a signature no test can exercise, a person records the technique in the signature's meta,
+    under a dedicated key if ART-16 goes that way. ACE flags it if a test later measures it.
+- **When:** coverage in phase 5; the manual key can be used from phase 1. [ART-11, ART-16, D-17]
+
+**S-10 SVS only knows about alerts created after it is deployed.**
+- **Who:** SOC leads, detection engineers.
+- **What changes:** grading, samples and test attribution start empty on deployment day. Older
+  alerts are not graded retroactively.
+- **When:** phase 1. [D-3]
+
+**S-11 A "missing" detection in a test run doesn't say why.**
+- **Who:** detection engineers, SOC leads.
+- **What changes:** when an expected signature doesn't fire, SVS can't tell whether the log data
+  never arrived or the signature failed to match. It does flag when the hunt was probably
+  suppressed. Investigate both possibilities.
+- **When:** phase 4. [COV-2, ART-8, D-4]
+
+---
+
+## 12. Round log
 
 | Round | Who | Summary |
 |---|---|---|
 | 1 | reviewer | Initial review of `SVS_INITIAL.md` @ `ec3cab18`. 37 items: 20 blocking (15 PROPOSED, 5 OPEN). |
 | 1 | author | Responses to all items except COV-1 (commit `6967686c`). |
 | 2 | reviewer | Replies to every response. 26 items AGREED, YR-10 DEFERRED, X-1 DEFERRED until CAS. Revised DP-4 (move to file), YR-3 (ACE fetches, warn only), ART-8 (staged), ART-10 (narrowed after the #587 merge), ART-11 (measured expectations), COV-1 (strawman without declared tags). New: TP-3, DP-7, YR-11, ART-14, ART-15 (replaces ART-6), §7 CAS-1 to CAS-8 (replaces YR-8), §10 decision text, F-18 to F-27. |
+| 2 | author | Responses to all round-2 items except DP-2, DP-4, YR-3 (a)/(b), ART-8 and the DP-3 example (commit `654df8dc`). Asked for a record of decisions that must be communicated to the SOC. |
+| 3 | reviewer | 15 more items AGREED: TP-3, DP-7, YR-11, ART-10, ART-11, ART-14, ART-15, COV-1, CAS-1 to CAS-6, X-1, and the CAS-8 deferral confirmed. CAS-7 revised after reviewing email-archive pruning (no unbounded DELETE; partitioned touch tables for high-churn pools; a GC load test gates the analysis-cache migration). New: ART-16 (manual-mapping meta key), X-5 and §11 (SOC communication list, S-1 to S-11), decisions D-13 to D-17. |
