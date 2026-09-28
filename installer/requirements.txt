@@ -75,7 +75,7 @@ requests-ntlm
 requests-oauthlib
 shodan
 splunk-sdk
-SQLAlchemy
+SQLAlchemy[asyncio]
 tabulate
 tld
 tldextract

@@ -8,6 +8,8 @@ on:
       - 'alembic/analysis_cache/versions/**'
       - 'alembic/brocess/versions/**'
       - 'alembic/email_archive/versions/**'
+      - '.github/workflows/check-model-drift.yml'
+      - 'installer/requirements*.txt'
   merge_group:
 
 jobs:
@@ -49,7 +51,7 @@ jobs:
           "
 
       - name: Install dependencies
-        run: pip install -r installer/requirements.txt
+        run: pip install -r installer/requirements-pinned.txt
 
       - name: Run ace migrations
         env:
