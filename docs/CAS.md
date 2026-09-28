@@ -126,15 +126,19 @@ autoincrement id. `cas_touches` does not exist yet (`ttl` is deferred). The `cas
 
 ## Lifecycle
 
-**`put`.** One transaction: `INSERT IGNORE` the `cas_objects` row, lock it `FOR UPDATE`, and
+**`put`.** One transaction: insert the `cas_objects` row if it is absent, lock it `FOR UPDATE`, and
 **while holding the lock** write the bytes if the backend does not have them, then take the hold
 and bump `last_held_at`. The bytes are written under the row lock rather than before the
 transaction (a small change from the design) because that is the only order that is safe against
 a GC pass that removed the bytes between an unlocked "already there" check and the row insert.
 The crash property is the same: a crash before the commit leaves orphan bytes, which the orphan
-sweep finds, and never a row pointing at nothing. Two first-time puts of one digest serialize on
-the `INSERT IGNORE` (the second blocks on the first's row until it commits, then finds the bytes
-present).
+sweep finds, and never a row pointing at nothing. Concurrent puts of one digest, first-time or
+not, serialize on the insert (the second blocks on the first's row until it commits, then finds
+the bytes present). The insert is `INSERT … ON DUPLICATE KEY UPDATE` with a no-op update, not
+`INSERT IGNORE`: on a duplicate key `INSERT IGNORE` takes a *shared* lock on the existing row, and
+two puts that then both asked for `FOR UPDATE` deadlocked on the upgrade (found by the stress test:
+16 workers putting one sample lost 30 of 32 processes to MySQL error 1213 in 20 seconds). `ON
+DUPLICATE KEY UPDATE` takes the exclusive record lock straight away.
 
 **GC.** For `held` pools:
 1. A candidate is a `present` object with no live hold and `last_held_at < now - grace`.
@@ -168,7 +172,10 @@ swept at the same time.
 **Verify.** `ace cas verify` re-hashes a sample of objects (`cas.verify_sample_size`, from a random
 starting point in digest order) and records `verified_at`. A corrupt, wrong-key or missing object is
 logged, makes the command exit 2, and is never deleted. Wrong-key objects are counted apart from
-corrupt ones: the bytes may well be intact, and the fix is the key, not the object.
+corrupt ones: the bytes may well be intact, and the fix is the key, not the object. An object that
+GC or a purge deleted after the sample was taken is counted as `removed`, not missing: the hourly
+GC and the weekly verify start in the same minute, so this is expected, and only bytes missing
+under a row that is still `present` are a failure.
 
 ## Operating constraints
 
@@ -252,6 +259,9 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
   (encrypted pools, non-local backends) go through a bounded node-local LRU directory
   (`cas.read_cache`), because most tools (YARA included) need a file path. The verified plaintext
   is produced once and hardlinked (or copied) to each destination. `max_bytes: 0` disables it.
+  Readers take the cache entry as an open file, never a path: another process can evict the entry
+  at any moment, and only an open file survives that (a `materialize` that finds the name gone
+  copies from the open file).
 
 ## Configuration
 
@@ -338,7 +348,16 @@ message text, so the monitor records are the place to look. Definitions are in
   the filesystem underneath (measured at the nearest existing directory), and `node`.
 - **Run records** are the run's stats dataclass (`GCStats`, `VerifyStats`, `OrphanStats`) plus
   `node` and `duration_seconds`; verify's `failures` is capped at 20 digests
-  (`failures_truncated`). GC on a `permanent` pool emits nothing, because nothing runs.
+  (`failures_truncated`). GC on a `permanent` pool emits nothing, because nothing runs. `GCStats`
+  also says where the run's time went: `scan_seconds`, `flip_seconds`, `delete_seconds`,
+  `prune_seconds` and `pause_seconds`.
+- **Operation timings** (`saq/cas/metrics.py`) are per process, not a monitor record: every
+  `put`, `hold`, `release`, `open` and `materialize` is timed as a whole (`total`) and by phase
+  (`put`: `spool`, `encrypt`, `index`, `lock`, `write`; reads: `row`, `verify`, `cache`), plus the
+  read cache's budget check (`read_cache`/`evict`) and counters such as `put`/`deduplicated`, into
+  fixed latency buckets keyed by (pool, operation, phase). `metrics.snapshot()` returns them; a
+  forked worker starts from zero. Recording is always on (a `perf_counter()` pair and a locked
+  dict update).
 - **`error.cas_integrity`** carries `pool`, `digest`, `operation`, `failure`, `error`, and for a
   key mismatch `stored_key_id` / `loaded_key_id`. It is emitted alongside an ERROR log line
   (`cas_pool`, `cas_digest`, `cas_operation`, `cas_failure` in `extra`), by the CAS itself, so a
@@ -379,8 +398,13 @@ These were not design questions; the implementation picked them:
   `cas.gc_batch_pause_seconds`); default grace 24 h; orphan grace 24 h; verify sample 1000 objects
   per pool per run; a `put` waits up to 30 s for a `deleting` object.
 - Read cache 10 GiB under `<DATA_DIR>/cas_cache`, evicted oldest-first by mtime. Its size
-  accounting walks the directory on each fill, which is fine at that scale and would not be for
-  millions of entries.
+  accounting walks the directory, and a process only walks it on its first fill and then after
+  filling another 1% of `max_bytes`, so the cache can run over budget by up to 1% per process
+  between checks. Walking on every fill, as first built, was the bottleneck at the default budget:
+  at ~33k entries (~300 KiB each) the walk took ~290 ms per fill with 8 readers, a hundred times
+  the decrypt it followed, and held cold reads to ~75/s; throttled, the same load ran at ~2,800
+  materializes/s. The eviction pass re-checks each victim's mtime, so an entry read since the
+  walk is kept.
 - Conditional writes are moot until an object-store backend exists; the index decides existence
   either way.
 

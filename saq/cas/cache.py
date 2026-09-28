@@ -6,10 +6,16 @@ pools, non-local backends) the verified plaintext is produced once into this bou
 and reused: <root>/<pool>/<digest>. Eviction is by mtime (oldest first) once the directory is
 over budget, and a hit refreshes the mtime, so it behaves as an LRU.
 
-Limits, on purpose: the size accounting is a walk of the directory per fill, which is fine for
-the thousands of files a 10 GiB budget holds and would not be for millions. Evicting a file that
-another process is reading is safe on POSIX (the inode outlives the name), and a hardlinked
-materialize() destination survives eviction for the same reason.
+The size accounting is a walk of the directory, which stats every entry. It does not run on every
+fill: a process checks the budget on its first fill and then once it has filled another
+1/_CHECK_DIVISOR of max_bytes, so the cache can run over budget by up to that much per process
+between checks. (Walking on every fill was measured at ~290 ms per fill at the default 10 GiB of
+~300 KiB entries with 8 concurrent readers, a hundred times the decrypt it followed.)
+
+Evicting a file that another process has open is safe on POSIX (the inode outlives the name), and
+a hardlinked materialize() destination survives eviction for the same reason. A path is not safe:
+the entry can go between get_or_fill() returning it and the caller using it, which is why readers
+use open_or_fill(), which hands out an open file.
 """
 
 import fcntl
@@ -17,16 +23,26 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from typing import BinaryIO, Callable
+
+from saq.cas import metrics
 
 _FILL_PREFIX = ".fill-"
 _LOCK_DIR = ".locks"
+# a process walks the directory to check the budget after filling this fraction of max_bytes
+_CHECK_DIVISOR = 100
+# open_or_fill() refills an entry that was evicted before it could be opened at most this often
+_OPEN_ATTEMPTS = 3
 
 
 class ReadCache:
     def __init__(self, root: str, max_bytes: int):
         self.root = root
         self.max_bytes = max_bytes
+        # bytes this process has filled since its last budget check; None forces a check on the
+        # first fill, so a short-lived process still checks once
+        self._unchecked_bytes: int | None = None
 
     @property
     def enabled(self) -> bool:
@@ -54,6 +70,7 @@ class ReadCache:
             try:
                 with os.fdopen(fd, "wb") as fp:
                     fill(fp)
+                    filled = fp.tell()
 
                 os.replace(temp_path, path)
             except BaseException:
@@ -64,8 +81,31 @@ class ReadCache:
 
                 raise
 
-        self._evict_if_needed()
+        if self._unchecked_bytes is not None:
+            self._unchecked_bytes += filled
+
+        if self._unchecked_bytes is None or self._unchecked_bytes >= self.max_bytes // _CHECK_DIVISOR:
+            self._unchecked_bytes = 0
+            # timed on its own (as pool/read_cache/evict) because it walks the whole directory
+            started = time.perf_counter()
+            self._evict_if_needed()
+            metrics.record(pool, "read_cache", "evict", time.perf_counter() - started)
+
         return path
+
+    def open_or_fill(self, pool: str, digest: str, fill: Callable[[BinaryIO], None]) -> BinaryIO:
+        """The cached plaintext open for reading, produced with fill(fp) on a miss (see
+        get_or_fill). Once open it is safe from eviction; an entry that another process evicts
+        between get_or_fill() returning its path and the open is filled again."""
+        for attempt in range(_OPEN_ATTEMPTS):
+            path = self.get_or_fill(pool, digest, fill)
+            try:
+                return open(path, "rb")
+            except FileNotFoundError:
+                if attempt == _OPEN_ATTEMPTS - 1:
+                    raise
+
+                logging.debug("cas read cache entry %s was evicted before it could be opened", path)
 
     def remove(self, pool: str, digest: str) -> None:
         try:
@@ -130,25 +170,31 @@ class ReadCache:
 
     def _evict_if_needed(self) -> int:
         """Remove oldest entries until the directory is within budget. Returns bytes freed. Only
-        one process evicts at a time; another that finds the eviction lock taken just skips."""
-        entries = self._entries()
-        total = sum(size for _, size, _ in entries)
-        if total <= self.max_bytes:
-            return 0
-
+        one process walks and evicts at a time; another that finds the eviction lock taken just
+        skips (the holder is already doing the work). The walk happens under the lock, so it is
+        never a snapshot from before another process's eviction."""
         lock = _FileLock(os.path.join(self.root, _LOCK_DIR, ".evict"), remove=False, blocking=False)
         if not lock.acquire():
             return 0
 
         freed = 0
         try:
-            for path, size, _ in sorted(entries, key=lambda entry: entry[2]):
+            entries = self._entries()
+            total = sum(size for _, size, _ in entries)
+            for path, size, mtime in sorted(entries, key=lambda entry: entry[2]):
                 if total <= self.max_bytes:
                     break
 
                 try:
+                    # the walk takes a while on a large cache: an entry read since it saw the
+                    # entry's mtime is no longer the oldest, so it stays
+                    if os.stat(path).st_mtime > mtime:
+                        continue
+
                     os.unlink(path)
                 except FileNotFoundError:
+                    # removed meanwhile (GC, purge): no longer counts, but this freed nothing
+                    total -= size
                     continue
 
                 total -= size
@@ -156,7 +202,9 @@ class ReadCache:
         finally:
             lock.release()
 
-        logging.debug("cas read cache evicted %s bytes from %s", freed, self.root)
+        if freed:
+            logging.debug("cas read cache evicted %s bytes from %s", freed, self.root)
+
         return freed
 
 

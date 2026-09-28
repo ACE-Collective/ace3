@@ -59,11 +59,17 @@ def _cutoff(grace_seconds: int):
 
 def insert_object_if_absent(session: Session, pool: str, digest: str, size: int, stored_size: int,
                             key_id: Optional[str]) -> None:
-    session.execute(
-        mysql_insert(CASObject)
-        .values(pool=pool, digest=digest, size=size, stored_size=stored_size, key_id=key_id,
-                state=STATE_PRESENT, last_held_at=func.now())
-        .prefix_with("IGNORE"))
+    """Insert the object row unless it exists, and leave it exclusively locked either way (an
+    existing row keeps its columns: the update is a no-op).
+
+    Not INSERT IGNORE: on a duplicate key that takes a *shared* lock on the existing row, and two
+    puts of one digest that both go on to lock_object() (FOR UPDATE) deadlock upgrading it. ON
+    DUPLICATE KEY UPDATE takes an exclusive record lock on a duplicate primary key straight away,
+    so concurrent puts of one digest queue on the row instead."""
+    stmt = mysql_insert(CASObject).values(
+        pool=pool, digest=digest, size=size, stored_size=stored_size, key_id=key_id,
+        state=STATE_PRESENT, last_held_at=func.now())
+    session.execute(stmt.on_duplicate_key_update(digest=CASObject.digest))
 
 
 def lock_object(session: Session, pool: str, digest: str) -> Optional[CASObject]:

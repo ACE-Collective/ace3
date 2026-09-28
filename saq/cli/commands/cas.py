@@ -221,7 +221,7 @@ def cli_verify(args):
         nonlocal failed
         stats = pool.verify(sample_size=args.sample, dry_run=args.dry_run)
         print(f"{pool.name}: checked {stats.checked}, intact {stats.verified}, corrupt {stats.mismatched}, "
-              f"wrong key {stats.key_mismatch}, missing {stats.missing}")
+              f"wrong key {stats.key_mismatch}, missing {stats.missing}, removed since sampled {stats.removed}")
         for digest in stats.failures:
             print(f"  FAILED {pool.name}/{digest}")
 

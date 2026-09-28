@@ -17,7 +17,7 @@ import os
 import shutil
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import BinaryIO, Iterator, Optional, Union
@@ -38,6 +38,7 @@ from saq.cas.errors import (
     ObjectNotFound,
 )
 from saq.cas.hold import Hold
+from saq.cas.metrics import OperationTimer, operation_timer
 from saq.configuration.schema import CASConfig, CASPoolConfig
 from saq.crypto import FORMAT_V1, CryptoError, KeyMismatchError, decrypt_stream, encrypt_stream
 from saq.environment import get_global_runtime_settings, get_temp_dir
@@ -95,6 +96,13 @@ class GCStats:
     bytes_reclaimed: int = 0
     expired_holds_pruned: int = 0
     errors: int = 0
+    # where the run's time went: the candidate scans, the conditional flips, removing bytes and rows
+    # (resumed and new deletions), pruning expired holds, and the pauses between batches
+    scan_seconds: float = 0.0
+    flip_seconds: float = 0.0
+    delete_seconds: float = 0.0
+    prune_seconds: float = 0.0
+    pause_seconds: float = 0.0
 
 
 @dataclass
@@ -105,7 +113,8 @@ class VerifyStats:
     verified: int = 0
     mismatched: int = 0            # corrupt: the bytes fail their hash or authentication
     key_mismatch: int = 0          # encrypted under a key other than the loaded one (a key problem, not corruption)
-    missing: int = 0
+    missing: int = 0               # the index says present and the backend has no bytes
+    removed: int = 0               # GC or a purge deleted it after the sample was taken (not a failure)
     failures: list[str] = field(default_factory=list)
 
 
@@ -197,28 +206,32 @@ class CASPool:
         if digest is not None:
             self._check_digest(digest)
 
-        spooled = self._spool(src)
-        try:
-            if digest is not None and spooled.digest != digest:
-                raise DigestMismatch(digest, spooled.digest)
-
-            stored_path, stored_size, key_id = spooled.path, spooled.size, None
-            encrypted_path = None
-            if self.encrypted:
-                fd, encrypted_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-enc-")
-                with open(spooled.path, "rb") as fp_in, os.fdopen(fd, "wb") as fp_out:
-                    result = encrypt_stream(fp_in, fp_out, size=spooled.size, format_version=FORMAT_V1)
-
-                stored_path, stored_size, key_id = encrypted_path, result.stored_size, result.key_id
+        with operation_timer(self.name, "put") as timer:
+            with timer.phase("spool"):
+                spooled = self._spool(src)
 
             try:
-                self._commit_put(spooled.digest, spooled.size, stored_size, key_id, stored_path, hold, created_by)
+                if digest is not None and spooled.digest != digest:
+                    raise DigestMismatch(digest, spooled.digest)
+
+                stored_path, stored_size, key_id = spooled.path, spooled.size, None
+                encrypted_path = None
+                if self.encrypted:
+                    with timer.phase("encrypt"):
+                        fd, encrypted_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-enc-")
+                        with open(spooled.path, "rb") as fp_in, os.fdopen(fd, "wb") as fp_out:
+                            result = encrypt_stream(fp_in, fp_out, size=spooled.size, format_version=FORMAT_V1)
+
+                    stored_path, stored_size, key_id = encrypted_path, result.stored_size, result.key_id
+
+                try:
+                    self._commit_put(spooled.digest, spooled.size, stored_size, key_id, stored_path, hold, created_by, timer)
+                finally:
+                    if encrypted_path is not None:
+                        _unlink_quietly(encrypted_path)
             finally:
-                if encrypted_path is not None:
-                    _unlink_quietly(encrypted_path)
-        finally:
-            if spooled.owned:
-                _unlink_quietly(spooled.path)
+                if spooled.owned:
+                    _unlink_quietly(spooled.path)
 
         return spooled.digest
 
@@ -255,15 +268,21 @@ class CASPool:
         return _Spooled(path=temp_path, digest=hasher.hexdigest(), size=size, owned=True)
 
     def _commit_put(self, digest: str, size: int, stored_size: int, key_id: Optional[str],
-                    stored_path: str, hold: Optional[Hold], created_by: Optional[str]) -> None:
+                    stored_path: str, hold: Optional[Hold], created_by: Optional[str],
+                    timer: OperationTimer) -> None:
         key = self.key(digest)
         deadline = time.monotonic() + self.cas_config.put_deleting_wait_seconds
         while True:
-            with index.transaction() as session:
-                # INSERT IGNORE then lock: two first-time puts of one digest both get here, the
-                # second blocks on the first's row until it commits, then finds the row present
-                index.insert_object_if_absent(session, self.name, digest, size, stored_size, key_id)
-                row = index.lock_object(session, self.name, digest)
+            # "index" is the whole transaction including its commit; "lock" is the part of it spent
+            # getting the row lock, which is where concurrent puts of one digest (and GC) wait
+            with timer.phase("index"), index.transaction() as session:
+                with timer.phase("lock"):
+                    # the insert takes the row's exclusive lock whether or not the row existed, so
+                    # concurrent puts of one digest queue here: the second blocks until the first
+                    # commits, then finds the row present (and the bytes written)
+                    index.insert_object_if_absent(session, self.name, digest, size, stored_size, key_id)
+                    row = index.lock_object(session, self.name, digest)
+
                 if row is None:
                     logging.error("cas object vanished under its row lock", extra={"cas_pool": self.name, "cas_digest": digest})
                     raise CASError(f"cas object {self.name}/{digest} vanished under its lock")
@@ -272,14 +291,18 @@ class CASPool:
                     # under the row lock, so GC cannot flip this object and remove the bytes
                     # between this check and the commit that references them
                     if not self.backend.exists(key):
-                        with open(stored_path, "rb") as fp:
+                        with timer.phase("write"), open(stored_path, "rb") as fp:
                             self.backend.write(key, fp)
+                    else:
+                        timer.count("deduplicated")
 
                     if hold is not None:
                         index.upsert_hold(session, self.name, digest, hold, created_by)
 
                     index.touch_last_held(session, self.name, digest)
                     return
+
+            timer.count("waited_deleting")
 
             # GC or purge is removing it: wait for the row to go, then the loop re-inserts and
             # re-uploads. nothing was changed in the transaction above, so committing it is a no-op
@@ -294,8 +317,10 @@ class CASPool:
     def hold(self, digest: str, hold: Hold, *, created_by: Optional[str] = None) -> None:
         """Take (or renew) a hold. Idempotent; a new expires_at replaces the old one."""
         self._check_digest(digest)
-        with index.transaction() as session:
-            row = index.lock_object(session, self.name, digest)
+        with operation_timer(self.name, "hold") as timer, index.transaction() as session:
+            with timer.phase("lock"):
+                row = index.lock_object(session, self.name, digest)
+
             if row is None:
                 raise ObjectNotFound(self.name, digest)
 
@@ -309,8 +334,10 @@ class CASPool:
         """Release a hold. Returns False when there was no such hold (not an error). The object's
         grace period counts from the last release."""
         self._check_digest(digest)
-        with index.transaction() as session:
-            row = index.lock_object(session, self.name, digest)
+        with operation_timer(self.name, "release") as timer, index.transaction() as session:
+            with timer.phase("lock"):
+                row = index.lock_object(session, self.name, digest)
+
             if row is None:
                 raise ObjectNotFound(self.name, digest)
 
@@ -393,11 +420,7 @@ class CASPool:
         go before the row), and so is bytes that exist again by the time we look (a put re-uploaded
         them)."""
         try:
-            with index.transaction() as session:
-                row = index.get_object(session, self.name, digest)
-                state = row.state if row is not None else None
-
-            divergent = state == index.STATE_PRESENT and not self.backend.exists(self.key(digest))
+            divergent = self._bytes_lost(digest)
         except Exception as e:
             logging.warning("cas unable to check the index row of an object with missing bytes", extra={
                 "cas_pool": self.name, "cas_digest": digest, "cas_operation": operation, "error": str(e)})
@@ -410,6 +433,16 @@ class CASPool:
             logging.debug("cas object %s/%s went away during %s", self.name, digest, operation)
 
         return ObjectNotFound(self.name, digest)
+
+    def _bytes_lost(self, digest: str) -> bool:
+        """After a read found no bytes: True when the index still says the object is present and
+        the backend still has nothing, i.e. they disagree. False for the accepted race with GC or
+        purge (the row is deleting or gone) and for bytes that a put has re-uploaded meanwhile."""
+        with index.transaction() as session:
+            row = index.get_object(session, self.name, digest)
+            state = row.state if row is not None else None
+
+        return state == index.STATE_PRESENT and not self.backend.exists(self.key(digest))
 
     def _report_integrity_failure(self, digest: str, operation: str, failure: str, error: Union[Exception, str],
                                   stored_key_id: Optional[str] = None, loaded_key_id: Optional[str] = None) -> None:
@@ -441,66 +474,87 @@ class CASPool:
         _emit(monitor, data)
 
     @contextmanager
-    def _plaintext_path(self, digest: str, operation: str) -> Iterator[str]:
-        """A path holding the verified plaintext, from the read cache or a temp file."""
+    def _plaintext_file(self, digest: str, operation: str, timer: OperationTimer) -> Iterator[BinaryIO]:
+        """The verified plaintext open for reading, from the read cache or a temp file. An open
+        file rather than a path, because another process can evict a cache entry at any moment,
+        and only an open file is safe from that. The timer's "verify" phase is the
+        decrypt-and-check, which a cache hit skips."""
+        def fill(fp: BinaryIO) -> None:
+            with timer.phase("verify"):
+                self._verify_and_fill(digest, fp, operation)
+
         if self.cache.enabled:
-            yield self.cache.get_or_fill(self.name, digest, lambda fp: self._verify_and_fill(digest, fp, operation))
+            with timer.phase("cache"):
+                fp = self.cache.open_or_fill(self.name, digest, fill)
+
+            with fp:
+                yield fp
+
             return
 
         fd, temp_path = tempfile.mkstemp(dir=get_temp_dir(), prefix="cas-read-")
         try:
-            with os.fdopen(fd, "wb") as fp:
-                self._verify_and_fill(digest, fp, operation)
+            with os.fdopen(fd, "wb") as target:
+                fill(target)
 
-            yield temp_path
+            with open(temp_path, "rb") as fp:
+                yield fp
         finally:
             _unlink_quietly(temp_path)
 
     @contextmanager
     def open(self, digest: str) -> Iterator[BinaryIO]:
         """A readable stream of the object's plaintext. Integrity is verified before the first
-        byte is available."""
-        self._require_row(digest)
-        if self._direct:
-            self._verify_and_fill(digest, None, "open")
-            try:
-                with self.backend.open(self.key(digest)) as fp:
-                    yield fp
-            except BackendKeyNotFound:
-                raise self._missing(digest, "open") from None
+        byte is available. The "open" timing ends when the stream is handed out, so it does not
+        include the caller's reading."""
+        with ExitStack() as stack:
+            with operation_timer(self.name, "open") as timer:
+                with timer.phase("row"):
+                    self._require_row(digest)
 
-            return
+                if self._direct:
+                    with timer.phase("verify"):
+                        self._verify_and_fill(digest, None, "open")
 
-        with self._plaintext_path(digest, "open") as path:
-            with open(path, "rb") as fp:
-                yield fp
+                    try:
+                        stream = stack.enter_context(self.backend.open(self.key(digest)))
+                    except BackendKeyNotFound:
+                        raise self._missing(digest, "open") from None
+                else:
+                    stream = stack.enter_context(self._plaintext_file(digest, "open", timer))
+
+            yield stream
 
     def materialize(self, digest: str, dest_path: str) -> None:
         """Put the object's plaintext at dest_path: a hardlink when the backend is local and the
         pool is plaintext, otherwise a hardlink out of the read cache, otherwise a copy. dest_path
         must not exist."""
-        self._require_row(digest)
-        if self._direct:
-            self._verify_and_fill(digest, None, "materialize")
-            key = self.key(digest)
-            if self.backend.link(key, dest_path):
+        with operation_timer(self.name, "materialize") as timer:
+            with timer.phase("row"):
+                self._require_row(digest)
+
+            if self._direct:
+                with timer.phase("verify"):
+                    self._verify_and_fill(digest, None, "materialize")
+
+                key = self.key(digest)
+                if self.backend.link(key, dest_path):
+                    return
+
+                timer.count("copied")
+                try:
+                    with self.backend.open(key) as source, open(dest_path, "wb") as target:
+                        shutil.copyfileobj(source, target, _CHUNK)
+                except BackendKeyNotFound:
+                    raise self._missing(digest, "materialize") from None
+
                 return
 
-            try:
-                with self.backend.open(key) as source, open(dest_path, "wb") as target:
-                    shutil.copyfileobj(source, target, _CHUNK)
-            except BackendKeyNotFound:
-                raise self._missing(digest, "materialize") from None
-
-            return
-
-        with self._plaintext_path(digest, "materialize") as path:
-            try:
-                os.link(path, dest_path)
-            except FileExistsError:
-                raise
-            except OSError:
-                shutil.copyfile(path, dest_path)
+            with self._plaintext_file(digest, "materialize", timer) as source:
+                if not _link_open_file(source, dest_path):
+                    timer.count("copied")
+                    with open(dest_path, "wb") as target:
+                        shutil.copyfileobj(source, target, _CHUNK)
 
     #
     # deletion
@@ -538,28 +592,33 @@ class CASPool:
 
     def _finish_delete(self, digest: str, stats: GCStats) -> None:
         """Delete the bytes, then the row, of an object already flipped to deleting."""
-        with index.transaction() as session:
-            row = index.get_object(session, self.name, digest)
-            stored_size = row.stored_size if row is not None else 0
-
+        started = time.monotonic()
         try:
-            self._delete_bytes(digest)
-        except (BackendError, OSError) as e:
-            # the row stays deleting; the next run's resume step retries
-            logging.error("cas gc unable to delete an object's bytes", extra={
-                "cas_pool": self.name, "cas_digest": digest, "error": str(e)})
-            stats.errors += 1
-            return
+            with index.transaction() as session:
+                row = index.get_object(session, self.name, digest)
+                stored_size = row.stored_size if row is not None else 0
 
-        with index.transaction() as session:
-            index.delete_object_row(session, self.name, digest)
+            try:
+                self._delete_bytes(digest)
+            except (BackendError, OSError) as e:
+                # the row stays deleting; the next run's resume step retries
+                logging.error("cas gc unable to delete an object's bytes", extra={
+                    "cas_pool": self.name, "cas_digest": digest, "error": str(e)})
+                stats.errors += 1
+                return
 
-        stats.deleted += 1
-        stats.bytes_reclaimed += stored_size
+            with index.transaction() as session:
+                index.delete_object_row(session, self.name, digest)
 
-    def _pause(self) -> None:
+            stats.deleted += 1
+            stats.bytes_reclaimed += stored_size
+        finally:
+            stats.delete_seconds += time.monotonic() - started
+
+    def _pause(self, stats: GCStats) -> None:
         if self.cas_config.gc_batch_pause_seconds > 0:
             time.sleep(self.cas_config.gc_batch_pause_seconds)
+            stats.pause_seconds += self.cas_config.gc_batch_pause_seconds
 
     def gc(self, *, dry_run: bool = False) -> GCStats:
         """Garbage-collect a held pool: finish deletions a previous run left behind, then remove
@@ -577,8 +636,11 @@ class CASPool:
 
         # 0. resume: objects flipped by a run (or a purge) that died before removing them
         while True:
+            scan_started = time.monotonic()
             with index.transaction() as session:
                 digests = index.deleting_objects(session, self.name, batch)
+
+            stats.scan_seconds += time.monotonic() - scan_started
 
             if not digests:
                 break
@@ -591,13 +653,16 @@ class CASPool:
             if dry_run or len(digests) < batch:
                 break
 
-            self._pause()
+            self._pause(stats)
 
         # 1. candidates, in primary-key order, one conditional flip per object
         after = ""
         while True:
+            scan_started = time.monotonic()
             with index.transaction() as session:
                 digests = index.gc_candidates(session, self.name, self.grace_seconds, after, batch)
+
+            stats.scan_seconds += time.monotonic() - scan_started
 
             if not digests:
                 break
@@ -607,8 +672,11 @@ class CASPool:
                 if dry_run:
                     continue
 
+                flip_started = time.monotonic()
                 with index.transaction() as session:
                     flipped = index.flip_to_deleting(session, self.name, digest, self.grace_seconds)
+
+                stats.flip_seconds += time.monotonic() - flip_started
 
                 if not flipped:
                     stats.skipped_held += 1
@@ -620,19 +688,22 @@ class CASPool:
             if len(digests) < batch:
                 break
 
-            self._pause()
+            self._pause(stats)
 
         # 2. expired hold rows
         if not dry_run:
             while True:
+                prune_started = time.monotonic()
                 with index.transaction() as session:
                     pruned = index.delete_expired_holds_batch(session, self.name, batch)
+
+                stats.prune_seconds += time.monotonic() - prune_started
 
                 stats.expired_holds_pruned += pruned
                 if pruned < batch:
                     break
 
-                self._pause()
+                self._pause(stats)
 
         logging.info("cas gc", extra={
             "cas_pool": self.name, "dry_run": dry_run, "resumed": stats.resumed,
@@ -661,6 +732,12 @@ class CASPool:
             try:
                 self._verify_and_fill(digest, None, "verify")
             except ObjectNotFound:
+                # the hourly GC and the weekly verify start in the same minute, so an object GC
+                # deletes after the sample was taken is expected here, and is not a failure
+                if not self._bytes_lost(digest):
+                    stats.removed += 1
+                    continue
+
                 stats.missing += 1
                 stats.failures.append(digest)
                 continue
@@ -680,7 +757,8 @@ class CASPool:
 
         logging.info("cas verify", extra={
             "cas_pool": self.name, "dry_run": dry_run, "checked": stats.checked, "verified": stats.verified,
-            "mismatched": stats.mismatched, "key_mismatch": stats.key_mismatch, "missing": stats.missing})
+            "mismatched": stats.mismatched, "key_mismatch": stats.key_mismatch, "missing": stats.missing,
+            "removed": stats.removed})
         self._emit_run(MONITOR_CAS_VERIFY, stats, started)
         return stats
 
@@ -752,6 +830,25 @@ def _emit(monitor: Monitor, data: dict) -> None:
         emit_monitor(monitor, data)
     except Exception as e:
         logging.debug("unable to emit %s: %s", monitor.path, e)
+
+
+def _link_open_file(fp: BinaryIO, dest_path: str) -> bool:
+    """Hardlink the file fp has open (by its name) to dest_path. Returns False when the caller
+    should copy from fp instead: dest_path is on another filesystem, or the name is gone because
+    another process evicted the read cache entry (the open file itself is intact). Raises
+    FileExistsError, and FileNotFoundError when it is dest_path's directory that is missing."""
+    try:
+        os.link(fp.name, dest_path)
+        return True
+    except FileExistsError:
+        raise
+    except FileNotFoundError:
+        if os.fstat(fp.fileno()).st_nlink > 0:
+            raise
+
+        return False
+    except OSError:
+        return False
 
 
 def _unlink_quietly(path: str) -> None:

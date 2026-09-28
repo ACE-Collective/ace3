@@ -26,6 +26,7 @@ from saq.database.model import CASPurge
 from saq.database.pool import get_db
 from saq.environment import get_data_dir, get_temp_dir
 
+from saq.cas import metrics
 from saq.cas.pool import VerifyStats
 from saq.monitor_definitions import MONITOR_CAS_VERIFY
 
@@ -172,6 +173,48 @@ def test_put_waits_for_a_deleting_object_then_reuploads(plain_pool, payload):
     assert stat.state == "present" and stat.hold_count == 1
     with open(backend_path(plain_pool, digest), "rb") as fp:
         assert fp.read() == payload
+
+
+def test_concurrent_puts_of_one_object_do_not_deadlock(enc_pool):
+    # many captures of one sample at once. a duplicate-key INSERT IGNORE takes a shared lock on the
+    # existing row, and two puts that both then asked for FOR UPDATE deadlocked on the upgrade
+    payload = os.urandom(4096)
+    digest = enc_pool.put(payload)
+    threads, puts = 8, 25
+    barrier = threading.Barrier(threads)
+    errors = []
+
+    def putter(n):
+        barrier.wait()
+        for i in range(puts):
+            try:
+                enc_pool.put(payload, hold=Hold("svs_capture", f"{n}-{i}"))
+            except Exception as e:
+                errors.append(e)
+
+    workers = [threading.Thread(target=putter, args=(n,)) for n in range(threads)]
+    for worker in workers:
+        worker.start()
+
+    for worker in workers:
+        worker.join(timeout=120)
+
+    assert errors == []
+    assert enc_pool.stat(digest).hold_count == threads * puts
+
+
+def test_operations_are_timed_by_phase(enc_pool, payload, dest_dir):
+    metrics.reset()
+    digest = enc_pool.put(payload)
+    enc_pool.put(payload)
+    enc_pool.materialize(digest, os.path.join(dest_dir, f"timed-{digest}"))
+    phases = {(r["operation"], r["phase"]): r["count"] for r in metrics.snapshot(enc_pool.name)}
+    assert phases[("put", "total")] == 2
+    assert phases[("put", "encrypt")] == 2
+    assert phases[("put", "write")] == 1
+    assert phases[("put", "deduplicated")] == 1
+    assert phases[("materialize", "total")] == 1
+    assert phases[("materialize", "verify")] == 1
 
 
 def test_put_gives_up_on_a_deleting_object(plain_pool, payload, monkeypatch, caplog):
@@ -497,6 +540,30 @@ def test_materialize_encrypted_goes_through_the_read_cache(enc_pool, payload, de
     assert open(again, "rb").read() == payload
 
 
+def test_materialize_copies_when_the_cache_entry_is_evicted_after_the_open(enc_pool, payload, dest_dir, monkeypatch):
+    # the cached name is gone by the time materialize() links it: the open file is still intact
+    digest = enc_pool.put(payload)
+    cache = get_cas().cache
+    open_or_fill = cache.open_or_fill
+
+    def evicting_open_or_fill(pool, digest, fill):
+        fp = open_or_fill(pool, digest, fill)
+        os.unlink(fp.name)
+        return fp
+
+    monkeypatch.setattr(cache, "open_or_fill", evicting_open_or_fill)
+    dest = os.path.join(dest_dir, f"evicted-{digest}")
+    enc_pool.materialize(digest, dest)
+    with open(dest, "rb") as fp:
+        assert fp.read() == payload
+
+
+def test_materialize_into_a_missing_directory_raises(enc_pool, payload, dest_dir):
+    digest = enc_pool.put(payload)
+    with pytest.raises(FileNotFoundError):
+        enc_pool.materialize(digest, os.path.join(dest_dir, "missing", "out"))
+
+
 def test_read_cache_disabled_uses_a_temp_file(enc_pool, payload, monkeypatch):
     monkeypatch.setattr(get_cas().cache, "max_bytes", 0)
     digest = enc_pool.put(payload)
@@ -661,6 +728,26 @@ def test_missing_bytes_under_a_deleting_row_is_the_accepted_race(plain_pool, pay
 
     assert records_for(cas_emitted, "error.cas_integrity") == []
     assert _integrity_errors(caplog) == []
+
+
+def test_verify_does_not_fail_on_an_object_gc_removed_after_the_sample(plain_pool, payload, monkeypatch, cas_emitted):
+    # the hourly GC and the weekly verify start in the same minute
+    digest = plain_pool.put(payload)
+    sample_objects = index.sample_objects
+
+    def sample_then_gc(session, pool, count):
+        rows = sample_objects(session, pool, count)
+        with index.transaction() as other:
+            index.set_deleting_forced(other, pool, digest)
+
+        os.unlink(backend_path(plain_pool, digest))
+        return rows
+
+    monkeypatch.setattr(index, "sample_objects", sample_then_gc)
+    stats = plain_pool.verify()
+    assert (stats.checked, stats.verified, stats.missing, stats.removed) == (1, 0, 0, 1)
+    assert stats.failures == []
+    assert records_for(cas_emitted, "error.cas_integrity") == []
 
 
 def test_verify_counts_a_key_mismatch_apart_from_corruption(enc_pool, payload, cas_emitted):
