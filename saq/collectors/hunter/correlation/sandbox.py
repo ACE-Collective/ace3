@@ -9,6 +9,8 @@ whoever wrote it. So every execution:
 - can read only the system libraries, the python runtime and a short list of /etc files; nothing
   under SAQ_HOME, the data dir, /auth, the SQL volumes, /home or /proc is readable
 - runs under rlimits (memory, file size, open files, CPU seconds)
+- can open TCP connections only to `allowed_tcp_ports` (443 and 53 by default), which keeps it off
+  the cloud metadata endpoint and ACE's own services
 - runs under sandbox_launcher.py, which kills everything the command started when it exits, times
   out or writes more output than allowed (even a process that left the session), kills a command
   that starts more than `max_processes` processes, and on Linux 6.12+ keeps the command from
@@ -35,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from saq.collectors.hunter.correlation.sandbox_launcher import SCOPE_ABI, landlock_abi
+from saq.collectors.hunter.correlation.sandbox_launcher import NET_ABI, SCOPE_ABI, landlock_abi
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.configuration import get_config
 from saq.configuration.schema import ExecutableSandboxConfig
@@ -248,10 +250,16 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: ExecutableSandboxC
     rules.extend(["--landlock-rule", "path-beneath:read-file,write-file:/dev/null"])
     rules.extend(["--landlock-rule", f"path-beneath:{_WORKDIR}:{workdir}"])
 
-    return [
-        _launcher_python(), "-I", "-S", LAUNCHER,
+    launcher_options = [
         f"--max-processes={config.max_processes}",
         f"--deadline={(timeout + _LAUNCHER_DEADLINE_GRACE).total_seconds()}",
+    ]
+    if config.allowed_tcp_ports is not None:
+        launcher_options.append(f"--tcp-ports={','.join(str(port) for port in config.allowed_tcp_ports)}")
+
+    return [
+        _launcher_python(), "-I", "-S", LAUNCHER,
+        *launcher_options,
         "--",
         PRLIMIT,
         f"--as={config.memory_limit}",
@@ -425,6 +433,12 @@ def prepare_sandbox():
     if landlock_available():
         abi = landlock_abi()
         logging.info("correlate executable commands run in a landlock sandbox (ABI %s) under %s", abi, get_sandbox_root())
+        if get_sandbox_config().allowed_tcp_ports is not None and abi < NET_ABI:
+            logging.error(
+                "landlock ABI %s cannot restrict TCP ports (ABI %s, Linux 6.7, is needed): every correlate "
+                "executable command will fail unless hunter.correlation.executable.allowed_tcp_ports is null",
+                abi, NET_ABI,
+            )
         if abi < SCOPE_ABI:
             logging.warning(
                 "landlock ABI %s cannot scope signals (ABI %s, Linux 6.12, is needed): a correlate "
