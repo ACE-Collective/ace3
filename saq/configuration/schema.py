@@ -1,6 +1,7 @@
 import logging
+import re
 import sys
-from typing import TYPE_CHECKING, Annotated, Any, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
@@ -643,6 +644,84 @@ class CrashReportingConfig(BaseModel):
     storage_bucket: str = Field(default="ace-crash-reports", description="bucket crash reports are replicated into. Keep it dedicated: it holds the file observables that crashed modules, i.e. live malware.")
 
 
+class CASBackendSpec(BaseModel):
+    """Selects and configures a custom CAS backend (docs/CAS.md).
+
+    The class is loaded from python_module/python_class, the config dict is validated against the
+    class's get_config_class() model, and the class must declare node_local (a bool class
+    attribute) so a pool declared shared can refuse a node-local backend when it is built.
+    """
+    model_config = ConfigDict(extra="forbid")
+    python_module: str = Field(..., description="Python module containing the CAS backend class")
+    python_class: str = Field(..., description="CAS backend class name within that module")
+    config: dict = Field(default_factory=dict, description="backend-specific config, validated against the class's get_config_class()")
+
+
+class CASReadCacheConfig(BaseModel):
+    """The node-local read cache that materialize() and open() go through for objects that cannot be
+    hardlinked straight out of the backend (encrypted pools, non-local backends)."""
+    model_config = ConfigDict(extra="forbid")
+    dir: str = Field(default="cas_cache", description="directory holding verified plaintext copies (relative to DATA_DIR; absolute paths are honored)")
+    max_bytes: int = Field(default=10 * 1024 * 1024 * 1024, ge=0, description="size budget in bytes; the oldest entries are evicted once it is exceeded. 0 disables the cache (every read goes through a temp file that is removed afterwards)")
+
+
+CAS_POOL_NAME_PATTERN = r"^[a-z0-9_]{1,64}$"
+
+
+class CASPoolConfig(BaseModel):
+    """One content-addressed storage pool: a named policy (docs/CAS.md).
+
+    Objects belong to a pool, dedup happens within a pool, and the pool decides the backend,
+    encryption, retention and whether the bytes must be reachable from every node.
+    """
+    model_config = ConfigDict(extra="forbid")
+    backend: Literal["local", "custom"] = Field(default="local", description="local (a directory on this node) or custom (python_module/python_class under `custom`). An object-store backend is not implemented yet")
+    root: Optional[str] = Field(default=None, description="local backend only: the pool's directory (relative to DATA_DIR). Defaults to <cas.local_root>/<pool name>")
+    custom: Optional[CASBackendSpec] = Field(default=None, description="custom backend only: the class to load and its config")
+    encryption: Literal["none", "system"] = Field(default="none", description="none stores plaintext; system encrypts every object with the system data key (saq/crypto, v1 format)")
+    retention: Literal["held", "ttl", "permanent"] = Field(default="held", description="held: an object lives while it has a live hold, plus grace. permanent: only purge deletes. ttl is reserved and not implemented yet (gated on the GC load test, docs/CAS.md)")
+    grace_seconds: Optional[int] = Field(default=None, ge=0, description="held pools: how long an object outlives its last hold before GC may delete it. Defaults to cas.default_grace_seconds")
+    shared: bool = Field(default=False, description="the bytes must be reachable from every node. A node-local backend (local, or a custom class that says node_local) is refused for a shared pool")
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.retention == "ttl":
+            raise ValueError("retention 'ttl' is not implemented, gated on the GC load test (docs/CAS.md)")
+        if self.backend == "custom" and self.custom is None:
+            raise ValueError("backend 'custom' requires a 'custom' spec (python_module, python_class)")
+        if self.backend != "custom" and self.custom is not None:
+            raise ValueError("'custom' is only valid with backend 'custom'")
+        if self.backend != "local" and self.root is not None:
+            raise ValueError("'root' is only valid with backend 'local'")
+        if self.shared and self.backend == "local":
+            raise ValueError("shared: true requires a backend that is not node-local, and 'local' is")
+        return self
+
+
+class CASConfig(BaseModel):
+    """Content-addressed storage (docs/CAS.md): immutable bytes identified by their sha256, in pools
+    with their own retention, encryption and backend. The index tables in the database are
+    authoritative for which objects exist; backends are dumb byte stores."""
+    model_config = ConfigDict(extra="forbid")
+    local_root: str = Field(default="cas", description="directory under which local-backend pools live by default, one subdirectory per pool (relative to DATA_DIR)")
+    gc_batch_size: int = Field(default=500, ge=1, le=5000, description="objects (and expired hold rows) handled per GC batch. Every CAS deletion from the index runs in primary-key order in batches of at most this many rows, one short transaction each, never as one unbounded DELETE")
+    gc_batch_pause_seconds: float = Field(default=0.5, ge=0, description="pause between GC batches so a large sweep never monopolizes the index tables")
+    default_grace_seconds: int = Field(default=24 * 3600, ge=0, description="grace period for held pools that do not set grace_seconds: an object survives this long after its last hold is released")
+    orphan_grace_seconds: int = Field(default=24 * 3600, ge=0, description="`ace cas orphans` only removes backend bytes with no index row once they are older than this, so an in-flight put is never mistaken for an orphan")
+    verify_sample_size: int = Field(default=1000, ge=1, description="how many objects per pool `ace cas verify` re-hashes per run when --sample is not given")
+    put_deleting_wait_seconds: float = Field(default=30.0, ge=0, description="how long a put() waits for GC to finish removing an object it found in the deleting state before giving up, after which it re-uploads")
+    gc_overdue_seconds: int = Field(default=2 * 3600, ge=0, description="the cas.pool monitor counts an unheld object as gc_overdue once it is this long past its pool's grace period. With the hourly `ace cas gc` a count that stays above zero means GC is not running on any node, or is failing")
+    read_cache: CASReadCacheConfig = Field(default_factory=CASReadCacheConfig, description="node-local read cache for materialize()/open()")
+    pools: dict[str, CASPoolConfig] = Field(default_factory=dict, description="pools by name; the name is the cas_objects.pool key and part of every backend key, so it must match " + CAS_POOL_NAME_PATTERN)
+
+    @model_validator(mode="after")
+    def _pool_names(self):
+        for name in self.pools:
+            if not re.match(CAS_POOL_NAME_PATTERN, name):
+                raise ValueError(f"cas pool name {name!r} must match {CAS_POOL_NAME_PATTERN}")
+        return self
+
+
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
     enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
@@ -719,6 +798,7 @@ class ACEConfig(BaseModel):
     secrets: SecretsConfig = Field(default_factory=SecretsConfig, description="dynamic encrypted-secret (SecretRef) resolution configuration")
     analysis_cache: AnalysisCacheConfig = Field(default_factory=AnalysisCacheConfig, description="analysis result cache configuration")
     crash_reporting: CrashReportingConfig = Field(default_factory=CrashReportingConfig, description="analysis module crash report configuration")
+    cas: CASConfig = Field(default_factory=CASConfig, description="content-addressed storage configuration (docs/CAS.md)")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None

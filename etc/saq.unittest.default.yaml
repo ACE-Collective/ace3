@@ -782,6 +782,29 @@ test_api:
   username: user
   password: pass
 
+# content-addressed storage test pools (tests/saq/cas). small batches and no pause so the GC
+# tests exercise the batching loop; a tiny read cache so eviction is testable with a few KB.
+cas:
+  gc_batch_size: 10
+  gc_batch_pause_seconds: 0
+  default_grace_seconds: 3600
+  read_cache:
+    dir: cas_cache
+    max_bytes: 1048576
+  pools:
+    test_plain:
+      backend: local
+      encryption: none
+      retention: held
+    test_encrypted:
+      backend: local
+      encryption: system
+      retention: held
+    test_permanent:
+      backend: local
+      encryption: none
+      retention: permanent
+
 storage:
   target: local
   base_dir: data_unittest/main/storage

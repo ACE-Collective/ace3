@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# re-hash a sample of content-addressed storage objects per pool (docs/CAS.md) and record
+# verified_at on the intact ones. a corrupt or missing object is reported (exit 2) and never
+# deleted. primary node only; the command checks ACE_IS_PRIMARY_NODE itself.
+ace cas verify

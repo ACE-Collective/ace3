@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# remove content-addressed storage bytes that have no index row (docs/CAS.md): what a put() that
+# crashed between writing the bytes and committing the row leaves behind. only bytes older than
+# cas.orphan_grace_seconds are touched, so an in-flight put is never mistaken for an orphan. this
+# is the one operation that lists a pool's backend, which is why it is weekly. primary node only;
+# the command checks ACE_IS_PRIMARY_NODE itself.
+ace cas orphans

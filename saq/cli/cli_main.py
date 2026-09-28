@@ -87,5 +87,8 @@ def main():
 
         sys.excepthook = info
 
-    # call the handler for the given command
-    args.func(args)
+    # call the handler for the given command. a handler that returns a non-zero int is reporting
+    # failure (ace cas verify returns 2 on a corrupt object so cron notices); anything else is success
+    result = args.func(args)
+    if isinstance(result, int) and result != 0:
+        sys.exit(result)

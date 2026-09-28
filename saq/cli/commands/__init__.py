@@ -20,6 +20,7 @@ from saq.cli.commands import ( # noqa: F401
     testing,
     alerts,
     cache,
+    cas,
     crash,
     cron,
     encryption,

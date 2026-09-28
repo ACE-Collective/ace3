@@ -65,3 +65,39 @@ MONITOR_NODE_STATUS = Monitor(
     data_type=dict,
     description="Status and operator intent for a single node in the cluster."
 )
+
+MONITOR_CAS_POOL = Monitor(
+    path="cas.pool",
+    data_type=dict,
+    description="Index state of one content-addressed storage pool: objects and bytes by state, holds, verify coverage, purges and objects GC should already have removed (docs/CAS.md)."
+)
+
+MONITOR_CAS_NODE = Monitor(
+    path="cas.node",
+    data_type=dict,
+    description="Node-local content-addressed storage state: the read cache's size and the free space under the read cache and each local-backend pool."
+)
+
+MONITOR_CAS_GC = Monitor(
+    path="cas.gc",
+    data_type=dict,
+    description="The outcome of one GC run over one content-addressed storage pool."
+)
+
+MONITOR_CAS_VERIFY = Monitor(
+    path="cas.verify",
+    data_type=dict,
+    description="The outcome of one verify run over one content-addressed storage pool."
+)
+
+MONITOR_CAS_ORPHANS = Monitor(
+    path="cas.orphans",
+    data_type=dict,
+    description="The outcome of one orphan sweep over one content-addressed storage pool."
+)
+
+MONITOR_CAS_INTEGRITY = Monitor(
+    path="error.cas_integrity",
+    data_type=dict,
+    description="A content-addressed storage object failed verification (corrupt, wrong key) or its index row points at bytes that are gone."
+)
