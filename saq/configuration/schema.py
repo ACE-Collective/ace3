@@ -231,6 +231,7 @@ class ExecutableSandboxConfig(BaseModel):
     file_size_limit: int = Field(default=256 * 1024 ** 2, gt=0, description="largest file the command may write, in bytes (RLIMIT_FSIZE)")
     open_files_limit: int = Field(default=1024, gt=0, description="maximum open file descriptors (RLIMIT_NOFILE)")
     max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed and the step fails")
+    max_processes: int = Field(default=64, gt=0, description="most processes a command may have alive at once, counting everything it starts; a command that starts more is killed and the step fails")
 
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

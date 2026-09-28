@@ -4,7 +4,10 @@ import pytest
 from pydantic import BaseModel, Field
 
 from saq.collectors.hunter.loader import (
+    HuntFileOutsideRootError,
+    find_hunt_files_outside,
     load_from_yaml,
+    load_merged_yaml,
     deep_merge,
     _load_and_merge_yaml,
     _get_observable_mapping_identity,
@@ -1184,3 +1187,115 @@ class TestDeepMergeObservableMappingOverride:
 
         assert len(result["mapping"]) == 1
         assert result["mapping"][0]["time"] is False
+
+
+@pytest.mark.unit
+class TestFindHuntFilesOutside:
+    """A hunt submitted to the validation API may only name files inside its own package."""
+
+    @pytest.fixture
+    def package(self, tmp_path):
+        package = tmp_path / "package"
+        (package / "hunts").mkdir(parents=True)
+        return package
+
+    @pytest.fixture
+    def outside(self, tmp_path):
+        """A real file outside the package, standing in for anything else on the server."""
+        path = tmp_path / "elsewhere" / "secret.yaml"
+        path.parent.mkdir()
+        path.write_text("rule:\n  name: not part of the hunt\n")
+        return path
+
+    @staticmethod
+    def _hunt(package, text: str) -> str:
+        path = package / "hunts" / "hunt.yaml"
+        path.write_text(text)
+        return str(path)
+
+    def test_hunt_that_stays_inside_passes(self, package):
+        (package / "hunts" / "base.include.yaml").write_text("rule:\n  tags: [base]\n")
+        (package / "hunts" / "query.spl").write_text("index=x <include:%s>\n" % (package / "hunts" / "ips.txt"))
+        (package / "hunts" / "ips.txt").write_text("1.1.1.1\n")
+        (package / "hunts" / "enrich.py").write_text("print('hi')\n")
+        path = self._hunt(package, f"""include:
+  - base.include.yaml
+rule:
+  name: inside
+  search: {package / "hunts" / "query.spl"}
+  correlate:
+    logic:
+      - transform:
+          command:
+            type: executable
+            path: enrich.py
+            files: [ips.txt]
+""")
+
+        assert find_hunt_files_outside(path, str(package)) == []
+
+    @pytest.mark.parametrize("include", ["ABSOLUTE", "../../elsewhere/secret.yaml"])
+    def test_include_outside_is_reported_without_being_read(self, package, outside, include):
+        include = str(outside) if include == "ABSOLUTE" else include
+        path = self._hunt(package, f"include:\n  - {include}\nrule:\n  name: x\n")
+
+        problems = find_hunt_files_outside(path, str(package))
+
+        assert len(problems) == 1
+        assert "secret.yaml" in problems[0] and "outside" in problems[0]
+
+    def test_merge_refuses_to_open_an_include_outside_the_root(self, package, outside):
+        path = self._hunt(package, f"include:\n  - {outside}\nrule:\n  name: x\n")
+
+        with pytest.raises(HuntFileOutsideRootError):
+            load_merged_yaml(path, file_root=str(package))
+
+        # without a root the include still loads, as it does for hunts in a hunt repository
+        merged, _ = load_merged_yaml(path)
+        assert merged["rule"]["name"] == "x"
+
+    def test_target_outside_the_root_is_reported(self, package, outside):
+        assert find_hunt_files_outside(str(outside), str(package)) != []
+
+    def test_query_file_outside_is_reported(self, package, outside):
+        path = self._hunt(package, f"rule:\n  name: x\n  search: {outside}\n")
+
+        assert find_hunt_files_outside(path, str(package)) == [f"query file {outside} is outside the submitted hunt"]
+
+    def test_query_include_outside_is_reported(self, package, outside):
+        path = self._hunt(package, f"rule:\n  name: x\n  query: 'index=x <include:{outside}>'\n")
+
+        assert find_hunt_files_outside(path, str(package)) == [f"query include {outside} is outside the submitted hunt"]
+
+    def test_query_include_inside_a_packaged_query_file_is_followed(self, package, outside):
+        # the query file is inside, but the file it includes is not
+        inner = package / "hunts" / "inner.txt"
+        inner.write_text(f"<include:{outside}>\n")
+        query = package / "hunts" / "query.spl"
+        query.write_text(f"index=x <include:{inner}>\n")
+        path = self._hunt(package, f"rule:\n  name: x\n  search: {query}\n")
+
+        assert find_hunt_files_outside(path, str(package)) == [f"query include {outside} is outside the submitted hunt"]
+
+    def test_executable_and_files_outside_are_reported(self, package, outside):
+        path = self._hunt(package, f"""commands:
+  - name: lookup
+    type: executable
+    path: /usr/bin/env
+rule:
+  name: x
+  correlate:
+    logic:
+      - when: "true"
+        execute:
+          - transform:
+              command:
+                type: executable
+                path: script.py
+                files: [{outside}]
+""")
+
+        assert find_hunt_files_outside(path, str(package)) == [
+            "executable /usr/bin/env is outside the submitted hunt",
+            f"file {outside} is outside the submitted hunt",
+        ]

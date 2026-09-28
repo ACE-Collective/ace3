@@ -1,15 +1,18 @@
 from datetime import datetime
+import hashlib
 import logging
 import shutil
 import tempfile
 import threading
-from typing import Optional
+import time
+from typing import Any, Optional
 
 import pytz
 import yaml
 from flask import g, request
 from pydantic import BaseModel, ValidationError
 
+from aceapi.audit import audit_event
 from aceapi.auth import API_AUTH_TYPE_USER, api_auth_check
 from aceapi.json import json_result
 from aceapi.blueprints import hunt_bp
@@ -21,7 +24,7 @@ from saq.collectors.hunter.correlation.validation import (
     check_custom_command_types,
     check_templates_for_removed_names,
 )
-from saq.collectors.hunter.loader import get_compiled_hunt_dir, peek_hunt_type
+from saq.collectors.hunter.loader import find_hunt_files_outside, get_compiled_hunt_dir, peek_hunt_type
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.collectors.hunter.service import HunterService
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, TAG_HUNT_VALIDATION
@@ -81,8 +84,27 @@ class ExecutionArguments(BaseModel):
     correlate_results: Optional[dict] = None
 
 
-def _validate_and_execute(target_file_path: str, request_json: dict):
+def _query_text(hunt) -> Optional[str]:
+    """The query a query hunt runs, for the audit record, or None when there is none."""
+    if not isinstance(hunt, QueryHunt):
+        return None
+
+    try:
+        return hunt.query
+    except Exception:
+        # a query that cannot be built fails the hunt's own execution, which reports why
+        return None
+
+
+def _validate_and_execute(target_file_path: str, package_dir: str, request_json: dict, audit: dict[str, Any]):
     """Validate and optionally execute a hunt from its target file path.
+
+    Args:
+        target_file_path: the hunt YAML, inside package_dir
+        package_dir: the directory the submitted package was materialized into; the hunt may name
+            no file outside it
+        request_json: the request body
+        audit: filled in with what the request did, for the audit record
 
     Returns:
         Flask response tuple (response, status_code).
@@ -94,6 +116,12 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
     load_command_types_from_config()
 
     try:
+        # the hunt is client-supplied: check that every file it names is part of its own package
+        # before anything parses it for real
+        outside = find_hunt_files_outside(target_file_path, package_dir)
+        if outside:
+            return json_result({"valid": False, "error": "; ".join(outside)}), 400
+
         hunt_type = peek_hunt_type(target_file_path)
     except FileNotFoundError:
         return json_result({"valid": False, "error": "target file not found"}), 400
@@ -115,6 +143,9 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         hunt = manager.load_hunt_from_config(target_file_path)
     except ValidationError as e:
         return json_result({"valid": False, "error": f"invalid hunt config: {e}"}), 400
+
+    audit["hunt"] = {"type": hunt_type, "name": hunt.name, "uuid": hunt.uuid}
+    audit["query"] = _query_text(hunt)
 
     # catch a correlate template that reads _secrets or _config. neither is bound when a hunt
     # renders, so it would fail on every event in production; failing here says why.
@@ -145,6 +176,19 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         execution_arguments = ExecutionArguments.model_validate(execution_arguments_dict)
     except ValidationError as e:
         return json_result({"valid": False, "error": f"invalid execution_arguments: {e}"}), 400
+
+    audit["execution"] = {
+        "start_time": execution_arguments.start_time,
+        "end_time": execution_arguments.end_time,
+        "timezone": execution_arguments.timezone,
+        "time_range_overrides": execution_arguments.time_range_overrides,
+        "analyze_results": execution_arguments.analyze_results,
+        "create_alerts": execution_arguments.create_alerts,
+        "queue": execution_arguments.queue,
+        # supplied events replace the data-source query; saved correlate results replace follow-ups
+        "supplied_events": None if execution_arguments.query_results is None else len(execution_arguments.query_results),
+        "correlate_replay": execution_arguments.correlate_results is not None,
+    }
 
     exec_kwargs = {}
     use_query_results_override = execution_arguments.query_results is not None
@@ -204,8 +248,10 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
             else:
                 submissions = hunt.execute(**exec_kwargs)
         except RemoteApiError as e:
+            audit["event"] = "hunt_error"
             return json_result({"valid": False, "error": e.message, "remote_status_code": e.status_code}), 400
         except Exception as e:
+            audit["event"] = "hunt_error"
             return json_result({"valid": False, "error": f"error executing hunt: {e}"}), 400
 
         if submissions is None:
@@ -233,6 +279,15 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
                 roots.append(new_root)
             else:
                 roots.append(submission.root)
+
+        audit["result"] = {"roots": len(roots)}
+        original_query_results = getattr(hunt, "original_query_results", None)
+        if isinstance(original_query_results, list):
+            audit["result"]["events"] = len(original_query_results)
+        if execution_arguments.create_alerts:
+            audit["result"]["alert_uuids"] = [root.uuid for root in roots]
+        elif execution_arguments.analyze_results:
+            audit["result"]["analysis_uuids"] = [root.uuid for root in roots]
 
         # a little quirck which how ACE works
         # the details are typically not loaded until they are needed
@@ -271,35 +326,76 @@ def _validate_and_execute(target_file_path: str, request_json: dict):
         root_logger.removeHandler(log_handler)
 
 
+def _validate_request(audit: dict[str, Any]):
+    """Materialize the submitted hunt and validate (and optionally execute) it."""
+    if not request.json:
+        return json_result({"valid": False, "error": "request body must be JSON"}), 400
+
+    if "compiled_hunt" not in request.json:
+        return json_result({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
+
+    try:
+        compiled = CompiledHunt.model_validate(request.json["compiled_hunt"])
+    except ValidationError as e:
+        return json_result({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
+
+    # the package as the client sent it, so what ran can be matched to a file in a hunt repository
+    audit["package"] = {
+        "target": compiled.target,
+        "package_root": compiled.package_root,
+        "assets": [
+            {"path": asset.path, "kind": asset.kind, "sha256": hashlib.sha256(asset.content.encode()).hexdigest()}
+            for asset in compiled.assets
+        ],
+    }
+
+    temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
+
+    try:
+        try:
+            logging.debug(
+                "loading compiled hunt version=%s package_root=%s assets=%s",
+                compiled.version,
+                compiled.package_root,
+                len(compiled.assets),
+            )
+            target_file_path = load_compiled_hunt(compiled, temp_dir)
+        except Exception as e:
+            return json_result({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
+
+        return _validate_and_execute(target_file_path, temp_dir, request.json, audit)
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+def _audit_request(audit: dict[str, Any], status: int, error: Optional[str], started: float):
+    if status == 200:
+        event = "hunt_validate"
+    else:
+        # an execution failure says so; anything else refused the request before it ran
+        event = audit.pop("event", "hunt_rejected")
+
+    audit_event(
+        event,
+        status=status,
+        detail=error,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        **audit,
+    )
+
+
 @hunt_bp.route('/validate', methods=['POST'])
 @api_auth_check("hunt", "write")
 def validate_hunt():
-    with suppress_external_logging():
-        if not request.json:
-            return json_result({"valid": False, "error": "request body must be JSON"}), 400
+    audit: dict[str, Any] = {}
+    started = time.monotonic()
+    try:
+        with suppress_external_logging():
+            response, status = _validate_request(audit)
+    except Exception as e:
+        _audit_request(audit, 500, f"{type(e).__name__}: {e}", started)
+        raise
 
-        if "compiled_hunt" not in request.json:
-            return json_result({"valid": False, "error": "missing 'compiled_hunt' field"}), 400
-
-        try:
-            compiled = CompiledHunt.model_validate(request.json["compiled_hunt"])
-        except ValidationError as e:
-            return json_result({"valid": False, "error": f"invalid compiled_hunt: {e}"}), 400
-
-        temp_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
-
-        try:
-            try:
-                logging.debug(
-                    "loading compiled hunt version=%s package_root=%s assets=%s",
-                    compiled.version,
-                    compiled.package_root,
-                    len(compiled.assets),
-                )
-                target_file_path = load_compiled_hunt(compiled, temp_dir)
-            except Exception as e:
-                return json_result({"valid": False, "error": f"error loading compiled hunt: {e}"}), 400
-
-            return _validate_and_execute(target_file_path, request.json)
-        finally:
-            shutil.rmtree(temp_dir)
+    body = response.get_json(silent=True) or {}
+    _audit_request(audit, status, body.get("error"), started)
+    return response, status

@@ -436,6 +436,8 @@ hunter:
       open_files_limit: 1024
       # bytes read from each of stdout and stderr before the command is killed (64 MiB)
       max_output_bytes: 67108864
+      # processes a command may have alive at once, counting everything it starts, before it is killed
+      max_processes: 64
 
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database

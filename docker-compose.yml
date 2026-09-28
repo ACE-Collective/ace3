@@ -421,6 +421,11 @@ services:
     init: true
     restart: always
     stop_grace_period: 60s
+    # POST /api/hunt/validate runs hunt scripts here. The sandbox kills a command with more than
+    # hunter.correlation.executable.max_processes processes, but it counts them by polling, so
+    # this is the hard ceiling for a fork loop that outruns it. 12 uwsgi workers each running one
+    # capped command stay far below it.
+    pids_limit: 2048
     volumes: *common-volumes
     hostname: ace
     expose:

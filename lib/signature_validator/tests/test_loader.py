@@ -155,6 +155,61 @@ class TestLoadBinaryExecutable:
         assert file_mode == 0o755
 
 
+class TestLoadRejectsPathsOutsideTheRoot:
+    """A CompiledHunt arrives from the client, so its paths must never reach outside temp_dir."""
+
+    @staticmethod
+    def _compiled(target="hunt.yaml", asset_path="hunt.yaml"):
+        return CompiledHunt(
+            target=target,
+            package_root="/client/signatures",
+            assets=[EmbeddedFile(kind="yaml", path=asset_path, content="rule: {}\n")],
+        )
+
+    @pytest.mark.parametrize("asset_path", [
+        "/tmp/escaped.yaml",
+        "../escaped.yaml",
+        "hunts/../../escaped.yaml",
+        ".",
+    ])
+    def test_escaping_asset_is_rejected_before_anything_is_written(self, tmp_path, asset_path):
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+        compiled = CompiledHunt(
+            target="hunt.yaml",
+            package_root="/client/signatures",
+            assets=[
+                EmbeddedFile(kind="yaml", path="hunt.yaml", content="rule: {}\n"),
+                EmbeddedFile(kind="yaml", path=asset_path, content="rule: {}\n"),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="asset path"):
+            load_compiled_hunt(compiled, str(target_dir))
+
+        assert list(target_dir.iterdir()) == []
+        assert not (tmp_path / "escaped.yaml").exists()
+
+    @pytest.mark.parametrize("target", ["/etc/hostname", "../hunt.yaml", "hunts/../../hunt.yaml"])
+    def test_escaping_target_is_rejected(self, tmp_path, target):
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        with pytest.raises(ValueError, match="target path"):
+            load_compiled_hunt(self._compiled(target=target), str(target_dir))
+
+    def test_path_that_stays_inside_is_accepted(self, tmp_path):
+        target_dir = tmp_path / "output"
+        target_dir.mkdir()
+
+        target_path = load_compiled_hunt(
+            self._compiled(target="hunts/../hunt.yaml", asset_path="hunts/../hunt.yaml"), str(target_dir)
+        )
+
+        assert target_path == str(target_dir / "hunt.yaml")
+        assert (target_dir / "hunt.yaml").is_file()
+
+
 class TestRoundTrip:
     def test_compile_serialize_deserialize_load(self, simple_hunt, tmp_path):
         """Full round-trip: compile -> JSON -> deserialize -> load."""

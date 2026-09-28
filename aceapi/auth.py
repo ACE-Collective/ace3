@@ -22,6 +22,10 @@ class ApiAuthResult:
     auth_type: Optional[str] = None
     auth_name: Optional[str] = None
     auth_user_id: Optional[int] = None
+    # identity of the specific credential used, for audit attribution; key_id is None for config
+    # keys (no table row)
+    key_id: Optional[int] = None
+    key_name: Optional[str] = None
     # None => unrestricted: a user key that inherits its owner's full permissions, or a config key
     # in the deprecated no-scope (legacy bypass) form. A list is a positive ALLOW-only allowlist of
     # (major, minor) patterns the request must also match -- intersected with the owner's
@@ -43,7 +47,7 @@ def _get_config_api_key_match(auth_sha256: str) -> Optional[ApiAuthResult]:
         return None
 
     name, scope = match
-    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope)
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope, key_name=name)
 
 def _get_user_api_key_match(auth_sha256: str) -> Optional[ApiAuthResult]:
     """Returns an ApiAuthResult if the given auth token is valid for a user API key, None otherwise."""
@@ -70,6 +74,8 @@ def _get_user_api_key_match(auth_sha256: str) -> Optional[ApiAuthResult]:
         auth_name=api_key.user.username,
         auth_user_id=api_key.user_id,
         key_scope=scope,
+        key_id=api_key.id,
+        key_name=api_key.name,
     )
 
 def verify_api_key(auth: str) -> Optional[ApiAuthResult]:
