@@ -661,10 +661,10 @@ class TestEngineTrace:
 @pytest.mark.unit
 class TestSecretSanitizationInTrace:
 
-    # A correlation template can read the credential store only in an executable's `env:` (see
-    # build_jinja_context). So a secret value reaches a rendered string two ways: by arriving in
-    # the event data itself -- a queried log line that happens to carry a credential -- or by a
-    # helper script echoing the credential it was handed. These cover both routes.
+    # No correlation template can read the credential store (see build_jinja_context). A secret
+    # value still reaches a rendered string two ways: by arriving in the event data itself -- a
+    # queried log line that happens to carry a credential -- or by a helper script that reads one
+    # on its own and echoes it. These cover both routes.
 
     def test_secrets_stripped_from_expression_trace(self):
         mock_raw = MagicMock()
@@ -700,8 +700,8 @@ class TestSecretSanitizationInTrace:
             assert "supersecret" not in (action.rendered_log_message or "")
             assert "***" in (action.rendered_log_message or "")
 
-    def test_env_secret_absent_from_rendered_command_trace(self, caplog):
-        """The trace summary renders path + args, never env, so a credential stays out of it."""
+    def test_env_value_absent_from_rendered_command_trace(self, caplog):
+        """The trace summary renders path + args, never env, so an env value stays out of it."""
         mock_raw = MagicMock()
         mock_raw._data = {}
         with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"vendor.api_key": "supersecret"}), \
@@ -716,15 +716,15 @@ class TestSecretSanitizationInTrace:
                             "type": "executable",
                             "path": PYTHON,
                             "args": ["-c", "import os; print(os.environ['API_KEY'][:2])"],
-                            "env": {"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+                            "env": {"API_KEY": "{{ _event.token }}"},
                         },
                     },
                 },
             ])
             engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1}])
+            result = engine.execute([{"id": 1, "token": "supersecret"}])
 
-            # the command really did receive the credential
+            # the command really did receive the value
             assert result.events[0]["result"] == "su"
             transform = result.trace.event_traces[0].steps[0].step
             assert isinstance(transform, TransformTrace)
@@ -732,8 +732,8 @@ class TestSecretSanitizationInTrace:
             assert "supersecret" not in caplog.text
 
     def test_transform_error_is_sanitized(self, caplog):
-        """A helper script that echoes its failing credential to stderr must not write it into
-        the trace -- TransformTrace.error is persisted into alert details."""
+        """A helper script that echoes a credential to stderr must not write it into the trace --
+        TransformTrace.error is persisted into alert details."""
         mock_raw = MagicMock()
         mock_raw._data = {}
         with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"vendor.api_key": "supersecret"}), \
@@ -748,13 +748,13 @@ class TestSecretSanitizationInTrace:
                             "type": "executable",
                             "path": PYTHON,
                             "args": ["-c", "import os, sys; sys.stderr.write(os.environ['API_KEY']); sys.exit(1)"],
-                            "env": {"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+                            "env": {"API_KEY": "{{ _event.token }}"},
                         },
                     },
                 },
             ])
             engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1}])
+            result = engine.execute([{"id": 1, "token": "supersecret"}])
 
             transform = result.trace.event_traces[0].steps[0].step
             assert isinstance(transform, TransformTrace)

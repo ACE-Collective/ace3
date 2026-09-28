@@ -52,7 +52,7 @@ class TestDescribeCommand:
         assert desc == "type=executable path=/bin/foo args=['-c', 'x']"
 
     def test_executable_summary_omits_env(self):
-        """env can hold a credential (it is the one context bound to _secrets) and this
+        """env is where a hunt puts the settings it hands a script, and this
         description is written to the log, so it must never appear here."""
         desc = _describe_command({
             "type": "executable",

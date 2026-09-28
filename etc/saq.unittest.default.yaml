@@ -871,3 +871,10 @@ ai_query_backend_splunk:
   python_module: saq.ai_query.backends.splunk
   python_class: SplunkAIQueryBackend
   splunk_config: test_api
+hunter:
+  correlation:
+    executable:
+      # the TCP port restriction needs Landlock ABI 4 (Linux 6.7) and fails every command without
+      # it; the sandbox tests that exercise it turn it on themselves, so the rest of the suite runs
+      # on any kernel the sandbox supports
+      allowed_tcp_ports: null

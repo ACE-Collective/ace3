@@ -33,7 +33,6 @@ def execute_action(
     action: ActionConfig,
     event: dict,
     events: list[dict],
-    config: dict | None = None,
 ) -> ActionResult:
     """Execute an action and return the result."""
     if action.type == "filter":
@@ -53,7 +52,7 @@ def execute_action(
     else:
         raise ValueError(f"unknown action type: {action.type!r}")
 
-    _log_action(action, event, events, config, result)
+    _log_action(action, event, events, result)
     return result
 
 
@@ -61,11 +60,10 @@ def _log_action(
     action: ActionConfig,
     event: dict,
     events: list[dict],
-    config: dict | None,
     result: ActionResult,
 ):
     """Log a message for any action execution."""
-    context = build_jinja_context(event, events, config)
+    context = build_jinja_context(event, events)
     level = getattr(logging, action.log_level.upper(), logging.INFO)
 
     if action.log_message:

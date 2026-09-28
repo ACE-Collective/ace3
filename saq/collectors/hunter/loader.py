@@ -1,13 +1,42 @@
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Type
+import re
+from typing import TYPE_CHECKING, Any, Iterator, Type
 
 import yaml
+
+from saq.configuration import get_config
+from saq.environment import get_data_dir
+from saq.util import abs_path
 
 if TYPE_CHECKING:
     from saq.collectors.hunter.base_hunter import HuntConfig
 
 INCLUDE_DIRECTIVE = "include"
+
+# a query pulls in another file with <include:path> (expanded by SplunkHunt.query)
+QUERY_INCLUDE_PATTERN = re.compile(r"<include:([^>]+)>")
+
+
+class HuntFileOutsideRootError(ValueError):
+    """A hunt names a file outside the directory it is confined to."""
+
+
+def _is_under(path: str, root: str) -> bool:
+    real_root = os.path.realpath(root)
+    return os.path.commonpath([os.path.realpath(path), real_root]) == real_root
+
+
+def get_compiled_hunt_dir() -> str:
+    """Return a directory for compiled hunt temp files that supports execution.
+
+    The default temp directory (/tmp) may be mounted as a noexec tmpfs in Docker,
+    preventing extracted scripts from being executed. This uses a configurable
+    subdirectory under the data directory instead.
+    """
+    path = os.path.join(get_data_dir(), get_config().global_settings.compiled_hunt_dir)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _get_observable_mapping_identity(item: Any) -> tuple[str, frozenset[str]] | None:
@@ -113,16 +142,21 @@ def _resolve_command_paths_in_steps(steps: list, yaml_dir: str) -> None:
             _resolve_command_paths_in_steps(step.get("else", []), yaml_dir)
 
 
-def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any]:
+def _load_and_merge_yaml(path: str, resolved_history: set[str], file_root: str | None = None) -> dict[str, Any]:
     """Recursively loads and merges a YAML file with its includes.
 
     Args:
         path: the path to the YAML file to load
         resolved_history: set of already resolved file paths to prevent circular references
+        file_root: when set, this file and every file it includes must lie under it;
+            HuntFileOutsideRootError is raised before a file outside it is opened
 
     Returns:
         The merged dictionary from this file and all its includes
     """
+    if file_root is not None and not _is_under(path, file_root):
+        raise HuntFileOutsideRootError(f"hunt file {path} is outside {file_root}")
+
     logging.debug(f"loading {path}")
 
     try:
@@ -162,7 +196,7 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
 
             # recursively load and merge the included file
             logging.debug(f"including {include_path} from {path}")
-            included_result = _load_and_merge_yaml(include_path, resolved_history)
+            included_result = _load_and_merge_yaml(include_path, resolved_history, file_root)
 
             # merge the included file's result into our result
             result = deep_merge(result, included_result)
@@ -176,16 +210,123 @@ def _load_and_merge_yaml(path: str, resolved_history: set[str]) -> dict[str, Any
     return result
 
 
-def load_merged_yaml(path: str) -> tuple[dict[str, Any], set[str]]:
+def load_merged_yaml(path: str, file_root: str | None = None) -> tuple[dict[str, Any], set[str]]:
     """Loads and merges a hunt YAML (with includes) without pydantic validation.
+
+    Args:
+        path: the hunt YAML
+        file_root: when set, the hunt and every file it includes must lie under it (see
+            _load_and_merge_yaml)
 
     Returns:
         A tuple of (the merged raw dict, the set of all file paths that were loaded).
     """
     resolved_history: set[str] = set()
     resolved_history.add(path)
-    result = _load_and_merge_yaml(path, resolved_history)
+    result = _load_and_merge_yaml(path, resolved_history, file_root)
     return result, resolved_history
+
+
+def _strings_in(value: Any) -> Iterator[str]:
+    """Every string anywhere in a loaded YAML value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings_in(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings_in(item)
+
+
+def _commands_in(merged: dict[str, Any]) -> Iterator[dict]:
+    """The predefined commands and every inline correlate command of a merged hunt."""
+    for command in merged.get("commands") or []:
+        if isinstance(command, dict):
+            yield command
+
+    rule = merged.get("rule")
+    correlate = rule.get("correlate") if isinstance(rule, dict) else None
+    steps = list(correlate.get("logic") or []) if isinstance(correlate, dict) else []
+    while steps:
+        step = steps.pop()
+        if not isinstance(step, dict):
+            continue
+        transform = step.get("transform")
+        if isinstance(transform, dict) and isinstance(transform.get("command"), dict):
+            yield transform["command"]
+        if "when" in step:
+            for branch in (step.get("execute"), step.get("else")):
+                if isinstance(branch, list):
+                    steps.extend(branch)
+
+
+def find_hunt_files_outside(path: str, root: str) -> list[str]:
+    """Describe every file the hunt at path would read that lies outside root.
+
+    The validation API materializes a submitted hunt into a directory of its own, and the hunt
+    compiler only packages files from inside the package, so nothing a genuine submission names
+    lies outside that directory. The hunt is still client-supplied, so this walks every way a hunt
+    names a file -- `include:`, the query file (`search`), `<include:...>` markers in query text
+    and in the files they pull in, and commands' executable `path` and `files` -- and reports the
+    ones outside root. It never opens a file outside root.
+
+    Raises whatever loading the hunt YAML raises (FileNotFoundError, yaml.YAMLError, ValueError).
+    """
+    try:
+        merged, _ = load_merged_yaml(path, file_root=root)
+    except HuntFileOutsideRootError as e:
+        return [str(e)]
+
+    problems: list[str] = []
+
+    def inside(file_path: str, what: str) -> bool:
+        if _is_under(file_path, root):
+            return True
+
+        problem = f"{what} {file_path} is outside the submitted hunt"
+        if problem not in problems:
+            problems.append(problem)
+
+        return False
+
+    rule = merged.get("rule") if isinstance(merged.get("rule"), dict) else {}
+
+    # query text, plus the query file and the files its <include:...> markers pull in
+    texts = list(_strings_in(rule))
+    for field in ("search", "query_file_path"):
+        query_file = rule.get(field)
+        if not isinstance(query_file, str):
+            continue
+
+        # the hunt reads its query file through abs_path (saq.query.config.load_query_from_file)
+        query_path = abs_path(query_file)
+        if inside(query_path, "query file") and os.path.isfile(query_path):
+            with open(query_path, "r", encoding="utf-8", errors="replace") as fp:
+                texts.append(fp.read())
+
+    seen: set[str] = set()
+    while texts:
+        for include in QUERY_INCLUDE_PATTERN.findall(texts.pop()):
+            # SplunkHunt.query opens the path as written, relative to the working directory
+            include_path = os.path.abspath(include)
+            if include_path in seen:
+                continue
+
+            seen.add(include_path)
+            if inside(include_path, "query include") and os.path.isfile(include_path):
+                with open(include_path, "r", encoding="utf-8", errors="replace") as fp:
+                    texts.append(fp.read())
+
+    for command in _commands_in(merged):
+        if command.get("type") == "executable" and isinstance(command.get("path"), str):
+            inside(command["path"], "executable")
+        files = command.get("files")
+        for file_path in files if isinstance(files, list) else []:
+            if isinstance(file_path, str):
+                inside(file_path, "file")
+
+    return problems
 
 
 def peek_hunt_type(path: str) -> str:

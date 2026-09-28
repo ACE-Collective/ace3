@@ -150,7 +150,7 @@ Every `command` as the following properties available:
 ```yaml
 command:
     type: TYPE # required (see below)
-    timeout: 30s # optional (default 30s)
+    timeout: 30s # optional (default 10m)
 ```
 
 The optional `timeout` setting controls how long to wait for the command to complete. If the command does not complete in the time specified, it is canceled (or killed) and treated as an error condition.
@@ -197,11 +197,13 @@ In either case, if no time range can be determined — an `event transformation`
 
 Executes a local binary or script.
 
-In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event), `_events` (full stream) and `_config` (the merged configuration) available.
+In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, stdin is empty (`/dev/null`). In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
 
 In the case of a `stream transformation`, the script is called once and passed all events in as JSONL to stdin.
 
-`env` values are interpolated too, and are the *only* templates that additionally get `_secrets` — see [Credentials in hunts](#credentials-in-hunts).
+`env` values are interpolated the same way. The script does **not** inherit ACE's environment — see [Credentials in hunts](#credentials-in-hunts).
+
+Every execution runs in a sandbox — see [Executable sandbox](#executable-sandbox). A script that reads a file next to it (a data file, a helper module) must list that file under `files:`.
 
 ```yaml
 command:
@@ -211,24 +213,37 @@ command:
     args: # list of arguments to pass to the command line (optional)
       - arg1
       - arg2
-    # NOTE arguments are interpolated using jinja with _event, _events and _config
+    # NOTE arguments are interpolated using jinja with _event and _events
     env:
-        SOME_SETTING: "{{ _config['vendor']['base_url'] }}"
-        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
-    # environment values are also interpolated using jinja, and are the only templates
-    # that can read _secrets
+        SOME_SETTING: "some value"
+        LOOKUP_DOMAIN: "{{ _event.domain }}"
+    # environment values are also interpolated using jinja with _event and _events
+    files: # files the script reads, copied next to it (optional)
+      - data/lookup.json # can be relative, like path
 ```
+
+#### Executable sandbox
+
+A hunt script is written by an analyst or by an AI agent working through the validation API, and a mistake in it must not be able to damage ACE or expose a secret. So every execution runs in a [Landlock](https://docs.kernel.org/userspace-api/landlock.html) sandbox (`saq/collectors/hunter/correlation/sandbox.py`):
+
+- **A private working directory.** Each execution gets a fresh directory under `hunter.correlation.executable.work_dir` (default `DATA_DIR/var/correlation_sandbox`). It is the command's working directory, `HOME` and `TMPDIR`, and it is deleted when the command finishes. It is the only place the command can create, change or delete a file.
+- **Staging.** The script (`path`) and every `files:` entry are copied into the working directory, keeping their layout relative to each other, so `Path(__file__).parent / "lookup.json"` still works. The script runs from the copy, so it cannot modify the hunt repository. Sources must be regular files inside a hunt repository: the `git_dir` (or `rule_dir`) of a `hunt_type_*` rule directory, or the directory the validation API unpacks a submitted hunt into. Anything else, including a symlink that points out of the repository, fails the step. A `path` that is already readable in the sandbox runs in place without being copied. Examples are `/usr/bin/jq`, the venv's `python3`, or a bare name such as `echo` that `PATH` resolves to one of those.
+- **Submitted hunts name only their own files.** A hunt submitted to `POST /api/hunt/validate` is unpacked into a directory of its own, and every file it names must be inside that directory: package assets and the target, `include:` files, the query file (`search`), `<include:...>` markers in query text, and every command's `path` and `files`. Anything outside it, a system binary included, is rejected before the hunt is parsed. The hunt compiler only ever packages files from inside the hunt repository, so `validate-hunt` never produces such a hunt.
+- **What it can read.** Only `/usr`, the python runtime (the venv and the interpreter it was built from), `/etc/ssl`, `/etc/ca-certificates`, the few `/etc` files that name resolution, TLS and time zones need, `/dev/null`, `/dev/urandom`, and its working directory. Nothing else is readable. That includes `SAQ_HOME` (config, `.env`, `ssl/`, `signatures/`), the data directory, `/auth`, the SQL volumes, `/home`, `/tmp`, `/proc` and the rest of `/etc`. The list is a constant in `sandbox.py`, not configuration.
+- **Limits.** Address space, largest file written, open files, bytes of output read from each of stdout and stderr, and the number of processes alive at once are set under `hunter.correlation.executable` in `etc/saq.default.yaml`. The CPU-seconds limit is the command's `timeout`. Exceeding a limit fails the step. The process count is checked by polling, so the `http-api` container, which runs scripts submitted through the validation API, also has a docker `pids_limit` as a hard ceiling.
+- **No leftovers.** The command runs under a small supervisor, `sandbox_launcher.py`, which is a child subreaper: everything the command starts is reparented to it, even a process that left the session. When the command exits, times out or writes too much output, the supervisor kills all of it. It also kills the command itself shortly after its timeout if the ACE process that started it is gone.
+- **Signals.** On Linux 6.12 or later (Landlock ABI 6) the command cannot send a signal to, or connect to an abstract unix socket of, any process outside it: not the hunter, not the API workers, not the supervisor. On an older kernel the hunter logs a warning at startup and this one protection is missing.
+- **Network.** A command can open TCP connections only to the ports in `hunter.correlation.executable.allowed_tcp_ports`, 443 and 53 by default (Landlock ABI 4, Linux 6.7). That keeps a script off the cloud metadata endpoint (port 80), whose instance credentials would undo the rest of the sandbox, and off ACE's own services. 53 is there because a resolver retries a truncated UDP answer over TCP, which large TXT and SPF records cause. UDP is not restricted, so ordinary DNS works, and the destination address is not restricted either. A config overlay list adds ports (a proxy's, say; never 80). Setting the value to `null` turns the restriction off; on a kernel older than 6.7 it has to be, because every executable command fails otherwise, and the hunter logs an error at startup.
+
+The sandbox needs Linux 5.13 or later with Landlock enabled (the Debian kernel default), plus util-linux `setpriv` and `prlimit`, which are in the ACE image. The TCP port restriction needs 6.7 and the signal scope 6.12. It needs no capability. The hunter logs at startup whether Landlock is available and which ABI it has. If Landlock is unavailable, every executable command fails as a step error; a command is never run unsandboxed.
 
 #### Credentials in hunts
 
-A command that needs a credential reads it from `_secrets`, in an `env:` value:
+A hunt has no access to secrets. Hunt templates can read `_event` and `_events` and nothing else: neither the credential store nor ACE's configuration is bound. Hunt validation rejects any template that references `_secrets` or `_config`, and at runtime such a template fails as a step error.
 
-```yaml
-env:
-    VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
-```
+An executable command does not inherit ACE's environment. It gets only a fixed allowlist of variables (`PATH`, `HOME`, locale, `TZ`, `TMPDIR`, `PYTHONUTF8`, the proxy variables and the CA bundle variables; see `EXECUTABLE_ENV_ALLOWLIST` in `saq/collectors/hunter/correlation/commands.py`) plus the values in its own `env:` block. `HOME` and `TMPDIR` are set to the command's private working directory.
 
-Note that the `env` block is the only place that `_secrets` can be used. Credentials are not available from `_config`, and any attempt to use a credential from it results in a validation error.
+A lookup that needs a credential belongs in a [custom command type](#custom-integration-provided-types). A custom command type is Python code in an integration, and it reads its credentials from that integration's configuration.
 
 #### defined
 
@@ -287,10 +302,9 @@ command:
 ```
 
 - Every string in `options`, including strings nested in lists and dicts, is rendered with
-  Jinja before the command runs. `_event`, `_events` and `_config` are available and `_secrets`
-  is not. A command type gets its credentials from its own integration's configuration, so
-  credentials never belong in `options`. An option that renders to an `encrypted:` marker is an
-  error.
+  Jinja before the command runs, with `_event` and `_events` available. A command type gets its
+  credentials from its own integration's configuration, so credentials never belong in
+  `options`.
 - The rendered options are then validated by the command type. A template always renders to a
   string, which the command type converts where it can (`"5"` becomes `5` for a number). A value
   that must be a list or a dict cannot come from a template.
@@ -402,8 +416,6 @@ commands:
       path: "scripts/external_lookup.py"
       cache: 1d
       args: []
-      env:
-        VENDOR_API_KEY: "{{ _secrets['vendor.api_key'] }}"
 ```
 
 These are referenced using the `defined` command type.
@@ -495,15 +507,13 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
     |---|---|---|
     | `_event` | the current event dict | every template |
     | `_events` | the full event stream list | every template |
-    | `_config` | the merged configuration, as a raw dict | every template |
-    | `_secrets` | the decrypted credential store, keyed on store key name | an executable command's `env:` values only |
 
-    A custom command type's `options` are rendered with `_event`, `_events` and `_config`.
+    Nothing else is bound: hunts have no access to configuration or secrets (see [Credentials in hunts](#credentials-in-hunts)).
 - When merging by time
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.
 - A stream mutate transformation drops the old stream and uses the new stream instead.
-- The current working directory of a command is a temporary directory created for the execution of the hunt. It is deleted immediately after execution.
+- The current working directory of an executable command is a private directory created for that one execution (see [Executable sandbox](#executable-sandbox)). It is deleted immediately after execution.
 - The cache is persistant and global. We'll probably want to use redis for this.
 - Since `commands` is a top-level list, common commands can be included with the `include` directive.
 - Malformed `correlate` blocks should be treated as a malformed hunt.

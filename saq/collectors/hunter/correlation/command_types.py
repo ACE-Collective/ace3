@@ -11,10 +11,10 @@ integration registers through `hunter.correlation.command_types` in its saq.inte
       options:
         ip: "{{ _event.src_ip }}"
 
-Core renders `options` with jinja (`_event`, `_events`, `_config` -- never `_secrets`), validates
-the result against the type's `config_class`, handles `timeout`/`cache`, sanitizes the output and
-traces the call; the handler only does the work. See "Extending correlation hunts" in
-docs/INTEGRATIONS.md for the full contract.
+Core renders `options` with jinja (`_event` and `_events` only), validates the result against
+the type's `config_class`, handles `timeout`/`cache`, sanitizes the output and traces the call;
+the handler only does the work. See "Extending correlation hunts" in docs/INTEGRATIONS.md for the
+full contract.
 
 This module must not import commands.py or engine.py (both import it).
 """

@@ -8,6 +8,7 @@ from saq.collectors.base_collector import Collector, CollectorExecutionMode, Col
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.submission_file_manager import SubmissionFileManager
 from saq.collectors.hunter.correlation.command_types import load_command_types_from_config
+from saq.collectors.hunter.correlation.sandbox import prepare_sandbox
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.manager import HuntManager
 from saq.configuration import get_config
@@ -72,6 +73,7 @@ class HunterService(ACEServiceInterface):
 
     @override
     def start(self):
+        prepare_sandbox()
         self.load_hunt_managers()
         self.start_hunt_managers()
         self.collector_service.start()
@@ -89,6 +91,7 @@ class HunterService(ACEServiceInterface):
 
     @override
     def start_single_threaded(self):
+        prepare_sandbox()
         self.load_hunt_managers(execution_mode=ExecutionMode.SINGLE_SHOT)
         for manager in self.hunt_managers.values():
             manager.start_single_threaded()

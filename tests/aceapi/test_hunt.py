@@ -1,11 +1,19 @@
+import hashlib
+import json
+import logging
+import os
+
 import pytest
 from unittest.mock import Mock, patch
 
 from aceapi.auth import create_api_key
 from hunt_compiler.models import CompiledHunt, EmbeddedFile
+from saq.collectors.hunter.loader import get_compiled_hunt_dir
+from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.configuration.config import get_config
 from saq.constants import TAG_HUNT_VALIDATION
 from saq.database.util.user_management import add_user, delete_user
+from saq.logging import ThreadSuppressionFilter
 from saq.permissions.user import add_user_permission
 
 
@@ -1518,7 +1526,7 @@ def test_validate_hunt_query_results_override_without_times(test_client, auth_he
 
 
 # =============================================================================
-# Integration Tests for /hunt/validate Endpoint - credentials in correlate env
+# Integration Tests for /hunt/validate Endpoint - hunts have no access to secrets
 # =============================================================================
 
 def _hunt_with_predefined_env(env_value):
@@ -1541,20 +1549,16 @@ def _hunt_with_predefined_env(env_value):
 
 
 @pytest.mark.integration
-def test_validate_hunt_rejects_env_reading_encrypted_secret_via_config(test_client, auth_headers):
-    """An `encrypted:` marker survives unresolved in the raw config dict bound as `_config`, so
-    reading a credential that way hands the marker to the helper script. Reject at authoring
-    time rather than letting it fail against the vendor in production."""
-    mock_raw = Mock()
-    mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
-
-    with patch("aceapi.hunt.HunterService") as mock_hunter_service, \
-         patch("saq.collectors.hunter.correlation.validation.get_config",
-               return_value=Mock(raw=mock_raw)):
+@pytest.mark.parametrize("env_value", [
+    "{{ _secrets['rapid7.api_key'] }}",
+    "{{ _config['rapid7']['api_key'] }}",
+])
+def test_validate_hunt_rejects_env_reading_secrets_or_config(test_client, auth_headers, env_value):
+    """Hunts have no access to secrets or configuration; say so at authoring time rather than
+    letting the step fail on every event in production."""
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
         mock_manager = Mock()
-        mock_manager.load_hunt_from_config.return_value = _hunt_with_predefined_env(
-            "{{ _config['rapid7']['api_key'] }}"
-        )
+        mock_manager.load_hunt_from_config.return_value = _hunt_with_predefined_env(env_value)
         mock_instance = mock_hunter_service.return_value
         mock_instance.hunt_managers = {"test": mock_manager}
         mock_instance.load_hunt_managers = Mock()
@@ -1568,22 +1572,16 @@ def test_validate_hunt_rejects_env_reading_encrypted_secret_via_config(test_clie
     assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
-    assert "R7_API_KEY" in data["error"]
-    assert "_secrets" in data["error"]
+    assert "get_r7_investigation_comments" in data["error"]
+    assert "no access to secrets or configuration" in data["error"]
 
 
 @pytest.mark.integration
-def test_validate_hunt_accepts_env_reading_secret_via_secrets(test_client, auth_headers):
-    """The supported form passes validation."""
-    mock_raw = Mock()
-    mock_raw._data = {"rapid7": {"api_key": "encrypted:rapid7.api_key"}}
-
-    with patch("aceapi.hunt.HunterService") as mock_hunter_service, \
-         patch("saq.collectors.hunter.correlation.validation.get_config",
-               return_value=Mock(raw=mock_raw)):
+def test_validate_hunt_accepts_env_reading_event_data(test_client, auth_headers):
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
         mock_manager = Mock()
         mock_manager.load_hunt_from_config.return_value = _hunt_with_predefined_env(
-            "{{ _secrets['rapid7.api_key'] }}"
+            "{{ _event.user }}"
         )
         mock_instance = mock_hunter_service.return_value
         mock_instance.hunt_managers = {"test": mock_manager}
@@ -1691,3 +1689,211 @@ def test_validate_hunt_accepts_registered_custom_command_type(test_client, auth_
 
     assert result.status_code == 200
     assert result.get_json()["valid"] is True
+
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Package Confinement
+# =============================================================================
+
+def _mocked_hunter_service():
+    """Patch HunterService so a hunt that got past the file checks would load as a Mock."""
+    patcher = patch("aceapi.hunt.HunterService")
+    mock_hunter_service = patcher.start()
+    mock_manager = Mock()
+    mock_manager.load_hunt_from_config.return_value = Mock()
+    mock_instance = mock_hunter_service.return_value
+    mock_instance.hunt_managers = {"test": mock_manager}
+    mock_instance.load_hunt_managers = Mock()
+    return patcher, mock_manager
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("asset_path", ["../escaped.yaml", "/tmp/escaped.yaml"])
+def test_validate_hunt_rejects_asset_outside_package(test_client, auth_headers, asset_path):
+    """An asset path is client-supplied; one that leaves the package is refused before any write."""
+    # each request's package directory is created inside the compiled hunt dir
+    escaped = asset_path if os.path.isabs(asset_path) else os.path.join(get_compiled_hunt_dir(), "escaped.yaml")
+    payload = {
+        "compiled_hunt": CompiledHunt(
+            target="test.yaml",
+            package_root="/tmp/test",
+            assets=[
+                EmbeddedFile(kind="yaml", path="test.yaml", content=VALID_HUNT_YAML),
+                EmbeddedFile(kind="yaml", path=asset_path, content="rule: {}\n"),
+            ],
+        ).model_dump()
+    }
+
+    result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+    assert result.status_code == 400
+    error = result.get_json()["error"]
+    assert f"asset path '{asset_path}'" in error and "package root" in error
+    assert not os.path.exists(escaped)
+
+
+@pytest.mark.integration
+def test_validate_hunt_rejects_include_outside_package(test_client, auth_headers, tmp_path):
+    """An include outside the package is refused before the hunt is parsed or loaded."""
+    outside = tmp_path / "outside.yaml"
+    outside.write_text(VALID_HUNT_YAML)
+    patcher, mock_manager = _mocked_hunter_service()
+    try:
+        payload = _make_compiled_payload(f"include:\n  - {outside}\nrule:\n  name: included\n")
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+    finally:
+        patcher.stop()
+
+    assert result.status_code == 400
+    assert str(outside) in result.get_json()["error"]
+    assert "outside" in result.get_json()["error"]
+    mock_manager.load_hunt_from_config.assert_not_called()
+
+
+@pytest.mark.integration
+def test_validate_hunt_rejects_executable_outside_package(test_client, auth_headers):
+    patcher, mock_manager = _mocked_hunter_service()
+    try:
+        hunt_yaml = VALID_HUNT_YAML + """  correlate:
+    logic:
+      - transform:
+          command:
+            type: executable
+            path: /usr/bin/env
+"""
+        result = test_client.post(HUNT_VALIDATE_URL, json=_make_compiled_payload(hunt_yaml), headers=auth_headers)
+    finally:
+        patcher.stop()
+
+    assert result.status_code == 400
+    assert "executable /usr/bin/env is outside the submitted hunt" in result.get_json()["error"]
+    mock_manager.load_hunt_from_config.assert_not_called()
+
+
+# =============================================================================
+# Integration Tests for /hunt/validate Endpoint - Audit Trail
+# =============================================================================
+
+@pytest.fixture
+def hunt_audit_records():
+    """HUNT_AUDIT records as a production handler receives them (it drops suppressed records)."""
+    records = []
+
+    class ProbeHandler(logging.Handler):
+        def emit(self, record):
+            message = record.getMessage()
+            if message.startswith("HUNT_AUDIT "):
+                records.append(json.loads(message[len("HUNT_AUDIT "):]))
+
+    probe = ProbeHandler()
+    probe.addFilter(ThreadSuppressionFilter())
+    audit_logger = logging.getLogger("ace.hunt_audit")
+    previous_level = audit_logger.level
+    audit_logger.setLevel(logging.INFO)
+    audit_logger.addHandler(probe)
+    try:
+        yield records
+    finally:
+        audit_logger.removeHandler(probe)
+        audit_logger.setLevel(previous_level)
+
+
+@pytest.mark.integration
+def test_validate_hunt_audits_execution_with_the_key_that_ran_it(test_client, hunt_audit_records):
+    from saq.analysis.root import Submission, RootAnalysis
+
+    user = add_user("hunt_auditor", "hunt_auditor@localhost", "Hunt Auditor", "password")
+    add_user_permission(user.id, "hunt", "write")
+    api_key = create_api_key(user.id, "hunt-ai", scope=[("hunt", "write")])
+
+    try:
+        with patch("aceapi.hunt.HunterService") as mock_hunter_service, \
+             patch("aceapi.hunt.storage_dir_from_uuid", return_value="/tmp/test-storage"), \
+             patch("aceapi.hunt.ALERT"):
+            mock_new_root = Mock(spec=RootAnalysis)
+            mock_new_root.json = {"uuid": "new-uuid-789"}
+            mock_new_root.details = {}
+            mock_new_root.uuid = "new-uuid-789"
+            mock_root = Mock(spec=RootAnalysis)
+            mock_root.duplicate.return_value = mock_new_root
+            mock_submission = Mock(spec=Submission)
+            mock_submission.root = mock_root
+
+            mock_hunt = Mock(spec=QueryHunt)
+            mock_hunt.name = "test_hunt"
+            mock_hunt.uuid = "7b5f2270-4a1d-4009-86a0-de3f8c9c82e7"
+            mock_hunt.query = "index=proxy | stats count by src"
+            mock_hunt.execute.return_value = [mock_submission]
+            mock_manager = Mock()
+            mock_manager.load_hunt_from_config.return_value = mock_hunt
+            mock_instance = mock_hunter_service.return_value
+            mock_instance.hunt_managers = {"test": mock_manager}
+            mock_instance.load_hunt_managers = Mock()
+
+            payload = _make_compiled_payload(VALID_HUNT_YAML)
+            payload["execution_arguments"] = {
+                "start_time": "01/15/2025:10:00:00",
+                "end_time": "01/15/2025:12:00:00",
+                "create_alerts": True,
+            }
+
+            result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers={"x-ace-auth": api_key})
+
+        assert result.status_code == 200
+        assert len(hunt_audit_records) == 1
+        record = hunt_audit_records[0]
+        assert record["event"] == "hunt_validate"
+        assert record["status"] == 200
+        assert record["detail"] is None
+        assert record["user"] == "hunt_auditor"
+        assert record["user_id"] == user.id
+        assert record["key_name"] == "hunt-ai"
+        assert isinstance(record["key_id"], int)
+        assert record["hunt"] == {"type": "test", "name": "test_hunt", "uuid": "7b5f2270-4a1d-4009-86a0-de3f8c9c82e7"}
+        assert record["query"] == "index=proxy | stats count by src"
+        assert record["execution"]["create_alerts"] is True
+        assert record["execution"]["start_time"] == "01/15/2025:10:00:00"
+        assert record["result"] == {"roots": 1, "alert_uuids": ["new-uuid-789"]}
+        assert record["package"]["target"] == "test.yaml"
+        assert record["package"]["assets"][0]["sha256"] == hashlib.sha256(VALID_HUNT_YAML.encode()).hexdigest()
+        assert isinstance(record["duration_ms"], int)
+    finally:
+        delete_user("hunt_auditor")
+
+
+@pytest.mark.integration
+def test_validate_hunt_audits_a_rejected_request(test_client, auth_headers, hunt_audit_records):
+    result = test_client.post(HUNT_VALIDATE_URL, json=_make_compiled_payload("rule: [unclosed\n"), headers=auth_headers)
+
+    assert result.status_code == 400
+    assert len(hunt_audit_records) == 1
+    record = hunt_audit_records[0]
+    assert record["event"] == "hunt_rejected"
+    assert record["status"] == 400
+    assert "YAML syntax error" in record["detail"]
+    # a config key has a name but no key row
+    assert record["key_name"] == record["user"]
+    assert record["key_id"] is None
+    assert "hunt" not in record
+
+
+@pytest.mark.integration
+def test_validate_hunt_audits_an_execution_error(test_client, auth_headers, hunt_audit_records):
+    with patch("aceapi.hunt.HunterService") as mock_hunter_service:
+        mock_hunt = Mock(spec=QueryHunt)
+        mock_hunt.execute.side_effect = Exception("Connection failed to SIEM")
+        mock_manager = Mock()
+        mock_manager.load_hunt_from_config.return_value = mock_hunt
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock()
+
+        payload = _make_compiled_payload(VALID_HUNT_YAML)
+        payload["execution_arguments"] = {"start_time": "01/15/2025:10:00:00", "end_time": "01/15/2025:12:00:00"}
+        result = test_client.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
+
+    assert result.status_code == 400
+    assert [record["event"] for record in hunt_audit_records] == ["hunt_error"]
+    assert "Connection failed to SIEM" in hunt_audit_records[0]["detail"]
+    assert "result" not in hunt_audit_records[0]
