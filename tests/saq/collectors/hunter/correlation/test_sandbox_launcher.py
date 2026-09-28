@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from saq.collectors.hunter.correlation.sandbox import LAUNCHER, _launcher_python, run_sandboxed
+from saq.collectors.hunter.correlation.sandbox import LAUNCHER, SETPRIV, _launcher_python, run_sandboxed
 from saq.collectors.hunter.correlation.sandbox_launcher import (
     EXIT_SANDBOX_FAILURE,
     SCOPE_ABI,
@@ -38,8 +38,9 @@ def _launcher_argv(*command: str, max_processes: int = 16, deadline: float = 60)
             f"--deadline={deadline}", "--", *command]
 
 
-def _launch(*command: str, stdin: str | None = None, timeout: float = 30, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(_launcher_argv(*command, **kwargs), input=stdin, capture_output=True, text=True, timeout=timeout)
+def _launch(*command: str, stdin: str | None = None, timeout: float = 30, cwd: str | None = None, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(_launcher_argv(*command, **kwargs), input=stdin, capture_output=True, text=True,
+                          timeout=timeout, cwd=cwd)
 
 
 def _alive(pid: int) -> bool:
@@ -129,6 +130,19 @@ def test_command_cannot_signal_a_process_outside_it():
     # the test process is outside the command's domain; the launcher's own child is inside it
     assert _launch(PYTHON, "-c", code, str(os.getpid())).stdout.strip() == "refused"
     assert _launch("/bin/sh", "-c", "kill -0 $$ && echo signalled").stdout.strip() == "signalled"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(landlock_abi() < SCOPE_ABI, reason=f"signal scoping needs Landlock ABI {SCOPE_ABI} (Linux 6.12)")
+def test_scope_allows_cross_directory_rename(tmp_path):
+    # every Landlock domain denies REFER unless a rule allows it, which only shows once a domain
+    # that handles filesystem access is nested inside the scope domain, as setpriv's is in the
+    # sandbox; this one allows REFER in tmp_path, so only the scope domain could deny it
+    code = "import os\nopen('a', 'w').close()\nos.mkdir('sub')\nos.rename('a', 'sub/a')\nos.link('sub/a', 'b')"
+    result = _launch(SETPRIV, "--landlock-access", "fs:refer", "--landlock-rule", f"path-beneath:refer:{tmp_path}",
+                     "--", PYTHON, "-c", code, cwd=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "sub" / "a").exists() and (tmp_path / "b").exists()
 
 
 @pytest.mark.unit

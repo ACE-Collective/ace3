@@ -8,9 +8,9 @@ It forks the command and stays outside the command's Landlock domain, which is w
 three things the command cannot undo:
 
 - Signal scoping. Before the exec, the child enters a Landlock domain scoped for signals and
-  abstract unix sockets (Landlock ABI 6, Linux 6.12). Nothing the command starts can then signal
-  or connect to a process outside that domain: not the ACE process that ran the hunt, not the other
-  API workers, not this launcher. On an older kernel the scope is skipped, and prepare_sandbox()
+  abstract unix sockets (Landlock ABI 6, Linux 6.12), which restricts no filesystem access.
+  Nothing the command starts can then signal or connect to a process outside that domain: not the
+  ACE process that ran the hunt, not the other API workers, not this launcher. On an older kernel the scope is skipped, and prepare_sandbox()
   logs that at startup.
 - Cleanup. It is a child subreaper, so whatever the command starts is reparented to it instead of
   to the container's init, even a process that left the session. When the command exits, when
@@ -30,8 +30,11 @@ import time
 
 # the same numbers on x86_64 and aarch64
 _SYS_LANDLOCK_CREATE_RULESET = 444
+_SYS_LANDLOCK_ADD_RULE = 445
 _SYS_LANDLOCK_RESTRICT_SELF = 446
 _LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
+_LANDLOCK_RULE_PATH_BENEATH = 1
+_LANDLOCK_ACCESS_FS_REFER = 1 << 13
 _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
 _LANDLOCK_SCOPE_SIGNAL = 1 << 1
 _PR_SET_CHILD_SUBREAPER = 36
@@ -57,6 +60,17 @@ class _RulesetAttr(ctypes.Structure):
         ("handled_access_fs", ctypes.c_uint64),
         ("handled_access_net", ctypes.c_uint64),
         ("scoped", ctypes.c_uint64),
+    ]
+
+
+class _PathBeneathAttr(ctypes.Structure):
+    # packed in the kernel's uapi header; ctypes only packs with the "ms" layout, which with
+    # _pack_ = 1 is the same 12 bytes with no padding
+    _layout_ = "ms"
+    _pack_ = 1
+    _fields_ = [
+        ("allowed_access", ctypes.c_uint64),
+        ("parent_fd", ctypes.c_int32),
     ]
 
 
@@ -91,12 +105,22 @@ def landlock_abi() -> int:
 def scope_to_own_domain():
     """Enter a Landlock domain that confines signals and abstract unix sockets to itself.
 
-    It handles no filesystem or network access; setpriv adds the filesystem rules as a nested
-    domain after the exec.
+    It restricts no filesystem or network access; setpriv adds the filesystem rules as a nested
+    domain after the exec. The one exception is REFER (renaming or linking a file into another
+    directory): every Landlock domain denies it unless a rule allows it, even one that does not
+    handle it, so this domain allows it beneath / and leaves setpriv's domain, which allows it
+    only in the working directory, to decide.
     """
-    attr = _RulesetAttr(0, 0, _LANDLOCK_SCOPE_SIGNAL | _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
+    attr = _RulesetAttr(_LANDLOCK_ACCESS_FS_REFER, 0, _LANDLOCK_SCOPE_SIGNAL | _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
     ruleset = _syscall(_SYS_LANDLOCK_CREATE_RULESET, ctypes.addressof(attr), ctypes.sizeof(attr), 0)
     try:
+        root = os.open("/", os.O_PATH | os.O_CLOEXEC)
+        try:
+            rule = _PathBeneathAttr(_LANDLOCK_ACCESS_FS_REFER, root)
+            _syscall(_SYS_LANDLOCK_ADD_RULE, ruleset, _LANDLOCK_RULE_PATH_BENEATH, ctypes.addressof(rule), 0)
+        finally:
+            os.close(root)
+
         _prctl(_PR_SET_NO_NEW_PRIVS, 1)
         _syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset, 0)
     finally:
