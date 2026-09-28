@@ -438,6 +438,13 @@ hunter:
       max_output_bytes: 67108864
       # processes a command may have alive at once, counting everything it starts, before it is killed
       max_processes: 64
+      # the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7). This is what keeps a
+      # script off the cloud metadata endpoint (port 80), whose instance credentials would undo the
+      # rest of the sandbox, and off ACE's own services. 443 is HTTPS; 53 is DNS over TCP, which a
+      # resolver falls back to when a UDP answer is truncated (large TXT/SPF records). UDP is not
+      # restricted. An overlay list adds ports (a proxy's, say; never 80). null turns the restriction
+      # off, and has to on an older kernel, where every executable command fails otherwise.
+      allowed_tcp_ports: [443, 53]
 
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database

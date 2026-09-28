@@ -1,22 +1,30 @@
 """sandbox_launcher.py on its own, and run_sandboxed driving it.
 
-None of this needs Landlock: the launcher is run around plain commands, without the prlimit and
-setpriv stages build_sandbox_argv adds. The signal-scope test is the exception and is skipped on a
-kernel older than Landlock ABI 6.
+Most of this needs no Landlock: the launcher is run around plain commands, without the prlimit and
+setpriv stages build_sandbox_argv adds. The TCP port and signal-scope tests are the exception and
+are skipped on a kernel older than the Landlock ABI they need.
 """
 
 import datetime
 import os
 import signal
+import socket
 import subprocess
 import sys
 import uuid
 
 import pytest
 
-from saq.collectors.hunter.correlation.sandbox import LAUNCHER, _launcher_python, run_sandboxed
+from saq.collectors.hunter.correlation.sandbox import (
+    LAUNCHER,
+    _launcher_python,
+    build_sandbox_argv,
+    get_sandbox_config,
+    run_sandboxed,
+)
 from saq.collectors.hunter.correlation.sandbox_launcher import (
     EXIT_SANDBOX_FAILURE,
+    NET_ABI,
     SCOPE_ABI,
     landlock_abi,
 )
@@ -33,9 +41,11 @@ print(child.pid, flush=True)
 """
 
 
-def _launcher_argv(*command: str, max_processes: int = 16, deadline: float = 60) -> list[str]:
-    return [_launcher_python(), "-I", "-S", LAUNCHER, f"--max-processes={max_processes}",
-            f"--deadline={deadline}", "--", *command]
+def _launcher_argv(*command: str, max_processes: int = 16, deadline: float = 60, tcp_ports: str | None = None) -> list[str]:
+    options = [f"--max-processes={max_processes}", f"--deadline={deadline}"]
+    if tcp_ports is not None:
+        options.append(f"--tcp-ports={tcp_ports}")
+    return [_launcher_python(), "-I", "-S", LAUNCHER, *options, "--", *command]
 
 
 def _launch(*command: str, stdin: str | None = None, timeout: float = 30, **kwargs) -> subprocess.CompletedProcess:
@@ -120,6 +130,69 @@ class TestCleanup:
         result = _launch(PYTHON, "-c", code, max_processes=4)
         assert result.returncode == EXIT_SANDBOX_FAILURE
         assert "more than 4 processes" in result.stderr
+
+
+# connects to each port given on 127.0.0.1 and prints port:outcome
+_CONNECT = """
+import socket, sys
+for port in sys.argv[1:]:
+    try:
+        socket.create_connection(("127.0.0.1", int(port)), timeout=5).close()
+        print(f"{port}:connected")
+    except OSError as e:
+        print(f"{port}:{type(e).__name__}")
+"""
+
+
+@pytest.fixture
+def listeners():
+    """Two listening TCP ports on 127.0.0.1."""
+    sockets = []
+    for _ in range(2):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        sockets.append(listener)
+    try:
+        yield [listener.getsockname()[1] for listener in sockets]
+    finally:
+        for listener in sockets:
+            listener.close()
+
+
+@pytest.mark.unit
+class TestTcpPorts:
+    def test_without_tcp_ports_tcp_is_unrestricted(self, listeners):
+        allowed, other = listeners
+        result = _launch(PYTHON, "-c", _CONNECT, str(allowed), str(other))
+        assert result.stdout.split() == [f"{allowed}:connected", f"{other}:connected"]
+
+    @pytest.mark.skipif(landlock_abi() >= NET_ABI, reason="checks the refusal on a kernel without TCP port rules")
+    def test_refused_where_the_kernel_cannot_enforce_it(self, listeners):
+        result = _launch(PYTHON, "-c", _CONNECT, str(listeners[0]), tcp_ports=str(listeners[0]))
+        assert result.returncode == EXIT_SANDBOX_FAILURE
+        assert "cannot restrict TCP ports" in result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.skipif(landlock_abi() < NET_ABI, reason=f"TCP port rules need Landlock ABI {NET_ABI} (Linux 6.7)")
+    def test_connections_limited_to_the_allowed_ports(self, listeners):
+        allowed, other = listeners
+        result = _launch(PYTHON, "-c", _CONNECT, str(allowed), str(other), tcp_ports=f"{allowed},53")
+        assert result.stdout.split() == [f"{allowed}:connected", f"{other}:PermissionError"]
+
+    @pytest.mark.skipif(landlock_abi() < NET_ABI, reason=f"TCP port rules need Landlock ABI {NET_ABI} (Linux 6.7)")
+    def test_empty_list_allows_no_tcp(self, listeners):
+        result = _launch(PYTHON, "-c", _CONNECT, str(listeners[0]), tcp_ports="")
+        assert result.stdout.split() == [f"{listeners[0]}:PermissionError"]
+
+    def test_build_sandbox_argv_passes_the_configured_ports(self, tmpdir):
+        config = get_sandbox_config().model_copy(update={"allowed_tcp_ports": [443, 53]})
+        argv = build_sandbox_argv(["/bin/true"], str(tmpdir), config, datetime.timedelta(seconds=5))
+        assert "--tcp-ports=443,53" in argv[:argv.index("--")]
+
+        config = config.model_copy(update={"allowed_tcp_ports": None})
+        argv = build_sandbox_argv(["/bin/true"], str(tmpdir), config, datetime.timedelta(seconds=5))
+        assert not any(arg.startswith("--tcp-ports") for arg in argv)
 
 
 @pytest.mark.unit
