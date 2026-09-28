@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.119] - 2026-09-28
+
+- [Run correlation executable commands in a Landlock sandbox](https://github.com/ACE-Collective/ace3/pull/611)
+- [Remove every path from a correlation hunt to secrets](https://github.com/ACE-Collective/ace3/pull/610)
+- [Let integrations add custom correlation command types](https://github.com/ACE-Collective/ace3/pull/609)
+- [Stop failed-analysis recovery from releasing a live worker's lock](https://github.com/ACE-Collective/ace3/pull/608)
+
 ## [3.0.118] - 2026-09-24
 
 - [Eliminate warnings from the test suite](https://github.com/ACE-Collective/ace3/pull/606)
