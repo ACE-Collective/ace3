@@ -779,3 +779,27 @@ Because the engine is Jinja2, you have the full Jinja expression and filter lang
 ```
 
 > The `key` vs `dot` distinction (looking a field up by exact key versus traversing a dotted path) applies to the `field_lookup_type` setting used by `fields` in [Observable Mapping](#observable-mapping) — it is not part of the interpolation syntax. In interpolated strings, use Jinja `{{ ... }}` directly.
+
+## Validation API
+
+`POST /api/hunt/validate` (permission `hunt:write`) is what `validate-hunt` calls. It takes a
+compiled hunt (the YAML and every file it names, packaged by `hunt_compiler`), unpacks it into a
+directory of its own, validates it, and optionally executes it: running the query, the correlate
+steps, and creating alerts when asked.
+
+- **The package is all a submitted hunt can reach.** Every asset path, the target, and every file
+  the hunt names (`include:`, the query file, `<include:...>` markers, commands' `path` and `files`)
+  must be inside the unpacked package, or the request is rejected before anything is parsed.
+  Scripts run in the [executable sandbox](CORRELATION_HUNTS.md#executable-sandbox).
+- **Every request is audited.** One `HUNT_AUDIT {json}` line per request on the `ace.hunt_audit`
+  logger (`aceapi/audit.py`), shipped off-box like any other log line. It has the same identity
+  fields as the AI investigation API's `AI_AUDIT` lines (`user`, `user_id`, `key_id`, `key_name`,
+  `src_ip`), plus:
+  - `event`: `hunt_validate` (200), `hunt_rejected` (refused before it ran) or `hunt_error` (the
+    execution failed), with `status`, `detail` (the error) and `duration_ms`
+  - `package`: the target, the client's `package_root`, and each asset's path, kind and sha256, so
+    what ran can be matched to a file in a hunt repository
+  - `hunt`: its type, name and uuid; `query`: the full query text of a query hunt
+  - `execution`: the time range, timezone, `create_alerts`/`analyze_results`, queue, and whether
+    supplied events or saved correlate results replaced the queries
+  - `result`: the number of roots and events, and the uuids of the alerts or analyses it created

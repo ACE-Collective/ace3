@@ -26,12 +26,12 @@ def set_test_password(monkeypatch):
 
 @pytest.mark.parametrize("apikeys,api_key,expected_result", [
     ({}, API_KEY, None),
-    ({"test": sha256_str(API_KEY)}, API_KEY, ApiAuthResult(auth_name="test", auth_type=API_AUTH_TYPE_CONFIG)),
+    ({"test": sha256_str(API_KEY)}, API_KEY, ApiAuthResult(auth_name="test", auth_type=API_AUTH_TYPE_CONFIG, key_name="test")),
     ({"test": sha256_str(API_KEY)}, "invalid", None),
 ])
 @pytest.mark.unit
 def test_get_config_api_key_match(monkeypatch, apikeys, api_key, expected_result):
-    # bare-string config entries carry no scope (key_scope stays None); the default matches.
+    # bare-string config entries carry no scope (key_scope stays None); a config key's name is also its key_name.
     monkeypatch.setattr(get_config(), "apikeys", apikeys)
     assert _get_config_api_key_match(sha256_str(api_key)) == expected_result
 
@@ -107,7 +107,7 @@ def test_verify_api_key(monkeypatch):
     assert verify_api_key(None) is None
     assert verify_api_key(API_KEY) is None
     monkeypatch.setattr(get_config(), "apikeys", {"test": sha256_str(API_KEY)})
-    assert verify_api_key(API_KEY) == ApiAuthResult(auth_name="test", auth_type=API_AUTH_TYPE_CONFIG)
+    assert verify_api_key(API_KEY) == ApiAuthResult(auth_name="test", auth_type=API_AUTH_TYPE_CONFIG, key_name="test")
 
     user_api_key = create_api_key(get_global_runtime_settings().automation_user_id, "test", inherit=True)
     match = verify_api_key(user_api_key)

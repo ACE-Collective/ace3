@@ -9,8 +9,12 @@ whoever wrote it. So every execution:
 - can read only the system libraries, the python runtime and a short list of /etc files; nothing
   under SAQ_HOME, the data dir, /auth, the SQL volumes, /home or /proc is readable
 - runs under rlimits (memory, file size, open files, CPU seconds)
-- runs in its own session, which is killed as a whole when the command exits, times out or
-  writes more output than allowed, so nothing it started outlives it
+- can open TCP connections only to `allowed_tcp_ports` (443 and 53 by default), which keeps it off
+  the cloud metadata endpoint and ACE's own services
+- runs under sandbox_launcher.py, which kills everything the command started when it exits, times
+  out or writes more output than allowed (even a process that left the session), kills a command
+  that starts more than `max_processes` processes, and on Linux 6.12+ keeps the command from
+  signalling any process outside it
 
 Landlock (https://docs.kernel.org/userspace-api/landlock.html) is an unprivileged kernel access
 control: a process restricts itself, the restriction is inherited by every descendant and can
@@ -33,6 +37,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from saq.collectors.hunter.correlation.sandbox_launcher import NET_ABI, SCOPE_ABI, landlock_abi
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.configuration import get_config
 from saq.configuration.schema import ExecutableSandboxConfig
@@ -41,6 +46,7 @@ from saq.util import abs_path
 
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
+LAUNCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_launcher.py")
 
 _READ_DIR = "read-file,read-dir,execute"
 # Landlock rejects directory rights on a rule for a single file
@@ -82,8 +88,15 @@ STDERR_TAIL_BYTES = 16 * 1024
 # a sandbox working directory older than this was left behind by a process that died mid-command
 STALE_WORKDIR_AGE = datetime.timedelta(hours=24)
 
-# how long to wait for the output readers once the command's session has been killed
+# how long to wait for the output readers once the launcher has exited
 _READER_JOIN_SECONDS = 5
+
+# how long the launcher gets to kill what the command started once it is told to stop
+_LAUNCHER_STOP_SECONDS = 10
+
+# the launcher kills the command itself this long after its timeout, for when the ACE process
+# that started it is gone (a recycled or killed API worker) and cannot tell it to stop
+_LAUNCHER_DEADLINE_GRACE = datetime.timedelta(seconds=30)
 
 
 def get_sandbox_config() -> ExecutableSandboxConfig:
@@ -221,8 +234,14 @@ def stage_executable(path: str, files: list[str] | None, workdir: str, search_pa
     return resolved if run_in_place else staged[0]
 
 
+def _launcher_python() -> str:
+    """The venv's interpreter; under uwsgi, sys.executable is not python."""
+    python = os.path.join(sys.exec_prefix, "bin", "python3")
+    return python if os.path.exists(python) else sys.executable
+
+
 def build_sandbox_argv(argv: list[str], workdir: str, config: ExecutableSandboxConfig, timeout: datetime.timedelta) -> list[str]:
-    """Wrap argv so it runs under the rlimits and the Landlock ruleset."""
+    """Wrap argv so it runs under the launcher, the rlimits and the Landlock ruleset."""
     rules = []
     for path in get_read_dirs():
         rules.extend(["--landlock-rule", f"path-beneath:{_READ_DIR}:{path}"])
@@ -231,7 +250,17 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: ExecutableSandboxC
     rules.extend(["--landlock-rule", "path-beneath:read-file,write-file:/dev/null"])
     rules.extend(["--landlock-rule", f"path-beneath:{_WORKDIR}:{workdir}"])
 
+    launcher_options = [
+        f"--max-processes={config.max_processes}",
+        f"--deadline={(timeout + _LAUNCHER_DEADLINE_GRACE).total_seconds()}",
+    ]
+    if config.allowed_tcp_ports is not None:
+        launcher_options.append(f"--tcp-ports={','.join(str(port) for port in config.allowed_tcp_ports)}")
+
     return [
+        _launcher_python(), "-I", "-S", LAUNCHER,
+        *launcher_options,
+        "--",
         PRLIMIT,
         f"--as={config.memory_limit}",
         f"--fsize={config.file_size_limit}",
@@ -259,6 +288,14 @@ def _kill_session(pid: int):
         pass
 
 
+def _stop(process: subprocess.Popen):
+    """Tell the launcher to kill everything the command started; it exits once that is done."""
+    try:
+        process.send_signal(signal.SIGTERM)
+    except OSError:
+        pass
+
+
 def run_sandboxed(
     argv: list[str],
     stdin_data: str | None,
@@ -267,12 +304,12 @@ def run_sandboxed(
     timeout: datetime.timedelta,
     max_output_bytes: int,
 ) -> SandboxResult:
-    """Run an already-wrapped argv and collect its output.
+    """Run an argv wrapped by build_sandbox_argv and collect its output.
 
-    The command runs in a new session. Whatever happens -- a normal exit, a timeout, too much
-    output -- the whole session is killed before this returns, so a process the command left in
-    the background does not survive it. With no stdin_data the command reads /dev/null rather
-    than inheriting ACE's stdin.
+    Whatever happens -- a normal exit, a timeout, too much output -- the launcher has killed
+    everything the command started before this returns, so a process the command left in the
+    background does not survive it. With no stdin_data the command reads /dev/null rather than
+    inheriting ACE's stdin.
     """
     process = subprocess.Popen(
         argv,
@@ -292,7 +329,7 @@ def run_sandboxed(
             while chunk := stream.read1(65536):
                 if len(buffer) + len(chunk) > max_output_bytes:
                     output_exceeded.set()
-                    _kill_session(process.pid)
+                    _stop(process)
                     return
 
                 buffer.extend(chunk)
@@ -326,13 +363,19 @@ def run_sandboxed(
     except subprocess.TimeoutExpired:
         timed_out = True
     finally:
-        _kill_session(process.pid)
-        process.wait()
+        # a no-op when the launcher has already exited: it cleaned up when the command did
+        _stop(process)
+        try:
+            process.wait(timeout=_LAUNCHER_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            # the launcher itself is stuck; it is still unreaped, so its pid is still its session's
+            logging.warning("sandbox launcher for %s did not exit when stopped", argv[-1])
+            _kill_session(process.pid)
+            process.wait()
 
     for thread in threads:
         thread.join(timeout=_READER_JOIN_SECONDS)
         if thread.is_alive():
-            # a descendant left the session and still holds the pipe open
             logging.warning("output reader for sandboxed command %s did not finish", argv[-1])
 
     for stream in (process.stdout, process.stderr):
@@ -388,7 +431,19 @@ def sweep_stale_workdirs(max_age: datetime.timedelta = STALE_WORKDIR_AGE):
 def prepare_sandbox():
     """Hunter startup: report whether executable commands can run and clear out stale workdirs."""
     if landlock_available():
-        logging.info("correlate executable commands run in a landlock sandbox under %s", get_sandbox_root())
+        abi = landlock_abi()
+        logging.info("correlate executable commands run in a landlock sandbox (ABI %s) under %s", abi, get_sandbox_root())
+        if get_sandbox_config().allowed_tcp_ports is not None and abi < NET_ABI:
+            logging.error(
+                "landlock ABI %s cannot restrict TCP ports (ABI %s, Linux 6.7, is needed): every correlate "
+                "executable command will fail unless hunter.correlation.executable.allowed_tcp_ports is null",
+                abi, NET_ABI,
+            )
+        if abi < SCOPE_ABI:
+            logging.warning(
+                "landlock ABI %s cannot scope signals (ABI %s, Linux 6.12, is needed): a correlate "
+                "executable command can signal other processes running as this user", abi, SCOPE_ABI,
+            )
     else:
         logging.error("landlock is unavailable here: every correlate executable command will fail")
 

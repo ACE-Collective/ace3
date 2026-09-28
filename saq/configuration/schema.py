@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
@@ -231,6 +231,8 @@ class ExecutableSandboxConfig(BaseModel):
     file_size_limit: int = Field(default=256 * 1024 ** 2, gt=0, description="largest file the command may write, in bytes (RLIMIT_FSIZE)")
     open_files_limit: int = Field(default=1024, gt=0, description="maximum open file descriptors (RLIMIT_NOFILE)")
     max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed and the step fails")
+    max_processes: int = Field(default=64, gt=0, description="most processes a command may have alive at once, counting everything it starts; a command that starts more is killed and the step fails")
+    allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

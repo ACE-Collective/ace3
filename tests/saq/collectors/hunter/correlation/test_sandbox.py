@@ -20,6 +20,7 @@ from saq.collectors.hunter.correlation.sandbox import (
     get_sandbox_root,
     sweep_stale_workdirs,
 )
+from saq.collectors.hunter.correlation.sandbox_launcher import NET_ABI, SCOPE_ABI, landlock_abi
 from saq.collectors.hunter.correlation.schema import CommandConfig
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.environment import get_base_dir, get_data_dir
@@ -217,6 +218,35 @@ class TestLimits:
         cmd = _python("import sys; print(sys.stdin.read())", stdin=True)
         assert json.loads(_run(cmd, tmpdir, event={"a": 1})) == {"a": 1}
 
+    @pytest.mark.skipif(landlock_abi() < NET_ABI, reason=f"TCP port rules need Landlock ABI {NET_ABI} (Linux 6.7)")
+    def test_tcp_connections_limited_to_allowed_ports(self, tmpdir):
+        import socket
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        code = "import socket, sys\n" \
+               "try:\n" \
+               "    socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=5).close(); print('connected')\n" \
+               "except OSError as e:\n" \
+               "    print(type(e).__name__)"
+        try:
+            with _limits(allowed_tcp_ports=[port]):
+                assert _run(_python(code, str(port)), tmpdir).strip() == "connected"
+            # the production default: the metadata endpoint's port 80, or any other, is refused
+            with _limits(allowed_tcp_ports=[443, 53]):
+                assert _run(_python(code, str(port)), tmpdir).strip() == "PermissionError"
+        finally:
+            listener.close()
+
+    def test_process_limit(self, tmpdir):
+        code = "import subprocess, sys, time\n" \
+               "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']) for _ in range(8)]\n" \
+               "time.sleep(300)"
+        with _limits(max_processes=4):
+            with pytest.raises(RuntimeError, match="more than 4 processes"):
+                _run(_python(code, timeout="60s"), tmpdir)
+
 
 @pytest.mark.unit
 class TestProcessCleanup:
@@ -240,6 +270,18 @@ print(child.pid, flush=True)
         with pytest.raises(RuntimeError, match="timed out"):
             _run(_python(code, marker, timeout="2s"), tmpdir)
         wait_for_condition(lambda: not _processes_with_marker(marker), timeout=10)
+
+    def test_process_that_left_the_session_is_killed(self, tmpdir):
+        marker = f"sandbox-marker-{uuid.uuid4().hex}"
+        code = self._SPAWN.format(
+            redirect="start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL", after="")
+        _run(_python(code, marker), tmpdir)
+        wait_for_condition(lambda: not _processes_with_marker(marker), timeout=10)
+
+    @pytest.mark.skipif(landlock_abi() < SCOPE_ABI, reason=f"signal scoping needs Landlock ABI {SCOPE_ABI} (Linux 6.12)")
+    def test_command_cannot_signal_ace(self, tmpdir):
+        code = "import os, sys\ntry:\n    os.kill(int(sys.argv[1]), 0)\n    print('signalled')\nexcept PermissionError:\n    print('refused')"
+        assert _run(_python(code, str(os.getpid())), tmpdir).strip() == "refused"
 
 
 @pytest.fixture
