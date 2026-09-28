@@ -150,7 +150,7 @@ Every `command` as the following properties available:
 ```yaml
 command:
     type: TYPE # required (see below)
-    timeout: 30s # optional (default 30s)
+    timeout: 30s # optional (default 10m)
 ```
 
 The optional `timeout` setting controls how long to wait for the command to complete. If the command does not complete in the time specified, it is canceled (or killed) and treated as an error condition.
@@ -197,11 +197,13 @@ In either case, if no time range can be determined — an `event transformation`
 
 Executes a local binary or script.
 
-In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, it is not. In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
+In the case of an `event transformation`, the script is called for each event. The optional `stdin` setting controls how the event is fed to the script. If `stdin` is true, then the event is written to stdin as JSONL. If `stdin` is false, stdin is empty (`/dev/null`). In either case, the `args` are jinja interpolated with `_event` (current event) and `_events` (full stream) available.
 
 In the case of a `stream transformation`, the script is called once and passed all events in as JSONL to stdin.
 
 `env` values are interpolated the same way. The script does **not** inherit ACE's environment — see [Credentials in hunts](#credentials-in-hunts).
+
+Every execution runs in a sandbox — see [Executable sandbox](#executable-sandbox). A script that reads a file next to it (a data file, a helper module) must list that file under `files:`.
 
 ```yaml
 command:
@@ -216,13 +218,28 @@ command:
         SOME_SETTING: "some value"
         LOOKUP_DOMAIN: "{{ _event.domain }}"
     # environment values are also interpolated using jinja with _event and _events
+    files: # files the script reads, copied next to it (optional)
+      - data/lookup.json # can be relative, like path
 ```
+
+#### Executable sandbox
+
+A hunt script is written by an analyst or by an AI agent working through the validation API, and a mistake in it must not be able to damage ACE or expose a secret. So every execution runs in a [Landlock](https://docs.kernel.org/userspace-api/landlock.html) sandbox (`saq/collectors/hunter/correlation/sandbox.py`):
+
+- **A private working directory.** Each execution gets a fresh directory under `hunter.correlation.executable.work_dir` (default `DATA_DIR/var/correlation_sandbox`). It is the command's working directory, `HOME` and `TMPDIR`, and it is deleted when the command finishes. It is the only place the command can create, change or delete a file.
+- **Staging.** The script (`path`) and every `files:` entry are copied into the working directory, keeping their layout relative to each other, so `Path(__file__).parent / "lookup.json"` still works. The script runs from the copy, so it cannot modify the hunt repository. Sources must be regular files inside a hunt repository: the `git_dir` (or `rule_dir`) of a `hunt_type_*` rule directory, or the directory the validation API unpacks a submitted hunt into. Anything else, including a symlink that points out of the repository, fails the step. A `path` that is already readable in the sandbox runs in place without being copied. Examples are `/usr/bin/jq`, the venv's `python3`, or a bare name such as `echo` that `PATH` resolves to one of those.
+- **What it can read.** Only `/usr`, the python runtime (the venv and the interpreter it was built from), `/etc/ssl`, `/etc/ca-certificates`, the few `/etc` files that name resolution, TLS and time zones need, `/dev/null`, `/dev/urandom`, and its working directory. Nothing else is readable. That includes `SAQ_HOME` (config, `.env`, `ssl/`, `signatures/`), the data directory, `/auth`, the SQL volumes, `/home`, `/tmp`, `/proc` and the rest of `/etc`. The list is a constant in `sandbox.py`, not configuration.
+- **Limits.** Address space, largest file written, open files and bytes of output read from each of stdout and stderr are set under `hunter.correlation.executable` in `etc/saq.default.yaml`. The CPU-seconds limit is the command's `timeout`. Exceeding a limit fails the step.
+- **No leftovers.** The command runs in its own session, and the whole session is killed when the command exits, times out or writes too much output. A process it started in the background does not survive it.
+- **Unchanged.** Network access. Every current hunt script needs DNS or HTTPS.
+
+The sandbox needs Linux 5.13 or later with Landlock enabled (the Debian kernel default), plus util-linux `setpriv` and `prlimit`, which are in the ACE image. It needs no capability and no docker compose change. The hunter logs at startup whether Landlock is available. If it is not, every executable command fails as a step error; a command is never run unsandboxed.
 
 #### Credentials in hunts
 
 A hunt has no access to secrets. Hunt templates can read `_event` and `_events` and nothing else: neither the credential store nor ACE's configuration is bound. Hunt validation rejects any template that references `_secrets` or `_config`, and at runtime such a template fails as a step error.
 
-An executable command does not inherit ACE's environment. It gets only a fixed allowlist of variables (`PATH`, `HOME`, locale, `TZ`, `TMPDIR`, `PYTHONUTF8`, the proxy variables and the CA bundle variables; see `EXECUTABLE_ENV_ALLOWLIST` in `saq/collectors/hunter/correlation/commands.py`) plus the values in its own `env:` block.
+An executable command does not inherit ACE's environment. It gets only a fixed allowlist of variables (`PATH`, `HOME`, locale, `TZ`, `TMPDIR`, `PYTHONUTF8`, the proxy variables and the CA bundle variables; see `EXECUTABLE_ENV_ALLOWLIST` in `saq/collectors/hunter/correlation/commands.py`) plus the values in its own `env:` block. `HOME` and `TMPDIR` are set to the command's private working directory.
 
 A lookup that needs a credential belongs in a [custom command type](#custom-integration-provided-types). A custom command type is Python code in an integration, and it reads its credentials from that integration's configuration.
 
@@ -494,7 +511,7 @@ fields and Jinja `value` templates that expand to many values). This avoids hand
     - events with identical timestamps are merged in the order of original event stream, then new event stream.
     - the number of events missing timestamps (and thus are not merged) and then a warning is logged with the number of events dropped.
 - A stream mutate transformation drops the old stream and uses the new stream instead.
-- The current working directory of a command is a temporary directory created for the execution of the hunt. It is deleted immediately after execution.
+- The current working directory of an executable command is a private directory created for that one execution (see [Executable sandbox](#executable-sandbox)). It is deleted immediately after execution.
 - The cache is persistant and global. We'll probably want to use redis for this.
 - Since `commands` is a top-level list, common commands can be included with the `include` directive.
 - Malformed `correlate` blocks should be treated as a malformed hunt.

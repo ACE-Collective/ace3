@@ -4,10 +4,25 @@ from typing import TYPE_CHECKING, Any, Type
 
 import yaml
 
+from saq.configuration import get_config
+from saq.environment import get_data_dir
+
 if TYPE_CHECKING:
     from saq.collectors.hunter.base_hunter import HuntConfig
 
 INCLUDE_DIRECTIVE = "include"
+
+
+def get_compiled_hunt_dir() -> str:
+    """Return a directory for compiled hunt temp files that supports execution.
+
+    The default temp directory (/tmp) may be mounted as a noexec tmpfs in Docker,
+    preventing extracted scripts from being executed. This uses a configurable
+    subdirectory under the data directory instead.
+    """
+    path = os.path.join(get_data_dir(), get_config().global_settings.compiled_hunt_dir)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _get_observable_mapping_identity(item: Any) -> tuple[str, frozenset[str]] | None:

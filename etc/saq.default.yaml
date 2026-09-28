@@ -423,6 +423,19 @@ hunter:
     #    python_module: wiz.correlation
     #    python_class: WizLookupCommand
     #    kwargs: {}
+    # `type: executable` commands run in a Landlock sandbox: they can read only system libraries,
+    # the python runtime and a few /etc files, and write only their own working directory.
+    # see "Executable sandbox" in docs/CORRELATION_HUNTS.md
+    executable:
+      # relative to DATA_DIR; must be on a filesystem that allows execution (not a noexec tmpfs)
+      work_dir: var/correlation_sandbox
+      # address space limit in bytes (4 GiB)
+      memory_limit: 4294967296
+      # largest file a command may write, in bytes (256 MiB)
+      file_size_limit: 268435456
+      open_files_limit: 1024
+      # bytes read from each of stdout and stderr before the command is killed (64 MiB)
+      max_output_bytes: 67108864
 
 node_translation:
   # when ACE looks up a node to send something to, it does so using the nodes.location from the ace database

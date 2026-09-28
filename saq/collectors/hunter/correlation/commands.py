@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import os
-import subprocess
 from typing import Optional
 
 from jinja2.sandbox import SandboxedEnvironment
@@ -11,6 +10,14 @@ from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder, get_
 from saq.collectors.hunter.correlation.command_types import CommandContext, CorrelationCommand, get_command_type
 from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.registry import get_query_source
+from saq.collectors.hunter.correlation.sandbox import (
+    build_sandbox_argv,
+    create_workdir,
+    get_sandbox_config,
+    landlock_available,
+    run_sandboxed,
+    stage_executable,
+)
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.trace import sanitize_value
@@ -296,8 +303,10 @@ def _execute_executable(
 ) -> str:
     """Execute an executable command.
 
-    The child process gets EXECUTABLE_ENV_ALLOWLIST from ACE's environment plus the command's
-    own rendered `env:` values, never the whole ACE environment.
+    The command runs in the Landlock sandbox (sandbox.py) from its own working directory, with its
+    script and `files:` staged into it; temp_dir is not used. The child process gets
+    EXECUTABLE_ENV_ALLOWLIST from ACE's environment plus the command's own rendered `env:` values,
+    never the whole ACE environment.
     """
     context = build_jinja_context(event, events)
     timeout = parse_timespec(command.timeout)
@@ -307,8 +316,6 @@ def _execute_executable(
     if command.args:
         for arg in command.args:
             rendered_args.append(_jinja_env.from_string(arg).render(**context))
-
-    args = [command.path] + rendered_args
 
     env_vars = {key: os.environ[key] for key in EXECUTABLE_ENV_ALLOWLIST if key in os.environ}
 
@@ -337,30 +344,39 @@ def _execute_executable(
         # Event transform with stdin enabled
         stdin_data = json.dumps(event)
 
-    try:
-        result = subprocess.run(
-            args,
-            cwd=temp_dir,
-            timeout=timeout.total_seconds(),
-            capture_output=True,
-            text=True,
-            input=stdin_data,
-            env=env_vars,
+    if not landlock_available():
+        raise RuntimeError("landlock is unavailable; executable commands cannot run")
+
+    sandbox_config = get_sandbox_config()
+    with create_workdir() as workdir:
+        # the workdir is the only place the command can write, so point its home and temp dir there
+        env_vars["HOME"] = workdir
+        env_vars["TMPDIR"] = workdir
+        if rendered_env:
+            env_vars.update(rendered_env)
+
+        executable = stage_executable(command.path, command.files, workdir, env_vars.get("PATH"))
+        result = run_sandboxed(
+            build_sandbox_argv([executable] + rendered_args, workdir, sandbox_config, timeout),
+            stdin_data,
+            env_vars,
+            workdir,
+            timeout,
+            sandbox_config.max_output_bytes,
         )
-        if result.returncode != 0:
-            # stderr is sanitized because it reaches the correlation trace, which is persisted
-            # into alert details and shown to analysts
-            raise RuntimeError(sanitize_value(
-                f"command exited with code {result.returncode}: {result.stderr}",
-                secrets or {},
-            ))
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"command timed out after {timeout}")
+
+    if result.returncode != 0:
+        # stderr is sanitized because it reaches the correlation trace, which is persisted
+        # into alert details and shown to analysts
+        raise RuntimeError(sanitize_value(
+            f"command exited with code {result.returncode}: {result.stderr}",
+            secrets or {},
+        ))
 
     # stdout is sanitized for the same reason stderr is: it becomes event data, which flows into
     # the persisted correlation trace and into later query text sent to a data source. A hunt
-    # never hands a script a credential, but a script can still read one on its own, so this
-    # stays as a backstop.
+    # never hands a script a credential and the sandbox keeps it from reading one, so this is
+    # only a backstop.
     stdout = sanitize_value(result.stdout, secrets or {})
 
     # Store in persistent cache
