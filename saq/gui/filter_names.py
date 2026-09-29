@@ -7,6 +7,7 @@
 FILTER_NAMES = frozenset([
     'Alert Date',
     'Alert Type',
+    'Analysis',
     'Description',
     'Detection Point',
     'Disposition',
@@ -38,6 +39,7 @@ DATE_RANGE_FILTER_NAMES = frozenset([
 FILTER_SLUGS = {
     'Alert Date': 'alert_date',
     'Alert Type': 'alert_type',
+    'Analysis': 'analysis',
     'Description': 'description',
     'Detection Point': 'detection_point',
     'Disposition': 'disposition',

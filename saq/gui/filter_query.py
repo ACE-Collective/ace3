@@ -20,6 +20,7 @@ genuinely tied to a Flask request.
 
 import datetime
 import hashlib
+from functools import cached_property
 
 import pytz
 from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, and_, exists, false, func, not_, or_, distinct
@@ -27,6 +28,8 @@ from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, and_, exists, false, func
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
     Alert,
+    AnalysisMapping,
+    AnalysisType,
     DetectionPoint,
     DispositionBy,
     Observable,
@@ -190,6 +193,61 @@ class DetectionPointFilter(Filter):
         ).correlate(Alert)
         return query.filter(not_(subquery) if self.inverted else subquery)
 
+# analysis type match, provides drop down menu of the analysis types that have been indexed
+class AnalysisFilter(Filter):
+    """Alerts containing a given type of analysis, by module path (module:Class[:instance]).
+
+    Matched against `analysis_mapping`, which records only the analysis an alert's tree
+    actually shows -- see is_indexed_analysis() in saq/database/util/index.py -- so an
+    analysis that ran and found nothing does not match. An EXISTS over that table; see the
+    note in Filter.apply for why.
+    """
+
+    @cached_property
+    def options(self) -> list[tuple[str, str]]:
+        """(module_path, display_name) for every analysis type at least one alert contains, by
+        display name.
+
+        The catalog is append-only, so it also holds types whose alerts have all been deleted;
+        listing only types with a mapping row keeps the dropdown to choices that can match. The
+        check is one probe into analysis_mapping's analysis_type_id index per catalog row.
+
+        Lazy rather than a constructor argument: create_filter() builds this filter for every
+        query, and only the filter editor needs the list.
+        """
+        in_use = exists().where(AnalysisMapping.analysis_type_id == AnalysisType.id)
+        return [(module_path, display_name) for module_path, display_name in
+                get_db().query(AnalysisType.module_path, AnalysisType.display_name)
+                .filter(in_use)
+                .order_by(AnalysisType.display_name, AnalysisType.module_path)]
+
+    def apply(self, query, values):
+        # a stored filter or pasted share link can carry anything; a value that cannot be a
+        # module path matches nothing rather than raising on every /manage load
+        module_paths = [value for value in values if isinstance(value, str)]
+        condition = AnalysisType.module_path.in_(module_paths) if module_paths else false()
+
+        subquery = exists().where(
+            and_(
+                AnalysisMapping.alert_id == Alert.id,
+                AnalysisMapping.analysis_type_id == AnalysisType.id,
+                condition,
+            )
+        ).correlate(Alert)
+        return query.filter(not_(subquery) if self.inverted else subquery)
+
+
+def get_analysis_type_labels(module_paths: list) -> dict[str, str]:
+    """module_path -> display_name for the given module paths, for showing an Analysis
+    filter's values as labels. A path that was never indexed is simply absent."""
+    module_paths = [value for value in module_paths if isinstance(value, str)]
+    if not module_paths:
+        return {}
+
+    return dict(get_db().query(AnalysisType.module_path, AnalysisType.display_name)
+                .filter(AnalysisType.module_path.in_(module_paths)))
+
+
 # exact match, provides type drop down menu with text input for value
 class TypeValueFilter(SelectFilter):
     """Alerts carrying an observable of a given type and value.
@@ -292,6 +350,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
     return {
         'Alert Date': lambda: DateRangeFilter(entity.insert_date, tz=tz, inverted=inverted),
         'Alert Type': lambda: SelectFilter(entity.alert_type, inverted=inverted),
+        'Analysis': lambda: AnalysisFilter(AnalysisType.module_path, inverted=inverted),
         'Description': lambda: TextFilter(entity.description, inverted=inverted),
         'Detection Point': lambda: DetectionPointFilter(DetectionPoint.signature_uuid, inverted=inverted),
         'Disposition': lambda: MultiSelectFilter(entity.disposition, nullable=False, options=list(VALID_DISPOSITIONS), inverted=inverted),

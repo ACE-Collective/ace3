@@ -107,6 +107,7 @@ disposition:DELIVERY,IGNORE      one term, values ORed
 alert_date:-7d                   a relative window (saq/util/relative_time.py)
 owner:jdoe  description:invoice  the rest of the manage-page filter vocabulary
 detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (any version, or exactly <v>)
+analysis:<module>:<Class>[:<i>]  alerts whose analysis tree shows that analysis type (see docs/ALERT_FILTER_URLS.md)
 -tag:whitelisted                 inverted (! works too)
 tag:"vendor mailer"              quoted, for a value containing a space or a comma
 docusign invoice                 free text

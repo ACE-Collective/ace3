@@ -629,7 +629,8 @@ class Alert(Base):
 
     def build_index(self) -> IndexSyncResult:
         """Reconciles this Alert's rows in the observables, tags, observable_mapping,
-        tag_mapping, observable_tag_index and detection_points tables."""
+        tag_mapping, observable_tag_index, detection_points, analysis_types and
+        analysis_mapping tables."""
         return self.rebuild_index()
 
     def rebuild_index(self) -> IndexSyncResult:
@@ -645,7 +646,7 @@ class Alert(Base):
                 return execute_with_retry(db, c, self._rebuild_index)
 
     def _rebuild_index(self, db, c) -> IndexSyncResult:
-        result = sync_alert_index(c, self.id, self.root_analysis)
+        result = sync_alert_index(c, self.id, self.root_analysis, archived=self.archived)
         db.commit()
 
         if result.changed:
@@ -1274,6 +1275,51 @@ class TagMapping(Base):
 
     alert: Mapped["Alert"] = relationship('Alert', backref='tag_mapping', overlaps="tag_mappings")
     tag: Mapped["Tag"] = relationship('Tag', backref='tag_mapping')
+
+class AnalysisType(Base):
+    """The catalog of analysis types that have ever been indexed, one row per module path.
+    Append-only, like `tags`: a type stays listed after its module is removed, because the
+    alerts that contain it still do."""
+
+    __tablename__ = 'analysis_types'
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True)
+
+    # module:Class[:instance], exactly as Analysis.module_path renders it. Binary collation
+    # because module paths are case-sensitive Python names: matching is byte-exact, so the
+    # index code needs no case folding (compare tag_key() in saq/database/util/index.py).
+    module_path: Mapped[str] = mapped_column(
+        String(512, collation='utf8mb4_bin'),
+        nullable=False,
+        unique=True)
+
+    # the dropdown label, recorded when the type is first indexed
+    display_name: Mapped[str] = mapped_column(
+        String(512),
+        nullable=False)
+
+class AnalysisMapping(Base):
+    """The analysis types each alert contains -- only the ones the alert's analysis tree
+    actually shows (see is_indexed_analysis() in saq/database/util/index.py).
+
+    alert_id leads the primary key, so reading one alert's rows is a primary key range. The
+    foreign key on analysis_type_id gives that column its own index, which InnoDB extends
+    with the primary key: every alert id containing a given type, in order, without reading
+    the table. That is what the Analysis filter's EXISTS subquery reads."""
+
+    __tablename__ = 'analysis_mapping'
+
+    alert_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
+
+    analysis_type_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('analysis_types.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True)
 
 class DetectionPoint(Base):
     """Database representation of an analysis-layer detection point, with signature

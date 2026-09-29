@@ -6,6 +6,8 @@ import shutil
 import sys
 import traceback
 
+import pytz
+
 from saq.cli.cli_main import get_cli_subparsers
 from saq.cli.cli_util import display_analysis
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
@@ -13,6 +15,7 @@ from saq.configuration import get_config
 from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.search.tasks import submit_delete_task
+from saq.util.relative_time import RelativeTimeError, parse_date_range
 from saq.util.uuid import storage_dir_from_uuid
 
 
@@ -49,11 +52,27 @@ def rebuild_index(args):
     from saq.database.model import Alert
     from saq.database import get_db_connection
 
+    if args.insert_date and not args.resync_all:
+        logging.error("--insert-date narrows --all; pass both")
+        sys.exit(1)
+
     storage_dirs = []
     if args.resync_all:
+        sql = "SELECT storage_dir FROM alerts WHERE location = %s"
+        params = [get_global_runtime_settings().saq_node]
+        if args.insert_date:
+            try:
+                start, end = parse_date_range(args.insert_date, now=datetime.datetime.now(pytz.utc), tz=pytz.utc)
+            except RelativeTimeError as e:
+                logging.error(f"invalid --insert-date {args.insert_date!r}: {e}")
+                sys.exit(1)
+
+            sql += " AND insert_date >= %s AND insert_date <= %s"
+            params.extend([start, end])
+
         with get_db_connection() as db:
             c = db.cursor()
-            c.execute("""SELECT storage_dir FROM alerts WHERE location = %s""", (get_global_runtime_settings().saq_node,))
+            c.execute(sql, tuple(params))
             for row in c:
                 storage_dirs.append(row[0])
     else:
@@ -88,6 +107,9 @@ rebuild_index_parser = alert_sp.add_parser('rebuild',
     help="Rebuilds the indexes for the given alerts.")
 rebuild_index_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
     help="Resyncs all alerts that belong to this node. This can take a long time.")
+rebuild_index_parser.add_argument('--insert-date', metavar='RANGE', default=None,
+    help="With --all, only the alerts inserted in this range, written the way the alert management "
+         "page's date filters are: a relative token such as -90d, or '<start> - <end>' (UTC).")
 rebuild_index_parser.add_argument('dirs', nargs='*', default=[], help="One ore more alert directories to resync.")
 rebuild_index_parser.set_defaults(func=rebuild_index)
 

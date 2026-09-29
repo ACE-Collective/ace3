@@ -1,21 +1,24 @@
 """Tests for the `ace alert` commands."""
 
 import os
+import uuid
 from argparse import Namespace
+from datetime import datetime, timedelta
 
 import pytest
 
 from saq.analysis.root import load_root
-from saq.cli.commands.alerts import delete_alerts, reload_alerts, reset_alerts
+from saq.cli.commands.alerts import delete_alerts, rebuild_index, reload_alerts, reset_alerts
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_TEST
-from saq.database.model import ObservableMapping, Workload
+from saq.database.model import Alert, ObservableMapping, Workload
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_base_dir
 from saq.modules.test import BasicTestAnalysis
-from saq.util.uuid import get_storage_dir
+from saq.util.uuid import get_storage_dir, storage_dir_from_uuid
+from tests.saq.helpers import create_root_analysis
 
 
 @pytest.mark.integration
@@ -103,3 +106,47 @@ def test_analyze_schedules_the_alert_in_correlation_mode(root_analysis):
     get_db().expire_all()
     workload = get_db().query(Workload).filter(Workload.uuid == root_analysis.uuid).one()
     assert workload.analysis_mode == ANALYSIS_MODE_CORRELATION
+
+
+def _alert_inserted_days_ago(days: int) -> str:
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
+    root.initialize_storage()
+    root.save()
+    ALERT(root)
+    get_db().execute(Alert.__table__.update().where(Alert.uuid == root_uuid)
+                     .values(insert_date=datetime.now() - timedelta(days=days)))
+    get_db().commit()
+    return root_uuid
+
+
+@pytest.mark.integration
+def test_rebuild_all_narrowed_by_insert_date(monkeypatch):
+    recent = _alert_inserted_days_ago(10)
+    old = _alert_inserted_days_ago(200)
+    # patched only now: ALERT() rebuilds the index of the alert it creates
+    rebuilt = []
+    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+
+    with pytest.raises(SystemExit) as e:
+        rebuild_index(Namespace(resync_all=True, insert_date="-90d", dirs=[]))
+
+    assert e.value.code == 0
+    assert recent in rebuilt
+    assert old not in rebuilt
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("resync_all,insert_date", [
+    (False, "-90d"),   # narrows --all, meaningless without it
+    (True, "-90dd"),   # not a date range
+])
+def test_rebuild_rejects_a_bad_insert_date(resync_all, insert_date, monkeypatch):
+    rebuilt = []
+    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+
+    with pytest.raises(SystemExit) as e:
+        rebuild_index(Namespace(resync_all=resync_all, insert_date=insert_date, dirs=[]))
+
+    assert e.value.code == 1
+    assert rebuilt == []

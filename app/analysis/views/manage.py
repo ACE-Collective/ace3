@@ -29,6 +29,7 @@ from app.analysis.views.session.filters import (
     reset_sort_filter,
 )
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES
+from saq.gui.filter_query import get_analysis_type_labels
 from saq.gui.filter_url import (
     FilterQueryError,
     decode_filter_query,
@@ -281,6 +282,9 @@ def build_manage_list_context() -> dict:
         'effective_filters': effective_filters,
         # lets the filter bar show what a relative token like -24h currently resolves to
         'date_range_filter_names': DATE_RANGE_FILTER_NAMES,
+        # the filter bar shows an Analysis filter's display names rather than its module paths
+        'analysis_type_labels': get_analysis_type_labels(
+            [value for entry in effective_filters if entry['name'] == 'Analysis' for value in entry['values']]),
         'search_query': search_query,
         'search_mode': search_mode,
         'search_notices': search_notices,

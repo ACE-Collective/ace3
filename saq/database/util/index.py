@@ -1,8 +1,9 @@
 """Reconciles an alert's search index with its analysis tree.
 
-An alert's index footprint spans five tables: the append-only catalogs `observables`
-and `tags`, and the per-alert junction tables `observable_mapping`, `tag_mapping` and
-`observable_tag_index` (plus `detection_points`, handled here for the same reason).
+An alert's index footprint spans the append-only catalogs `observables`, `tags` and
+`analysis_types`, and the per-alert junction tables `observable_mapping`, `tag_mapping`,
+`observable_tag_index` and `analysis_mapping` (plus `detection_points`, handled here for the
+same reason).
 
 The diff is computed against the DATABASE, never against cached in-process state. That
 is not an implementation detail to optimize away later: workers are separate processes,
@@ -16,8 +17,11 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
+from saq.analysis.analysis import Analysis, UnknownAnalysis
 from saq.analysis.detection_point import DetectionPoint
+from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.analysis.observable import Observable
+from saq.analysis.presenter.analysis_presenter import create_analysis_presenter
 from saq.analysis.root import RootAnalysis
 
 T = TypeVar("T")
@@ -61,6 +65,26 @@ def observable_key(observable_type: str, sha256: bytes) -> ObservableKey:
     return (observable_type.casefold(), sha256)
 
 
+def is_indexed_analysis(analysis: Analysis) -> bool:
+    """Returns True if this analysis belongs in `analysis_mapping`.
+
+    The rule is the alert page's own: an analysis is indexed exactly when the tree would render
+    it (a summary, or observables of its own; presenters can override). Anything looser makes
+    the Analysis filter match analysis that found nothing -- QRCodeAnalyzer, for one, records an
+    empty QRCodeAnalysis for every image it scans so the negative result can be cached.
+    """
+    return create_analysis_presenter(analysis).should_render
+
+
+def analysis_type_label(analysis: Analysis) -> str:
+    """The Analysis filter's dropdown label for this analysis's type: its display name, plus the
+    instance for a module configured more than once (one SplunkAPIAnalysis per instance)."""
+    _module, class_name, instance = SPLIT_MODULE_PATH(analysis.module_path)
+    # an analysis whose class no longer loads only knows its module path
+    name = class_name if isinstance(analysis, UnknownAnalysis) else analysis.display_name
+    return f"{name} ({instance})" if instance else name
+
+
 def chunked(items: Sequence[T], size: int = CHUNK_SIZE) -> Iterator[list[T]]:
     """Yields successive chunks of at most size items."""
     for index in range(0, len(items), size):
@@ -87,6 +111,8 @@ class DesiredIndex:
     tags: dict[str, str]
     observable_tags: set[tuple[ObservableKey, str]]
     detection_points: dict[str, DetectionPoint]
+    # module path -> dropdown label, for every analysis type the tree shows
+    analysis_types: dict[str, str]
 
 
 @dataclass
@@ -103,10 +129,14 @@ class IndexSyncResult:
     observable_tag_index_removed: int = 0
     detection_points_written: int = 0
     detection_points_removed: int = 0
+    analysis_types_created: int = 0
+    analysis_mappings_added: int = 0
+    analysis_mappings_removed: int = 0
     # keys the catalogs could not resolve even after INSERT IGNORE -- only reachable
     # via a collation fold casefold() does not model. Never expected to be non-zero.
     unresolved_tags: int = 0
     unresolved_observables: int = 0
+    unresolved_analysis_types: int = 0
 
     @property
     def total_writes(self) -> int:
@@ -114,7 +144,9 @@ class IndexSyncResult:
                 + self.observable_mappings_added + self.observable_mappings_removed
                 + self.tag_mappings_added + self.tag_mappings_removed
                 + self.observable_tag_index_added + self.observable_tag_index_removed
-                + self.detection_points_written + self.detection_points_removed)
+                + self.detection_points_written + self.detection_points_removed
+                + self.analysis_types_created
+                + self.analysis_mappings_added + self.analysis_mappings_removed)
 
     @property
     def changed(self) -> bool:
@@ -126,13 +158,16 @@ class IndexSyncResult:
                 f"observable_mapping +{self.observable_mappings_added}/-{self.observable_mappings_removed} "
                 f"tag_mapping +{self.tag_mappings_added}/-{self.tag_mappings_removed} "
                 f"observable_tag_index +{self.observable_tag_index_added}/-{self.observable_tag_index_removed} "
-                f"detection_points ~{self.detection_points_written}/-{self.detection_points_removed}")
+                f"detection_points ~{self.detection_points_written}/-{self.detection_points_removed} "
+                f"analysis_types +{self.analysis_types_created} "
+                f"analysis_mapping +{self.analysis_mappings_added}/-{self.analysis_mappings_removed}")
 
 
 def build_desired_index(root_analysis: RootAnalysis) -> DesiredIndex:
     """Computes the desired index state from the analysis tree."""
     observables: dict[ObservableKey, Observable] = {}
     observable_tags: set[tuple[ObservableKey, str]] = set()
+    analysis_types: dict[str, str] = {}
 
     for observable in root_analysis.all_observables:
         if observable.ignored:
@@ -142,6 +177,10 @@ def build_desired_index(root_analysis: RootAnalysis) -> DesiredIndex:
         observables.setdefault(key, observable)
         for tag in observable.tags:
             observable_tags.add((key, tag_key(tag)))
+
+        for analysis in observable.all_analysis:
+            if analysis.module_path not in analysis_types and is_indexed_analysis(analysis):
+                analysis_types[analysis.module_path] = analysis_type_label(analysis)
 
     # all_tags spans both Analysis and Observable objects, so every tag referenced by
     # observable_tags is guaranteed to be resolvable through this map.
@@ -153,7 +192,8 @@ def build_desired_index(root_analysis: RootAnalysis) -> DesiredIndex:
         observables=observables,
         tags=tags,
         observable_tags=observable_tags,
-        detection_points=detection_points)
+        detection_points=detection_points,
+        analysis_types=analysis_types)
 
 
 def read_current_observables(c, alert_id: int) -> dict[ObservableKey, int]:
@@ -192,6 +232,53 @@ def read_current_observable_tags(c, alert_id: int) -> set[tuple[int, int]]:
     """Returns the (observable_id, tag_id) pairs currently indexed for this alert."""
     c.execute("SELECT observable_id, tag_id FROM observable_tag_index WHERE alert_id = %s", (alert_id,))
     return {(observable_id, tag_id) for observable_id, tag_id in c.fetchall()}
+
+
+def read_current_analysis_types(c, alert_id: int) -> dict[str, int]:
+    """Returns the analysis types currently mapped to this alert, keyed by module path."""
+    c.execute("""SELECT t.id, t.module_path
+                 FROM analysis_mapping am JOIN analysis_types t ON t.id = am.analysis_type_id
+                 WHERE am.alert_id = %s""", (alert_id,))
+    return {module_path: analysis_type_id for analysis_type_id, module_path in c.fetchall()}
+
+
+def resolve_analysis_type_ids(c, analysis_types: dict[str, str], result: IndexSyncResult) -> dict[str, int]:
+    """Resolves module paths to `analysis_types.id`, creating catalog rows only for misses.
+
+    `analysis_types.module_path` has a binary collation, so unlike tags there is no case
+    folding: the module path is its own key.
+    """
+    if not analysis_types:
+        return {}
+
+    resolved: dict[str, int] = {}
+    _select_analysis_type_ids(c, list(analysis_types), resolved)
+
+    missing = [module_path for module_path in analysis_types if module_path not in resolved]
+    if not missing:
+        return resolved
+
+    for chunk in chunked(missing):
+        c.execute(
+            "INSERT IGNORE INTO analysis_types ( module_path, display_name ) VALUES {}".format(
+                _row_placeholders(len(chunk), 2)),
+            tuple(value for module_path in chunk for value in (module_path, analysis_types[module_path])))
+
+    # see the READ COMMITTED note in resolve_tag_ids()
+    before = len(resolved)
+    _select_analysis_type_ids(c, missing, resolved)
+    result.analysis_types_created += len(resolved) - before
+
+    return resolved
+
+
+def _select_analysis_type_ids(c, module_paths: list[str], resolved: dict[str, int]):
+    for chunk in chunked(module_paths):
+        c.execute(
+            "SELECT id, module_path FROM analysis_types WHERE module_path IN ({})".format(_placeholders(len(chunk))),
+            tuple(chunk))
+        for analysis_type_id, module_path in c.fetchall():
+            resolved[module_path] = analysis_type_id
 
 
 def resolve_tag_ids(c, tags: dict[str, str], result: IndexSyncResult) -> dict[str, int]:
@@ -385,9 +472,15 @@ def sync_detection_points(c, alert_id: int, desired: dict[str, DetectionPoint],
     result.detection_points_removed += len(removed)
 
 
-def sync_alert_index(c, alert_id: int, root_analysis: RootAnalysis) -> IndexSyncResult:
+def sync_alert_index(c, alert_id: int, root_analysis: RootAnalysis, archived: bool = False) -> IndexSyncResult:
     """Reconciles every index table for this alert against its analysis tree, writing
-    only what changed. The caller owns the transaction (commit is not issued here)."""
+    only what changed. The caller owns the transaction (commit is not issued here).
+
+    `archived` makes the analysis_mapping sync add-only. Archiving an alert discards the
+    details of every analysis, and the save that follows regenerates each summary from those
+    empty details -- so a type found only through its summary would look absent from the tree
+    it was derived from. The rows written while the alert was whole are the surviving record.
+    """
     result = IndexSyncResult()
     desired = build_desired_index(root_analysis)
 
@@ -432,6 +525,31 @@ def sync_alert_index(c, alert_id: int, root_analysis: RootAnalysis) -> IndexSync
         result=result)
 
     sync_detection_points(c, alert_id, desired.detection_points, result)
+
+    current_analysis_types = read_current_analysis_types(c, alert_id)
+    new_analysis_types = {module_path: label for module_path, label in desired.analysis_types.items()
+                          if module_path not in current_analysis_types}
+    analysis_type_ids = current_analysis_types | resolve_analysis_type_ids(c, new_analysis_types, result)
+    result.unresolved_analysis_types = sum(
+        1 for module_path in desired.analysis_types if module_path not in analysis_type_ids)
+
+    desired_analysis_type_ids = {analysis_type_ids[module_path] for module_path in desired.analysis_types
+                                 if module_path in analysis_type_ids}
+    current_analysis_type_ids = set(current_analysis_types.values())
+    if archived:
+        desired_analysis_type_ids |= current_analysis_type_ids
+
+    added, removed = apply_id_diff(
+        c, alert_id, "analysis_mapping", "analysis_type_id",
+        desired=desired_analysis_type_ids,
+        current=current_analysis_type_ids)
+    result.analysis_mappings_added += added
+    result.analysis_mappings_removed += removed
+
+    if result.unresolved_analysis_types:
+        logging.warning(
+            "alert_id %s: unable to resolve %s analysis type(s) to catalog rows -- they are "
+            "missing from the index", alert_id, result.unresolved_analysis_types)
 
     if result.unresolved_observables or result.unresolved_tags:
         logging.warning(

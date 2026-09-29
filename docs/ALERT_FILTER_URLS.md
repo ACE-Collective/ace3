@@ -28,11 +28,11 @@ f = [!] <slug> : <value> [, <value> ...]
 |---|---|---|---|---|
 | `alert_date` | Alert Date | | `event_date` | Event Date |
 | `alert_type` | Alert Type | | `observable` | Observable |
-| `description` | Description | | `owner` | Owner |
-| `disposition` | Disposition | | `queue` | Queue |
-| `disposition_by` | Disposition By | | `reviewed` | Reviewed |
-| `disposition_date` | Disposition Date | | `tag` | Tag |
-| `detection_point` | Detection Point | | | |
+| `analysis` | Analysis | | `owner` | Owner |
+| `description` | Description | | `queue` | Queue |
+| `disposition` | Disposition | | `reviewed` | Reviewed |
+| `disposition_by` | Disposition By | | `tag` | Tag |
+| `disposition_date` | Disposition Date | | `detection_point` | Detection Point |
 
 ### Escaping
 
@@ -56,6 +56,21 @@ f=observable:url:https%3A%2F%2Fevil.com%2Fa%2Cb
 
 The second example is why the value's own colons must be encoded — otherwise
 `url:https://evil.com` would parse as an observable of type `https`.
+
+### Analysis
+
+An `analysis` value is an analysis type's module path, `module:Class`, with `:instance` appended
+for a module configured more than once. Its colons are part of the value, so they are encoded:
+
+```
+f=analysis:saq.modules.file_analysis.qrcode%3AQRCodeAnalysis
+```
+
+It matches alerts whose analysis tree *shows* that analysis -- one with a summary or with
+observables of its own -- so an analysis that ran and found nothing does not count. The types
+come from the `analysis_mapping` index, which the engine keeps with the rest of an alert's
+index; alerts analyzed before it existed need `ace alert rebuild --all` (optionally narrowed
+with `--insert-date -90d`) to be found by it.
 
 ### Dates
 
@@ -134,8 +149,8 @@ on `/set_filters`.
 - The search box's grammar over the same slugs: `saq/search/syntax.py`
 - Relative-time parser: `saq/util/relative_time.py`
 
-The `Observable` and `Tag` filters are **EXISTS subqueries over their mapping tables, in both
-directions**. Inverted, that is the only form that is true for an alert with no matching rows
+The `Observable`, `Tag` and `Analysis` filters are **EXISTS subqueries over their mapping
+tables, in both directions**. Inverted, that is the only form that is true for an alert with no matching rows
 at all -- a `NOT` evaluated against a joined row cannot be. Non-inverted it avoids the row
 fan-out, which is what lets two `observable` filters mean "carries both".
 

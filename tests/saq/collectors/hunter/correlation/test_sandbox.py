@@ -399,8 +399,11 @@ class TestFailClosed:
 
 @pytest.mark.unit
 class TestSweep:
-    def test_removes_only_stale_workdirs(self):
-        root = get_sandbox_root()
+    def test_removes_only_stale_workdirs(self, tmp_path):
+        # a temp directory, not the real sandbox root: that sits under data_unittest/, a bind mount
+        # in the dev container, where a mode-000 directory cannot be chmodded from inside the
+        # container -- it would outlive a failed sweep and break every later data directory reset
+        root = str(tmp_path)
         stale = os.path.join(root, f"cmd-stale-{uuid.uuid4().hex}")
         fresh = os.path.join(root, f"cmd-fresh-{uuid.uuid4().hex}")
         os.makedirs(os.path.join(stale, "locked"))
@@ -410,9 +413,8 @@ class TestSweep:
         old = (datetime.datetime.now() - datetime.timedelta(days=2)).timestamp()
         os.utime(stale, (old, old))
 
-        try:
+        with patch("saq.collectors.hunter.correlation.sandbox.get_sandbox_root", return_value=root):
             sweep_stale_workdirs()
-            assert not os.path.exists(stale)
-            assert os.path.exists(fresh)
-        finally:
-            os.rmdir(fresh)
+
+        assert not os.path.exists(stale)
+        assert os.path.exists(fresh)

@@ -190,6 +190,19 @@ class TestDetectionPointTerms:
         assert parsed.errors and "detection point" in parsed.errors[0]
 
 
+class TestAnalysisTerms:
+    def test_module_path_keeps_its_colons(self):
+        parsed = parse_search_query("analysis:saq.modules.splunk:SplunkAPIAnalysis:session_activity")
+        assert parsed.errors == ()
+        assert _filter(parsed, "Analysis") == [{"name": "Analysis", "inverted": False,
+                                                "values": ["saq.modules.splunk:SplunkAPIAnalysis:session_activity"]}]
+
+    def test_bad_value_is_an_error_not_a_dropped_filter(self):
+        parsed = parse_search_query("analysis:QRCodeAnalysis")
+        assert parsed.filters == ()
+        assert parsed.errors and "analysis module path" in parsed.errors[0]
+
+
 class TestQuoting:
     def test_quoted_value_with_a_space(self):
         parsed = parse_search_query('tag:"vendor mailer"')
