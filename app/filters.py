@@ -14,6 +14,7 @@ from flask_login import current_user
 
 from saq.gui.filter_query import (
     ANY_OBSERVABLE_TYPE,
+    AnalysisFilter,
     AutoTextFilter,
     BoolFilter,
     DateRangeFilter,

@@ -6,6 +6,7 @@ from typing import Optional, Union
 import pytz
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from saq.analysis.module_path import IS_MODULE_PATH
 from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES
 from saq.util.relative_time import parse_date_range
@@ -39,8 +40,15 @@ class FilterEntry(BaseModel):
     @field_validator("values")
     @classmethod
     def validate_values(cls, values: list, info) -> list:
-        """Reject an unparseable date token or detection point value at WRITE time.
+        """Reject an unparseable date token, detection point value or analysis module path at
+        WRITE time.
         """
+        if info.data.get("name") == "Analysis":
+            for value in values:
+                if not isinstance(value, str) or not IS_MODULE_PATH(value):
+                    raise ValueError(f"analysis values must be module paths (module:Class[:instance]), got {value!r}")
+            return values
+
         if info.data.get("name") == "Detection Point":
             if not all(isinstance(value, str) for value in values):
                 raise ValueError(f"detection point values must be strings, got {values!r}")

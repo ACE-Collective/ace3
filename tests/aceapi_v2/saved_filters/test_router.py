@@ -167,6 +167,21 @@ class TestCrud:
         assert created["filters"][0]["values"] == ["6f3a1b2c-1111-2222-3333-444455556666:v1"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["QRCodeAnalysis", ["saq.modules.file_analysis.qrcode", "QRCodeAnalysis"]])
+    async def test_rejects_a_value_that_is_not_a_module_path(self, client: AsyncClient, value):
+        response = await client.post(f"{BASE}/", json={
+            "name": "Bad Analysis",
+            "filters": [{"name": "Analysis", "values": [value]}]})
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_accepts_analysis_module_path(self, client: AsyncClient):
+        created = await _create(
+            client, "QR codes", filters=[{"name": "Analysis", "inverted": False,
+                                          "values": ["saq.modules.file_analysis.qrcode:QRCodeAnalysis"]}])
+        assert created["filters"][0]["values"] == ["saq.modules.file_analysis.qrcode:QRCodeAnalysis"]
+
+    @pytest.mark.asyncio
     async def test_accepts_relative_date_token(self, client: AsyncClient):
         created = await _create(
             client, "Relative", filters=[{"name": "Alert Date", "inverted": False, "values": ["-24h@h"]}])

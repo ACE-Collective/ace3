@@ -10,6 +10,7 @@ by a field term; everything else is free text for the semantic lanes.
     uuid:1f2e3d4c-…                  an alert uuid (a prefix of one also works)
     queue:default                    a narrowing filter
     detection_point:<sig uuid>[:<v>] alerts with a detection point from that signature (version)
+    analysis:<module>:<Class>[:<i>]  alerts containing that analysis type (the dropdown's value)
     disposition:DELIVERY,IGNORE      one term, values ORed
     alert_date:-7d                   a relative window
     -tag:whitelisted                 inverted (! works too)
@@ -39,6 +40,7 @@ from typing import Optional
 
 import pytz
 
+from saq.analysis.module_path import IS_MODULE_PATH
 from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
@@ -270,6 +272,16 @@ def _filter_term(field: str, values: list[str], inverted: bool, errors: list[str
                 kept.append(normalize_detection_point_value(value))
             except ValueError as e:
                 errors.append(f"{field}:{value!r} is not a detection point: {e}")
+
+        values = kept
+
+    elif name == "Analysis":
+        kept = []
+        for value in values:
+            if IS_MODULE_PATH(value):
+                kept.append(value)
+            else:
+                errors.append(f"{field}:{value!r} is not an analysis module path (module:Class[:instance])")
 
         values = kept
 

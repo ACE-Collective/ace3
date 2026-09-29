@@ -87,6 +87,16 @@ def test_observable_pair_round_trip(observable_type, observable_value):
 
 
 @pytest.mark.unit
+def test_analysis_module_path_round_trip():
+    """A module path carries one colon, or two with an instance; inside a value they are
+    encoded, so they cannot be mistaken for the slug separator."""
+    filters = [{"name": "Analysis", "inverted": False, "values": [
+        "saq.modules.file_analysis.qrcode:QRCodeAnalysis",
+        "saq.modules.splunk:SplunkAPIAnalysis:session_activity"]}]
+    assert _roundtrip(filters) == filters
+
+
+@pytest.mark.unit
 def test_url_observable_does_not_split_on_the_scheme_colon():
     """Regression guard for the ambiguity this grammar was designed around: a `url`
     observable must not decode to a type of "https"."""

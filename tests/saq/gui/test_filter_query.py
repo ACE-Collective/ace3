@@ -10,20 +10,34 @@ from datetime import datetime
 import pytest
 import pytz
 
-from saq.database.model import Alert, DetectionPoint, Observable, ObservableMapping, Tag, TagMapping
+from saq.database.model import (
+    Alert,
+    AnalysisMapping,
+    AnalysisType,
+    DetectionPoint,
+    Observable,
+    ObservableMapping,
+    Tag,
+    TagMapping,
+)
 from saq.database.pool import get_db
 from saq.gui.filter_query import (
     ANY_OBSERVABLE_TYPE,
+    AnalysisFilter,
     build_alert_query,
     count_alerts,
     create_filter,
     filter_alert_uuids,
+    get_analysis_type_labels,
 )
 from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.integration
 
 SIGNATURE_UUID = "6f3a1b2c-1111-2222-3333-444455556666"
+QR_CODE_ANALYSIS = "saq.modules.file_analysis.qrcode:QRCodeAnalysis"
+URL_EXTRACTION_ANALYSIS = "saq.modules.file_analysis.url_extraction:URLExtractionAnalysis"
+SPLUNK_SESSION_ACTIVITY = "saq.modules.splunk:SplunkAPIAnalysis:session_activity"
 OTHER_SIGNATURE_UUID = "9b21c3d4-aaaa-bbbb-cccc-ddddeeeeffff"
 
 
@@ -63,6 +77,18 @@ def _detection_point(alert: Alert, signature_uuid: str, signature_version: str) 
     db.add(DetectionPoint(alert_id=alert.id, description=f"detected by {signature_uuid}",
                           signature_uuid=signature_uuid, signature_version=signature_version,
                           content_hash=content_hash))
+    db.commit()
+
+
+def _analysis(alert: Alert, module_path: str, display_name: str) -> None:
+    """Maps an analysis type to an alert, reusing the catalog row if it already exists."""
+    db = get_db()
+    analysis_type = db.query(AnalysisType).filter(AnalysisType.module_path == module_path).one_or_none()
+    if analysis_type is None:
+        analysis_type = AnalysisType(module_path=module_path, display_name=display_name)
+        db.add(analysis_type)
+        db.flush()
+    db.add(AnalysisMapping(alert_id=alert.id, analysis_type_id=analysis_type.id))
     db.commit()
 
 
@@ -191,6 +217,81 @@ class TestDetectionPointFilter:
     def test_an_impossible_value_matches_nothing_rather_than_raising(self, detections):
         assert _uuids(_detection_filter("not-a-uuid")) == set()
         assert _uuids(_detection_filter(f"{SIGNATURE_UUID}:")) == set()
+
+
+@pytest.fixture
+def analyzed():
+    """One alert with a QR code, one with a QR code and extracted URLs, one with only the output
+    of one instance of an instanced module, and one with no indexed analysis at all."""
+    qr, qr_and_urls, instanced, none = insert_alert(), insert_alert(), insert_alert(), insert_alert()
+    _analysis(qr, QR_CODE_ANALYSIS, "QR Code Analysis")
+    _analysis(qr_and_urls, QR_CODE_ANALYSIS, "QR Code Analysis")
+    _analysis(qr_and_urls, URL_EXTRACTION_ANALYSIS, "URL Extraction Analysis")
+    _analysis(instanced, SPLUNK_SESSION_ACTIVITY, "SplunkAPIAnalysis (session_activity)")
+    return qr, qr_and_urls, instanced, none
+
+
+def _analysis_filter(*values, inverted=False):
+    return [{"name": "Analysis", "inverted": inverted, "values": list(values)}]
+
+
+class TestAnalysisFilter:
+    def test_finds_alerts_containing_the_analysis_type(self, analyzed):
+        qr, qr_and_urls, _, _ = analyzed
+        assert _uuids(_analysis_filter(QR_CODE_ANALYSIS)) == {qr.uuid, qr_and_urls.uuid}
+
+    def test_instances_are_separate_types(self, analyzed):
+        _, _, instanced, _ = analyzed
+        assert _uuids(_analysis_filter(SPLUNK_SESSION_ACTIVITY)) == {instanced.uuid}
+        assert _uuids(_analysis_filter("saq.modules.splunk:SplunkAPIAnalysis")) == set()
+
+    def test_values_within_one_entry_are_ored(self, analyzed):
+        qr, qr_and_urls, instanced, _ = analyzed
+        assert _uuids(_analysis_filter(QR_CODE_ANALYSIS, SPLUNK_SESSION_ACTIVITY)) == {
+            qr.uuid, qr_and_urls.uuid, instanced.uuid}
+
+    def test_separate_entries_are_anded(self, analyzed):
+        _, qr_and_urls, _, _ = analyzed
+        assert _uuids(_analysis_filter(QR_CODE_ANALYSIS) + _analysis_filter(URL_EXTRACTION_ANALYSIS)) == {
+            qr_and_urls.uuid}
+
+    def test_inverted_keeps_alerts_with_no_indexed_analysis(self, analyzed):
+        qr, qr_and_urls, instanced, none = analyzed
+        found = _uuids(_analysis_filter(QR_CODE_ANALYSIS, inverted=True))
+        assert {instanced.uuid, none.uuid}.issubset(found)
+        assert not {qr.uuid, qr_and_urls.uuid} & found
+
+    def test_an_unknown_or_impossible_value_matches_nothing_rather_than_raising(self, analyzed):
+        assert _uuids(_analysis_filter("saq.modules.gone:RemovedAnalysis")) == set()
+        assert _uuids(_analysis_filter(["not", "a string"])) == set()
+
+    def test_count_alerts(self, analyzed):
+        assert count_alerts(_analysis_filter(QR_CODE_ANALYSIS), entity=Alert, tz=pytz.utc, locations=None) == 2
+
+    def test_options_are_the_types_alerts_contain_by_label(self, analyzed):
+        db = get_db()
+        db.add(AnalysisType(module_path="saq.modules.gone:RemovedAnalysis", display_name="Removed Analysis"))
+        db.commit()
+
+        # a catalogued type no alert contains is not offered
+        assert AnalysisFilter(AnalysisType.module_path).options == [
+            (QR_CODE_ANALYSIS, "QR Code Analysis"),
+            (SPLUNK_SESSION_ACTIVITY, "SplunkAPIAnalysis (session_activity)"),
+            (URL_EXTRACTION_ANALYSIS, "URL Extraction Analysis"),
+        ]
+
+    def test_deleting_the_last_alert_with_a_type_drops_it_from_the_options(self, analyzed):
+        _, _, instanced, _ = analyzed
+        db = get_db()
+        db.execute(Alert.__table__.delete().where(Alert.id == instanced.id))
+        db.commit()
+
+        assert SPLUNK_SESSION_ACTIVITY not in dict(AnalysisFilter(AnalysisType.module_path).options)
+
+    def test_labels_for_the_filter_bar(self, analyzed):
+        assert get_analysis_type_labels([QR_CODE_ANALYSIS, "saq.modules.gone:RemovedAnalysis", ["x"]]) == {
+            QR_CODE_ANALYSIS: "QR Code Analysis"}
+        assert get_analysis_type_labels([]) == {}
 
 
 class TestOtherFilters:

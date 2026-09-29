@@ -365,6 +365,36 @@ def test_filter_editor_renders_a_stored_relative_token_in_relative_mode(web_clie
 
 
 @pytest.mark.integration
+def test_analysis_filter_on_the_manage_page(web_client, analyst):
+    """The list shows only the alerts containing the analysis type, the filter bar names the
+    type by its display name rather than its module path, and the editor offers it selected."""
+    from saq.database.model import AnalysisMapping, AnalysisType
+
+    module_path = "saq.modules.file_analysis.qrcode:QRCodeAnalysis"
+    _insert_alert('manage-analysis-match', 'has a qr code')
+    _insert_alert('manage-analysis-nomatch', 'has no qr code')
+    db = get_db()
+    analysis_type = AnalysisType(module_path=module_path, display_name="QR Code Analysis")
+    db.add(analysis_type)
+    db.flush()
+    match = db.query(Alert).filter(Alert.uuid == 'manage-analysis-match').one()
+    db.add(AnalysisMapping(alert_id=match.id, analysis_type_id=analysis_type.id))
+    db.commit()
+
+    response = web_client.post(url_for("analysis.set_filters"), data={
+        "filters": json.dumps([{"name": "Analysis", "inverted": False, "values": [module_path]}])})
+    assert response.status_code == 204
+
+    body = web_client.get(url_for("analysis.manage")).data.decode()
+
+    assert 'alert_row_manage-analysis-match' in body
+    assert 'alert_row_manage-analysis-nomatch' not in body
+    assert '>QR Code Analysis</span>' in body
+    assert f'>{module_path}</span>' not in body
+    assert re.search(rf'<option value="{re.escape(module_path)}"[^>]*SELECTED[^>]*>QR Code Analysis</option>', body)
+
+
+@pytest.mark.integration
 def test_manage_search_repages_when_offset_is_past_the_end(web_client, analyst, monkeypatch):
     """A remembered page offset beyond the (now smaller) result set is clamped and the search
     re-run with the clamped offset, so the analyst never sees an empty page with a total."""

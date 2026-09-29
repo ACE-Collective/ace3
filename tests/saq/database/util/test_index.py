@@ -4,7 +4,10 @@ import hashlib
 
 import pytest
 
+from saq.analysis.analysis import Analysis, UnknownAnalysis
 from saq.analysis.detection_point import DetectionPoint
+from saq.analysis.presenter import analysis_presenter
+from saq.analysis.presenter.analysis_presenter import AnalysisPresenter
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_TEST
 from saq.database.util.index import (
@@ -12,8 +15,10 @@ from saq.database.util.index import (
     IndexSyncResult,
     _placeholders,
     _row_placeholders,
+    analysis_type_label,
     build_desired_index,
     chunked,
+    is_indexed_analysis,
     observable_key,
     tag_key,
 )
@@ -140,3 +145,120 @@ def test_build_desired_index_dedupes_detection_points_by_content_hash(root_analy
     assert len(desired.detection_points) == 2
     expected = DetectionPoint(description="same detection").content_hash
     assert expected in desired.detection_points
+
+
+class FoundTestAnalysis(Analysis):
+    @property
+    def display_name(self) -> str:
+        return "Found Test Analysis"
+
+
+class EmptyTestAnalysis(Analysis):
+    pass
+
+
+class ExtractorTestAnalysis(Analysis):
+    pass
+
+
+class HiddenTestAnalysis(Analysis):
+    pass
+
+
+class HiddenTestAnalysisPresenter(AnalysisPresenter):
+    @property
+    def should_render(self) -> bool:
+        return False
+
+
+def _found(summary: str = "found something") -> FoundTestAnalysis:
+    analysis = FoundTestAnalysis()
+    analysis.summary = summary
+    return analysis
+
+
+@pytest.mark.unit
+def test_is_indexed_analysis_follows_what_the_tree_renders(root_analysis: RootAnalysis, monkeypatch):
+    observable = root_analysis.add_observable_by_spec(F_TEST, "value")
+
+    found = observable.add_analysis(_found())
+    assert is_indexed_analysis(found)
+
+    # ran and found nothing: the negative result QRCodeAnalyzer records for caching
+    empty = observable.add_analysis(EmptyTestAnalysis())
+    assert not is_indexed_analysis(empty)
+
+    # no summary, but it produced observables (PDFAnalysis and the other extractors)
+    extractor = observable.add_analysis(ExtractorTestAnalysis())
+    extractor.add_observable_by_spec(F_TEST, "extracted")
+    assert is_indexed_analysis(extractor)
+
+    # a presenter that hides the analysis hides it from the index too
+    hidden = observable.add_analysis(HiddenTestAnalysis())
+    hidden.summary = "never shown"
+    monkeypatch.setitem(analysis_presenter._ANALYSIS_PRESENTER_REGISTRY, HiddenTestAnalysis, HiddenTestAnalysisPresenter)
+    assert not is_indexed_analysis(hidden)
+
+
+@pytest.mark.unit
+def test_analysis_type_label():
+    assert analysis_type_label(_found()) == "Found Test Analysis"
+
+    instanced = _found()
+    instanced.instance = "o365_session_activity"
+    assert analysis_type_label(instanced) == "Found Test Analysis (o365_session_activity)"
+
+    # a class that no longer loads only has its module path to go on
+    unknown = UnknownAnalysis("saq.modules.gone:RemovedAnalysis:some_instance")
+    assert analysis_type_label(unknown) == "RemovedAnalysis (some_instance)"
+
+
+@pytest.mark.unit
+def test_build_desired_index_records_analysis_types_the_tree_shows(root_analysis: RootAnalysis):
+    first = root_analysis.add_observable_by_spec(F_TEST, "first")
+    first.add_analysis(_found())
+    first.add_analysis(EmptyTestAnalysis())
+
+    # the same type on a second observable is still one type
+    second = root_analysis.add_observable_by_spec(F_TEST, "second")
+    second.add_analysis(_found("found something else"))
+
+    desired = build_desired_index(root_analysis)
+
+    assert desired.analysis_types == {FoundTestAnalysis().module_path: "Found Test Analysis"}
+
+
+@pytest.mark.unit
+def test_build_desired_index_keeps_instances_apart(root_analysis: RootAnalysis):
+    observable = root_analysis.add_observable_by_spec(F_TEST, "value")
+    for instance in ("one", "two"):
+        analysis = _found()
+        analysis.instance = instance
+        observable.add_analysis(analysis)
+
+    desired = build_desired_index(root_analysis)
+
+    assert set(desired.analysis_types.values()) == {"Found Test Analysis (one)", "Found Test Analysis (two)"}
+    assert all(module_path.endswith((":one", ":two")) for module_path in desired.analysis_types)
+
+
+@pytest.mark.unit
+def test_build_desired_index_skips_analysis_of_ignored_observables(root_analysis: RootAnalysis):
+    ignored = root_analysis.add_observable_by_spec(F_TEST, "ignored")
+    ignored.add_analysis(_found())
+    ignored.ignored = True
+
+    assert build_desired_index(root_analysis).analysis_types == {}
+
+
+@pytest.mark.unit
+def test_index_sync_result_counts_analysis_writes():
+    result = IndexSyncResult()
+    result.unresolved_analysis_types = 1
+    assert not result.changed
+
+    result.analysis_types_created = 1
+    result.analysis_mappings_added = 2
+    result.analysis_mappings_removed = 3
+    assert result.total_writes == 6
+    assert "analysis_mapping +2/-3" in str(result)

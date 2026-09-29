@@ -26,6 +26,17 @@
                         <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" value="{% if name == filter_name %}{{value}}{% endif %}"/>
                     {% elif filters[name].__class__.__name__ == 'DetectionPointFilter' %}
                         <input type="text" class="form-control" name="filter_{{unique_reference}}_value_{{name}}" placeholder="signature-uuid[:version]" value="{% if name == filter_name %}{{value}}{% endif %}"/>
+                    {% elif filters[name].__class__.__name__ == 'AnalysisFilter' %}
+                        {# the label is the display name, the value the module path the filter matches on #}
+                        {% set module_paths = filters[name].options | map('first') | list %}
+                        <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
+                        {% if name == filter_name and value not in module_paths %}
+                            <option value="{{value}}" SELECTED>{{value}}</option>
+                        {% endif %}
+                        {% for module_path, label in filters[name].options %}
+                            <option value="{{module_path}}" title="{{module_path}}" {% if (name == filter_name and module_path == value) or (name != filter_name and loop.first) %}SELECTED{% endif %}>{{label}}</option>
+                        {% endfor %}
+                        </select>
                     {% elif filters[name].__class__.__name__ in ['SelectFilter', 'BoolFilter'] %}
                         <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
                         {% for option in filters[name].options %}

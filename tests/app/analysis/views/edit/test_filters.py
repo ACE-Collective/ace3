@@ -164,6 +164,12 @@ def test_apply_rejects_an_unparseable_date(web_client):
 
 
 @pytest.mark.integration
+def test_apply_rejects_an_analysis_value_that_is_not_a_module_path(web_client):
+    response = _apply(web_client, [{"name": "Analysis", "inverted": False, "values": ["QRCodeAnalysis"]}])
+    assert response.status_code == 400
+
+
+@pytest.mark.integration
 def test_apply_rejects_an_unknown_filter_name(web_client):
     response = _apply(web_client, [{"name": "Nonexistent", "inverted": False, "values": ["x"]}])
     assert response.status_code == 400

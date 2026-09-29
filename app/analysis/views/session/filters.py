@@ -3,7 +3,7 @@ from flask import g, session
 from flask_login import current_user
 import pytz
 
-from app.filters import AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
+from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
 from saq.configuration.config import get_config
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
@@ -11,7 +11,7 @@ from aceapi_v2.saved_filters import service as saved_filters_service
 from aceapi_v2.saved_filters.schemas import FilterEntry, ScratchFilterWrite
 from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
 from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
-from saq.database.model import DetectionPoint, DispositionBy, Observable, Owner, Tag
+from saq.database.model import AnalysisType, DetectionPoint, DispositionBy, Observable, Owner, Tag
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import has_filter
@@ -74,6 +74,7 @@ def getFilters():
     return {
         'Alert Date': DateRangeFilter(GUIAlert.insert_date),
         'Alert Type': SelectFilter(GUIAlert.alert_type),
+        'Analysis': AnalysisFilter(AnalysisType.module_path),
         'Description': TextFilter(GUIAlert.description),
         'Detection Point': DetectionPointFilter(DetectionPoint.signature_uuid),
         'Disposition': MultiSelectFilter(GUIAlert.disposition, nullable=False, options=VALID_DISPOSITIONS),
