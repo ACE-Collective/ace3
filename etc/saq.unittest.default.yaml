@@ -589,15 +589,6 @@ smtp:
   server: localhost
   mail_from: ace@localhost
 
-messaging_system_test:
-  enabled: true
-  module: saq.messaging.test
-  class: TestMessageDispatchSystem
-  route: test
-
-message_routing:
-  test: test:test_destination
-
 ldap:
   ldap_server: localhost
   ldap_bind_user: user

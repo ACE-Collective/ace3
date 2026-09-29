@@ -310,10 +310,6 @@ class SMTPConfig(BaseModel):
     server: str = Field(..., description="SMTP server address")
     mail_from: str = Field(..., description="from email address")
 
-class MessagingConfig(BaseModel):
-    lock_timeout: int = Field(..., description="how long (in seconds) a message can be locked before the lock times out")
-    batch_size: int = Field(..., description="how many requests to lock for dispatch at a single time")
-
 class EmailArchiveConfig(BaseModel):
     target: str = Field(..., description="possible values: local, s3")
     primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
@@ -785,8 +781,6 @@ class ACEConfig(BaseModel):
     network_configuration: Optional[NetworkConfigurationConfig] = None
     wiki: Optional[WikiConfig] = None
     smtp: Optional[SMTPConfig] = None
-    messaging: Optional[MessagingConfig] = None
-    message_routing: Optional[dict] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
     email: Optional[EmailConfig] = None
