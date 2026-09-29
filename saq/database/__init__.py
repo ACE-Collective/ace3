@@ -11,7 +11,6 @@ from saq.database.model import Event, EventStatus, EventType, EventPreventionToo
 from saq.database.model import Lock, LockedException
 from saq.database.model import Malware, ThreatType, Threat
 from saq.database.model import ObservableMapping, ObservableRemediationMapping, ObservableTagMapping, ObservableTagIndex, TagMapping, CompanyMapping, EventMapping, EventTagMapping, MalwareMapping
-from saq.database.model import Message, MessageRouting
 from saq.database.model import Nodes
 from saq.database.model import Observable, ObservableDetection
 from saq.database.model import Persistence, PersistenceSource

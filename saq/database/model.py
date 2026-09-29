@@ -1408,52 +1408,6 @@ class MalwareMapping(Base):
     def name(self):
         return self.malware.name
 
-class Message(Base):
-
-    __tablename__ = 'messages'
-
-    id: Mapped[int] = mapped_column(
-        BigInteger,
-        primary_key=True)
-
-    content: Mapped[str] = mapped_column(
-        Text,
-        nullable=False)
-
-class MessageRouting(Base):
-
-    __tablename__ = 'message_routing'
-    __table_args__ = (
-        Index('idx_message_routing_mrd', 'message_id', 'route', 'destination'),
-    )
-
-    id: Mapped[int] = mapped_column(
-        BigInteger,
-        primary_key=True)
-
-    message_id: Mapped[int] = mapped_column(
-        BigInteger,
-        ForeignKey('messages.id', ondelete='CASCADE', onupdate='CASCADE'),
-        nullable=False)
-
-    message: Mapped["Message"] = relationship('Message', foreign_keys=[message_id], backref='routing')
-
-    route: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False)
-
-    destination: Mapped[str] = mapped_column(
-        String(256),
-        nullable=False)
-
-    lock: Mapped[Optional[str]] = mapped_column(
-        String(36),
-        nullable=True)
-
-    lock_time: Mapped[Optional[datetime]] = mapped_column(
-        DateTime,
-        nullable=True)
-
 class AnalysisModuleCrash(Base):
     """Index of the analysis module crash reports written under <data_dir>/crash_reports.
 

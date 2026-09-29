@@ -363,8 +363,6 @@ def initialize_environment(
         initialize_automation_user()
 
     # initialize other systems
-    # initialize_message_system()
-
     from saq.disposition import initialize_dispositions
     initialize_dispositions()
 

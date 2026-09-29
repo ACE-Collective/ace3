@@ -153,7 +153,6 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM external_remediation_check")
         cursor.execute("DELETE FROM file_collection_history")
         cursor.execute("DELETE FROM file_collection")
-        cursor.execute("DELETE FROM messages")
         cursor.execute("DELETE FROM persistence")
         cursor.execute("DELETE FROM persistence_source")
         cursor.execute("DELETE FROM company WHERE name != 'default'")

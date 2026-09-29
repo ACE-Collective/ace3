@@ -717,15 +717,6 @@ smtp:
   server: localhost
   mail_from: ace@localhost
 
-messaging:
-  # how long (in seconds) a message can be locked before the lock times out
-  # messages shouldn't take too long to dispatch so this should be kept fairly short
-  lock_timeout: 60
-  # how many requests to lock for dispatch at a single time
-  batch_size: 10
-
-message_routing: {}
-
 nrd:
   # kill switch for the refresh script. When false, `ace nrd refresh`
   # exits as a no-op before any DB or HTTP work, regardless of database age,

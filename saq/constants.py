@@ -713,9 +713,6 @@ SUMMARY_DETAIL_FORMAT_TXT = 'txt' # plain text display
 SUMMARY_DETAIL_FORMAT_MD = 'md' # markdown
 SUMMARY_DETAIL_FORMAT_JINJA = 'jinja' # jinja2 templating
 
-# messaging (TODO FIX ME)
-MESSAGE_TYPE_SLACK = "slack"
-
 REMEDIATION_STATUS_GUI = {
     'NEW': 'New',
     'IN_PROGRESS': 'In Progress',
