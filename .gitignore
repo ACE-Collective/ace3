@@ -183,7 +183,8 @@ notes/
 .vscode/
 
 # integrations
-integrations/
+integrations/*
+!integrations/.gitkeep
 
 # claude
 .claude/settings.local.json
