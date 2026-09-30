@@ -18,7 +18,7 @@ from saq.observables.file import FileObservable
 from saq.observables.generator import create_observable
 from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import create_root_analysis, track_io
+from tests.saq.helpers import create_root_analysis, track_io, validate_tree_integrity
 
 class TestRootAnalysis:
     @pytest.mark.unit
@@ -416,7 +416,7 @@ def test_load_root_with_hash_observable_rejected_after_the_fact(tmpdir, caplog, 
     assert reloaded.get_observable(generated.uuid) is not None
 
     # nothing is left pointing at the observable that went away
-    assert reloaded.analysis_tree_manager.validate_tree_integrity() == []
+    assert validate_tree_integrity(reloaded) == []
 
     # and the save does not fail either
     assert reloaded.save()

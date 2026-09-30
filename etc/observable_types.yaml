@@ -31,42 +31,6 @@ types:
   asset:
     description: "a F_IPV4 identified to be a managed asset"
 
-  av_streetname:
-    description: "anti-virus vendor name for a malware family"
-
-  aws_access_key_id:
-    description: "an access key ID assigned to a user identity"
-
-  aws_account_id:
-    description: "id of an AWS account"
-
-  aws_ami_id:
-    description: "id of an AWS AMI"
-
-  aws_instance_id:
-    description: "id of an AWS instance"
-
-  aws_network_interface_id:
-    description: "eni id"
-
-  aws_principal_id:
-    description: "principal ID for an aws user"
-
-  aws_private_dns_name:
-    description: "private DNS Name for an AWS entity"
-
-  aws_security_group_id:
-    description: "id of an AWS security group"
-
-  aws_subnet_id:
-    description: "AWS subnet id"
-
-  aws_username:
-    description: "username associated with an AWS account"
-
-  aws_vpc_id:
-    description: "virtual private cloud (VPC) id"
-
   cidr:
     description: "IPv4 range in CIDR notation"
     deprecated: true
@@ -233,9 +197,6 @@ types:
   ip_conversation:
     description: "two F_IP that were communicating formatted as src_dst"
 
-  ip_full_conversation:
-    description: "two F_IP that were communicating formatted as src_ip!src_port!dest_ip!dest_port"
-
   ipv4:
     description: "IP address (version 4)"
 
@@ -254,17 +215,11 @@ types:
   jarm_hash:
     description: "JARM TLS server fingerprint hash"
 
-  mac_address:
-    description: "network card mac address"
-
   md5:
     description: "MD5 hash"
 
   message_id:
     description: "email Message-ID"
-
-  mutex:
-    description: "mutex created during sample execution"
 
   o365_file:
     description: "graph api path to a file in o365"
@@ -321,42 +276,6 @@ types:
   snort_sig:
     description: "snort signature ID"
 
-  string_eps:
-    description: "string in an eps file"
-
-  string_html:
-    description: "string in an html file"
-
-  string_java:
-    description: "string in java source code"
-
-  string_js:
-    description: "string in javascript code"
-
-  string_office:
-    description: "string in a microsoft office file"
-
-  string_pdf:
-    description: "string in a pdf file"
-
-  string_pe:
-    description: "string in a portable executable file"
-
-  string_rtf:
-    description: "string in an rtf file"
-
-  string_swf:
-    description: "string in a shockwave/flash file"
-
-  string_unix_shell:
-    description: "string from unix command line"
-
-  string_vbs:
-    description: "string in a vbs file"
-
-  string_windows_shell:
-    description: "string from windows command line"
-
   suspect_file:
     description: "path to an attached file that might be malicious *** DEPRECATED (use directives instead)"
     deprecated: true
@@ -375,12 +294,6 @@ types:
 
   user_agent:
     description: "user agent used in web requests"
-
-  windows_registry:
-    description: "a windows registry key"
-
-  windows_service:
-    description: "name of a windows service"
 
   yara:
     description: "yara scan result *** DEPRECATED (use F_YARA_RULE instead)"

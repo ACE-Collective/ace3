@@ -132,18 +132,6 @@ F_DISPOSITION = 'disposition'
 # and add a matching entry to the _OBSERVABLE_TYPE_MAPPING dictionary
 
 F_ASSET = 'asset'
-F_AV_STREETNAME = 'av_streetname'
-F_AWS_ACCESS_KEY_ID = 'aws_access_key_id'
-F_AWS_ACCOUNT_ID = 'aws_account_id'
-F_AWS_AMI_ID = 'aws_ami_id'
-F_AWS_INSTANCE_ID = 'aws_instance_id'
-F_AWS_NETWORK_INTERFACE_ID = 'aws_network_interface_id'
-F_AWS_PRINCIPAL_ID = 'aws_principal_id'
-F_AWS_PRIVATE_DNS_NAME = 'aws_private_dns_name'
-F_AWS_SECURITY_GROUP_ID = 'aws_security_group_id'
-F_AWS_SUBNET_ID = 'aws_subnet_id'
-F_AWS_USERNAME = 'aws_username'
-F_AWS_VPC_ID = 'aws_vpc_id'
 F_CIDR = 'cidr'
 F_COMMAND_LINE = 'command_line'
 F_COMPROMISED_ACCOUNT = 'compromised_account'
@@ -185,22 +173,18 @@ F_FQDN = 'fqdn'
 F_HOSTNAME = 'hostname'
 F_HTTP_REQUEST = 'http_request'
 F_HUNT = 'hunt'
-F_IDS_STREETNAME = 'ids_streetname'
 F_IMPHASH = 'imphash'
 F_INDICATOR = 'indicator'
 F_IP = 'ip'
 F_IP_CONVERSATION = 'ip_conversation'
-F_IP_FULL_CONVERSATION = 'ip_full_conversation'
 F_IPV4 = 'ipv4'
 F_IPV4_CONVERSATION = 'ipv4_conversation'
 F_IPV4_FULL_CONVERSATION = 'ipv4_full_conversation'
 F_JA3 = 'ja3'
 F_JA3S = 'ja3s'
 F_JARM_HASH = 'jarm_hash'
-F_MAC_ADDRESS = 'mac_address'
 F_MD5 = 'md5'
 F_MESSAGE_ID = 'message_id'
-F_MUTEX = 'mutex'
 F_O365_FILE = 'o365_file'
 F_O365_FILE_CONVERSATION = 'o365_file_conversation'
 F_O365_GROUP = 'o365_group'
@@ -219,26 +203,12 @@ F_SHA256 = 'sha256'
 F_SHAREPOINT_FILE = 'sharepoint_file'
 F_SIGNATURE_ID = "signature_id"
 F_SNORT_SIGNATURE = 'snort_sig'
-F_STRING_EPS = 'string_eps'
-F_STRING_HTML = 'string_html'
-F_STRING_JAVA = 'string_java'
-F_STRING_JS = 'string_js'
-F_STRING_OFFICE = 'string_office'
-F_STRING_PDF = 'string_pdf'
-F_STRING_PE = 'string_pe'
-F_STRING_RTF = 'string_rtf'
-F_STRING_SWF = 'string_swf'
-F_STRING_UNIX_SHELL = 'string_unix_shell'
-F_STRING_VBS = 'string_vbs'
-F_STRING_WINDOWS_SHELL = 'string_windows_shell'
 F_SUSPECT_FILE = 'suspect_file' # DEPRECATED
 F_TEST = 'test'
 F_URI_PATH = 'uri_path'
 F_URL = 'url'
 F_USER = 'user'
 F_USER_AGENT = 'user_agent'
-F_WINDOWS_REGISTRY = 'windows_registry'
-F_WINDOWS_SERVICE = 'windows_service'
 F_YARA = 'yara'
 F_YARA_RULE = 'yara_rule'
 F_YARA_STRING = 'yara_string'
@@ -251,12 +221,6 @@ F_YARA_STRING = 'yara_string'
 HARDCOPY_SUBDIR = "hardcopies"
 # files are stored in subdirectories of the root analysis
 FILE_SUBDIR = "files"
-
-def parse_ip_full_conversation(f_ip_fc):
-    return f_ip_fc.split('!', 4)
-
-def create_ip_full_conversation(src, src_port, dst, dst_port):
-    return '{}!{}!{}!{}'.format(src.strip(), src_port, dst.strip(), dst_port)
 
 # utility functions to work with F_IPV4_FULL_CONVERSATION types
 def parse_ipv4_full_conversation(f_ipv4_fc):

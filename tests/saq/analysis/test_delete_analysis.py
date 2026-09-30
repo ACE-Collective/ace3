@@ -8,7 +8,7 @@ from saq.analysis.root import load_root
 from saq.constants import F_FQDN, F_TEST, F_URL
 from saq.environment import get_base_dir
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, validate_tree_integrity
 
 
 class DeletableAnalysis(Analysis):
@@ -37,11 +37,6 @@ class Level3Analysis(Analysis):
 
 def _detail_path(root, analysis):
     return os.path.join(get_base_dir(), root.storage_dir, ".ace", analysis.external_details_path)
-
-
-def _integrity(root):
-    """returns the list of tree-integrity issues (empty list == healthy)."""
-    return root.analysis_tree_manager.validate_tree_integrity()
 
 
 @pytest.mark.integration
@@ -195,7 +190,7 @@ def test_delete_analysis_cascades_through_multiple_levels():
     registry = root.analysis_tree_manager.observable_registry
     assert mid.uuid in registry and leaf.uuid in registry
     assert len(root.all_detection_points) == 1
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     detail_paths = [_detail_path(root, a) for a in (a1, a2, a3) if a.external_details_path]
     assert all(os.path.exists(p) for p in detail_paths)
@@ -209,12 +204,12 @@ def test_delete_analysis_cascades_through_multiple_levels():
     assert top.uuid in registry  # the observable the analysis hung off of survives
     assert root.all_detection_points == []
     assert all(not os.path.exists(p) for p in detail_paths)
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     # round-trip: save the pruned tree, reload, and confirm it is still healthy
     root.save()
     reloaded = load_root(get_storage_dir(root.uuid))
-    assert _integrity(reloaded) == []
+    assert validate_tree_integrity(reloaded) == []
     reloaded_top = reloaded.get_observable(top.uuid)
     assert reloaded_top.get_analysis(Level1Analysis) is None
     assert reloaded.get_observable(mid.uuid) is None
@@ -240,7 +235,7 @@ def test_delete_analysis_twice_is_a_noop():
     # second delete must not raise and must not disturb the tree
     obs.delete_analysis(analysis)
     assert obs.get_analysis(DeletableAnalysis) is None
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
 
 @pytest.mark.integration
@@ -257,7 +252,7 @@ def test_delete_analysis_not_on_observable_is_a_noop():
 
     # the real analysis is untouched
     assert obs.get_analysis(DeletableAnalysis) is attached
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
 
 @pytest.mark.integration
@@ -280,11 +275,11 @@ def test_delete_analysis_shared_observable_removed_only_after_last_referrer():
 
     obs.delete_analysis(a1)
     assert shared.uuid in registry  # still referenced by a2
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     obs.delete_analysis(a2)
     assert shared.uuid not in registry  # last referrer gone
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
 
 @pytest.mark.integration
@@ -312,12 +307,12 @@ def test_delete_analysis_drops_dependencies_referencing_removed_observable():
         d.source_observable_id == child.uuid or d.target_observable_id == child.uuid
         for d in dep_mgr.dependency_tracking
     )
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     # the registry no longer hands back the pruned observable, so save/load is clean
     root.save()
     reloaded = load_root(get_storage_dir(root.uuid))
-    assert _integrity(reloaded) == []
+    assert validate_tree_integrity(reloaded) == []
 
 
 @pytest.mark.integration
@@ -344,7 +339,7 @@ def test_delete_analysis_terminates_on_observable_cycle():
     assert anchor.get_analysis(FirstAnalysis) is None
     assert o2.uuid not in registry  # the generated cycle node is pruned
     assert anchor.uuid in registry  # the original anchor is retained
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
 
 @pytest.mark.integration
@@ -377,4 +372,4 @@ def test_delete_analysis_retains_subtree_held_alive_by_reference_cycle():
     # o1 is still referenced by a2, so the whole cycle is retained -- no dangling refs
     assert o1.uuid in registry
     assert o2.uuid in registry
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []

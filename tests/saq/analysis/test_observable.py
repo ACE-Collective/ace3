@@ -3,7 +3,7 @@ import datetime
 import pytest
 
 from saq.configuration import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
+from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
 from saq.observables import create_observable
 from tests.saq.helpers import create_root_analysis
@@ -215,26 +215,6 @@ def test_add_invalid_email_delivery_message_id():
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_EMAIL_DELIVERY, create_email_delivery('CANTOGZtOdse1SqNtFRs2o22ohrWpbddWfCzkzn+iy1SEHxt2pg@mail.gmail.com', 'test@localhost.com'))
     assert observable.value == '<CANTOGZtOdse1SqNtFRs2o22ohrWpbddWfCzkzn+iy1SEHxt2pg@mail.gmail.com>|test@localhost.com'
-
-@pytest.mark.unit
-def test_valid_mac_observable():
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '001122334455')
-    assert observable
-    assert observable.value == '001122334455'
-    assert observable.mac_address() == '00:11:22:33:44:55'
-    assert observable.mac_address(sep='-') == '00-11-22-33-44-55'
-
-    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00:11:22:33:44:55')
-    assert observable
-    assert observable.value == '00:11:22:33:44:55'
-    assert observable.mac_address(sep='') == '001122334455'
-
-@pytest.mark.unit
-def test_invalid_mac_observable():
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00112233445Z')
-    assert observable is None
 
 @pytest.mark.unit
 def test_display_added_time():

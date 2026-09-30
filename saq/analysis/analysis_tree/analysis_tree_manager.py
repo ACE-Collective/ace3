@@ -1,19 +1,16 @@
 import logging
 import sys
-from typing import TYPE_CHECKING, Callable, Iterable, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Callable, Iterable, Optional, Type, Union
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.analysis_tree.analysis_tree_analytics import AnalysisTreeAnalytics
 from saq.analysis.analysis_tree.analysis_tree_persistence import AnalysisTreePersistenceManager
 from saq.analysis.analysis_tree.analysis_tree_query import AnalysisTreeQueryEngine
-from saq.analysis.analysis_tree.analysis_tree_validator import AnalysisTreeValidator
 from saq.analysis.dependency_manager import AnalysisDependencyManager
 from saq.analysis.event_bus import AnalysisEventBus
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.observable_registry import ObservableRegistry
-from saq.analysis.detection_point import DetectionPoint
 from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_ANALYSIS_DELETED, EVENT_OBSERVABLE_ADDED
 
 if TYPE_CHECKING:
@@ -47,12 +44,6 @@ class AnalysisTreeManager:
         
         # Initialize the query engine
         self.query_engine = AnalysisTreeQueryEngine(root_analysis, self.observable_registry)
-        
-        # Initialize the analytics engine
-        self.analytics = AnalysisTreeAnalytics(root_analysis, self.query_engine)
-        
-        # Initialize the validator
-        self.validator = AnalysisTreeValidator(self.query_engine, self.observable_registry)
         
         # Initialize the persistence manager
         self.persistence_manager = AnalysisTreePersistenceManager(
@@ -113,14 +104,6 @@ class AnalysisTreeManager:
     def get_observable_by_spec(self, o_type: str, o_value: str, o_time=None) -> Optional[Observable]:
         """Returns the Observable object by type and value, and optionally time, or None if it cannot be found."""
         return self.query_engine.get_observable_by_spec(o_type, o_value, o_time)
-
-    def search_tree(self, root_object, tags=()) -> list[Union[Analysis, Observable]]:
-        """Searches the analysis tree starting from root_object for objects with the given tags."""
-        return self.query_engine.search_tree(root_object, tags)
-
-    def search_tree_by_callback(self, root_object, callback) -> list[Union[Analysis, Observable]]:
-        """Searches the analysis tree starting from root_object using a callback function."""
-        return self.query_engine.search_tree_by_callback(root_object, callback)
 
     def iterate_all_references(self, target: Union[Analysis, Observable]) -> Iterable[Union[Analysis, Observable]]:
         """Iterates through all objects that refer to target."""
@@ -361,36 +344,19 @@ class AnalysisTreeManager:
 
         return recorded_observable
 
-    # analytics facade
+    # analytics
     # ------------------------------------------------------------------------
-
-    def is_on_detection_path(self, target_object: Union[Analysis, Observable]) -> bool:
-        """Returns True if the target object or any node down to (but not including) the root has a detection point."""
-        return self.analytics.is_on_detection_path(target_object)
 
     def get_all_tags(self) -> list[str]:
         """Return all unique tags for the entire analysis tree."""
-        return self.analytics.get_all_tags()
+        result = []
 
-    def get_all_detection_points(self) -> list[DetectionPoint]:
-        """Returns all DetectionPoint objects found in any DetectableObject in the hierarchy."""
-        return self.analytics.get_all_detection_points()
+        for analysis in self.query_engine.all_analysis:
+            if analysis.tags is not None:
+                result.extend(analysis.tags)
 
-    def has_detections(self) -> bool:
-        """Returns True if this analysis tree has at least one DetectionPoint somewhere."""
-        return self.analytics.has_detections()
+        for observable in self.query_engine.all_observables:
+            if observable.tags is not None:
+                result.extend(observable.tags)
 
-    def calculate_priority(self) -> int:
-        """Calculates and returns the priority score for the analysis tree."""
-        return self.analytics.calculate_priority()
-
-    def get_tree_statistics(self) -> dict:
-        """Returns statistics about the analysis tree."""
-        return self.analytics.get_tree_statistics()
-
-    # validator facade
-    # ------------------------------------------------------------------------
-
-    def validate_tree_integrity(self) -> List[str]:
-        """Validates the integrity of the analysis tree and returns a list of issues found."""
-        return self.validator.validate_tree_integrity()
+        return list(set(result))
