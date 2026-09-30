@@ -3255,7 +3255,7 @@ class BrocessConnLog(BrocessBase):
 class BrocessHttpLog(BrocessBase):
     """How often each http host has been seen.
 
-    Backs the "uncommon network" heuristic in saq/crawlphish_filter.py.
+    Nothing in ACE reads or writes this table any more; it is kept for external feeders.
     """
 
     __tablename__ = 'httplog'

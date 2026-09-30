@@ -698,9 +698,6 @@ class PhishkitAnalyzer(AnalysisModule):
                         file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
                     analysis.output_files.append(file_observable.file_path)
 
-
-                # TODO follow the logic of the existing crawlphish module here
-
         # A scan that was interrupted mid-crawl still flushes partial
         # requests.json/dom.html/metrics.json (interrupted=True) and exits 143.
         # Label it honestly so analysts know the capture is incomplete, while

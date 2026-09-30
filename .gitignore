@@ -132,11 +132,6 @@ bro/ace_local.bro
 !ssl/root/ca/intermediate/openssl.cnf
 ssl/
 
-# crawlphish unittesting
-etc/crawlphish.unittest.blacklist
-etc/crawlphish.unittest.regex
-etc/crawlphish.unittest.whitelist
-
 # config files
 etc/amc_client.yaml
 etc/saq.docker.passwords.yaml

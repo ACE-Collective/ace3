@@ -1,9 +1,6 @@
 saq.local.ini
 ipv4_tags.csv
 local_networks.csv
-crawlphish.blacklist
-crawlphish.path_regex
-crawlphish.whitelist
 saq.ini
 saq.unittest.ini
 saq_apache.conf

@@ -169,7 +169,7 @@ parser.add_argument(
     help="File containing the search query.",
 )
 
-# adding this for use with url_click cloudphish hunt
+# search by index time rather than event time
 parser.add_argument(
     "-i",
     "--use-index-time",
