@@ -2,19 +2,7 @@
 #
 # utility functions to use the brocess databases
 
-from saq.database import execute_with_retry, get_db_connection
-from saq.util import iterate_fqdn_parts
-
-def query_brocess_by_fqdn(fqdn):
-    with get_db_connection(name='brocess') as db:
-        cursor = db.cursor()
-        cursor.execute('SELECT SUM(numconnections) FROM httplog WHERE host = %s', (fqdn,))
-    
-        for row in cursor:
-            count = row[0]
-            return int(count) if count is not None else 0
-
-        raise RuntimeError("failed to return a row for sum() query operation !?")
+from saq.database import get_db_connection
 
 def query_brocess_by_dest_ipv4(ipv4):
     with get_db_connection(name='brocess') as db:
@@ -49,14 +37,3 @@ def query_brocess_by_source_email(source_email_address):
             return int(count) if count is not None else 0
 
         raise RuntimeError("failed to return a row for sum() query operation !?")
-
-def add_httplog(fqdn):
-    with get_db_connection(name='brocess') as db:
-        cursor = db.cursor()
-        for fqdn_part in iterate_fqdn_parts(fqdn):
-            execute_with_retry(db, cursor, """
-INSERT INTO httplog ( host, numconnections, firstconnectdate ) 
-VALUES ( LOWER(%s), 1, UNIX_TIMESTAMP(NOW()) )
-ON DUPLICATE KEY UPDATE numconnections = numconnections + 1""", ( fqdn_part, ))
-
-        db.commit()

@@ -8,7 +8,7 @@ from saq.modules.file_analysis.exif import ExifAnalysis, ExifAnalyzer
 from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.hash import FileHashAnalysis, FileHashAnalyzer
 from saq.modules.file_analysis.ioc_extraction import IOCExtractionAnalysis, IOCExtractionAnalyzer
-from saq.modules.file_analysis.html import MetaRefreshExtractionAnalysis, MetaRefreshExtractionAnalyzer, MHTMLAnalysis, MHTMLAnalysisModule, HTMLDataURLAnalysis, HTMLDataURLAnalyzer
+from saq.modules.file_analysis.html import MHTMLAnalysis, MHTMLAnalysisModule, HTMLDataURLAnalysis, HTMLDataURLAnalyzer
 from saq.modules.file_analysis.java import JavaClassDecompilerAnalysis, JavaClassDecompilerAnalysisModule
 from saq.modules.file_analysis.js import JavaScriptDeobfuscationAnalysis, JavaScriptDeobfuscationAnalyzer
 from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer
@@ -18,7 +18,6 @@ from saq.modules.file_analysis.msoffice import OfficeXMLRelationshipExternalURLA
 from saq.modules.file_analysis.ocr import OCRAnalysis, OCRAnalyzer
 from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3, OfficeParserAnalyzer3
 from saq.modules.file_analysis.ole import ExtractedOLEAnalysis, ExtractedOLEAnalyzer
-from saq.modules.file_analysis.ole_archiver import OLEArchiver_v1_0, OLEArchiverAnalysis_v1_0
 from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2, OLEVBA_Analyzer_v1_2
 from saq.modules.file_analysis.one_note import OneNoteFileAnalysis, OneNoteFileAnalyzer
 from saq.modules.file_analysis.pdf import PDFAnalysis, PDFAnalyzer, PDFTextAnalysis, PDFTextAnalyzer

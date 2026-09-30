@@ -163,7 +163,6 @@ class URLExtractionAnalyzer(AnalysisModule):
         return True
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        from saq.modules.url import CrawlphishAnalyzer
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
 
         # we need file type analysis first
@@ -245,7 +244,7 @@ class URLExtractionAnalyzer(AnalysisModule):
         extracted_urls = list(filter(self.filter_excluded_domains, extracted_urls))
         analysis = self.create_analysis(_file)
 
-        # since cloudphish_request_limit, order urls by our interest in them
+        # since max_extracted_urls caps what becomes an observable, order urls by our interest in them
         extracted_ordered_urls, analysis.details['urls_grouped_by_domain'] = self.order_urls_by_interest(extracted_urls)
         observable_count = 0
         for url in extracted_ordered_urls:
@@ -259,10 +258,5 @@ class URLExtractionAnalyzer(AnalysisModule):
 
                     if _file.has_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS):
                         url_observable.add_directive(DIRECTIVE_CRAWL)
-                    else:
-                        # don't download from links that came from files downloaded from the internet
-                        if _file.has_relationship(R_DOWNLOADED_FROM):
-                            url_observable.exclude_analysis(CrawlphishAnalyzer)
-                            #url_observable.exclude_analysis(RenderAnalyzer)
 
         return AnalysisExecutionResult.COMPLETED

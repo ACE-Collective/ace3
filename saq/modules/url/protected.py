@@ -52,8 +52,7 @@ PROTECTION_TYPE_ONE_DRIVE = 'one drive'
 
 class ProtectedURLAnalyzer(AnalysisModule):
     """Is this URL protected by another company by wrapping it inside another URL they check first?"""
-    """Most of this AnalysisModule has been moved to URLObservable.sanitize_protected_urls, OneDrive analysis remains
-        as it relies on CrawlPhish analysis"""
+    """Most of this AnalysisModule has been moved to URLObservable.sanitize_protected_urls, OneDrive analysis remains here"""
     
     @property
     def generated_analysis_type(self):

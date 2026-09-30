@@ -281,7 +281,6 @@ class GUIConfig(BaseModel):
     upload_vt: bool = Field(..., description="enable VirusTotal upload")
     upload_vxstream: bool = Field(..., description="enable VxStream upload")
     view_in_vx: bool = Field(..., description="enable view in VxStream")
-    clear_cloudphish_alert: bool = Field(..., description="allows analysts to clear cached URL content")
     show_total_alert_count: bool = Field(..., description="show the total alerts resulting from the current filter")
     matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
