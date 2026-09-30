@@ -97,7 +97,6 @@ RUN apt-get update && \
         rng-tools-debian \
         rsync \
         screen \
-        smbclient \
         ssdeep \
         strace \
         tcpdump \

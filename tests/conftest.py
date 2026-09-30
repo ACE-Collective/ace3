@@ -48,8 +48,6 @@ from tests.saq.helpers import (
 from tests.saq.test_util import create_test_context
 from tests import session_lock, unittest_database, unittest_session
 
-pytest.register_assert_rewrite("tests.saq.requests")
-
 def needs_full_reset(request: pytest.FixtureRequest) -> bool:
     """Returns True if the given test request is an integration or system test, False otherwise."""
     for marker in [ "integration", "system" ]:

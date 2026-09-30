@@ -121,9 +121,9 @@ def test_serialize_full_observable(sample_observable):
     assert isinstance(result, dict)
     
     # Check component manager data is included
-    assert 'tags' in result  # from TagManager
-    assert 'detections' in result  # from DetectionManager
-    assert 'sort_order' in result  # from SortManager
+    assert 'tags' in result
+    assert 'detections' in result
+    assert 'sort_order' in result
     assert result['sort_order'] == 75
     
     # Check observable-specific data
