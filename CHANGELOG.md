@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.120] - 2026-09-30
+
+- [removed legacy "messaging" subsystem](https://github.com/ACE-Collective/ace3/pull/619)
+- [added ruff linter settings we're using](https://github.com/ACE-Collective/ace3/pull/618)
+- [added missing integrations dir](https://github.com/ACE-Collective/ace3/pull/617)
+- [Adds analysis type alert filter](https://github.com/ACE-Collective/ace3/pull/616)
+- [Fix model drift CI: install pinned requirements, require sqlalchemy[asyncio]](https://github.com/ACE-Collective/ace3/pull/615)
+- [Add the content-addressed storage subsystem (CAS)](https://github.com/ACE-Collective/ace3/pull/612)
+
 ## [3.0.119] - 2026-09-28
 
 - [Run correlation executable commands in a Landlock sandbox](https://github.com/ACE-Collective/ace3/pull/611)
