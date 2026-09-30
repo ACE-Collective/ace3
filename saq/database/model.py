@@ -174,6 +174,11 @@ class Alert(Base):
         assert isinstance(root_analysis, RootAnalysis)
         self._root_analysis = root_analysis
 
+    def unload(self):
+        """Drops the loaded RootAnalysis so its tree can be freed; the next access to
+        root_analysis loads it from disk again."""
+        self._root_analysis = None
+
     __tablename__ = 'alerts'
     __table_args__ = (
         Index('idx_location', 'location', mysql_length=767),

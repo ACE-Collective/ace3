@@ -8,11 +8,22 @@ import traceback
 
 import pytz
 
+from saq.cli.alert_sweep import (
+    DEFAULT_BATCH_SIZE,
+    AlertAction,
+    count_node_alerts,
+    iter_node_alert_id_batches,
+    resolve_alert_ids_by_storage_dir,
+    run_alert_sweep,
+)
 from saq.cli.cli_main import get_cli_subparsers
 from saq.cli.cli_util import display_analysis
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
 from saq.configuration import get_config
+from saq.database.model import Alert
 from saq.database.pool import get_db
+from saq.database.util.index import chunked
+from saq.gui.icon import KEY_ICON_CONFIGURATION, IconConfiguration
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.search.tasks import submit_delete_task
 from saq.util.relative_time import RelativeTimeError, parse_date_range
@@ -47,118 +58,86 @@ create_alert_parser = alert_sp.add_parser('create', aliases=['new'],
 create_alert_parser.add_argument('dir', help="The directory to store the alert in.")
 create_alert_parser.set_defaults(func=create_alert)
 
-def rebuild_index(args):
-    """Rebuilds the indexes for the given alerts."""
-    from saq.database.model import Alert
-    from saq.database import get_db_connection
+def _add_sweep_arguments(parser):
+    parser.add_argument('--insert-date', metavar='RANGE', default=None,
+        help="With --all, only the alerts inserted in this range, written the way the alert management "
+             "page's date filters are: a relative token such as -90d, or '<start> - <end>' (UTC).")
+    parser.add_argument('--after-id', metavar='ID', type=int, default=0,
+        help="With --all, only the alerts with a database id above this one. The progress lines of an "
+             "earlier run print the value that resumes it where it stopped.")
+    parser.add_argument('--workers', metavar='N', type=int, default=1,
+        help="Handle the alerts in this many processes (default 1). Each one holds two database connections.")
+    parser.add_argument('--batch-size', metavar='N', type=int, default=DEFAULT_BATCH_SIZE,
+        help=f"How many alerts are fetched and handed to a worker at a time (default {DEFAULT_BATCH_SIZE}).")
 
-    if args.insert_date and not args.resync_all:
-        logging.error("--insert-date narrows --all; pass both")
-        sys.exit(1)
+def _sweep_alerts(args, action: AlertAction, verb: str) -> int:
+    """Runs action over the alerts selected by --all (narrowed by --insert-date and --after-id)
+    or by the given storage directories. Returns the exit code."""
+    if not args.resync_all and (args.insert_date or args.after_id):
+        logging.error("--insert-date and --after-id narrow --all; pass it too")
+        return 1
 
-    storage_dirs = []
+    if args.workers < 1 or args.batch_size < 1:
+        logging.error("--workers and --batch-size must be at least 1")
+        return 1
+
     if args.resync_all:
-        sql = "SELECT storage_dir FROM alerts WHERE location = %s"
-        params = [get_global_runtime_settings().saq_node]
+        insert_range = None
         if args.insert_date:
             try:
-                start, end = parse_date_range(args.insert_date, now=datetime.datetime.now(pytz.utc), tz=pytz.utc)
+                insert_range = parse_date_range(args.insert_date, now=datetime.datetime.now(pytz.utc), tz=pytz.utc)
             except RelativeTimeError as e:
                 logging.error(f"invalid --insert-date {args.insert_date!r}: {e}")
-                sys.exit(1)
+                return 1
 
-            sql += " AND insert_date >= %s AND insert_date <= %s"
-            params.extend([start, end])
-
-        with get_db_connection() as db:
-            c = db.cursor()
-            c.execute(sql, tuple(params))
-            for row in c:
-                storage_dirs.append(row[0])
+        missing = []
+        total = count_node_alerts(args.after_id, insert_range)
+        batches = iter_node_alert_id_batches(args.after_id, insert_range, args.batch_size)
+        after_id = args.after_id
     else:
-        storage_dirs = args.dirs
+        alert_ids, missing = resolve_alert_ids_by_storage_dir(args.dirs)
+        for storage_dir in missing:
+            logging.error("missing alert with storage directory %s", storage_dir)
 
-    logging.info("rebuilding indexes for {} alerts".format(len(storage_dirs)))
+        total = len(alert_ids)
+        batches = chunked(alert_ids, args.batch_size)
+        after_id = None
 
-    for storage_dir in storage_dirs:
-        logging.info("rebuilding {}".format(storage_dir))
-        alert = get_db().query(Alert).filter(Alert.storage_dir==storage_dir).first()
-        if alert is None:
-            logging.error(f"missing alert with storage directory {storage_dir}")
-            continue
+    result = run_alert_sweep(batches, action, total=total, workers=args.workers, verb=verb, after_id=after_id)
+    return 0 if result.completed and not result.failed and not missing else 1
 
-        try:
-            if not alert.load():
-                logging.error("unable to load {}".format(alert))
-                continue
+def _rebuild_alert_index(alert: Alert):
+    logging.debug("rebuilding %s", alert.storage_dir)
+    alert.rebuild_index()
 
-            alert.rebuild_index()
-
-        except Exception as e:
-            logging.error("rebuild failure on {}: {} ({})".format(storage_dir, e, type(e)))
-            continue
-
-        finally:
-            get_db().commit()
-
-    sys.exit(0)
+def rebuild_index(args):
+    """Rebuilds the indexes for the given alerts."""
+    sys.exit(_sweep_alerts(args, _rebuild_alert_index, "rebuilt"))
 
 rebuild_index_parser = alert_sp.add_parser('rebuild',
     help="Rebuilds the indexes for the given alerts.")
 rebuild_index_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
     help="Resyncs all alerts that belong to this node. This can take a long time.")
-rebuild_index_parser.add_argument('--insert-date', metavar='RANGE', default=None,
-    help="With --all, only the alerts inserted in this range, written the way the alert management "
-         "page's date filters are: a relative token such as -90d, or '<start> - <end>' (UTC).")
+_add_sweep_arguments(rebuild_index_parser)
 rebuild_index_parser.add_argument('dirs', nargs='*', default=[], help="One ore more alert directories to resync.")
 rebuild_index_parser.set_defaults(func=rebuild_index)
 
+def _backfill_alert_icons(alert: Alert):
+    icon_configuration_dict = (alert.root_analysis.extensions or {}).get(KEY_ICON_CONFIGURATION)
+    icon_configuration = IconConfiguration.model_validate(icon_configuration_dict) if icon_configuration_dict else None
+    alert.apply_icon_configuration(icon_configuration)
+    get_db().commit()
+    logging.debug("backfilled icon columns for %s", alert.storage_dir)
+
 def backfill_icons(args):
     """Backfills the icon_* columns for alerts created before those columns existed."""
-    from saq.database.model import Alert
-    from saq.database import get_db_connection
-    from saq.gui.icon import IconConfiguration, KEY_ICON_CONFIGURATION
-
-    storage_dirs = []
-    if args.resync_all:
-        with get_db_connection() as db:
-            c = db.cursor()
-            c.execute("""SELECT storage_dir FROM alerts WHERE location = %s""", (get_global_runtime_settings().saq_node,))
-            for row in c:
-                storage_dirs.append(row[0])
-    else:
-        storage_dirs = args.dirs
-
-    logging.info("backfilling icon columns for %s alerts", len(storage_dirs))
-
-    for storage_dir in storage_dirs:
-        alert = get_db().query(Alert).filter(Alert.storage_dir == storage_dir).first()
-        if alert is None:
-            logging.error("missing alert with storage directory %s", storage_dir)
-            continue
-
-        try:
-            if not alert.load():
-                logging.error("unable to load %s", storage_dir)
-                continue
-
-            icon_configuration_dict = (alert.root_analysis.extensions or {}).get(KEY_ICON_CONFIGURATION)
-            icon_configuration = IconConfiguration.model_validate(icon_configuration_dict) if icon_configuration_dict else None
-            alert.apply_icon_configuration(icon_configuration)
-            get_db().commit()
-            logging.info("backfilled icon columns for %s", storage_dir)
-
-        except Exception as e:
-            get_db().rollback()
-            logging.error("icon backfill failure on %s: %s (%s)", storage_dir, e, type(e))
-            continue
-
-    sys.exit(0)
+    sys.exit(_sweep_alerts(args, _backfill_alert_icons, "backfilled icons for"))
 
 backfill_icons_parser = alert_sp.add_parser('backfill-icons',
     help="Backfills the alert icon columns from the root analysis for existing alerts.")
 backfill_icons_parser.add_argument('--all', default=False, action='store_true', dest='resync_all',
     help="Backfills all alerts that belong to this node. This can take a long time.")
+_add_sweep_arguments(backfill_icons_parser)
 backfill_icons_parser.add_argument('dirs', nargs='*', default=[], help="One or more alert directories to backfill.")
 backfill_icons_parser.set_defaults(func=backfill_icons)
 
@@ -219,7 +198,6 @@ import_alert_parser.set_defaults(func=import_alerts)
 
 def delete_alerts(args):
     """Completely deletes the given alerts from both the storage system and the database."""
-    from saq.database.model import Alert
 
     for uuid in args.uuids:
         try:
@@ -251,7 +229,6 @@ delete_alert_parser.set_defaults(func=delete_alerts)
 
 def reset_alerts(args): 
     from saq.analysis.root import RootAnalysis
-    from saq.database.model import Alert
 
     for storage_dir in args.dirs:
         # get the storage directory of the alert
