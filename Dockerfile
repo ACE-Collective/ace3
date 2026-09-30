@@ -102,7 +102,6 @@ RUN apt-get update && \
         strace \
         tcpdump \
         tesseract-ocr \
-        tshark \
         unace-nonfree \
         unixodbc-dev \
         unrar \

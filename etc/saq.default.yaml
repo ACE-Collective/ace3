@@ -1601,7 +1601,6 @@ analysis_module_file_hash_analyzer:
   enabled: true
   # ignored file patterns (glob style pattern matching)
   ignore_pattern_pcap: "*.pcap"
-  ignore_pattern_tshark: "*.tshark"
   ignore_pattern_brotex_1: "*.brotex.tar"
   ignore_pattern_brotex_2: "*.brotex.tar.gz"
   ignore_pattern_stderr: "*.stderr"
