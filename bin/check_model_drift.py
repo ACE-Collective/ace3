@@ -12,9 +12,9 @@ variable (``DATABASE_NAME``, ``CACHE_DATABASE_NAME``, ``BROCESS_DATABASE_NAME`` 
 ``EMAIL_ARCHIVE_DATABASE_NAME``) checks that existing, already-migrated database
 instead and never drops anything -- this is what CI does.
 
-Expression-based indexes (e.g. ``desc('col')``) produce false positives
-because Alembic cannot round-trip compare them.  These are filtered out
-automatically.
+Indexes with an ordered column (e.g. ``desc('col')``) produce false positives
+because MySQL reflection drops the direction.  These are filtered out by
+``saq.database.migration.include_object``, the same hook alembic/ace/env.py uses.
 
 Usage (inside dev container):
     /venv/bin/python bin/check_model_drift.py                       # main ace models (default)
@@ -48,7 +48,7 @@ sys.path = [p for p in sys.path if os.path.realpath(p) != os.path.realpath(proje
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import Column, create_engine
+from sqlalchemy import create_engine
 
 # bin/ is sys.path[0] when this runs as a script. upgrade_databases strips the project
 # root from sys.path again when imported, so it has to come before the root is re-added.
@@ -59,6 +59,7 @@ sys.path.insert(0, project_root)
 
 from saq.database.admin import get_superuser_url, superuser_connection
 from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
+from saq.database.migration import include_object
 import saq.database.model  # noqa: F401 — populates the Base, CacheBase, BrocessBase and EmailArchiveBase metadata
 
 
@@ -112,46 +113,12 @@ def drop_throwaway_database(db_name: str) -> None:
         cursor.execute(f"DROP DATABASE IF EXISTS `{db_name}`")
 
 
-def _expression_index_names(diffs) -> set[str]:
-    """Return names of indexes that appear as false-positive add/remove pairs.
-
-    Alembic cannot round-trip compare expression-based indexes (e.g. those
-    using ``desc()``).  It emits a ``remove_index`` + ``add_index`` pair for
-    the *same* index name even though nothing changed.  We detect these by
-    finding index names that have *both* an add and a remove, where at least
-    one side contains a non-column expression.
-    """
-    by_name: dict[str, set[str]] = {}  # index_name -> set of ops
-    has_expr: set[str] = set()  # index names with expression elements
-
-    for diff in diffs:
-        if not isinstance(diff, tuple) or len(diff) < 2:
-            continue
-        op = diff[0]
-        if op not in ("remove_index", "add_index"):
-            continue
-        index = diff[1]
-        name = index.name
-        by_name.setdefault(name, set()).add(op)
-        for expr in index.expressions:
-            if not isinstance(expr, Column):
-                has_expr.add(name)
-                break
-
-    # Only filter indexes that appear as a matched pair with expressions
-    return {
-        name
-        for name, ops in by_name.items()
-        if ops == {"remove_index", "add_index"} and name in has_expr
-    }
-
-
 def compare(db_name: str, metadata) -> list:
     """Returns the autogenerate diff between the models and the given database."""
     engine = create_engine(get_superuser_url(db_name))
     try:
         with engine.connect() as conn:
-            migration_ctx = MigrationContext.configure(conn)
+            migration_ctx = MigrationContext.configure(conn, opts={"include_object": include_object})
             return compare_metadata(migration_ctx, metadata)
     finally:
         # a pooled connection left open would hold a metadata lock against the DROP
@@ -194,25 +161,12 @@ def main() -> int:
             except Exception as e:
                 print(f"WARNING: unable to drop {db_name} ({e}); run bin/cleanup-unittest-databases.py --orphans")
 
-    # Filter out expression-index false positives (paired add/remove)
-    false_positive_indexes = _expression_index_names(diffs)
-    real_diffs = []
-    for diff in diffs:
-        if (
-            isinstance(diff, tuple)
-            and len(diff) >= 2
-            and diff[0] in ("remove_index", "add_index")
-            and diff[1].name in false_positive_indexes
-        ):
-            continue
-        real_diffs.append(diff)
-
-    if not real_diffs:
+    if not diffs:
         print("OK: Models and migrations are in sync.")
         return 0
 
     print("DRIFT DETECTED: The following changes need a migration:\n")
-    for diff in real_diffs:
+    for diff in diffs:
         print(f"  {diff}")
     print(
         f"\nRun '{revision_cmd} MESSAGE=\"describe your change\"' to generate a migration."
