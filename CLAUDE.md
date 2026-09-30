@@ -251,6 +251,10 @@ Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticate
 `ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
 `retention: ttl` and an S3 backend are designed but not built; the config rejects both.
 
+#### YARA QA results
+
+A YARA rule with `modifiers = "qa"` never alerts; the files it matches are kept for review instead (`docs/YARA_QA.md`). The scanner module calls `saq.yara_qa.store.record_qa_match()`, which puts the file and the full, untruncated match record into the `yara_qa` CAS pool (encrypted, `local` by default; a multi-node site redefines it with a shared backend) and indexes them in `yara_qa_matches`, with per (uuid, version) counters in `yara_qa_signatures`. Files are capped per (uuid, version) and per uuid (the version is the repo commit, so every commit is a new version), reserved by one conditional UPDATE so no worker waits on a lock; every match is counted regardless. Holds expire `yara_qa.retention_days` after the last match and `ace yara-qa prune` (daily cron) removes expired rows in batches. The rule list, including QA rules that never matched, comes from the signature inventory, which reads `modifiers`/`enabled` with the same helpers as the scanner (`saq/signatures/yara_meta.py`). Analysts use `aceapi_v2/yara_qa/` (`/api/v2/signatures/yara-qa`, `signature:read`; file bytes need `signature:download` and come only as `infected`-password zips) and the **Signatures → Yara QA Results** page (`app/signatures/`, gated by `signature:read`), which is a shell over that API.
+
 #### Cron
 
 Periodic maintenance is one executable per task in `etc/cron/{hourly,daily,weekly}/` (`docs/CRON.md`): `ace cron run <cadence>` (`saq/cron_tasks.py`, called by `bin/<cadence>-maintenance.sh` from `etc/cron.yaml`) runs every task, plus each enabled integration's `etc/cron/<cadence>/`, in parallel (`service_cron.max_parallel_tasks`, default cpu count), each through `bin/run-cron-job` as `<cadence>-<task>`. Tasks are unordered, so steps that depend on each other go in one script.

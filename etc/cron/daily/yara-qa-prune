@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# remove the yara qa matches (docs/YARA_QA.md) whose file has not matched for yara_qa.retention_days,
+# in small batches, and release their holds; the hourly cas-gc then reclaims the bytes. the command
+# exits 0 without doing anything unless ACE_IS_PRIMARY_NODE is 1, because the index is shared state.
+ace yara-qa prune

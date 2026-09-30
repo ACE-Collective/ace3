@@ -48,6 +48,14 @@ class Signature:
     # sorted, deduplicated
     tags: tuple[str, ...]
 
+    # yara only: the rule's `modifiers` meta, in order (saq.signatures.yara_meta). empty for
+    # every other type
+    modifiers: tuple[str, ...] = ()
+
+    # yara only: False when the rule's `enabled` meta turns it off in place. True for every other
+    # type
+    enabled: bool = True
+
 
 @dataclass(frozen=True)
 class SignatureLocation:

@@ -1,6 +1,5 @@
 from datetime import datetime
 import gc
-import json
 import logging
 import os
 import re
@@ -19,38 +18,20 @@ from saq.database import Observable as db_Observable, ObservableDetection as db_
 from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_data_dir
 from saq.error.reporting import report_exception
-from saq.json_encoding import _JSONEncoder
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.util.filesystem import abs_path
+from saq.yara_qa.store import record_qa_match
 from saq.yara_scanning_service import get_validated_git_repo_dirs
 
 import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
-
-
-# meta values returned by yara-python can be bool, int, or str depending on how the analyst
-# wrote them in the rule (e.g. `enabled = false` vs `enabled = "false"`)
-_FALSE_META_VALUES = {"false", "no", "0", "off", "disabled"}
-
-
-def _rule_enabled(match_result: dict) -> bool:
-    """Returns False only if the rule's `enabled` meta is set to a falsy value. Defaults to True."""
-    meta = match_result.get("meta") or {}
-    if "enabled" not in meta:
-        return True
-
-    value = meta["enabled"]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return str(value).strip().lower() not in _FALSE_META_VALUES
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -130,8 +111,7 @@ class YaraScannerConfig(AnalysisModuleConfig):
     context_bytes: int = Field(..., description="Number of context bytes to capture around matches.")
     local_scanner_lifetime: int = Field(..., description="The amount of time (in minutes) a local scanner is used before it expires.")
     save_scan_failures: bool = Field(default=False, description="If this is True then files that fail scanning are saved for later analysis.")
-    save_qa_scan_results: bool = Field(default=True, description="Returns True if we should save the results of yara rules in QA mode into self.qa_dir.")
-    qa_dir: str = Field(..., description="Location of files and yara scan results for rules set to 'qa mode' (relative to saq.DATA_DIR).")
+    save_qa_scan_results: bool = Field(default=True, description="Store the files matched by yara rules in QA mode, and their match records, in the yara_qa CAS pool (docs/YARA_QA.md).")
 
 class YaraScanner_v3_4(AnalysisModule):
     @classmethod
@@ -175,13 +155,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
     @property
     def save_qa_scan_results(self):
-        """Returns True if we should save the results of yara rules in QA mode into self.qa_dir."""
+        """Returns True if we should store the files matched by yara rules in QA mode (docs/YARA_QA.md)."""
         return self.config.save_qa_scan_results
-
-    @property
-    def qa_dir(self):
-        """Relative directory of the directory to store QA mode matches."""
-        return os.path.join(get_data_dir(), self.config.qa_dir)
 
     @property
     def generated_analysis_type(self):
@@ -321,7 +296,7 @@ class YaraScanner_v3_4(AnalysisModule):
             if matches_found:
                 # drop matches from rules an analyst has disabled in place via `enabled = false`.
                 # a file matching only disabled rules then behaves exactly like no match at all.
-                result = [r for r in result if _rule_enabled(r)]
+                result = [r for r in result if meta_enabled(r.get('meta'))]
                 if not result:
                     logging.debug("all yara matches for {} were from disabled rules".format(local_file_path))
                     return AnalysisExecutionResult.COMPLETED
@@ -339,15 +314,15 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 alertable = False # initially set to False until we hit at least one rule that does NOT have the no_alert modifier
                 for match_result in analysis.scan_results:
-                    if 'modifiers' in match_result['meta']:
+                    if META_MODIFIERS in match_result['meta']:
                         modifier_no_alert = False
                         modifier_qa = False
 
-                        modifiers = [x.strip() for x in match_result['meta']['modifiers'].split(',')]
+                        modifiers = meta_modifiers(match_result['meta'])
                         logging.debug("yara rule {} has modifiers {}".format(match_result['rule'], ','.join(modifiers)))
 
                         for modifier in modifiers:
-                            if modifier == 'qa':
+                            if modifier == MODIFIER_QA:
                                 modifier_qa = True
                                 modifier_no_alert = True
                                 no_alert_rules.add(match_result['rule'])
@@ -355,21 +330,12 @@ class YaraScanner_v3_4(AnalysisModule):
                                 logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
 
                                 if self.save_qa_scan_results:
-                                    try:
-                                        target_dir = os.path.join(self.qa_dir, match_result['rule'])
-                                        os.makedirs(target_dir, exist_ok=True)
-                                        target_file = os.path.join(target_dir, f"{_file}-{_file.sha256_hash}")
-                                        if not os.path.exists(target_file):
-                                            shutil.copy(local_file_path, target_file)
-                                            with open(f'{target_file}.json', 'w') as fp:
-                                                json.dump(match_result, fp, cls=_JSONEncoder)
-                                            logging.info(f"saved file {target_file} for QA review")
-                                    except Exception as e:
-                                        logging.error(f"unable to save results for QA mode match: {e}")
+                                    # never raises: storing a QA sample must not fail the analysis
+                                    record_qa_match(match_result, _file, self.get_root().uuid)
 
                                 continue
 
-                            if modifier == 'no_alert':
+                            if modifier == MODIFIER_NO_ALERT:
                                 modifier_no_alert = True
                                 no_alert_rules.add(match_result['rule'])
                                 continue

@@ -25,6 +25,7 @@ from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
+from saq.yara_qa.inventory import reset_yara_inventory
 from saq.storage.factory import reset_storage_system
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
@@ -192,6 +193,8 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM cas_holds")
         cursor.execute("DELETE FROM cas_purges")
         cursor.execute("DELETE FROM cas_objects")
+        cursor.execute("DELETE FROM yara_qa_matches")
+        cursor.execute("DELETE FROM yara_qa_signatures")
 
         if database_reset_information is not None:
             cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_automation_user)
@@ -382,6 +385,7 @@ def global_function_setup(request):
     # afterwards. exactly the same hazard as the tracking files above, and the same fix.
     reset_storage_system()
     reset_cas()
+    reset_yara_inventory()
 
     # XXX we're initializing AND THEN we're resetting the database
 

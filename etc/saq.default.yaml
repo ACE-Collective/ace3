@@ -181,8 +181,18 @@ cas:
   read_cache:
     dir: cas_cache
     max_bytes: 10737418240
-  # pools by name. none are defined by default; the consumer that needs one adds it.
-  pools: {}
+  # pools by name. a consumer that needs one adds it here.
+  pools:
+    # files matched by YARA rules in QA mode and their match records (docs/YARA_QA.md). live
+    # malware, so encrypted. backend: local keeps the bytes on the node that matched them; a
+    # multi-node site redefines this pool in its own config with a backend every node can reach and
+    # shared: true, so any node can serve the downloads.
+    yara_qa:
+      backend: local
+      encryption: system
+      retention: held
+      grace_seconds: 86400
+      shared: false
   # example: the SVS sample pool (docs/SVS.md). encrypted with the system key, kept while a capture
   # record holds it. backend: local is fine for a single-node instance; a multi-node deployment needs
   # shared: true, which requires a backend every node can reach (not implemented yet).
@@ -192,6 +202,24 @@ cas:
   #    retention: held         # held | permanent  (ttl is reserved, not implemented)
   #    grace_seconds: 86400
   #    shared: false
+
+# files matched by YARA rules in QA mode (`modifiers = "qa"`), kept in the CAS pool below so analysts
+# can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
+yara_qa:
+  pool: yara_qa
+  # most distinct files kept per (rule uuid, rule version). the version is the commit of the rule's
+  # repository, so every commit to it starts a new version of every rule in it
+  max_files_per_version: 25
+  # most distinct files kept per rule uuid across all of its versions
+  max_files_per_signature: 250
+  # a stored file is kept this long after it last matched
+  retention_days: 30
+  prune_batch_size: 500
+  prune_batch_pause_seconds: 0.5
+  max_bulk_download_files: 500
+  max_bulk_download_bytes: 1073741824
+  # how often the API rescans the rule files for rules in QA mode
+  inventory_refresh_seconds: 60
 
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
@@ -1964,10 +1992,8 @@ analysis_module_yara_scanner_v3_4:
   local_scanner_lifetime: 5
   # set to yes to save any files that fail yara scanning to the scan_failure_dir specified in the service_yara section
   save_scan_failures: false
-  # set to yes to save the results of yara rules running in "qa mode"
+  # set to yes to save the files matched by yara rules running in "qa mode" (see the yara_qa section)
   save_qa_scan_results: true
-  # location of files and yara scan results for rules set to "qa mode" (relative to saq.DATA_DIR)
-  qa_dir: var/qa
 
 analysis_module_binary_file_analyzer:
   name: binary_file_analyzer
