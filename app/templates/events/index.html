@@ -1,10 +1,5 @@
 {% extends "base.html" %}
 
-{# scrollspy follows the table of contents below. Only a page that has a #toc may turn it on:
-   without the target Bootstrap spies on every link in the body instead, and treats each
-   URL fragment as a CSS selector. #}
-{% block body_attribs %} data-bs-spy="scroll" data-bs-target="#toc"{% endblock %}
-
 {% block control_panel %}
 
 {% endblock %}
@@ -67,20 +62,7 @@
                                 <!--
                                 <div class="card mb-3">
                                     <div class="card-header">
-                                        <h5 class="card-title" data-toc-text="Table of Contents">Table of Contents <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseToc" aria-expanded="true" aria-controls="collapseToc">(hide/show)</a></h5>
-                                    </div>
-                                    <div class="card-body">
-                                        <div class="card-text collapse show" id="collapseToc">
-                                            <nav id="toc" data-bs-toggle="toc"></nav>
-                                        </div>
-                                    </div>
-                                </div>
-                                -->
-
-                                <!--
-                                <div class="card mb-3">
-                                    <div class="card-header">
-                                        <h3 class="card-title" data-toc-text="Detect Op Summary">Detect Op Summary <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseDetectOpSummary" aria-expanded="true" aria-controls="collapseDetectOpSummary">(hide/show)</a></h3>
+                                        <h3 class="card-title">Detect Op Summary <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseDetectOpSummary" aria-expanded="true" aria-controls="collapseDetectOpSummary">(hide/show)</a></h3>
                                     </div>
                                     <div class="card-body collapse show" id="collapseDetectOpSummary">
                                         <div class="card-body">

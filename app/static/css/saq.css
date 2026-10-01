@@ -621,25 +621,6 @@ span.multiselect-native-select select {
     border-radius : .2rem;
 }
 
-/* Bootstrap TOC styles */
-nav[data-toggle="toc"] {
-  top: 42px;
-}
-
-/* small screens */
-@media (max-width: 768px) {
-  /* override stickyness so that the navigation does not follow scrolling */
-  nav[data-toggle="toc"] {
-    margin-bottom: 42px;
-    position: static;
-  }
-
-  /* don't expand nested items, which pushes down the rest of the page when navigating */
-  nav[data-toggle="toc"] .nav .active .nav {
-    display: none;
-  }
-}
-
 /* Breadcrumb navigation bar */
 #breadcrumb_bar {
     position: sticky;
