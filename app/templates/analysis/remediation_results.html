@@ -1,5 +1,0 @@
-{% for target_type in target_types %}
-{% with first=loop.first, base='remediation/base_results.html', targets=target_types[target_type], prefix='results_' %}
-{% include ['remediation/{}.html'.format(target_type), 'remediation/default.html'] %}
-{% endwith %}
-{% endfor %}
