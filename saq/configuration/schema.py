@@ -390,7 +390,6 @@ class TimelineConfig(BaseModel):
 #class ConfigConfig(BaseModel):
     #git_repos_default: str = Field(..., description="path to default git repos configuration")
     #signatures_default: str = Field(..., description="path to default signatures configuration")
-    #zeek_default: str = Field(..., description="path to default zeek configuration")
     #remediation_default: str = Field(..., description="path to default remediation configuration")
     #shodan_default: str = Field(..., description="path to default shodan configuration")
     #splunk_default: str = Field(..., description="path to default splunk configuration")

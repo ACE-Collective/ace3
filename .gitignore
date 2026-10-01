@@ -121,7 +121,6 @@ load_proxy
 backups/
 /data/
 extra/
-bro/ace_local.bro
 
 # site modules
 /lib/saq/modules/site

@@ -1581,8 +1581,6 @@ analysis_module_file_hash_analyzer:
   enabled: true
   # ignored file patterns (glob style pattern matching)
   ignore_pattern_pcap: "*.pcap"
-  ignore_pattern_brotex_1: "*.brotex.tar"
-  ignore_pattern_brotex_2: "*.brotex.tar.gz"
   ignore_pattern_stderr: "*.stderr"
   ignore_pattern_stdout: "*.stdout"
   ignore_pattern_pdfparser: "*.pdfparser"
@@ -1593,9 +1591,6 @@ analysis_module_file_hash_analyzer:
   # not sure why these were in there
   # ignore_pattern_olevba = *.olevba/*
   # ignore_pattern_vtdownload = */vt_downloads/*
-  ignore_pattern_brotex_smtp_protocol: "*/protocol.smtp"
-  ignore_pattern_brotex_http_protocol: "*/protocol.http"
-  ignore_pattern_brotex_connection: "*/connection"
   # ignore_pattern_email = */email.rfc822
   ignore_pattern_email_headers: "*email.rfc822.headers"
   ignore_pattern_email_plain_text: "*email.rfc822.unknown_text_plain_*"
@@ -2170,6 +2165,7 @@ disabled_modules: []
 # config section name.
 deprecated_modules:
   - saq.modules.whois:WhoisAnalysis
+  - saq.modules.email.zeek:BroSMTPStreamAnalysis
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2550,14 +2546,6 @@ analysis_mode_file:
     - file
   cleanup: true
 
-analysis_mode_http:
-  name: http
-  # mode used for HTTP analysis
-  module_groups:
-    - common
-    - file
-  cleanup: true
-
 analysis_mode_correlation:
   name: correlation
   # mode used for analyzing alerts
@@ -2750,7 +2738,6 @@ malicious_dispositions:
 config:
   git_repos_default: etc/saq.git_repos.default.yaml
   signatures_default: etc/saq.signatures.default.yaml
-  zeek_default: etc/saq.bro.default.yaml
   remediation_default: etc/saq.remediation.default.yaml
   shodan_default: etc/saq.shodan.default.yaml
   splunk_default: etc/saq.splunk.default.yaml

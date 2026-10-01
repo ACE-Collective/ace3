@@ -35,7 +35,7 @@ def test_cli_commands_registered():
         # company / misc
         "company",
         "config", "modules", "workload",
-        "bro", "event", "debug", "git",
+        "event", "debug", "git",
         "s3",
     }
 
@@ -98,5 +98,4 @@ def test_cli_subcommands_registered():
     assert {"database-connections", "network-semaphore", "proxies", "modules"} <= choices("test")
     assert {"update-organization"} <= choices("user")
     assert {"build-db"} <= choices("signatures")
-    assert {"remove-http-whitelist"} <= choices("bro")
     assert {"display", "clear"} <= choices("remediation")

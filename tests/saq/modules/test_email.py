@@ -12,7 +12,7 @@ import pytz
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_BRO_SMTP, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_FROM, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
+from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_FROM, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_conversation, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.crypto import decrypt
 from saq.database.model import load_alert
@@ -1096,7 +1096,6 @@ def test_basic_smtp_email_parsing(root_analysis, datadir):
 
     # parse a basic email message we got from the smtp collector
 
-    root_analysis.alert_type = ANALYSIS_TYPE_BRO_SMTP
     root_analysis.analysis_mode = "test_groups"
     file_observable = root_analysis.add_file_observable(str(datadir / 'emails/smtp.email.rfc822'))
     file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
