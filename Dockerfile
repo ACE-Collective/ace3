@@ -91,7 +91,6 @@ RUN apt-get update && \
         man \
         net-tools \
         nginx \
-        nmap \
         pkg-config \
         poppler-utils \
         rng-tools-debian \
@@ -99,7 +98,6 @@ RUN apt-get update && \
         screen \
         ssdeep \
         strace \
-        tcpdump \
         tesseract-ocr \
         unace-nonfree \
         unixodbc-dev \
@@ -108,7 +106,6 @@ RUN apt-get update && \
         upx-ucl \
         vim \
         wget \
-        wireshark-common \
         zbar-tools \
         zip \
         zlib1g-dev \

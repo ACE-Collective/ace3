@@ -14,7 +14,7 @@ from saq.modules.file_analysis.js import JavaScriptDeobfuscationAnalysis, JavaSc
 from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis, LnkParseAnalyzer
 from saq.modules.file_analysis.mime import ActiveMimeAnalysis, ActiveMimeAnalyzer, HiddenMIMEAnalysis, HiddenMIMEAnalyzer
 from saq.modules.file_analysis.mse import MicrosoftScriptEncodingAnalysis, MicrosoftScriptEncodingAnalyzer
-from saq.modules.file_analysis.msoffice import OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, OfficeFileArchiveAction, OfficeFileArchiver
+from saq.modules.file_analysis.msoffice import OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer
 from saq.modules.file_analysis.ocr import OCRAnalysis, OCRAnalyzer
 from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3, OfficeParserAnalyzer3
 from saq.modules.file_analysis.ole import ExtractedOLEAnalysis, ExtractedOLEAnalyzer

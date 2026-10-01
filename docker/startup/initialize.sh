@@ -104,7 +104,6 @@ for dir in \
     data/stats/modules/ace \
     data/archive/email \
     data/archive/smtp_stream \
-    data/archive/office \
     data/archive/ole \
     data/work \
     data/etc \
