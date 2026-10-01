@@ -15,7 +15,6 @@ from app.analysis.views.edit.filters import (
     create_saved_filter, update_saved_filter, delete_saved_filter, set_quick_filters,
     saved_filters_modal_body, saved_filter_link, resolve_date_range,
 )
-from app.analysis.views.edit.legacy import mark_suspect
 from app.analysis.views.observables import observables
 from app.analysis.views.prune import toggle_prune, toggle_prune_volatile
 from app.analysis.views.edit.observable_action.whitelist import observable_action_whitelist, observable_action_un_whitelist
