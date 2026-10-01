@@ -286,7 +286,7 @@ def correlate(args):
 
 correlate_parser = get_cli_subparsers().add_parser('correlate',
     help="Analyze one or more observables or alerts.",
-    epilog="Example: ace correlate ipv4 8.8.8.8 -G email -E ip_inspector -E gglsbl_service -D process_analysis_v1 -G common")
+    epilog="Example: ace correlate ipv4 8.8.8.8 -G email -E ip_inspector -E rdap_analyzer -D process_analysis_v1 -G common")
 correlate_parser.add_argument('--multi-threaded', required=False, dest='multi_threaded', default=False, action='store_true',
     help="Use multiple processes to run the analysis.")
 correlate_parser.add_argument('-D', '--disable-module', required=False, dest='disabled_modules', action='append',

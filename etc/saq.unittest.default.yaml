@@ -439,9 +439,6 @@ analysis_module_netbios_analyzer:
   enabled: true
   ssh_host: ""
 
-analysis_module_dns_analyzer:
-  ssh_host: ""
-
 #analysis_module_api_analysis_test:
   #name: api_analysis_test
   #module: tests.saq.test_api_analysis
