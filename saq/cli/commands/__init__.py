@@ -35,5 +35,6 @@ from saq.cli.commands import ( # noqa: F401
     nrd,
     observables,
     signatures,
+    yara,
     yara_qa,
 )

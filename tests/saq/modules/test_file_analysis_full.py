@@ -30,7 +30,7 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
-from saq.yara_scanning_service import YSSService
+from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import create_root_analysis, log_count
 
 UNITTEST_SOCKET_DIR = 'socket_unittest'
@@ -42,12 +42,15 @@ def setup(datadir, monkeypatch):
 
 @pytest.fixture
 def yss_server():
-    yara_service = YSSService()
+    yara_service = YaraScannerService()
     yara_service.start()
-    yara_service.wait_for_start()
+    assert yara_service.wait_for_start(30)
     yield yara_service
     yara_service.stop()
     yara_service.wait()
+
+    # every scan went through the service rather than the in-process fallback
+    assert log_count("initializing local yara scanner") == 0
 
 @pytest.mark.integration
 def test_file_analysis_000_url_extraction_001_pdfparser(root_analysis, datadir):
@@ -414,7 +417,7 @@ def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     #assert log_count('with yss (matches found: True)') == 0
-    assert log_count('failed to connect to yara socket server') == 1
+    assert log_count('yara scanner service unavailable, scanning locally') == 1
     assert log_count('initializing local yara scanner') == 1
     assert log_count('got yara results for') == 1
 

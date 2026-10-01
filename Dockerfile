@@ -176,7 +176,7 @@ RUN sed -i '/en_US.UTF-8 UTF-8/ s/^# //' /etc/locale.gen && \
     dpkg-reconfigure locales && \
     update-locale LANG=en_US.utf8
 
-# support yara_scanner_v2 command line defaults
+# support the default signature directory of the yara_scanner_v2 scan command
 RUN ln -s /opt/ace/signatures/yara /opt/signatures
 
 # install nodejs
@@ -204,7 +204,7 @@ RUN python3 -m virtualenv --python=python3 /venv && \
     pip config set global.cert /etc/ssl/certs/ca-certificates.crt && \
     pip install --no-cache-dir -U pip wheel setuptools && \
     pip install --no-cache-dir -r /venv/python-requirements.txt && \
-    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v2.1.4 && \
+    pip install --no-cache-dir git+https://github.com/unixfreak0037/yara_scanner_v2.git@v3.0.0 && \
     pip install --no-cache-dir git+https://github.com/unixfreak0037/officeparser3.git && \
     pip install sentence-transformers --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir git+https://github.com/ACE-Collective/ace3apiv2_client.git

@@ -12,6 +12,8 @@ layer of result *interpretation* on top of that. This document covers all three.
   [YARA documentation](https://yara.readthedocs.io/).
 - The scanner library and its CLI are documented in the
   [`yara_scanner_v2` README][yara_scanner].
+- The service that runs the scans for the engine is documented in
+  [YARA_SCANNER.md](YARA_SCANNER.md).
 - Everything ACE-specific is documented here.
 
 [yara_scanner]: https://github.com/unixfreak0037/yara_scanner_v2/blob/main/README.md

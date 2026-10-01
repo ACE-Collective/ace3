@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import shutil
-import socket
 from subprocess import PIPE, Popen
 from typing import override
 
@@ -16,7 +15,7 @@ from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
-from saq.environment import get_base_dir, get_data_dir
+from saq.environment import get_data_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -26,7 +25,9 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.util.filesystem import abs_path
 from saq.yara_qa.store import record_qa_match
-from saq.yara_scanning_service import get_validated_git_repo_dirs
+from saq.yara_scanning import client as yara_client
+from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 import yara
 import yara_scanner
@@ -103,8 +104,8 @@ class YaraScanResults_v3_4(Analysis):
 
 #
 # this module has two modes of operation
-# the default mode is to use the Yara Scanner Server (see /opt/yara_scanner)
-# if this is unavailable then local yara scanning will be used until the server is available again
+# the default mode is to use the yara scanner service (docs/YARA_SCANNER.md)
+# if this is unavailable then local yara scanning will be used until the service is available again
 #
 
 class YaraScannerConfig(AnalysisModuleConfig):
@@ -126,16 +127,6 @@ class YaraScanner_v3_4(AnalysisModule):
     def local_scanner_lifetime(self):
         """The amount of time (in minutes) a local scanner is used before it expires."""
         return self.config.local_scanner_lifetime
-
-    @property
-    def base_dir(self):
-        """Base directory of the yara_scanner server."""
-        return get_base_dir()
-
-    @property
-    def socket_dir(self):
-        """Relative directory of the socket directory of the yara scanner server."""
-        return os.path.join(get_data_dir(), get_service_config(SERVICE_YARA_SCANNER).socket_dir)
 
     @property
     def signature_dir(self):
@@ -189,7 +180,8 @@ class YaraScanner_v3_4(AnalysisModule):
         logging.info("initializing local yara scanner")
         # initialize the scanner and compile the rules
         self.scanner = yara_scanner.YaraScanner(
-            signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs)
+            signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
+            default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
         self.scanner.load_rules()
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
@@ -257,38 +249,44 @@ class YaraScanner_v3_4(AnalysisModule):
             no_alert_rules = set() # the set of rules that matches that have the no_alert modifier
             matches_found = False # set to True if at least one rule matched
 
+            # this path needs to be absolute for the yara scanner service to know where to find it
+            _full_path = os.path.abspath(local_file_path)
+
+            # any other failure of the service (including a scanner that crashed on this file)
+            # is a scan failure, handled below
             try:
-                # this path needs to be absolute for the yara scanner server to know where to find it
-                _full_path = local_file_path
-                if not os.path.isabs(local_file_path):
-                    _full_path = os.path.join(os.getcwd(), local_file_path)
-                result = yara_scanner.scan_file(_full_path, base_dir=self.base_dir, socket_dir=self.socket_dir, meta_tags=meta_tags)
+                result = yara_client.scan_file(_full_path, meta_tags=meta_tags)
                 matches_found = bool(result)
 
-                logging.debug("scanned file {} with yss (matches found: {})".format(_full_path, matches_found))
+                logging.debug("scanned file {} with the yara scanner service (matches found: {})".format(_full_path, matches_found))
 
                 # if that worked and we have a local scanner see if we still need it
                 # we keep it around for some length of time
-                # even when we get the yara scanner server back
+                # even when we get the yara scanner service back
                 if self.scanner:
-                    if (datetime.now() - self.scanner_start_time).total_seconds() * 60 >= self.local_scanner_lifetime:
+                    if (datetime.now() - self.scanner_start_time).total_seconds() / 60 >= self.local_scanner_lifetime:
                         # get rid of it
                         logging.info("releasing local yara scanner")
                         self.scanner = None
                         self.scanner_start_time = None
                         gc.collect()
-                
-            except (yara.TimeoutError, TimeoutError) as e:
-                logging.warning("yara scanner server timed out scanning file %s: %s", _full_path, e)
+
+            except YaraScanTimeout as e:
+                logging.warning("yara scanner service timed out scanning file %s: %s", _full_path, e)
                 matches_found = False
 
-            except socket.error as e:
-                logging.warning("failed to connect to yara socket server: {}".format(e))
+            except YaraServiceUnavailable as e:
+                logging.warning("yara scanner service unavailable, scanning locally: {}".format(e))
                 if not self.scanner:
                     self.initialize_local_scanner()
 
-                matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
-                result = self.scanner.scan_results
+                try:
+                    matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
+                    result = self.scanner.scan_results
+                except yara.TimeoutError as e:
+                    logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
+                    matches_found = False
+
                 # we want to keep using it for now...
                 self.scanner_start_time = datetime.now()
 

@@ -1,0 +1,8 @@
+"""The yara scanner service: a pre-forked pool of processes that scan files with yara on behalf of
+the engine, reached over a local unix socket (docs/YARA_SCANNER.md).
+
+- protocol.py -- the wire format shared by both ends
+- server.py -- the manager, generation and worker processes
+- client.py -- what the engine calls
+- service.py -- the ACE service wrapper and its configuration
+"""

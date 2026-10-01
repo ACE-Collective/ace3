@@ -22,6 +22,7 @@ from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.signatures.model import SignatureLocation, SignatureType
 from saq.util.filesystem import abs_path
+from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 CONFIG_SERVICE_YARA = f"service_{SERVICE_YARA_SCANNER}"
 CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER = f"analysis_module_{ANALYSIS_MODULE_OBSERVABLE_MODIFIER}"
@@ -29,8 +30,6 @@ CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER = f"analysis_module_{ANALYSIS_MODULE_
 
 def _yara_locations() -> list[SignatureLocation]:
     """service_yara.signature_dir, versioned by service_yara.git_repo_dirs."""
-    from saq.yara_scanning_service import get_validated_git_repo_dirs
-
     try:
         config = get_service_config(SERVICE_YARA_SCANNER)
     except ValueError:

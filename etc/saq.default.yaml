@@ -1192,11 +1192,13 @@ sip_observable_type_mappping:
 
 service_yara:
   name: yara
-  python_module: saq.yara_scanning_service
-  python_class: YSSService
-  description: Yara Scanner Service - local distributed yara scanner
+  python_module: saq.yara_scanning.service
+  python_class: YaraScannerService
+  description: Yara Scanner Service - a local pool of yara scanning processes (docs/YARA_SCANNER.md)
   enabled: true
-  # relative directory where the unix sockets for the yara scanner server are located (relative to DATA_DIR)
+  # a stopping scanner finishes the scan it is running (up to default_timeout) before it exits
+  shutdown_deadline_seconds: 30
+  # relative directory where the unix socket for the yara scanner server is located (relative to DATA_DIR)
   socket_dir: var/yss/sockets
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
   # each subdirectory in this directory has any yara rules loaded in the scanner
@@ -1218,6 +1220,18 @@ service_yara:
   scan_failure_dir: scan_failures
   # how long (in seconds) a single scan is allowed to take
   default_timeout: 10
+  # how many scanning processes to run (defaults to the number of CPUs this process may use)
+  #worker_count: 8
+  # how long (in seconds) compiling the rules may take before a new generation of scanners is given up on
+  compile_timeout: 600
+  # how long (in seconds) a scanner waits on a client that stops sending or receiving
+  io_timeout: 30
+  # how long (in seconds) a client waits for a free scanner before it scans locally instead
+  client_queue_timeout: 30
+  # the largest data stream (in bytes) a client may send to be scanned
+  max_data_bytes: 268435456
+  # replace a scanning process after it served this many requests (0 disables this)
+  max_requests_per_worker: 0
 
 # observable groups
 observable_group_internal:

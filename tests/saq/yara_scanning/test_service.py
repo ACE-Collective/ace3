@@ -12,7 +12,7 @@ import pytest
 
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
-from saq.yara_scanning_service import get_validated_git_repo_dirs
+from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 
 def _init_repo_with_commit(path: str):
