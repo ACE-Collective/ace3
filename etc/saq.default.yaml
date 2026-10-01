@@ -1409,16 +1409,6 @@ analysis_module_network_identifier:
   # the CSV file that contains the definitions
   csv_file: data/etc/local_networks.csv
 
-analysis_module_asset_analyzer:
-  name: asset_analyzer
-  dependencies:
-    - dns_analyzer
-    - netbios_analyzer
-    - active_directory_analyzer
-  python_module: saq.modules.asset.asset
-  python_class: AssetAnalyzer
-  enabled: false
-
 analysis_module_netbios_analyzer:
   name: netbios_analyzer
   python_module: saq.modules.asset.netbios
@@ -1447,15 +1437,6 @@ analysis_module_idna_analyzer:
   python_module: saq.modules.url.idna
   python_class: IDNAAnalyzer
   enabled: true
-
-analysis_module_dns_analyzer:
-  name: dns_analyzer
-  python_module: saq.modules.asset.dns
-  python_class: DNSAnalyzer
-  enabled: true
-  # if this is set then the command is prefixed with ssh ssh_host so that it executes from another system
-  # use this if you are in AWS and your target is inside target network
-  ssh_host: ""
 
 analysis_module_rdap_analyzer:
   name: rdap_analyzer
@@ -2029,18 +2010,6 @@ analysis_module_x509_analyzer:
   python_class: X509Analyzer
   enabled: true
 
-# XXX this needs fixed, I think it needs a local service running?
-analysis_module_google_safe_browsing_service:
-  name: google_safe_browsing_service
-  python_module: saq.modules.url.google_sb
-  python_class: GoogleSafeBrowsingAnalyzer
-  enabled: false
-  server: ""
-  port: 5000
-  # If we're verifying ssl and the cert is signed by an authority the OS trusts, then True.
-  # Else, it should be the path the the CA chain
-  verify_ssl: false
-
 analysis_module_protected_url_analyzer:
   name: protected_url_analyzer
   python_module: saq.modules.url.protected
@@ -2396,6 +2365,7 @@ module_group_file:
     - nowhitespace_analyzer
     - ocr
     - office_file_archiver
+    - office_xml_rel
     - officeparser3
     - olevba_v1_2
     - onenote_extraction
@@ -2654,15 +2624,6 @@ analysis_mode_suricata_ids:
     - pcap_conversation_extraction
 
 integrations: {}
-
-# settings for saq/domain_generator.py
-domain_generation:
-  # relative to saq.ANALYST_DATA_DIR
-  keyword_file_path: certificates/keyword.txt
-  # relative path to the opensquat external tool
-  opensquat: /opt/misc/opensquat/opensquat.py
-  # relative to saq.ANALYST_DATA_DIR
-  static_domain_file: certificates/static_domains.txt
 
 settings:
   refresh_seconds: 60

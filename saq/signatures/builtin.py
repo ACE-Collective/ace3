@@ -59,7 +59,6 @@ EMAIL_ENCRYPTED_DECRYPTED     = BuiltinSignature("email_encrypted_attachment_dec
 EMAIL_MACRO_NEW_SENDER        = BuiltinSignature("email_macro_new_sender", "26fb96a4-6e20-48df-b826-a9c4a25b1965", "macro from a new sender")
 EMAIL_SUSPECT_URL_NEW_SENDER  = BuiltinSignature("email_suspect_url_new_sender", "11b42a94-e21a-4cd0-bdb6-8f278d20611d", "suspect URL from a new sender")
 CVE_2021_30657_DMG_SCRIPT     = BuiltinSignature("cve_2021_30657_dmg_script", "3ba358a3-b7ab-4475-a10a-f2a8070b455d", "CVE-2021-30657 DMG script")
-URL_GOOGLE_SAFE_BROWSING      = BuiltinSignature("url_google_safe_browsing_match", "c49cb4bf-12f2-4a46-9943-4c432481fe74", "Google Safe Browsing match")
 URL_CLICKER                   = BuiltinSignature("url_clicker", "a764126b-443d-4991-a554-72d86125382d", "user clicked a URL / visited a flagged domain (clicker detection)")
 DHASH_IMAGE_MATCH             = BuiltinSignature("dhash_image_match", "10d1e320-3b07-45f1-9bcf-078044643b7e", "image dhash match")
 # fallback for YARA rules that matched but carry no uuid meta (warn-but-detect)
@@ -93,7 +92,6 @@ BUILTIN_SIGNATURES = {
         EMAIL_MACRO_NEW_SENDER,
         EMAIL_SUSPECT_URL_NEW_SENDER,
         CVE_2021_30657_DMG_SCRIPT,
-        URL_GOOGLE_SAFE_BROWSING,
         URL_CLICKER,
         DHASH_IMAGE_MATCH,
         YARA_RULE_MATCH,

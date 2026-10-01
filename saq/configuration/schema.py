@@ -374,11 +374,6 @@ class CustomAlertsConfig(BaseModel):
     template_dir: str = Field(..., description="directory containing all flask views")
     dirs: list[str] = Field(..., description="list of dirs containing all custom alert views")
 
-class DomainGenerationConfig(BaseModel):
-    keyword_file_path: str = Field(..., description="path to keyword file (relative to ANALYST_DATA_DIR)")
-    opensquat: str = Field(..., description="relative path to the opensquat external tool")
-    static_domain_file: str = Field(..., description="path to static domains file (relative to ANALYST_DATA_DIR)")
-
 class SettingsConfig(BaseModel):
     refresh_seconds: int = Field(..., description="how often to refresh settings (in seconds)")
 
@@ -805,7 +800,6 @@ class ACEConfig(BaseModel):
     deprecated_modules: list[str] = Field(default_factory=list, description="MODULE_PATH values (python_module:AnalysisClass[:instance]) of analysis modules that have been removed from ACE; their serialized Analysis can no longer be loaded, and that is expected rather than an error")
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
-    domain_generation: Optional[DomainGenerationConfig] = None
     settings: Optional[SettingsConfig] = None
     observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
     events: Optional[EventsConfig] = None
