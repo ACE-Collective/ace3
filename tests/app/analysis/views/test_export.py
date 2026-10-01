@@ -5,61 +5,11 @@ import pytest
 from flask import url_for
 
 from saq.configuration import get_config
-from saq.constants import F_TEST
 from saq.database.model import Alert, Comment, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, touch_alerts
 from saq.environment import get_global_runtime_settings
-from saq.observables.testing import TestObservable
 from saq.util.time import local_time
-
-
-@pytest.mark.integration
-def test_download_json_no_alert(web_client):
-    """Test download_json when no alert is loaded."""
-    result = web_client.get(url_for("analysis.download_json"))
-    assert result.status_code == 200
-    assert result.data == b'{}'
-
-
-@pytest.mark.integration 
-def test_download_json_with_alert(web_client, root_analysis):
-    """Test download_json with a valid alert."""
-    # Create test observable 
-    test_observable = root_analysis.add_observable_by_spec(F_TEST, "test_value")
-    assert isinstance(test_observable, TestObservable)
-
-    # Save and create alert
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    assert isinstance(alert, Alert)
-
-    result = web_client.get(url_for("analysis.download_json"), 
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    assert result.mimetype == 'application/json'
-    
-    data = result.get_json()
-    assert 'nodes' in data
-    assert 'edges' in data
-    # Should have at least the root analysis node and the observable node
-    assert len(data['nodes']) >= 2
-
-
-@pytest.mark.integration
-def test_download_json_load_error(web_client, root_analysis):
-    """Test download_json when alert fails to load."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Remove alert storage to cause load error
-    import shutil
-    shutil.rmtree(alert.storage_dir)
-
-    result = web_client.get(url_for("analysis.download_json"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    assert result.data == b'{}'
 
 
 @pytest.mark.integration

@@ -1,6 +1,6 @@
 from app.analysis.views.manage import manage
 from app.analysis.views.index import index
-from app.analysis.views.export import download_json, export_alerts_to_csv, download_file, get_alert_metadata, email_file, html_details
+from app.analysis.views.export import export_alerts_to_csv, download_file, get_alert_metadata, email_file, html_details
 from app.analysis.views.navigation import redirect_to, set_page_size, set_page_offset
 from app.analysis.views.edit.tag import add_tag, remove_tag
 from app.analysis.views.edit.observable import add_observable

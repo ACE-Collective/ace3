@@ -332,21 +332,6 @@ $(document).ready(function() {
         })();
     });
 
-    //$('#btn-stats').click(function(e) {
-        //e.preventDefault();
-        /*var panel = $.jsPanel({
-            position: "center",
-            title: "Default Title",
-            //content: $(".jsPanel-content"),
-            size: { height: 270, width: 430 }
-        });
-        panel.on("jspanelloaded", function(event, id) {
-            graph_alert($(".jsPanel-content")[0]);
-        });*/
-
-        //graph_alert($("#visualization")[0]);
-    //});
-
     $('#btn-assign-ownership').click(function(e) {
         // add a hidden field to the form and then submit
         $("#assign-ownership-form").append('<input type="hidden" name="alert_uuid" value="' + current_alert_uuid + '" />').submit();
@@ -691,94 +676,6 @@ function download_url(url) {
     } else {
         $download_element = $('<iframe>', { id: 'download_element', src: url }).hide().appendTo('body');
     }
-}
-
-function graph_alert(container) {
-    (function() {
-        const params = new URLSearchParams({ alert_uuid: current_alert_uuid });
-        fetch('/json?' + params.toString(), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            return resp.json();
-        })
-        .then(function(data){
-            var nodes = new vis.DataSet(data['nodes']);
-            // create an array with edges
-            var edges = new vis.DataSet(data['edges']);
-            // create a network
-            // this must be an actual DOM element
-            //var container = $(".jsPanel-content")[0];
-            var data = {
-                nodes: nodes,
-                edges: edges
-            };
-            var options = {
-                nodes: {
-                    shape: "dot",
-                    size: 10 },
-                layout: {
-                    /*hierarchical: {
-                        enabled: true,
-                        sortMethod: 'directed'
-                    }*/
-                }
-            };
-
-            var network = new vis.Network(container, data, options);
-            network.stopSimulation();
-            network.stabilize();
-
-            // turn off the physics engine once it's stabilized
-            network.once("stabilized", function() {
-                // don't let it run stabilize again
-                network.on("startStabilizing", function() {
-                    network.stopSimulation();
-                });
-
-                //network.setOptions({
-                    //physics: { enabled: false }
-                //});
-                network.fit();
-            });
-
-            network.on("click", function() {
-            });
-
-            network.on("resize", function() {
-                network.fit();
-            });
-    
-            network.on("selectNode", function(e) {
-                for (var i = 0; i < e.nodes.length; i++) {
-                    var node = data.nodes.get(e.nodes[i]);
-                    if ('details' in node) {
-                        data.nodes.update({id: node.id, label: node.details, saved_label: node.label, font: { background: 'white' }});
-                    }
-
-                    if ('observable_uuid' in node && 'module_path' in node) {
-                        var new_window = window.open("/analysis?observable_uuid=" + node.observable_uuid + "&module_path=" + encodeURIComponent(node.module_path), "");
-                        if (new_window) { } else { alert("Unable to open a new window (adblocker?)"); }
-                    }
-                }
-            });
-
-            network.on("deselectNode", function(e) {
-                for (var i = 0; i < e.previousSelection.nodes.length; i++) {
-                    var node = data.nodes.get(e.previousSelection.nodes[i]);
-                    if ('details' in node) {
-                        data.nodes.update({id: node.id, label: node.saved_label});
-                    }
-                }
-            });
-
-            $("#btn-fit-to-window").click(function(e) {
-                network.fit();
-            });
-        })
-        .catch(function(){
-            alert('DOH');
-        });
-    })();
 }
 
 function delete_comment(comment_id) {
