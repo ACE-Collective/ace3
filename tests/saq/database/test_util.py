@@ -2,7 +2,7 @@ from multiprocessing import Event
 import uuid
 import pytest
 
-from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_HTTP
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_FILE
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
@@ -26,9 +26,9 @@ def test_assign_node_analysis_modes():
     assert get_node_included_analysis_modes() == [ ANALYSIS_MODE_CORRELATION ]
     assert get_node_excluded_analysis_modes() == [ ANALYSIS_MODE_EMAIL ]
 
-    assign_node_analysis_modes(analysis_modes=[ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_ANALYSIS], excluded_analysis_modes=[ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_HTTP])
+    assign_node_analysis_modes(analysis_modes=[ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_ANALYSIS], excluded_analysis_modes=[ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_FILE])
     assert set(get_node_included_analysis_modes()) == set([ ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_ANALYSIS ])
-    assert set(get_node_excluded_analysis_modes()) == set([ ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_HTTP ])
+    assert set(get_node_excluded_analysis_modes()) == set([ ANALYSIS_MODE_EMAIL, ANALYSIS_MODE_FILE ])
 
     assign_node_analysis_modes()
     assert not get_node_included_analysis_modes()

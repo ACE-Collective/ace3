@@ -396,7 +396,6 @@ DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
 DIRECTIVE_OCR = 'ocr'
 DIRECTIVE_ORIGINAL_EMAIL = 'original_email'
-DIRECTIVE_ORIGINAL_SMTP = 'original_smtp'
 DIRECTIVE_PHISHKIT = 'phishkit'
 DIRECTIVE_PREVIEW = 'preview'
 DIRECTIVE_RENDER = 'render'
@@ -435,7 +434,6 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
     DIRECTIVE_OCR: 'run OCR text extraction on this image file',
     DIRECTIVE_ORIGINAL_EMAIL: 'treat this file as the original email file',
-    DIRECTIVE_ORIGINAL_SMTP: 'treat this file as the original smtp stream',
     DIRECTIVE_PHISHKIT: 'analyze target for phishkit detection',
     DIRECTIVE_PREVIEW: 'show this content inline if possible',
     DIRECTIVE_RENDER: 'render an image of the target',
@@ -658,15 +656,12 @@ ANALYSIS_MODE_CORRELATION = "correlation"
 ANALYSIS_MODE_CLI = "cli"
 ANALYSIS_MODE_ANALYSIS = "analysis"
 ANALYSIS_MODE_EMAIL = "email"
-ANALYSIS_MODE_HTTP = "http"
 ANALYSIS_MODE_FILE = "file"
 ANALYSIS_MODE_BINARY = "binary"
 ANALYSIS_MODE_DISPOSITIONED = "dispositioned"
 ANALYSIS_MODE_EVENT = "event"
 ANALYSIS_MODE_TEST = "test"
 
-ANALYSIS_TYPE_BRO_HTTP = 'bro - http'
-ANALYSIS_TYPE_BRO_SMTP = 'bro - smtp'
 ANALYSIS_TYPE_EWS = 'ews'
 ANALYSIS_TYPE_FAQUEUE = 'faqueue'
 ANALYSIS_TYPE_FIREEYE = 'fireeye'
@@ -728,8 +723,6 @@ GUI_TABS = [
 # service constants
 #
 
-SERVICE_BRO_HTTP_COLLECTOR = "bro_http_collector"
-SERVICE_BRO_SMTP_COLLECTOR = "bro_smtp_collector"
 SERVICE_CRON = "cron"
 SERVICE_EMAIL_COLLECTOR = "email_collector"
 SERVICE_ENGINE = "engine"
