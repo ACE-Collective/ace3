@@ -23,6 +23,7 @@ from aceapi_v2.observable_comments.router import router as observable_comments_r
 from aceapi_v2.threats.router import router as threats_router
 from aceapi_v2.user_preferences.router import router as user_preferences_router
 from aceapi_v2.users.router import router as users_router
+from aceapi_v2.yara_qa.router import router as yara_qa_router
 from saq.error.reporting import report_exception
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(saved_filters_router, prefix="/saved-filters", tags=["saved-filters"])
     app.include_router(search_router, prefix="/search", tags=["search"])
     app.include_router(secrets_router, prefix="/secrets", tags=["secrets"])
+    app.include_router(yara_qa_router, prefix="/signatures/yara-qa", tags=["signatures"])
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])
     app.include_router(users_router, prefix="/users", tags=["users"])

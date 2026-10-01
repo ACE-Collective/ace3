@@ -18,7 +18,7 @@ own key scheme, retention mechanism and failure modes:
 | Analysis-cache blobs (`saq/analysis/blob_store.py`) | `<root>/<sha[:3]>/<sha>` + `blob_refs` | no | references expire with a ~35-day partition |
 | Email archive (`saq/email_archive/`) | `<sha[:2]>/<sha>.gz.e`; S3 key = sha | AES-GCM, system key | 30 days (S3 copies never deleted) |
 | Crash report bytes | per crash directory | no | 30 days |
-| YARA `qa_dir` | `var/qa/<rule>/<file>-<sha>` | no | never cleaned |
+| YARA `qa_dir` (before the `yara_qa` pool) | `var/qa/<rule>/<file>-<sha>` | no | never cleaned |
 
 None of them can keep a byte "until I say so", and none can be shared between nodes without
 bespoke code. The CAS is one subsystem for **immutable bytes identified by content**. Each use sets
@@ -290,8 +290,10 @@ cas:
 The schema (`CASConfig`, `CASPoolConfig` in `saq/configuration/schema.py`) rejects unknown keys
 explicitly (`extra="forbid"`; most of the rest of the config silently ignores them). Paths are
 relative to the data directory, like `crash_reporting.directory`, which is what gives every test
-slot its own store. `etc/saq.default.yaml` carries the defaults and a commented `svs_samples`
-example; nothing defines a pool out of the box.
+slot its own store. `etc/saq.default.yaml` carries the defaults, the `yara_qa` pool (the one pool
+defined out of the box, `docs/YARA_QA.md`) and a commented `svs_samples` example. A site redefines a
+pool by overriding its keys in its own configuration, for example to give `yara_qa` a shared backend
+on a multi-node install.
 
 ## Permissions, CLI, cron
 
@@ -375,13 +377,13 @@ message text, so the monitor records are the place to look. Definitions are in
 | Order | Store | Pool | Status |
 |---|---|---|---|
 | 1 | SVS YARA samples | `svs_samples` (`held`, encrypted, shared) | first; built with the CAS |
-| 2 | YARA `qa_dir` | `yara_qa` | next; the only store holding live malware in plaintext with no cleanup |
+| 2 | YARA `qa_dir` | `yara_qa` (`held`, encrypted, local by default) | **done** (`docs/YARA_QA.md`): the files and full match records of QA-mode rules, held for 30 days after the last match, capped per rule |
 | 3 | Analysis-cache blobs | `analysis_cache` (`ttl`, plaintext, local `link`) | gated on the load test |
 | 4 | Crash report bytes | `crash_files` | later |
 | 5 | Email archive | `email_archive` | later; has its own DB and retention semantics |
 | 6 | Alert hardcopies | `alert_files` | last; largest disk win and largest blast radius (node transfer, archive, hardlinks) |
 
-Only step 1 is in scope now. [CAS-8]
+Steps 1 and 2 are built; the rest are not scheduled. [CAS-8]
 
 ## Prerequisites (phase 0)
 

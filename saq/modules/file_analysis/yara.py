@@ -1,11 +1,9 @@
 from datetime import datetime
 import gc
-import json
 import logging
 import os
 import re
 import shutil
-import socket
 from subprocess import PIPE, Popen
 from typing import override
 
@@ -17,40 +15,23 @@ from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
-from saq.environment import get_base_dir, get_data_dir
+from saq.environment import get_data_dir
 from saq.error.reporting import report_exception
-from saq.json_encoding import _JSONEncoder
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.util.filesystem import abs_path
-from saq.yara_scanning_service import get_validated_git_repo_dirs
+from saq.yara_scanning import client as yara_client
+from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
-
-
-# meta values returned by yara-python can be bool, int, or str depending on how the analyst
-# wrote them in the rule (e.g. `enabled = false` vs `enabled = "false"`)
-_FALSE_META_VALUES = {"false", "no", "0", "off", "disabled"}
-
-
-def _rule_enabled(match_result: dict) -> bool:
-    """Returns False only if the rule's `enabled` meta is set to a falsy value. Defaults to True."""
-    meta = match_result.get("meta") or {}
-    if "enabled" not in meta:
-        return True
-
-    value = meta["enabled"]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return str(value).strip().lower() not in _FALSE_META_VALUES
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -122,16 +103,15 @@ class YaraScanResults_v3_4(Analysis):
 
 #
 # this module has two modes of operation
-# the default mode is to use the Yara Scanner Server (see /opt/yara_scanner)
-# if this is unavailable then local yara scanning will be used until the server is available again
+# the default mode is to use the yara scanner service (docs/YARA_SCANNER.md)
+# if this is unavailable then local yara scanning will be used until the service is available again
 #
 
 class YaraScannerConfig(AnalysisModuleConfig):
     context_bytes: int = Field(..., description="Number of context bytes to capture around matches.")
     local_scanner_lifetime: int = Field(..., description="The amount of time (in minutes) a local scanner is used before it expires.")
     save_scan_failures: bool = Field(default=False, description="If this is True then files that fail scanning are saved for later analysis.")
-    save_qa_scan_results: bool = Field(default=True, description="Returns True if we should save the results of yara rules in QA mode into self.qa_dir.")
-    qa_dir: str = Field(..., description="Location of files and yara scan results for rules set to 'qa mode' (relative to saq.DATA_DIR).")
+    save_qa_scan_results: bool = Field(default=True, description="Have the yara scanner service store the files matched by yara rules in QA mode, and their match records, in the yara_qa CAS pool (docs/YARA_QA.md). Matches found by the local fallback scanner are never stored.")
 
 class YaraScanner_v3_4(AnalysisModule):
     @classmethod
@@ -146,16 +126,6 @@ class YaraScanner_v3_4(AnalysisModule):
     def local_scanner_lifetime(self):
         """The amount of time (in minutes) a local scanner is used before it expires."""
         return self.config.local_scanner_lifetime
-
-    @property
-    def base_dir(self):
-        """Base directory of the yara_scanner server."""
-        return get_base_dir()
-
-    @property
-    def socket_dir(self):
-        """Relative directory of the socket directory of the yara scanner server."""
-        return os.path.join(get_data_dir(), get_service_config(SERVICE_YARA_SCANNER).socket_dir)
 
     @property
     def signature_dir(self):
@@ -175,13 +145,9 @@ class YaraScanner_v3_4(AnalysisModule):
 
     @property
     def save_qa_scan_results(self):
-        """Returns True if we should save the results of yara rules in QA mode into self.qa_dir."""
+        """Returns True if the yara scanner service should store the files matched by yara rules in
+        QA mode (docs/YARA_QA.md)."""
         return self.config.save_qa_scan_results
-
-    @property
-    def qa_dir(self):
-        """Relative directory of the directory to store QA mode matches."""
-        return os.path.join(get_data_dir(), self.config.qa_dir)
 
     @property
     def generated_analysis_type(self):
@@ -214,7 +180,8 @@ class YaraScanner_v3_4(AnalysisModule):
         logging.info("initializing local yara scanner")
         # initialize the scanner and compile the rules
         self.scanner = yara_scanner.YaraScanner(
-            signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs)
+            signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
+            default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
         self.scanner.load_rules()
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
@@ -281,39 +248,59 @@ class YaraScanner_v3_4(AnalysisModule):
         try:
             no_alert_rules = set() # the set of rules that matches that have the no_alert modifier
             matches_found = False # set to True if at least one rule matched
+            scanned_locally = False # the local scanner does not record QA matches; the service does
 
+            # with this the service records the matches of rules in QA mode, after it answers
+            # (docs/YARA_QA.md). the value of a file observable is its sha256
+            qa_context = None
+            if self.save_qa_scan_results:
+                qa_context = {
+                    "root_uuid": self.get_root().uuid,
+                    "observable_uuid": _file.uuid,
+                    "file_name": _file.file_name,
+                    "file_size": _file.size or 0,
+                    "sha256": _file.value.lower(),
+                }
+
+            # this path needs to be absolute for the yara scanner service to know where to find it
+            _full_path = os.path.abspath(local_file_path)
+
+            # any other failure of the service (including a scanner that crashed on this file)
+            # is a scan failure, handled below
             try:
-                # this path needs to be absolute for the yara scanner server to know where to find it
-                _full_path = local_file_path
-                if not os.path.isabs(local_file_path):
-                    _full_path = os.path.join(os.getcwd(), local_file_path)
-                result = yara_scanner.scan_file(_full_path, base_dir=self.base_dir, socket_dir=self.socket_dir, meta_tags=meta_tags)
+                result = yara_client.scan_file(_full_path, meta_tags=meta_tags, qa=qa_context)
                 matches_found = bool(result)
 
-                logging.debug("scanned file {} with yss (matches found: {})".format(_full_path, matches_found))
+                logging.debug("scanned file {} with the yara scanner service (matches found: {})".format(_full_path, matches_found))
 
                 # if that worked and we have a local scanner see if we still need it
                 # we keep it around for some length of time
-                # even when we get the yara scanner server back
+                # even when we get the yara scanner service back
                 if self.scanner:
-                    if (datetime.now() - self.scanner_start_time).total_seconds() * 60 >= self.local_scanner_lifetime:
+                    if (datetime.now() - self.scanner_start_time).total_seconds() / 60 >= self.local_scanner_lifetime:
                         # get rid of it
                         logging.info("releasing local yara scanner")
                         self.scanner = None
                         self.scanner_start_time = None
                         gc.collect()
-                
-            except (yara.TimeoutError, TimeoutError) as e:
-                logging.warning("yara scanner server timed out scanning file %s: %s", _full_path, e)
+
+            except YaraScanTimeout as e:
+                logging.warning("yara scanner service timed out scanning file %s: %s", _full_path, e)
                 matches_found = False
 
-            except socket.error as e:
-                logging.warning("failed to connect to yara socket server: {}".format(e))
+            except YaraServiceUnavailable as e:
+                logging.warning("yara scanner service unavailable, scanning locally: {}".format(e))
                 if not self.scanner:
                     self.initialize_local_scanner()
 
-                matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
-                result = self.scanner.scan_results
+                scanned_locally = True
+                try:
+                    matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
+                    result = self.scanner.scan_results
+                except yara.TimeoutError as e:
+                    logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
+                    matches_found = False
+
                 # we want to keep using it for now...
                 self.scanner_start_time = datetime.now()
 
@@ -321,7 +308,7 @@ class YaraScanner_v3_4(AnalysisModule):
             if matches_found:
                 # drop matches from rules an analyst has disabled in place via `enabled = false`.
                 # a file matching only disabled rules then behaves exactly like no match at all.
-                result = [r for r in result if _rule_enabled(r)]
+                result = [r for r in result if meta_enabled(r.get('meta'))]
                 if not result:
                     logging.debug("all yara matches for {} were from disabled rules".format(local_file_path))
                     return AnalysisExecutionResult.COMPLETED
@@ -339,37 +326,27 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 alertable = False # initially set to False until we hit at least one rule that does NOT have the no_alert modifier
                 for match_result in analysis.scan_results:
-                    if 'modifiers' in match_result['meta']:
+                    if META_MODIFIERS in match_result['meta']:
                         modifier_no_alert = False
                         modifier_qa = False
 
-                        modifiers = [x.strip() for x in match_result['meta']['modifiers'].split(',')]
+                        modifiers = meta_modifiers(match_result['meta'])
                         logging.debug("yara rule {} has modifiers {}".format(match_result['rule'], ','.join(modifiers)))
 
                         for modifier in modifiers:
-                            if modifier == 'qa':
+                            if modifier == MODIFIER_QA:
                                 modifier_qa = True
                                 modifier_no_alert = True
                                 no_alert_rules.add(match_result['rule'])
 
                                 logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
-
-                                if self.save_qa_scan_results:
-                                    try:
-                                        target_dir = os.path.join(self.qa_dir, match_result['rule'])
-                                        os.makedirs(target_dir, exist_ok=True)
-                                        target_file = os.path.join(target_dir, f"{_file}-{_file.sha256_hash}")
-                                        if not os.path.exists(target_file):
-                                            shutil.copy(local_file_path, target_file)
-                                            with open(f'{target_file}.json', 'w') as fp:
-                                                json.dump(match_result, fp, cls=_JSONEncoder)
-                                            logging.info(f"saved file {target_file} for QA review")
-                                    except Exception as e:
-                                        logging.error(f"unable to save results for QA mode match: {e}")
+                                if scanned_locally and self.save_qa_scan_results:
+                                    logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
+                                                    "with the local yara scanner: the match is not recorded")
 
                                 continue
 
-                            if modifier == 'no_alert':
+                            if modifier == MODIFIER_NO_ALERT:
                                 modifier_no_alert = True
                                 no_alert_rules.add(match_result['rule'])
                                 continue

@@ -1,5 +1,3 @@
-import socket
-
 import pytest
 import yara
 import yara_scanner
@@ -14,6 +12,8 @@ from saq.constants import (
 )
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
+from saq.yara_scanning import client as yara_client
+from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
 from tests.saq.test_util import create_test_context
 
 
@@ -43,11 +43,11 @@ class TestYaraScannerMetaTagsUnit:
 
         captured = {}
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             captured["meta_tags"] = meta_tags
             return []
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -66,11 +66,11 @@ class TestYaraScannerMetaTagsUnit:
 
         captured = {}
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             captured["meta_tags"] = meta_tags
             return []
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -79,8 +79,8 @@ class TestYaraScannerMetaTagsUnit:
         assert captured["meta_tags"] is None
 
     @pytest.mark.unit
-    def test_meta_tags_passed_to_local_scanner_on_socket_error(self, monkeypatch, root_analysis):
-        """When scan_file raises socket.error, local scanner fallback receives meta_tags."""
+    def test_meta_tags_passed_to_local_scanner_when_service_unavailable(self, monkeypatch, root_analysis):
+        """When the yara scanner service is unavailable, local scanner fallback receives meta_tags."""
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
@@ -88,10 +88,10 @@ class TestYaraScannerMetaTagsUnit:
         observable = root_analysis.add_file_observable(file_path)
         observable.add_yara_meta("content_type", "email_body")
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
-            raise socket.error("connection refused")
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraServiceUnavailable("connection refused")
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         captured = {}
 
@@ -126,11 +126,11 @@ class TestYaraScannerMetaTagsUnit:
 
         scan_called = {"called": False}
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             scan_called["called"] = True
             return []
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -142,8 +142,8 @@ class TestYaraScannerMetaTagsUnit:
 # ---------------------------------------------------------------------------
 # Unit tests — scan timeouts must be swallowed and logged as warnings
 # ---------------------------------------------------------------------------
-class TestYaraScannerTimeout:
-    """A scan timeout from the yara scanner server must not escape execute_analysis."""
+class TestYaraScannerServiceFailures:
+    """How execute_analysis handles each way the yara scanner service can fail."""
 
     def _create_module(self, root):
         module = YaraScanner_v3_4(
@@ -154,7 +154,7 @@ class TestYaraScannerTimeout:
 
     @pytest.mark.unit
     def test_yara_timeout_is_caught(self, monkeypatch, caplog, root_analysis):
-        """yara.TimeoutError from scan_file is handled by the timeout handler, not the
+        """YaraScanTimeout from scan_file is handled by the timeout handler, not the
         generic error handler.
 
         The generic `except Exception` handler also swallows the exception and returns
@@ -162,19 +162,16 @@ class TestYaraScannerTimeout:
         dedicated handler — which logs the specific timeout warning and does NOT call
         report_exception (i.e. it does not generate an error report).
         """
-        # guard the premise of this test: yara.TimeoutError is not the builtin
-        assert not issubclass(yara.TimeoutError, TimeoutError)
-
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
 
         observable = root_analysis.add_file_observable(file_path)
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
-            raise yara.TimeoutError("scanning timed out")
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraScanTimeout("scanning timed out")
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         report_exception_called = {"called": False}
 
@@ -194,8 +191,85 @@ class TestYaraScannerTimeout:
         # the timeout must be handled by the dedicated handler, not reported as an error
         assert report_exception_called["called"] is False
         assert any(
-            "yara scanner server timed out" in record.message for record in caplog.records
+            "yara scanner service timed out" in record.message for record in caplog.records
         )
+
+
+    @pytest.mark.unit
+    def test_crashed_scan_is_a_scan_failure_without_local_fallback(self, monkeypatch, root_analysis):
+        """A scanner that died on the file is reported as a scan failure; the file is not
+        rescanned in-process, where it could take the engine worker down the same way."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraScanCrashed("the yara scanner closed the connection without answering")
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+
+        report_exception_called = {"called": False}
+
+        def mock_report_exception(*args, **kwargs):
+            report_exception_called["called"] = True
+            return ""
+
+        monkeypatch.setattr("saq.modules.file_analysis.yara.report_exception", mock_report_exception)
+
+        def fail_initialize_local_scanner(self):
+            raise AssertionError("the local scanner must not be used")
+
+        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", fail_initialize_local_scanner)
+
+        adapter = self._create_module(root_analysis)
+        result = adapter.execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert report_exception_called["called"] is True
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+
+    @pytest.mark.unit
+    def test_local_scanner_timeout_is_caught(self, monkeypatch, caplog, root_analysis):
+        """yara.TimeoutError from the local fallback scanner is a timeout, not a scan failure."""
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraServiceUnavailable("connection refused")
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+
+        class TimingOutLocalScanner:
+            scan_results = []
+
+            def scan(self, path, meta_tags=None):
+                raise yara.TimeoutError("scanning timed out")
+
+        def mock_initialize_local_scanner(self):
+            self.scanner = TimingOutLocalScanner()
+
+        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
+
+        report_exception_called = {"called": False}
+
+        def mock_report_exception(*args, **kwargs):
+            report_exception_called["called"] = True
+            return ""
+
+        monkeypatch.setattr("saq.modules.file_analysis.yara.report_exception", mock_report_exception)
+
+        adapter = self._create_module(root_analysis)
+        with caplog.at_level("WARNING"):
+            result = adapter.execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert report_exception_called["called"] is False
+        assert any("local yara scanner timed out" in record.message for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +374,10 @@ class TestYaraSignatureIdEmission:
         rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
         matches = [self._match("test_rule_with_uuid", rule_uuid=rule_uuid)]
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -326,10 +400,10 @@ class TestYaraSignatureIdEmission:
 
         matches = [self._match("test_rule_no_uuid")]
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -356,10 +430,10 @@ class TestYaraSignatureIdEmission:
             self._match("rule_b", rule_uuid=uuid_b),
         ]
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -385,10 +459,10 @@ class TestYaraSignatureIdEmission:
             self._match("rule_b", rule_uuid=rule_uuid),
         ]
 
-        def mock_scan_file(path, base_dir=None, socket_dir=None, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
-        monkeypatch.setattr(yara_scanner, "scan_file", mock_scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
@@ -428,8 +502,8 @@ class TestYaraEnabledMeta:
         observable = root_analysis.add_file_observable(file_path)
 
         monkeypatch.setattr(
-            yara_scanner, "scan_file",
-            lambda path, base_dir=None, socket_dir=None, meta_tags=None: matches,
+            yara_client, "scan_file",
+            lambda path, meta_tags=None, qa=None: matches,
         )
 
         adapter = self._create_module(root_analysis)
@@ -500,8 +574,8 @@ class TestYaraQueueMeta:
         observable = root_analysis.add_file_observable(file_path)
 
         monkeypatch.setattr(
-            yara_scanner, "scan_file",
-            lambda path, base_dir=None, socket_dir=None, meta_tags=None: matches,
+            yara_client, "scan_file",
+            lambda path, meta_tags=None, qa=None: matches,
         )
 
         adapter = self._create_module(root_analysis)
@@ -535,3 +609,89 @@ class TestYaraQueueMeta:
 
         assert root_analysis.all_detection_points == []
         assert not root_analysis.has_detections()
+
+
+class TestYaraQAMatches:
+    """QA matches are recorded by the yara scanner service, never by the module (docs/YARA_QA.md)."""
+
+    QA_META = {"modifiers": "qa", "uuid": "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"}
+
+    def _create_module(self, root):
+        return YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+
+    def _observable(self, root_analysis):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        return root_analysis.add_file_observable(file_path)
+
+    @pytest.mark.unit
+    def test_service_is_told_where_the_file_came_from(self, monkeypatch, root_analysis):
+        observable = self._observable(root_analysis)
+        captured = {}
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            captured["qa"] = qa
+            return [_yara_match("qa_rule", meta=self.QA_META)]
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+        result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert captured["qa"] == {
+            "root_uuid": root_analysis.uuid,
+            "observable_uuid": observable.uuid,
+            "file_name": "test.txt",
+            "file_size": 14,
+            "sha256": observable.value,
+        }
+        # a qa rule never alerts
+        assert not root_analysis.has_detections()
+
+    @pytest.mark.unit
+    def test_no_qa_context_when_qa_results_are_not_saved(self, monkeypatch, root_analysis):
+        observable = self._observable(root_analysis)
+        captured = {}
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            captured["qa"] = qa
+            return []
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+        module = self._create_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_qa_scan_results", False)
+        AnalysisModuleAdapter(module).execute_analysis(observable)
+
+        assert captured["qa"] is None
+
+    @pytest.mark.unit
+    def test_local_scanner_qa_matches_are_logged_and_dropped(self, monkeypatch, caplog, root_analysis):
+        observable = self._observable(root_analysis)
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraServiceUnavailable("connection refused")
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+
+        class QAMatchingLocalScanner:
+            scan_results = [_yara_match("qa_rule", meta=TestYaraQAMatches.QA_META)]
+
+            def scan(self, path, meta_tags=None):
+                return True
+
+        def mock_initialize_local_scanner(self):
+            self.scanner = QAMatchingLocalScanner()
+
+        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
+
+        with caplog.at_level("WARNING"):
+            result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert observable.get_and_load_analysis(YaraScanResults_v3_4) is not None
+        assert not root_analysis.has_detections()
+        assert any("with the local yara scanner: the match is not recorded" in record.message for record in caplog.records)

@@ -65,7 +65,8 @@ def test_list_signatures_as_json(capsys):
 
     # the full record, not the abbreviated table
     assert set(signatures[0]) == {
-        "name", "uuid", "type", "version", "git_remote", "source_path", "content_hash", "tags"}
+        "name", "uuid", "type", "version", "git_remote", "source_path", "content_hash", "tags",
+        "modifiers", "enabled"}
     assert isinstance(signatures[0]["tags"], list)
 
 

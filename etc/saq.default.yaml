@@ -181,8 +181,18 @@ cas:
   read_cache:
     dir: cas_cache
     max_bytes: 10737418240
-  # pools by name. none are defined by default; the consumer that needs one adds it.
-  pools: {}
+  # pools by name. a consumer that needs one adds it here.
+  pools:
+    # files matched by YARA rules in QA mode and their match records (docs/YARA_QA.md). live
+    # malware, so encrypted. backend: local keeps the bytes on the node that matched them; a
+    # multi-node site redefines this pool in its own config with a backend every node can reach and
+    # shared: true, so any node can serve the downloads.
+    yara_qa:
+      backend: local
+      encryption: system
+      retention: held
+      grace_seconds: 86400
+      shared: false
   # example: the SVS sample pool (docs/SVS.md). encrypted with the system key, kept while a capture
   # record holds it. backend: local is fine for a single-node instance; a multi-node deployment needs
   # shared: true, which requires a backend every node can reach (not implemented yet).
@@ -192,6 +202,24 @@ cas:
   #    retention: held         # held | permanent  (ttl is reserved, not implemented)
   #    grace_seconds: 86400
   #    shared: false
+
+# files matched by YARA rules in QA mode (`modifiers = "qa"`), kept in the CAS pool below so analysts
+# can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
+yara_qa:
+  pool: yara_qa
+  # most distinct files kept per (rule uuid, rule version). the version is the commit of the rule's
+  # repository, so every commit to it starts a new version of every rule in it
+  max_files_per_version: 25
+  # most distinct files kept per rule uuid across all of its versions
+  max_files_per_signature: 250
+  # a stored file is kept this long after it last matched
+  retention_days: 30
+  prune_batch_size: 500
+  prune_batch_pause_seconds: 0.5
+  max_bulk_download_files: 500
+  max_bulk_download_bytes: 1073741824
+  # how often the API rescans the rule files for rules in QA mode
+  inventory_refresh_seconds: 60
 
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
@@ -1162,11 +1190,13 @@ sip_observable_type_mappping:
 
 service_yara:
   name: yara
-  python_module: saq.yara_scanning_service
-  python_class: YSSService
-  description: Yara Scanner Service - local distributed yara scanner
+  python_module: saq.yara_scanning.service
+  python_class: YaraScannerService
+  description: Yara Scanner Service - a local pool of yara scanning processes (docs/YARA_SCANNER.md)
   enabled: true
-  # relative directory where the unix sockets for the yara scanner server are located (relative to DATA_DIR)
+  # a stopping scanner finishes the scan it is running (up to default_timeout) before it exits
+  shutdown_deadline_seconds: 30
+  # relative directory where the unix socket for the yara scanner server is located (relative to DATA_DIR)
   socket_dir: var/yss/sockets
   # global configuration of yara rules (relative to SAQ_HOME or absolute path)
   # each subdirectory in this directory has any yara rules loaded in the scanner
@@ -1188,6 +1218,24 @@ service_yara:
   scan_failure_dir: scan_failures
   # how long (in seconds) a single scan is allowed to take
   default_timeout: 10
+  # how many scanning processes to run (defaults to the number of CPUs this process may use)
+  #worker_count: 8
+  # how long (in seconds) compiling the rules may take before a new generation of scanners is given up on
+  compile_timeout: 600
+  # how long (in seconds) a scanner waits on a client that stops sending or receiving
+  io_timeout: 30
+  # how long (in seconds) a client waits for a free scanner before it scans locally instead
+  client_queue_timeout: 30
+  # the largest data stream (in bytes) a client may send to be scanned
+  max_data_bytes: 268435456
+  # replace a scanning process after it served this many requests (0 disables this)
+  max_requests_per_worker: 0
+  # where the scanners spool the matches of rules in QA mode for the qa recorder (relative to DATA_DIR).
+  # the scanned file is hardlinked into it, so it must be on the same filesystem as the engine's
+  # storage; elsewhere every file is copied instead (docs/YARA_SCANNER.md)
+  qa_spool_dir: var/yss/qa_spool
+  # the most QA match jobs the spool may hold; past it new QA matches are logged and dropped (0 = no limit)
+  qa_spool_max_jobs: 10000
 
 # observable groups
 observable_group_internal:
@@ -1893,10 +1941,8 @@ analysis_module_yara_scanner_v3_4:
   local_scanner_lifetime: 5
   # set to yes to save any files that fail yara scanning to the scan_failure_dir specified in the service_yara section
   save_scan_failures: false
-  # set to yes to save the results of yara rules running in "qa mode"
+  # set to yes to save the files matched by yara rules running in "qa mode" (see the yara_qa section)
   save_qa_scan_results: true
-  # location of files and yara scan results for rules set to "qa mode" (relative to saq.DATA_DIR)
-  qa_dir: var/qa
 
 analysis_module_binary_file_analyzer:
   name: binary_file_analyzer

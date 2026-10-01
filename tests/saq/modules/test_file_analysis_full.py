@@ -1,11 +1,15 @@
+import json
 import os
+import shutil
 import uuid
 import pytest
+from sqlalchemy import select
 
 from saq.analysis.root import load_root
+from saq.cas import Hold, get_cas
 from saq.configuration.config import get_analysis_module_config, get_service_config
-from saq.constants import ANALYSIS_MODULE_OFFICEPARSER3, ANALYSIS_MODULE_OLEVBA_V1_2, ANALYSIS_MODULE_XML_PLAIN_TEXT_ANALYZER, ANALYSIS_MODULE_YARA_SCANNER_V3_4, DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, F_URI_PATH, F_URL, F_YARA_RULE, R_EXTRACTED_FROM, SERVICE_YARA_SCANNER
-from saq.database.model import load_alert
+from saq.constants import ANALYSIS_MODULE_OFFICEPARSER3, ANALYSIS_MODULE_OLEVBA_V1_2, ANALYSIS_MODULE_XML_PLAIN_TEXT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, F_URI_PATH, F_URL, F_YARA_RULE, R_EXTRACTED_FROM, SERVICE_YARA_SCANNER
+from saq.database.model import YaraQAMatch, YaraQASignature, load_alert
 from saq.database.pool import get_db
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
@@ -21,9 +25,10 @@ from saq.modules.file_analysis.vbs import PCodeAnalysis
 from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util.uuid import get_storage_dir
-from saq.yara_scanning_service import YSSService
-from tests.saq.helpers import create_root_analysis, log_count
+from saq.yara_scanning.service import YaraScannerService
+from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
 
 UNITTEST_SOCKET_DIR = 'socket_unittest'
 
@@ -32,14 +37,25 @@ def setup(datadir, monkeypatch):
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", UNITTEST_SOCKET_DIR)  # noqa: F821
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(datadir / 'yara_rules'))
 
+def _empty_qa_spool():
+    """A job left in the qa spool would be recorded during the next test, after its yara_qa rows
+    were reset."""
+    shutil.rmtree(os.path.join(get_data_dir(), get_service_config(SERVICE_YARA_SCANNER).qa_spool_dir), ignore_errors=True)
+
+
 @pytest.fixture
 def yss_server():
-    yara_service = YSSService()
+    _empty_qa_spool()
+    yara_service = YaraScannerService()
     yara_service.start()
-    yara_service.wait_for_start()
+    assert yara_service.wait_for_start(30)
     yield yara_service
     yara_service.stop()
     yara_service.wait()
+    _empty_qa_spool()
+
+    # every scan went through the service rather than the in-process fallback
+    assert log_count("initializing local yara scanner") == 0
 
 @pytest.mark.integration
 def test_file_analysis_000_url_extraction_001_pdfparser(root_analysis, datadir):
@@ -406,7 +422,7 @@ def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     #assert log_count('with yss (matches found: True)') == 0
-    assert log_count('failed to connect to yara socket server') == 1
+    assert log_count('yara scanner service unavailable, scanning locally') == 1
     assert log_count('initializing local yara scanner') == 1
     assert log_count('got yara results for') == 1
 
@@ -579,11 +595,39 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
 
     # the yara rule should NOT have detections
     assert len(root_analysis.all_detection_points) == 0
-    # there should be a file named after the md5 of the file
-    target_dir = os.path.join(get_data_dir(), get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).qa_dir)
-    target_path = os.path.join(target_dir, 'test_qa_modifier', f"{_file.file_path}-{_file.sha256_hash}")
-    assert os.path.exists(target_path)
-    assert os.path.exists(f'{target_path}.json')
+
+    # the yara scanner service stores the file and its match record in the yara_qa cas pool,
+    # indexed by the rule's uuid, after it answered the scan. the test rules are not in a declared
+    # git repo, so the version is unknown
+    qa_uuid = "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"
+
+    def _stored() -> bool:
+        get_db().rollback()  # a fresh snapshot each time
+        match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one_or_none()
+        return match is not None and match.match_digest is not None
+
+    wait_for_condition(_stored, timeout=30)
+    match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one()
+    assert match.signature_version == SIGNATURE_VERSION_UNKNOWN
+    assert match.sha256 == _file.sha256_hash
+    assert match.file_name == _file.file_name
+    assert match.root_uuid == root_analysis.uuid
+    assert match.hit_count == 1
+    assert match.match_digest is not None
+
+    counters = get_db().execute(select(YaraQASignature).where(YaraQASignature.signature_uuid == qa_uuid)).scalar_one()
+    assert counters.rule_name == "test_qa_modifier"
+    assert (counters.match_count, counters.stored_count) == (1, 1)
+
+    pool = get_cas().pool("yara_qa")
+    assert Hold("yara_qa", str(match.id)) in [Hold(h.holder_kind, h.holder_id) for h in pool.holds(match.sha256)]
+    with pool.open(match.sha256) as fp:
+        assert fp.read() == open(_file.full_path, "rb").read()
+    with pool.open(match.match_digest) as fp:
+        assert json.load(fp)["rule"] == "test_qa_modifier"
+
+    # nothing is written to the old qa directory any more
+    assert not os.path.exists(os.path.join(get_data_dir(), "var", "qa"))
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_008_for_detection_legacy_obs_prefix(yss_server, root_analysis, datadir):

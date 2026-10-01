@@ -97,10 +97,10 @@
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('file_collection.manage') }}">File Collections</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
-                    <li class="nav-item">
-                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">Signatures</a>
-                    </li>
+                    {% if has_permission('signature', 'read') %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('signatures.signatures_hub') }}">Signatures</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
+                    {% endif %}
                     <li class="nav-item">
                         <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">DetectOps</a>
                     </li>
