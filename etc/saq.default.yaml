@@ -417,45 +417,6 @@ service_default:
   description: default unconfigured service
   enabled: true
 
-service_email_collector:
-  name: email_collector
-  python_module: saq.collectors.email.scanner
-  python_class: EmailCollectorService
-  description: Email Collector (AMS) - collects emails from remote AMS systems
-  enabled: true
-  shutdown_deadline_seconds: 60
-  workload_type: email
-  delete_files: true
-  # contains the rules that assigns emails to collectors
-  assignment_yara_rule_path: etc/remote_assignments.yar
-  # any email that matches these rules are ignored
-  blacklist_yara_rule_path: etc/blacklist.yar
-  # how often do we check to see if the blacklist yara rule has changed (in SECONDS)
-  blacklist_yara_rule_check_frequency: 10
-
-service_journal_email_collector:
-  name: journal_email_collector
-  python_module: saq.collectors.email.journal
-  python_class: JournalEmailCollectorService
-  description: Journal Email Collector - collects journal emails from a local directory or S3 bucket
-  enabled: true
-  shutdown_deadline_seconds: 60
-  workload_type: journal
-  # source type: local or s3
-  source: local
-  # local source settings
-  source_directory: data/journal-emails
-  delete_files: true
-  # how often to poll for new emails (in seconds)
-  collection_frequency: 5
-  # s3 source settings (only used when source is s3)
-  bucket_name: journal-emails
-  delete_s3_objects: true
-  # any email that matches these rules are ignored
-  blacklist_yara_rule_path: etc/blacklist.yar
-  # how often do we check to see if the blacklist yara rule has changed (in SECONDS)
-  blacklist_yara_rule_check_frequency: 10
-
 # ACE Services
 service_hunter:
   name: hunter
@@ -842,15 +803,6 @@ email_archive:
 memcached:
   # the address of the memcached system used by ACE
   client_address: unix:var/memcached.socket
-
-email:
-  # the directory that contains the emails received by ACE for scanning
-  # either via postfix or local email routing (not SMTP stream scanning)
-  # (relative to DATA_DIR)
-  email_dir: var/incoming/amc
-  # the strftime format used to generate the subdirectory names that actually contain the emails
-  # NOTE that INI used %% to escape; YAML uses normal % formatting here
-  subdir_format: "%Y%m%d%H"
 
 # database connections
 # NOTE: unix_socket is typically /var/run/mysqld/mysqld.sock

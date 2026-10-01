@@ -100,7 +100,6 @@ for dir in \
     data/var \
     data/scan_failures \
     data/storage \
-    data/journal-emails \
     data/stats/modules/ace \
     data/archive/email \
     data/archive/smtp_stream \

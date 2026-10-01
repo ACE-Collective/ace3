@@ -556,10 +556,6 @@ service_network_semaphore:
   remote_address: 127.0.0.1
   remote_port: 53560
 
-service_email_collector:
-  enabled: true
-  assignment_yara_rule_path: etc/remote_assignments.unittest.yar
-
 smtp:
   server: localhost
   mail_from: ace@localhost
