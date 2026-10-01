@@ -31,7 +31,7 @@ The `AnalysisTreeManager` acts as a service or a controller for this implicit tr
 **Cons:**
 
 *   **Complex Dependencies:** The most significant drawback is the circular dependency. `RootAnalysis` creates an `AnalysisTreeManager`, which is then injected into `Analysis` and `Observable` nodes that are part of the `RootAnalysis`'s tree. This makes the components tightly coupled and harder to reason about or test in isolation.
-*   **Distributed State:** The state of the tree is spread across all nodes. This makes global operations like validation, serialization, or complex queries more difficult. The existence of dedicated `AnalysisTreeValidator`, `AnalysisTreeQueryEngine`, and `AnalysisTreePersistenceManager` classes highlights the complexity of managing this distributed structure.
+*   **Distributed State:** The state of the tree is spread across all nodes. This makes global operations like validation, serialization, or complex queries more difficult. The existence of dedicated `AnalysisTreeQueryEngine` and `AnalysisTreePersistenceManager` classes highlights the complexity of managing this distributed structure.
 *   **Awkward Delegation:** An `Analysis` object wanting to add a child `Observable` has to call *up* to its `analysis_tree_manager` (`self.analysis_tree_manager.add_observable(...)`). This is a strong indicator that the responsibility for managing the tree structure is not cleanly separated. The node objects are responsible for holding references, but the manager is responsible for the logic of creating them.
 
 ### Proposed Design: Explicit Tree Object
