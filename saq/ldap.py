@@ -114,9 +114,6 @@ def lookup_user_email_address(user):
         return None
     return normalize_email_address(attributes['mail'])
 
-def lookup_hostname(hostname):
-    return lookup_user(hostname)
-
 def get_child_groups(groups):
     query = ""
     for group in groups:

@@ -435,10 +435,6 @@ analysis_module_bad_summary_test:
   python_class: BadSummaryTestAnalyzer
   enabled: false
 
-analysis_module_netbios_analyzer:
-  enabled: true
-  ssh_host: ""
-
 #analysis_module_api_analysis_test:
   #name: api_analysis_test
   #module: tests.saq.test_api_analysis
