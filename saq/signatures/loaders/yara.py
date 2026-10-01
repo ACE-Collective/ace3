@@ -29,6 +29,7 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.git_context import GitContext
 from saq.signatures.loaders.util import content_hash, normalize_tags, sort_signatures
 from saq.signatures.model import Signature, SignatureType
+from saq.signatures.yara_meta import meta_enabled, meta_modifiers
 
 YARA_FILE_EXTENSIONS = (".yar", ".yara")
 
@@ -117,9 +118,42 @@ def _parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
             source_path=source_path,
             content_hash=content_hash(rule_source),
             tags=_rule_tags(parsed_rule, metadata),
+            modifiers=tuple(meta_modifiers(metadata)),
+            enabled=meta_enabled(metadata),
         ))
 
     return result
+
+
+# a file's stat identity: (st_mtime_ns, st_size, st_ino). a rule file that has none of these changed
+# parses to the same rules
+FileIdentity = tuple[int, int, int]
+
+# path -> (identity when parsed, the rules parsed from it). see load_yara_signatures(parse_cache=)
+ParseCache = dict[str, tuple[FileIdentity, list[Signature]]]
+
+
+def _file_identity(path: str) -> FileIdentity:
+    stat = os.stat(path)
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def _parse_rule_file_cached(path: str, git_context: GitContext, parse_cache: ParseCache) -> list[Signature]:
+    """_parse_rule_file, reusing the rules parsed from an unchanged file. The version and remote
+    are stamped from git_context either way, because a commit that touched some other file still
+    moves the version of every rule in the repo."""
+    identity = _file_identity(path)
+    cached = parse_cache.get(path)
+    if cached is None or cached[0] != identity:
+        signatures = _parse_rule_file(path, git_context)
+        parse_cache[path] = (identity, signatures)
+        return signatures
+
+    return [
+        signature if signature.version == git_context.version and signature.git_remote == git_context.git_remote
+        else replace(signature, version=git_context.version, git_remote=git_context.git_remote)
+        for signature in cached[1]
+    ]
 
 
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:
@@ -131,7 +165,8 @@ def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[st
     }
 
 
-def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = None) -> list[Signature]:
+def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = None, *,
+                         parse_cache: ParseCache | None = None) -> list[Signature]:
     """Loads every yara signature under signature_dir, which is the directory
     ACE configures as service_yara.signature_dir: one subdirectory per set of
     rules, each holding .yar/.yara files.
@@ -140,7 +175,12 @@ def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = N
     directories it names are versioned by their repo's commit, so the inventory
     reports the same version a detection on those rules would. Omit it to resolve
     an enclosing repo for every rule directory instead - the layout exists so that
-    independently cloned rule repos can sit side by side."""
+    independently cloned rule repos can sit side by side.
+
+    parse_cache, when given, is kept by the caller across calls: a rule file whose stat identity
+    has not changed since it was parsed is not parsed again (plyara is the expensive part of a
+    load), and entries for files that are gone are dropped. Parsing every file is seconds for a
+    few hundred rules, which is too slow to repeat on every API request."""
     if not os.path.isdir(signature_dir):
         raise NotADirectoryError(f"yara signature_dir {signature_dir} is not a directory")
 
@@ -149,6 +189,7 @@ def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = N
         declared_repo_paths = _declared_repo_paths(signature_dir, git_repo_dirs)
 
     result: list[Signature] = []
+    seen_files: set[str] = set()
     for entry in sorted(os.listdir(signature_dir)):
         rule_dir = os.path.join(signature_dir, entry)
         if not os.path.isdir(rule_dir):
@@ -174,9 +215,17 @@ def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = N
             if not os.path.isfile(rule_file):
                 continue
 
+            seen_files.add(rule_file)
             try:
-                result.extend(_parse_rule_file(rule_file, git_context))
+                if parse_cache is None:
+                    result.extend(_parse_rule_file(rule_file, git_context))
+                else:
+                    result.extend(_parse_rule_file_cached(rule_file, git_context, parse_cache))
             except Exception as e:
                 logging.warning("unable to load yara signatures from %s: %s", rule_file, e)
+
+    if parse_cache is not None:
+        for stale_path in set(parse_cache) - seen_files:
+            del parse_cache[stale_path]
 
     return sort_signatures(result)

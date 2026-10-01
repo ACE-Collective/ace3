@@ -29,7 +29,8 @@ class CatalogEntry:
 #
 # `admin:read` is the umbrella gate for the /admin GUI area; it is enforced by the admin blueprint's
 # before_request guard (app/admin/views/access.py:24) rather than a require_permission decorator, so
-# it has no decorator call site. `ai:read` is enforced by the out-of-repo AI container. `cas:hold`
+# it has no decorator call site. `signature:read` is likewise the umbrella gate for the /signatures
+# GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `cas:hold`
 # and `cas:purge` have no in-repo enforcement site yet: `ace cas hold|purge` record --actor without
 # checking, and the entries exist so an API surface can enforce them without a catalog migration
 # (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
@@ -67,6 +68,8 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("remediation", "read", "View remediation actions and history."),
     CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
     CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
+    CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode (live malware, in zips protected with the password infected)."),
+    CatalogEntry("signature", "read", "Access the Signatures area and read YARA QA results: rules in QA mode, match counts and match records."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),

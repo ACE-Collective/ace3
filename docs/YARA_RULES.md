@@ -12,6 +12,8 @@ layer of result *interpretation* on top of that. This document covers all three.
   [YARA documentation](https://yara.readthedocs.io/).
 - The scanner library and its CLI are documented in the
   [`yara_scanner_v2` README][yara_scanner].
+- The service that runs the scans for the engine is documented in
+  [YARA_SCANNER.md](YARA_SCANNER.md).
 - Everything ACE-specific is documented here.
 
 [yara_scanner]: https://github.com/unixfreak0037/yara_scanner_v2/blob/main/README.md
@@ -365,7 +367,7 @@ A comma-separated list of modifiers that change how the match is interpreted:
 | Modifier         | Effect |
 |------------------|--------|
 | `no_alert`       | The rule still matches and still produces observables and tags, but it does **not** by itself make the file alertable and does **not** add a detection point. Useful for enrichment/tagging rules. |
-| `qa`             | **QA mode.** Implies `no_alert`. In addition, ACE copies the matched file plus a JSON dump of the match into `qa_dir/<rule_name>/` for analyst review. Use this to vet a new rule against live data before letting it alert. |
+| `qa`             | **QA mode.** Implies `no_alert`. In addition, ACE keeps the matched file and the full match record (encrypted, in the `yara_qa` CAS pool) for analyst review under **Signatures → Yara QA Results**, up to a cap per rule and for 30 days after the file last matched. The rule needs a `uuid` meta for its matches to be kept. Use this to vet a new rule against live data before letting it alert. See `docs/YARA_QA.md`. |
 | `directive=VALUE`| Adds the ACE directive `VALUE` to the scanned file (e.g. `directive=sandbox`). Skipped when the rule is also in `qa` mode. |
 
 ```yara

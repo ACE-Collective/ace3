@@ -52,6 +52,7 @@ rule test_whitelist : whitelisted
 rule test_qa_modifier
 {
     meta:
+        uuid = "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"
         modifiers = "qa"
 
     strings:

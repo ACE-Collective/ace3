@@ -593,3 +593,104 @@ def test_unparseable_file_is_skipped(signature_repo, file_name, content):
     _write(os.path.join(signature_repo, file_name), content)
 
     assert loader(path) == baseline
+
+
+#
+# yara meta: modifiers and enabled (saq.signatures.yara_meta)
+#
+
+QA_RULES = """\
+rule qa_rule
+{
+    meta:
+        uuid = "5a0c7f1e-1c43-4a39-8d8e-2f1b3c4d5e6f"
+        modifiers = "no_alert, qa ,directive=sandbox"
+
+    strings:
+        $a = "qa"
+
+    condition:
+        $a
+}
+
+rule disabled_rule
+{
+    meta:
+        uuid = "6b1d8a2f-2d54-4b4a-9e9f-3a2c4d5e6f70"
+        enabled = false
+
+    strings:
+        $a = "disabled"
+
+    condition:
+        $a
+}
+
+rule disabled_by_string
+{
+    meta:
+        uuid = "7c2e9b3a-3e65-4c5b-8fa0-4b3d5e6f7081"
+        enabled = "off"
+
+    strings:
+        $a = "off"
+
+    condition:
+        $a
+}
+"""
+
+
+@pytest.mark.unit
+def test_yara_modifiers_and_enabled(signature_dir):
+    _write(os.path.join(signature_dir, "yara", "qa", "qa.yar"), QA_RULES)
+    signatures = {s.name: s for s in load_yara_signatures(_yara_dir(signature_dir))}
+
+    assert signatures["qa_rule"].modifiers == ("no_alert", "qa", "directive=sandbox")
+    assert signatures["qa_rule"].enabled is True
+    assert signatures["disabled_rule"].modifiers == ()
+    assert signatures["disabled_rule"].enabled is False
+    assert signatures["disabled_by_string"].enabled is False
+    # a rule without either meta
+    assert signatures["tracked_rule"].modifiers == ()
+    assert signatures["tracked_rule"].enabled is True
+
+
+@pytest.mark.unit
+def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
+    import saq.signatures.loaders.yara as yara_loader
+
+    parsed = []
+    original = yara_loader._parse_rule_file
+
+    def counting_parse(path, git_context):
+        parsed.append(os.path.basename(path))
+        return original(path, git_context)
+
+    monkeypatch.setattr(yara_loader, "_parse_rule_file", counting_parse)
+    cache = {}
+
+    first = load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache)
+    assert parsed == ["rules.yar"]
+
+    # nothing changed: nothing is parsed again, and the result is the same
+    assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == first
+    assert parsed == ["rules.yar"]
+
+    # a commit that touches another file moves the version of the cached rules without a re-parse
+    _write(os.path.join(signature_repo, "README.md"), "unrelated")
+    commit = _commit(signature_repo, "unrelated change")
+    restamped = load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache)
+    assert parsed == ["rules.yar"]
+    assert {s.version for s in restamped} == {commit}
+
+    # a changed rule file is parsed again
+    _write(os.path.join(signature_repo, "yara", "bv", "rules.yar"), YARA_RULES + QA_RULES)
+    changed = load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache)
+    assert parsed == ["rules.yar", "rules.yar"]
+    assert "qa_rule" in {s.name for s in changed}
+
+    # a removed rule file is dropped from the cache
+    os.remove(os.path.join(signature_repo, "yara", "bv", "rules.yar"))
+    assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == []
+    assert cache == {}

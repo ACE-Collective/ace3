@@ -771,6 +771,16 @@ cas:
       encryption: none
       retention: permanent
 
+# yara qa storage (tests/saq/yara_qa). the yara_qa pool itself comes from saq.default.yaml; small caps
+# so the tests reach them, small prune batches with no pause so the batching loop runs, and no
+# inventory refresh interval so a test that writes a rule file sees it at once.
+yara_qa:
+  max_files_per_version: 3
+  max_files_per_signature: 5
+  prune_batch_size: 2
+  prune_batch_pause_seconds: 0
+  inventory_refresh_seconds: 0
+
 storage:
   target: local
   base_dir: data_unittest/main/storage

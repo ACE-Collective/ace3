@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block control_panel %}
+<div class="container-fluid">
+    <form id="qa_filters" class="row row-cols-lg-auto g-2 align-items-end">
+        <div class="col">
+            <label class="form-label mb-0" for="qa_q">Search</label>
+            <input type="text" class="form-control form-control-sm" id="qa_q" placeholder="rule name, uuid, file…">
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="qa_status">Status</label>
+            <select class="form-select form-select-sm" id="qa_status">
+                <option value="qa" selected>In QA mode</option>
+                <option value="not_qa">No longer in QA mode</option>
+                <option value="missing">Removed</option>
+                <option value="">All</option>
+            </select>
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="qa_has_matches">Matches</label>
+            <select class="form-select form-select-sm" id="qa_has_matches">
+                <option value="" selected>any</option>
+                <option value="true">has matched</option>
+                <option value="false">never matched</option>
+            </select>
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="qa_sort">Sort</label>
+            <select class="form-select form-select-sm" id="qa_sort">
+                <option value="name" selected>name</option>
+                <option value="last_match">last match</option>
+                <option value="match_count">match count</option>
+            </select>
+        </div>
+        <div class="col">
+            <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" id="qa_descending">
+                <label class="form-check-label" for="qa_descending">descending</label>
+            </div>
+        </div>
+        <div class="col">
+            <label class="form-label mb-0" for="qa_limit">Per page</label>
+            <select class="form-select form-select-sm" id="qa_limit">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+        <div class="col">
+            <button type="submit" class="btn btn-sm btn-outline-dark">Apply</button>
+            <button type="button" id="qa_reset" class="btn btn-sm btn-outline-secondary">Reset</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block page_content %}
+<style>
+#qa_signature_table { table-layout: fixed; width: 100%; }
+#qa_signature_table td, #qa_signature_table th { vertical-align: top; }
+#qa_signature_table .qa-uuid, #qa_signature_table .qa-name { overflow-wrap: anywhere; }
+#qa_signature_table tr.qa-signature-row { cursor: pointer; }
+#qa_signature_table tr.qa-detail-row > td { background-color: #f8f9fa; }
+.qa-match-table td, .qa-match-table th { vertical-align: top; font-size: 0.875rem; }
+.qa-match-table .qa-file-name, .qa-match-table .qa-sha256 { overflow-wrap: anywhere; }
+</style>
+
+<div id="yara_qa_page"
+     data-api="/api/v2/signatures/yara-qa"
+     data-alert-url="{{ url_for('analysis.index') }}"
+     data-can-download="{{ 'true' if has_permission('signature', 'download') else 'false' }}">
+
+    <h2 class="mb-1">Yara QA Results</h2>
+    <p class="text-muted mb-3">
+        YARA rules with <code>modifiers = "qa"</code> match live data without alerting. The files they match are
+        kept for review, up to a cap per rule, until they have not matched for a while. Click a rule to see its files.
+        Downloads are zips protected with the password <code>infected</code>.
+    </p>
+
+    <div id="qa_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="qa_inventory_warning" class="alert alert-warning d-none" role="alert"></div>
+
+    <table id="qa_signature_table" class="table table-sm table-hover">
+        <thead>
+            <tr>
+                <th style="width: 22%">Rule</th>
+                <th style="width: 20%">UUID</th>
+                <th style="width: 9%">Status</th>
+                <th style="width: 7%">Enabled</th>
+                <th style="width: 8%" title="every match, including those past the file cap">Matches</th>
+                <th style="width: 8%" title="files kept for review">Stored</th>
+                <th style="width: 7%" title="versions of the rule that have matched">Versions</th>
+                <th style="width: 19%">Last match</th>
+            </tr>
+        </thead>
+        <tbody id="qa_signature_rows">
+            <tr><td colspan="8" class="text-muted">Loading…</td></tr>
+        </tbody>
+    </table>
+
+    <div class="d-flex align-items-center gap-2">
+        <button type="button" id="qa_prev" class="btn btn-sm btn-outline-secondary" disabled>&laquo; Previous</button>
+        <button type="button" id="qa_next" class="btn btn-sm btn-outline-secondary" disabled>Next &raquo;</button>
+        <span id="qa_page_info" class="text-muted small"></span>
+    </div>
+</div>
+
+<div class="modal fade" id="qa_match_modal" tabindex="-1" role="dialog" aria-labelledby="qa_match_modal_label" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="qa_match_modal_label">Match</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="qa_match_modal_body"></div>
+            <div class="modal-footer">
+                <a id="qa_match_modal_record" class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener">Full match record (JSON)</a>
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/signatures_yara_qa.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

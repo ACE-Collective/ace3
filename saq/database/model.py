@@ -1580,6 +1580,76 @@ class CASPurge(Base):
         server_default=text('CURRENT_TIMESTAMP'))
 
 
+class YaraQASignature(Base):
+    """Per (signature uuid, signature version) counters for YARA rules in QA mode (docs/YARA_QA.md).
+
+    signature_version is the commit of the rule's repository (or 'unknown'), the same value a
+    detection point carries, so one rule has a row per commit it matched under. match_count counts
+    every match, including those past the file cap, because "how noisy is this rule" is the
+    question QA answers and the cap must not hide it. stored_count is the number of
+    yara_qa_matches rows for this version: it is the slot counter the cap is enforced against,
+    incremented by one conditional UPDATE when a file is stored and decremented when a match is
+    pruned. Only saq/yara_qa writes this table.
+    """
+
+    __tablename__ = 'yara_qa_signatures'
+
+    signature_uuid: Mapped[str] = mapped_column(String(36), primary_key=True)
+    signature_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # the rule's name and namespace when it last matched
+    rule_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    namespace: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    match_count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text('0'))
+    stored_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    first_match_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_match_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class YaraQAMatch(Base):
+    """One file stored for a YARA rule in QA mode (docs/YARA_QA.md).
+
+    The file and the full match record (the yara_scanner match dict, JSON-serialized and never
+    truncated) are both objects in the yara_qa CAS pool, each held by Hold("yara_qa", str(id))
+    until expires_at. A new match of the same file under the same rule version bumps hit_count
+    and renews the expiry instead of adding a row. match_summary is derived from the record and
+    its size depends on the rule, not the file: meta, tags and, per string identifier, how many
+    times it matched and where first. The record itself can be megabytes (a loose string may match
+    thousands of times, each with its bytes), which is why it lives in the CAS and not here.
+
+    node is the node that stored the file: with a node-local pool the bytes are only there.
+    Rows are removed by `ace yara-qa prune` once expired, in primary-key batches. Only saq/yara_qa
+    writes this table.
+    """
+
+    __tablename__ = 'yara_qa_matches'
+    __table_args__ = (
+        UniqueConstraint('signature_uuid', 'signature_version', 'sha256', name='uq_yara_qa_matches_file'),
+        Index('i_yara_qa_matches_signature', 'signature_uuid', 'id'),
+        Index('i_yara_qa_matches_expires', 'expires_at', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # the file's digest in the pool
+    sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(1024), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # the RootAnalysis the file was analyzed in; it only sometimes becomes an alert
+    root_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    observable_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    node: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # the full match record's digest in the pool; NULL only while the row is being stored
+    match_digest: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # JSON-serialized (no native JSON column type is used anywhere in this schema -- see
+    # ExternalRemediationCheck.context_json)
+    match_summary: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('1'))
+    first_seen: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'
