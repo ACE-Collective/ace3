@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Callable, Iterable, List, Optional, Type, Unio
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.observable_registry import ObservableRegistry
-from saq.analysis.search import recurse_tree, search_down
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -89,49 +88,6 @@ class AnalysisTreeQueryEngine:
     def get_observable_by_spec(self, o_type: str, o_value: str, o_time=None):
         """Returns the Observable object by type and value, and optionally time, or None if it cannot be found."""
         return self.observable_registry.get_by_spec(o_type, o_value, o_time)
-
-    def search_tree(self, root_object, tags=()) -> list[Union[Analysis, Observable]]:
-        """Searches the analysis tree starting from root_object for objects with the given tags.
-
-        Args:
-            root_object: The root object to start searching from (Analysis or Observable)
-            tags: Tuple of tags to search for
-
-        Returns:
-            List of objects that match the search criteria
-        """
-        if not isinstance(tags, tuple):
-            tags = (tags,)
-
-        result: list[Union[Analysis, Observable]] = []
-
-        def _search(target):
-            for tag in tags:
-                if target.has_tag(tag):
-                    if target not in result:
-                        result.append(target)
-
-        recurse_tree(root_object, _search)
-        return result
-
-    def search_tree_by_callback(self, root_object, callback) -> list[Union[Analysis, Observable]]:
-        """Searches the analysis tree starting from root_object using a callback function.
-
-        Args:
-            root_object: The root object to start searching from (Analysis or Observable)
-            callback: Function that takes an object and returns True if it matches
-
-        Returns:
-            List of objects that match the search criteria
-        """
-        result = []
-
-        def _search(target):
-            if callback(target):
-                result.append(target)
-
-        recurse_tree(root_object, _search)
-        return result
 
     def iterate_all_references(self, target: Union[Analysis, Observable]) -> Iterable[Union[Analysis, Observable]]:
         """Iterates through all objects that refer to target."""

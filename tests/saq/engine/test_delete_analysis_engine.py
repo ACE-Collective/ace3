@@ -17,6 +17,7 @@ from saq.engine.enums import EngineExecutionMode
 from saq.modules.test import BasicTestAnalysis
 from saq.observables.file import FileObservable
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import validate_tree_integrity
 
 
 def _run_basic_test_engine(value: str) -> RootAnalysis:
@@ -41,10 +42,6 @@ def create_root_for(value: str) -> RootAnalysis:
     return root
 
 
-def _integrity(root):
-    return root.analysis_tree_manager.validate_tree_integrity()
-
-
 def _rows_for(alert_id):
     return get_db().query(db_DetectionPoint).filter(db_DetectionPoint.alert_id == alert_id).all()
 
@@ -62,7 +59,7 @@ def test_engine_delete_analysis_prunes_generated_child_observables():
     result_1 = root.get_observable_by_spec(F_TEST, "result_1")
     result_2 = root.get_observable_by_spec(F_TEST, "result_2")
     assert result_1 is not None and result_2 is not None
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     obs.delete_analysis(analysis)
 
@@ -70,11 +67,11 @@ def test_engine_delete_analysis_prunes_generated_child_observables():
     registry = root.analysis_tree_manager.observable_registry
     assert result_1.uuid not in registry
     assert result_2.uuid not in registry
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     root.save()
     reloaded = load_root(get_storage_dir(root.uuid))
-    assert _integrity(reloaded) == []
+    assert validate_tree_integrity(reloaded) == []
     assert reloaded.get_observable(obs.uuid).get_analysis(BasicTestAnalysis) is None
     assert reloaded.get_observable_by_spec(F_TEST, "result_1") is None
 
@@ -100,10 +97,10 @@ def test_engine_delete_analysis_removes_generated_files_from_disk():
     for f in file_observables:
         assert f.uuid not in registry
     assert all(not os.path.exists(p) for p in full_paths)
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     root.save()
-    assert _integrity(load_root(get_storage_dir(root.uuid))) == []
+    assert validate_tree_integrity(load_root(get_storage_dir(root.uuid))) == []
 
 
 @pytest.mark.integration
@@ -129,7 +126,7 @@ def test_engine_delete_analysis_reconciles_detection_points_in_db():
     assert _rows_for(alert.id) == []
     get_db().expire_all()
     assert load_alert(root.uuid).detection_count == 0
-    assert _integrity(alert.root_analysis) == []
+    assert validate_tree_integrity(alert.root_analysis) == []
 
 
 @pytest.mark.integration
@@ -151,8 +148,8 @@ def test_engine_delete_clears_detection_path_and_reconcile_is_idempotent():
 
     # the detection is gone from the tree entirely
     assert alert.root_analysis.all_detection_points == []
-    assert not alert.root_analysis.analysis_tree_manager.has_detections()
-    assert _integrity(alert.root_analysis) == []
+    assert not alert.root_analysis.has_detections()
+    assert validate_tree_integrity(alert.root_analysis) == []
 
     alert.root_analysis.save()
     alert.sync()
@@ -188,17 +185,17 @@ def test_engine_delete_analysis_with_runtime_dependency():
     obs = root.get_observable_by_spec(F_TEST, "test_1")
     assert obs.get_and_load_analysis(WaitAnalysis_A) is not None
     assert obs.get_and_load_analysis(WaitAnalysis_B) is not None
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     # delete the dependent (source) analysis; the depended-on analysis must remain
     obs.delete_analysis(obs.get_analysis(WaitAnalysis_A))
     assert obs.get_analysis(WaitAnalysis_A) is None
     assert obs.get_analysis(WaitAnalysis_B) is not None
-    assert _integrity(root) == []
+    assert validate_tree_integrity(root) == []
 
     root.save()
     reloaded = load_root(get_storage_dir(root.uuid))
-    assert _integrity(reloaded) == []
+    assert validate_tree_integrity(reloaded) == []
     reloaded_obs = reloaded.get_observable(obs.uuid)
     assert reloaded_obs.get_analysis(WaitAnalysis_A) is None
     assert reloaded_obs.get_and_load_analysis(WaitAnalysis_B) is not None
