@@ -1,5 +1,0 @@
-officeparser
-pefile==2019.4.18
-six
-uncompyle6
-xdis==5.0.12

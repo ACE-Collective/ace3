@@ -191,7 +191,6 @@ RUN if [ "$USE_UNPINNED_REQUIREMENTS" = "true" ]; then \
 else \
     cp /venv/python-requirements-pinned.txt /venv/python-requirements.txt; \
 fi
-COPY --chown=ace:ace installer/requirements-2.7.txt /venv/python-requirements-2.7.txt
 
 # NOTE for now we're installing sentence-transformers w/o nvidia gpu support
 RUN python3 -m virtualenv --python=python3 /venv && \
