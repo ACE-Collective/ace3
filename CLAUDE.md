@@ -110,7 +110,7 @@ Four Alembic chains, each with its own ini, versions dir, declarative base (`saq
 
 All models live in `saq/database/model.py`. The brocess models are schema-definition only — every actual read/write goes through raw pymysql (`saq/brocess.py`, `saq/modules/email/logging.py`, `saq/modules/email/conversation.py`).
 
-The `amc` database is **not** under Alembic; it is still created from the raw DDL in `sql/05-amc.sql`. The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
+The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
 
 `bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
 

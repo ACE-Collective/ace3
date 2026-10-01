@@ -132,10 +132,7 @@ extra/
 ssl/
 
 # config files
-etc/amc_client.yaml
 etc/saq.docker.passwords.yaml
-etc/blacklist.yar
-etc/remote_assignments.yar
 etc/saq.yaml
 etc/mysql_defaults.root
 docker/provision/ace/etc

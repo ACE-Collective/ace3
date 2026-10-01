@@ -318,10 +318,6 @@ class EmailArchiveConfig(BaseModel):
 class MemcachedConfig(BaseModel):
     client_address: str = Field(..., description="the address of the memcached system used by ACE")
 
-class EmailConfig(BaseModel):
-    email_dir: str = Field(..., description="the directory that contains the emails received by ACE for scanning (relative to DATA_DIR)")
-    subdir_format: str = Field(..., description="the strftime format used to generate the subdirectory names that actually contain the emails")
-
 class LDAPConfig(BaseModel):
     ldap_server: str = Field(..., description="the LDAP server (probably your domain controller)")
     ldap_port: int = Field(..., description="the port the LDAP server listens to")
@@ -796,7 +792,6 @@ class ACEConfig(BaseModel):
     smtp: Optional[SMTPConfig] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
-    email: Optional[EmailConfig] = None
     ldap: Optional[LDAPConfig] = None
     sip: Optional[SIPConfig] = None
     shodan: Optional[ShodanConfig] = None

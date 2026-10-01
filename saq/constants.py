@@ -724,10 +724,8 @@ GUI_TABS = [
 #
 
 SERVICE_CRON = "cron"
-SERVICE_EMAIL_COLLECTOR = "email_collector"
 SERVICE_ENGINE = "engine"
 SERVICE_HUNTER = "hunter"
-SERVICE_JOURNAL_EMAIL_COLLECTOR = "journal_email_collector"
 SERVICE_SEARCH_INDEXER = "search_indexer"
 SERVICE_NETWORK_SEMAPHORE = "network_semaphore"
 SERVICE_REMEDIATION = "remediation"
@@ -1057,22 +1055,6 @@ CONFIG_SPLUNK_APP_CONTEXT = "app_context"
 CONFIG_QUERY_HUNTER = "query_hunter"
 CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT = "max_result_count"
 CONFIG_QUERY_HUNTER_QUERY_TIMEOUT = "query_timeout"
-
-# email scanning
-CONFIG_EMAIL = "email"
-CONFIG_EMAIL_DIR = "email_dir"
-CONFIG_EMAIL_SUBDIR_FORMAT = "subdir_format"
-
-CONFIG_EMAIL_COLLECTOR = "service_email_collector"
-CONFIG_EMAIL_COLLECTOR_ASSIGNMENT_YARA_RULE_PATH = "assignment_yara_rule_path"
-CONFIG_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_PATH = "blacklist_yara_rule_path"
-
-# journal email collector
-CONFIG_JOURNAL_EMAIL_COLLECTOR = "service_journal_email_collector"
-CONFIG_JOURNAL_EMAIL_COLLECTOR_DELETE_S3_OBJECTS = "delete_s3_objects"
-CONFIG_JOURNAL_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_PATH = "blacklist_yara_rule_path"
-CONFIG_JOURNAL_EMAIL_COLLECTOR_BLACKLIST_YARA_RULE_CHECK_FREQUENCY = "blacklist_yara_rule_check_frequency"
-
 
 # remote email scanner
 CONFIG_REMOTE_EMAIL_COLLECTOR = "service_remote_email_collector"

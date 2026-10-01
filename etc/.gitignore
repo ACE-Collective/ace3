@@ -18,8 +18,6 @@ yara/
 startup
 validation_hash
 FLAG_EXTRACT_ARCHIVES
-amc_mda.ini
-amc_mda_logging.ini
 
 collection/
 
