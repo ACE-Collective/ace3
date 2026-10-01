@@ -34,6 +34,8 @@ class YaraScannerServiceConfig(ServiceConfig):
     client_queue_timeout: float = Field(..., gt=0, description="how long (in seconds) a client waits for a free scanner before it scans locally instead")
     max_data_bytes: int = Field(..., gt=0, description="the largest data stream (in bytes) a client may send to be scanned")
     max_requests_per_worker: int = Field(..., ge=0, description="replace a scanning process after it served this many requests; 0 disables this")
+    qa_spool_dir: str = Field(..., description="relative directory (relative to DATA_DIR) where the scanners spool the matches of rules in QA mode for the qa recorder; it must be on the same filesystem as the engine's storage, or every matched file is copied")
+    qa_spool_max_jobs: int = Field(..., ge=0, description="the most QA match jobs the spool may hold before new QA matches are dropped; 0 is no limit")
 
     @model_validator(mode="after")
     def _shutdown_fits(self) -> "YaraScannerServiceConfig":
@@ -89,6 +91,8 @@ def get_scanner_settings() -> ScannerSettings:
         max_data_bytes=config.max_data_bytes,
         max_requests_per_worker=config.max_requests_per_worker,
         backlog=config.backlog,
+        qa_spool_dir=os.path.join(get_data_dir(), config.qa_spool_dir),
+        qa_spool_max_jobs=config.qa_spool_max_jobs,
     )
 
 

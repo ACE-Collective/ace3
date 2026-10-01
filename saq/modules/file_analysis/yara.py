@@ -24,7 +24,6 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.util.filesystem import abs_path
-from saq.yara_qa.store import record_qa_match
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
 from saq.yara_scanning.service import get_validated_git_repo_dirs
@@ -112,7 +111,7 @@ class YaraScannerConfig(AnalysisModuleConfig):
     context_bytes: int = Field(..., description="Number of context bytes to capture around matches.")
     local_scanner_lifetime: int = Field(..., description="The amount of time (in minutes) a local scanner is used before it expires.")
     save_scan_failures: bool = Field(default=False, description="If this is True then files that fail scanning are saved for later analysis.")
-    save_qa_scan_results: bool = Field(default=True, description="Store the files matched by yara rules in QA mode, and their match records, in the yara_qa CAS pool (docs/YARA_QA.md).")
+    save_qa_scan_results: bool = Field(default=True, description="Have the yara scanner service store the files matched by yara rules in QA mode, and their match records, in the yara_qa CAS pool (docs/YARA_QA.md). Matches found by the local fallback scanner are never stored.")
 
 class YaraScanner_v3_4(AnalysisModule):
     @classmethod
@@ -146,7 +145,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
     @property
     def save_qa_scan_results(self):
-        """Returns True if we should store the files matched by yara rules in QA mode (docs/YARA_QA.md)."""
+        """Returns True if the yara scanner service should store the files matched by yara rules in
+        QA mode (docs/YARA_QA.md)."""
         return self.config.save_qa_scan_results
 
     @property
@@ -248,6 +248,19 @@ class YaraScanner_v3_4(AnalysisModule):
         try:
             no_alert_rules = set() # the set of rules that matches that have the no_alert modifier
             matches_found = False # set to True if at least one rule matched
+            scanned_locally = False # the local scanner does not record QA matches; the service does
+
+            # with this the service records the matches of rules in QA mode, after it answers
+            # (docs/YARA_QA.md). the value of a file observable is its sha256
+            qa_context = None
+            if self.save_qa_scan_results:
+                qa_context = {
+                    "root_uuid": self.get_root().uuid,
+                    "observable_uuid": _file.uuid,
+                    "file_name": _file.file_name,
+                    "file_size": _file.size or 0,
+                    "sha256": _file.value.lower(),
+                }
 
             # this path needs to be absolute for the yara scanner service to know where to find it
             _full_path = os.path.abspath(local_file_path)
@@ -255,7 +268,7 @@ class YaraScanner_v3_4(AnalysisModule):
             # any other failure of the service (including a scanner that crashed on this file)
             # is a scan failure, handled below
             try:
-                result = yara_client.scan_file(_full_path, meta_tags=meta_tags)
+                result = yara_client.scan_file(_full_path, meta_tags=meta_tags, qa=qa_context)
                 matches_found = bool(result)
 
                 logging.debug("scanned file {} with the yara scanner service (matches found: {})".format(_full_path, matches_found))
@@ -280,6 +293,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 if not self.scanner:
                     self.initialize_local_scanner()
 
+                scanned_locally = True
                 try:
                     matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
@@ -326,10 +340,9 @@ class YaraScanner_v3_4(AnalysisModule):
                                 no_alert_rules.add(match_result['rule'])
 
                                 logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
-
-                                if self.save_qa_scan_results:
-                                    # never raises: storing a QA sample must not fail the analysis
-                                    record_qa_match(match_result, _file, self.get_root().uuid)
+                                if scanned_locally and self.save_qa_scan_results:
+                                    logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
+                                                    "with the local yara scanner: the match is not recorded")
 
                                 continue
 

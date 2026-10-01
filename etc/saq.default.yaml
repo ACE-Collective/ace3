@@ -1232,6 +1232,12 @@ service_yara:
   max_data_bytes: 268435456
   # replace a scanning process after it served this many requests (0 disables this)
   max_requests_per_worker: 0
+  # where the scanners spool the matches of rules in QA mode for the qa recorder (relative to DATA_DIR).
+  # the scanned file is hardlinked into it, so it must be on the same filesystem as the engine's
+  # storage; elsewhere every file is copied instead (docs/YARA_SCANNER.md)
+  qa_spool_dir: var/yss/qa_spool
+  # the most QA match jobs the spool may hold; past it new QA matches are logged and dropped (0 = no limit)
+  qa_spool_max_jobs: 10000
 
 # observable groups
 observable_group_internal:

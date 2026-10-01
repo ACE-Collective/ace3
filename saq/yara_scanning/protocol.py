@@ -8,6 +8,10 @@ Every message is a frame: a 4 byte big-endian length followed by that many bytes
    reads the file there. OP_SCAN_DATA is followed by one more frame holding the raw bytes to scan.
 3. The server sends one JSON response frame and closes the connection.
 
+A scan_file request may carry a `qa` object describing where the file came from (QA_FIELDS). Only
+then does the server keep the matches of rules in QA mode, which it records after answering
+(saq/yara_scanning/qa.py).
+
 Matched string data is binary, so each (offset, identifier, data) tuple of a match travels as
 [offset, identifier, base64(data)] and is turned back into a tuple on the client. A match
 therefore looks exactly like what YaraScanner.scan_results returns locally.
@@ -15,6 +19,7 @@ therefore looks exactly like what YaraScanner.scan_results returns locally.
 
 import base64
 import json
+import re
 import socket
 import struct
 from typing import Any
@@ -34,6 +39,12 @@ STATUS_OK = "ok"
 STATUS_TIMEOUT = "timeout"
 STATUS_ERROR = "error"
 STATUS_BAD_REQUEST = "bad_request"
+
+# what a scan_file request's `qa` object carries: the analysis the file belongs to, so a QA match
+# can be traced back to it
+QA_FIELDS = ("root_uuid", "observable_uuid", "file_name", "file_size", "sha256")
+_UUID_MAX_LENGTH = 36
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 # a JSON request is small: scan_file carries a path, scan_data carries only metadata.
 # the bytes of a scan_data request are a separate frame and do not count against this limit
@@ -155,5 +166,37 @@ def validate_request(request: dict) -> str | None:
     timeout = request.get("timeout")
     if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0):
         return "timeout must be a positive integer"
+
+    qa = request.get("qa")
+    if qa is not None:
+        if op != OP_SCAN_FILE:
+            return "qa is only valid for scan_file"
+
+        return _validate_qa(qa)
+
+    return None
+
+
+def _validate_qa(qa: Any) -> str | None:
+    if not isinstance(qa, dict):
+        return "qa must be an object"
+
+    missing = [field for field in QA_FIELDS if field not in qa]
+    if missing:
+        return f"qa is missing {', '.join(missing)}"
+
+    for field in ("root_uuid", "observable_uuid"):
+        if not (isinstance(qa[field], str) and 0 < len(qa[field]) <= _UUID_MAX_LENGTH):
+            return f"qa.{field} must be a uuid"
+
+    if not (isinstance(qa["file_name"], str) and qa["file_name"]):
+        return "qa.file_name must be a non-empty string"
+
+    file_size = qa["file_size"]
+    if isinstance(file_size, bool) or not isinstance(file_size, int) or file_size < 0:
+        return "qa.file_size must be a non-negative integer"
+
+    if not (isinstance(qa["sha256"], str) and _SHA256.fullmatch(qa["sha256"])):
+        return "qa.sha256 must be a lowercase hex sha256"
 
     return None

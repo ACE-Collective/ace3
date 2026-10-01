@@ -92,11 +92,22 @@ VALID_FILE_REQUEST = {"v": protocol.PROTOCOL_VERSION, "op": protocol.OP_SCAN_FIL
                       "ext_vars": {}, "meta_tags": None, "timeout": 5}
 
 
+VALID_QA = {
+    "root_uuid": "0c8a1d5e-7b2f-4c1e-9a3d-5f6e7d8c9b0a",
+    "observable_uuid": "1d9b2e6f-8c3a-4d2f-ab4e-6a7f8e9d0c1b",
+    "file_name": "sample.bin",
+    "file_size": 1024,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+}
+
+
 @pytest.mark.unit
 def test_valid_requests():
     assert protocol.validate_request(VALID_FILE_REQUEST) is None
     assert protocol.validate_request({"v": protocol.PROTOCOL_VERSION, "op": protocol.OP_SCAN_DATA}) is None
     assert protocol.validate_request({**VALID_FILE_REQUEST, "meta_tags": ["a", "b=c"]}) is None
+    assert protocol.validate_request({**VALID_FILE_REQUEST, "qa": VALID_QA}) is None
+    assert protocol.validate_request({**VALID_FILE_REQUEST, "qa": {**VALID_QA, "file_size": 0}}) is None
 
 
 @pytest.mark.unit
@@ -111,6 +122,21 @@ def test_valid_requests():
     {"timeout": 0},
     {"timeout": True},
     {"timeout": "5"},
+    {"qa": "yes"},
+    {"qa": {**VALID_QA, "root_uuid": ""}},
+    {"qa": {**VALID_QA, "observable_uuid": "x" * 37}},
+    {"qa": {**VALID_QA, "file_name": ""}},
+    {"qa": {**VALID_QA, "file_size": -1}},
+    {"qa": {**VALID_QA, "file_size": True}},
+    {"qa": {**VALID_QA, "sha256": "A" * 64}},
+    {"qa": {**VALID_QA, "sha256": "a" * 63}},
+    {"qa": {k: v for k, v in VALID_QA.items() if k != "sha256"}},
 ])
 def test_invalid_requests(changes):
     assert protocol.validate_request({**VALID_FILE_REQUEST, **changes})
+
+
+@pytest.mark.unit
+def test_qa_is_only_valid_for_scan_file():
+    request = {"v": protocol.PROTOCOL_VERSION, "op": protocol.OP_SCAN_DATA, "qa": VALID_QA}
+    assert protocol.validate_request(request) == "qa is only valid for scan_file"

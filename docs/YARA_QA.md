@@ -13,8 +13,17 @@ Rules in QA mode are listed whether or not they have matched anything yet.
 The files live in the content-addressed store (`docs/CAS.md`), in the pool named by
 `yara_qa.pool` (default `yara_qa`). That pool is encrypted with the system key.
 
-For each match, the scanner module (`saq/modules/file_analysis/yara.py`) calls
-`saq.yara_qa.store.record_qa_match()`, which stores two objects in the pool:
+QA matches are recorded by the yara scanner service, not by the engine
+([YARA_SCANNER.md](YARA_SCANNER.md#qa-matches)). The scanner module
+(`saq/modules/file_analysis/yara.py`) tells the service which analysis and file observable it is
+scanning. A worker that finds a QA match spools it, and the service's qa recorder process calls
+`saq.yara_qa.store.record_qa_match()` for it after the scan was answered. So an engine worker never
+waits on any of this, and a match shows up seconds after the scan.
+
+If the service is unavailable and the module scans with its local fallback scanner, QA matches are
+logged as not recorded, and dropped.
+
+`record_qa_match()` stores two objects in the pool:
 
 - **The file.** Its digest is the file observable's sha256.
 - **The full match record.** This is the yara_scanner match dict as JSON. It is the same content the
@@ -44,8 +53,9 @@ rule's repository, or `unknown` for a rule directory that is not listed in
 `service_yara.git_repo_dirs`.
 
 **Rules without a uuid.** A rule with no `uuid` meta has nothing to be filed under, so its matches
-are not stored. The scanner logs a warning. (The detection path attributes such rules to a shared
-built-in uuid, which would put every such rule's files in one bucket.)
+are not stored. The service does not spool them, and `record_qa_match()` logs a warning if it is
+given one. (The detection path attributes such rules to a shared built-in uuid, which would put
+every such rule's files in one bucket.)
 
 ## Caps
 
@@ -65,11 +75,12 @@ really is even when no more files are being kept.
 A new match of a file that is already stored, under the same version, does not use another slot.
 It increments `hit_count` and renews the expiry.
 
-**How the caps hold under concurrency.** Engine workers never wait on a lock for this. The slot is
-reserved with a single conditional `UPDATE` of the counter row:
+**How the caps hold under concurrency.** Each node's recorder stores one match at a time, but the
+recorders of several nodes can store at once, and none of them waits on a lock for this. The slot
+is reserved with a single conditional `UPDATE` of the counter row:
 
 - The per-version cap is **exact**.
-- The per-uuid ceiling is read in the same statement. Two workers storing under *different* versions
+- The per-uuid ceiling is read in the same statement. Two recorders storing under *different* versions
   of one uuid at the same instant can both pass it, so it can be exceeded by the number of versions
   racing, which in practice is one.
 
@@ -91,6 +102,8 @@ The holds carry the expiry themselves, so an object is collected even if a prune
 ## Nodes
 
 The default pool uses the `local` backend, so a file's bytes are only on the node that matched it.
+The node recorded with a match is the yara service's `saq_node`, which is the engine's: they run on
+the same host with the same configuration and share `DATA_DIR`.
 The API marks each match `local: true` or `false`. For a match stored on another node, anything
 that reads bytes (a download, or the full match record) answers **409 `wrong_node`** and names that
 node.
@@ -178,6 +191,10 @@ The download controls appear only with `signature:download`.
 ```yaml
 analysis_module_yara_scanner_v3_4:
   save_qa_scan_results: true     # false stops storing QA matches (they still never alert)
+
+service_yara:
+  qa_spool_dir: var/yss/qa_spool # where scans hand QA matches to the recorder (docs/YARA_SCANNER.md)
+  qa_spool_max_jobs: 10000
 
 yara_qa:
   pool: yara_qa

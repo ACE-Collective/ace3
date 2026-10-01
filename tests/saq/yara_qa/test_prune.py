@@ -2,7 +2,7 @@ import pytest
 
 from saq.configuration.config import get_config
 from saq.yara_qa.prune import prune_expired
-from saq.yara_qa.store import record_qa_match
+from saq.yara_qa.store import QATarget, record_qa_match
 from tests.saq.yara_qa.conftest import VERSION_A, VERSION_B, counter_row, expire_matches, match_rows, qa_match_result
 
 pytestmark = pytest.mark.integration
@@ -12,7 +12,7 @@ def test_prune_removes_expired_matches_in_batches(qa_pool, make_file, root_analy
     # 3 under one version and 2 under another: the per-signature ceiling in the tests is 5
     for version, count in ((VERSION_A, 3), (VERSION_B, 2)):
         for _ in range(count):
-            assert record_qa_match(qa_match_result(commit=version), make_file(), root_analysis.uuid).status == "stored"
+            assert record_qa_match(qa_match_result(commit=version), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "stored"
 
     rows = match_rows()
     assert len(rows) == 5
@@ -49,9 +49,9 @@ def test_prune_removes_expired_matches_in_batches(qa_pool, make_file, root_analy
 def test_a_pruned_slot_can_be_used_again(make_file, root_analysis):
     cap = get_config().yara_qa.max_files_per_version
     for _ in range(cap):
-        record_qa_match(qa_match_result(), make_file(), root_analysis.uuid)
-    assert record_qa_match(qa_match_result(), make_file(), root_analysis.uuid).status == "capped"
+        record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid))
+    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "capped"
 
     expire_matches([match_rows()[0].id])
     prune_expired()
-    assert record_qa_match(qa_match_result(), make_file(), root_analysis.uuid).status == "stored"
+    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "stored"

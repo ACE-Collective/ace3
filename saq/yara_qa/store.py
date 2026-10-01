@@ -1,7 +1,8 @@
 """Storing the files matched by YARA rules in QA mode (docs/YARA_QA.md).
 
-record_qa_match() is called by the scanner module (saq/modules/file_analysis/yara.py) for every
-match of a rule whose `modifiers` include `qa`. It keeps the matched file and the full match record
+record_qa_match() is called by the yara scanner service's qa recorder (saq/yara_scanning/qa.py) for
+every match of a rule whose `modifiers` include `qa`, off the scanning path: the scanning workers
+only spool the match (docs/YARA_SCANNER.md). It keeps the matched file and the full match record
 in the yara_qa CAS pool and indexes them in yara_qa_matches, subject to two caps: at most
 yara_qa.max_files_per_version distinct files per (signature uuid, signature version), and at most
 yara_qa.max_files_per_signature per uuid across all of its versions. The version is the commit of
@@ -10,14 +11,14 @@ ceiling is what keeps that churn from growing storage.
 
 Every match is counted in yara_qa_signatures.match_count, including the ones past the cap.
 
-Concurrency. Many engine workers can match the same rule at once, and none of them may spend its
-slot waiting on a lock, so every step is a single statement or a short transaction:
+Concurrency. The recorders of several nodes can record the same rule at once, and none of them
+should wait on a lock, so every step is a single statement or a short transaction:
 - the slot is reserved by one conditional UPDATE of the (uuid, version) counter row. The
-  per-version cap is exact. The per-uuid ceiling is read in the same statement, but two workers
+  per-version cap is exact. The per-uuid ceiling is read in the same statement, but two recorders
   storing under *different* versions of one uuid at the same instant can both pass it, so it can
   be exceeded by the number of versions racing (in practice, by one).
 - the match row is inserted in the same transaction that reserves the slot, so a duplicate-key
-  race (two workers storing the same file under the same version) rolls the reservation back with
+  race (two recorders storing the same file under the same version) rolls the reservation back with
   it, and the loser renews the winner's row instead.
 - the CAS puts run after that commit, outside any yara_qa transaction. If one fails, the row is
   deleted and the slot given back. A row whose match_digest is still NULL is one whose puts are in
@@ -71,6 +72,26 @@ class QARecordStatus(StrEnum):
     CAPPED = "capped"      # counted, but not stored: a cap was reached
     SKIPPED = "skipped"    # not counted: no usable uuid, or no pool configured
     FAILED = "failed"      # something went wrong; logged
+
+
+@dataclass(frozen=True)
+class QATarget:
+    """The file a QA rule matched, and where it came from."""
+    path: str              # where the bytes can be read now (the yara service's spooled copy)
+    sha256: str
+    file_name: str
+    file_size: int
+    root_uuid: str
+    observable_uuid: str
+
+    def __str__(self) -> str:
+        return f"{self.file_name} ({self.sha256})"
+
+    @classmethod
+    def from_file_observable(cls, file_observable: "FileObservable", root_uuid: str) -> "QATarget":
+        return cls(path=file_observable.full_path, sha256=file_observable.sha256_hash,
+                   file_name=file_observable.file_name, file_size=file_observable.size or 0,
+                   root_uuid=root_uuid, observable_uuid=file_observable.uuid)
 
 
 @dataclass(frozen=True)
@@ -250,19 +271,21 @@ def release_match_holds(pool: CASPool, match: MatchRef) -> bool:
 # record_qa_match
 #
 
-def record_qa_match(match_result: dict, file_observable: "FileObservable", root_uuid: str) -> QARecordResult:
+def record_qa_match(match_result: dict, target: QATarget) -> QARecordResult:
     """Count one QA-mode match and store the file and its match record if the caps allow.
 
-    Never raises: a failure is logged and reported, and the analysis goes on without the sample."""
+    Never raises: a failure is logged and reported, and the match is not stored."""
     try:
-        return _record_qa_match(match_result, file_observable, root_uuid)
+        return record_qa_match_or_raise(match_result, target)
     except Exception as e:
-        logging.error("unable to store yara qa match of rule %s on %s: %s", match_result.get("rule"), file_observable, e)
+        logging.error("unable to store yara qa match of rule %s on %s: %s", match_result.get("rule"), target, e)
         report_exception()
         return QARecordResult(QARecordStatus.FAILED)
 
 
-def _record_qa_match(match_result: dict, file_observable: "FileObservable", root_uuid: str) -> QARecordResult:
+def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordResult:
+    """record_qa_match, raising whatever went wrong instead of reporting it, so the caller can tell
+    a database that is unreachable for now from a match that cannot be stored."""
     config = get_config().yara_qa
     rule_name = _truncate(str(match_result.get("rule") or "unnamed"), _RULE_NAME_MAX_LENGTH)
 
@@ -286,8 +309,8 @@ def _record_qa_match(match_result: dict, file_observable: "FileObservable", root
 
     signature_version = match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
     namespace = _truncate(match_result.get("namespace"), _NAMESPACE_MAX_LENGTH)
-    sha256 = file_observable.sha256_hash
-    file_path = file_observable.full_path
+    sha256 = target.sha256
+    file_path = target.path
 
     # naive local time, like every CAS hold expiry (compared against the database's NOW())
     now = datetime.now()
@@ -310,15 +333,15 @@ def _record_qa_match(match_result: dict, file_observable: "FileObservable", root
 
             match = YaraQAMatch(
                 signature_uuid=signature_uuid, signature_version=signature_version, sha256=sha256,
-                file_name=_truncate(file_observable.file_name, _FILE_NAME_MAX_LENGTH),
-                file_size=file_observable.size or 0, root_uuid=root_uuid,
-                observable_uuid=file_observable.uuid, node=_local_node(), match_digest=None,
+                file_name=_truncate(target.file_name, _FILE_NAME_MAX_LENGTH),
+                file_size=target.file_size, root_uuid=target.root_uuid,
+                observable_uuid=target.observable_uuid, node=_local_node(), match_digest=None,
                 match_summary=summary, hit_count=1, first_seen=now, last_seen=now, expires_at=expires_at)
             session.add(match)
             session.flush()
             match_ref = MatchRef.from_row(match)
     except IntegrityError:
-        # another worker stored this file for this version first. the rollback gave the slot back
+        # another recorder stored this file for this version first. the rollback gave the slot back
         renewed = _renew(pool, signature_uuid, signature_version, sha256, file_path, match_result, now, expires_at)
         return renewed if renewed is not None else QARecordResult(QARecordStatus.FAILED)
 
@@ -339,7 +362,7 @@ def _record_qa_match(match_result: dict, file_observable: "FileObservable", root
             .execution_options(synchronize_session=False))
 
     logging.info("stored yara qa match %s: rule %s (%s @ %s) on %s", match_ref.id, rule_name, signature_uuid,
-                 signature_version, file_observable)
+                 signature_version, target)
     return QARecordResult(QARecordStatus.STORED, match_ref.id)
 
 
@@ -367,7 +390,7 @@ def _renew(pool: CASPool, signature_uuid: str, signature_version: str, sha256: s
     hold = qa_hold(match_id, expires_at)
     _renew_hold(pool, sha256, hold, lambda: pool.put(file_path, hold=hold, digest=sha256))
 
-    # a NULL digest means another worker's puts are in flight; it sets the digest when they finish
+    # a NULL digest means another recorder's puts are in flight; it sets the digest when they finish
     if match_digest is not None:
         def _restore_record():
             # the object is gone (its hold lapsed before this match came in): store this match's

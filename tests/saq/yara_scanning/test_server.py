@@ -7,14 +7,19 @@ import signal
 import socket
 import tempfile
 import time
+import uuid
 
 import psutil
 import pytest
 
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
 from saq.yara_scanning.client import YaraServiceUnavailable
+from saq.yara_scanning.qa import RECORDER_NICENESS
 from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork
 from tests.saq.helpers import wait_for_condition
+from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
 
 RULE_A = """
 rule rule_a {
@@ -55,6 +60,19 @@ rule rule_b {
 """
 
 
+RULE_QA = f"""
+rule rule_qa {{
+    meta:
+        modifiers = "qa"
+        uuid = "{QA_UUID}"
+    strings:
+        $a = "MATCH_A"
+    condition:
+        $a
+}}
+"""
+
+
 def _write(path, content: str):
     with open(path, "w") as fp:
         fp.write(content)
@@ -89,6 +107,11 @@ def socket_dir():
     result = tempfile.mkdtemp(prefix="yss-")
     yield result
     shutil.rmtree(result, ignore_errors=True)
+
+
+@pytest.fixture
+def qa_spool(tmp_path) -> str:
+    return str(tmp_path / "qa_spool")
 
 
 @pytest.fixture
@@ -133,8 +156,26 @@ def _rules(matches: list[dict]) -> set[str]:
     return {match["rule"] for match in matches}
 
 
+def _is_recorder(process: psutil.Process) -> bool:
+    # the only process of the tree that lowers its priority
+    try:
+        return process.nice() == RECORDER_NICENESS
+    except psutil.Error:
+        return False
+
+
 def _generations(server: YaraScannerServer) -> list[psutil.Process]:
-    return psutil.Process(server.process.pid).children()
+    return [_ for _ in psutil.Process(server.process.pid).children() if not _is_recorder(_)]
+
+
+def _recorders(server: YaraScannerServer) -> list[psutil.Process]:
+    return [_ for _ in psutil.Process(server.process.pid).children()
+            if _is_recorder(_) and _.status() != psutil.STATUS_ZOMBIE]
+
+
+def _qa_context(path: str) -> dict:
+    return {"root_uuid": str(uuid.uuid4()), "observable_uuid": str(uuid.uuid4()), "file_name": os.path.basename(path),
+            "file_size": os.path.getsize(path), "sha256": sha256_file(path)}
 
 
 def _workers(server: YaraScannerServer) -> list[psutil.Process]:
@@ -409,3 +450,54 @@ def test_forked_children_get_their_own_manager_connections():
         assert len(records) == 1 + 5 * 4 * 200
     finally:
         manager.shutdown()
+
+
+@pytest.mark.integration
+def test_qa_matches_are_recorded_after_the_answer(make_server, rules_dir, target, qa_spool):
+    _write(os.path.join(rules_dir, "qa.yar"), RULE_QA)
+    # one worker: it writes the job of a scan before it takes the next one
+    server = make_server(worker_count=1, qa_spool_dir=qa_spool)
+    assert server.wait_for_start(30)
+    assert len(_recorders(server)) == 1
+
+    # without the origin of the file, the match is only answered
+    assert _rules(_scan(server, target)) == {"rule_qa"}
+
+    qa_context = _qa_context(target)
+    assert _rules(_scan(server, target, qa=qa_context)) == {"rule_qa"}
+
+    wait_for_condition(lambda: len(match_rows()) == 1, timeout=30)
+    (row,) = match_rows()
+    assert row.sha256 == qa_context["sha256"]
+    assert (row.root_uuid, row.observable_uuid) == (qa_context["root_uuid"], qa_context["observable_uuid"])
+    assert counter_row(SIGNATURE_VERSION_UNKNOWN).match_count == 1
+
+    wait_for_condition(lambda: os.listdir(qa_spool) == [], timeout=10)
+
+
+@pytest.mark.integration
+def test_dead_recorder_is_replaced(make_server, rules_dir, target, qa_spool):
+    _write(os.path.join(rules_dir, "qa.yar"), RULE_QA)
+    server = make_server(qa_spool_dir=qa_spool)
+    assert server.wait_for_start(30)
+
+    (recorder,) = _recorders(server)
+    os.kill(recorder.pid, signal.SIGKILL)
+    wait_for_condition(lambda: [_.pid for _ in _recorders(server)] not in ([], [recorder.pid]), timeout=10)
+
+    # scanning never depended on it, and what was spooled meanwhile is recorded
+    assert _rules(_scan(server, target, qa=_qa_context(target))) == {"rule_qa"}
+    wait_for_condition(lambda: len(match_rows()) == 1, timeout=30)
+
+
+@pytest.mark.integration
+def test_stop_leaves_no_recorder_behind(make_server, rules_dir, qa_spool):
+    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
+    server = make_server(qa_spool_dir=qa_spool)
+    assert server.wait_for_start(30)
+    pgid = server.process.pid
+    assert len(_process_group(pgid)) == 1 + 1 + 1 + 2  # manager, recorder, generation, workers
+
+    server.stop()
+    assert server.wait(0)
+    assert _process_group(pgid) == []

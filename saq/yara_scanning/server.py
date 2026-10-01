@@ -2,8 +2,9 @@
 
     service process            YaraScannerServer: starts the manager, stops it
     └─ manager                 owns the listening socket, watches the rules, runs generations
+       ├─ qa recorder          records the spooled matches of rules in QA mode (saq/yara_scanning/qa.py)
        ├─ generation G         compiles the rules once, forks the workers, restarts dead ones
-       │  └─ worker × N        accept() on the shared listening socket and scan
+       │  └─ worker × N        accept() on the shared listening socket, scan, spool QA matches
        └─ generation G+1       only while it is replacing G after a rule change
 
 Every worker of every generation accepts on the same listening socket, so the kernel hands each
@@ -14,6 +15,11 @@ When the rules change the manager starts a new generation and retires the old on
 new one is ready. A ruleset that does not compile never replaces one that does. A retired worker
 finishes the scan it is running and exits; connections still waiting in the socket's backlog are
 picked up by the new generation's workers.
+
+A worker never waits on the database. When a rule in QA mode matches a file the request says the
+origin of, the worker hardlinks the file into the qa spool before it answers and writes the job
+after, and the qa recorder records it from there. The recorder belongs to the manager, not to a
+generation, so a rule change does not interrupt it.
 
 Every level is stopped through a control pipe its parent holds the write end of: the parent writes
 a byte and closes it, and a process whose parent dies sees EOF and stops too. The processes are
@@ -40,6 +46,7 @@ from yara_scanner import YaraScanner
 from saq.environment import ACE_MP_CONTEXT
 from saq.error.reporting import log_loop_exception
 from saq.yara_scanning import protocol
+from saq.yara_scanning.qa import QASpooler, run_recorder
 
 # how often the generation and manager loops look around when nothing happens
 POLL_INTERVAL = 0.5
@@ -65,6 +72,11 @@ class ScannerSettings:
     max_data_bytes: int
     max_requests_per_worker: int
     backlog: int
+    # where the workers spool the matches of rules in QA mode for the recorder. None runs no
+    # recorder and spools nothing
+    qa_spool_dir: Optional[str] = None
+    # the most jobs the spool may hold before the workers drop new QA matches; 0 is no limit
+    qa_spool_max_jobs: int = 0
 
     @property
     def socket_path(self) -> str:
@@ -178,12 +190,11 @@ def _scan(scanner: YaraScanner, settings: ScannerSettings, request: dict, data: 
         logging.warning("yara scan of %s failed: %s", request.get("path") or "data stream", e)
         return {"status": protocol.STATUS_ERROR, "error": {"type": type(e).__name__, "message": str(e)}}
 
-    # NOTE this is where matches from rules in QA mode will be handed to the manager (docs/YARA_SCANNER.md)
     matches = scanner.scan_results if matched else []
     return {"status": protocol.STATUS_OK, "matches": protocol.encode_matches(matches)}
 
 
-def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: ScannerSettings):
+def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: ScannerSettings, spooler: Optional[QASpooler]):
     # a connection accepted from a non-blocking listener comes back blocking; without a timeout
     # a client that stalls would hold this worker forever
     conn.settimeout(settings.io_timeout)
@@ -202,7 +213,16 @@ def _serve_connection(conn: socket.socket, scanner: YaraScanner, settings: Scann
         if request["op"] == protocol.OP_SCAN_DATA:
             data = protocol.recv_frame(conn, settings.max_data_bytes)
 
-        protocol.send_json(conn, _scan(scanner, settings, request, data))
+        response = _scan(scanner, settings, request, data)
+
+        # the scanned file is pinned before the client has its answer and may delete it; the job is
+        # written after, so writing it costs the client nothing
+        job = spooler.begin(request, response) if spooler else None
+        try:
+            protocol.send_json(conn, response)
+        finally:
+            if job:
+                spooler.commit(job)
 
     except (OSError, protocol.ProtocolError) as e:
         # the client went away or does not speak the protocol: there is nobody to answer
@@ -213,6 +233,8 @@ def _run_worker(settings: ScannerSettings, scanner: YaraScanner, listen_sock: so
     selector = selectors.DefaultSelector()
     selector.register(ctl_r, selectors.EVENT_READ)
     selector.register(listen_sock, selectors.EVENT_READ)
+
+    spooler = QASpooler(settings.qa_spool_dir, settings.qa_spool_max_jobs) if settings.qa_spool_dir else None
 
     handled = 0
     while True:
@@ -230,7 +252,7 @@ def _run_worker(settings: ScannerSettings, scanner: YaraScanner, listen_sock: so
             continue
 
         with conn:
-            _serve_connection(conn, scanner, settings)
+            _serve_connection(conn, scanner, settings, spooler)
 
         handled += 1
         if settings.max_requests_per_worker and handled >= settings.max_requests_per_worker:
@@ -372,6 +394,13 @@ class _GenerationHandle:
     retired: Optional[float] = None
 
 
+@dataclass
+class _RecorderHandle:
+    pid: int
+    ctl_w: Optional[int]
+    started: float
+
+
 class _Manager:
     """Runs in the manager process."""
 
@@ -398,8 +427,18 @@ class _Manager:
         self.failures = 0
         self.retry_at: Optional[float] = None
 
+        # the qa recorder, while it runs; it is restarted at recorder_restart_at after it died
+        self.recorder: Optional[_RecorderHandle] = None
+        self.recorder_failures = 0
+        self.recorder_restart_at: Optional[float] = None
+
     def run(self) -> int:
         _reset_signals()
+
+        # forked before anything else exists, so it inherits as little as possible
+        if self.settings.qa_spool_dir:
+            os.makedirs(self.settings.qa_spool_dir, exist_ok=True)
+            self._start_recorder()
 
         self._bind()
         self.tracker = YaraScanner(signature_dir=self.settings.signature_dir, git_repo_dirs=list(self.settings.git_repo_dirs))
@@ -421,7 +460,7 @@ class _Manager:
                 if self.pending and self.pending.ready_r in readable:
                     self._read_ready()
 
-                self._reap_generations()
+                self._reap_children()
                 now = time.monotonic()
 
                 if self.pending and now - self.pending.started >= self.settings.compile_timeout:
@@ -438,6 +477,9 @@ class _Manager:
 
                 if not self.current and not self.pending and self.retry_at is not None and now >= self.retry_at:
                     self._start_generation()
+
+                if not self.recorder and self.recorder_restart_at is not None and now >= self.recorder_restart_at:
+                    self._start_recorder()
 
             except Exception as e:
                 log_loop_exception(e, "managing yara scanner generations")
@@ -513,7 +555,41 @@ class _Manager:
             if handle:
                 result.extend([handle.ctl_w, handle.ready_r])
 
+        if self.recorder:
+            result.append(self.recorder.ctl_w)
+
         return result
+
+    def _start_recorder(self):
+        ctl_r, ctl_w = os.pipe()
+        spool_dir, listen_sock = self.settings.qa_spool_dir, self.listen_sock
+
+        def _recorder() -> int:
+            # a restarted recorder is forked after the socket is bound. a copy of it would keep
+            # accepting connections nothing answers if the manager were killed
+            if listen_sock:
+                listen_sock.close()
+
+            return run_recorder(spool_dir, ctl_r)
+
+        pid = _fork(self._owned_fds() + [ctl_w], _recorder)
+        _close(ctl_r)
+        self.recorder = _RecorderHandle(pid, ctl_w, time.monotonic())
+        self.recorder_restart_at = None
+        logging.info("started yara qa recorder (pid %d)", pid)
+
+    def _recorder_exited(self, code: int):
+        """The recorder only stops on its own when it is told to, so this is a crash."""
+        handle, self.recorder = self.recorder, None
+        _close(handle.ctl_w)
+
+        if time.monotonic() - handle.started >= WORKER_STABLE_SECONDS:
+            self.recorder_failures = 0
+
+        delay = min(2 ** self.recorder_failures, MAX_GENERATION_RESTART_DELAY)
+        self.recorder_failures += 1
+        self.recorder_restart_at = time.monotonic() + delay
+        logging.error("yara qa recorder %d exited with %d; restarting it in %d seconds", handle.pid, code, delay)
 
     def _start_generation(self):
         generation_id = self.next_generation_id
@@ -603,8 +679,12 @@ class _Manager:
         handle.retired = time.monotonic()
         self.retiring[handle.pid] = handle
 
-    def _reap_generations(self):
+    def _reap_children(self):
         for pid, code in _reap():
+            if self.recorder and pid == self.recorder.pid:
+                self._recorder_exited(code)
+                continue
+
             if self.pending and pid == self.pending.pid:
                 # whatever it reported before it exited is still in the pipe
                 self._read_ready()
@@ -629,6 +709,12 @@ class _Manager:
         logging.info("yara scanner manager stopping")
         self._unpublish()
 
+        # stopped first: it may be in the middle of storing a file. whatever it has not recorded
+        # stays in the spool for the next start
+        if self.recorder:
+            _signal_stop(self.recorder.ctl_w)
+            self.recorder.ctl_w = None
+
         if self.pending:
             self._discard(self.pending)
             self.retiring[self.pending.pid] = self.pending
@@ -639,15 +725,21 @@ class _Manager:
             self.current = None
 
         deadline = time.monotonic() + self.settings.drain_timeout + 1
-        while self.retiring and time.monotonic() < deadline:
+        while (self.retiring or self.recorder) and time.monotonic() < deadline:
             for pid, _ in _reap():
                 self.retiring.pop(pid, None)
+                if self.recorder and pid == self.recorder.pid:
+                    self.recorder = None
 
             time.sleep(0.05)
 
         for handle in self.retiring.values():
             logging.warning("yara scanner generation %d did not stop in time: killing it", handle.generation_id)
             _kill(handle.pid)
+
+        if self.recorder:
+            logging.warning("yara qa recorder %d did not stop in time: killing it", self.recorder.pid)
+            _kill(self.recorder.pid)
 
         self.listen_sock.close()
         try:

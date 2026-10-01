@@ -43,7 +43,7 @@ class TestYaraScannerMetaTagsUnit:
 
         captured = {}
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             captured["meta_tags"] = meta_tags
             return []
 
@@ -66,7 +66,7 @@ class TestYaraScannerMetaTagsUnit:
 
         captured = {}
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             captured["meta_tags"] = meta_tags
             return []
 
@@ -88,7 +88,7 @@ class TestYaraScannerMetaTagsUnit:
         observable = root_analysis.add_file_observable(file_path)
         observable.add_yara_meta("content_type", "email_body")
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             raise YaraServiceUnavailable("connection refused")
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -126,7 +126,7 @@ class TestYaraScannerMetaTagsUnit:
 
         scan_called = {"called": False}
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             scan_called["called"] = True
             return []
 
@@ -168,7 +168,7 @@ class TestYaraScannerServiceFailures:
 
         observable = root_analysis.add_file_observable(file_path)
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             raise YaraScanTimeout("scanning timed out")
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -205,7 +205,7 @@ class TestYaraScannerServiceFailures:
 
         observable = root_analysis.add_file_observable(file_path)
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             raise YaraScanCrashed("the yara scanner closed the connection without answering")
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -239,7 +239,7 @@ class TestYaraScannerServiceFailures:
 
         observable = root_analysis.add_file_observable(file_path)
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             raise YaraServiceUnavailable("connection refused")
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -374,7 +374,7 @@ class TestYaraSignatureIdEmission:
         rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
         matches = [self._match("test_rule_with_uuid", rule_uuid=rule_uuid)]
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -400,7 +400,7 @@ class TestYaraSignatureIdEmission:
 
         matches = [self._match("test_rule_no_uuid")]
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -430,7 +430,7 @@ class TestYaraSignatureIdEmission:
             self._match("rule_b", rule_uuid=uuid_b),
         ]
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -459,7 +459,7 @@ class TestYaraSignatureIdEmission:
             self._match("rule_b", rule_uuid=rule_uuid),
         ]
 
-        def mock_scan_file(path, meta_tags=None):
+        def mock_scan_file(path, meta_tags=None, qa=None):
             return matches
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
@@ -503,7 +503,7 @@ class TestYaraEnabledMeta:
 
         monkeypatch.setattr(
             yara_client, "scan_file",
-            lambda path, meta_tags=None: matches,
+            lambda path, meta_tags=None, qa=None: matches,
         )
 
         adapter = self._create_module(root_analysis)
@@ -575,7 +575,7 @@ class TestYaraQueueMeta:
 
         monkeypatch.setattr(
             yara_client, "scan_file",
-            lambda path, meta_tags=None: matches,
+            lambda path, meta_tags=None, qa=None: matches,
         )
 
         adapter = self._create_module(root_analysis)
@@ -609,3 +609,89 @@ class TestYaraQueueMeta:
 
         assert root_analysis.all_detection_points == []
         assert not root_analysis.has_detections()
+
+
+class TestYaraQAMatches:
+    """QA matches are recorded by the yara scanner service, never by the module (docs/YARA_QA.md)."""
+
+    QA_META = {"modifiers": "qa", "uuid": "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"}
+
+    def _create_module(self, root):
+        return YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+
+    def _observable(self, root_analysis):
+        file_path = root_analysis.create_file_path("test.txt")
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        return root_analysis.add_file_observable(file_path)
+
+    @pytest.mark.unit
+    def test_service_is_told_where_the_file_came_from(self, monkeypatch, root_analysis):
+        observable = self._observable(root_analysis)
+        captured = {}
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            captured["qa"] = qa
+            return [_yara_match("qa_rule", meta=self.QA_META)]
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+        result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert captured["qa"] == {
+            "root_uuid": root_analysis.uuid,
+            "observable_uuid": observable.uuid,
+            "file_name": "test.txt",
+            "file_size": 14,
+            "sha256": observable.value,
+        }
+        # a qa rule never alerts
+        assert not root_analysis.has_detections()
+
+    @pytest.mark.unit
+    def test_no_qa_context_when_qa_results_are_not_saved(self, monkeypatch, root_analysis):
+        observable = self._observable(root_analysis)
+        captured = {}
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            captured["qa"] = qa
+            return []
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+        module = self._create_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_qa_scan_results", False)
+        AnalysisModuleAdapter(module).execute_analysis(observable)
+
+        assert captured["qa"] is None
+
+    @pytest.mark.unit
+    def test_local_scanner_qa_matches_are_logged_and_dropped(self, monkeypatch, caplog, root_analysis):
+        observable = self._observable(root_analysis)
+
+        def mock_scan_file(path, meta_tags=None, qa=None):
+            raise YaraServiceUnavailable("connection refused")
+
+        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
+
+        class QAMatchingLocalScanner:
+            scan_results = [_yara_match("qa_rule", meta=TestYaraQAMatches.QA_META)]
+
+            def scan(self, path, meta_tags=None):
+                return True
+
+        def mock_initialize_local_scanner(self):
+            self.scanner = QAMatchingLocalScanner()
+
+        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
+
+        with caplog.at_level("WARNING"):
+            result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert observable.get_and_load_analysis(YaraScanResults_v3_4) is not None
+        assert not root_analysis.has_detections()
+        assert any("with the local yara scanner: the match is not recorded" in record.message for record in caplog.records)

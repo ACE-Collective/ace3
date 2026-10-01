@@ -50,11 +50,18 @@ def get_socket_path() -> str:
 
 
 def scan_file(path: str, *, meta_tags: Optional[list[str]] = None, ext_vars: Optional[dict] = None,
-              timeout: Optional[int] = None, socket_path: Optional[str] = None) -> list[dict]:
+              timeout: Optional[int] = None, socket_path: Optional[str] = None,
+              qa: Optional[dict] = None) -> list[dict]:
     """Sends the absolute path of the file and returns the matches, shaped like
     YaraScanner.scan_results. The server reads the file at that same path. An empty list means
-    nothing matched."""
+    nothing matched.
+
+    qa (protocol.QA_FIELDS) says which analysis the file belongs to. With it, the service records
+    the matches of rules in QA mode after it answers (docs/YARA_QA.md); without it, it does not."""
     request = {"op": protocol.OP_SCAN_FILE, "path": os.path.abspath(path)}
+    if qa is not None:
+        request["qa"] = qa
+
     return _request(request, None, meta_tags, ext_vars, timeout, socket_path)
 
 

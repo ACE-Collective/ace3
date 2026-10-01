@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import uuid
 import pytest
 from sqlalchemy import select
@@ -31,7 +32,7 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
-from tests.saq.helpers import create_root_analysis, log_count
+from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
 
 UNITTEST_SOCKET_DIR = 'socket_unittest'
 
@@ -40,14 +41,22 @@ def setup(datadir, monkeypatch):
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", UNITTEST_SOCKET_DIR)  # noqa: F821
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(datadir / 'yara_rules'))
 
+def _empty_qa_spool():
+    """A job left in the qa spool would be recorded during the next test, after its yara_qa rows
+    were reset."""
+    shutil.rmtree(os.path.join(get_data_dir(), get_service_config(SERVICE_YARA_SCANNER).qa_spool_dir), ignore_errors=True)
+
+
 @pytest.fixture
 def yss_server():
+    _empty_qa_spool()
     yara_service = YaraScannerService()
     yara_service.start()
     assert yara_service.wait_for_start(30)
     yield yara_service
     yara_service.stop()
     yara_service.wait()
+    _empty_qa_spool()
 
     # every scan went through the service rather than the in-process fallback
     assert log_count("initializing local yara scanner") == 0
@@ -591,9 +600,17 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     # the yara rule should NOT have detections
     assert len(root_analysis.all_detection_points) == 0
 
-    # the file and its match record are stored in the yara_qa cas pool, indexed by the rule's uuid.
-    # the test rules are not in a declared git repo, so the version is unknown
+    # the yara scanner service stores the file and its match record in the yara_qa cas pool,
+    # indexed by the rule's uuid, after it answered the scan. the test rules are not in a declared
+    # git repo, so the version is unknown
     qa_uuid = "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"
+
+    def _stored() -> bool:
+        get_db().rollback()  # a fresh snapshot each time
+        match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one_or_none()
+        return match is not None and match.match_digest is not None
+
+    wait_for_condition(_stored, timeout=30)
     match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one()
     assert match.signature_version == SIGNATURE_VERSION_UNKNOWN
     assert match.sha256 == _file.sha256_hash
