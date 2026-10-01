@@ -357,17 +357,6 @@ update_organization_parser = user_sp.add_parser('update-organization',
     help="Updates the files used by the UserTaggingAnalyzer module.")
 update_organization_parser.set_defaults(func=update_organization)
 
-def generate_api_key(args):
-    import uuid
-    from saq.util import sha256_str
-    api_key = str(uuid.uuid4())
-    print(f"api_key = {api_key}")
-    print(f"api_key_sha256 = {sha256_str(api_key)}")
-    sys.exit(0)
-
-generate_api_key_parser = user_sp.add_parser('generate-api-key')
-generate_api_key_parser.set_defaults(func=generate_api_key)
-
 def delete_user(args):
     from saq.database import get_db_connection
 

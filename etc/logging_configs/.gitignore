@@ -1,5 +1,3 @@
-service_bro_http_collector.ini
-service_bro_smtp_collector.ini
 service_email_collector.ini
 service_engine.ini
 service_ews_collector.ini

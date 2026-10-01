@@ -6,9 +6,10 @@ from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
 from saq.modules.file_analysis.dotnet import De4dotAnalysis
+from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 
 from saq.modules.adapter import AnalysisModuleAdapter
 from tests.saq.helpers import create_root_analysis
@@ -546,6 +547,48 @@ def test_html_data_url_extraction(datadir, test_context):
         excluded = " ".join(extracted.excluded_analysis)
         assert "OCRAnalyzer" in excluded
         assert "QRCodeAnalyzer" not in excluded
+
+OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/hyperlink" TargetMode="External"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/oleObject1.bin"/>
+<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="https://example.com/payload.html!" TargetMode="External"/>
+</Relationships>
+"""
+
+@pytest.mark.parametrize("file_name,expected_urls", [
+    ("document.xml.rels", ["https://example.com/payload.html!"]),
+    # only the main document relationships file is examined
+    ("settings.xml.rels", None),
+])
+@pytest.mark.unit
+def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    rels_path = tmp_path / file_name
+    rels_path.write_text(OFFICE_XML_RELS)
+    observable = root.add_file_observable(rels_path)
+
+    analyzer = OfficeXMLRelationshipExternalURLAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OFFICE_XML_REL))
+
+    result = analyzer.execute_analysis(observable)
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OfficeXMLRelationshipExternalURLAnalysis)
+
+    if expected_urls is None:
+        assert analysis is None
+        assert not observable.has_detection_points()
+        return
+
+    assert isinstance(analysis, OfficeXMLRelationshipExternalURLAnalysis)
+    assert analysis.urls == expected_urls
+    urls = analysis.get_observables_by_type(F_URL)
+    assert [o.value for o in urls] == expected_urls
+    assert all(o.has_directive(DIRECTIVE_FORCE_DOWNLOAD) for o in urls)
+    assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
 
 @pytest.mark.unit
 def test_one_file_in_zip_detection(datadir):

@@ -121,7 +121,6 @@ load_proxy
 backups/
 /data/
 extra/
-bro/ace_local.bro
 
 # site modules
 /lib/saq/modules/site
@@ -131,11 +130,6 @@ bro/ace_local.bro
 !ssl/root/ca/openssl.cnf
 !ssl/root/ca/intermediate/openssl.cnf
 ssl/
-
-# crawlphish unittesting
-etc/crawlphish.unittest.blacklist
-etc/crawlphish.unittest.regex
-etc/crawlphish.unittest.whitelist
 
 # config files
 etc/amc_client.yaml

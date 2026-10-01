@@ -214,18 +214,17 @@ verify_hunt_parser = hunt_sp.add_parser('verify',
     help="Verifies that all configured hunts are able to load.")
 verify_hunt_parser.set_defaults(func=verify_hunt)
 
-# XXX broken
 def list_hunts(args):
-    from saq.collectors.hunter import HunterCollector
-    collector = HunterCollector()
-    collector.load_hunt_managers()
-    for hunt_type, manager in sorted(collector.hunt_managers.items()):
+    from saq.collectors.hunter import HunterService
+    hunter_service = HunterService()
+    hunter_service.load_hunt_managers()
+    for hunt_type, manager in sorted(hunter_service.hunt_managers.items()):
         manager.load_hunts_from_config()
-        for hunt in sorted(sorted(manager.hunts, key=operator.attrgetter('name')), 
+        for hunt in sorted(sorted(manager.hunts, key=operator.attrgetter('name')),
                 key=operator.attrgetter('enabled'), reverse=True):
-            ini_file = os.path.splitext(os.path.basename(hunt.ini_path))[0]
+            hunt_file = os.path.splitext(os.path.basename(hunt.file_path))[0]
             status = "E" if hunt.enabled else "D"
-            print(f"{status} {hunt_type}:{ini_file} - {hunt.name}")
+            print(f"{status} {hunt_type}:{hunt_file} - {hunt.name}")
 
     sys.exit(0)
 
@@ -238,10 +237,10 @@ list_hunts_parser = hunt_sp.add_parser('list',
 list_hunts_parser.set_defaults(func=list_hunts)
 
 def list_hunt_types(args):
-    from saq.collectors.hunter import HunterCollector
-    collector = HunterCollector()
-    collector.load_hunt_managers()
-    for hunt_type in collector.hunt_managers.keys():
+    from saq.collectors.hunter import HunterService
+    hunter_service = HunterService()
+    hunter_service.load_hunt_managers()
+    for hunt_type in hunter_service.hunt_managers.keys():
         print(hunt_type)
 
     sys.exit(0)
@@ -249,86 +248,3 @@ def list_hunt_types(args):
 list_hunt_types_parser = hunt_sp.add_parser('list-types',
     help="List the available hunting types.")
 list_hunt_types_parser.set_defaults(func=list_hunt_types)
-
-# XXX broken
-def list_saved_searches(args):
-    from saq.splunk_ss import load_saved_searches
-    for saved_search in load_saved_searches(args.section, args.user, args.app):
-        print(saved_search.name)
-
-    sys.exit(0)
-
-list_saved_searches_parser = hunt_sp.add_parser('list-saved-searches',
-    help="List all managed saved searches.")
-list_saved_searches_parser.add_argument("-s", "--section", default="splunk_cloud",
-    help="The splunk configuration section in the INI files to use.")
-list_saved_searches_parser.add_argument("-u", "--user", default="nobody",
-    help="The splunk services namespace user.")
-list_saved_searches_parser.add_argument("-a", "--app", default="ftb_search_infosec",
-    help="The splunk services namespace app.")
-list_saved_searches_parser.set_defaults(func=list_saved_searches)
-
-# XXX broken
-def publish_saved_searches(args):
-    from saq.splunk_ss import load_ini_files, publish_saved_search
-    for saved_search in load_ini_files(args.dir):
-        publish_saved_search(saved_search)
-
-    sys.exit(0)
-
-publish_saved_searches_parser = hunt_sp.add_parser('publish-saved-searches',
-    help="Publish all saved searches specified in the given directory.")
-publish_saved_searches_parser.add_argument("-d", "--dir",
-    help="The directory to load the saved searches from.")
-publish_saved_searches_parser.set_defaults(func=publish_saved_searches)
-
-# XXX broken
-def delete_saved_search(args):
-    from saq.splunk_ss import delete_saved_search, load_from_ini, SavedSearch
-    search = None
-    if args.file_path:
-        search = load_from_ini(args.file_path)
-    else:
-        search = SavedSearch(
-            name=args.name,
-            type=args.section,
-            ns_user=args.user,
-            ns_app=args.app,
-        )
-
-    delete_saved_search(search)
-    sys.exit(0)
-
-delete_saved_search_parser = hunt_sp.add_parser('delete-saved-search',
-    help="""Deletes a saved search. An existing ini file can be specified, or individual options.
-    NOTE if you specify --file you do NOT need to specify the other arguments.
-    """)
-delete_saved_search_parser.add_argument("-f", "--file-path",
-    help="The .savedsearch INI file specifying the saved search to delete.")
-delete_saved_search_parser.add_argument("-s", "--section", default="splunk_cloud",
-    help="The splunk configuration section in the INI files to use.")
-delete_saved_search_parser.add_argument("-u", "--user", default="nobody",
-    help="The splunk services namespace user.")
-delete_saved_search_parser.add_argument("-a", "--app", default="ftb_search_infosec",
-    help="The splunk services namespace app.")
-delete_saved_search_parser.add_argument("-n", "--name", default="ftb_search_infosec",
-    help="The name of the saved search to delete.")
-delete_saved_search_parser.set_defaults(func=delete_saved_search)
-
-# XXX broken
-def sync_saved_searches(args):
-    from saq.splunk_ss import sync_saved_searches
-    sync_saved_searches(args.dir, config=args.section, ns_user=args.user, ns_app=args.app)
-    sys.exit(0)
-
-sync_saved_searches_parser = hunt_sp.add_parser('sync-saved-searches',
-    help="Sync all saved searches specified in the given directory.")
-sync_saved_searches_parser.add_argument("-d", "--dir",
-    help="The directory to load the saved searches from.")
-sync_saved_searches_parser.add_argument("-s", "--section", default="splunk_cloud",
-    help="The splunk configuration section in the INI files to use.")
-sync_saved_searches_parser.add_argument("-u", "--user", default="nobody",
-    help="The splunk services namespace user.")
-sync_saved_searches_parser.add_argument("-a", "--app", default="ftb_search_infosec",
-    help="The splunk services namespace app.")
-sync_saved_searches_parser.set_defaults(func=sync_saved_searches)

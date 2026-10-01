@@ -123,10 +123,9 @@ Note that the exclusions shipped in `etc/saq.default.yaml` are now live:
 `fqdn:google.com` and `fqdn:youtube.com` are no longer analyzed by any module.
 
 Still open, and out of scope here: the v1 `observable_group:<name>` indirection
-inside module `exclude_*` keys was lost in the same rewrite, which is why
-`exclude_internal_network: observable_group:internal` under
-`analysis_module_pcap_conversation_extraction` is silently dropped by pydantic
-today.
+inside module `exclude_*` keys was lost in the same rewrite, so a module setting
+such as `exclude_internal_network: observable_group:internal` would be silently
+dropped by pydantic today.
 
 *Regression guard.* `tests/saq/engine/test_executor_observable_exclusions.py` —
 thirteen unit tests over `_process_observable_exclusions` with a mocked

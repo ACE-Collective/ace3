@@ -5,12 +5,25 @@ from pydantic import Field, ConfigDict
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_MACRO_NEW_SENDER, EMAIL_SUSPECT_URL_NEW_SENDER
 from saq.analysis.observable import Observable
-from saq.analysis.search import search_down
+from saq.analysis.search import recurse_tree, search_down
 from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_source_email
 from saq.constants import DIRECTIVE_SANDBOX, F_EMAIL_CONVERSATION, F_FILE, F_URL, parse_email_conversation, AnalysisExecutionResult
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+
+
+def _tree_has_tag(target, tag: str) -> bool:
+    """Returns True if target, or anything in the analysis tree below it, has the given tag."""
+    found = False
+
+    def _check(obj):
+        nonlocal found
+        if obj.has_tag(tag):
+            found = True
+
+    recurse_tree(target, _check)
+    return found
 
 
 class EmailConversationFrequencyAnalysis(Analysis):
@@ -154,7 +167,7 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         # is there a macro anywhere?
-        if not _file.search_tree(tags='macro'):
+        if not _tree_has_tag(_file, 'macro'):
             return AnalysisExecutionResult.COMPLETED
 
         # wait for email conversation analysis to complete

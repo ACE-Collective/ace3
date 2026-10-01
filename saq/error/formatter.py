@@ -1,22 +1,18 @@
-from __future__ import absolute_import
-
 import ast
 import inspect
 import keyword
 import linecache
+import locale
 import os
 import re
 import sys
 import traceback
 
-from .context import PY3
-from .encoding import ENCODING, to_byte, to_unicode
-
 PIPE_CHAR = u'\u2502'
 CAP_CHAR = u'\u2514'
 
 try:
-    PIPE_CHAR.encode(ENCODING)
+    PIPE_CHAR.encode(locale.getpreferredencoding())
 except UnicodeEncodeError:
     PIPE_CHAR = '|'
     CAP_CHAR = '->'
@@ -185,14 +181,9 @@ class ExceptionFormatter(object):
                 line += (' ' * (pc - index)) + self._pipe_char
                 index = pc + 1
 
-            if not PY3 and isinstance(val, str):
-                # In Python2 the Non-ASCII value will be the escaped string,
-                # use string-escape to decode the string to show the text in human way.
-                val = to_unicode(val.decode("string-escape"))
-
             line += u'{}{} {}'.format((' ' * (col - index)), self._cap_char, val)
             lines.append(line)
-        formatted = u'\n    '.join([to_unicode(x) for x in lines])
+        formatted = u'\n    '.join(lines)
 
         return (filename, lineno, function, formatted), source
 
@@ -237,7 +228,7 @@ class ExceptionFormatter(object):
 
         seen.add(id(exc_value))
 
-        if exc_value and PY3:
+        if exc_value:
             if exc_value.__cause__ is not None and id(exc_value.__cause__) not in seen:
                 for text in self._format_exception(exc_value.__cause__,exc_value.__cause__.__traceback__, seen=seen):
                     yield text

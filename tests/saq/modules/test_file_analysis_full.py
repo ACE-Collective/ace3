@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import shutil
@@ -10,7 +9,6 @@ from saq.analysis.root import load_root
 from saq.cas import Hold, get_cas
 from saq.configuration.config import get_analysis_module_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OFFICEPARSER3, ANALYSIS_MODULE_OLEVBA_V1_2, ANALYSIS_MODULE_XML_PLAIN_TEXT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, F_URI_PATH, F_URL, F_YARA_RULE, R_EXTRACTED_FROM, SERVICE_YARA_SCANNER
-from saq.crypto import decrypt
 from saq.database.model import YaraQAMatch, YaraQASignature, load_alert
 from saq.database.pool import get_db
 from saq.engine.core import Engine
@@ -20,7 +18,6 @@ from saq.environment import get_data_dir
 from saq.modules.file_analysis.archive import ArchiveAnalysis
 from saq.modules.file_analysis.html import MHTMLAnalysis
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_ole_file
-from saq.modules.file_analysis.msoffice import OfficeFileArchiveAction
 from saq.modules.file_analysis.pdf import PDFAnalysis
 from saq.modules.file_analysis.upx import UPXAnalysis
 from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
@@ -29,7 +26,6 @@ from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
-from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
@@ -734,65 +730,6 @@ def test_file_analysis_005_pcode_000_extract_pcode(root_analysis, datadir):
     _file = _file[0]
     # and that should have a redirection
     assert _file.redirection
-
-@pytest.mark.integration
-def test_file_analysis_005_office_file_archiver_000_archive(root_analysis, tmpdir, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "ole_files/Paid Invoice.doc"))
-    sha256 = _file.sha256_hash
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('office_file_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    assert _file
-
-    analysis = _file.get_and_load_analysis(OfficeFileArchiveAction)
-    assert analysis
-    
-    # the details of the analysis should be the FULL path to the archived file
-    assert analysis.details
-    assert os.path.exists(analysis.details)
-
-    # make sure we can decrypt it
-    target_path = str(tmpdir / _file.file_name)
-    decrypt(analysis.details, target_path)
-    h = hashlib.sha256()
-    with open(target_path, 'rb') as fp:
-        h.update(fp.read())
-
-    assert sha256_file(target_path) == sha256.lower()
-
-    root_analysis = create_root_analysis(analysis_mode="test_groups")
-    root_analysis.initialize_storage()
-    _file = root_analysis.add_file_observable(target_path)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('office_file_archiver', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    assert _file
-
-    analysis = _file.get_and_load_analysis(OfficeFileArchiveAction)
-    assert analysis
-    
-    # the details of the analysis should be the FULL path to the archived file
-    assert analysis.details
-    assert os.path.exists(analysis.details)
-
-    # but it should also be a duplicate so the name should have the number prefix
-    assert os.path.basename(analysis.details).startswith('000000_')
 
 @pytest.mark.integration
 def test_file_analysis_006_extracted_ole_000_js(root_analysis, datadir):

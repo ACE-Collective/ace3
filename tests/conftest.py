@@ -49,8 +49,6 @@ from tests.saq.helpers import (
 from tests.saq.test_util import create_test_context
 from tests import session_lock, unittest_database, unittest_session
 
-pytest.register_assert_rewrite("tests.saq.requests")
-
 def needs_full_reset(request: pytest.FixtureRequest) -> bool:
     """Returns True if the given test request is an integration or system test, False otherwise."""
     for marker in [ "integration", "system" ]:
@@ -208,17 +206,9 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
 
     with get_db_connection("brocess") as db:
         cursor = db.cursor()
-        cursor.execute("""DELETE FROM httplog""")
         cursor.execute("""DELETE FROM smtplog""")
         cursor.execute("""DELETE FROM email_thread_message""")
         cursor.execute("""DELETE FROM email_thread_domain""")
-        db.commit()
-        # TODO instead of using harded values pull the limits from the config
-        cursor.execute("""INSERT INTO httplog ( host, numconnections, firstconnectdate ) 
-                    VALUES ( 'local', 1000, UNIX_TIMESTAMP(NOW()) ),
-                            ( 'xyz', 1000, UNIX_TIMESTAMP(NOW()) ),
-                            ( 'test1.local', 70, UNIX_TIMESTAMP(NOW()) ),
-                            ( 'test2.local', 69, UNIX_TIMESTAMP(NOW()) )""")
         db.commit()
 
     with get_db_connection('email_archive') as db:

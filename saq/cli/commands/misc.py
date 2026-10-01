@@ -1,12 +1,10 @@
 import logging
 import os
 import os.path
-import shutil
 import sys
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.configuration import get_config
-from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 
 
@@ -147,32 +145,3 @@ s3_upload_parser.add_argument("--bucket", help="The bucket to upload the file to
 s3_upload_parser.add_argument("--key", help="The key to upload the file to.")
 s3_upload_parser.add_argument("--config", help="The configuration to use for the S3 client.")
 s3_upload_parser.set_defaults(func=s3_upload_file)
-
-def remove_bro_http_whitelist(args):
-    removed_line = False
-    src_path = os.path.join(get_base_dir(), 'bro', 'http.whitelist')
-    tmp_path = os.path.join(get_base_dir(), 'bro', 'http.whitelist.tmp')
-
-    with open(src_path, 'r') as fp_in, open(tmp_path, 'a') as fp_out:
-        for line in fp_in:
-            if line.startswith(args.cidr):
-                logging.info("removed {}".format(line.strip()))
-                removed_line = True
-            else:
-                fp_out.write(line)
-
-    if removed_line:
-        shutil.copy(tmp_path, src_path)
-    
-    os.remove(tmp_path)
-    sys.exit(0)
-
-bro_parser = get_cli_subparsers().add_parser('bro',
-    help="Bro network monitor operations.")
-bro_sp = bro_parser.add_subparsers(dest='bro_cmd')
-
-remove_bro_http_whitelist_parser = bro_sp.add_parser('remove-http-whitelist',
-    help="Removes the given CIDR from the bro HTTP whitelist.")
-remove_bro_http_whitelist_parser.add_argument('cidr', help="The network CIDR to remove from the whitelist.")
-remove_bro_http_whitelist_parser.set_defaults(func=remove_bro_http_whitelist)
-

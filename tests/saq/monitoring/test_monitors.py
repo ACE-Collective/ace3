@@ -240,14 +240,14 @@ class TestDistributedDelayedAnalysisMonitor:
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_db_connection")
     def test_execute_strips_analysis_module_prefix(self, mock_get_db, mock_emit):
         mock_get_db.return_value = _make_mock_db([
-            ("/opt/ace/data/uuid-1", "analysis_module_cloudphish", "node1", 1),
+            ("/opt/ace/data/uuid-1", "analysis_module_phishkit_analyzer", "node1", 1),
         ])
 
         monitor = DistributedDelayedAnalysisMonitor(name="test", frequency=1.0)
         monitor.execute()
 
         data = mock_emit.call_args[0][1]
-        assert data["module"] == "cloudphish"
+        assert data["module"] == "phishkit_analyzer"
 
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.emit_monitor")
     @patch("saq.monitoring.monitors.distributed_delayed_analysis_monitor.get_db_connection")

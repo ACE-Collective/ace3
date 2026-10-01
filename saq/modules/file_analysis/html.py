@@ -7,101 +7,13 @@ import re
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
-from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.ocr import OCRAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.filesystem import map_mimetype_to_file_ext
 from saq.util.strings import format_item_list_for_summary
-
-KEY_URL = "url"
-
-
-class MetaRefreshExtractionAnalysis(Analysis):
-    """Does this HTML file downloaded from the Internet have a meta-redirect?"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_URL: None
-        }
-
-    @override
-    @property
-    def display_name(self) -> str:
-        return "Meta Refresh Analysis"
-
-    @property
-    def url(self):
-        return self.details[KEY_URL]
-
-    @url.setter
-    def url(self, value):
-        self.details[KEY_URL] = value
-
-    def generate_summary(self):
-        if self.url is None:
-            return None
-
-        return f"{self.display_name}: Detected meta-refresh to {self.url}"
-
-class MetaRefreshExtractionAnalyzer(AnalysisModule):
-    @property
-    def generated_analysis_type(self):
-        return MetaRefreshExtractionAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_FILE
-
-    def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        # the file must have been downloaded from a URL
-        # doesn't really matter what URL, just needs the downloaded_from relationship
-        if not _file.has_relationship(R_DOWNLOADED_FROM):
-            return AnalysisExecutionResult.COMPLETED
-
-        local_file_path = _file.full_path
-        if not os.path.exists(local_file_path):
-            logging.error("cannot find local file path for {}".format(_file))
-            return AnalysisExecutionResult.COMPLETED
-
-        # skip zero length files
-        if os.path.getsize(local_file_path) == 0:
-            return AnalysisExecutionResult.COMPLETED
-
-        analysis = self.create_analysis(_file)
-
-        try:
-            import bs4
-
-            with open(local_file_path, 'rb') as fp:
-                # we're only going took at the first 8K of the file
-                # that's where these things are usually at and we don't want to kill RAM loading binary files
-                # since we're not going to try to guess if it's HTML or not here
-                content = fp.read(1024 * 8)
-
-            # based this on this post
-            # https://stackoverflow.com/questions/2318446/how-to-follow-meta-refreshes-in-python
-            soup  = bs4.BeautifulSoup(content.decode(errors='ignore'), 'lxml')
-
-            for meta in soup.find_all(lambda x: x.name.lower() == 'meta'):
-                if 'http-equiv' in meta.attrs and meta.attrs['http-equiv'].lower() == 'refresh':
-                    wait, text = meta['content'].split(';')
-                    if text.strip().lower().startswith("url="):
-                        url = text[4:]
-                        url_observable = analysis.add_observable_by_spec(F_URL, url)
-                        if url_observable:
-                            url_observable.add_directive(DIRECTIVE_CRAWL)
-                        logging.info("found meta refresh url {} from {}".format(url, _file))
-
-                        analysis.details = url
-            
-        except Exception as e:
-            logging.info("meta refresh extraction failed (usually ok): {}".format(e))
-            return AnalysisExecutionResult.COMPLETED
-
-        return AnalysisExecutionResult.COMPLETED
 
 KEY_EXTRACTED_FILES = "extracted_files"
 

@@ -91,18 +91,14 @@ RUN apt-get update && \
         man \
         net-tools \
         nginx \
-        nmap \
         pkg-config \
         poppler-utils \
         rng-tools-debian \
         rsync \
         screen \
-        smbclient \
         ssdeep \
         strace \
-        tcpdump \
         tesseract-ocr \
-        tshark \
         unace-nonfree \
         unixodbc-dev \
         unrar \
@@ -110,7 +106,6 @@ RUN apt-get update && \
         upx-ucl \
         vim \
         wget \
-        wireshark-common \
         zbar-tools \
         zip \
         zlib1g-dev \
@@ -300,7 +295,6 @@ COPY --chown=ace:ace aceapi_ai /opt/ace/aceapi_ai
 COPY --chown=ace:ace aceapi_v2 /opt/ace/aceapi_v2
 COPY --chown=ace:ace alembic /opt/ace/alembic
 COPY --chown=ace:ace app /opt/ace/app
-COPY --chown=ace:ace bro /opt/ace/bro
 COPY --chown=ace:ace cron /opt/ace/cron
 COPY --chown=ace:ace docker /opt/ace/docker
 COPY --chown=ace:ace phishkit /opt/ace/phishkit

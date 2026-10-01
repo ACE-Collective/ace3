@@ -9,7 +9,6 @@ function create_ace_dirs() {
     for d in \
         archive/email \
         archive/smtp_stream \
-        archive/office \
         archive/ole \
         data \
         error_reports \

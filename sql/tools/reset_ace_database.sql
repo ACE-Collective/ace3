@@ -1,5 +1,4 @@
 DELETE FROM alerts;
-DELETE FROM cloudphish_analysis_results;
 DELETE FROM comments;
 DELETE FROM delayed_analysis;
 DELETE FROM incoming_workload;

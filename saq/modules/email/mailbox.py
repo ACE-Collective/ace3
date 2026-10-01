@@ -66,7 +66,6 @@ class MailboxEmailAnalyzer(AnalysisModule):
             self.get_root().set_details_modified()
 
             # make sure we track message IDs across analysis
-            # this is basically so that cloudphish requests receive the message_id
             for observable in email_analysis.observables:
                 if observable.type == F_MESSAGE_ID:
                     observable.add_directive(DIRECTIVE_TRACKED)

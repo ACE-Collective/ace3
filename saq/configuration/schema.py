@@ -281,7 +281,6 @@ class GUIConfig(BaseModel):
     upload_vt: bool = Field(..., description="enable VirusTotal upload")
     upload_vxstream: bool = Field(..., description="enable VxStream upload")
     view_in_vx: bool = Field(..., description="enable view in VxStream")
-    clear_cloudphish_alert: bool = Field(..., description="allows analysts to clear cached URL content")
     show_total_alert_count: bool = Field(..., description="show the total alerts resulting from the current filter")
     matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
@@ -375,11 +374,6 @@ class CustomAlertsConfig(BaseModel):
     template_dir: str = Field(..., description="directory containing all flask views")
     dirs: list[str] = Field(..., description="list of dirs containing all custom alert views")
 
-class DomainGenerationConfig(BaseModel):
-    keyword_file_path: str = Field(..., description="path to keyword file (relative to ANALYST_DATA_DIR)")
-    opensquat: str = Field(..., description="relative path to the opensquat external tool")
-    static_domain_file: str = Field(..., description="path to static domains file (relative to ANALYST_DATA_DIR)")
-
 class SettingsConfig(BaseModel):
     refresh_seconds: int = Field(..., description="how often to refresh settings (in seconds)")
 
@@ -396,7 +390,6 @@ class TimelineConfig(BaseModel):
 #class ConfigConfig(BaseModel):
     #git_repos_default: str = Field(..., description="path to default git repos configuration")
     #signatures_default: str = Field(..., description="path to default signatures configuration")
-    #zeek_default: str = Field(..., description="path to default zeek configuration")
     #remediation_default: str = Field(..., description="path to default remediation configuration")
     #shodan_default: str = Field(..., description="path to default shodan configuration")
     #splunk_default: str = Field(..., description="path to default splunk configuration")
@@ -827,7 +820,6 @@ class ACEConfig(BaseModel):
     deprecated_modules: list[str] = Field(default_factory=list, description="MODULE_PATH values (python_module:AnalysisClass[:instance]) of analysis modules that have been removed from ACE; their serialized Analysis can no longer be loaded, and that is expected rather than an error")
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
-    domain_generation: Optional[DomainGenerationConfig] = None
     settings: Optional[SettingsConfig] = None
     observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
     events: Optional[EventsConfig] = None

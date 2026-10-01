@@ -29,13 +29,6 @@ class TestAnalysis(Analysis):
     """Test Analysis class for serialization testing."""
 
     __test__ = False
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Initialize component managers with real instances
-        #self._tag_manager = TagManager(self)
-        #self._detection_manager = DetectionManager(self)
-        #self._sort_manager = SortManager(self)
 
 
 @pytest.fixture
@@ -108,9 +101,9 @@ def test_serialize_full_analysis(sample_analysis):
     assert isinstance(result, dict)
     
     # Check component manager data is included
-    assert 'tags' in result  # from TagManager
-    assert 'detections' in result  # from DetectionManager
-    assert 'sort_order' in result  # from SortManager
+    assert 'tags' in result
+    assert 'detections' in result
+    assert 'sort_order' in result
     assert result['sort_order'] == 50
     
     # Check analysis-specific data

@@ -341,6 +341,25 @@ def create_root_analysis(tool=None, tool_instance=None, alert_type=None, desc=No
                         queue=queue if queue else None,
                         instructions=instructions if instructions else None)
 
+def validate_tree_integrity(root: RootAnalysis) -> list[str]:
+    """Returns the list of structural problems in the analysis tree of root (empty list == healthy)."""
+    issues: list[str] = []
+
+    # every analysis on an observable points back at that observable
+    for observable in root.all_observables:
+        for analysis in observable.all_analysis:
+            if analysis.observable is not observable:
+                issues.append(f"Analysis {analysis} in observable {observable.uuid} has incorrect observable reference")
+
+    # every observable referenced by an analysis is in the registry
+    registry = root.analysis_tree_manager.observable_registry.store
+    for analysis in root.all_analysis:
+        for observable in analysis.observables:
+            if observable.uuid not in registry:
+                issues.append(f"Observable {observable.uuid} in analysis {analysis} not found in registry")
+
+    return issues
+
 def track_io(target_function):
     def wrapper(*args, **kwargs):
         try:

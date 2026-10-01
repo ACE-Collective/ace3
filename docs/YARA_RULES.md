@@ -286,10 +286,7 @@ so a `sub:` match like `type=script.` will match every script subtype.
 | Type | Description |
 |------|-------------|
 | `network.smtp` | Raw SMTP stream |
-| `network.http` | HTTP traffic files (Bro/Zeek) |
 | `network.pcap` | PCAP conversation file |
-| `network.pcap.text` | Tshark text output |
-| `network.download` | CrawlPhish downloaded file |
 
 #### Payloads
 

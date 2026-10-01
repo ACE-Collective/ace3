@@ -396,7 +396,6 @@ DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
 DIRECTIVE_OCR = 'ocr'
 DIRECTIVE_ORIGINAL_EMAIL = 'original_email'
-DIRECTIVE_ORIGINAL_SMTP = 'original_smtp'
 DIRECTIVE_PHISHKIT = 'phishkit'
 DIRECTIVE_PREVIEW = 'preview'
 DIRECTIVE_RENDER = 'render'
@@ -435,7 +434,6 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
     DIRECTIVE_OCR: 'run OCR text extraction on this image file',
     DIRECTIVE_ORIGINAL_EMAIL: 'treat this file as the original email file',
-    DIRECTIVE_ORIGINAL_SMTP: 'treat this file as the original smtp stream',
     DIRECTIVE_PHISHKIT: 'analyze target for phishkit detection',
     DIRECTIVE_PREVIEW: 'show this content inline if possible',
     DIRECTIVE_RENDER: 'render an image of the target',
@@ -566,7 +564,6 @@ VALID_EVENTS = [
     EVENT_GLOBAL_ANALYSIS_ADDED ]
 
 # available actions for observables
-ACTION_CLEAR_CLOUDPHISH_ALERT = 'clear_cloudphish_alert'
 ACTION_COLLECT_FILE = 'collect_file'
 ACTION_ADD_LOCAL_EMAIL_DOMAIN = 'add_local_email_domain'
 ACTION_DLP_INCIDENT_VIEW_DLP = 'dlp_incident_view_dlp'
@@ -659,17 +656,12 @@ ANALYSIS_MODE_CORRELATION = "correlation"
 ANALYSIS_MODE_CLI = "cli"
 ANALYSIS_MODE_ANALYSIS = "analysis"
 ANALYSIS_MODE_EMAIL = "email"
-ANALYSIS_MODE_HTTP = "http"
 ANALYSIS_MODE_FILE = "file"
-ANALYSIS_MODE_CLOUDPHISH = "cloudphish"
 ANALYSIS_MODE_BINARY = "binary"
 ANALYSIS_MODE_DISPOSITIONED = "dispositioned"
 ANALYSIS_MODE_EVENT = "event"
 ANALYSIS_MODE_TEST = "test"
 
-ANALYSIS_TYPE_BRO_HTTP = 'bro - http'
-ANALYSIS_TYPE_BRO_SMTP = 'bro - smtp'
-ANALYSIS_TYPE_CLOUDPHISH = 'cloudphish'
 ANALYSIS_TYPE_EWS = 'ews'
 ANALYSIS_TYPE_FAQUEUE = 'faqueue'
 ANALYSIS_TYPE_FIREEYE = 'fireeye'
@@ -731,8 +723,6 @@ GUI_TABS = [
 # service constants
 #
 
-SERVICE_BRO_HTTP_COLLECTOR = "bro_http_collector"
-SERVICE_BRO_SMTP_COLLECTOR = "bro_smtp_collector"
 SERVICE_CRON = "cron"
 SERVICE_EMAIL_COLLECTOR = "email_collector"
 SERVICE_ENGINE = "engine"
@@ -1171,11 +1161,9 @@ EMAIL_ARCHIVE_FIELD_MESSAGE_ID = "message_id"
 EMAIL_ARCHIVE_FIELD_URL = "url"
 
 # analysis module names
-ANALYSIS_MODULE_ACTIVE_DIRECTORY_ANALYZER = "active_directory_analyzer"
 ANALYSIS_MODULE_ACTIVE_MIME = "active_mime"
 ANALYSIS_MODULE_ALERT_ADDED_TO_EVENT = "alert_added_to_event"
 ANALYSIS_MODULE_ARCHIVE = "archive"
-ANALYSIS_MODULE_ASSET_ANALYZER = "asset_analyzer"
 ANALYSIS_MODULE_AUTOIT = "autoit"
 ANALYSIS_MODULE_AUTOMATED_REMEDIATION = "automated_remediation"
 ANALYSIS_MODULE_BASIC_TEST = "basic_test"
@@ -1183,12 +1171,10 @@ ANALYSIS_MODULE_BINARY_FILE_ANALYZER = "binary_file_analyzer"
 ANALYSIS_MODULE_COMMAND_LINE_ANALYZER = "command_line_analyzer"
 ANALYSIS_MODULE_CONFIGURATION_DEFINED_TAGGING = "configuration_defined_tagging"
 ANALYSIS_MODULE_CORRELATED_TAG_ANALYZER = "correlated_tag_analyzer"
-ANALYSIS_MODULE_CRAWLPHISH = "crawlphish"
 ANALYSIS_MODULE_CVE_2021_30657_ANALYZER = "cve_2021_30657_analyzer"
 ANALYSIS_MODULE_DE4DOT = "de4dot"
 ANALYSIS_MODULE_DHASH = "dhash"
 ANALYSIS_MODULE_DMG_ANALYZER = "dmg_analyzer"
-ANALYSIS_MODULE_DNS_ANALYZER = "dns_analyzer"
 ANALYSIS_MODULE_EMAIL_ADDRESS_FQDN_ANALYZER = "email_address_fqdn_analyzer"
 ANALYSIS_MODULE_EMAIL_ANALYZER = "email_analyzer"
 ANALYSIS_MODULE_EMAIL_ARCHIVER = "email_archiver"
@@ -1204,7 +1190,6 @@ ANALYSIS_MODULE_FILE_HASH_ANALYZER = "file_hash_analyzer"
 ANALYSIS_MODULE_FILE_PATH_ANALYSIS = "file_path_analysis"
 ANALYSIS_MODULE_FILE_TYPE = "file_type"
 ANALYSIS_MODULE_FQDN_ANALYZER = "fqdn_analyzer"
-ANALYSIS_MODULE_GOOGLE_SAFE_BROWSING_SERVICE = "google_safe_browsing_service"
 ANALYSIS_MODULE_HIDDEN_MIME = "hidden_mime"
 ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION = "html_data_url_extraction"
 ANALYSIS_MODULE_HTML_JS_EXTRACTION = "html_js_extraction"
@@ -1216,24 +1201,20 @@ ANALYSIS_MODULE_JAVASCRIPT_DEOBFUSCATION = "javascript_deobfuscation"
 ANALYSIS_MODULE_LNK_PARSER = "lnk_parser"
 ANALYSIS_MODULE_MAILBOX_EMAIL_ANALYZER = "mailbox_email_analyzer"
 ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2 = "message_id_analyzer_v2"
-ANALYSIS_MODULE_META_REFRESH_EXTRACTION = "meta_refresh_extraction"
 ANALYSIS_MODULE_MHTML = "mhtml"
 ANALYSIS_MODULE_MICROSOFT_SCRIPT_ENCODING_ANALYSIS = "microsoft_script_encoding_analysis"
 ANALYSIS_MODULE_MSOFFICE_ENCRYPTION_ANALYZER = "msoffice_encryption_analyzer"
-ANALYSIS_MODULE_NETBIOS_ANALYZER = "netbios_analyzer"
 ANALYSIS_MODULE_NETWORK_IDENTIFIER = "network_identifier"
 ANALYSIS_MODULE_NOWHITESPACE_ANALYZER = "nowhitespace_analyzer"
 ANALYSIS_MODULE_NRD_ANALYZER = "nrd_analyzer"
 ANALYSIS_MODULE_OBSERVABLE_DETECTION = "observable_detection"
 ANALYSIS_MODULE_OBSERVABLE_MODIFIER = "observable_modifier"
 ANALYSIS_MODULE_OCR = "ocr"
-ANALYSIS_MODULE_OFFICE_FILE_ARCHIVER = "office_file_archiver"
 ANALYSIS_MODULE_OFFICE_XML_REL = "office_xml_rel"
 ANALYSIS_MODULE_OFFICEPARSER3 = "officeparser3"
 ANALYSIS_MODULE_OLEVBA_V1_2 = "olevba_v1_2"
 ANALYSIS_MODULE_ONENOTE_EXTRACTION = "onenote_extraction"
 ANALYSIS_MODULE_PARSE_URL = "parse_url"
-ANALYSIS_MODULE_PCAP_CONVERSATION_EXTRACTION = "pcap_conversation_extraction"
 ANALYSIS_MODULE_PCODEDMP = "pcodedmp"
 ANALYSIS_MODULE_PDF_ANALYZER = "pdf_analyzer"
 ANALYSIS_MODULE_PDFTOTEXT = "pdftotext"

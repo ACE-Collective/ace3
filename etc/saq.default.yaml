@@ -605,7 +605,6 @@ gui:
   upload_vxstream: true
   view_in_vx: true
   # Allows analysts to clear cached URL content
-  clear_cloudphish_alert: true
   # Show the total alerts resulting from the current filter.
   #  Ex: "Alert (22)" would say there are 22 alerts matching the filter.
   show_total_alert_count: true
@@ -717,8 +716,7 @@ service_network_semaphore:
   stats_dir: var/network_semaphore
   # SEMAPHORE CAPACITY LIMITS
   # each of these represents a resource and the number of simultaneous connections allowed to it
-  semaphore_capacity_limits:
-    pcap: 1
+  semaphore_capacity_limits: {}
 
 network_configuration:
   # this section defines what the managed network looks like
@@ -1431,25 +1429,6 @@ analysis_module_file_path_analysis:
   python_class: FilePathAnalyzer
   enabled: true
 
-analysis_module_pcap_conversation_extraction:
-  name: pcap_conversation_extraction
-  python_module: saq.modules.pcap.sensor_extraction
-  python_class: PcapConversationExtraction
-  enabled: false
-  semaphore: pcap
-  # relative time capture (see -d option of the extract script)
-  relative_duration: "00:01:00"
-  # pcap executable path
-  executable_path: bin/extract
-  # custom pcap extraction configuration path for ACE
-  config_path: etc/pcap_extract.ini
-  # we don't want to pull pcap for internal systems (too much data)
-  exclude_internal_network: observable_group:internal
-  # the maximum total number of pcap files we should get for a single alert
-  max_pcap_count: 2
-  # the maximum size (in MB) of pcap we collect from each sensor
-  max_size: 10
-
 analysis_module_network_identifier:
   name: network_identifier
   python_module: saq.modules.asset.network_identifier
@@ -1457,25 +1436,6 @@ analysis_module_network_identifier:
   enabled: true
   # the CSV file that contains the definitions
   csv_file: data/etc/local_networks.csv
-
-analysis_module_asset_analyzer:
-  name: asset_analyzer
-  dependencies:
-    - dns_analyzer
-    - netbios_analyzer
-    - active_directory_analyzer
-  python_module: saq.modules.asset.asset
-  python_class: AssetAnalyzer
-  enabled: false
-
-analysis_module_netbios_analyzer:
-  name: netbios_analyzer
-  python_module: saq.modules.asset.netbios
-  python_class: NetBIOSAnalyzer
-  enabled: false
-  # if this is set then the command is prefixed with ssh ssh_host so that it executes from another system
-  # use this if you are in AWS and your target is inside target network
-  ssh_host: ""
 
 analysis_module_parse_url:
   name: parse_url
@@ -1496,15 +1456,6 @@ analysis_module_idna_analyzer:
   python_module: saq.modules.url.idna
   python_class: IDNAAnalyzer
   enabled: true
-
-analysis_module_dns_analyzer:
-  name: dns_analyzer
-  python_module: saq.modules.asset.dns
-  python_class: DNSAnalyzer
-  enabled: true
-  # if this is set then the command is prefixed with ssh ssh_host so that it executes from another system
-  # use this if you are in AWS and your target is inside target network
-  ssh_host: ""
 
 analysis_module_rdap_analyzer:
   name: rdap_analyzer
@@ -1527,12 +1478,6 @@ analysis_module_nrd_analyzer:
   # fail open (the hit is kept). Set to 0 or null to disable verification.
   max_registration_age_days: 90
   cache_ttl: 86400
-
-analysis_module_active_directory_analyzer:
-  name: active_directory_analyzer
-  python_module: saq.modules.asset.active_directory
-  python_class: ActiveDirectoryAnalyzer
-  enabled: false
 
 analysis_module_snort_signature_analysis_v1:
   name: snort_signature_analysis_v1
@@ -1649,9 +1594,6 @@ analysis_module_file_hash_analyzer:
   enabled: true
   # ignored file patterns (glob style pattern matching)
   ignore_pattern_pcap: "*.pcap"
-  ignore_pattern_tshark: "*.tshark"
-  ignore_pattern_brotex_1: "*.brotex.tar"
-  ignore_pattern_brotex_2: "*.brotex.tar.gz"
   ignore_pattern_stderr: "*.stderr"
   ignore_pattern_stdout: "*.stdout"
   ignore_pattern_pdfparser: "*.pdfparser"
@@ -1662,9 +1604,6 @@ analysis_module_file_hash_analyzer:
   # not sure why these were in there
   # ignore_pattern_olevba = *.olevba/*
   # ignore_pattern_vtdownload = */vt_downloads/*
-  ignore_pattern_brotex_smtp_protocol: "*/protocol.smtp"
-  ignore_pattern_brotex_http_protocol: "*/protocol.http"
-  ignore_pattern_brotex_connection: "*/connection"
   # ignore_pattern_email = */email.rfc822
   ignore_pattern_email_headers: "*email.rfc822.headers"
   ignore_pattern_email_plain_text: "*email.rfc822.unknown_text_plain_*"
@@ -1867,16 +1806,6 @@ analysis_module_extracted_ole_analyzer:
   # comma separated list of extracted file extensions that would be considered suspect here
   suspect_file_ext: vbs,jse,exe,jar,lnk,ps1,bat,scr,hta,wsf,cmd,vbe,wsc
 
-analysis_module_office_file_archiver:
-  name: office_file_archiver
-  dependencies:
-    - file_type
-  python_module: saq.modules.file_analysis.msoffice
-  python_class: OfficeFileArchiver
-  enabled: false
-  # the directory (relative to SAQ_DATA) to store the archived office documents
-  office_archive_dir: archive/office
-
 analysis_module_file_type:
   name: file_type
   python_module: saq.modules.file_analysis.file_type
@@ -2077,67 +2006,6 @@ analysis_module_x509_analyzer:
   python_class: X509Analyzer
   enabled: true
 
-# XXX this needs fixed, I think it needs a local service running?
-analysis_module_google_safe_browsing_service:
-  name: google_safe_browsing_service
-  python_module: saq.modules.url.google_sb
-  python_class: GoogleSafeBrowsingAnalyzer
-  enabled: false
-  server: ""
-  port: 5000
-  # If we're verifying ssl and the cert is signed by an authority the OS trusts, then True.
-  # Else, it should be the path the the CA chain
-  verify_ssl: false
-
-#
-# this module was been deprecated in favor of this "phishkit" approach
-# you used to be able to just reach out the pull stuff down
-# but the bad guys got smart and put themselves behind geo-blocking, recaptcha, cloudflare, etc...
-#
-
-analysis_module_crawlphish:
-  name: crawlphish
-  python_module: saq.modules.url.crawlphish
-  python_class: CrawlphishAnalyzer
-  enabled: false
-  # path to whitelisted netloc
-  whitelist_path: etc/crawlphish.whitelist
-  # path to whitelisted path regexes
-  regex_path: etc/crawlphish.path_regex
-  # path to blacklisted netloc
-  blacklist_path: etc/crawlphish.blacklist
-  # threshold for uncommon networks (total connections threshold)
-  uncommon_network_threshold: 70
-  # the user-agent to send with requests
-  user-agent: Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/27.0.1453.94 Safari/537.36
-  # how long to wait (in full seconds) until a request is timed out
-  timeout: 8
-  # maximum file size (in MB)
-  max_download_size: 10
-  # maximum file name length of downloaded files (in bytes) file names are truncated past this value
-  max_file_name_length: 50
-  # how long do wait until we start trying to query brocess again? (in seconds)
-  cooldown_period: 60
-  # update the brocess database with requests made with crawlphish
-  update_brocess: true
-  # comma separate list of proxies to use. The special value GLOBAL refers to the global proxy settings (see [proxy])
-  proxies: []
-  # enable automatic crawlphish analysis for all url observables
-  auto_crawl_all_alert_urls: false
-  # filtering capabilities
-  blacklist_filter_enabled: true
-  whitelist_filter_enabled: true
-  path_regex_filter_enabled: true
-  common_filter_enabled: true
-  intel_filter_enabled: true
-  direct_ipv4_filter_enabled: true
-  # set this to true to cache anything downloaded by crawlphish
-  cache_downloaded_files: false
-  # directory to store cached downloaded files into (relative to DATA_DIR)
-  cache_directory: crawlphish_cache
-  # path (relative to ANALYST_DATA_DIR) to file that contains all the user agents to use (one per line)
-  user_agent_list_path: crawlphish_uas.txt
-
 analysis_module_protected_url_analyzer:
   name: protected_url_analyzer
   python_module: saq.modules.url.protected
@@ -2190,13 +2058,6 @@ analysis_module_nowhitespace_analyzer:
   name: nowhitespace_analyzer
   python_module: saq.modules.file_analysis.rtf
   python_class: NoWhiteSpaceAnalyzer
-  enabled: true
-
-analysis_module_meta_refresh_extraction:
-  name: meta_refresh_extraction
-  # NOTE this is only configured for the cloudphish engine
-  python_module: saq.modules.file_analysis.html
-  python_class: MetaRefreshExtractionAnalyzer
   enabled: true
 
 # TAGGING MODULES
@@ -2305,6 +2166,11 @@ disabled_modules: []
 # config section name.
 deprecated_modules:
   - saq.modules.whois:WhoisAnalysis
+  - saq.modules.email.zeek:BroSMTPStreamAnalysis
+  - saq.modules.file_analysis.msoffice:OfficeFileArchiveAction
+  - saq.modules.asset.netbios:NetBIOSAnalysis
+  - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
+  - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2448,16 +2314,13 @@ analysis_module_clicker_detection_splunk:
 module_group_correlation:
   name: correlation
   modules:
-    - active_directory_analyzer
     - clicker_detection_splunk
     - email_thread_analyzer
     - fqdn_analyzer
     - idna_analyzer
     - message_id_analyzer_v2
-    - netbios_analyzer
     - network_identifier
     - parse_url
-    - pcap_conversation_extraction
     - phishkit_analyzer
     - rdap_analyzer
     - snort_signature_analysis_v1
@@ -2499,7 +2362,7 @@ module_group_file:
     - msoffice_encryption_analyzer
     - nowhitespace_analyzer
     - ocr
-    - office_file_archiver
+    - office_xml_rel
     - officeparser3
     - olevba_v1_2
     - onenote_extraction
@@ -2546,11 +2409,6 @@ module_group_common:
     - site_tagger
     - user_defined_tagging
     - user_tagger
-
-module_group_action:
-  name: action
-  modules:
-    - crawlphish
 
 # EXTERNAL REMEDIATION CHECK SERVICE
 # Background daemon that polls external systems to discover whether *they*
@@ -2689,14 +2547,6 @@ analysis_mode_file:
     - file
   cleanup: true
 
-analysis_mode_http:
-  name: http
-  # mode used for HTTP analysis
-  module_groups:
-    - common
-    - file
-  cleanup: true
-
 analysis_mode_correlation:
   name: correlation
   # mode used for analyzing alerts
@@ -2709,7 +2559,6 @@ analysis_mode_correlation:
     - file
     - email
     - correlation
-    - action
   cleanup: false
   # NOTE once an analysis is set to correlation it automatically becomes an alert
   # analysis_module_detection: no
@@ -2761,18 +2610,8 @@ analysis_mode_suricata_ids:
   cleanup: true
   enabled_modules:
     - snort_signature_analysis_v1
-    - pcap_conversation_extraction
 
 integrations: {}
-
-# settings for saq/domain_generator.py
-domain_generation:
-  # relative to saq.ANALYST_DATA_DIR
-  keyword_file_path: certificates/keyword.txt
-  # relative path to the opensquat external tool
-  opensquat: /opt/misc/opensquat/opensquat.py
-  # relative to saq.ANALYST_DATA_DIR
-  static_domain_file: certificates/static_domains.txt
 
 settings:
   refresh_seconds: 60
@@ -2899,7 +2738,6 @@ malicious_dispositions:
 config:
   git_repos_default: etc/saq.git_repos.default.yaml
   signatures_default: etc/saq.signatures.default.yaml
-  zeek_default: etc/saq.bro.default.yaml
   remediation_default: etc/saq.remediation.default.yaml
   shodan_default: etc/saq.shodan.default.yaml
   splunk_default: etc/saq.splunk.default.yaml

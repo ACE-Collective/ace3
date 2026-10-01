@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, pool
 
 from saq.database.meta import Base
 import saq.database.model  # noqa: F401 — populates Base.metadata
+from saq.database.migration import include_object
 
 target_metadata = Base.metadata
 
@@ -26,7 +27,7 @@ def get_url() -> str:
 
 
 def run_migrations_offline() -> None:
-    context.configure(url=get_url(), target_metadata=target_metadata, literal_binds=True)
+    context.configure(url=get_url(), target_metadata=target_metadata, literal_binds=True, include_object=include_object)
     with context.begin_transaction():
         context.run_migrations()
 
@@ -34,7 +35,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     connectable = create_engine(get_url(), poolclass=pool.NullPool)
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(connection=connection, target_metadata=target_metadata, include_object=include_object)
         with context.begin_transaction():
             context.run_migrations()
 

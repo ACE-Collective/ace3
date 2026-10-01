@@ -52,16 +52,14 @@ def observable_action():
                 return "request failed - check logs", 500
 
         elif action_id in [ACTION_URL_CRAWL, ACTION_FILE_RENDER]:
-            from saq.modules.url import CrawlphishAnalyzer
             #from saq.modules.render import RenderAnalyzer
 
             # make sure alert is locked before starting new analysis
             if alert.is_locked():
                 try:
-                    # crawlphish only works for URL observables, so we want to limit these actions to the URL observable action only
+                    # only URL observables can be crawled, so we want to limit these actions to the URL observable action only
                     if action_id == ACTION_URL_CRAWL:
                         observable.add_directive(DIRECTIVE_CRAWL)
-                        observable.remove_analysis_exclusion(CrawlphishAnalyzer)
                         logging.info(f"user {current_user} added directive {DIRECTIVE_CRAWL} to {observable}")
 
                     # both URLs and files can be rendered, so we can do that in either case (ACTION_URL_CRAWL or ACTION_FILE_RENDER)
