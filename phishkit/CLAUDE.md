@@ -69,7 +69,9 @@ Tests are marked `unit`; the local `conftest.py` registers the marker and sets `
 - `response_bodies.txt` — captured response bodies + WebSocket frames as `MARKER URL: <url>` blocks. A grep/yara corpus, deliberately split out of `dom.html`; the `.txt` extension is not the enforcement (ACE excludes it from `HTMLJavaScriptExtractor` explicitly because libmagic reads it as `text/html`).
 - `script.js` — top-level body when the target served JavaScript rather than a page. The `.js` extension is load-bearing: it triggers ACE's JS deobfuscator.
 - `requests.json` — CDP request/response records. Its presence is what marks a run *recoverable*.
-- `screenshot.png`, `pre_bypass_screenshot*.png`, `metrics.json`, `downloads/`
+- `metrics.json` — byte and timing stats, plus `document_url`: the URL Chrome was showing when the DOM was captured, after every redirect and with the fragment (which no request carries, so `requests.json` can't supply it). ACE relates `dom.html` to it (`downloaded_from`), and the JS deobfuscator runs the page's scripts with it as their `location`.
+- `downloads/` — only downloads a frame started (`Browser.downloadWillBegin` with a frame id), under the site's suggested filename; one still in flight at the end is kept as `<name>.crdownload`. Chrome fetches its own on-device models (the client-side phishing model and others) through the same download manager even with the `OptimizationGuideModelDownloading` feature SeleniumBase already disables (Chrome 153/154), so copying the download folder wholesale reported them as the site's files. `_route_downloads` saves every download under its CDP guid in a folder of our own, and the scan's stdout names each file it skipped.
+- `screenshot.png`, `pre_bypass_screenshot*.png`
 - Written by the manager, not the scanner: `std.out`, `std.err`, `exit.code`, `proxy.json`.
 
 ## Timeouts and partial results

@@ -60,8 +60,12 @@ def deobfuscate_file(
     is_async: bool = False,
     timeout: float = 60,
     scanner_timeout: int = 30,
+    dom_snapshot_path: str | None = None,
 ) -> str | list[str]:
     """Run the sandbox harness against ``file_path`` in the manager service.
+
+    ``dom_snapshot_path`` is the DOM snapshot (written by html_js_extraction)
+    of the document the script runs in, or None to run it without one.
 
     If ``is_async=True`` returns the celery job id so the caller can poll
     with ``get_async_deobfuscate_result``. Otherwise blocks up to
@@ -76,16 +80,15 @@ def deobfuscate_file(
     shared_file_path = os.path.join(shared_dir, os.path.basename(file_path))
     shutil.copy2(file_path, shared_file_path)
 
-    # If html_js_extraction wrote a DOM snapshot beside the script, ship it too.
-    # The harness discovers it by the `<input>.dom.json` convention rather than
-    # via the celery signature, so no task-signature change is needed. It lets
-    # the sandbox resolve document lookups against the source document's real
-    # element attributes. (If deob results are ever cached, note the cache key
-    # would then need to account for this sidecar's content — neither the
-    # extractor nor the deobfuscator is cacheable today.)
-    sidecar_path = file_path + ".dom.json"
-    if os.path.exists(sidecar_path):
-        shutil.copy2(sidecar_path, shared_file_path + ".dom.json")
+    # The harness discovers the snapshot by the `<input>.dom.json` convention
+    # rather than via the celery signature, so no task-signature change is
+    # needed. It lets the sandbox resolve document lookups against the
+    # document's real element attributes and location. (If deob results are
+    # ever cached, note the cache key would then need to account for this
+    # snapshot's content — neither the extractor nor the deobfuscator is
+    # cacheable today.)
+    if dom_snapshot_path is not None:
+        shutil.copy2(dom_snapshot_path, shared_file_path + ".dom.json")
 
     result = pk_deobfuscate.delay(shared_file_path, timeout=scanner_timeout)
 

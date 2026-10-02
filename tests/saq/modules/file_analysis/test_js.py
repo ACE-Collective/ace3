@@ -15,8 +15,10 @@ that image, and the tests below stub the report when they need to cover how
 the module handles them.
 """
 
+import base64
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -51,10 +53,20 @@ HARNESS_PATH = os.path.normpath(
 )
 
 
-def _local_deobfuscate_file(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+def _local_deobfuscate_file(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+                            dom_snapshot_path=None):
     """Stand-in for saq.js_deobfuscator.deobfuscate_file that runs the
-    harness directly via node."""
+    harness directly via node. The harness finds the snapshot at
+    `<input>.dom.json`, so one borrowed from another document is staged beside a
+    copy of the script, as the real client does on the shared volume."""
     os.makedirs(output_dir, exist_ok=True)
+    if dom_snapshot_path is not None and dom_snapshot_path != file_path + ".dom.json":
+        staged_dir = os.path.join(output_dir, "input")
+        os.makedirs(staged_dir, exist_ok=True)
+        staged_path = os.path.join(staged_dir, os.path.basename(file_path))
+        shutil.copy2(file_path, staged_path)
+        shutil.copy2(dom_snapshot_path, staged_path + ".dom.json")
+        file_path = staged_path
     out_js = os.path.join(output_dir, "deobfuscated.js")
     proc = subprocess.run(
         ["node", HARNESS_PATH, file_path, out_js],
@@ -303,7 +315,8 @@ def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
     still emit the deobfuscated-<name> observable carrying analysis.error."""
     import json as _json
 
-    def _crashing_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+    def _crashing_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+                       dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")
         with open(out_js, "w") as fp:
@@ -722,7 +735,8 @@ def test_legacy_report_without_error_type_does_not_tag(tmpdir, monkeypatch):
     """
     import json as _json
 
-    def _legacy_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+    def _legacy_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+                     dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")
         with open(out_js, "w") as fp:
@@ -802,7 +816,8 @@ def test_webcrack_failure_is_reported_in_summary(tmpdir, monkeypatch, patched_de
     """
     import json as _json
 
-    def _webcrack_failed_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30):
+    def _webcrack_failed_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+                              dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")
         with open(out_js, "w") as fp:
@@ -1219,3 +1234,169 @@ def test_documentelement_attribute_redirect_recovers_url(datadir, monkeypatch, p
         body = fp.read()
     assert 'location.replace("https://phish.example.com/o/?c3Y9dGVzdA==N0123N#victim%40example.com");' in body
     assert "[document.documentElement" not in body
+
+
+# ---------------------------------------------------------------------------
+# Real implementations over unknown input.
+#
+# atob is a real implementation, but a script loaded on its own (an SVG's
+# external <script xlink:href>) or reading the page URL asks it to decode a
+# value the sandbox does not have. Decoding the recorder's `[label]`
+# placeholder produced garbage bytes that landed inside the redirect URL; the
+# result must stay symbolic and the trace must say what was decoded.
+# ---------------------------------------------------------------------------
+
+
+def _deobfuscate_source(tmpdir, name, source):
+    sample_path = tmpdir / name
+    sample_path.write(source)
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis.error_type is None
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(file_observables) == 1
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        return fp.read()
+
+
+@pytest.mark.unit
+def test_atob_of_unknown_attribute_stays_symbolic(tmpdir, monkeypatch, patched_deobfuscate):
+    body = _deobfuscate_source(tmpdir, "external_svg_script.js", (
+        "try{var q=document.getElementById('lnk');"
+        "window.location.href=atob(q.getAttribute('href'))+(q.getAttribute('data-s')||'');}catch(e){}"
+    ))
+
+    assert (
+        'window.location.href = atob(document.getElementById("lnk").getAttribute("href"))'
+        ' + document.getElementById("lnk").getAttribute("data-s");'
+    ) in body
+    assert body.isascii()
+
+
+@pytest.mark.unit
+def test_atob_of_location_fragment_stays_symbolic(tmpdir, monkeypatch, patched_deobfuscate):
+    body = _deobfuscate_source(tmpdir, "location_fragment_email.js", (
+        "var email = atob(window.location.href.split('#marker=')[1]);\n"
+        "location.replace('https://redirect.example.com#' + email);\n"
+    ))
+
+    assert (
+        'location.replace("https://redirect.example.com#" + atob(window.location.href.split("#marker=")[1]));'
+    ) in body
+    assert body.isascii()
+
+
+# ---------------------------------------------------------------------------
+# The document a script runs in. A script fetched on its own from a URL an SVG
+# referenced runs against that SVG's snapshot; a crawled page's scripts see the
+# URL the page was loaded at as their location.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_external_script_runs_against_referring_document(monkeypatch, patched_deobfuscate):
+    from saq.configuration.config import get_analysis_module_config as _gc
+    from saq.constants import ANALYSIS_MODULE_HTML_JS_EXTRACTION, F_URL
+    from saq.modules.file_analysis.html_js_extraction import (
+        HTMLJavaScriptExtractionAnalysis,
+        HTMLJavaScriptExtractor,
+    )
+    from saq.modules.phishkit import PhishkitAnalysis
+
+    redirect = "https://redirect.example.com/landing#token="
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+        f'<a id="lnk" href="{base64.b64encode(redirect.encode()).decode()}" data-s="dXNlckBleGFtcGxlLmNvbQ==">'
+        '<rect width="800"/></a>'
+        '<script type="text/javascript" xlink:href="https://cdn.example.com/referenced.js"/>'
+        '</svg>'
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    svg_path = root.create_file_path("referring.svg")
+    with open(svg_path, "w") as fp:
+        fp.write(svg)
+    svg_obs = root.add_file_observable(svg_path)
+
+    extractor = AnalysisModuleAdapter(HTMLJavaScriptExtractor(
+        context=create_test_context(root=root),
+        config=_gc(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
+    extractor.root = root
+    assert extractor.execute_analysis(svg_obs) == AnalysisExecutionResult.COMPLETED
+    ext_analysis = svg_obs.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    script_url = next(o for o in ext_analysis.observables if o.type == F_URL)
+
+    # what a crawl of that URL produces: the script on its own, under the URL
+    fetch_analysis = PhishkitAnalysis()
+    script_url.add_analysis(fetch_analysis)
+    script_path = root.create_file_path("referenced_fetched.js")
+    with open(script_path, "w") as fp:
+        fp.write("try{var q=document.getElementById('lnk');"
+                 "window.location.href=atob(q.getAttribute('href'))+(q.getAttribute('data-s')||'');}catch(e){}")
+    script_obs = fetch_analysis.add_file_observable(script_path)
+
+    deob = _build_analyzer(root)
+    assert deob.execute_analysis(script_obs) == AnalysisExecutionResult.COMPLETED
+    analysis = script_obs.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis.dom_snapshot is True
+    assert analysis.dom_snapshot_source == svg_obs.file_path
+
+    emitted = [o for o in analysis.observables if o.type == F_FILE]
+    with open(emitted[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert 'window.location.href = "https://redirect.example.com/landing#token=dXNlckBleGFtcGxlLmNvbQ==";' in body
+
+
+@pytest.mark.unit
+def test_location_from_dom_snapshot_url(tmpdir, monkeypatch, patched_deobfuscate):
+    sample_path = tmpdir / "crawled_page_inline.js"
+    sample_path.write(
+        "var email = atob(window.location.href.split('#token=')[1]);\n"
+        "location.replace('https://next.example.com#' + email + '&from=' + document.location.hostname);\n"
+    )
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = root.add_file_observable(str(sample_path))
+    observable.add_directive(YARA_META_JS)
+    _write_sidecar(observable, {
+        "version": 1, "truncated": False,
+        "url": "https://landing.example.com/page/#token=dXNlckBleGFtcGxlLmNvbQ==",
+        "elements": [{"tag": "html", "attrs": {}}, {"tag": "body", "attrs": {}}],
+    })
+
+    analyzer = _build_analyzer(root)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis.error_type is None
+    assert analysis.dom_snapshot_source is None
+    file_observables = [o for o in analysis.observables if o.type == F_FILE]
+    with open(file_observables[0].full_path, "r", encoding="utf-8") as fp:
+        body = fp.read()
+    assert 'location.replace("https://next.example.com#user@example.com&from=landing.example.com");' in body
+
+
+@pytest.mark.unit
+def test_long_call_argument_is_left_out_of_labels_not_cut_short(tmpdir, monkeypatch, patched_deobfuscate):
+    """A label that cut a long URL argument short left an unterminated string
+    literal in the trace (`fetch("https://host/...?action=get_dev...).json()`),
+    and URL extraction reported each such fragment as a URL."""
+    url = "https://api.example.com/admin/apifiles.php?action=get_device_code&user_id=dGVzdHVzZXI%3D"
+    body = _deobfuscate_source(tmpdir, "long_fetch_arg.js", (
+        "(async function () {\n"
+        f'  var response = await fetch("{url}");\n'
+        "  var data = await response.json();\n"
+        "  document.title = data.user_code;\n"
+        "})();\n"
+    ))
+
+    assert 'document.title = fetch(...).json().user_code;' in body
+    assert body.count(url) == 1  # the fetch call's own line, in full
+    assert "get_device_code&user_id=dGVzdHVzZXI%3D..." not in body
+    for line in body.splitlines():
+        assert line.count('"') % 2 == 0, f"unterminated string literal in trace line: {line}"
