@@ -56,11 +56,13 @@ class ObservableLookupResult(BaseModel):
     """Per-pair result, positionally aligned with the request (key on index, not value: the
     echoed type/value are the normalized forms, e.g. a lowercased file hash).
 
-    Alerts with alert_type 'faqueue' are never counted. disposition_counts is the raw
-    histogram including OPEN and UNKNOWN (unlike the GUI's disposition history, which drops
-    UNKNOWN), so total_alert_count == sum(disposition_counts.values()) always holds.
-    found=false with error=null means the observable has never been indexed; found=true with
-    total_alert_count=0 means every containing alert was faqueue, excluded, or before since.
+    Only alerts in the default queue are counted, and alerts with alert_type 'faqueue' never
+    are. disposition_counts is the raw histogram including OPEN and UNKNOWN (unlike the GUI's
+    disposition history, which drops UNKNOWN), so total_alert_count ==
+    sum(disposition_counts.values()) always holds. found=false with error=null means the
+    observable has never been indexed; found=true with total_alert_count=0 means every
+    containing alert was in another queue, faqueue, excluded, or before since. Event
+    memberships are not filtered by queue.
     """
     index: int
     type: str
