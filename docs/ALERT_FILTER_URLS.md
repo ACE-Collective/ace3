@@ -130,8 +130,9 @@ commit an older timestamp behind a cursor already handed out. Delivery is at lea
 client that resumes from the last `updated_at` it saw may see a row again, never miss one.
 Alerts that existed before `updated_at` was added carry the time of that migration.
 
-`GET /api/v2/alerts/export?format=ndjson|csv` streams the whole result in one response, with
-the same parameters and order and no paging.
+`GET /api/v2/alerts/export/ndjson` and `GET /api/v2/alerts/export/csv` stream the whole result in
+one response, with the same parameters and order and no paging: one `AlertRow` per line, or a
+header line and one row per alert.
 
 ## The same slugs in the search box
 

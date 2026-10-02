@@ -52,22 +52,15 @@ class CsvResponse(PlainTextResponse):
 
 
 class NdjsonStreamResponse(StreamingResponse):
-    """A streamed export, one JSON object per line (the alert export). A route that can also
-    stream CSV passes media_type="text/csv" to the instance and documents it with
-    NDJSON_OR_CSV_RESPONSES; StreamingResponse honors the argument."""
+    """A streamed export, one JSON object per line (the alert NDJSON export)."""
 
     media_type = "application/x-ndjson"
 
 
-# The CSV alternative of an NdjsonStreamResponse route. Merged onto the entry FastAPI builds from
-# the response class, so the operation lists application/x-ndjson first and text/csv second.
-NDJSON_OR_CSV_RESPONSES = {
-    200: {
-        "content": {
-            "text/csv": {"schema": {"type": "string"}},
-        }
-    }
-}
+class CsvStreamResponse(StreamingResponse):
+    """A streamed CSV export (the alert CSV export). CsvResponse is for CSV built in memory."""
+
+    media_type = "text/csv"
 
 
 # Describes the body of the zip download endpoints for generators that look at the schema

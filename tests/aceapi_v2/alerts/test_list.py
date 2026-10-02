@@ -1,4 +1,5 @@
-"""GET /api/v2/alerts and /api/v2/alerts/export: the alert listing for export and reporting."""
+"""GET /api/v2/alerts and its /export/ndjson and /export/csv streams: the alert listing for export
+and reporting."""
 
 import csv
 import io
@@ -59,13 +60,13 @@ def no_settle(monkeypatch):
 class TestAccess:
     @pytest.mark.asyncio
     async def test_requires_auth(self, unauth_client: AsyncClient):
-        assert (await unauth_client.get("/alerts/")).status_code == 401
-        assert (await unauth_client.get("/alerts/export")).status_code == 401
+        for path in ("/alerts/", "/alerts/export/ndjson", "/alerts/export/csv"):
+            assert (await unauth_client.get(path)).status_code == 401
 
     @pytest.mark.asyncio
     async def test_requires_alert_read(self, noperm_client: AsyncClient):
-        assert (await noperm_client.get("/alerts/")).status_code == 403
-        assert (await noperm_client.get("/alerts/export")).status_code == 403
+        for path in ("/alerts/", "/alerts/export/ndjson", "/alerts/export/csv"):
+            assert (await noperm_client.get(path)).status_code == 403
 
 
 class TestRows:
@@ -244,8 +245,8 @@ class TestFilters:
         {"tz": "Not/AZone"},
     ])
     async def test_bad_filters_are_422(self, client: AsyncClient, params):
-        assert (await client.get("/alerts/", params=params)).status_code == 422
-        assert (await client.get("/alerts/export", params=params)).status_code == 422
+        for path in ("/alerts/", "/alerts/export/ndjson", "/alerts/export/csv"):
+            assert (await client.get(path, params=params)).status_code == 422
 
 
 class TestChangedSince:
@@ -312,7 +313,7 @@ class TestExport:
         monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
         alerts = [insert_alert() for _ in range(5)]
 
-        response = await client.get("/alerts/export")
+        response = await client.get("/alerts/export/ndjson")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/x-ndjson")
         assert "alerts.ndjson" in response.headers["content-disposition"]
@@ -325,7 +326,7 @@ class TestExport:
         alerts = [insert_alert() for _ in range(3)]
         _set(alerts[1], queue="external")
 
-        response = await client.get("/alerts/export", params={"format": "csv"})
+        response = await client.get("/alerts/export/csv")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/csv")
         records = list(csv.DictReader(io.StringIO(response.text)))
@@ -339,8 +340,11 @@ class TestExport:
         external = insert_alert()
         _set(external, queue="external")
 
-        response = await client.get("/alerts/export", params={"f": "queue:external"})
+        response = await client.get("/alerts/export/ndjson", params={"f": "queue:external"})
         assert [json.loads(line)["uuid"] for line in response.text.splitlines()] == [external.uuid]
+
+        response = await client.get("/alerts/export/csv", params={"f": "queue:external"})
+        assert [record["uuid"] for record in csv.DictReader(io.StringIO(response.text))] == [external.uuid]
 
     @pytest.mark.asyncio
     async def test_a_failure_part_way_ends_with_an_error_line(self, client: AsyncClient, monkeypatch):
@@ -358,12 +362,45 @@ class TestExport:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(service, "fetch_alert_page", _fail_after_first)
-        response = await client.get("/alerts/export")
+        response = await client.get("/alerts/export/ndjson")
         assert response.status_code == 200
         lines = [json.loads(line) for line in response.text.splitlines()]
         assert len(lines) == 2
         assert "uuid" in lines[0]
         assert "error" in lines[1]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_part_way_truncates_the_csv(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 1)
+        first = insert_alert()
+        insert_alert()
+
+        original = service.fetch_alert_page
+        calls = []
+
+        def _fail_after_first(*args, **kwargs):
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("database went away")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(service, "fetch_alert_page", _fail_after_first)
+        response = await client.get("/alerts/export/csv")
+        assert response.status_code == 200
+        assert [record["uuid"] for record in csv.DictReader(io.StringIO(response.text))] == [first.uuid]
+
+    def test_each_export_documents_exactly_one_media_type(self):
+        """One route per format: neither export advertises the other's content type, and the
+        old combined /export route is gone."""
+        from aceapi_v2.application import app
+
+        paths = app.openapi()["paths"]
+        assert "/alerts/export" not in paths
+        for path, media_type in (("/alerts/export/ndjson", "application/x-ndjson"),
+                                 ("/alerts/export/csv", "text/csv")):
+            content = paths[path]["get"]["responses"]["200"]["content"]
+            assert list(content) == [media_type]
+            assert "format" not in [p["name"] for p in paths[path]["get"]["parameters"]]
 
 
 class TestUpdatedAtColumn:
