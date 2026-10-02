@@ -8,6 +8,7 @@ from saq.constants import (
     F_FILE,
     F_URI_PATH,
     F_URL,
+    R_DOWNLOADED_FROM,
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
@@ -954,3 +955,81 @@ def test_dom_snapshot_truncation(tmpdir, test_context):
     assert snapshot["truncated"] is True
     meta = next(e for e in snapshot["elements"] if e["attrs"].get("id") == "m")
     assert len(meta["attrs"]["data-blob"]) == 16384
+
+
+# ---------------------------------------------------------------------------
+# External scripts run inside the document that references them. An SVG keeps
+# its base64 redirect target in an <a href> and loads a separate script that
+# decodes it; whatever fetches that script gets it alone. The document's
+# snapshot is left beside the document for the deobfuscator to find.
+# ---------------------------------------------------------------------------
+
+SVG_WITH_EXTERNAL_SCRIPTS = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <a id="lnk" href="aHR0cHM6Ly9yZWRpcmVjdC5leGFtcGxlLmNvbS9sYW5kaW5nI3Rva2VuPQ==" data-s="dXNlckBleGFtcGxlLmNvbQ=="><rect width="800"/></a>
+  <script type="text/javascript" xlink:href="https://cdn.example.com/rd.js"/>
+  <script type="text/javascript" href="https://cdn.example.com/svg2.js"/>
+</svg>"""
+
+
+@pytest.mark.unit
+def test_svg_external_scripts_leave_document_snapshot(tmpdir, test_context):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("external_scripts.svg")
+    with open(target_path, "w") as fp:
+        fp.write(SVG_WITH_EXTERNAL_SCRIPTS)
+    observable = root.add_file_observable(target_path)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.extracted_files == []
+    assert sorted(analysis.extracted_urls) == ["https://cdn.example.com/rd.js", "https://cdn.example.com/svg2.js"]
+    for url in [o for o in analysis.observables if o.type == F_URL]:
+        assert url.get_relationship_by_type(R_EXTRACTED_FROM).target is observable
+
+    sidecar_path = observable.full_path + ".dom.json"
+    assert analysis.dom_snapshot_files == [os.path.basename(sidecar_path)]
+    with open(sidecar_path, "r", encoding="utf-8") as fp:
+        snapshot = json.load(fp)
+    lnk = next(e for e in snapshot["elements"] if e["attrs"].get("id") == "lnk")
+    assert lnk["attrs"]["href"] == "aHR0cHM6Ly9yZWRpcmVjdC5leGFtcGxlLmNvbS9sYW5kaW5nI3Rva2VuPQ=="
+    assert lnk["attrs"]["data-s"] == "dXNlckBleGFtcGxlLmNvbQ=="
+    assert "url" not in snapshot
+
+
+@pytest.mark.unit
+def test_relative_external_script_leaves_no_document_snapshot(tmpdir, test_context):
+    """A relative path can't be fetched on its own, so nothing would use it."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("relative_script.html")
+    with open(target_path, "w") as fp:
+        fp.write('<html><body><div id="x" data-a="b"></div><script src="/static/app.js"></script></body></html>')
+    observable = root.add_file_observable(target_path)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.extracted_uri_paths == ["/static/app.js"]
+    assert not os.path.exists(observable.full_path + ".dom.json")
+
+
+@pytest.mark.unit
+def test_dom_snapshot_carries_document_url(tmpdir, test_context):
+    """A document that records where it was loaded from (phishkit's dom.html)
+    hands that URL to its scripts as their location."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    target_path = root.create_file_path("crawled_dom.html")
+    with open(target_path, "w") as fp:
+        fp.write('<html><body><script>location.replace("https://next.example.com#" + location.hash)</script></body></html>')
+    observable = root.add_file_observable(target_path)
+    page_url = root.add_observable_by_spec(F_URL, "https://landing.example.com/page/#token=dGVzdA==")
+    observable.add_relationship(R_DOWNLOADED_FROM, page_url)
+
+    assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    extracted = [o for o in analysis.observables if o.type == F_FILE]
+    with open(extracted[0].full_path + ".dom.json", "r", encoding="utf-8") as fp:
+        snapshot = json.load(fp)
+    assert snapshot["url"] == "https://landing.example.com/page/#token=dGVzdA=="

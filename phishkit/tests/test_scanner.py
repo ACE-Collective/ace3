@@ -209,6 +209,22 @@ class TestComputeMetrics:
         assert metrics["domain_stats"]["example.com"]["duration_seconds"] == 0
 
     @pytest.mark.unit
+    def test_compute_metrics_document_url(self, scanner):
+        assert scanner._compute_metrics("https://example.com", 0.0)["document_url"] is None
+
+        class _Cdp:
+            def get_current_url(self):
+                return "https://landing.example.com/page/#token=abc"
+
+        class _Sb:
+            cdp = _Cdp()
+
+        scanner._capture_document_url(_Sb())
+        metrics = scanner._compute_metrics("https://redirect.example.com/?u=x", 0.0)
+        assert metrics["url_scanned"] == "https://redirect.example.com/?u=x"
+        assert metrics["document_url"] == "https://landing.example.com/page/#token=abc"
+
+    @pytest.mark.unit
     def test_compute_metrics_timestamp_format(self, scanner):
         metrics = scanner._compute_metrics("https://example.com", 0.0)
         ts = datetime.fromisoformat(metrics["timestamp"])
@@ -1650,3 +1666,71 @@ class TestLoadConfigScanWaits:
         # sample_config_data in conftest does NOT set scan_waits → defaults apply
         assert scanner.ADDITIONAL_WAIT == 3
         assert scanner.MAX_NETWORK_WAIT == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Page downloads: only downloads a frame started are the scanned site's. Chrome
+# fetches its own on-device models through the same download manager.
+# ---------------------------------------------------------------------------
+
+def _download_event(**attrs):
+    event = MagicMock()
+    for k, v in attrs.items():
+        setattr(event, k, v)
+    return event
+
+
+class TestPageDownloads:
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_only_frame_downloads_are_recorded(self, scanner):
+        await scanner.download_will_begin_handler(_download_event(
+            frame_id="F1", guid="g1", url="https://example.com/invoice.bin", suggested_filename="invoice.bin"))
+        await scanner.download_will_begin_handler(_download_event(
+            frame_id="", guid="g2", url="https://models.example.com/downloads?name=x", suggested_filename="downloads.html"))
+
+        assert scanner.page_downloads == {"g1": {"url": "https://example.com/invoice.bin", "name": "invoice.bin"}}
+
+    @pytest.mark.unit
+    def test_collect_copies_page_downloads_by_name(self, scanner, tmp_path):
+        root = tmp_path / "downloaded_files"
+        scanner.page_downloads_dir = str(root / "page_downloads")
+        (root / "page_downloads").mkdir(parents=True)
+        (root / "page_downloads" / "g1").write_bytes(b"complete")
+        (root / "page_downloads" / "g2.crdownload").write_bytes(b"part")
+        (root / "page_downloads" / "g3").write_bytes(b"same name")
+        (root / "page_downloads" / "g4").write_bytes(b"chrome model")
+        scanner.page_downloads = {
+            "g1": {"url": "https://example.com/a", "name": "invoice.bin"},
+            "g2": {"url": "https://example.com/b", "name": "payload.zip"},
+            "g3": {"url": "https://example.com/c", "name": "invoice.bin"},
+            "g5": {"url": "https://example.com/d", "name": "canceled.exe"},  # nothing on disk
+        }
+        out = tmp_path / "out"
+
+        downloads = scanner._collect_page_downloads(str(out))
+
+        assert sorted(downloads) == ["downloads/g3_invoice.bin", "downloads/invoice.bin", "downloads/payload.zip.crdownload"]
+        assert (out / "downloads" / "invoice.bin").read_bytes() == b"complete"
+        assert (out / "downloads" / "payload.zip.crdownload").read_bytes() == b"part"
+        assert sorted(p.name for p in (out / "downloads").iterdir()) == ["g3_invoice.bin", "invoice.bin", "payload.zip.crdownload"]
+
+    @pytest.mark.unit
+    def test_skipped_downloads_are_logged_but_proxy_extension_is_not_entered(self, scanner, tmp_path, capsys):
+        root = tmp_path / "downloaded_files"
+        (root / "page_downloads").mkdir(parents=True)
+        (root / "page_downloads" / "g1").write_bytes(b"page")
+        (root / "page_downloads" / "g4.crdownload").write_bytes(b"model")
+        (root / "proxy_ext_dir").mkdir()
+        (root / "proxy_ext_dir" / "background.js").write_text("user:pass")
+        (root / "pyautogui.lock").write_text("")
+        scanner.page_downloads = {"g1": {"url": "https://example.com/a", "name": "a.bin"}}
+
+        scanner._log_skipped_downloads(str(root))
+
+        out = capsys.readouterr().out
+        assert "g4.crdownload" in out
+        assert "page_downloads/g1 " not in out
+        assert "proxy_ext_dir" not in out
+        assert ".lock" not in out

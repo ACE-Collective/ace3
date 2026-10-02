@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_HTML_JS_EXTRACTION, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URL, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODULE_HTML_JS_EXTRACTION, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_PHISHKIT_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, DIRECTIVE_YARA_META_PREFIX, F_FILE, F_URL, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.modules.phishkit import (
     PhishkitAnalysis,
     PhishkitAnalyzer,
@@ -1862,7 +1862,7 @@ def test_phishkit_analyzer_file_scan_passes_proxy(monkeypatch, test_context):
 # ----------------------------------------------------------------------
 
 def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
-                         url="https://example.com/phish"):
+                         url="https://example.com/phish", document_url=None):
     """Drive PhishkitAnalyzer through its REAL delayed lifecycle and return
     (analyzer, root, observable, merged_delta) — the delta the executor would
     cache.
@@ -1890,10 +1890,10 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
     with open(exit_code_path, "w") as fp:
         fp.write("143" if interrupted else "0")
     files = [exit_code_path, dom_path, bodies_path]
-    if interrupted:
+    if interrupted or document_url:
         metrics_path = os.path.join(out_dir, "metrics.json")
         with open(metrics_path, "w") as fp:
-            json.dump({"interrupted": True}, fp)
+            json.dump({"interrupted": interrupted, "document_url": document_url}, fp)
         files.append(metrics_path)
 
     def fake_delay(self, observable, analysis, **kwargs):
@@ -2358,3 +2358,115 @@ def test_phishkit_dom_html_is_not_marked_for_url_extraction(monkeypatch, tmp_pat
     )
 
     assert not observables["dom.html"].has_directive(DIRECTIVE_EXTRACT_URLS)
+
+
+# ---------------------------------------------------------------------------
+# dom.html's downloaded_from relationship: the URL the page was loaded at, which
+# html_js_extraction hands to the JS deobfuscator as the page's location.
+# ---------------------------------------------------------------------------
+
+
+def _scan_with_metrics(monkeypatch, temp_dir, scanned_url, metrics):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    url_observable = root.add_observable_by_spec(F_URL, scanned_url)
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-document-url"
+    url_observable.add_analysis(analysis)
+
+    dom_file = os.path.join(temp_dir, "dom.html")
+    with open(dom_file, "w") as f:
+        f.write("<html><body><script>location.replace('x')</script></body></html>\n")
+    exit_code_file = os.path.join(temp_dir, "exit.code")
+    with open(exit_code_file, "w") as f:
+        f.write("0")
+    output_files = [exit_code_file, dom_file]
+    if metrics is not None:
+        metrics_file = os.path.join(temp_dir, "metrics.json")
+        with open(metrics_file, "w") as f:
+            json.dump(metrics, f)
+        output_files.append(metrics_file)
+
+    analysis.output_dir = temp_dir
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                        lambda job_id, output_dir, timeout=1: output_files)
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+    assert analyzer.continue_analysis(url_observable, analysis) == AnalysisExecutionResult.COMPLETED
+
+    dom_observable = next(o for o in analysis.observables if o.type == F_FILE and o.file_name == "dom.html")
+    return url_observable, dom_observable
+
+
+@pytest.mark.unit
+def test_phishkit_dom_downloaded_from_document_url(monkeypatch, test_context):
+    """After a redirect the page's URL is not the scanned one, and its fragment is
+    in no request -- only the browser's own URL (metrics document_url) has it."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, dom_observable = _scan_with_metrics(
+            monkeypatch, temp_dir, "https://redirect.example.com/url?q=x#token=",
+            {"url_scanned": "https://redirect.example.com/url?q=x#token=",
+             "document_url": "https://landing.example.com/page/#token=dGVzdA=="})
+
+        relationship = dom_observable.get_relationship_by_type(R_DOWNLOADED_FROM)
+        assert relationship is not None
+        assert relationship.target.type == F_URL
+        assert relationship.target.value == "https://landing.example.com/page/#token=dGVzdA=="
+        assert relationship.target.display_type.startswith("Phishkit Document URL")
+
+
+@pytest.mark.unit
+def test_phishkit_dom_downloaded_from_scanned_url(monkeypatch, test_context):
+    """No redirect: the relationship points at the scanned observable itself
+    rather than re-adding it under its own analysis."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        url_observable, dom_observable = _scan_with_metrics(
+            monkeypatch, temp_dir, "https://landing.example.com/page",
+            {"document_url": "https://landing.example.com/page"})
+
+        assert dom_observable.get_relationship_by_type(R_DOWNLOADED_FROM).target is url_observable
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("metrics", [
+    None,  # scanner predates document_url
+    {"document_url": None},  # the url read failed
+    {"document_url": "file:///phishkit/input/attachment.html"},  # a rendered file
+])
+def test_phishkit_dom_without_document_url(monkeypatch, test_context, metrics):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _, dom_observable = _scan_with_metrics(monkeypatch, temp_dir, "https://landing.example.com/page", metrics)
+
+        assert dom_observable.get_relationship_by_type(R_DOWNLOADED_FROM) is None
+
+
+@pytest.mark.integration
+def test_phishkit_cache_replays_dom_document_url(monkeypatch, tmp_path):
+    """The relationship targets an observable the scan itself creates, so the
+    cache stores it and a replay recreates it -- a cache hit must not lose the
+    page's location."""
+    monkeypatch.setattr("saq.modules.phishkit.get_phishkit_scanner_version",
+                        lambda: {"image_id": "sha256:deadbeef"})
+    blob_store = LocalHardlinkBlobStore(
+        LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blobs")))
+
+    document_url = "https://landing.example.com/page/#token=dGVzdA=="
+    analyzer, root, obs, delta = _drive_phishkit_scan(
+        monkeypatch, str(tmp_path / "scan"), document_url=document_url)
+    assert not delta.out_of_scope_relationship_targets()
+    delta.cache_key = generate_cache_key(obs, analyzer)
+    assert put_cached_delta(delta, analyzer, blob_store, root=root) is not None
+
+    root2 = create_root_analysis(analysis_mode="test_single")
+    root2.initialize_storage()
+    obs2 = root2.add_observable_by_spec(F_URL, obs.value)
+    lookup = get_cached_delta(obs2, analyzer, blob_store)
+    assert lookup.delta is not None, f"expected cache hit, got miss: {lookup.miss_reason}"
+    apply_delta(root2, obs2, lookup.delta, blob_store)
+
+    replayed = obs2.get_and_load_analysis(PhishkitAnalysis)
+    dom_observable = next(o for o in replayed.observables if o.type == F_FILE and o.file_name == "dom.html")
+    relationship = dom_observable.get_relationship_by_type(R_DOWNLOADED_FROM)
+    assert relationship is not None
+    assert relationship.target.value == document_url

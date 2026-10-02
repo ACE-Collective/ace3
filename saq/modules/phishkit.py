@@ -12,7 +12,7 @@ from fluent import sender
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, F_URL, F_FILE, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, F_URL, F_FILE, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
@@ -65,6 +65,9 @@ SCREENSHOT_PREFIXES = ("screenshot.png", "pre_bypass_screenshot")
 # page. Mirrors TOP_LEVEL_SCRIPT_NAME in phishkit/scanner.py -- the scanner runs in a
 # separate image and can't be imported from here, so the two must be kept in step.
 TOP_LEVEL_SCRIPT_NAME = "script.js"
+
+# The rendered DOM scanner.py captures at the end of a scan.
+DOM_NAME = "dom.html"
 
 # scanner.py's grep/yara corpus of captured response bodies and WebSocket traffic,
 # one "MARKER URL: <url>" line per block. Mirrors RESPONSE_BODIES_NAME in
@@ -559,6 +562,40 @@ class PhishkitAnalyzer(AnalysisModule):
                     # requested, we found it in content the kit served
                     obs.display_type = "Phishkit Captured URL"
 
+    def _link_document_url(self, observable: Observable, analysis: PhishkitAnalysis,
+                           dom_observable: FileObservable, scanned_url_value: Optional[str]) -> None:
+        """Records the URL dom.html was loaded from as a downloaded_from relationship.
+
+        The page's scripts read their own location -- kits carry the victim's address in the
+        fragment and decode it into the next hop -- and html_js_extraction hands this URL to the JS
+        deobfuscator as that location. It comes from the browser (metrics.json document_url), not
+        from requests.json, because it has to be the URL after every redirect and keep the
+        fragment, which no request carries.
+
+        The target is the scanned observable or a URL observable this scan adds, both of which a
+        cached result replays. When the URL is already in the alert from somewhere else, the cache
+        refuses to store this scan (the relationship would point outside its own output); the
+        analysis is unaffected.
+        """
+        document_url = (analysis.metrics or {}).get("document_url")
+        # a rendered attachment's document is a file:// path inside the scanner
+        if not isinstance(document_url, str) or not document_url.lower().startswith(("http://", "https://")):
+            return
+
+        url = URL(document_url)
+        if not url.value:
+            return
+
+        if url.value == scanned_url_value:
+            target = observable
+        else:
+            target = analysis.add_observable_by_spec(F_URL, url.value)
+            if target is None:
+                return
+            target.display_type = "Phishkit Document URL"
+
+        dom_observable.add_relationship(R_DOWNLOADED_FROM, target)
+
     def continue_analysis(self, observable: Observable, analysis: PhishkitAnalysis) -> AnalysisExecutionResult:
         """Completes an existing analysis."""
         if not analysis.job_id:
@@ -597,6 +634,7 @@ class PhishkitAnalyzer(AnalysisModule):
         # nothing the captured body doesn't already, so don't hand it to OCR
         skip_screenshot_ocr = self._top_level_content_type(analysis.output_dir) in OCR_SKIP_CONTENT_TYPES
 
+        dom_observable = None
         for file_path in scan_results:
             if not os.path.exists(file_path):
                 logging.error(f"file {file_path} does not exist for {observable} job ID {analysis.job_id}")
@@ -696,6 +734,8 @@ class PhishkitAnalyzer(AnalysisModule):
                         # dump every CDN/font/analytics URL into the alert.
                         logging.debug(f"extracting urls from top level script body {file_path}")
                         file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+                    if os.path.basename(file_path) == DOM_NAME:
+                        dom_observable = file_observable
                     analysis.output_files.append(file_observable.file_path)
 
         # A scan that was interrupted mid-crawl still flushes partial
@@ -773,6 +813,9 @@ class PhishkitAnalyzer(AnalysisModule):
         # They are also the interesting ones. Without this, they only reach an alert if
         # some other chain happens to crawl them, which is not something to rely on.
         self._extract_urls_from_captured_bodies(observable, analysis, scanned_url_value)
+
+        if dom_observable is not None:
+            self._link_document_url(observable, analysis, dom_observable, scanned_url_value)
 
         self._emit_scan_outcome(
             observable, analysis, "failed" if analysis.error else "success"
