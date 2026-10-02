@@ -803,3 +803,23 @@ steps, and creating alerts when asked.
   - `execution`: the time range, timezone, `create_alerts`/`analyze_results`, queue, and whether
     supplied events or saved correlate results replaced the queries
   - `result`: the number of roots and events, and the uuids of the alerts or analyses it created
+
+## Hunt completion record
+
+Every scheduled execution of a hunt ends with one INFO record, `completed hunt <name>`, whose
+fields are carried in `extra={}`. `saq.log` renders them as `key=value` and the fluent formatter
+makes them top-level fields, so they can be searched directly in the site's log tooling. This is
+how an operator checks whether a hunt ran over a given window, for example when an expected
+detection is missing.
+
+| Field | Meaning |
+|---|---|
+| `hunt_uuid`, `hunt_name`, `hunt_type` | Which hunt ran |
+| `status` | `success`, `error` or `remote_api_error` |
+| `query_start`, `query_end` | The window actually queried, after `offset` is applied (ISO 8601); query hunts only, null if the hunt failed before querying |
+| `result_count` | Events the query returned; query hunts only, null if the query failed |
+| `submission_count` | Submissions the hunt produced; null if the execution failed |
+| `duration_ms` | Wall-clock duration of the execution |
+
+These fields are a contract (`docs/SVS.md`, *Logging contract*): a test asserts them, and renaming
+or removing one is a breaking change.

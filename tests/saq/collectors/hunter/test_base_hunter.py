@@ -1684,3 +1684,53 @@ def test_reload_completes_after_a_hunt_fails_to_finalize(manager_kwargs, monkeyp
     # nothing was left running, so there was nothing to cancel and nothing to abandon
     assert elapsed < 5
     assert log_count("did not stop within") == 0
+
+
+def _completion_records(caplog, hunt):
+    return [r for r in caplog.records if r.getMessage() == f"completed hunt {hunt.name}"]
+
+
+@pytest.mark.integration
+def test_completion_record_success(manager_kwargs, caplog):
+    """The completion record carries its fields in extra={} (docs/HUNTS.md, Hunt completion record)."""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    hunt.semaphore = None
+
+    with caplog.at_level(logging.INFO):
+        result = hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
+
+    (record,) = _completion_records(caplog, hunt)
+    assert record.levelno == logging.INFO
+    assert record.hunt_uuid == hunt.uuid
+    assert record.hunt_name == hunt.name
+    assert record.hunt_type == hunt.type
+    assert record.status == "success"
+    assert record.submission_count == len(result) == 1
+    assert isinstance(record.duration_ms, int) and record.duration_ms >= 0
+    # the base hunt knows nothing about query windows
+    assert not hasattr(record, "query_start")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("exception, status", [
+    (RemoteApiError(401, "transient upstream failure"), "remote_api_error"),
+    (RuntimeError("nope"), "error"),
+])
+def test_completion_record_failure(manager_kwargs, caplog, exception, status):
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(manager=manager)
+    hunt.semaphore = None
+
+    def _boom():
+        raise exception
+
+    hunt.execute = _boom
+    with caplog.at_level(logging.INFO):
+        hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
+
+    (record,) = _completion_records(caplog, hunt)
+    assert record.status == status
+    assert record.hunt_uuid == hunt.uuid
+    # nothing was produced, and "0" would claim the hunt ran and found nothing
+    assert record.submission_count is None
