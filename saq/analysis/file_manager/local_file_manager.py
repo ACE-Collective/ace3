@@ -6,6 +6,7 @@ from typing import Any, Optional
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
+from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
 from saq.error import report_exception
 
@@ -230,7 +231,6 @@ class LocalFileManager(FileManagerInterface):
     def cleanup_empty_directories(self):
         """Remove empty directories within the storage directory."""
         from subprocess import Popen
-        from saq.util import abs_path
         
         logging.debug("removing empty directories inside {}".format(self._storage_dir))
         p = Popen(['find', abs_path(self._storage_dir), '-type', 'd', '-empty', '-delete'])
@@ -239,43 +239,54 @@ class LocalFileManager(FileManagerInterface):
     def archive_files(self, retained_files: set):
         """
         Archive by removing analysis files while keeping specified files.
-        
+
+        Keeps data.json and everything else directly in the storage directory, and the .ace
+        directory (analysis details, cleared separately by the caller). Every other file is
+        deleted unless it is in retained_files, including files under files/ (at any depth) and
+        hardcopies/: a derived file's bytes are only freed once both its files/ link and its
+        hardcopy are gone. untracked directories are removed whole.
+
         Args:
-            retained_files: Set of file paths to retain
+            retained_files: Set of file paths to retain (relative to SAQ_HOME or absolute)
         """
-        for dir_path, dir_names, file_names in os.walk(self._storage_dir):
-            # Skip core directories
-            if dir_path in [self._storage_dir, os.path.join(self._storage_dir, '.ace'), 
-                           self.hardcopy_dir, self.file_dir]:
-                logging.debug("skipping core directory {}".format(dir_path))
-                continue
-                
-            # Delete untracked subdirectories
-            for dir_name in dir_names:
+        storage_dir = abs_path(self._storage_dir)
+        retained = {os.path.normpath(abs_path(path)) for path in retained_files}
+        kept_dirs = {os.path.normpath(storage_dir), os.path.join(os.path.normpath(storage_dir), '.ace')}
+
+        for dir_path, dir_names, file_names in os.walk(storage_dir):
+            dir_path = os.path.normpath(dir_path)
+
+            # delete untracked subdirectories, and don't walk into them
+            for dir_name in list(dir_names):
                 if dir_name == 'untracked':
                     target_untracked_dir = os.path.join(dir_path, dir_name)
                     logging.debug(f"deleting untracked directory {target_untracked_dir}")
+                    dir_names.remove(dir_name)
                     try:
                         shutil.rmtree(target_untracked_dir)
                     except Exception as e:
                         logging.error(f"unable to delete untracked directory {target_untracked_dir}: {e}")
-                        
-            # Delete files not in retained set
+
+            if dir_path in kept_dirs:
+                logging.debug("skipping core directory {}".format(dir_path))
+                continue
+
+            # delete files not in the retained set
             for file_name in file_names:
                 file_path = os.path.join(dir_path, file_name)
-                if file_path in retained_files:
+                if file_path in retained:
                     logging.debug("skipping retained file {}".format(file_path))
                     continue
-                    
+
                 try:
                     logging.debug("deleting {}".format(file_path))
                     os.remove(file_path)
                 except Exception as e:
                     logging.error("unable to remove {}: {}".format(file_path, e))
                     report_exception()
-                    
+
         self.cleanup_empty_directories()
-        
+
     def record_submission(self, analysis_data: dict, files: list):
         """
         Record submission data to the submission JSON file.

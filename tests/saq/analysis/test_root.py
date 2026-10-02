@@ -342,11 +342,94 @@ def test_archive_root_analysis(tmpdir):
 
     root.archive()
 
-    # original file should still exist
-    assert os.path.exists(target_file)
+    # the stored copy of the file that came with the alert, and its content, should still exist
+    assert file_observable.exists
+    assert os.path.exists(_hardcopy_path(root, file_observable))
 
     # untracked dir should be gone
     assert not os.path.exists(untracked_dir)
+
+
+class ArchiveTestAnalysis(Analysis):
+    pass
+
+
+def _hardcopy_path(root: RootAnalysis, file_observable: FileObservable) -> str:
+    return os.path.join(root.storage_dir, "hardcopies", file_observable.value)
+
+
+def _archive_test_tree(tmpdir):
+    """A root with files that came with it (one under a subdirectory of files/) and files derived
+    by an analysis (one sharing its content with a root file)."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    def _write(relative_path: str, content: bytes) -> str:
+        path = root.create_file_path(relative_path)
+        with open(path, "wb") as fp:
+            fp.write(content)
+        return path
+
+    root_files = [
+        root.add_file_observable(_write("email.rfc822", b"the email")),
+        root.add_file_observable(_write("attachments/invoice.pdf", b"the attachment")),
+    ]
+
+    parent = root.add_observable_by_spec(F_TEST, "archive_parent")
+    analysis = ArchiveTestAnalysis()
+    parent.add_analysis(analysis)
+    derived_files = [
+        analysis.add_file_observable(_write("extracted.bin", b"extracted content")),
+        analysis.add_file_observable(_write("extracted/deep/payload.js", b"derived payload")),
+    ]
+    # same bytes as a root file, at another path: one hardcopy, two links
+    shared = analysis.add_file_observable(_write("extracted/copy-of-invoice.pdf", b"the attachment"))
+    root.save()
+    return root, root_files, derived_files, shared
+
+
+@pytest.mark.integration
+def test_archive_frees_derived_files(tmpdir):
+    """archive() frees the bytes of every derived file: its files/ link and its hardcopy (YR-11)."""
+    root, _, derived_files, shared = _archive_test_tree(tmpdir)
+    for file_observable in derived_files:
+        assert file_observable.exists
+        assert os.path.exists(_hardcopy_path(root, file_observable))
+
+    root.archive()
+
+    for file_observable in derived_files:
+        assert not file_observable.exists
+        assert not os.path.exists(_hardcopy_path(root, file_observable))
+
+    assert not shared.exists
+    assert not os.path.isdir(os.path.join(root.storage_dir, "files", "extracted"))
+
+
+@pytest.mark.integration
+def test_archive_keeps_the_files_that_came_with_the_alert(tmpdir):
+    """Root-level files are kept, including one in a subdirectory of files/, which archive used
+    to delete (YR-11), and their hardcopies are kept even when a derived file shares one."""
+    root, root_files, _, shared = _archive_test_tree(tmpdir)
+
+    root.archive()
+
+    for file_observable in root_files:
+        assert file_observable.exists
+        assert os.path.exists(_hardcopy_path(root, file_observable))
+        # still one file, linked from files/ and hardcopies/
+        assert os.stat(file_observable.full_path).st_ino == os.stat(_hardcopy_path(root, file_observable)).st_ino
+
+    # the shared content survives because a root file still uses it
+    assert shared.value == root_files[1].value
+    assert os.path.exists(_hardcopy_path(root, shared))
+
+    with open(root_files[1].full_path, "rb") as fp:
+        assert fp.read() == b"the attachment"
+
+    # the archived root still loads, with every observable
+    reloaded = load_root(root.storage_dir)
+    assert {o.uuid for o in reloaded.all_observables} == {o.uuid for o in root.all_observables}
 class HashObservableAnalysis(Analysis):
     """Stands in for whatever module analyzed the hash observable before the check existed."""
     pass

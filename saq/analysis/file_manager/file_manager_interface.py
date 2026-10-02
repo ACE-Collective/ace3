@@ -124,7 +124,11 @@ class FileManagerInterface(Protocol):
     def archive_files(self, retained_files: set) -> None:
         """
         Archive by removing analysis files while keeping specified files.
-        
+
+        Everything except the analysis's own JSON and the files in retained_files is removed,
+        including file content stored by hash, so the bytes of every file that is not retained
+        are freed.
+
         Args:
             retained_files: Set of file paths to retain
         """
