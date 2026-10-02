@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.121] - 2026-10-02
+
+- [remove the ACE mailbox collector (AMC) and the local email-ingest collectors](https://github.com/ACE-Collective/ace3/pull/635)
+- [remove dead packages/ blobs and installer/ leftovers](https://github.com/ACE-Collective/ace3/pull/634)
+- [Remove orphan Jinja templates](https://github.com/ACE-Collective/ace3/pull/633)
+- [remove dead vendored JS/CSS (vis.js, duplicate vendors, orphan assets)](https://github.com/ACE-Collective/ace3/pull/632)
+- [YARA QA results in the CAS, the yara scanner as an ACE service, and QA recording off the scanning path](https://github.com/ACE-Collective/ace3/pull/631)
+- [remove office_file_archiver, netbios/AD analyzers and pcap sensor extraction](https://github.com/ACE-Collective/ace3/pull/630)
+- [Remove the Bro/Zeek stream subsystem](https://github.com/ACE-Collective/ace3/pull/629)
+- [remove orphaned module configs and wire office_xml_rel into the file group](https://github.com/ACE-Collective/ace3/pull/628)
+- [Remove dead CLI surface and fix ace hunt list](https://github.com/ACE-Collective/ace3/pull/627)
+- [Remove the dead analysis-tree facade](https://github.com/ACE-Collective/ace3/pull/626)
+- [Remove dead support modules](https://github.com/ACE-Collective/ace3/pull/624)
+- [Remove dead legacy modules, crawlphish and cloudphish](https://github.com/ACE-Collective/ace3/pull/623)
+- [Stop autogenerate proposing spurious changes to DESC indexes](https://github.com/ACE-Collective/ace3/pull/622)
+
 ## [3.0.120] - 2026-09-30
 
 - [removed legacy "messaging" subsystem](https://github.com/ACE-Collective/ace3/pull/619)
