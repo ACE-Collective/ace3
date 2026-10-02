@@ -9,8 +9,12 @@ from httpx import AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import field_validator
+
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from saq.database.model import AuthUserPermission, SavedFilter, User
+from saq.gui.filter_entry import FilterEntryBase
+from saq.gui.filter_screens import FILTER_SCREENS, FilterScreen
 
 pytestmark = pytest.mark.integration
 
@@ -391,8 +395,8 @@ class TestSeeding:
     async def test_seeds_the_two_defaults_in_order(self, session: AsyncSession, test_user):
         from aceapi_v2.saved_filters import service
 
-        await service.ensure_default_saved_filters(session, test_user.id)
-        filters = await service.get_saved_filters_for_user(session, test_user.id)
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        filters = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         seeded = [f for f in filters if f.name in ("Last 24h", "Last 7d")]
 
         assert [f.name for f in seeded] == ["Last 24h", "Last 7d"]
@@ -402,8 +406,8 @@ class TestSeeding:
     async def test_seeded_defaults_use_relative_tokens(self, session: AsyncSession, test_user):
         from aceapi_v2.saved_filters import service
 
-        await service.ensure_default_saved_filters(session, test_user.id)
-        filters = await service.get_saved_filters_for_user(session, test_user.id)
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        filters = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         last_24h = next(f for f in filters if f.name == "Last 24h")
         date_entry = next(e for e in last_24h.filters if e.name == "Alert Date")
 
@@ -413,9 +417,9 @@ class TestSeeding:
     async def test_seeds_only_once(self, session: AsyncSession, test_user):
         from aceapi_v2.saved_filters import service
 
-        await service.ensure_default_saved_filters(session, test_user.id)
-        await service.ensure_default_saved_filters(session, test_user.id)
-        second = await service.get_saved_filters_for_user(session, test_user.id)
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        second = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
 
         assert len([f for f in second if f.name == "Last 24h"]) == 1
 
@@ -427,8 +431,8 @@ class TestSeeding:
         next page load. This is the trap in the naive 'seed if no quick filters' guard."""
         from aceapi_v2.saved_filters import service
 
-        await service.ensure_default_saved_filters(session, test_user.id)
-        seeded = await service.get_saved_filters_for_user(session, test_user.id)
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        seeded = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         for f in seeded:
             await service.delete_saved_filter(session, f.uuid, test_user.id)
 
@@ -436,10 +440,10 @@ class TestSeeding:
         # makes "has this user ever been seeded?" answerable without a extra flag column.
         from aceapi_v2.saved_filters.schemas import ScratchFilterWrite
         await service.upsert_scratch_filter(
-            session, test_user.id, "working", ScratchFilterWrite(filters=QUEUE_FILTER))
+            session, test_user.id, "working", ScratchFilterWrite(filters=QUEUE_FILTER), screen="alerts")
 
-        await service.ensure_default_saved_filters(session, test_user.id)
-        again = await service.get_saved_filters_for_user(session, test_user.id)
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        again = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         assert again == [], "deleted defaults must not be resurrected"
 
     @pytest.mark.asyncio
@@ -448,4 +452,155 @@ class TestSeeding:
         must never write (docs/GUI_DATASTAR.md). Seeding is a separate, explicit call."""
         from aceapi_v2.saved_filters import service
 
-        assert await service.get_saved_filters_for_user(session, test_user.id) == []
+        assert await service.get_saved_filters_for_user(session, test_user.id, screen="alerts") == []
+
+
+# a second screen with a filter vocabulary of its own, standing in for the SVS screens
+class _ColorEntry(FilterEntryBase):
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value != "Color":
+            raise ValueError(f"unknown filter name {value!r}")
+        return value
+
+
+TEST_SCREEN = FilterScreen(name="test_screen", entry_model=_ColorEntry, slugs={"Color": "color"})
+COLOR_FILTER = [{"name": "Color", "inverted": False, "values": ["red"]}]
+
+
+@pytest.fixture
+def test_screen(monkeypatch):
+    monkeypatch.setitem(FILTER_SCREENS, TEST_SCREEN.name, TEST_SCREEN)
+    return TEST_SCREEN
+
+
+class TestScreens:
+    @pytest.mark.asyncio
+    async def test_rows_default_to_the_alert_screen(self, client: AsyncClient):
+        created = await _create(client, "Default screen")
+        assert created["screen"] == "alerts"
+
+    @pytest.mark.asyncio
+    async def test_a_name_is_unique_per_screen(self, client: AsyncClient, test_screen):
+        await _create(client, "Mine")
+        other = await client.post(f"{BASE}/?screen=test_screen", json={"name": "Mine", "filters": COLOR_FILTER})
+        assert other.status_code == 201, other.text
+        assert other.json()["screen"] == "test_screen"
+
+        duplicate = await client.post(f"{BASE}/?screen=test_screen", json={"name": "Mine", "filters": COLOR_FILTER})
+        assert duplicate.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_lists_are_per_screen(self, client: AsyncClient, test_screen):
+        await _create(client, "Alert filter")
+        await client.post(f"{BASE}/?screen=test_screen", json={"name": "Color filter", "filters": COLOR_FILTER})
+
+        alerts = [f["name"] for f in (await client.get(f"{BASE}/")).json()["data"]]
+        colors = [f["name"] for f in (await client.get(f"{BASE}/?screen=test_screen")).json()["data"]]
+        assert alerts == ["Alert filter"]
+        assert colors == ["Color filter"]
+
+    @pytest.mark.asyncio
+    async def test_filters_are_validated_against_their_screen(self, client: AsyncClient, test_screen):
+        # an alert filter on the test screen, and a test-screen filter on the alert screen
+        wrong_screen = await client.post(f"{BASE}/?screen=test_screen", json={"name": "x", "filters": QUEUE_FILTER})
+        assert wrong_screen.status_code == 422
+        wrong_alerts = await client.post(f"{BASE}/", json={"name": "x", "filters": COLOR_FILTER})
+        assert wrong_alerts.status_code == 422
+        assert isinstance(wrong_alerts.json()["detail"], list)
+
+    @pytest.mark.asyncio
+    async def test_an_update_is_validated_against_the_rows_own_screen(self, client: AsyncClient, test_screen):
+        created = (await client.post(f"{BASE}/?screen=test_screen", json={"name": "c", "filters": COLOR_FILTER})).json()
+
+        bad = await client.patch(f"{BASE}/{created['uuid']}", json={"filters": QUEUE_FILTER})
+        assert bad.status_code == 422
+        good = await client.patch(f"{BASE}/{created['uuid']}", json={
+            "filters": [{"name": "Color", "inverted": True, "values": ["blue"]}]})
+        assert good.status_code == 200
+        assert good.json()["filters"][0]["values"] == ["blue"]
+
+    @pytest.mark.asyncio
+    async def test_scratch_rows_are_singletons_per_screen(
+        self, client: AsyncClient, session: AsyncSession, test_user, test_screen
+    ):
+        alerts_first = await client.put(f"{BASE}/scratch/working", json={"filters": QUEUE_FILTER})
+        screen_first = await client.put(f"{BASE}/scratch/working?screen=test_screen", json={"filters": COLOR_FILTER})
+        screen_second = await client.put(f"{BASE}/scratch/working?screen=test_screen", json={"filters": COLOR_FILTER})
+        alerts_second = await client.put(f"{BASE}/scratch/working", json={"filters": QUEUE_FILTER})
+
+        assert alerts_first.json()["uuid"] == alerts_second.json()["uuid"]
+        assert screen_first.json()["uuid"] == screen_second.json()["uuid"]
+        assert alerts_first.json()["uuid"] != screen_first.json()["uuid"]
+
+        rows = (await session.execute(
+            select(SavedFilter.screen).where(SavedFilter.user_id == test_user.id,
+                                             SavedFilter.kind == "working"))).scalars().all()
+        assert sorted(rows) == ["alerts", "test_screen"]
+
+    @pytest.mark.asyncio
+    async def test_quick_filters_are_per_screen(self, client: AsyncClient, test_screen):
+        alert_filter = await _create(client, "Alert badge", quick_filter=True)
+        color = (await client.post(f"{BASE}/?screen=test_screen", json={
+            "name": "Color badge", "filters": COLOR_FILTER, "quick_filter": True})).json()
+        # each screen numbers its badges from 0
+        assert alert_filter["quick_filter_order"] == 0
+        assert color["quick_filter_order"] == 0
+
+        # another screen's filter cannot be pinned on this one
+        response = await client.put(f"{BASE}/quick-filters?screen=test_screen",
+                                    json={"filter_uuids": [alert_filter["uuid"]]})
+        assert response.status_code == 400
+
+        # unpinning everything on one screen leaves the other screen's badges alone
+        response = await client.put(f"{BASE}/quick-filters?screen=test_screen", json={"filter_uuids": []})
+        assert response.status_code == 200
+        alerts = (await client.get(f"{BASE}/")).json()["data"]
+        assert [f["quick_filter_order"] for f in alerts] == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method, path, body", [
+        ("get", "/?screen=nope", None),
+        ("post", "/?screen=nope", {"name": "x", "filters": QUEUE_FILTER}),
+        ("put", "/quick-filters?screen=nope", {"filter_uuids": []}),
+        ("put", "/scratch/working?screen=nope", {"filters": QUEUE_FILTER}),
+    ])
+    async def test_unknown_screen_is_404(self, client: AsyncClient, method, path, body):
+        kwargs = {"json": body} if body is not None else {}
+        response = await getattr(client, method)(f"{BASE}{path}", **kwargs)
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_with_a_screen_never_returns_another_screens_row(
+        self, client: AsyncClient, session: AsyncSession, test_user, test_screen
+    ):
+        """The alert page applies whatever filter it is handed to the alert query, so it must
+        never be handed another screen's filter names."""
+        from aceapi_v2.saved_filters import service
+
+        created = (await client.post(f"{BASE}/?screen=test_screen", json={"name": "c", "filters": COLOR_FILTER})).json()
+        assert await service.get_saved_filter(session, created["uuid"], test_user.id, screen="alerts") is None
+        found = await service.get_saved_filter(session, created["uuid"], test_user.id, screen="test_screen")
+        assert found.filters[0].name == "Color"
+        # by uuid alone, the row is found whatever its screen
+        assert (await client.get(f"{BASE}/{created['uuid']}")).json()["screen"] == "test_screen"
+
+    @pytest.mark.asyncio
+    async def test_screens_without_defaults_seed_nothing(self, session: AsyncSession, test_user, test_screen):
+        from aceapi_v2.saved_filters import service
+
+        await service.ensure_default_saved_filters(session, test_user.id, screen="test_screen")
+        assert await service.get_saved_filters_for_user(session, test_user.id, screen="test_screen") == []
+
+    @pytest.mark.asyncio
+    async def test_seeding_is_per_screen(self, session: AsyncSession, test_user, test_screen):
+        """Rows on another screen do not count as "already seeded" for the alert screen."""
+        from aceapi_v2.saved_filters import service
+        from aceapi_v2.saved_filters.schemas import ScratchFilterWrite
+
+        await service.upsert_scratch_filter(
+            session, test_user.id, "working", ScratchFilterWrite(filters=COLOR_FILTER), screen="test_screen")
+        await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
+        names = [f.name for f in await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")]
+        assert names == ["Last 24h", "Last 7d"]

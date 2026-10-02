@@ -59,7 +59,7 @@ def _seed_manage_session(sess, analyst_id, **overrides):
 
     row = run_async_with_session(
         saved_filters_service.upsert_scratch_filter, analyst_id, 'working',
-        ScratchFilterWrite(filters=overrides.get('filters', [])))
+        ScratchFilterWrite(filters=overrides.get('filters', [])), screen='alerts')
 
     sess['filter_uuid'] = row.uuid
     sess['filter_base_uuid'] = None

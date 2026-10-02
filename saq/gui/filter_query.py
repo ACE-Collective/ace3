@@ -60,12 +60,17 @@ _DEFAULT_LOCATIONS = object()
 
 # exact match, provides text input
 class Filter:
-    def __init__(self, column, nullable=False, case_sensitive=True, wildcardable=False, inverted=False):
+    # `entity` is the mapped class (or alias) the query selects. Only the filters that test a
+    # mapping table with a correlated EXISTS (Tag, Detection Point, Analysis, Observable) use
+    # it: the subquery has to correlate to the outer query's own entity, which is not `Alert`
+    # when the caller selects an alias of it.
+    def __init__(self, column, nullable=False, case_sensitive=True, wildcardable=False, inverted=False, entity=None):
         self.column = column
         self.nullable = nullable
         self.wildcardable = wildcardable
         self.case_sensitive = case_sensitive
         self.inverted = inverted
+        self.entity = entity if entity is not None else Alert
 
     def apply(self, query, values):
         conditions = []
@@ -94,7 +99,7 @@ class Filter:
                     TagMapping.tag_id == Tag.id,
                     or_(*conditions)
                 )
-            ).where(TagMapping.alert_id == Alert.id).correlate(Alert)
+            ).where(TagMapping.alert_id == self.entity.id).correlate(self.entity)
             return query.filter(not_(subquery) if self.inverted else subquery)
 
         if self.inverted:
@@ -144,8 +149,8 @@ class DateRangeFilter(Filter):
 
 # exact match, provides drop down menu for value selection
 class SelectFilter(Filter):
-    def __init__(self, column, nullable=False, options=None, case_sensitive=True, wildcardable=False, inverted=False):
-        super().__init__(column, nullable=nullable, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted)
+    def __init__(self, column, nullable=False, options=None, case_sensitive=True, wildcardable=False, inverted=False, entity=None):
+        super().__init__(column, nullable=nullable, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted, entity=entity)
         self.options = options if options else [r[0] for r in get_db().query(self.column).order_by(self.column.asc()).distinct()]
         if nullable and 'None' not in self.options:
             self.options.insert(0, 'None')
@@ -187,10 +192,10 @@ class DetectionPointFilter(Filter):
         conditions = [self._condition(value) for value in values]
         subquery = exists().where(
             and_(
-                DetectionPoint.alert_id == Alert.id,
+                DetectionPoint.alert_id == self.entity.id,
                 or_(*conditions)
             )
-        ).correlate(Alert)
+        ).correlate(self.entity)
         return query.filter(not_(subquery) if self.inverted else subquery)
 
 # analysis type match, provides drop down menu of the analysis types that have been indexed
@@ -229,11 +234,11 @@ class AnalysisFilter(Filter):
 
         subquery = exists().where(
             and_(
-                AnalysisMapping.alert_id == Alert.id,
+                AnalysisMapping.alert_id == self.entity.id,
                 AnalysisMapping.analysis_type_id == AnalysisType.id,
                 condition,
             )
-        ).correlate(Alert)
+        ).correlate(self.entity)
         return query.filter(not_(subquery) if self.inverted else subquery)
 
 
@@ -258,8 +263,8 @@ class TypeValueFilter(SelectFilter):
     `resolve_observable_identity()`, the same way the engine normalizes it at index time.
     """
 
-    def __init__(self, column, value_column, sha256_column=None, options=None, case_sensitive=True, wildcardable=False, inverted=False):
-        super().__init__(column, options=options, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted)
+    def __init__(self, column, value_column, sha256_column=None, options=None, case_sensitive=True, wildcardable=False, inverted=False, entity=None):
+        super().__init__(column, options=options, case_sensitive=case_sensitive, wildcardable=wildcardable, inverted=inverted, entity=entity)
         self.value_column = value_column
         self.sha256_column = sha256_column if sha256_column is not None else Observable.sha256
         if ANY_OBSERVABLE_TYPE not in self.options:
@@ -297,7 +302,7 @@ class TypeValueFilter(SelectFilter):
                     ObservableMapping.observable_id == Observable.id,
                     or_(*conditions)
                 )
-            ).where(ObservableMapping.alert_id == Alert.id).correlate(Alert)
+            ).where(ObservableMapping.alert_id == self.entity.id).correlate(self.entity)
             return query.filter(not_(subquery) if self.inverted else subquery)
 
         if self.inverted:
@@ -339,8 +344,8 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
     """Builds the filter that applies `filter_name` to a query.
 
     `entity` is the mapped class the query selects (GUIAlert for the browser, Alert for the
-    API). They map the same table, so the column expressions are identical either way; it is
-    passed for clarity and so a caller cannot accidentally mix them.
+    API, or an alias of either). The filters that test a mapping table correlate their
+    subquery to it, so it has to be the entity the outer query selects.
 
     The values are thunks rather than instances: SelectFilter's constructor runs a
     SELECT DISTINCT when it is not handed an options list, and building a dict of every filter
@@ -350,18 +355,18 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
     return {
         'Alert Date': lambda: DateRangeFilter(entity.insert_date, tz=tz, inverted=inverted),
         'Alert Type': lambda: SelectFilter(entity.alert_type, inverted=inverted),
-        'Analysis': lambda: AnalysisFilter(AnalysisType.module_path, inverted=inverted),
+        'Analysis': lambda: AnalysisFilter(AnalysisType.module_path, inverted=inverted, entity=entity),
         'Description': lambda: TextFilter(entity.description, inverted=inverted),
-        'Detection Point': lambda: DetectionPointFilter(DetectionPoint.signature_uuid, inverted=inverted),
+        'Detection Point': lambda: DetectionPointFilter(DetectionPoint.signature_uuid, inverted=inverted, entity=entity),
         'Disposition': lambda: MultiSelectFilter(entity.disposition, nullable=False, options=list(VALID_DISPOSITIONS), inverted=inverted),
         'Disposition By': lambda: SelectFilter(DispositionBy.display_name, nullable=True, inverted=inverted),
         'Disposition Date': lambda: DateRangeFilter(entity.disposition_time, tz=tz, inverted=inverted),
         'Event Date': lambda: DateRangeFilter(entity.event_time, tz=tz, inverted=inverted),
-        'Observable': lambda: TypeValueFilter(Observable.type, Observable.value, Observable.sha256, options=sorted(get_all_valid_types()), inverted=inverted),
+        'Observable': lambda: TypeValueFilter(Observable.type, Observable.value, Observable.sha256, options=sorted(get_all_valid_types()), inverted=inverted, entity=entity),
         'Owner': lambda: SelectFilter(Owner.display_name, nullable=True, inverted=inverted),
         'Queue': lambda: SelectFilter(entity.queue, inverted=inverted),
         'Reviewed': lambda: MultiSelectFilter(entity.disposition_review, nullable=False, options=list(VALID_DISPOSITION_REVIEWS), inverted=inverted),
-        'Tag': lambda: AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True, inverted=inverted),
+        'Tag': lambda: AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True, inverted=inverted, entity=entity),
     }[filter_name]()
 
 

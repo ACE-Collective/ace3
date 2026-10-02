@@ -300,3 +300,43 @@ def test_real_world_legacy_link_shape_round_trips():
     assert warnings == []
     # the point of the new format: ~200 characters of encoded JSON becomes ~50 readable ones
     assert len("&f=".join(params)) < len(encoded) / 2
+
+
+@pytest.mark.unit
+def test_strict_mode_rejects_an_unknown_slug():
+    """API callers get an error, not a skipped filter they cannot see a warning for: a
+    silently missing filter returns more alerts than asked for."""
+    with pytest.raises(FilterQueryError, match="obsolete_thing"):
+        decode_filter_query(["queue:default", "obsolete_thing:x"], strict=True)
+
+    filters, warnings = decode_filter_query(["queue:default"], strict=True)
+    assert filters == [{"name": "Queue", "inverted": False, "values": ["default"]}]
+    assert warnings == []
+
+
+@pytest.mark.unit
+def test_another_screen_uses_its_own_slugs_and_pair_filters():
+    from saq.gui.filter_entry import FilterEntryBase
+    from saq.gui.filter_screens import FilterScreen
+
+    screen = FilterScreen(
+        name="test_screen",
+        entry_model=FilterEntryBase,
+        slugs={"Color": "color", "Target": "target"},
+        pair_filter_names=frozenset(["Target"]),
+    )
+    filters = [
+        {"name": "Color", "inverted": True, "values": ["red", "a,b"]},
+        {"name": "Target", "inverted": False, "values": [["host", "lab:01"]]},
+    ]
+
+    params = encode_filter_query(filters, screen=screen)
+    assert params == ["!color:red,a%2Cb", "target:host:lab%3A01"]
+    assert decode_filter_query(params, screen=screen) == (filters, [])
+
+    # the alert screen's slugs mean nothing there, and vice versa
+    assert decode_filter_query(["queue:default"], screen=screen)[0] == []
+    with pytest.raises(FilterQueryError):
+        encode_filter_query([{"name": "Queue", "inverted": False, "values": ["default"]}], screen=screen)
+    with pytest.raises(FilterQueryError):
+        decode_filter_query(["color:red"], strict=True)

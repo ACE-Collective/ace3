@@ -144,13 +144,21 @@ on `/set_filters`.
 
 - Grammar and codec: `saq/gui/filter_url.py`
 - Slug registry and the frozen legacy alias map: `saq/gui/filter_names.py`
+- Screens: `saq/gui/filter_screens.py`. A `FilterScreen` is one list screen with filters
+  (`alerts` is this page): its entry model (which names and values it accepts, see
+  `saq/gui/filter_entry.py`), its slugs and its pair filters. The codec takes a screen
+  (default `alerts`), and `saved_filters` rows carry one, so names, the `working`/`temp`
+  scratch rows and quick filters are all per screen. The saved-filter API takes `?screen=`.
+- API callers decode with `decode_filter_query(..., strict=True)`, which rejects an unknown
+  slug instead of warning: there is no banner to show the warning on.
 - Filter classes and the query they build: `saq/gui/filter_query.py` (Flask-free, so the search
   API runs the same filters)
 - The search box's grammar over the same slugs: `saq/search/syntax.py`
 - Relative-time parser: `saq/util/relative_time.py`
 
-The `Observable`, `Tag` and `Analysis` filters are **EXISTS subqueries over their mapping
-tables, in both directions**. Inverted, that is the only form that is true for an alert with no matching rows
+The `Observable`, `Tag`, `Analysis` and `Detection Point` filters are **EXISTS subqueries over
+their mapping tables, in both directions**, correlated to the entity the caller selects
+(`create_filter(..., entity=)`: `GUIAlert`, `Alert` or an alias of either). Inverted, that is the only form that is true for an alert with no matching rows
 at all -- a `NOT` evaluated against a joined row cannot be. Non-inverted it avoids the row
 fan-out, which is what lets two `observable` filters mean "carries both".
 

@@ -2705,11 +2705,14 @@ class AuthApiKeyPermission(Base):
     api_key: Mapped["AuthApiKey"] = relationship('AuthApiKey', back_populates='scope')
 
 class SavedFilter(Base):
-    """One alert-management filter belonging to one analyst.
+    """One list-screen filter belonging to one analyst.
 
     Every filter state is a row here -- named filters, the analyst's unsaved working set,
     and an active pivot -- which is what lets the Flask session carry nothing but UUIDs
     instead of the multi-KB filter payload it used to hold in a cookie.
+
+    Each row belongs to one screen (the alert manage page is 'alerts'; see
+    saq/gui/filter_screens.py). Names, scratch rows and quick filters are all per screen.
 
     Note this table is NEVER a share target. Share links are self-describing URLs (see
     saq/gui/filter_url.py), so a link keeps working after its filter is edited or deleted
@@ -2717,9 +2720,9 @@ class SavedFilter(Base):
 
     __tablename__ = 'saved_filters'
     __table_args__ = (
-        UniqueConstraint('user_id', 'name', name='uq_saved_filter_user_name'),
-        Index('i_saved_filter_user_kind', 'user_id', 'kind'),
-        Index('i_saved_filter_user_quick', 'user_id', 'quick_filter_order'),
+        UniqueConstraint('user_id', 'screen', 'name', name='uq_saved_filter_user_screen_name'),
+        Index('i_saved_filter_user_screen_kind', 'user_id', 'screen', 'kind'),
+        Index('i_saved_filter_user_screen_quick', 'user_id', 'screen', 'quick_filter_order'),
     )
 
     id: Mapped[int] = mapped_column(
@@ -2738,12 +2741,19 @@ class SavedFilter(Base):
         ForeignKey('users.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
 
+    # the screen this filter belongs to (a FilterScreen name); its entries are validated
+    # against that screen's filter names
+    screen: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=text("'alerts'"))
+
     # named   -- an analyst's saved filter; the only kind that is listed in the GUI
-    # working -- this user's unsaved edits; a per-user singleton, overwritten in place
-    # temp    -- this user's active pivot or opened share link; a per-user singleton
+    # working -- this user's unsaved edits; a per-user, per-screen singleton, overwritten in place
+    # temp    -- this user's active pivot or opened share link; a per-user, per-screen singleton
     #
     # The scratch kinds being singletons is what bounds this table's growth: at most two
-    # rows per user beyond the ones they deliberately created.
+    # rows per user and screen beyond the ones they deliberately created.
     kind: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -2751,7 +2761,7 @@ class SavedFilter(Base):
         server_default=text("'named'"))
 
     # NULL for the scratch kinds. InnoDB treats NULLs as distinct in a UNIQUE index, so any
-    # number of scratch rows coexist with the per-user unique name constraint.
+    # number of scratch rows coexist with the per-user, per-screen unique name constraint.
     name: Mapped[Optional[str]] = mapped_column(
         String(255),
         nullable=True)

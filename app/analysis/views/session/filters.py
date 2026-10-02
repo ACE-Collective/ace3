@@ -15,6 +15,7 @@ from saq.database.model import AnalysisType, DetectionPoint, DispositionBy, Obse
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import has_filter
+from saq.gui.filter_screens import ALERTS_SCREEN
 
 
 def _default_filters() -> list:
@@ -191,6 +192,7 @@ def _write_scratch(kind: str, filters: list, label: str | None = None):
         current_user.id,
         kind,
         ScratchFilterWrite(filters=filters, label=label),
+        screen=ALERTS_SCREEN.name,
     )
     return result.uuid
 
@@ -201,7 +203,8 @@ def _read_filters(filter_uuid: str) -> list | None:
         return None
 
     result = run_async_with_session(
-        saved_filters_service.get_saved_filter, filter_uuid, current_user.id)
+        saved_filters_service.get_saved_filter, filter_uuid, current_user.id,
+        screen=ALERTS_SCREEN.name)
     if result is None:
         return None
 
@@ -214,7 +217,8 @@ def get_current_filter() -> dict:
     name = None
     if base_uuid:
         result = run_async_with_session(
-            saved_filters_service.get_saved_filter, base_uuid, current_user.id)
+            saved_filters_service.get_saved_filter, base_uuid, current_user.id,
+            screen=ALERTS_SCREEN.name)
         # the base filter can be deleted out from under us; fall back rather than lie
         name = result.name if result else None
         if result is None:
@@ -234,7 +238,8 @@ def get_temp_filter() -> dict | None:
         return None
 
     result = run_async_with_session(
-        saved_filters_service.get_saved_filter, session.get("filter_uuid"), current_user.id)
+        saved_filters_service.get_saved_filter, session.get("filter_uuid"), current_user.id,
+        screen=ALERTS_SCREEN.name)
     return {"label": (result.description if result else None) or "Modified filter"}
 
 
@@ -434,7 +439,8 @@ def migrate_legacy_session_filters():
 def get_saved_filter_list() -> list:
     """The current user's named saved filters, pinned ones first in badge order."""
     return run_async_with_session(
-        saved_filters_service.get_saved_filters_for_user, current_user.id)
+        saved_filters_service.get_saved_filters_for_user, current_user.id,
+        screen=ALERTS_SCREEN.name)
 
 
 def seed_default_saved_filters():
@@ -443,7 +449,8 @@ def seed_default_saved_filters():
     This WRITES, so it must only be called from a real page render -- never from the polled
     refresh endpoint (docs/GUI_DATASTAR.md). It must also run BEFORE the working row is
     created, because the guard is "this user has no filter rows at all"."""
-    run_async_with_session(saved_filters_service.ensure_default_saved_filters, current_user.id)
+    run_async_with_session(
+        saved_filters_service.ensure_default_saved_filters, current_user.id, screen=ALERTS_SCREEN.name)
 
 
 def get_quick_filter_display_data(saved_filters: list) -> list:
