@@ -161,6 +161,11 @@ class QueryHunt(Hunt):
         # (only populated when self.config.correlate is set)
         self.original_query_results: Optional[list[dict]] = None
 
+        # what the last execution queried, for the hunt completion record
+        self._last_query_start: Optional[datetime.datetime] = None
+        self._last_query_end: Optional[datetime.datetime] = None
+        self._last_result_count: Optional[int] = None
+
     @property
     def time_range(self) -> Optional[datetime.timedelta]:
         # Prefer time_ranges.TIMESPEC when time_ranges is configured, since time_range
@@ -374,6 +379,9 @@ class QueryHunt(Hunt):
         offset_start_time = target_start_time = start_time if start_time is not None else self.start_time
         offset_end_time = target_end_time = end_time if end_time is not None else self.end_time
         query_result = None
+        self._last_query_start = None
+        self._last_query_end = None
+        self._last_result_count = None
 
         try:
             # the optional offset allows hunts to run at some offset of time
@@ -381,7 +389,10 @@ class QueryHunt(Hunt):
                 offset_start_time -= self.offset
                 offset_end_time -= self.offset
 
+            self._last_query_start = offset_start_time
+            self._last_query_end = offset_end_time
             query_result = self.execute_query(offset_start_time, offset_end_time, *args, **kwargs)
+            self._last_result_count = len(query_result) if query_result is not None else 0
 
             # record the actual query window so correlation (process_query_results)
             # can anchor a stream transform's relative time_range to it
@@ -394,6 +405,13 @@ class QueryHunt(Hunt):
             # if we're not manually hunting then record the last end time
             if not self.manual_hunt and query_result is not None:
                 self.last_end_time = target_end_time
+
+    def completion_fields(self) -> dict:
+        return {
+            "query_start": self._last_query_start.isoformat() if self._last_query_start else None,
+            "query_end": self._last_query_end.isoformat() if self._last_query_end else None,
+            "result_count": self._last_result_count,
+        }
 
     def formatted_query(self):
         """Formats query to a readable string with the timestamps used at runtime properly substituted.

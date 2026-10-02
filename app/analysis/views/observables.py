@@ -1,9 +1,11 @@
 from operator import attrgetter
 from flask import flash, redirect, render_template, request, url_for
+from sqlalchemy import func
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.database.model import Observable, ObservableMapping
-from saq.database.pool import get_db, get_db_connection
+from saq.constants import ANALYSIS_TYPE_FAQUEUE, QUEUE_DEFAULT
+from saq.database.model import Alert, Observable, ObservableMapping
+from saq.database.pool import get_db
 from saq.gui.alert import GUIAlert
 
 @analysis.route('/observables', methods=['GET'])
@@ -25,37 +27,29 @@ def observables():
                                                     Observable.id == ObservableMapping.observable_id).filter(
                                                     ObservableMapping.alert_id == alert.id).all()
 
-    # key = Observable.id, value = count
+    # key = Observable.id, value = the number of alerts this observable has been seen in. Only
+    # alerts in the default queue count, and faqueue alerts never do, the same rule as the
+    # observable disposition history and the v2 observable lookup: "seen before" means real alerts
     observable_count = {}
-
-    # for each observable, get a count of the # of times we've seen this observable (ever)
-    if len(observables) > 0:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                SELECT 
-                    o.id,
-                    count(*)
-                FROM 
-                    observables o JOIN observable_mapping om ON om.observable_id = o.id 
-                WHERE 
-                    om.observable_id IN ( {0} )
-                GROUP BY 
-                    o.id""".format(",".join([str(o.id) for o in observables]))
-
-            cursor.execute(sql)
-
-            for row in cursor:
-                # we record in a dictionary that matches the observable "id" to the count
-                observable_count[row[0]] = row[1]
-                #logging.debug("recorded observable count of {0} for {1}".format(row[1], row[0]))
+    if observables:
+        rows = (
+            get_db().query(ObservableMapping.observable_id, func.count())
+            .join(Alert, Alert.id == ObservableMapping.alert_id)
+            .filter(
+                ObservableMapping.observable_id.in_([o.id for o in observables]),
+                Alert.queue == QUEUE_DEFAULT,
+                Alert.alert_type != ANALYSIS_TYPE_FAQUEUE,
+            )
+            .group_by(ObservableMapping.observable_id)
+        )
+        observable_count = dict(rows.all())
 
     data = {}  # key = observable_type
     for observable in observables:
         if observable.type not in data:
             data[observable.type] = []
         data[observable.type].append(observable)
-        observable.count = observable_count[observable.id]
+        observable.count = observable_count.get(observable.id, 0)
 
     # sort the types
     types = [key for key in data.keys()]

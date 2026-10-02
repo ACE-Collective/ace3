@@ -1,10 +1,15 @@
 # Signature Validation System (SVS)
 
-> **Status: agreed design, not implemented (2026-09-27; Parts 5 and 6 added in review rounds 8–10).**
+> **Status: agreed design, not implemented (2026-10-02; Parts 5 and 6 added in review rounds 8–10,
+> the pre-implementation review folded in and the design reconciled with the v3.0.121 release on
+> 2026-10-02).**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
-> reasoning and the alternatives that were rejected. SVS stores its samples in the CAS
+> reasoning and the alternatives that were rejected. `docs/SVS_FINAL_REVIEW.md` is the
+> pre-implementation review of this design against the code; `[FR-n]` IDs point there, and the
+> decisions on its items are written into this document. Its §7 (`[FR-25]` to `[FR-30]`) records
+> what the v3.0.121 release changed under the design. SVS stores its samples in the CAS
 > (`docs/CAS.md`).
 
 SVS answers two questions about ACE's detection signatures:
@@ -77,6 +82,7 @@ Only what an analyst explicitly set is stored. Everything else is derived when r
 ```
 effective(dp) =
     NULL                        if class(alert.disposition) is unclassified
+    NULL                        if the alert is attributed to a run that is not Reviewed
     FP   (inherited)            if class(alert.disposition) == fp         # overrides are masked
     override (explicit)         if an override row exists                 # tp alerts only
     TP   (inherited_single)     if the alert has one signature
@@ -85,6 +91,13 @@ effective(dp) =
 
 - **On an FP alert every verdict is FP.** If the alert itself was wrong, the fix is to correct its
   disposition (the review path), not to override a detection. [DP-3]
+- **An alert from a run that is not Reviewed has no verdicts.** *Close* sets `SIMULATED` on
+  canceled, error and discarded runs too (Part 3), and `SIMULATED` is tp, so without this rule every
+  detection on those alerts would count as TP in per-signature counts and in the detection-points
+  API, although nothing was learned from the run. The check is one join from `svs_attributions` to
+  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review or close
+  writes for ignored detections are stored either way and take effect only once the run is
+  Reviewed. An alert with no attribution is unaffected.
 - **Overrides survive disposition changes.** A TP→FP→TP correction restores them.
 - **On a TP alert every detection inherits TP.** `inherited_multi` marks inheritance on an alert
   where several signatures fired: 37% of TP alerts with a YARA hit, in production data from
@@ -93,8 +106,10 @@ effective(dp) =
   regression, but per-signature TP/FP counts are useful everywhere. [DP-6]
 
 **Storage.** `detection_point_verdicts(alert_id, content_hash, signature_uuid, verdict, user_id,
-set_at)`, unique on `(alert_id, content_hash)`. The `detection_points` rows themselves are deleted
-and reinserted as the tree changes, so they can't hold the verdict. [DP-1]
+set_at)`, unique on `(alert_id, content_hash)`. The `detection_points` rows are synced as a delta
+upsert keyed on `(alert_id, content_hash)`: a row whose detection disappears from the tree is
+deleted, and one that reappears gets a new `id`. So the verdict is keyed on `content_hash`, never
+on the row. [DP-1, FR-16]
 
 **Detection identity** (prerequisite, before the first verdict is written). Today
 `content_hash = sha256(signature_uuid, description, details)`, which ignores the node the detection
@@ -124,16 +139,21 @@ orphans every override. [DP-7]
   has no verdict step. [DP-5, DP-2]
 - **Alert page.** Each detection shows a verdict chip, marked *inherited* or *explicit*, editable at
   any time. On an FP alert the chip reads *"FP (from alert). If the alert was wrong, correct its
-  disposition"* and offers no TP option. [DP-3]
-- **Manage page.** A filter for *has unlabeled detections*.
+  disposition"* and offers no TP option. [DP-3] On a `SIMULATED` alert the chips are read-only:
+  the run review owns those verdicts (Part 3), so an analyst override and a run re-review never
+  fight over the same row. [FR-15]
+- **Manage page.** A filter for *has unconfirmed detections*, i.e. detections whose verdict source
+  is `inherited_multi`. (Under D-6 nearly every detection on a classified alert has a verdict, so
+  "unlabeled" would be an empty filter.) [FR-15]
 
 ## Part 2 — YARA static regression
 
 ### Capture
 
 A module, `svs_yara_sample_capture`, runs in `analysis_mode_dispositioned`. Both disposition
-writers already requeue into that mode, and today it runs nothing. The module reads
-`alerts.disposition` from the database, because roots don't carry it. [YR-5]
+writers already requeue into that mode, run review and close set `SIMULATED` through one of them
+(Part 3), and today the mode runs nothing by default. The module reads `alerts.disposition` from
+the database, because roots don't carry it. [YR-5]
 
 - **What gets captured:** every YARA-matched file on an alert whose disposition classifies tp or
   fp, whatever the per-detection verdict. A verdict set later needs only a database write, never
@@ -142,6 +162,18 @@ writers already requeue into that mode, and today it runs nothing. The module re
 - **Missing data** is logged at ERROR and counted per rule, and the count is shown on the SVS page.
 - **Capture is the only chance.** Once the phase-0 archive fix lands [YR-11], `archive()` removes an
   FP alert's derived files after `fp_days`. IGNORE alerts are deleted after a day.
+- **Alerts from unreviewed runs are skipped.** An alert attributed to a run (one join from
+  `svs_attributions` to `svs_runs.state`) is captured only when that run is *Reviewed*. Closed,
+  Canceled and Error runs set `SIMULATED` too (Part 3), and their alerts are the least
+  trustworthy, so they add nothing to the corpus. Alerts with no attribution are unaffected. [FR-4]
+- **`signature_version` is checked.** It is `"unknown"` unless `service_yara.git_repo_dirs` is
+  set, which makes the audit column worthless. The module logs ERROR for every capture whose
+  version is unknown. [FR-15]
+- **The work item keeps its mode.** The `dispositioned` requeue targets the alert's own node, but
+  any node of the same company may pull it, and `transfer_work_target` today returns the root
+  without the item's `analysis_mode`, so the orchestrator falls back to `correlation` and capture
+  silently does not run. The phase-2 PR fixes `transfer_work_target` to carry the mode, with a
+  test. [FR-5]
 
 Each capture record stores: [YR-4]
 
@@ -157,6 +189,39 @@ Each capture record stores: [YR-4]
 | yara-python and yara_scanner versions | Explains library-driven differences. |
 
 Rules without a `uuid` fall back to the shared built-in signature, so they are not captured. [YR-7]
+The signature inventory (`saq/signatures/loaders/yara.py`) lists only rules that have one, and
+gives each rule's `content_hash`, `modifiers` and `enabled` with the same helpers the scanner uses.
+It does not report two rules sharing a uuid: it keeps one. The validation's duplicate check (below)
+parses the head tree itself, or extends the inventory to report duplicates. [FR-27]
+
+**The YARA QA store is the precedent.** The yara service already keeps the files matched by rules
+in QA mode, and their full match records, in the encrypted `yara_qa` CAS pool, indexed in
+`yara_qa_matches` (`docs/YARA_QA.md`, `saq/yara_qa/store.py`). Capture is a second store of the
+same shape, not a second consumer of that one: QA records every match of a QA rule at scan time,
+in the service, keyed on `(rule uuid, rule version, sha256)`, capped and expiring; capture runs at
+disposition time, in the engine, only on classified alerts, keyed on `(alert, sha256, rule uuid)`,
+and holds for as long as the capture record exists. `svs_yara_captures` stays its own table and
+reuses the building blocks: the hold idiom and the one-statement conditional UPDATE, the scanner
+protocol's base64 encoding of match strings for the stored record (`saq/yara_scanning/protocol.py`;
+the QA store's `_JSONEncoder` path decodes string bytes lossily, so it is not copied),
+`signature_version` taken exactly as QA takes it, the namespace stored relative to the signature
+directory (the match carries the absolute rule directory, which a replay tree does not have), the
+`wrong_node` answer for bytes on another node's local pool, and the infected-password zips of
+`aceapi_v2/common/archive.py` for downloads. [FR-27]
+
+**Sample storage on a multi-node site.** Capture runs in the engine of whichever node owns the
+alert and validation runs in `service_svs` on one node, so the `svs_samples` pool has to be
+reachable from every node (`shared: true`). The CAS ships only the `local` backend, which is enough
+for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
+backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
+ACE does not build one as an SVS prerequisite, and the capture module stays disabled on a
+multi-node site until the pool exists. The `yara_qa` pool already works this way (`docs/YARA_QA.md`,
+*Nodes*): a site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
+
+The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output
+depends on file name and `meta_tags`, which are not in the cache key. Moving its detections onto
+the file [DP-4] therefore needs no cache-version bump, and it is the same fact that makes replay
+rebuild path and `meta_tags`. [FR-21]
 
 ### Labels
 
@@ -188,9 +253,31 @@ from the `GitManagerService` checkout production loads rules from. It fetches `b
 
 **Scanning.** Each tree is compiled in a subprocess into a private `YaraScanner`, with a
 wall-clock timeout, a memory limit and a size limit. It never touches the live scanner or
-`signature_dir`. [YR-9]
-- **Compile errors are results.** For example: "namespace X failed to compile: all N rules in it
-  are dropped".
+`signature_dir`. [YR-9] Production scanning lives in the `yara` service (`docs/YARA_SCANNER.md`),
+and the `yara_scanner_v2` library (3.0.0) only compiles, tracks and filters rules, so the subprocess
+uses it the way the module's fallback scanner does.
+- **Validations are a queue.** `service_svs` runs one scan at a time by default
+  (`svs.yara.max_concurrent_validations`), and a result is cached per `(repository, base_sha,
+  head_sha, corpus version)`, so a CI retry does not rescan. [FR-13] The **corpus version** is the
+  greatest `updated_at` over `svs_yara_captures`, `detection_point_verdicts`,
+  `svs_sample_retirements`, the sample deletion audit and the `alerts` rows the captures reference
+  (`alerts.updated_at`, Part 6). So a new capture, a relabel, a confirm, a retirement, a sample
+  deletion or a disposition correction changes the version and the next request rescans, and
+  nothing else does.
+- **Compile the way production loads.** The production loader compiles each file on its own and
+  drops only a file that fails; then it compiles the survivors once per namespace, and if that
+  fails (two files defining the same rule name, for instance) the whole ruleset is dropped and the
+  service keeps serving the previous generation. The validation does the same two steps, but
+  through `yara.compile()` directly, because `yara_scanner.load_rules()` only logs a failing file
+  and returns `False`, and the direct call gives the error text and the compiler warnings
+  (`Rules.warnings`). The subprocess applies the same `yara.set_config()` limits the library sets
+  when it is imported, so the two agree on what compiles. [FR-11, FR-26]
+- **Compile errors are results.** "File X does not compile: its N rules are dropped", or "the
+  ruleset would not load: production keeps the previous generation". A validation that compiled a
+  namespace as one source would instead report every rule in it as regressed when one file is
+  broken. [FR-26]
+- **Duplicate `uuid` meta** in the head tree makes two rules share one label set. Both are listed
+  as *not regression-testable*, next to the rules with no uuid [YR-7]. [FR-11]
 - **The whole corpus is scanned with the whole base ruleset and the whole head ruleset**, and the
   results are diffed per `(sample, rule uuid)`. [YR-2] That is the only way to catch:
   - new rules, which have no samples of their own;
@@ -204,6 +291,13 @@ wall-clock timeout, a memory limit and a size limit. It never touches the live s
   alert's storage directory.
 - **The report also carries** base-vs-head scan time per namespace and the head's compiler
   warnings.
+
+**The SVS node is a malware store.** The pool is encrypted, but `materialize` of an encrypted
+object goes through the node-local CAS read cache, and replay writes every sample in plaintext under
+`<tmp>/files/`. That is inherent in scanning, so it is accepted and operated accordingly: the node
+gets AV exclusions, disk encryption and restricted shell access; the replay tree is deleted after
+every validation; and `cas.read_cache.max_bytes` is sized to the corpus so a validation does not
+decrypt tens of thousands of objects twice. [FR-12]
 
 ### Report and baseline
 
@@ -228,6 +322,8 @@ label: check that the sample was ever a real hit for this rule"*. [DP-2]
   source of truth as Part 1.
 - **Confirm label.**
 - **Retire** for one rule, with who and why. The sample is no longer expected to match that rule.
+- **Download**, one sample or a selection, as a zip with the password `infected`, exactly as the
+  Yara QA Results page does. It needs `signature:download`. [FR-28]
 - **Delete sample.** A CAS purge plus rows, audited, for legal or privacy requests.
 
 Nothing changes automatically when a PR merges. An accepted regression keeps showing as *already
@@ -237,8 +333,11 @@ broken on base* until it is retired or relabeled.
 
 ### Test hosts and registration
 
-**Test hosts** are configured under `svs.test_hosts` as a list of `{hostname, fqdn?, usernames?, ips?}`.
-Matching normalizes case, short name vs FQDN, and `DOMAIN\user` / `user@domain` / `user`. [ART-9]
+**Test hosts** are rows in `svs_test_hosts` (`hostname, fqdn?, usernames?, ips?`), managed on an
+SVS admin tab and through `/api/v2/svs/test-hosts`, both under `svs:admin`. They are a table
+rather than config because a site may build test VMs dynamically, and adding one must not need a
+restart of every process that evaluates routers. Matching normalizes case, short name vs FQDN,
+and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15]
 
 The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Every call requires
 `svs:run_register`. [ART-2]
@@ -253,11 +352,17 @@ The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Ev
 | (timer) | Created → **Error** | `start` was never called within the configured time. |
 | (analyst) | Ended → **Reviewed** | Sign-off; Coverage counts only Reviewed runs. See Part 5 for its preconditions. |
 | (analyst) | Ended, Canceled, Error → **Closed** | Discards the run: its alerts are closed, nothing is learned from it. A reason is required on an Ended run. [MGT-3] |
-| (timer) | Canceled, Error → **Closed** | When the attribution window ends. Ended runs always wait for a person. |
+| (timer) | Canceled, Error → **Closed** | When the attribution window ends. An Error run that never started has no window and is Closed in the same transition. Ended runs always wait for a person. |
 
 **Cancel stops the run, not attribution.** The test may have run anyway, so a canceled run keeps
 attributing inside its attribution window. Otherwise its markers would surface as
-`MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts. [MGT-3]
+`MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts, so it is Closed at the
+transition, with the reason in its event log, and never waits in *Needs attention*. [MGT-3]
+
+**Timers run in one place.** `service_svs` runs as a single instance on the primary node, like the
+CAS cron tasks, and owns the run timers, the validation queue and the catalog refresh. Every timer
+transition is a conditional update (`… SET state='ended' WHERE id=? AND state='started'`), so a
+duplicate firing is harmless anyway. [FR-13]
 
 **A reviewed run can change.** A late alert or a manual association after sign-off flags the run
 *changed since review*, and it returns to the operator's *Needs attention* list. The result as
@@ -268,13 +373,19 @@ from another person. Reviewing a run takes it if nobody owns it. [MGT-3]
 
 **Registration against a non-test host,** or an unlisted user on a host that lists `usernames`, is
 **refused with 403**. It also creates an alert in the default queue through the normal submission
-path, with a built-in signature and the caller's identity as observables. [ART-9]
+path, with a built-in signature and the caller's identity as observables. [ART-9] The alerts are
+collapsed to one per `(caller, host)` per hour; further refusals in that hour are logged at
+WARNING, so a misconfigured launcher retrying in a loop does not flood the queue. The launcher's
+`extra` is stored and rendered, so its size is capped. [FR-15]
 
 **Windows.** The *observation window* comes from the test's config if it sets one. Otherwise it is
 computed as the maximum, over the test's expected signatures, of their worst-case latency (for
-hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceiling. The
-*attribution window* is longer. Alerts that arrive after *Ended* but inside it are attributed, marked
-*late*, and the result is recomputed. [ART-3, ART-2]
+hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceiling. A test with no
+expectations yet (its first run, where expectations are discovered) gets the maximum worst-case
+latency over every *enabled* hunt, capped at the ceiling, not the floor. [FR-10] The *attribution
+window* is longer. Alerts that arrive after *Ended* but inside it are attributed, marked *late*,
+and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `root.event_time`
+(for hunts, the query's event time), falling back to the alert's insert time when it is unset. [FR-9]
 
 ### Markers
 
@@ -286,9 +397,18 @@ hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceil
 - **A marker that doesn't agree never routes the alert.** That covers unknown markers, well-formed
   markers not in the database, markers from another host, and markers outside the window. The
   alert stays in its normal queue, is tagged `svs:marker_mismatch`, and gets a detection from a
-  built-in signature. A marker on a production host is exactly what an analyst should see.
-- **Without a marker**, attribution falls back to target plus window, recorded with confidence
-  `context`. Context-only attribution also routes. [ART-5]
+  built-in signature. Both are added at the `POST_ANALYSIS` stage, which owns the root (see
+  *Attribution and routing*), never at `PRE_INSERT`. A marker on a production host is exactly what
+  an analyst should see. [FR-3] **A disagreeing marker also ends attribution for that alert**: the
+  context fallback below never runs on it, otherwise an alert carrying run A's marker outside A's
+  window could be attributed by context to run B on the same target.
+- **Without any marker**, attribution falls back to target plus window, recorded with confidence
+  `context`. Context-only attribution also routes. [ART-5] An alert whose marker disagreed never
+  reaches this fallback. It has no per-detection signal, so it
+  attributes **every** detection on the alert: a context-only alert is always `TEST?`, never
+  `PARTIAL TEST`. It also requires exactly one candidate run. When two runs on the same target
+  have overlapping windows, nothing is attributed and a WARNING record names both run UUIDs,
+  because attributing to the wrong run teaches the wrong expectation. [FR-9]
 
 The launcher's contract is to put the marker where the technique's process telemetry will show it:
 an input argument, a file name, or a trailing shell comment on the executor command.
@@ -330,36 +450,75 @@ ACE itself, not only to SVS. [D-13, ART-15]
 
 - **`AlertRouter.route(root, stage) -> RouteDecision | None`**, where a decision is
   `{queue, reason, router}`.
-  - Routers run in priority order, and the first decision wins.
-  - An explicitly set `root.queue` (a submission or hunt override) is never overridden.
+  - Every router, built-in or configured, has a numeric `priority`. Routers run in priority
+    order, and the first decision wins. **The SVS marker router runs before the detection-queue
+    router**, so a YARA rule with a `queue` meta that matches a dropped test file does not take the
+    alert before SVS sees it. [FR-2]
+  - **A configured queue may be overridden.** A marker that agrees with its run is stronger
+    evidence than a queue set by hunt config, a `queue` detection meta or a submission, so the SVS
+    router may route such an alert. (There is no "explicitly set" flag to honor: `root.queue`
+    always has a value, and every hunt submits with one.) The only queue it never overrides is one
+    that `move_alert_to_queue` itself set earlier and recorded as SVS-set, so a manual
+    *disassociate* is not undone by re-analysis. When the SVS router makes no decision, the
+    configured route applies as it does today. [FR-2]
+  - **A router never breaks an insert.** The registry runs each router inside a `try`; a router
+    that raises is logged with `report_exception()` and skipped, and `ALERT()` continues. ART-15
+    says this for loading a router; it holds at runtime too, because the registry sits inside
+    every alert insert. [FR-2]
   - Routers are registered as built-ins plus `alert_routers:` config entries
-    (`python_module`/`python_class`), in the same pattern as `hunter.correlation.command_types`.
+    (`python_module`/`python_class`/`priority`), in the same pattern as
+    `hunter.correlation.command_types`.
   - The registry is **open to integrations from day one**. It is documented in
     `docs/INTEGRATIONS.md`, and the example integration ships a trivial router.
 - **Stage `PRE_INSERT`**, inside `ALERT()`, the one function every alert insert goes through,
   before `Alert.create_from_root_analysis` copies `root.queue`.
   - Engine-converted alerts arrive here fully analyzed, so they never appear in the wrong queue.
-- **Stage `POST_ANALYSIS`**, in the orchestrator after each analysis pass.
+  - **`PRE_INSERT` routers are pure.** They return a decision and may write their own rows (the
+    SVS router writes `svs_attributions`) in the caller's transaction, but they never touch the
+    tree. Every caller of `ALERT()` saves the root *before* the call and `ALERT()` does not save
+    it, so a tag or detection added here is indexed once and deleted by the next sync. This rule
+    is part of the `AlertRouter` contract in `docs/INTEGRATIONS.md`, because integration routers
+    hit the same trap. [FR-3]
+  - The alert row has no `id` until the session flushes, so attribution rows are keyed on the
+    alert **uuid**. [FR-23]
+- **Stage `POST_ANALYSIS`**, in the orchestrator after each analysis pass, which owns the root.
   - It covers alerts inserted at submission time (hunts, API) whose marker appears only after
     analysis.
+  - It is where the tree is changed: the `svs:marker_mismatch` tag and its detection, and the
+    `svs_test` tag. Hunt alerts are analyzed after insert and engine-converted alerts get a
+    correlation pass, so a mismatch still surfaces before an analyst sees the alert. [FR-3]
   - A decision there moves the existing alert through `move_alert_to_queue(alert, queue, reason,
     actor)`. That new core primitive updates the column and `root.queue`, touches the alert,
-    refreshes the search payload, writes an audit line, and records the previous queue.
+    refreshes the search payload, writes an audit line, and records the previous queue and that
+    the move was SVS's.
 - **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS badge
-  instead.
-- **`_apply_detection_queue` becomes the first built-in router**, with its all-or-nothing rule
-  unchanged.
+  instead. The automation user (`ace`, `automation_user_id`) counts as nobody here: setting
+  `SIMULATED` backfills `owner_id` with the dispositioning user, so without this exception a
+  re-review could never move a test alert. [FR-15]
+- **`_apply_detection_queue` becomes a built-in router**, with its all-or-nothing rule unchanged
+  and a priority below the SVS router. (Its comment claims `all_detection_points` omits root
+  detections; it does not, and they are counted twice, harmlessly. Fix the comment then. [FR-24])
 
 **Where the SVS router looks:**
 
 | Scan point | Covers |
 |---|---|
 | Observable values and file names, and `root.details` (at both stages) | Hunt raw events, API details, command lines, URLs |
-| Each new analysis's `details` and new observables, scanned by an executor hook right after the module returns | Decoded or deobfuscated output |
-| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details` | Markers inside dropped scripts and documents |
+| Each module's `ModuleExecutionDelta` (new observables and added detections, plus the new analysis's `details`), scanned in the executor right after the module returns. The cache path produces the same delta, so cache replays are scanned too. [FR-19] | Decoded or deobfuscated output |
+| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`, so the rule ships in the repo as its own namespace there, listed with the other rule locations (`saq/signatures/locations.py`); a test asserts that both the service and the module's fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
 
-Markers found are resolved against runs through a short-lived per-process cache. Attribution rows
-`(run, alert, detection content_hash, confidence, late, source)` are written at the same time.
+**The scan is gated and the cache is one-sided.** [FR-8]
+- The whole scan (a regex over every observable value and `root.details`, on every alert insert)
+  runs only when one cheap check says a run is inside an open attribution window. That check is
+  cached for a few seconds, so the router costs nothing when no test is running.
+- Markers are resolved against runs through a short-lived per-process cache that holds **positive
+  resolutions only**. A marker that misses the cache always goes to the database before any
+  decision. The router runs in every process that calls `ALERT()` (engine workers, the hunter, the
+  API, the GUI, the CLI), and a launcher registers a run seconds before the test fires; a stale
+  negative would route a real test to the default queue as `MARKER MISMATCH`.
+
+Attribution rows `(run, alert uuid, detection content_hash, confidence, late, source)` are written
+at the same time as the decision.
 
 **Mixed alerts.** Attribution is per detection. An alert is routed to the SVS queue only when
 **every** detection is attributed. Otherwise it stays in its queue with the `PARTIAL TEST` status.
@@ -383,18 +542,40 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
 ### Test alerts downstream
 
 - **Disposition `SIMULATED`, class tp, ranked below `GRAYWARE` for event roll-up.** SVS sets it when
-  a run is *Reviewed* or *Closed*, on the run's fully attributed alerts. [D-16, MGT-3]
+  a run is *Reviewed* or *Closed*, on the run's fully attributed alerts, through the same
+  disposition writer analysts use. That writer requeues the alert into
+  `analysis_mode_dispositioned`, so capture (Part 2) runs on a reviewed run's alerts the way it
+  runs on any other. [D-16, MGT-3]
   - It is `analyst_selectable: false`: not in any modal, and rejected server-side.
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
     and report them.
+  - A `SIMULATED` alert is **never reset or re-analyzed** (`ace alert reset`, the GUI's
+    re-analyze, bulk actions). Its detections, and so its verdict sources and the labels derived
+    from them, are frozen at review time, so a report stays reproducible. [FR-15]
+  - Verdict chips on a `SIMULATED` alert are read-only; the run review owns them (Part 1). [FR-15]
+  - `SIMULATED` is added to the engine's `stop_analysis_on_dispositions`: nothing needs further
+    analysis of a test alert. [FR-7]
+- **Test alerts are archived after `svs.simulated_days`** (default 30), the way `FALSE_POSITIVE`
+  alerts are archived after `fp_days`, and they are **never deleted**. Maintenance today archives
+  only `FALSE_POSITIVE` alerts and deletes only `IGNORE` ones, and `SIMULATED` alerts would be the
+  steadiest source of new alerts once the test program runs. `archive()` frees the analysis
+  details and the derived files (the samples are already in the CAS) and keeps the row, its
+  disposition and its detection points, which is what the verdicts (Part 1), the sample labels
+  (Part 2) and the attributions derive from. Deleting the alert would orphan all three: every TP
+  sample from the test program would lose its label source. A reset is no alternative, because
+  `RootAnalysis.reset()` clears the disposition and the derived observables, which is the same
+  loss. [FR-7]
 - **Ignored detections are benign.** A run's ignored detections (launcher noise) get FP overrides
   when the run is reviewed or closed.
-- **YARA TP samples come for free.** Because `SIMULATED` is tp, YARA hits in reviewed runs become
-  TP samples through the normal capture.
+- **YARA TP samples come from Reviewed runs only.** Because `SIMULATED` is tp, YARA hits in a
+  reviewed run become TP samples through the normal capture. Capture skips alerts attributed to a
+  run in any other state (Part 2), and the verdict formula returns no verdict for them (Part 1),
+  so nothing is learned from a Closed, Canceled or Error run, not even a per-signature TP count,
+  which is what *Close* promises. [FR-4]
 - **Test alerts stay out of observable history and prevalence.** Both count only the `default`
   queue. Disposition history already did (PR #587); prevalence is changed to match.
-- **Routed alerts are tagged `svs_test`.**
+- **Routed alerts are tagged `svs_test`** (at `POST_ANALYSIS`).
 
 ### Expectations
 
@@ -472,6 +653,15 @@ technique is undetected; the drill-down shows which tests and signatures cover i
 release used for names and roll-up is pinned in config. Revoked or renamed techniques are mapped on
 upgrade.
 
+**The ATT&CK catalog ships in the image.** [FR-14] Production ACE never fetches it from the
+internet. A compact extract per supported release is vendored in this repo at
+`etc/attack/<release>.json` (`etc/` is copied into the image) and holds only what SVS uses:
+technique ids and names, sub-technique → parent, tactics, and the revoked and renamed maps.
+`bin/update-attack-catalog <release>` builds it: it downloads the raw enterprise ATT&CK STIX bundle
+for that release from MITRE's CTI repository, parses it and writes the extract. A developer runs it
+when ACE adds support for a release, and commits the result. `attack_release` names one of the
+vendored files, and startup fails validation when the file is missing.
+
 ## Part 5 — Operating SVS
 
 Someone owns the test program: they launch runs (outside ACE), watch them, review results, cancel
@@ -480,15 +670,28 @@ whatever logic it uses. ACE shows the facts, and neither recommends nor queues t
 
 ### One SVS area
 
-One *SVS* navigation entry, with tabs **Runs**, **Tests**, **Validations**, **Samples**,
-**Coverage** and **Worklist**. Every tab follows the alert manage page's pattern [MGT-7]:
+SVS has two homes, because its YARA half belongs with the other signature screens. [FR-28]
+
+- One *SVS* navigation entry, in the slot of the disabled *DetectOps* placeholder, with tabs
+  **Runs**, **Tests**, **Coverage** and **Worklist**, plus a **Test hosts** admin tab shown only
+  with `svs:admin` [FR-15].
+- **Validations** and **Samples** are cards in the existing **Signatures** hub (`app/signatures/`,
+  next to *Yara QA Results*), so they are gated by `signature:read` like everything else there,
+  and built the way that page is: a shell whose data all comes from the API.
+
+Every tab and card follows the alert manage page's pattern [MGT-7]:
 - a filtered, sortable, paged list, with its own filter registry in the manage page's
   `{name, inverted, values}` shape, saved filters and share URLs;
 - export, which is the API (Part 6);
 - a detail page per row.
 
-`saved_filters` gains a `screen` column (`alerts`, `svs_runs`, `svs_tests`, ...), so there is one
-saved-filter system for every screen. [MGT-1]
+Saved filters become **per screen** (`alerts`, `svs_runs`, `svs_tests`, `svs_validations`,
+`svs_samples`, ...), so there is one saved-filter system for every screen. [MGT-1] That is more
+than a column: the unique key becomes `(user_id, screen, name)`, the `working`/`temp` scratch rows
+are one per user *per screen*, `FilterEntry` (`aceapi_v2/saved_filters/schemas.py`) validates names
+against a registry object passed in per screen instead of the alert `FILTER_NAMES`, and the query
+builder in `saq/gui/filter_query.py`, whose `entity=` parameter already exists, stops naming `Alert`
+in its correlated subqueries. [FR-18, FR-30]
 
 ### Runs
 
@@ -499,8 +702,9 @@ saved-filter system for every screen. [MGT-1]
 - **Filters:** state; test; technique, including its parents; target; launcher; batch; date ranges;
   *has missing / possibly suppressed / candidates / late / context-only*; owner; reviewer; *has open
   alerts*.
-- **Default view, *Needs attention*:** Ended and not reviewed, Error, Created past its start
-  timeout, reviewed runs *changed since review*, and terminal runs that still hold open alerts.
+- **Default view, *Needs attention*:** Ended and not reviewed, Error, reviewed runs *changed since
+  review*, and terminal runs that still hold open alerts. A run Closed because `start` was never
+  called is found through the *state* and *reason* filters, not here.
   Its count is shown on the navigation entry.
 - **Bulk actions:** take ownership, cancel, close, export. Review is never a bulk action.
 - **Batches.** `batch_id` is a label, not a table. It is a filter and a group-by, and a grouped
@@ -564,19 +768,27 @@ for a close, and it is the run's change feed (Part 6). [MGT-5]
 
 ACE's convention applies: the message text describes the event, and `extra={}` carries the fields.
 `saq.log` renders them as `key=value`, and the fluent formatter makes them top-level Splunk fields
-(`saq/logging.py`, as `crash_id` does). **Every SVS record carries `svs_run`**, plus `svs_test` and
-`svs_marker` wherever they are known, so one search on `svs_run=…` returns everything ACE did about
-a run, across services and nodes. [MGT-9]
+(`saq/logging.py`; crash reports log their `crash_id` this way). [FR-30] **Every SVS record
+carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, so one search on
+`svs_run=…` returns everything ACE did about a run, across services and nodes. [MGT-9]
 
 | Event | Level | Fields beyond the run's own |
 |---|---|---|
 | Lifecycle transition, including timers | INFO | `from_state`, `to_state`, `actor` |
-| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome (and the caller on refusal) |
+| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome (and the caller on refusal; after the first refusal per `(caller, host)` in an hour this record is all that is written, no alert) [FR-15] |
 | Router decision on an alert, at both stages | INFO | `alert_uuid`, `stage`, `decision` (routed / partial / none / not moved because owned or closed), `queue`, `confidence` |
 | Marker sighting, agreeing or not | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window) |
+| Context attribution refused: more than one candidate run | WARNING | `alert_uuid`, `candidate_runs` (every run UUID; no single `svs_run`) [FR-9] |
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
+
+Two SVS records are not about a run and carry no `svs_run`: [FR-15]
+
+| Event | Level | Fields |
+|---|---|---|
+| The `disposition_classification` map, once at startup | WARNING | the map. A changed map relabels the whole corpus at read time, so every start says what it is. Unknown keys still fail validation. |
+| A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
 *completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
@@ -614,27 +826,31 @@ and reports are built outside ACE. [RPT-1]
 | `GET /api/v2/detection-points` | Detection points with effective verdict, verdict source, signature UUID and family, alert UUID and node identity. Filters: signature, family, alert date, queue, verdict, source, has override. |
 | `GET /api/v2/alerts/{uuid}/detection-points` | The same, for one alert |
 
-`GET /api/v2/alerts` shares its filter vocabulary and SQL path (`build_alert_query()`,
-`apply_sql_filters()`) with the alert search listing, and differs in pager and row shape. It
+`GET /api/v2/alerts` shares its filter vocabulary and SQL path with the alert search listing, and
+differs in pager and row shape. Those are two paths: `build_alert_query()`
+(`saq/gui/filter_query.py`) for the manage page's filter list, and `apply_sql_filters()`
+(`saq/search/lexical.py`) for the typed `SearchFilters` of the search API. [FR-22] It
 returns test alerts like any other; filtering them out is the caller's choice. It is not added to
 the AI API, which stays small and rate-limited for agents. `/api/v2/detection` is
 observable-detection settings, a different thing, which is why this one is `detection-points`.
 
 **Alert search leaves test alerts out by default.** `saq/search/query.py` excludes `svs.queue`
 whenever a request doesn't filter on queues. That covers the search box, `POST /api/v2/search/*`,
-`POST /ai/v1/search/*` and `ace search`. Each response counts what it left out
-(`excluded_test_alerts`); naming the SVS queue, the GUI toggle or `ace search --include-tests`
-brings them back. This is the same split as prevalence (Part 3): "have we seen this before?" means
-real alerts. [RPT-7]
+`POST /ai/v1/search/*` and the `ace search` subcommands. Each response counts what it left out
+(`excluded_test_alerts`); naming the SVS queue, the GUI toggle or `--include-tests` on `ace search
+query` and `ace search similar` brings them back. This is the same split as prevalence (Part 3):
+"have we seen this before?" means real alerts. [RPT-7]
 
 **SVS** (`/api/v2/svs/…`, list and detail for each):
 - `runs`, and for each run `results` (live and as reviewed), `attributions` and `events`;
 - `tests`;
 - `expectations` and `ignores`;
-- `validations` and their results;
-- `samples` and their labels (metadata only);
+- `validations` and their results, read with `signature:read` [FR-28];
+- `samples` and their labels (metadata only, `signature:read`; the bytes need `signature:download`)
+  [FR-28];
 - `coverage`, `coverage/history`;
-- `worklist`.
+- `worklist`;
+- `test-hosts`, read with `svs:run_read`, written with `svs:admin` [FR-15].
 
 ### Mechanics
 
@@ -644,8 +860,10 @@ real alerts. [RPT-7]
 - **Formats:** JSON pages, NDJSON, and CSV for flat lists. Nested data is its own endpoint.
 - **Incremental pulls with `changed_since`:**
   - every SVS table has `updated_at`;
-  - `alerts` gains `updated_at`, set wherever `alerts.version` rotates (`Alert.sync()`,
-    `touch_alerts()`), because the version token is random and can't be ordered;
+  - `alerts` gains `updated_at`, because the version token is random and can't be ordered. It is a
+    server-side `ON UPDATE CURRENT_TIMESTAMP` column rather than a write at each of the ten call
+    sites that rotate `alerts.version`, and the keyset for `changed_since` is `(updated_at, id)`
+    [FR-17, FR-30];
   - deletions and disassociations appear in the run event log and the sample deletion audit.
 - **Schemas** are versioned through the OpenAPI document. Renaming or removing a field is a breaking
   change and goes in the changelog.
@@ -663,8 +881,8 @@ These can't be rebuilt later, so they are recorded from day one. [RPT-4]
 ### Access
 
 [RPT-5]
-- **A reporting key is read-only:** an automation user with the `*_read` permissions and
-  `alert:read`.
+- **A reporting key is read-only:** an automation user with the `*_read` permissions,
+  `alert:read` and `signature:read`.
 - **File contents never come out of a reporting endpoint.** Sample, file and email bytes stay behind
   their download permissions.
 - **Alert data is scoped as in the GUI.** SVS data is global.
@@ -690,12 +908,16 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | Prevalence counts only the default queue | Consistency with disposition history (PR #587) | ART-10 |
 | Detection identity includes the node | Part 1 | DP-7 |
 | YARA detections on the file | Part 1 | DP-4 |
-| Alert-router registry, `move_alert_to_queue` | Part 3 | ART-15 |
-| CAS (`saq/cas/`) | Sample storage, and later every byte store | `docs/CAS.md` |
+| Alert-router registry, `move_alert_to_queue`, as their own PR (a refactor of `_apply_detection_queue` plus a new primitive) | Part 3 | ART-15, FR-2 |
+| CAS (`saq/cas/`), **landed** | Sample storage, and later every byte store. The shared backend a multi-node site needs for `svs_samples` is the site's to provide | `docs/CAS.md`, FR-1 |
+| Correlation-mode submissions to a remote node get an `alerts` row | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
+| `transfer_work_target` carries the work item's `analysis_mode` | A `dispositioned` item pulled by another node ran in correlation mode, so capture silently did not run. Phase 2 | FR-5 |
+| `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
+| Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
 | `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes | Prerequisites for the CAS | F-13, F-18 to F-20 |
-| `GET /api/v2/alerts` and `alerts.updated_at` | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7 |
+| `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`) | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
 | `GET /api/v2/detection-points` and verdict history | No detection-point API exists | RPT-2, RPT-4 |
-| `saved_filters.screen` | Saved filters for screens other than the manage page | MGT-1 |
+| Saved filters per screen | Saved filters for screens other than the manage page; unique key, scratch rows, name registry and query builder all become per screen | MGT-1, FR-18 |
 | Alert search excludes the SVS queue by default | Test alerts would dominate "similar alerts" | RPT-7 |
 | The hunt completion log line carries structured fields | Debugging a missing hunt detection from the site's logs | MGT-9 |
 
@@ -709,10 +931,11 @@ tables are on the main chain.
 | `detection_point_verdicts` | Explicit verdicts (Part 1) |
 | `svs_yara_captures` | One row per `(alert, sha256, rule uuid)`, with scan context; each holds its CAS object |
 | `svs_sample_retirements` | Retire actions: `(sha256, rule uuid, who, why, when)` |
-| `svs_validations`, `svs_validation_results` | A validation request and its per-`(sample, rule)` outcome and category |
+| `svs_validations`, `svs_validation_results` | A validation request and its per-`(sample, rule)` outcome and category; a request is served from an earlier validation with the same `(repository, base_sha, head_sha, corpus version)` [FR-13] |
+| `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips` (Part 3) [FR-15] |
 | `svs_catalog_tests` | The ART catalog: guid, repository, technique, name, platforms, commit |
 | `svs_runs`, `svs_run_targets` | Runs, their lifecycle timestamps, marker, windows, and targets |
-| `svs_attributions` | `(run, alert, detection content_hash, confidence, late, source, actor)` |
+| `svs_attributions` | `(run, alert uuid, detection content_hash, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23] |
 | `svs_expectations` | `(test guid, signature uuid, state: candidate/expected/rejected, who, when)` |
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / unexpected / ignored |
@@ -732,28 +955,35 @@ reviewed next to the live one. Every SVS table has `updated_at`.
 | `svs:validate` | Requesting a YARA validation (the CI key) |
 | `svs:run_read` | Runs and Tests screens, run pages, coverage, and their read APIs [MGT-6] |
 | `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association [MGT-6] |
-| `svs:validation_read` | Validation reports and their APIs [MGT-6] |
-| `svs:sample_read`, `svs:sample_download` | Sample metadata; sample bytes |
-| `svs:admin` | Retiring and deleting samples, global ignores, configuration |
+| `signature:read` (existing) | The Validations and Samples cards, validation reports, sample metadata and their APIs [FR-28] |
+| `signature:download` (existing) | Sample bytes [FR-28] |
+| `svs:admin` | Retiring and deleting samples, global ignores, the test-host table, configuration |
 
-Plus `cas:purge` and `cas:hold` from the CAS. Each is added to `saq/permissions/catalog.py` with a
-seeding migration. A reporting key gets the `*_read` permissions and `alert:read`.
+Plus `cas:purge` and `cas:hold` from the CAS. Each new `svs:*` permission is added to
+`saq/permissions/catalog.py` with a seeding migration; the `signature:*` pair already exists and
+gates the Signatures area. A reporting key gets the `*_read` permissions, `alert:read` and
+`signature:read`.
 
 ## Configuration (sketch)
 
 ```yaml
-disposition_classification:
+disposition_classification:         # logged at WARNING on every start [FR-15]
   FALSE_POSITIVE: fp
   GRAYWARE: tp
   # ... (Part 1 table)
   SIMULATED: tp
 
+cas:
+  pools:
+    svs_samples:                    # the second pool next to yara_qa (docs/YARA_QA.md) [FR-27]
+      backend: local                # enough for one node. A multi-node site redefines this pool
+      shared: false                 # with the shared backend it gave yara_qa, and shared: true [FR-1]
+      encryption: system
+      retention: held
+
 svs:
   queue: svs
-  test_hosts:
-    - hostname: lab-win10-01
-      fqdn: lab-win10-01.lab.example
-      usernames: ['LAB\svs-runner']
+  simulated_days: 30                # SIMULATED alerts are archived after this, like FP alerts after fp_days [FR-7]
   runs:
     start_timeout_minutes: 30
     observation_window: {slack_minutes: 30, floor_minutes: 60, ceiling_hours: 72}
@@ -762,26 +992,32 @@ svs:
   yara:
     repositories: [signatures]      # git_repo_<name> sections SVS may validate
     scan_timeout_seconds: 1800
-  attack_release: "v17"
+    max_concurrent_validations: 1   # [FR-13]
+  attack_release: "v17"             # names etc/attack/v17.json [FR-14]
+
+service_svs:                        # one instance, on the primary node [FR-13]
+  enabled: true
 
 alert_routers:
   - name: svs_marker
     python_module: saq.svs.routing
     python_class: MarkerRouter
+    priority: 100                   # ahead of the built-in detection-queue router [FR-2]
 ```
 
-Every value here is illustrative. The schema rejects unknown keys.
+Every value here is illustrative. The schema rejects unknown keys. Test hosts are rows in
+`svs_test_hosts`, not config (Part 3).
 
 ## Phases
 
 | Phase | Contents |
 |---|---|
-| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool; `GET /api/v2/alerts` with `alerts.updated_at`; `saved_filters.screen`; the structured hunt completion record |
+| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (**landed**; the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture** | The capture module; the Samples tab and its API |
-| **3: YARA validation** | API, mirror clones, isolated scanning, the report and its actions; the Validations tab; CI in one signature repo |
-| **4: runs** | Registration, test hosts, markers, the alert-router registry and `move_alert_to_queue`, `SIMULATED`, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
-| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
+| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
+| **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
+| **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
+| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
 `CHANGELOG.md`.
@@ -826,6 +1062,8 @@ and the YARA results under it are always shown.
   - regressions on files graded only by inheritance, listed separately as "check the label
     first".
 - It warns and never blocks. CI posts a summary on the PR with a link to ACE.
+- The reports and the graded files live under *Signatures*, next to *Yara QA Results*, for anyone
+  who can see that area; downloading a file needs the same permission as downloading a QA match.
 - Rules without a `uuid` can't be checked.
 - An intended regression is retired or relabeled in ACE, so the report stops showing it.
 
@@ -835,7 +1073,8 @@ test alerts, show smaller numbers.
 
 **Alerts from red-team test runs get their own queue and badge** (analysts; phase 4).
 - They go to the test queue with the disposition `SIMULATED`. Only ACE sets it, and it can't be
-  changed by hand; bulk actions skip those alerts.
+  changed by hand; bulk actions skip those alerts. They can't be reset or re-analyzed either. After
+  about 30 days they are archived like false positives: the analysis details go, the alert stays.
 - Badges: `TEST` (nothing to do), `TEST?` (nothing unless it looks wrong; one click marks it *not a
   test*), `PARTIAL TEST` (triage the non-test detections as usual), and `MARKER MISMATCH`
   (**treat as suspicious and investigate**).
@@ -855,7 +1094,8 @@ phase 4).
 **Alerts from canceled, failed or discarded runs are closed as `SIMULATED` too** (analysts,
 operators; phase 4). A canceled run still claims its alerts, so they don't reach the normal queue
 as `MARKER MISMATCH`. Closing a run, by hand or when its attribution window ends, closes its
-alerts without learning anything from it.
+alerts without learning anything from it: its YARA hits don't become samples, its signatures
+don't become expectations, and its detections carry no verdict.
 
 **All alert, detection and test data can be pulled through the API** (anyone who builds reports;
 phases 0–5).
