@@ -30,7 +30,7 @@ Three things to know before changing any of this:
   parameter is missing. Plain subclasses with no ``__init__`` are the correct shape.
 """
 
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 
 class ZipFileResponse(FileResponse):
@@ -49,6 +49,25 @@ class CsvResponse(PlainTextResponse):
     """Generated CSV text (the event export)."""
 
     media_type = "text/csv"
+
+
+class NdjsonStreamResponse(StreamingResponse):
+    """A streamed export, one JSON object per line (the alert export). A route that can also
+    stream CSV passes media_type="text/csv" to the instance and documents it with
+    NDJSON_OR_CSV_RESPONSES; StreamingResponse honors the argument."""
+
+    media_type = "application/x-ndjson"
+
+
+# The CSV alternative of an NdjsonStreamResponse route. Merged onto the entry FastAPI builds from
+# the response class, so the operation lists application/x-ndjson first and text/csv second.
+NDJSON_OR_CSV_RESPONSES = {
+    200: {
+        "content": {
+            "text/csv": {"schema": {"type": "string"}},
+        }
+    }
+}
 
 
 # Describes the body of the zip download endpoints for generators that look at the schema

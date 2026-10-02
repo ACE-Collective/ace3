@@ -1,27 +1,50 @@
 """Alert service for ACE API v2."""
 
+import base64
+import csv
+import io
 import json
 import logging
 import os
 import shutil
 import tempfile
 import uuid as uuidlib
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import Select, and_, func, or_, select, text
+from sqlalchemy.orm import aliased
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
-from saq.database.model import Alert, Comment, ObservableComment, ObservableMapping
+from saq.database.model import (
+    Alert,
+    Comment,
+    Company,
+    DetectionPoint,
+    ObservableComment,
+    ObservableMapping,
+    Tag,
+    TagMapping,
+    User,
+)
 from saq.database.pool import get_db
+from saq.database.util.alert import node_scope_locations
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
+from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
+from saq.gui.filter_screens import ALERTS_SCREEN
+from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
+from saq.search.query import build_listing_query
+from saq.search.types import SearchFilters
 from saq.util import local_time
 from saq.util.uuid import is_uuid
 
-from aceapi_v2.alerts.schemas import BulkAddObservableResult
+from aceapi_v2.alerts.schemas import ALERT_ROW_CSV_FIELDS, AlertRow, BulkAddObservableResult
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
 from aceapi_v2.sync import run_db_in_thread
 
@@ -375,3 +398,241 @@ async def bulk_add_observable(
         failed_uuids=failed_uuids,
         failed_details=failed_details,
     )
+
+
+#
+# GET /api/v2/alerts: the alert listing for export and reporting
+#
+# One SQL path with the search listing (saq.search.query.build_listing_query), paged by keyset
+# instead of offset: a report builder pulling every alert must not skip or repeat rows while
+# new alerts arrive. The statement is built ONCE per request (relative dates resolve then, and
+# building the filters runs queries of its own) and each page is executed in its own thread
+# through run_db_in_thread, returning plain data only.
+#
+
+LISTING_ORDER_ID = "id"
+LISTING_ORDER_UPDATED = "updated_at"
+
+LISTING_MAX_PAGE_SIZE = 1000
+LISTING_EXPORT_PAGE_SIZE = 1000
+
+# A changed_since pull only returns rows whose updated_at is at least this old. updated_at is
+# stamped when the UPDATE runs, not when it commits, so a row can appear with a timestamp
+# older than a cursor that was already handed out; waiting until no transaction can still be
+# writing a value that old is what makes the (updated_at, id) keyset safe. Delivery is
+# at-least-once: a client that resumes from changed_since may see a row twice, never miss one.
+CHANGED_SINCE_SETTLE_SECONDS = 5
+
+_CURSOR_VERSION = 1
+
+
+class InvalidListingRequest(ValueError):
+    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
+
+    def __init__(self, detail):
+        super().__init__(str(detail))
+        self.detail = detail
+
+
+class InvalidCursor(ValueError):
+    """The cursor is malformed, or belongs to a listing in another order."""
+
+
+@dataclass(frozen=True)
+class AlertListing:
+    """A prepared listing: the filtered, scoped statement selecting (Alert.id,
+    Alert.updated_at), with no order or limit, and the order its pages follow."""
+
+    statement: Select
+    order: str
+
+
+def _to_utc_naive(value: datetime) -> datetime:
+    # TIMESTAMP columns are compared in the session time zone, which ACE runs as UTC
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def prepare_alert_listing(
+    filter_params: list[str], *, changed_since: datetime | None, tz, viewer_user_id: int | None
+) -> AlertListing:
+    """Builds the listing statement from share-link filters (`f=`), resolved the way the manage
+    page resolves them ($USER / $USER_QUEUE against the caller, repeats of one filter ORed) and
+    scoped to this node's alerts exactly as the GUI is. Raises InvalidListingRequest."""
+    try:
+        entries, _ = decode_filter_query(filter_params, strict=True)
+    except FilterQueryError as e:
+        raise InvalidListingRequest(str(e))
+
+    try:
+        entries = [entry.model_dump() for entry in ALERTS_SCREEN.validate_entries(entries)]
+    except ValidationError as e:
+        raise InvalidListingRequest(e.errors(include_url=False, include_context=False))
+
+    user_queue = user_display_name = None
+    if uses_filter_sentinels(entries):
+        viewer = get_db().get(User, viewer_user_id) if viewer_user_id is not None else None
+        if viewer is None:
+            raise InvalidListingRequest("$USER and $USER_QUEUE need a caller that is a user")
+        user_queue, user_display_name = viewer.queue, viewer.display_name
+
+    entries = resolve_filter_list(entries, user_queue=user_queue, user_display_name=user_display_name)
+
+    locations = node_scope_locations()
+    filters = SearchFilters(
+        filter_list=tuple(entries),
+        locations=tuple(locations) if locations is not None else None,
+        timezone=tz,
+    )
+
+    query = build_listing_query(filters)
+    order = LISTING_ORDER_ID
+    if changed_since is not None:
+        order = LISTING_ORDER_UPDATED
+        query = query.filter(Alert.updated_at >= _to_utc_naive(changed_since))
+
+    # no filter fans the rows out (see filter_listing); DISTINCT is insurance, and valid
+    # under ONLY_FULL_GROUP_BY because every column the pages order by is selected
+    statement = query.with_entities(Alert.id, Alert.updated_at).distinct().statement
+    return AlertListing(statement=statement, order=order)
+
+
+def encode_listing_cursor(order: str, alert_id: int, updated_at: datetime) -> str:
+    key = [alert_id] if order == LISTING_ORDER_ID else [updated_at.isoformat(), alert_id]
+    payload = json.dumps({"v": _CURSOR_VERSION, "o": order, "k": key}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def decode_listing_cursor(cursor: str, order: str) -> list:
+    """The keyset values a cursor carries. Raises InvalidCursor."""
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        if payload["v"] != _CURSOR_VERSION:
+            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+        if payload["o"] != order:
+            raise InvalidCursor(
+                f"this cursor pages a listing ordered by {payload['o']}, not {order}: "
+                "pass the same changed_since (or none) as the request that returned it")
+        key = payload["k"]
+        if order == LISTING_ORDER_ID:
+            (alert_id,) = key
+            return [int(alert_id)]
+        updated_at, alert_id = key
+        return [datetime.fromisoformat(updated_at), int(alert_id)]
+    except InvalidCursor:
+        raise
+    except Exception as e:
+        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+
+def fetch_alert_page(
+    listing: AlertListing, cursor: str | None, limit: int
+) -> tuple[list[AlertRow], str | None]:
+    """One page of the listing after `cursor` (the first page when None), and the cursor of
+    the next page (None on the last). Raises InvalidCursor."""
+    statement = listing.statement
+    if listing.order == LISTING_ORDER_UPDATED:
+        settled = func.timestampadd(text("MICROSECOND"), -CHANGED_SINCE_SETTLE_SECONDS * 1000000, func.now(6))
+        statement = statement.where(Alert.updated_at < settled)
+        if cursor is not None:
+            updated_at, alert_id = decode_listing_cursor(cursor, listing.order)
+            # written out rather than as a row comparison so mysql serves it from the index
+            statement = statement.where(or_(
+                Alert.updated_at > updated_at,
+                and_(Alert.updated_at == updated_at, Alert.id > alert_id)))
+        statement = statement.order_by(Alert.updated_at, Alert.id)
+    else:
+        if cursor is not None:
+            (alert_id,) = decode_listing_cursor(cursor, listing.order)
+            statement = statement.where(Alert.id > alert_id)
+        statement = statement.order_by(Alert.id)
+
+    keys = get_db().execute(statement.limit(limit + 1)).all()
+    next_cursor = None
+    if len(keys) > limit:
+        keys = keys[:limit]
+        last_id, last_updated_at = keys[-1]
+        next_cursor = encode_listing_cursor(listing.order, last_id, last_updated_at)
+
+    return load_alert_rows([alert_id for alert_id, _ in keys]), next_cursor
+
+
+def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
+    """The rows for these alert ids, in the order given: three queries, whatever the page size."""
+    if not alert_ids:
+        return []
+
+    db = get_db()
+    owner = aliased(User)
+    disposition_user = aliased(User)
+    result = db.execute(
+        select(
+            Alert.id, Alert.uuid, Alert.insert_date, Alert.event_time, Alert.disposition_time,
+            Alert.owner_time, Alert.updated_at, Alert.tool, Alert.tool_instance, Alert.alert_type,
+            Alert.description, Alert.priority, Alert.queue, Alert.disposition,
+            disposition_user.username, owner.username, Company.name, Alert.location, Alert.archived,
+        )
+        .outerjoin(owner, owner.id == Alert.owner_id)
+        .outerjoin(disposition_user, disposition_user.id == Alert.disposition_user_id)
+        .outerjoin(Company, Company.id == Alert.company_id)
+        .where(Alert.id.in_(alert_ids))
+    ).all()
+
+    tags: dict[int, list[str]] = {}
+    for alert_id, name in db.execute(
+        select(TagMapping.alert_id, Tag.name)
+        .join(Tag, Tag.id == TagMapping.tag_id)
+        .where(TagMapping.alert_id.in_(alert_ids))
+    ):
+        tags.setdefault(alert_id, []).append(name)
+
+    detection_counts = dict(db.execute(
+        select(DetectionPoint.alert_id, func.count())
+        .where(DetectionPoint.alert_id.in_(alert_ids))
+        .group_by(DetectionPoint.alert_id)
+    ).all())
+
+    rows = {}
+    for (alert_id, alert_uuid, insert_date, event_time, disposition_time, owner_time, updated_at,
+         tool, tool_instance, alert_type, description, priority, queue, disposition,
+         disposition_username, owner_username, company_name, location, archived) in result:
+        rows[alert_id] = AlertRow(
+            uuid=alert_uuid,
+            insert_date=insert_date,
+            event_time=event_time,
+            disposition_time=disposition_time,
+            owner_time=owner_time,
+            updated_at=updated_at,
+            tool=tool,
+            tool_instance=tool_instance,
+            alert_type=alert_type,
+            description=description,
+            priority=priority,
+            queue=queue,
+            disposition=disposition,
+            disposition_user=disposition_username,
+            owner=owner_username,
+            company=company_name,
+            location=location,
+            archived=bool(archived),
+            tags=sorted(tags.get(alert_id, [])),
+            detection_count=detection_counts.get(alert_id, 0),
+        )
+
+    # an alert deleted between the key query and this one is simply absent
+    return [rows[alert_id] for alert_id in alert_ids if alert_id in rows]
+
+
+def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
+    """CSV text for rows of the export, with the header line when asked."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if header:
+        writer.writerow(ALERT_ROW_CSV_FIELDS)
+    for row in rows:
+        values = row.model_dump(mode="json")
+        values["tags"] = ",".join(row.tags)
+        writer.writerow([values[name] if values[name] is not None else "" for name in ALERT_ROW_CSV_FIELDS])
+    return buffer.getvalue()

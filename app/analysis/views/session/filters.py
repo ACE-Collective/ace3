@@ -14,7 +14,11 @@ from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
 from saq.database.model import AnalysisType, DetectionPoint, DispositionBy, Observable, Owner, Tag
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
-from saq.gui.filter_query import has_filter
+from saq.gui.filter_query import (
+    has_filter,
+    resolve_filter_list,
+    resolve_filter_sentinel,
+)
 from saq.gui.filter_screens import ALERTS_SCREEN
 
 
@@ -119,50 +123,21 @@ def get_existing_filter(filter_name: str, inverted: bool):
 #
 # filter sentinels
 #
-# $USER / $USER_QUEUE are resolved against whoever is logged in, at READ time, never at
-# write time -- so the sentinel survives round-tripping through both the database and a
-# share URL. That is what makes a link portable: a runbook link written as
-# `queue:$USER_QUEUE` shows each reader their OWN queue rather than the author's.
+# The rules live in saq.gui.filter_query (resolve_filter_list) so the alert listing API applies
+# the same ones; these wrappers resolve against whoever is logged in.
 #
-
-QUICK_FILTER_USER_QUEUE = "$USER_QUEUE"
-QUICK_FILTER_USER = "$USER"
-
 
 def resolve_filter_sentinels(value):
     """Resolve the sentinels a stored or shared filter can use to refer to the viewer."""
-    if value == QUICK_FILTER_USER_QUEUE:
-        return current_user.queue
-
-    if value == QUICK_FILTER_USER:
-        return current_user.display_name
-
-    if isinstance(value, list):
-        return [resolve_filter_sentinels(_) for _ in value]
-
-    return value
+    return resolve_filter_sentinel(
+        value, user_queue=current_user.queue, user_display_name=current_user.display_name)
 
 
 def resolve_saved_filter(filters: list) -> list:
     """Prepare a stored filter list for querying: sentinels resolved against the logged in
-    user, and entries sharing a name+inverted merged into one.
-
-    The merge matters. Filter entries are ANDed together (see build_alert_query), so two
-    separate Queue entries would match nothing at all rather than either queue."""
-    result = []
-    merged_by_key = {}
-    for entry in filters or []:
-        key = (entry["name"], entry.get("inverted", False))
-        values = [resolve_filter_sentinels(_) for _ in entry["values"]]
-        if key in merged_by_key:
-            merged_by_key[key]["values"].extend(values)
-            continue
-
-        merged = {"name": entry["name"], "inverted": entry.get("inverted", False), "values": values}
-        merged_by_key[key] = merged
-        result.append(merged)
-
-    return result
+    user, and entries sharing a name+inverted merged into one (see resolve_filter_list)."""
+    return resolve_filter_list(
+        filters, user_queue=current_user.queue, user_display_name=current_user.display_name)
 
 
 #

@@ -370,6 +370,63 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
     }[filter_name]()
 
 
+# $USER / $USER_QUEUE are resolved against whoever is looking, at READ time, never at write
+# time -- so the sentinel survives round-tripping through both the database and a share URL.
+# That is what makes a link portable: a runbook link written as `queue:$USER_QUEUE` shows each
+# reader their OWN queue rather than the author's.
+FILTER_SENTINEL_USER_QUEUE = "$USER_QUEUE"
+FILTER_SENTINEL_USER = "$USER"
+FILTER_SENTINELS = frozenset([FILTER_SENTINEL_USER_QUEUE, FILTER_SENTINEL_USER])
+
+
+def resolve_filter_sentinel(value, *, user_queue, user_display_name):
+    """Resolve the sentinels a stored or shared filter value can use to refer to the viewer."""
+    if value == FILTER_SENTINEL_USER_QUEUE:
+        return user_queue
+
+    if value == FILTER_SENTINEL_USER:
+        return user_display_name
+
+    if isinstance(value, list):
+        return [resolve_filter_sentinel(_, user_queue=user_queue, user_display_name=user_display_name) for _ in value]
+
+    return value
+
+
+def resolve_filter_list(filters: list, *, user_queue, user_display_name) -> list:
+    """Prepare a stored or shared filter list for querying: sentinels resolved against the
+    viewer, and entries sharing a name+inverted merged into one.
+
+    The merge matters. Filter entries are ANDed together (see build_alert_query), so two
+    separate Queue entries would match nothing at all rather than either queue. The GUI and
+    the alert listing API both query through this, so one link means one thing in both."""
+    result = []
+    merged_by_key = {}
+    for entry in filters or []:
+        key = (entry["name"], entry.get("inverted", False))
+        values = [resolve_filter_sentinel(_, user_queue=user_queue, user_display_name=user_display_name)
+                  for _ in entry["values"]]
+        if key in merged_by_key:
+            merged_by_key[key]["values"].extend(values)
+            continue
+
+        merged = {"name": entry["name"], "inverted": entry.get("inverted", False), "values": values}
+        merged_by_key[key] = merged
+        result.append(merged)
+
+    return result
+
+
+def uses_filter_sentinels(filters: list) -> bool:
+    """True if any value of the filter list is a sentinel (and so needs a viewer to resolve)."""
+    def _uses(value) -> bool:
+        if isinstance(value, list):
+            return any(_uses(_) for _ in value)
+        return value in FILTER_SENTINELS
+
+    return any(_uses(value) for entry in filters or [] for value in entry["values"])
+
+
 def has_filter(filters: list, name: str) -> bool:
     """Returns True if `filters` (a filter list) contains a filter with this name."""
     return any(_filter["name"] == name for _filter in filters or [])
