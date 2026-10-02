@@ -276,19 +276,89 @@ const callHooks = {
   'window.document.writeln': accumulateDocumentWrite,
 };
 
+// Values the sandbox does not know. Every recorder is registered with its
+// label, and every `[label]` placeholder a recorder has stringified to is
+// registered with the label it stands for, so later code can tell a value the
+// sample computed from one the harness made up: real implementations stay
+// symbolic on them (see atob below), and the trace renders a string that
+// carries one as the concatenation that built it.
+// Finding them in a string has to stay cheap however many there are and
+// however large the string: a payload is often one huge literal full of
+// brackets. So the search tries, at each `[`, only the lengths some registered
+// placeholder actually has (a handful in practice), longest first, because a
+// label can contain another label (`a.split(",")[1]` holds `a.split(",")`).
+const recorderLabels = new WeakMap();
+const placeholders = new Map();
+let placeholderLengths = [];
+
+function placeholderFor(label) {
+  const placeholder = `[${label}]`;
+  if (!placeholders.has(placeholder)) {
+    placeholders.set(placeholder, label);
+    if (!placeholderLengths.includes(placeholder.length)) {
+      placeholderLengths = [...placeholderLengths, placeholder.length].sort((a, b) => b - a);
+    }
+  }
+  return placeholder;
+}
+
+// The [start, end) spans of the registered placeholders in `s`, leftmost first.
+function findPlaceholders(s) {
+  const spans = [];
+  if (!placeholders.size) return spans;
+  let i = s.indexOf('[');
+  while (i !== -1) {
+    let end = -1;
+    for (const length of placeholderLengths) {
+      if (s[i + length - 1] === ']' && placeholders.has(s.slice(i, i + length))) {
+        end = i + length;
+        break;
+      }
+    }
+    if (end !== -1) spans.push([i, end]);
+    i = s.indexOf('[', end !== -1 ? end : i + 1);
+  }
+  return spans;
+}
+
+function isUnknown(value) {
+  return recorderLabels.has(value) || (typeof value === 'string' && findPlaceholders(value).length > 0);
+}
+
+// A string that carries placeholders renders as the concatenation that built
+// it, `"https://host/#" + atob(location.hash)`, not as one literal with the
+// placeholder inside it. Inside the literal the expression reads as part of
+// the URL, and URL extraction reports `https://host/#[atob(location.hash)]`
+// (or worse) as an observable.
+function renderString(s) {
+  const spans = findPlaceholders(s);
+  if (!spans.length) return JSON.stringify(s);
+  const parts = [];
+  let last = 0;
+  for (const [start, end] of spans) {
+    if (start > last) parts.push(JSON.stringify(s.slice(last, start)));
+    parts.push(placeholders.get(s.slice(start, end)));
+    last = end;
+  }
+  if (last < s.length) parts.push(JSON.stringify(s.slice(last)));
+  return parts.join(' + ');
+}
+
 function safeStringify(value) {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   const t = typeof value;
-  if (t === 'string') return JSON.stringify(value);
+  if (t === 'string') return renderString(value);
   if (t === 'number' || t === 'boolean') return String(value);
+  if (recorderLabels.has(value)) return recorderLabels.get(value);
   if (t === 'function') {
     try {
-      // String(value) hits the recorder Proxy's toString trap (returning
-      // `[label]` for our wrappers) or calls Function.prototype.toString on a
-      // real user-written function (returning its source). That lets us
-      // surface cleartext function bodies the malware author actually wrote
-      // while still rendering recorders as readable labels.
+      // String(value) hits the jQuery Proxy's toString trap (returning
+      // `[$()]`; recorders were rendered as their label above) or calls
+      // Function.prototype.toString on a real user-written function
+      // (returning its source). That lets us surface cleartext function bodies
+      // the malware author actually wrote while still rendering the stubs as
+      // readable labels.
       const src = String(value);
       if (src.startsWith('[') && src.endsWith(']')) return src;
       if (src.includes('[native code]')) return '[native function]';
@@ -305,6 +375,29 @@ function safeStringify(value) {
   } catch (_) {
     try { return String(value); } catch (__) { return '[unserializable]'; }
   }
+}
+
+// Labels read as the JavaScript that produced the value, arguments included
+// (`document.getElementById("lnk").getAttribute("href")`, `s.split(",")[1]`),
+// because a label is all the trace has to say where an unknown value came
+// from. A long argument is left out whole (`fetch(...).json()`), so a call on a
+// large literal can't carry it into every label derived from the result. It is
+// never cut short: a truncated string literal leaves an unterminated quote and a
+// partial URL in the trace, and URL extraction reports that as an observable.
+// The call's own trace line carries the argument in full.
+const MAX_LABEL_ARG_LENGTH = 64;
+
+function labelArgs(args) {
+  return args.map((arg) => {
+    const s = safeStringify(arg);
+    return s.length > MAX_LABEL_ARG_LENGTH ? '...' : s;
+  }).join(', ');
+}
+
+function memberLabel(label, prop) {
+  if (/^[A-Za-z_$][\w$]*$/.test(prop)) return `${label}.${prop}`;
+  if (/^\d+$/.test(prop)) return `${label}[${prop}]`;
+  return `${label}[${JSON.stringify(prop)}]`;
 }
 
 // `overrides` (optional): a plain object of property name → real value that the
@@ -328,20 +421,21 @@ function recorder(label, overrides, onSet) {
   // names like `__proto__` or `hasOwnProperty`.
   const stored = Object.create(null);
   const children = Object.create(null);
-  return new Proxy(target, {
+  const proxy = new Proxy(target, {
     get(_t, prop) {
       if (typeof prop === 'symbol') {
-        if (prop === Symbol.toPrimitive) return () => `[${label}]`;
+        // overrides may supply the real coercion (a known `location` is its href)
+        if (prop === Symbol.toPrimitive) return (overrides && overrides[Symbol.toPrimitive]) || (() => placeholderFor(label));
         if (prop === Symbol.iterator) return undefined;
         return undefined;
       }
-      if (prop === 'toString' || prop === 'valueOf') return () => `[${label}]`;
+      if ((prop === 'toString' || prop === 'valueOf') && !(overrides && prop in overrides)) return () => placeholderFor(label);
       if (prop === 'then') return undefined; // don't look like a thenable
       events.push({ kind: 'get', label, prop: String(prop) });
       if (prop in stored) return stored[prop];
       if (overrides && prop in overrides) return overrides[prop];
       if (!(prop in children)) {
-        children[prop] = recorder(`${label}.${String(prop)}`);
+        children[prop] = recorder(memberLabel(label, String(prop)));
       }
       return children[prop];
     },
@@ -366,7 +460,7 @@ function recorder(label, overrides, onSet) {
           events.push({ kind: 'call.hook.error', label, error: e && (e.message || String(e)) });
         }
       }
-      return recorder(`${label}()`);
+      return recorder(`${label}(${labelArgs(args)})`);
     },
     construct(_t, args) {
       events.push({ kind: 'new', label, args: args.map(safeStringify) });
@@ -376,10 +470,12 @@ function recorder(label, overrides, onSet) {
           events.push({ kind: 'construct.hook.error', label, error: e && (e.message || String(e)) });
         }
       }
-      return recorder(`new ${label}()`);
+      return recorder(`new ${label}(${labelArgs(args)})`);
     },
     has() { return true; },
   });
+  recorderLabels.set(proxy, label);
+  return proxy;
 }
 
 // A node:vm context starts with ECMAScript intrinsics ONLY (Uint8Array, JSON,
@@ -480,7 +576,32 @@ function queueElementListener(type, handler, wrapper, label) {
   elementListeners.push({ type, handler, wrapper, label });
 }
 
-function buildDomDocument(snapshot) {
+// The document's own URL, when the snapshot carries one (a crawled page's
+// dom.html). Scripts read it, and kits key on it: the victim's address rides in
+// the fragment, `atob(location.href.split('#x=')[1])` decodes it, and the
+// result is appended to the next hop. Without it `location` is a recorder and
+// the address is unknowable. The URL's parts are real values; everything else,
+// above all `replace`/`assign`, still records, because the navigation is the
+// IOC. `location.href = x` overwrites href through the recorder's `stored`.
+// Node's URL (host realm) parses it -- the sandbox's `URL` is a recorder.
+function buildLocation(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    events.push({ kind: 'dom.snapshot.error', error: `bad url ${JSON.stringify(url)}: ${e && (e.message || String(e))}` });
+    return null;
+  }
+  const overrides = Object.create(null);
+  for (const prop of ['href', 'origin', 'protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'hash']) {
+    overrides[prop] = parsed[prop];
+  }
+  overrides.toString = () => parsed.href;
+  overrides[Symbol.toPrimitive] = () => parsed.href;
+  return recorder('location', overrides);
+}
+
+function buildDomDocument(snapshot, domLocation) {
   const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
   const byId = new Map();
   const byTag = new Map();
@@ -636,11 +757,17 @@ function buildDomDocument(snapshot) {
   }
   docOverrides.getElementsByClassName = (cls) => (byClass.get(String(cls)) || []).map((el, i) => wrapperFor(el, `getElementsByClassName(${JSON.stringify(String(cls))})[${i}]`));
   docOverrides.readyState = 'complete';
+  if (domLocation) {
+    docOverrides.location = domLocation;
+    docOverrides.URL = domLocation.href;
+    docOverrides.documentURI = domLocation.href;
+  }
 
   return recorder('document', docOverrides);
 }
 
-const domDocument = DOM_SNAPSHOT ? buildDomDocument(DOM_SNAPSHOT) : null;
+const domLocation = (DOM_SNAPSHOT && typeof DOM_SNAPSHOT.url === 'string') ? buildLocation(DOM_SNAPSHOT.url) : null;
+const domDocument = DOM_SNAPSHOT ? buildDomDocument(DOM_SNAPSHOT, domLocation) : null;
 
 const sandbox = {
   $: jqueryGlobal,
@@ -652,8 +779,14 @@ const sandbox = {
     info: (...a) => events.push({ kind: 'console.info', args: a.map(safeStringify) }),
     debug: () => {},
   },
-  atob: (s) => Buffer.from(String(s), 'base64').toString('binary'),
-  btoa: (s) => Buffer.from(String(s), 'binary').toString('base64'),
+  // Real implementations, but only over real input. Given a value the sandbox
+  // made up (a recorder, or a string with its placeholder inside it), there is
+  // nothing true to compute, so the result stays symbolic and the trace shows
+  // `atob(window.location.hash)`. Decoding the placeholder text instead turns
+  // `[window.location.hash]` into bytes no browser would ever produce, which
+  // land in the redirect URL as garbage.
+  atob: (s) => isUnknown(s) ? recorder(`atob(${safeStringify(s)})`) : Buffer.from(String(s), 'base64').toString('binary'),
+  btoa: (s) => isUnknown(s) ? recorder(`btoa(${safeStringify(s)})`) : Buffer.from(String(s), 'binary').toString('base64'),
   // Host-realm classes handed to the sandbox directly. Cross-realm is fine:
   // a Uint8Array built inside the vm decodes correctly through these because
   // node brand-checks via internal slots, which are realm-agnostic.
@@ -698,6 +831,10 @@ if (domDocument) {
   sandbox.document = domDocument;
   const winOverride = Object.create(null);
   winOverride.document = domDocument;
+  if (domLocation) {
+    sandbox.location = domLocation;
+    winOverride.location = domLocation;
+  }
   for (const name of ['window', 'top', 'self', 'parent']) {
     sandbox[name] = recorder(name, winOverride);
   }

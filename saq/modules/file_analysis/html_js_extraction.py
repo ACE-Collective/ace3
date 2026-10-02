@@ -17,6 +17,7 @@ from saq.constants import (
     F_FILE,
     F_URI_PATH,
     F_URL,
+    R_DOWNLOADED_FROM,
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
@@ -33,6 +34,10 @@ DOM_SNAPSHOT_MAX_TEXT_LEN = 4096
 # Tags whose content is script/style, not document structure the deobfuscator
 # needs to resolve element lookups against.
 DOM_SNAPSHOT_SKIP_TAGS = frozenset({'script', 'style'})
+
+# The attributes that name an external script: `src` in HTML, and `href` (SVG 2)
+# or `xlink:href` (SVG 1.1) on an SVG <script>. bs4 keeps the prefix in the name.
+SCRIPT_SOURCE_ATTRIBUTES = ('src', 'href', 'xlink:href')
 
 
 # Event attributes that can contain JavaScript code
@@ -390,22 +395,23 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         # attribute of a sibling element; shipping this alongside the script lets
         # the JS deobfuscator resolve document.getElementById(...).getAttribute(...)
         # to the true value instead of a placeholder.
-        dom_snapshot = self._build_dom_snapshot(soup)
+        dom_snapshot = self._build_dom_snapshot(soup, _file)
 
         # Extract inline scripts
         self._extract_inline_scripts(soup, _file, analysis, seen_hashes, dom_snapshot)
 
         # Extract external script URLs
-        self._extract_external_scripts(soup, _file, analysis)
+        self._extract_external_scripts(soup, _file, analysis, dom_snapshot)
 
         # Extract event handlers if enabled
         if self.extract_event_handlers:
             self._extract_event_handlers(soup, _file, analysis, seen_hashes, dom_snapshot)
 
-    def _build_dom_snapshot(self, soup) -> dict | None:
+    def _build_dom_snapshot(self, soup, _file: FileObservable) -> dict | None:
         """Serialize the parsed document's elements and attributes into a compact
         dict the JS deobfuscator harness can use to back document lookups with
-        real values. Returns None when disabled or when nothing survives."""
+        real values, plus the URL the document was loaded from when known.
+        Returns None when disabled or when nothing survives."""
         if not self.emit_dom_snapshot:
             return None
 
@@ -452,7 +458,37 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         if not elements:
             return None
 
-        return {"version": 1, "truncated": truncated, "elements": elements}
+        snapshot = {"version": 1, "truncated": truncated, "elements": elements}
+
+        # The page's scripts read their own location, and kits key on it: the
+        # victim's address rides in the fragment and the script decodes it into
+        # the next hop. Whatever downloaded this document (phishkit's dom.html)
+        # records where it was loaded from.
+        downloaded_from = _file.get_relationship_by_type(R_DOWNLOADED_FROM)
+        if downloaded_from is not None and downloaded_from.target.type == F_URL:
+            snapshot["url"] = downloaded_from.target.value
+
+        return snapshot
+
+    def _write_dom_snapshot(self, path: str, dom_snapshot: dict, analysis: HTMLJavaScriptExtractionAnalysis):
+        """Write a snapshot sidecar. Not registered as an observable: it is context
+        for the deobfuscator, which finds it by name. A plain file in the storage
+        dir survives node transfer (the whole dir is tarred) and is cleaned up with
+        the alert. Failure here must never fail extraction."""
+        try:
+            with open(path, 'w', encoding='utf-8') as fp:
+                json.dump(dom_snapshot, fp, separators=(",", ":"))
+            if os.path.basename(path) not in analysis.dom_snapshot_files:
+                analysis.dom_snapshot_files.append(os.path.basename(path))
+        except Exception as e:
+            logging.warning(f"failed to write DOM snapshot sidecar {path}: {e}")
+
+    def _get_script_source(self, script) -> str | None:
+        for attr in SCRIPT_SOURCE_ATTRIBUTES:
+            if script.has_attr(attr):
+                return script[attr]
+
+        return None
 
     def _extract_inline_scripts(
         self,
@@ -464,8 +500,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
     ):
         """Extract inline <script> tags."""
         for script in soup.find_all('script'):
-            # Skip scripts with src attribute (external scripts)
-            if script.has_attr('src'):
+            # Skip external scripts
+            if self._get_script_source(script) is not None:
                 continue
 
             # Get script type attribute
@@ -514,14 +550,18 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         self,
         soup,
         _file: FileObservable,
-        analysis: HTMLJavaScriptExtractionAnalysis
+        analysis: HTMLJavaScriptExtractionAnalysis,
+        dom_snapshot: dict | None = None
     ):
-        """Extract external script URLs from src attributes."""
+        """Extract external script URLs, and leave the document's DOM snapshot
+        beside the document for the scripts fetched from them."""
+        extracted_url = False
         for script in soup.find_all('script'):
-            if not script.has_attr('src'):
+            src_url = self._get_script_source(script)
+            if src_url is None:
                 continue
 
-            src_url = script['src'].strip()
+            src_url = src_url.strip()
             if not src_url:
                 continue
 
@@ -539,9 +579,20 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                 obs.add_relationship(R_EXTRACTED_FROM, _file)
                 if obs_type == F_URL:
                     analysis.extracted_urls.append(src_url)
+                    extracted_url = True
                 else:
                     analysis.extracted_uri_paths.append(src_url)
                 logging.info(f"extracted external script {obs_type} {src_url} from {_file.file_name}")
+
+        # Whatever fetches one of these URLs gets the script on its own, but in a
+        # browser it runs inside this document and reads its elements: an SVG
+        # keeps the base64 redirect target in an <a href> and loads a separate
+        # script that decodes it. The JS deobfuscator follows the script back to
+        # the URL, the URL back to this document (the extracted_from relationship
+        # above), and runs it against this snapshot. One per document: in an
+        # MHTML file with external scripts in several parts, the last part wins.
+        if extracted_url and dom_snapshot is not None:
+            self._write_dom_snapshot(_file.full_path + ".dom.json", dom_snapshot, analysis)
 
     def _extract_event_handlers(
         self,
@@ -629,11 +680,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             tracking_list.append(file_observable.file_path)
             logging.debug(f"extracted {script_type} JavaScript to {filename}")
 
-            # Write the DOM snapshot beside the script (not registered as an
-            # observable — it is context for the deobfuscator, discovered by the
-            # harness at `<script>.dom.json`). A plain file in the storage dir
-            # survives node transfer (the whole dir is tarred) and is cleaned up
-            # with the alert. Failure here must never fail extraction.
+            # Write the DOM snapshot beside the script, where the deobfuscator
+            # looks for it (`<script>.dom.json`).
             #
             # NOTE: neither this module nor the deobfuscator is cacheable today.
             # If deob results are ever cached keyed on the .js content hash, the
@@ -643,13 +691,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
             # identical script extracted from two different documents keeps only
             # the first document's snapshot.
             if dom_snapshot is not None:
-                sidecar_path = target_path + ".dom.json"
-                try:
-                    with open(sidecar_path, 'w', encoding='utf-8') as fp:
-                        json.dump(dom_snapshot, fp, separators=(",", ":"))
-                    analysis.dom_snapshot_files.append(os.path.basename(sidecar_path))
-                except Exception as e:
-                    logging.warning(f"failed to write DOM snapshot sidecar {sidecar_path}: {e}")
+                self._write_dom_snapshot(target_path + ".dom.json", dom_snapshot, analysis)
 
 
     def _compute_hash(self, content: str) -> str:

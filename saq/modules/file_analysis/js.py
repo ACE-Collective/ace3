@@ -10,6 +10,7 @@ from saq.constants import (
     DIRECTIVE_EXTRACT_URLS,
     DIRECTIVE_YARA_META_PREFIX,
     F_FILE,
+    F_URL,
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
@@ -41,6 +42,10 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     # lookups during the run (see html_js_extraction). Useful when triaging why
     # a data-* attribute payload did or did not decode.
     KEY_DOM_SNAPSHOT = "dom_snapshot"
+    # The document whose snapshot the script ran against when it is not the
+    # document the script was extracted from: a script fetched from a URL that
+    # document referenced (`<script src>`, an SVG's `<script xlink:href>`).
+    KEY_DOM_SNAPSHOT_SOURCE = "dom_snapshot_source"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -56,6 +61,7 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR: None,
             JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT: False,
+            JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT_SOURCE: None,
         }
 
     @property
@@ -145,6 +151,14 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
         self.details[JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT] = value
 
     @property
+    def dom_snapshot_source(self):
+        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT_SOURCE)
+
+    @dom_snapshot_source.setter
+    def dom_snapshot_source(self, value):
+        self.details[JavaScriptDeobfuscationAnalysis.KEY_DOM_SNAPSHOT_SOURCE] = value
+
+    @property
     def webcrack_failed(self) -> bool:
         """True when the static pre-pass errored out. The dynamic sandbox still
         runs and does the real work, so this degrades the result rather than
@@ -203,6 +217,36 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
 
+    def _find_dom_snapshot(self, _file: FileObservable) -> tuple[str | None, FileObservable | None]:
+        """Returns the DOM snapshot to run the script against, and the document it
+        was borrowed from when it is not the script's own.
+
+        A script html_js_extraction pulled out of a document has its own sidecar.
+        A script fetched on its own -- the target of an SVG's
+        `<script xlink:href>` or an HTML `<script src>`, downloaded by whatever
+        analyzed that URL -- has none, yet in a browser it runs inside the
+        document that referenced it and reads that document's elements. So walk
+        back: the analysis that produced the script ran on a URL, and
+        html_js_extraction recorded that URL as extracted from the document and
+        left the document's snapshot beside it."""
+        own_snapshot = _file.full_path + ".dom.json"
+        if os.path.exists(own_snapshot):
+            return own_snapshot, None
+
+        for parent in _file.parents:
+            source_url = parent.observable
+            if source_url is None or source_url.type != F_URL:
+                continue
+            for relationship in source_url.get_relationships_by_type(R_EXTRACTED_FROM):
+                document = relationship.target
+                if not isinstance(document, FileObservable):
+                    continue
+                document_snapshot = document.full_path + ".dom.json"
+                if os.path.exists(document_snapshot):
+                    return document_snapshot, document
+
+        return None, None
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         local_file_path = _file.full_path
 
@@ -234,6 +278,10 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
         # back from the shared ace-js-deobfuscator volume
         scratch_dir = create_temporary_directory()
 
+        dom_snapshot_path, dom_snapshot_source = self._find_dom_snapshot(_file)
+        if dom_snapshot_source is not None:
+            analysis.dom_snapshot_source = dom_snapshot_source.file_path
+
         try:
             result_files = deobfuscate_file(
                 local_file_path,
@@ -241,6 +289,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                 is_async=False,
                 timeout=self.config.celery_timeout,
                 scanner_timeout=self.config.scanner_timeout,
+                dom_snapshot_path=dom_snapshot_path,
             )
         except Exception as e:
             analysis.error = f"js deobfuscator call failed: {e}"

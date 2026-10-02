@@ -979,6 +979,19 @@ class Scanner:
         # monotonic ts of the most recent Network.* CDP event; 0.0 until the
         # first event arrives. Read by _wait_for_network_quiescence.
         self.last_network_event_ts: float = 0.0
+        # The URL Chrome was showing when the screenshot and DOM were captured:
+        # after every redirect, and with the fragment, which no request carries
+        # and requests.json therefore never shows. It is the page's own
+        # location.href, which the page's scripts read (kits keep the victim's
+        # address in the fragment). None until captured.
+        self.document_url: Optional[str] = None
+        # Downloads a frame started, by CDP guid -> {"url", "name"}. Only these are
+        # the scanned site's. Chrome downloads its own on-device models (the
+        # client-side phishing model and others) through the same download
+        # manager during a scan, and copying the whole download folder reported
+        # them as files the site served. See _route_downloads.
+        self.page_downloads: dict[str, dict] = {}
+        self.page_downloads_dir: Optional[str] = None
 
         config = _load_config(config_path)
         self.SKIP_BODY_EXT = config.skip_body_ext
@@ -1026,6 +1039,7 @@ class Scanner:
         return {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "url_scanned": url,
+            "document_url": self.document_url,
             "total_bytes_downloaded": self.bytes_downloaded,
             "scan_duration_seconds": round(scan_duration, 2),
             "domain_stats": domain_metrics,
@@ -1458,6 +1472,72 @@ class Scanner:
         except Exception as e:
             print(f"exception parsing network.WebSocketClosed event: {event}: {e}")
 
+    async def download_will_begin_handler(self, event: mycdp.browser.DownloadWillBegin):
+        frame_id = str(event.frame_id or "")
+        print(f"download {event.guid} begins: frame={frame_id or '-'} url={event.url} name={event.suggested_filename}")
+        if frame_id:
+            self.page_downloads[event.guid] = {"url": event.url, "name": event.suggested_filename}
+
+    async def download_progress_handler(self, event: mycdp.browser.DownloadProgress):
+        if event.state != "inProgress":
+            print(f"download {event.guid} {event.state}")
+
+    def _route_downloads(self, sb, downloads_dir: str) -> None:
+        """Send downloads to our own folder, each saved under its CDP guid, with
+        download events on, so _collect_page_downloads can tell the page's
+        downloads from Chrome's. SeleniumBase sets plain "allow" into its own
+        folder, which names files after the URL (a model fetched from
+        .../downloads?name=... lands as downloads.html) and reports nothing.
+        A failure here costs the scan its downloads, not the scan itself."""
+        self.page_downloads_dir = downloads_dir
+        try:
+            os.makedirs(downloads_dir, exist_ok=True)
+            sb.cdp.loop.run_until_complete(self._cdp_tab.send(mycdp.browser.set_download_behavior(
+                behavior="allowAndName", download_path=downloads_dir, events_enabled=True,
+            )))
+        except Exception as e:
+            print(f"failed to route downloads, none will be reported: {e}")
+
+    def _collect_page_downloads(self, output_dir: str) -> list[str]:
+        """Copy the downloads a frame started into <output_dir>/downloads under the
+        name the site gave them. One still in flight when the scan ends is copied as
+        <name>.crdownload: a partial payload still carries its hash and header."""
+        downloads = []
+        target_dir = os.path.join(output_dir, "downloads")
+        os.makedirs(target_dir, exist_ok=True)
+        for guid, info in self.page_downloads.items():
+            source = os.path.join(self.page_downloads_dir, guid)
+            suffix = ""
+            if not os.path.isfile(source):
+                source += ".crdownload"
+                suffix = ".crdownload"
+            if not os.path.isfile(source):
+                continue
+
+            name = os.path.basename(info["name"] or "") or guid
+            target = os.path.join(target_dir, name + suffix)
+            if os.path.exists(target):
+                target = os.path.join(target_dir, f"{guid}_{name}{suffix}")
+
+            print(f"copying {source} ({info['url']}) to {target}")
+            shutil.copy(source, target)
+            downloads.append(os.path.relpath(target, start=output_dir))
+
+        return downloads
+
+    def _log_skipped_downloads(self, downloads_root: str) -> None:
+        """Name every other file Chrome left in the download folders, so a scan's
+        stdout shows what was not reported. proxy_ext_dir is SeleniumBase's proxy
+        extension and holds the proxy credentials: never descend into it."""
+        copied = set(self.page_downloads)
+        for dir_path, dir_names, file_names in os.walk(downloads_root):
+            dir_names[:] = [d for d in dir_names if d != "proxy_ext_dir"]
+            for file_name in file_names:
+                if file_name.endswith(".lock") or file_name.removesuffix(".crdownload") in copied:
+                    continue
+                path = os.path.join(dir_path, file_name)
+                print(f"not a page download, skipped: {path} ({os.path.getsize(path)} bytes)")
+
     def bypass_recaptcha(self, sb: SB):
         searches = ["Please complete the security check to access the website."]
         page_source = sb.cdp.get_page_source()
@@ -1578,6 +1658,14 @@ class Scanner:
                 print(f"page settled after {waited:.1f}s (DOM stable)")
                 return
         print(f"page settle timeout after {timeout}s, proceeding anyway")
+
+    def _capture_document_url(self, sb) -> None:
+        """Record the URL Chrome is showing, for metrics.json. Called right
+        before the DOM capture so the two describe the same document."""
+        try:
+            self.document_url = sb.cdp.get_current_url()
+        except Exception as e:
+            print(f"failed to read the current url: {e}")
 
     def _wait_for_network_quiescence(
         self,
@@ -1906,6 +1994,7 @@ class Scanner:
                 # response is logged this reads as a rendered page, so an
                 # interrupted navigation still flushes whatever we have.
                 interrupted_rendered_page = self.top_level_is_rendered_page()
+                self._capture_document_url(sb)
                 if interrupted_rendered_page:
                     try:
                         with open(os.path.join(output_dir, "dom.html"), "w") as fp:
@@ -1971,6 +2060,10 @@ class Scanner:
             sb.cdp.add_handler(
                 mycdp.network.WebSocketClosed, self.websocket_closed_handler
             )
+
+            sb.cdp.add_handler(mycdp.browser.DownloadWillBegin, self.download_will_begin_handler)
+            sb.cdp.add_handler(mycdp.browser.DownloadProgress, self.download_progress_handler)
+            self._route_downloads(sb, os.path.join(sb.get_downloads_folder(), "page_downloads"))
 
             # Auto-attach to Worker/ServiceWorker targets to inject stealth code.
             # NOTE: waitForDebuggerOnStart must be False. When True, Chrome pauses
@@ -2140,6 +2233,7 @@ class Scanner:
             # navigation completed and _wait_for_network_quiescence ran above), so
             # the content type is known without re-fetching anything.
             top_level_content_type = self.top_level_content_type()
+            self._capture_document_url(sb)
 
             # get the screenshot
             if not is_rendered_page:
@@ -2257,25 +2351,8 @@ class Scanner:
                         f"failed to append websocket block for {ws.get('url')}: {e}"
                     )
 
-            downloads = []
-            downloads_dir = os.path.join(output_dir, "downloads")
-            os.makedirs(downloads_dir, exist_ok=True)
-            for dir_path, dir_names, file_names in os.walk(sb.get_downloads_folder()):
-                # skip SeleniumBase proxy extension directory (contains credentials)
-                dir_names[:] = [d for d in dir_names if d != "proxy_ext_dir"]
-                if "proxy_ext_dir" in Path(dir_path).parts:
-                    continue
-                for file_name in file_names:
-                    if file_name.endswith(".lock"):
-                        continue
-
-                    source_file_path = os.path.join(dir_path, file_name)
-                    target_file_path = os.path.join(downloads_dir, file_name)
-                    print(f"copying {source_file_path} to {target_file_path}")
-                    shutil.copy(source_file_path, target_file_path)
-                    downloads.append(
-                        os.path.relpath(target_file_path, start=output_dir)
-                    )
+            downloads = self._collect_page_downloads(output_dir)
+            self._log_skipped_downloads(sb.get_downloads_folder())
 
         return ScanResult(
             url=url,
