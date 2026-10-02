@@ -190,7 +190,8 @@ crash_reporting:
 ```
 
 The built-in `s3` backend talks to an S3-compatible endpoint with a static access key and secret
-(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block). A deployment whose
+(`saq/storage/factory.py::_create_s3_storage` reads the top-level `s3:` block, including `secure`,
+`cert_check` and `region`). A deployment whose
 object store authenticates some other way — an IAM instance role, STS, a signing proxy — supplies
 its own backend instead, through the same plugin convention `analysis_cache.blob_store` uses:
 

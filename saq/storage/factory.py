@@ -9,6 +9,7 @@ and pluggable backends loaded from configuration (storage.target: custom).
 import importlib
 import logging
 import os
+from typing import Optional
 
 from saq.configuration.config import get_config
 from saq.storage.adapter import StorageAdapter
@@ -158,12 +159,15 @@ class StorageFactory:
         except (ValueError, TypeError):
             raise StorageError(f"invalid S3 port configuration: {port}")
 
+        # the same TLS, certificate and region settings get_s3_client() honors
         return StorageFactory.create_storage_with_config(
             host=host,
             port=port_int,
             access_key=access_key,
             secret_key=secret_key,
-            secure=False,
+            secure=s3_config.secure,
+            region=s3_config.region,
+            verify=s3_config.cert_check,
         )
 
     @staticmethod
@@ -173,6 +177,8 @@ class StorageFactory:
         access_key: str,
         secret_key: str,
         secure: bool = False,
+        region: Optional[str] = None,
+        verify: bool = True,
     ) -> StorageAdapter:
         """
         Create a storage adapter with explicit S3 configuration.
@@ -183,6 +189,8 @@ class StorageFactory:
             access_key: S3 access key
             secret_key: S3 secret key
             secure: Whether to use HTTPS (default: False)
+            region: S3 region (optional)
+            verify: Whether to verify the server's TLS certificate (default: True)
 
         Returns:
             StorageAdapter: A configured storage adapter
@@ -199,6 +207,8 @@ class StorageFactory:
                 access_key=access_key,
                 secret_key=secret_key,
                 secure=secure,
+                region=region,
+                config={"verify": verify},
             )
 
             storage_adapter = StorageAdapter(s3_storage)

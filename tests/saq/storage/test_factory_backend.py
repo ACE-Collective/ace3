@@ -129,3 +129,37 @@ def test_backend_without_get_config_class_is_rejected():
     with patch("saq.storage.factory.get_config", return_value=_config(backend=spec)):
         with pytest.raises(StorageError, match="get_config_class"):
             StorageFactory.get_storage_system()
+
+
+def _s3_config(**overrides):
+    from saq.configuration.schema import S3Config
+
+    class _Config:
+        storage = StorageConfig(target="s3")
+        s3 = S3Config(**{
+            "host": "s3.example", "port": 443, "access_key": "key", "secret_key": "secret",
+            "secure": True, "cert_check": True, "region": "us-east-2", **overrides,
+        })
+
+    return _Config()
+
+
+@pytest.mark.parametrize("secure, cert_check, scheme", [
+    (True, True, "https"),
+    (True, False, "https"),
+    (False, True, "http"),
+])
+def test_s3_backend_honors_tls_cert_check_and_region(secure, cert_check, scheme):
+    """target: s3 builds its client from the same s3 settings get_s3_client() honors: it used
+    to hardcode plain HTTP and ignore cert_check and region (F-13)."""
+    pytest.importorskip("boto3")
+    config = _s3_config(secure=secure, cert_check=cert_check)
+    with patch("saq.storage.factory.get_config", return_value=config), \
+            patch("saq.storage.s3.get_config", return_value=config), \
+            patch("saq.storage.s3.boto3") as mock_boto3:
+        StorageFactory.get_storage_system()
+
+    kwargs = mock_boto3.client.call_args.kwargs
+    assert kwargs["endpoint_url"] == f"{scheme}://s3.example:443"
+    assert kwargs["verify"] is cert_check
+    assert kwargs["region_name"] == "us-east-2"
