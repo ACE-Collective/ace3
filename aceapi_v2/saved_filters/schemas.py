@@ -1,73 +1,27 @@
 """Saved filter schemas for ACE API v2."""
 
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional
 
-import pytz
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from saq.analysis.module_path import IS_MODULE_PATH
-from saq.gui.detection_point_value import normalize_detection_point_value
-from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES
-from saq.util.relative_time import parse_date_range
+# FilterEntry is the alert screen's entry model; it is re-exported here because the search API
+# and the Flask views import it from this module
+from saq.gui.filter_entry import FilterEntry, FilterEntryBase
+
+__all__ = [
+    "FilterEntry",
+    "FilterEntryBase",
+    "QuickFilterOrder",
+    "SavedFilterCreate",
+    "SavedFilterRead",
+    "SavedFilterUpdate",
+    "ScratchFilterWrite",
+    "SCRATCH_KINDS",
+]
 
 # the row kinds a client is allowed to write directly
 SCRATCH_KINDS = ("working", "temp")
-
-
-class FilterEntry(BaseModel):
-    """One entry of a filter list -- the {name, inverted, values} shape the GUI's filter
-    editor produces, the database stores, and a share URL encodes.
-
-    This is the single validation gate for all three doors: a modal save, an API call, and
-    a hand-edited wiki link are all held to the same standard."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    name: str = Field(description="a filter name supported by create_filter()")
-    inverted: bool = Field(default=False, description="negate this filter")
-    # str for every filter except Observable, whose values are [type, value] pairs
-    values: list[Union[str, list[str]]] = Field(min_length=1, description="the values to filter on")
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        if value not in FILTER_NAMES:
-            raise ValueError(f"unknown filter name {value!r} (expected one of {', '.join(sorted(FILTER_NAMES))})")
-
-        return value
-
-    @field_validator("values")
-    @classmethod
-    def validate_values(cls, values: list, info) -> list:
-        """Reject an unparseable date token, detection point value or analysis module path at
-        WRITE time.
-        """
-        if info.data.get("name") == "Analysis":
-            for value in values:
-                if not isinstance(value, str) or not IS_MODULE_PATH(value):
-                    raise ValueError(f"analysis values must be module paths (module:Class[:instance]), got {value!r}")
-            return values
-
-        if info.data.get("name") == "Detection Point":
-            if not all(isinstance(value, str) for value in values):
-                raise ValueError(f"detection point values must be strings, got {values!r}")
-            # normalize_detection_point_value raises ValueError, which pydantic reports
-            return [normalize_detection_point_value(value) for value in values]
-
-        if info.data.get("name") not in DATE_RANGE_FILTER_NAMES:
-            return values
-
-        now = datetime.now(pytz.utc)
-        for value in values:
-            if not isinstance(value, str):
-                raise ValueError(f"date range value must be a string, got {value!r}")
-            try:
-                parse_date_range(value, now=now, tz=pytz.utc)
-            except ValueError as e:
-                raise ValueError(f"invalid date range {value!r}: {e}") from None
-
-        return values
 
 
 class SavedFilterRead(BaseModel):
@@ -78,10 +32,11 @@ class SavedFilterRead(BaseModel):
     # and touching a lazy relationship in a Jinja template would raise at render time.
 
     uuid: str
+    screen: str
     kind: str
     name: Optional[str] = None
     description: Optional[str] = None
-    filters: list[FilterEntry]
+    filters: list[FilterEntryBase]
     quick_filter_order: Optional[int] = None
     quick_filter_indicator: bool = False
     owner_id: int
@@ -90,12 +45,17 @@ class SavedFilterRead(BaseModel):
     updated_at: datetime
 
 
+# The request models below check only the SHAPE of their filters (FilterEntryBase): which
+# names and values are valid depends on the screen the filter belongs to, which the body does
+# not carry, so the service validates them against that screen (FilterScreen.validate_entries).
+
+
 class SavedFilterCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=1024)
-    filters: list[FilterEntry] = Field(min_length=1)
+    filters: list[FilterEntryBase] = Field(min_length=1)
     quick_filter: bool = Field(default=False, description="pin as a quick filter badge")
     quick_filter_indicator: bool = Field(default=False, description="show an alert count on the badge")
 
@@ -105,7 +65,7 @@ class SavedFilterUpdate(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=1024)
-    filters: Optional[list[FilterEntry]] = Field(default=None, min_length=1)
+    filters: Optional[list[FilterEntryBase]] = Field(default=None, min_length=1)
     quick_filter_indicator: Optional[bool] = None
 
 
@@ -123,5 +83,5 @@ class ScratchFilterWrite(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    filters: list[FilterEntry] = Field(default_factory=list)
+    filters: list[FilterEntryBase] = Field(default_factory=list)
     label: Optional[str] = Field(default=None, max_length=1024)

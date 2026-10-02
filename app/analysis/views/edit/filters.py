@@ -31,6 +31,7 @@ from aceapi_v2.saved_filters.schemas import (
 )
 from aceapi_v2.saved_filters.service import SavedFilterNameConflict
 from aceapi_v2.sync import run_async_with_session
+from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_legacy_filter_json, encode_filter_query
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
 
@@ -251,7 +252,8 @@ def create_saved_filter():
 
     try:
         saved = run_async_with_session(
-            saved_filters_service.create_saved_filter, current_user_id(), body)
+            saved_filters_service.create_saved_filter, current_user_id(), body,
+            screen=ALERTS_SCREEN.name)
     except SavedFilterNameConflict as e:
         return (str(e), 409)
 
@@ -326,7 +328,8 @@ def set_quick_filters():
     """Set which saved filters appear as badges, and in what order, in one call."""
     try:
         order = QuickFilterOrder(filter_uuids=request.form.getlist('filter_uuids'))
-        run_async_with_session(saved_filters_service.set_quick_filters, current_user_id(), order)
+        run_async_with_session(
+            saved_filters_service.set_quick_filters, current_user_id(), order, screen=ALERTS_SCREEN.name)
     except (ValidationError, ValueError) as e:
         return (f"Could not update quick filters: {e}", 400)
 
@@ -351,7 +354,8 @@ def saved_filter_link(filter_uuid):
     The URL carries the filter itself, so it keeps working after this row is renamed,
     edited, or deleted -- which is exactly why links are not row ids."""
     saved = run_async_with_session(
-        saved_filters_service.get_saved_filter, filter_uuid, current_user_id())
+        saved_filters_service.get_saved_filter, filter_uuid, current_user_id(),
+        screen=ALERTS_SCREEN.name)
     if saved is None:
         return ('', 404)
 
@@ -367,7 +371,8 @@ def saved_filters_modal_body():
     """The Manage Filters modal body, refetched after each change so the modal updates
     without a page reload."""
     saved = run_async_with_session(
-        saved_filters_service.get_saved_filters_for_user, current_user_id())
+        saved_filters_service.get_saved_filters_for_user, current_user_id(),
+        screen=ALERTS_SCREEN.name)
     return render_template('analysis/_saved_filters_table.html', saved_filters=saved)
 
 

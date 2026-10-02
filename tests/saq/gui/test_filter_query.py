@@ -340,3 +340,37 @@ class TestHelpers:
 
     def test_filter_alert_uuids_with_nothing_given(self):
         assert filter_alert_uuids([], [], entity=Alert, tz=pytz.utc, locations=None) == []
+
+
+class TestAliasedEntity:
+    """The mapping-table filters correlate their EXISTS to the entity the outer query selects.
+    They used to name `Alert`, which only worked because every caller selected `Alert` itself
+    or `GUIAlert` on the same table: against an alias, the subquery stopped correlating and
+    matched every alert as soon as any alert matched."""
+
+    @staticmethod
+    def _aliased_uuids(filters):
+        from sqlalchemy.orm import aliased
+
+        entity = aliased(Alert)
+        query = build_alert_query(filters, entity=entity, tz=pytz.utc, locations=None)
+        return {row[0] for row in query.with_entities(entity.uuid).distinct()}
+
+    def test_tag(self, corpus):
+        _, tagged, plain = corpus
+        assert self._aliased_uuids([{"name": "Tag", "inverted": False, "values": ["credential-harvest"]}]) == {tagged.uuid}
+        inverted = self._aliased_uuids([{"name": "Tag", "inverted": True, "values": ["credential-harvest"]}])
+        assert plain.uuid in inverted and tagged.uuid not in inverted
+
+    def test_observable(self, corpus):
+        signed, _, _ = corpus
+        assert self._aliased_uuids([{"name": "Observable", "inverted": False,
+                                     "values": [["signature_id", SIGNATURE_UUID]]}]) == {signed.uuid}
+
+    def test_detection_point(self, detections):
+        v1, v2, _, _ = detections
+        assert self._aliased_uuids(_detection_filter(SIGNATURE_UUID)) == {v1.uuid, v2.uuid}
+
+    def test_analysis(self, analyzed):
+        qr, qr_and_urls, _, _ = analyzed
+        assert self._aliased_uuids(_analysis_filter(QR_CODE_ANALYSIS)) == {qr.uuid, qr_and_urls.uuid}

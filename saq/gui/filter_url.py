@@ -25,18 +25,14 @@ from urllib.parse import quote, unquote
 
 from saq.gui.filter_names import (
     FILTER_NAMES_BY_SLUG,
-    FILTER_SLUGS,
     LEGACY_FILTER_NAME_ALIASES,
 )
+from saq.gui.filter_screens import ALERTS_SCREEN, FilterScreen
 
 # Everything except the three structural characters survives unescaped. quote() already
 # leaves unreserved characters alone; safe="" makes it escape ':' and ',' too, and it
 # always escapes '%'.
 _VALUE_SAFE = ""
-
-# filters whose values are [type, value] pairs rather than plain strings
-_PAIR_FILTER_NAMES = frozenset(["Observable"])
-
 
 def _is_empty(value) -> bool:
     if isinstance(value, (list, tuple)):
@@ -49,8 +45,8 @@ class FilterQueryError(ValueError):
     """A filter query parameter is malformed -- a broken link, not merely an outdated one."""
 
 
-def _encode_value(name: str, value) -> str:
-    if name in _PAIR_FILTER_NAMES:
+def _encode_value(name: str, value, pair_filter_names: frozenset) -> str:
+    if name in pair_filter_names:
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             raise FilterQueryError(f"{name} value must be a [type, value] pair, got {value!r}")
         # the type/value colon stays literal so nested colons in the value are unambiguous
@@ -62,8 +58,8 @@ def _encode_value(name: str, value) -> str:
     return quote("" if value is None else str(value), safe=_VALUE_SAFE)
 
 
-def _decode_value(name: str, token: str):
-    if name in _PAIR_FILTER_NAMES:
+def _decode_value(name: str, token: str, pair_filter_names: frozenset):
+    if name in pair_filter_names:
         observable_type, separator, observable_value = token.partition(":")
         if not separator:
             raise FilterQueryError(
@@ -73,8 +69,10 @@ def _decode_value(name: str, token: str):
     return unquote(token)
 
 
-def encode_filter_query(filters: list) -> list[str]:
-    """Render a filter list as the `f` query parameter values for a share link."""
+def encode_filter_query(filters: list, *, screen: FilterScreen = ALERTS_SCREEN) -> list[str]:
+    """Render a filter list as the `f` query parameter values for a share link, using the
+    screen's slugs."""
+    slugs = screen.slugs
     params = []
     for entry in filters or []:
         try:
@@ -83,14 +81,15 @@ def encode_filter_query(filters: list) -> list[str]:
         except (TypeError, KeyError) as e:
             raise FilterQueryError(f"malformed filter entry {entry!r}") from e
 
-        slug = FILTER_SLUGS.get(name)
+        slug = slugs.get(name)
         if slug is None:
             raise FilterQueryError(f"unknown filter name {name!r}")
 
         # An empty value is dropped rather than encoded. It is meaningless at best, and for
         # a TextFilter it is actively dangerous: `ilike '%%'` matches EVERYTHING, so a link
         # carrying one would show far more alerts than its author intended.
-        encoded = [_encode_value(name, value) for value in values if not _is_empty(value)]
+        encoded = [_encode_value(name, value, screen.pair_filter_names)
+                   for value in values if not _is_empty(value)]
         if not encoded:
             continue
 
@@ -100,8 +99,10 @@ def encode_filter_query(filters: list) -> list[str]:
     return params
 
 
-def decode_filter_query(params) -> tuple[list, list[str]]:
-    """Parse `f` query parameter values into a filter list."""
+def decode_filter_query(
+    params, *, screen: FilterScreen = ALERTS_SCREEN, strict: bool = False
+) -> tuple[list, list[str]]:
+    """Parse `f` query parameter values into a filter list, using the screen's slugs."""
 
     # Returns (filters, warnings). An unknown slug is SKIPPED and reported in warnings rather
     # than raising: a link written years ago may name a filter type that no longer exists,
@@ -112,6 +113,10 @@ def decode_filter_query(params) -> tuple[list, list[str]]:
     # A malformed parameter raises FilterQueryError: that is a broken link, not an outdated
     # one, and silently ignoring it would show the analyst the wrong alerts.
 
+    # strict=True raises on an unknown slug too. That is for API callers, which get an error
+    # response instead of a page that can show a warning banner.
+
+    names_by_slug = screen.names_by_slug
     filters = []
     warnings = []
 
@@ -131,8 +136,10 @@ def decode_filter_query(params) -> tuple[list, list[str]]:
         if not slug:
             raise FilterQueryError(f"malformed filter parameter {param!r}: empty filter name")
 
-        name = FILTER_NAMES_BY_SLUG.get(slug.lower())
+        name = names_by_slug.get(slug.lower())
         if name is None:
+            if strict:
+                raise FilterQueryError(f"unknown filter {slug!r}")
             warnings.append(
                 f"This link uses a filter that no longer exists ({slug!r}); "
                 f"it was skipped and the remaining filters were applied.")
@@ -147,7 +154,7 @@ def decode_filter_query(params) -> tuple[list, list[str]]:
         filters.append({
             "name": name,
             "inverted": inverted,
-            "values": [_decode_value(name, token) for token in tokens],
+            "values": [_decode_value(name, token, screen.pair_filter_names) for token in tokens],
         })
 
     return filters, warnings
