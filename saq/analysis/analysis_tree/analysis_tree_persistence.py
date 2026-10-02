@@ -257,30 +257,3 @@ class AnalysisTreePersistenceManager:
             observable._load_relationships()
 
         # dependency tracking is now handled by the dependency manager during deserialization
-
-    # Archive Operations
-    # ------------------------------------------------------------------------
-
-    def archive_analysis_details(self):
-        """Archives analysis details by clearing external details storage for all non-root analysis.
-        
-        This is typically used when archiving alerts to save space while retaining
-        observables and tags.
-        """
-        # Clear external details storage for all analysis (except root)
-        for analysis in self.query_engine.all_non_root_analysis:
-            self.reset_analysis_details(analysis)
-
-        # Clean up any files associated with observables that weren't part of the original alert
-        retained_files = set()
-        for observable in self.query_engine.all_observables:
-            # Skip the ones that came with the alert
-            if observable in self.root_analysis.observables:
-                continue
-
-            if observable.type == F_FILE:
-                file_path = getattr(observable, 'full_path', None)
-                if file_path:
-                    retained_files.add(file_path)
-
-        self.file_manager.archive_files(retained_files)

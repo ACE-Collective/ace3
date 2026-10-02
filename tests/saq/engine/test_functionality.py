@@ -3379,6 +3379,12 @@ def test_archive():
     # but the one that was added during analysis should NOT be there
     assert not additional_file_observable.exists
 
+    # and its bytes are freed: the hardcopy it was linked to is gone too, while the root file's
+    # hardcopy stays
+    hardcopy_dir = os.path.join(alert.root_analysis.storage_dir, "hardcopies")
+    assert not os.path.exists(os.path.join(hardcopy_dir, additional_file_observable.value))
+    assert os.path.exists(os.path.join(hardcopy_dir, root_file_observable.value))
+
 @pytest.mark.integration
 def test_cleanup():
     

@@ -18,7 +18,7 @@ from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.serialize.observable_serializer import KEY_TYPE as KEY_OBSERVABLE_TYPE
 from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE, RootAnalysisSerializer
-from saq.constants import F_FILE, QUEUE_DEFAULT
+from saq.constants import F_FILE, HARDCOPY_SUBDIR, QUEUE_DEFAULT
 from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.util import parse_event_time
 from saq.util.time import local_time
@@ -756,23 +756,17 @@ class RootAnalysis(Analysis):
         for _analysis in self.all_non_root_analysis:
             self.analysis_tree_manager.reset_analysis_details(_analysis)
 
+        # the files that came with the alert are kept: their files/ link and the hardcopy it points
+        # to. Everything else under files/ and hardcopies/ is derived and goes, which is what
+        # actually frees the bytes (every files/ entry is a hardlink to hardcopies/<sha256>).
         retained_files = set()
-        for observable in self.all_observables:
-            # skip the ones that came with the alert
-            if observable in self.observables:
+        for observable in self.observables:
+            if observable.type != F_FILE:
                 continue
 
-            if observable.type == F_FILE:
-                file_path = getattr(observable, 'full_path', None)
-                if file_path and os.path.exists(file_path):
-                    logging.debug("deleting observable file {}".format(file_path))
+            retained_files.add(observable.full_path)
+            retained_files.add(os.path.join(self.storage_dir, HARDCOPY_SUBDIR, observable.value))
 
-                    try:
-                        os.remove(file_path)
-                    except Exception as e:
-                        logging.error("unable to remove {}: {}".format(file_path, str(e)))
-
-        # use file manager for archiving
         if self.file_manager:
             self.file_manager.archive_files(retained_files)
 
