@@ -21,6 +21,7 @@ from saq.configuration.schema import HuntTypeConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     ANALYSIS_MODE_FILE,
+    ExecutionMode,
     F_COMMAND_LINE,
     F_HOSTNAME,
     F_IP,
@@ -5340,3 +5341,74 @@ def test_hunt_manager_unknown_version_without_git_dir(manager_kwargs, rules_dir)
     assert len(manager.hunts) > 0
     for hunt in manager.hunts:
         assert hunt.signature_version == SIGNATURE_VERSION_UNKNOWN
+
+
+def _completion_record(caplog, hunt):
+    (record,) = [r for r in caplog.records if r.getMessage() == f"completed hunt {hunt.name}"]
+    return record
+
+
+@pytest.mark.integration
+def test_completion_record_query_window(manager_kwargs, caplog):
+    """The completion record carries the window actually queried, after the offset."""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt(time_range='01:00:00', frequency='01:00:00', offset='00:30:00')
+    hunt.manager = manager
+    manager.add_hunt(hunt)
+
+    hunt.last_executed_time = local_time() - timedelta(hours=3)
+    hunt.last_end_time = local_time() - timedelta(hours=2)
+
+    with caplog.at_level(logging.INFO):
+        hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
+
+    record = _completion_record(caplog, hunt)
+    assert record.status == "success"
+    assert record.query_start == hunt.exec_start_time.isoformat()
+    assert record.query_end == hunt.exec_end_time.isoformat()
+    assert record.result_count == 0
+    assert record.submission_count == 0
+    assert record.hunt_type == "test_query"
+
+
+@pytest.mark.integration
+def test_completion_record_failed_query(manager_kwargs, caplog):
+    """A failed query still reports the window it tried, but no result count."""
+    manager = HuntManager(**manager_kwargs)
+    hunt = default_hunt()
+    hunt.manager = manager
+    manager.add_hunt(hunt)
+
+    attempted = {}
+
+    def _boom(start_time, end_time):
+        attempted["window"] = (start_time, end_time)
+        raise RuntimeError("query failed")
+
+    hunt.execute_query = _boom
+    with caplog.at_level(logging.INFO):
+        hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
+
+    record = _completion_record(caplog, hunt)
+    assert record.status == "error"
+    assert (record.query_start, record.query_end) == tuple(t.isoformat() for t in attempted["window"])
+    assert record.result_count is None
+    assert record.submission_count is None
+
+
+@pytest.mark.unit
+def test_completion_fields_reset_between_executions():
+    """A later execution never reports the previous execution's window."""
+    hunt = default_hunt()
+    hunt._last_query_start = hunt._last_query_end = local_time()
+    hunt._last_result_count = 5
+
+    def _boom(start_time, end_time):
+        raise RuntimeError("query failed")
+
+    hunt.manual_hunt = True
+    hunt.execute_query = _boom
+    with pytest.raises(RuntimeError):
+        hunt.execute(start_time=local_time() - timedelta(hours=1), end_time=local_time())
+
+    assert hunt.completion_fields()["result_count"] is None

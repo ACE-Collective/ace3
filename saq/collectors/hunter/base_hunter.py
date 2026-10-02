@@ -584,7 +584,7 @@ class Hunt:
                 logging.debug(f"clearing barrier for {self}")
                 self.startup_barrier.wait()
 
-            submission_list = None
+            result = None
             start_time = local_time()
             result_status = "success"
 
@@ -606,10 +606,26 @@ class Hunt:
                 try:
                     self.last_executed_time = local_time()
                     end_time = local_time()
+                    if result is not None:
+                        submission_count = len(result)
+                    elif result_status == "success":
+                        submission_count = 0
+                    else:
+                        submission_count = None
+
+                    # the operator's record of "did this hunt run over that window?"; its fields are
+                    # a contract (docs/HUNTS.md, Hunt completion record), so they go in extra={}
                     logging.info(
-                        "completed hunt %s (uuid=%s, type=%s) status=%s started=%s completed=%s duration=%.2fs",
-                        self.name, self.uuid, self.type, result_status, start_time, end_time,
-                        (end_time - start_time).total_seconds(),
+                        f"completed hunt {self.name}",
+                        extra={
+                            "hunt_uuid": self.uuid,
+                            "hunt_name": self.name,
+                            "hunt_type": self.type,
+                            "status": result_status,
+                            "submission_count": submission_count,
+                            "duration_ms": int((end_time - start_time).total_seconds() * 1000),
+                            **self.completion_fields(),
+                        },
                     )
                     self.startup_barrier.reset()
                 except Exception as e:
@@ -618,6 +634,13 @@ class Hunt:
                     report_exception()
                 finally:
                     self.execution_lock.release()
+
+    def completion_fields(self) -> dict:
+        """Returns the type-specific fields of the hunt completion record for the last execution.
+
+        Subclasses add what they know about the execution (a query hunt adds its query window and
+        result count). Keys must not collide with the standard LogRecord attributes."""
+        return {}
 
     def execute(self):
         """Called to execute the hunt. Returns a list of zero or more saq.collector.Submission objects."""
