@@ -13,7 +13,7 @@ from aceapi_v2.observables.schemas import (
     ObservableLookupResult,
     RecentAlertSummary,
 )
-from saq.constants import ANALYSIS_TYPE_FAQUEUE
+from saq.constants import ANALYSIS_TYPE_FAQUEUE, QUEUE_DEFAULT
 from saq.database.model import (
     Alert,
     Event,
@@ -102,9 +102,11 @@ async def get_interesting_observables_by_hashes(
 
 # batch prevalence lookup
 #
-# Alerts with alert_type 'faqueue' are excluded everywhere an alert is counted or listed, matching
-# saq/database/database_observable.py. Unlike that module's DispositionHistory, the histogram here
-# keeps OPEN and UNKNOWN so that total_alert_count == sum(disposition_counts.values()).
+# Only alerts in the default queue count, and alerts with alert_type 'faqueue' are excluded,
+# everywhere an alert is counted or listed, matching saq/database/database_observable.py: "have we
+# seen this before?" means real alerts, and other queues (test runs, special-purpose queues) would
+# inflate it. Unlike that module's DispositionHistory, the histogram here keeps OPEN and UNKNOWN so
+# that total_alert_count == sum(disposition_counts.values()).
 #
 # No cap on per-observable work: the aggregate is a covering range scan of the observable_mapping
 # PK plus PK probes into alerts (the same shape the GUI runs per alert render), and an exact
@@ -241,6 +243,7 @@ def _alert_predicates(
     predicates = [
         ObservableMapping.observable_id.in_(observable_ids),
         Alert.alert_type != ANALYSIS_TYPE_FAQUEUE,
+        Alert.queue == QUEUE_DEFAULT,
     ]
     if exclude_alert_ids:
         predicates.append(ObservableMapping.alert_id.notin_(exclude_alert_ids))
@@ -322,9 +325,9 @@ async def _load_event_memberships(
     observable_ids: list[int],
     exclude_alert_ids: list[int],
 ) -> dict[int, list[EventMembership]]:
-    """Distinct events over every matched alert. Never joins alerts (no faqueue/since filtering:
-    a faqueue alert is never mapped into an event, and an old event membership is still worth
-    surfacing)."""
+    """Distinct events over every matched alert. Never joins alerts (no queue/faqueue/since
+    filtering: a faqueue alert is never mapped into an event, an alert an analyst put in an event
+    is relevant whatever its queue, and an old event membership is still worth surfacing)."""
     events: dict[int, list[EventMembership]] = {}
     for chunk in chunked(observable_ids, CHUNK_SIZE):
         predicates = [ObservableMapping.observable_id.in_(chunk)]

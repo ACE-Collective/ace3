@@ -9,6 +9,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from saq.constants import QUEUE_DEFAULT
 from saq.database.model import (
     Alert,
     Event,
@@ -31,7 +32,7 @@ def _sha256(value: str) -> bytes:
 
 
 def _alert(disposition: str = "OPEN", alert_type: str = "test",
-           insert_date: datetime | None = None) -> Alert:
+           insert_date: datetime | None = None, queue: str = QUEUE_DEFAULT) -> Alert:
     return Alert(
         uuid=str(uuid4()),
         location="test-location",
@@ -41,6 +42,7 @@ def _alert(disposition: str = "OPEN", alert_type: str = "test",
         alert_type=alert_type,
         disposition=disposition,
         insert_date=insert_date or datetime(2026, 1, 1, 12, 0, 0),
+        queue=queue,
     )
 
 
@@ -498,6 +500,43 @@ class TestObservableLookup:
         # the faqueue alert is also absent from recent alerts
         recent_uuids = {a["uuid"] for a in result["recent_alerts"]}
         assert alerts[5].uuid not in recent_uuids
+
+    @pytest.mark.asyncio
+    async def test_only_the_default_queue_counts(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        """Prevalence follows the observable disposition history (PR #587): alerts in other
+        queues (test runs, special-purpose queues) are not "seen before"."""
+        default = _alert("DELIVERY", insert_date=datetime(2026, 1, 1))
+        other = _alert("FALSE_POSITIVE", insert_date=datetime(2026, 2, 1), queue="external")
+        await _seed_mapped_alerts(session, _observable("ipv4", "203.0.113.21"), [default, other])
+
+        response = await client.post(
+            "/observables/lookup", json=_lookup_body(("ipv4", "203.0.113.21")))
+        (result,) = response.json()["results"]
+        assert result["found"] is True
+        assert result["total_alert_count"] == 1
+        assert result["disposition_counts"] == {"DELIVERY": 1}
+        assert result["last_seen"].startswith("2026-01-01")
+        assert [a["uuid"] for a in result["recent_alerts"]] == [default.uuid]
+
+    @pytest.mark.asyncio
+    async def test_only_other_queues_is_found_with_zero_count(
+        self, session: AsyncSession, client: AsyncClient
+    ):
+        other = _alert("DELIVERY", queue="external")
+        await _seed_mapped_alerts(session, _observable("ipv4", "203.0.113.22"), [other])
+        # an analyst put the alert in an event: that is relevant whatever the alert's queue
+        await _event(session, "event-external", await _event_lookups(session), [other])
+
+        response = await client.post(
+            "/observables/lookup", json=_lookup_body(("ipv4", "203.0.113.22")))
+        (result,) = response.json()["results"]
+        assert result["found"] is True
+        assert result["total_alert_count"] == 0
+        assert result["disposition_counts"] == {}
+        assert result["recent_alerts"] == []
+        assert [e["name"] for e in result["events"]] == ["event-external"]
 
     @pytest.mark.asyncio
     async def test_exclude_alert_uuids(self, session: AsyncSession, client: AsyncClient):

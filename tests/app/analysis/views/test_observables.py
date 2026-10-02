@@ -219,3 +219,78 @@ class TestObservablesView:
         assert response.status_code == 200
         # The count functionality is tested through successful execution
         # The actual count value is added to the observable object during processing
+    def test_observables_count_only_default_queue(self, web_client):
+        """The "seen N times" count follows the disposition history rule: only alerts in the
+        default queue count, and faqueue alerts never do."""
+        db = get_db()
+
+        def _alert(uuid, queue="default", alert_type="test"):
+            alert = GUIAlert()
+            alert.uuid = uuid
+            alert.storage_dir = f'/tmp/{uuid}'
+            alert.tool = 'test'
+            alert.tool_instance = 'test'
+            alert.alert_type = alert_type
+            alert.description = 'Test alert'
+            alert.priority = 1
+            alert.location = 'test'
+            alert.insert_date = '2023-01-01 00:00:00'
+            alert.queue = queue
+            db.add(alert)
+            return alert
+
+        viewed = _alert('test-alert-uuid-queue-1')
+        alerts = [
+            viewed,
+            _alert('test-alert-uuid-queue-2'),
+            _alert('test-alert-uuid-queue-3', queue='external'),
+            _alert('test-alert-uuid-queue-4', alert_type='faqueue'),
+        ]
+        db.flush()
+
+        observable = Observable()
+        observable.type = 'ipv4'
+        observable.value = '192.168.1.200'.encode('utf-8')
+        observable.sha256 = hashlib.sha256(observable.value).digest()
+        db.add(observable)
+        db.flush()
+
+        for alert in alerts:
+            db.add(ObservableMapping(alert_id=alert.id, observable_id=observable.id))
+        db.commit()
+
+        response = web_client.get(url_for('analysis.observables', alert_uuid=viewed.uuid))
+
+        assert response.status_code == 200
+        assert '192.168.1.200 (2)' in response.get_data(as_text=True)
+
+    def test_observables_count_zero_when_only_other_queues(self, web_client):
+        """An alert outside the default queue still lists its observables, with a count of 0."""
+        db = get_db()
+        alert = GUIAlert()
+        alert.uuid = 'test-alert-uuid-queue-5'
+        alert.storage_dir = '/tmp/test-queue-5'
+        alert.tool = 'test'
+        alert.tool_instance = 'test'
+        alert.alert_type = 'test'
+        alert.description = 'Test alert'
+        alert.priority = 1
+        alert.location = 'test'
+        alert.insert_date = '2023-01-01 00:00:00'
+        alert.queue = 'external'
+        db.add(alert)
+        db.flush()
+
+        observable = Observable()
+        observable.type = 'ipv4'
+        observable.value = '192.168.1.201'.encode('utf-8')
+        observable.sha256 = hashlib.sha256(observable.value).digest()
+        db.add(observable)
+        db.flush()
+        db.add(ObservableMapping(alert_id=alert.id, observable_id=observable.id))
+        db.commit()
+
+        response = web_client.get(url_for('analysis.observables', alert_uuid=alert.uuid))
+
+        assert response.status_code == 200
+        assert '192.168.1.201 (0)' in response.get_data(as_text=True)
