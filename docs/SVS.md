@@ -82,6 +82,7 @@ Only what an analyst explicitly set is stored. Everything else is derived when r
 ```
 effective(dp) =
     NULL                        if class(alert.disposition) is unclassified
+    NULL                        if the alert is attributed to a run that is not Reviewed
     FP   (inherited)            if class(alert.disposition) == fp         # overrides are masked
     override (explicit)         if an override row exists                 # tp alerts only
     TP   (inherited_single)     if the alert has one signature
@@ -90,6 +91,13 @@ effective(dp) =
 
 - **On an FP alert every verdict is FP.** If the alert itself was wrong, the fix is to correct its
   disposition (the review path), not to override a detection. [DP-3]
+- **An alert from a run that is not Reviewed has no verdicts.** *Close* sets `SIMULATED` on
+  canceled, error and discarded runs too (Part 3), and `SIMULATED` is tp, so without this rule every
+  detection on those alerts would count as TP in per-signature counts and in the detection-points
+  API, although nothing was learned from the run. The check is one join from `svs_attributions` to
+  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review or close
+  writes for ignored detections are stored either way and take effect only once the run is
+  Reviewed. An alert with no attribution is unaffected.
 - **Overrides survive disposition changes.** A TP→FP→TP correction restores them.
 - **On a TP alert every detection inherits TP.** `inherited_multi` marks inheritance on an alert
   where several signatures fired: 37% of TP alerts with a YARA hit, in production data from
@@ -143,8 +151,9 @@ orphans every override. [DP-7]
 ### Capture
 
 A module, `svs_yara_sample_capture`, runs in `analysis_mode_dispositioned`. Both disposition
-writers already requeue into that mode, and today it runs nothing. The module reads
-`alerts.disposition` from the database, because roots don't carry it. [YR-5]
+writers already requeue into that mode, run review and close set `SIMULATED` through one of them
+(Part 3), and today the mode runs nothing by default. The module reads `alerts.disposition` from
+the database, because roots don't carry it. [YR-5]
 
 - **What gets captured:** every YARA-matched file on an alert whose disposition classifies tp or
   fp, whatever the per-detection verdict. A verdict set later needs only a database write, never
@@ -249,7 +258,12 @@ and the `yara_scanner_v2` library (3.0.0) only compiles, tracks and filters rule
 uses it the way the module's fallback scanner does.
 - **Validations are a queue.** `service_svs` runs one scan at a time by default
   (`svs.yara.max_concurrent_validations`), and a result is cached per `(repository, base_sha,
-  head_sha, corpus version)`, so a CI retry does not rescan. [FR-13]
+  head_sha, corpus version)`, so a CI retry does not rescan. [FR-13] The **corpus version** is the
+  greatest `updated_at` over `svs_yara_captures`, `detection_point_verdicts`,
+  `svs_sample_retirements`, the sample deletion audit and the `alerts` rows the captures reference
+  (`alerts.updated_at`, Part 6). So a new capture, a relabel, a confirm, a retirement, a sample
+  deletion or a disposition correction changes the version and the next request rescans, and
+  nothing else does.
 - **Compile the way production loads.** The production loader compiles each file on its own and
   drops only a file that fails; then it compiles the survivors once per namespace, and if that
   fails (two files defining the same rule name, for instance) the whole ruleset is dropped and the
@@ -338,11 +352,12 @@ The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Ev
 | (timer) | Created → **Error** | `start` was never called within the configured time. |
 | (analyst) | Ended → **Reviewed** | Sign-off; Coverage counts only Reviewed runs. See Part 5 for its preconditions. |
 | (analyst) | Ended, Canceled, Error → **Closed** | Discards the run: its alerts are closed, nothing is learned from it. A reason is required on an Ended run. [MGT-3] |
-| (timer) | Canceled, Error → **Closed** | When the attribution window ends. Ended runs always wait for a person. |
+| (timer) | Canceled, Error → **Closed** | When the attribution window ends. An Error run that never started has no window and is Closed in the same transition. Ended runs always wait for a person. |
 
 **Cancel stops the run, not attribution.** The test may have run anyway, so a canceled run keeps
 attributing inside its attribution window. Otherwise its markers would surface as
-`MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts. [MGT-3]
+`MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts, so it is Closed at the
+transition, with the reason in its event log, and never waits in *Needs attention*. [MGT-3]
 
 **Timers run in one place.** `service_svs` runs as a single instance on the primary node, like the
 CAS cron tasks, and owns the run timers, the validation queue and the catalog refresh. Every timer
@@ -384,9 +399,12 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
   alert stays in its normal queue, is tagged `svs:marker_mismatch`, and gets a detection from a
   built-in signature. Both are added at the `POST_ANALYSIS` stage, which owns the root (see
   *Attribution and routing*), never at `PRE_INSERT`. A marker on a production host is exactly what
-  an analyst should see. [FR-3]
-- **Without a marker**, attribution falls back to target plus window, recorded with confidence
-  `context`. Context-only attribution also routes. [ART-5] It has no per-detection signal, so it
+  an analyst should see. [FR-3] **A disagreeing marker also ends attribution for that alert**: the
+  context fallback below never runs on it, otherwise an alert carrying run A's marker outside A's
+  window could be attributed by context to run B on the same target.
+- **Without any marker**, attribution falls back to target plus window, recorded with confidence
+  `context`. Context-only attribution also routes. [ART-5] An alert whose marker disagreed never
+  reaches this fallback. It has no per-detection signal, so it
   attributes **every** detection on the alert: a context-only alert is always `TEST?`, never
   `PARTIAL TEST`. It also requires exactly one candidate run. When two runs on the same target
   have overlapping windows, nothing is attributed and a WARNING record names both run UUIDs,
@@ -524,7 +542,10 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
 ### Test alerts downstream
 
 - **Disposition `SIMULATED`, class tp, ranked below `GRAYWARE` for event roll-up.** SVS sets it when
-  a run is *Reviewed* or *Closed*, on the run's fully attributed alerts. [D-16, MGT-3]
+  a run is *Reviewed* or *Closed*, on the run's fully attributed alerts, through the same
+  disposition writer analysts use. That writer requeues the alert into
+  `analysis_mode_dispositioned`, so capture (Part 2) runs on a reviewed run's alerts the way it
+  runs on any other. [D-16, MGT-3]
   - It is `analyst_selectable: false`: not in any modal, and rejected server-side.
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
@@ -535,15 +556,22 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   - Verdict chips on a `SIMULATED` alert are read-only; the run review owns them (Part 1). [FR-15]
   - `SIMULATED` is added to the engine's `stop_analysis_on_dispositions`: nothing needs further
     analysis of a test alert. [FR-7]
-- **Test alerts are deleted after `svs.simulated_days`** (default 30). Maintenance today archives
+- **Test alerts are archived after `svs.simulated_days`** (default 30), the way `FALSE_POSITIVE`
+  alerts are archived after `fp_days`, and they are **never deleted**. Maintenance today archives
   only `FALSE_POSITIVE` alerts and deletes only `IGNORE` ones, and `SIMULATED` alerts would be the
-  steadiest source of new alerts once the test program runs. Their samples are already in the
-  CAS, so the directories buy nothing. They are deleted, not archived. [FR-7]
+  steadiest source of new alerts once the test program runs. `archive()` frees the analysis
+  details and the derived files (the samples are already in the CAS) and keeps the row, its
+  disposition and its detection points, which is what the verdicts (Part 1), the sample labels
+  (Part 2) and the attributions derive from. Deleting the alert would orphan all three: every TP
+  sample from the test program would lose its label source. A reset is no alternative, because
+  `RootAnalysis.reset()` clears the disposition and the derived observables, which is the same
+  loss. [FR-7]
 - **Ignored detections are benign.** A run's ignored detections (launcher noise) get FP overrides
   when the run is reviewed or closed.
 - **YARA TP samples come from Reviewed runs only.** Because `SIMULATED` is tp, YARA hits in a
   reviewed run become TP samples through the normal capture. Capture skips alerts attributed to a
-  run in any other state (Part 2), so nothing is learned from a Closed, Canceled or Error run,
+  run in any other state (Part 2), and the verdict formula returns no verdict for them (Part 1),
+  so nothing is learned from a Closed, Canceled or Error run, not even a per-signature TP count,
   which is what *Close* promises. [FR-4]
 - **Test alerts stay out of observable history and prevalence.** Both count only the `default`
   queue. Disposition history already did (PR #587); prevalence is changed to match.
@@ -674,8 +702,9 @@ in its correlated subqueries. [FR-18, FR-30]
 - **Filters:** state; test; technique, including its parents; target; launcher; batch; date ranges;
   *has missing / possibly suppressed / candidates / late / context-only*; owner; reviewer; *has open
   alerts*.
-- **Default view, *Needs attention*:** Ended and not reviewed, Error, Created past its start
-  timeout, reviewed runs *changed since review*, and terminal runs that still hold open alerts.
+- **Default view, *Needs attention*:** Ended and not reviewed, Error, reviewed runs *changed since
+  review*, and terminal runs that still hold open alerts. A run Closed because `start` was never
+  called is found through the *state* and *reason* filters, not here.
   Its count is shown on the navigation entry.
 - **Bulk actions:** take ownership, cancel, close, export. Review is never a bulk action.
 - **Batches.** `batch_id` is a label, not a table. It is a filter and a group-by, and a grouped
@@ -883,7 +912,7 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | CAS (`saq/cas/`), **landed** | Sample storage, and later every byte store. The shared backend a multi-node site needs for `svs_samples` is the site's to provide | `docs/CAS.md`, FR-1 |
 | Correlation-mode submissions to a remote node get an `alerts` row | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
 | `transfer_work_target` carries the work item's `analysis_mode` | A `dispositioned` item pulled by another node ran in correlation mode, so capture silently did not run. Phase 2 | FR-5 |
-| `SIMULATED` alerts are deleted after `svs.simulated_days`; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts | FR-7 |
+| `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
 | Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
 | `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes | Prerequisites for the CAS | F-13, F-18 to F-20 |
 | `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`) | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
@@ -954,7 +983,7 @@ cas:
 
 svs:
   queue: svs
-  simulated_days: 30                # SIMULATED alerts are deleted after this [FR-7]
+  simulated_days: 30                # SIMULATED alerts are archived after this, like FP alerts after fp_days [FR-7]
   runs:
     start_timeout_minutes: 30
     observation_window: {slack_minutes: 30, floor_minutes: 60, ceiling_hours: 72}
@@ -1044,8 +1073,8 @@ test alerts, show smaller numbers.
 
 **Alerts from red-team test runs get their own queue and badge** (analysts; phase 4).
 - They go to the test queue with the disposition `SIMULATED`. Only ACE sets it, and it can't be
-  changed by hand; bulk actions skip those alerts. They can't be reset or re-analyzed either, and
-  they are deleted after about 30 days.
+  changed by hand; bulk actions skip those alerts. They can't be reset or re-analyzed either. After
+  about 30 days they are archived like false positives: the analysis details go, the alert stays.
 - Badges: `TEST` (nothing to do), `TEST?` (nothing unless it looks wrong; one click marks it *not a
   test*), `PARTIAL TEST` (triage the non-test detections as usual), and `MARKER MISMATCH`
   (**treat as suspicious and investigate**).
@@ -1065,8 +1094,8 @@ phase 4).
 **Alerts from canceled, failed or discarded runs are closed as `SIMULATED` too** (analysts,
 operators; phase 4). A canceled run still claims its alerts, so they don't reach the normal queue
 as `MARKER MISMATCH`. Closing a run, by hand or when its attribution window ends, closes its
-alerts without learning anything from it: its YARA hits don't become samples and its signatures
-don't become expectations.
+alerts without learning anything from it: its YARA hits don't become samples, its signatures
+don't become expectations, and its detections carry no verdict.
 
 **All alert, detection and test data can be pulled through the API** (anyone who builds reports;
 phases 0–5).
