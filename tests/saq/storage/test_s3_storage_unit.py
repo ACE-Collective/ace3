@@ -98,3 +98,39 @@ class TestEnsureBucketExistsMemo:
         assert storage.client.head_bucket.call_count == 3
         assert "forbidden" not in storage._known_buckets
         storage.client.create_bucket.assert_not_called()
+
+
+class TestObjectExists:
+    """Only "not found" means False; anything else is an error, not a missing object (F-18)."""
+
+    @pytest.mark.parametrize("code", ["404", "NotFound", "NoSuchKey"])
+    def test_not_found_is_false(self, storage, code):
+        storage.client.head_object.side_effect = _client_error(code)
+        assert storage.object_exists("bucket", "key") is False
+
+    def test_found_is_true(self, storage):
+        storage.client.head_object.return_value = {}
+        assert storage.object_exists("bucket", "key") is True
+
+    @pytest.mark.parametrize("code", ["403", "AccessDenied", "500", "SlowDown"])
+    def test_other_client_errors_raise(self, storage, code):
+        from saq.storage.error import StorageError
+
+        storage.client.head_object.side_effect = _client_error(code)
+        with pytest.raises(StorageError):
+            storage.object_exists("bucket", "key")
+
+    def test_connection_error_raises(self, storage):
+        from saq.storage.error import StorageError
+
+        storage.client.head_object.side_effect = botocore.exceptions.EndpointConnectionError(
+            endpoint_url="https://s3.local:9000")
+        with pytest.raises(StorageError):
+            storage.object_exists("bucket", "key")
+
+
+class TestGetObjectInfoNotFound:
+    @pytest.mark.parametrize("code", ["404", "NotFound", "NoSuchKey"])
+    def test_not_found_is_none(self, storage, code):
+        storage.client.head_object.side_effect = _client_error(code)
+        assert storage.get_object_info("bucket", "key") is None

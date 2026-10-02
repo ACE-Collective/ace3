@@ -31,6 +31,16 @@ def _require_boto3():
     if not HAS_BOTO3:
         raise StorageError("boto3 is required for S3 storage - install it with: pip install boto3")
 
+# the error codes S3 and S3-compatible servers use for "no such object": HEAD answers a bare
+# 404 (no body, so botocore reports the status code or NotFound), GET answers NoSuchKey
+_NOT_FOUND_CODES = frozenset({"404", "NotFound", "NoSuchKey"})
+
+
+def _is_not_found(error: Exception) -> bool:
+    """True when a botocore ClientError means the object does not exist (and nothing else does:
+    a 403 or a 5xx is an error, not a missing object)."""
+    return error.response.get("Error", {}).get("Code") in _NOT_FOUND_CODES
+
 @dataclass
 class S3Credentials:
     access_key: str
@@ -313,7 +323,7 @@ class S3Storage(StorageInterface):
             try:
                 self.client.head_object(Bucket=bucket, Key=remote_path)
             except botocore.exceptions.ClientError as e:
-                if e.response["Error"]["Code"] == "404":
+                if _is_not_found(e):
                     raise FileNotFoundError(f"file not found in storage: {bucket}/{remote_path}")
                 raise
 
@@ -493,17 +503,25 @@ class S3Storage(StorageInterface):
             remote_path: Remote path of the object to check
 
         Returns:
-            bool: True if object exists, False otherwise
+            bool: True if object exists, False if it does not
+
+        Raises:
+            StorageError: If existence cannot be determined (access denied, server error,
+                connection failure). Only "not found" means False.
         """
         try:
             self.client.head_object(Bucket=bucket, Key=remote_path)
             return True
         except botocore.exceptions.ClientError as e:
-            if e.response["Error"]["Code"] == "404":
+            if _is_not_found(e):
                 return False
-            # For other errors, log and return False
-            logging.warning("error checking if object exists %s/%s: %s", bucket, remote_path, e)
-            return False
+            error_msg = f"failed to check if object exists {bucket}/{remote_path}: {e}"
+            logging.error(error_msg)
+            raise StorageError(error_msg)
+        except botocore.exceptions.BotoCoreError as e:
+            error_msg = f"failed to check if object exists {bucket}/{remote_path}: {e}"
+            logging.error(error_msg)
+            raise StorageError(error_msg)
 
     def get_object_info(self, bucket: str, remote_path: str) -> Optional[dict]:
         """
@@ -527,7 +545,7 @@ class S3Storage(StorageInterface):
                 "metadata": response.get("Metadata", {}),
             }
         except botocore.exceptions.ClientError as e:
-            if e.response["Error"]["Code"] == "404":
+            if _is_not_found(e):
                 return None
             error_msg = f"failed to get object info for {bucket}/{remote_path}: {e}"
             logging.error(error_msg)

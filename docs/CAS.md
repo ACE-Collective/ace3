@@ -246,8 +246,7 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
   hardlink trick available: a plaintext object in a local pool is verified by re-hashing and then
   hardlinked out (`materialize`) or read in place (`open`), with no copy.
 - **S3.** Not implemented yet. When it is, it uses `saq.storage.s3.get_s3_client()`, which honors
-  `s3.secure`, `s3.cert_check` and `s3.region` (the storage factory currently does not, see
-  [F-13]).
+  `s3.secure`, `s3.cert_check` and `s3.region` (as the storage factory now does too [F-13]).
   - Conditional writes (`If-None-Match: *`) avoid redundant uploads. Where the object store
     doesn't support them, a redundant upload of identical content is harmless, because the index
     decides existence.
@@ -388,9 +387,10 @@ Step 2 is built and step 1 lands with SVS; the rest are not scheduled. [CAS-8]
 ## Prerequisites (phase 0)
 
 - The two `saq/crypto` fixes above shipped with the CAS. [F-20]
-- The `saq/storage` defects are separate and still open: `saq/storage/factory.py:166` hardcodes
-  `secure=False`; `S3Storage.object_exists` reports False on any error, including 403; the local
-  backend isn't atomic. The CAS does not use `saq/storage`, so they do not block it.
+- The `saq/storage` defects are fixed separately (the CAS does not use `saq/storage`): the
+  storage factory honors `s3.secure`, `s3.cert_check` and `s3.region`; `S3Storage.object_exists`
+  reports False only for a missing object and raises on a 403, a server error or a connection
+  failure; the local backend writes atomically and confines every path to its bucket.
   [F-13, F-18, F-19]
 
 ## Left for implementation
