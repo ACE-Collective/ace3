@@ -42,6 +42,7 @@ from sqlalchemy.dialects.mysql import (
     INTEGER as MYSQL_INTEGER,
     LONGBLOB,
     MEDIUMTEXT,
+    TIMESTAMP as MYSQL_TIMESTAMP,
     TINYINT,
 )
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -345,6 +346,19 @@ class Alert(Base):
     icon_url: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True)
+
+    # When the row last changed, for incremental pulls (GET /api/v2/alerts?changed_since=).
+    # The version token above is random and cannot be ordered, so this is its orderable twin:
+    # maintained by the server on every UPDATE of the row rather than at each of the call
+    # sites that rotate the version. Microsecond precision keeps the (updated_at, id) keyset
+    # from collapsing every change in one second onto one value. server_onupdate carries no
+    # DDL; see ObservableDetection.modified_at.
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
 
     # relationships
     disposition_user: Mapped[Optional["User"]] = relationship(

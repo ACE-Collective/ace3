@@ -30,7 +30,7 @@ Three things to know before changing any of this:
   parameter is missing. Plain subclasses with no ``__init__`` are the correct shape.
 """
 
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 
 
 class ZipFileResponse(FileResponse):
@@ -47,6 +47,18 @@ class TextFileResponse(FileResponse):
 
 class CsvResponse(PlainTextResponse):
     """Generated CSV text (the event export)."""
+
+    media_type = "text/csv"
+
+
+class NdjsonStreamResponse(StreamingResponse):
+    """A streamed export, one JSON object per line (the alert NDJSON export)."""
+
+    media_type = "application/x-ndjson"
+
+
+class CsvStreamResponse(StreamingResponse):
+    """A streamed CSV export (the alert CSV export). CsvResponse is for CSV built in memory."""
 
     media_type = "text/csv"
 

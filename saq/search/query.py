@@ -457,6 +457,16 @@ def _sql_post_filter(filters: SearchFilters, caller: Optional[PostFilter]) -> Op
     return post_filter
 
 
+def build_listing_query(filters: SearchFilters):
+    """The alert query for a filter-only request: the filter list (saq.gui.filter_query), the
+    typed filters and the node scoping in SearchFilters. One SQL path for every listing of
+    alerts: the search listing below pages it by offset, GET /api/v2/alerts by keyset."""
+    # locations are applied by apply_sql_filters, from SearchFilters
+    query = build_alert_query(
+        list(filters.filter_list), entity=Alert, tz=filters.timezone or pytz.utc, locations=None)
+    return apply_sql_filters(query, filters)
+
+
 def filter_listing(
     filters: SearchFilters,
     *,
@@ -475,16 +485,15 @@ def filter_listing(
     timings = timings if timings is not None else {}
     start = time.time()
 
-    # locations are applied by apply_sql_filters below, from SearchFilters
-    query = build_alert_query(
-        list(filters.filter_list), entity=Alert, tz=filters.timezone or pytz.utc, locations=None)
-    query = apply_sql_filters(query, filters)
+    query = build_listing_query(filters)
 
     total = get_db().execute(
         query.statement.with_only_columns(func.count(distinct(Alert.id)))).scalar() or 0
 
-    # GROUP BY rather than DISTINCT: the observable and tag joins fan out, and under
-    # ONLY_FULL_GROUP_BY mysql refuses to order a DISTINCT by a column that is not selected
+    # No filter fans the rows out today (the many-to-many filters are EXISTS subqueries and
+    # the joins are to-one), so the grouping is insurance. It is GROUP BY rather than DISTINCT
+    # because under ONLY_FULL_GROUP_BY mysql refuses to order a DISTINCT by a column that is
+    # not selected.
     rows = query.with_entities(Alert.uuid) \
         .group_by(Alert.id) \
         .order_by(Alert.insert_date.desc(), Alert.id.desc()) \

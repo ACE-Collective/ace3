@@ -20,7 +20,8 @@ f = [!] <slug> : <value> [, <value> ...]
 ```
 
 - One `f` parameter per filter. Separate parameters are **ANDed**; commas within one are
-  **ORed**.
+  **ORed**. Repeats of the same filter with the same polarity are merged into one before the
+  query runs, so `f=queue:a&f=queue:b` means either queue, exactly like `f=queue:a,b`.
 - A leading `!` inverts the filter (`!tag:whitelisted` = alerts *without* that tag).
 - Filters are named by a stable **slug**, not by the label shown in the GUI.
 
@@ -103,6 +104,35 @@ work for a whole team:
 ```
 f=queue:$USER_QUEUE&f=reviewed:UNREVIEWED
 ```
+
+## The same filters in the API
+
+`GET /api/v2/alerts` (permission `alert:read`) lists alerts as flat database rows for export
+and reporting, and takes these filters as repeated `f` query parameters, exactly as written in
+a link: copy the part of a manage-page URL after `?` and the API returns the same alerts. Two
+differences, both on purpose:
+
+- An unknown slug is a **422**, not a skipped filter with a warning: an API caller has no
+  banner to read the warning on, and a silently missing filter returns more alerts than asked
+  for.
+- Relative dates resolve in the `tz` parameter (default `UTC`) rather than the viewer's GUI
+  timezone. `$USER` and `$USER_QUEUE` resolve against the API key's user.
+
+The listing is scoped to the alerts this node shows, like the manage page, and does not leave
+test alerts out. Pages are keyset pages: follow `next_cursor` until it is `null`, and no alert
+is skipped or repeated while new ones arrive. Rows come in `id` order.
+
+`changed_since=<ISO time>` returns only the alerts whose row changed at or after that time,
+ordered by `(updated_at, id)`. `alerts.updated_at` is maintained by the database on every
+update of the row (a disposition, an owner, a comment, an analysis sync all rotate the row). A
+change is returned once it is a few seconds old, so that no transaction still in flight can
+commit an older timestamp behind a cursor already handed out. Delivery is at least once: a
+client that resumes from the last `updated_at` it saw may see a row again, never miss one.
+Alerts that existed before `updated_at` was added carry the time of that migration.
+
+`GET /api/v2/alerts/export/ndjson` and `GET /api/v2/alerts/export/csv` stream the whole result in
+one response, with the same parameters and order and no paging: one `AlertRow` per line, or a
+header line and one row per alert.
 
 ## The same slugs in the search box
 
