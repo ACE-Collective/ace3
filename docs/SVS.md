@@ -1,13 +1,15 @@
 # Signature Validation System (SVS)
 
 > **Status: agreed design, not implemented (2026-10-02; Parts 5 and 6 added in review rounds 8–10,
-> the pre-implementation review folded in on 2026-10-02).**
+> the pre-implementation review folded in and the design reconciled with the v3.0.121 release on
+> 2026-10-02).**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
 > reasoning and the alternatives that were rejected. `docs/SVS_FINAL_REVIEW.md` is the
 > pre-implementation review of this design against the code; `[FR-n]` IDs point there, and the
-> decisions on its items are written into this document. SVS stores its samples in the CAS
+> decisions on its items are written into this document. Its §7 (`[FR-25]` to `[FR-30]`) records
+> what the v3.0.121 release changed under the design. SVS stores its samples in the CAS
 > (`docs/CAS.md`).
 
 SVS answers two questions about ACE's detection signatures:
@@ -178,6 +180,25 @@ Each capture record stores: [YR-4]
 | yara-python and yara_scanner versions | Explains library-driven differences. |
 
 Rules without a `uuid` fall back to the shared built-in signature, so they are not captured. [YR-7]
+The signature inventory (`saq/signatures/loaders/yara.py`) lists only rules that have one, and
+gives each rule's `content_hash`, `modifiers` and `enabled` with the same helpers the scanner uses.
+It does not report two rules sharing a uuid: it keeps one. The validation's duplicate check (below)
+parses the head tree itself, or extends the inventory to report duplicates. [FR-27]
+
+**The YARA QA store is the precedent.** The yara service already keeps the files matched by rules
+in QA mode, and their full match records, in the encrypted `yara_qa` CAS pool, indexed in
+`yara_qa_matches` (`docs/YARA_QA.md`, `saq/yara_qa/store.py`). Capture is a second store of the
+same shape, not a second consumer of that one: QA records every match of a QA rule at scan time,
+in the service, keyed on `(rule uuid, rule version, sha256)`, capped and expiring; capture runs at
+disposition time, in the engine, only on classified alerts, keyed on `(alert, sha256, rule uuid)`,
+and holds for as long as the capture record exists. `svs_yara_captures` stays its own table and
+reuses the building blocks: the hold idiom and the one-statement conditional UPDATE, the scanner
+protocol's base64 encoding of match strings for the stored record (`saq/yara_scanning/protocol.py`;
+the QA store's `_JSONEncoder` path decodes string bytes lossily, so it is not copied),
+`signature_version` taken exactly as QA takes it, the namespace stored relative to the signature
+directory (the match carries the absolute rule directory, which a replay tree does not have), the
+`wrong_node` answer for bytes on another node's local pool, and the infected-password zips of
+`aceapi_v2/common/archive.py` for downloads. [FR-27]
 
 **Sample storage on a multi-node site.** Capture runs in the engine of whichever node owns the
 alert and validation runs in `service_svs` on one node, so the `svs_samples` pool has to be
@@ -185,7 +206,8 @@ reachable from every node (`shared: true`). The CAS ships only the `local` backe
 for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
 backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
 ACE does not build one as an SVS prerequisite, and the capture module stays disabled on a
-multi-node site until the pool exists. [FR-1, CAS-6]
+multi-node site until the pool exists. The `yara_qa` pool already works this way (`docs/YARA_QA.md`,
+*Nodes*): a site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
 
 The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output
 depends on file name and `meta_tags`, which are not in the cache key. Moving its detections onto
@@ -222,15 +244,24 @@ from the `GitManagerService` checkout production loads rules from. It fetches `b
 
 **Scanning.** Each tree is compiled in a subprocess into a private `YaraScanner`, with a
 wall-clock timeout, a memory limit and a size limit. It never touches the live scanner or
-`signature_dir`. [YR-9]
+`signature_dir`. [YR-9] Production scanning lives in the `yara` service (`docs/YARA_SCANNER.md`),
+and the `yara_scanner_v2` library (3.0.0) only compiles, tracks and filters rules, so the subprocess
+uses it the way the module's fallback scanner does.
 - **Validations are a queue.** `service_svs` runs one scan at a time by default
   (`svs.yara.max_concurrent_validations`), and a result is cached per `(repository, base_sha,
   head_sha, corpus version)`, so a CI retry does not rescan. [FR-13]
-- **Compile per namespace, directly.** `yara_scanner.load_rules()` only logs a failing file and
-  returns `False`. The validation compiles each namespace with `yara.compile(sources=…)`, which
-  gives the error text and the compiler warnings (`Rules.warnings`). [FR-11]
-- **Compile errors are results.** For example: "namespace X failed to compile: all N rules in it
-  are dropped".
+- **Compile the way production loads.** The production loader compiles each file on its own and
+  drops only a file that fails; then it compiles the survivors once per namespace, and if that
+  fails (two files defining the same rule name, for instance) the whole ruleset is dropped and the
+  service keeps serving the previous generation. The validation does the same two steps, but
+  through `yara.compile()` directly, because `yara_scanner.load_rules()` only logs a failing file
+  and returns `False`, and the direct call gives the error text and the compiler warnings
+  (`Rules.warnings`). The subprocess applies the same `yara.set_config()` limits the library sets
+  when it is imported, so the two agree on what compiles. [FR-11, FR-26]
+- **Compile errors are results.** "File X does not compile: its N rules are dropped", or "the
+  ruleset would not load: production keeps the previous generation". A validation that compiled a
+  namespace as one source would instead report every rule in it as regressed when one file is
+  broken. [FR-26]
 - **Duplicate `uuid` meta** in the head tree makes two rules share one label set. Both are listed
   as *not regression-testable*, next to the rules with no uuid [YR-7]. [FR-11]
 - **The whole corpus is scanned with the whole base ruleset and the whole head ruleset**, and the
@@ -277,6 +308,8 @@ label: check that the sample was ever a real hit for this rule"*. [DP-2]
   source of truth as Part 1.
 - **Confirm label.**
 - **Retire** for one rule, with who and why. The sample is no longer expected to match that rule.
+- **Download**, one sample or a selection, as a zip with the password `infected`, exactly as the
+  Yara QA Results page does. It needs `signature:download`. [FR-28]
 - **Delete sample.** A CAS purge plus rows, audited, for legal or privacy requests.
 
 Nothing changes automatically when a PR merges. An accepted regression keeps showing as *already
@@ -454,7 +487,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
 |---|---|
 | Observable values and file names, and `root.details` (at both stages) | Hunt raw events, API details, command lines, URLs |
 | Each module's `ModuleExecutionDelta` (new observables and added detections, plus the new analysis's `details`), scanned in the executor right after the module returns. The cache path produces the same delta, so cache replays are scanned too. [FR-19] | Decoded or deobfuscated output |
-| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. The rule must live in a namespace production loads, or be added by the YARA module itself. [FR-20] | Markers inside dropped scripts and documents |
+| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`, so the rule ships in the repo as its own namespace there, listed with the other rule locations (`saq/signatures/locations.py`); a test asserts that both the service and the module's fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
 
 **The scan is gated and the cache is one-sided.** [FR-8]
 - The whole scan (a regex over every observable value and `root.details`, on every alert insert)
@@ -496,7 +529,7 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
     and report them.
-  - A `SIMULATED` alert is **never reset or re-analyzed** (`ace alerts reset`, the GUI's
+  - A `SIMULATED` alert is **never reset or re-analyzed** (`ace alert reset`, the GUI's
     re-analyze, bulk actions). Its detections, and so its verdict sources and the labels derived
     from them, are frozen at review time, so a report stays reproducible. [FR-15]
   - Verdict chips on a `SIMULATED` alert are read-only; the run review owns them (Part 1). [FR-15]
@@ -609,20 +642,28 @@ whatever logic it uses. ACE shows the facts, and neither recommends nor queues t
 
 ### One SVS area
 
-One *SVS* navigation entry, with tabs **Runs**, **Tests**, **Validations**, **Samples**,
-**Coverage** and **Worklist**, plus a **Test hosts** admin tab shown only with `svs:admin`
-[FR-15]. Every tab follows the alert manage page's pattern [MGT-7]:
+SVS has two homes, because its YARA half belongs with the other signature screens. [FR-28]
+
+- One *SVS* navigation entry, in the slot of the disabled *DetectOps* placeholder, with tabs
+  **Runs**, **Tests**, **Coverage** and **Worklist**, plus a **Test hosts** admin tab shown only
+  with `svs:admin` [FR-15].
+- **Validations** and **Samples** are cards in the existing **Signatures** hub (`app/signatures/`,
+  next to *Yara QA Results*), so they are gated by `signature:read` like everything else there,
+  and built the way that page is: a shell whose data all comes from the API.
+
+Every tab and card follows the alert manage page's pattern [MGT-7]:
 - a filtered, sortable, paged list, with its own filter registry in the manage page's
   `{name, inverted, values}` shape, saved filters and share URLs;
 - export, which is the API (Part 6);
 - a detail page per row.
 
-Saved filters become **per screen** (`alerts`, `svs_runs`, `svs_tests`, ...), so there is one
-saved-filter system for every screen. [MGT-1] That is more than a column: the unique key becomes
-`(user_id, screen, name)`, the `working`/`temp` scratch rows are one per user *per screen*,
-`FilterEntry` validates names against a registry object passed in per screen instead of the alert
-`FILTER_NAMES`, and the query builder in `saq/gui/filter_query.py` stops hard-coding `Alert` and
-takes the entity. [FR-18]
+Saved filters become **per screen** (`alerts`, `svs_runs`, `svs_tests`, `svs_validations`,
+`svs_samples`, ...), so there is one saved-filter system for every screen. [MGT-1] That is more
+than a column: the unique key becomes `(user_id, screen, name)`, the `working`/`temp` scratch rows
+are one per user *per screen*, `FilterEntry` (`aceapi_v2/saved_filters/schemas.py`) validates names
+against a registry object passed in per screen instead of the alert `FILTER_NAMES`, and the query
+builder in `saq/gui/filter_query.py`, whose `entity=` parameter already exists, stops naming `Alert`
+in its correlated subqueries. [FR-18, FR-30]
 
 ### Runs
 
@@ -698,9 +739,9 @@ for a close, and it is the run's change feed (Part 6). [MGT-5]
 
 ACE's convention applies: the message text describes the event, and `extra={}` carries the fields.
 `saq.log` renders them as `key=value`, and the fluent formatter makes them top-level Splunk fields
-(`saq/logging.py`, as `crash_id` does). **Every SVS record carries `svs_run`**, plus `svs_test` and
-`svs_marker` wherever they are known, so one search on `svs_run=…` returns everything ACE did about
-a run, across services and nodes. [MGT-9]
+(`saq/logging.py`; crash reports log their `crash_id` this way). [FR-30] **Every SVS record
+carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, so one search on
+`svs_run=…` returns everything ACE did about a run, across services and nodes. [MGT-9]
 
 | Event | Level | Fields beyond the run's own |
 |---|---|---|
@@ -766,17 +807,18 @@ observable-detection settings, a different thing, which is why this one is `dete
 
 **Alert search leaves test alerts out by default.** `saq/search/query.py` excludes `svs.queue`
 whenever a request doesn't filter on queues. That covers the search box, `POST /api/v2/search/*`,
-`POST /ai/v1/search/*` and `ace search`. Each response counts what it left out
-(`excluded_test_alerts`); naming the SVS queue, the GUI toggle or `ace search --include-tests`
-brings them back. This is the same split as prevalence (Part 3): "have we seen this before?" means
-real alerts. [RPT-7]
+`POST /ai/v1/search/*` and the `ace search` subcommands. Each response counts what it left out
+(`excluded_test_alerts`); naming the SVS queue, the GUI toggle or `--include-tests` on `ace search
+query` and `ace search similar` brings them back. This is the same split as prevalence (Part 3):
+"have we seen this before?" means real alerts. [RPT-7]
 
 **SVS** (`/api/v2/svs/…`, list and detail for each):
 - `runs`, and for each run `results` (live and as reviewed), `attributions` and `events`;
 - `tests`;
 - `expectations` and `ignores`;
-- `validations` and their results;
-- `samples` and their labels (metadata only);
+- `validations` and their results, read with `signature:read` [FR-28];
+- `samples` and their labels (metadata only, `signature:read`; the bytes need `signature:download`)
+  [FR-28];
 - `coverage`, `coverage/history`;
 - `worklist`;
 - `test-hosts`, read with `svs:run_read`, written with `svs:admin` [FR-15].
@@ -790,9 +832,9 @@ real alerts. [RPT-7]
 - **Incremental pulls with `changed_since`:**
   - every SVS table has `updated_at`;
   - `alerts` gains `updated_at`, because the version token is random and can't be ordered. It is a
-    server-side `ON UPDATE CURRENT_TIMESTAMP` column rather than a write at each of the seven
-    places that rotate `alerts.version`, and the keyset for `changed_since` is `(updated_at, id)`
-    [FR-17];
+    server-side `ON UPDATE CURRENT_TIMESTAMP` column rather than a write at each of the ten call
+    sites that rotate `alerts.version`, and the keyset for `changed_since` is `(updated_at, id)`
+    [FR-17, FR-30];
   - deletions and disassociations appear in the run event log and the sample deletion audit.
 - **Schemas** are versioned through the OpenAPI document. Renaming or removing a field is a breaking
   change and goes in the changelog.
@@ -810,8 +852,8 @@ These can't be rebuilt later, so they are recorded from day one. [RPT-4]
 ### Access
 
 [RPT-5]
-- **A reporting key is read-only:** an automation user with the `*_read` permissions and
-  `alert:read`.
+- **A reporting key is read-only:** an automation user with the `*_read` permissions,
+  `alert:read` and `signature:read`.
 - **File contents never come out of a reporting endpoint.** Sample, file and email bytes stay behind
   their download permissions.
 - **Alert data is scoped as in the GUI.** SVS data is global.
@@ -884,12 +926,14 @@ reviewed next to the live one. Every SVS table has `updated_at`.
 | `svs:validate` | Requesting a YARA validation (the CI key) |
 | `svs:run_read` | Runs and Tests screens, run pages, coverage, and their read APIs [MGT-6] |
 | `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association [MGT-6] |
-| `svs:validation_read` | Validation reports and their APIs [MGT-6] |
-| `svs:sample_read`, `svs:sample_download` | Sample metadata; sample bytes |
+| `signature:read` (existing) | The Validations and Samples cards, validation reports, sample metadata and their APIs [FR-28] |
+| `signature:download` (existing) | Sample bytes [FR-28] |
 | `svs:admin` | Retiring and deleting samples, global ignores, the test-host table, configuration |
 
-Plus `cas:purge` and `cas:hold` from the CAS. Each is added to `saq/permissions/catalog.py` with a
-seeding migration. A reporting key gets the `*_read` permissions and `alert:read`.
+Plus `cas:purge` and `cas:hold` from the CAS. Each new `svs:*` permission is added to
+`saq/permissions/catalog.py` with a seeding migration; the `signature:*` pair already exists and
+gates the Signatures area. A reporting key gets the `*_read` permissions, `alert:read` and
+`signature:read`.
 
 ## Configuration (sketch)
 
@@ -902,9 +946,9 @@ disposition_classification:         # logged at WARNING on every start [FR-15]
 
 cas:
   pools:
-    svs_samples:
+    svs_samples:                    # the second pool next to yara_qa (docs/YARA_QA.md) [FR-27]
       backend: local                # enough for one node. A multi-node site redefines this pool
-      shared: false                 # with its own shared backend and shared: true [FR-1]
+      shared: false                 # with the shared backend it gave yara_qa, and shared: true [FR-1]
       encryption: system
       retention: held
 
@@ -939,11 +983,11 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 
 | Phase | Contents |
 |---|---|
-| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (**landed**); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
+| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (**landed**; the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples tab and its API. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
-| **3: YARA validation** | API, mirror clones, isolated per-namespace scanning, the validation queue and result cache, the report and its actions; the Validations tab; CI in one signature repo |
-| **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
+| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
+| **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
+| **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
@@ -989,6 +1033,8 @@ and the YARA results under it are always shown.
   - regressions on files graded only by inheritance, listed separately as "check the label
     first".
 - It warns and never blocks. CI posts a summary on the PR with a link to ACE.
+- The reports and the graded files live under *Signatures*, next to *Yara QA Results*, for anyone
+  who can see that area; downloading a file needs the same permission as downloading a QA match.
 - Rules without a `uuid` can't be checked.
 - An intended regression is retired or relabeled in ACE, so the report stops showing it.
 

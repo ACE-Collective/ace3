@@ -376,14 +376,14 @@ message text, so the monitor records are the place to look. Definitions are in
 
 | Order | Store | Pool | Status |
 |---|---|---|---|
-| 1 | SVS YARA samples | `svs_samples` (`held`, encrypted, shared) | first; built with the CAS |
+| 1 | SVS YARA samples | `svs_samples` (`held`, encrypted, shared) | the CAS was built for it; the pool is defined when SVS phase 2 lands (`docs/SVS.md`) |
 | 2 | YARA `qa_dir` | `yara_qa` (`held`, encrypted, local by default) | **done** (`docs/YARA_QA.md`): the files and full match records of QA-mode rules, held for 30 days after the last match, capped per rule |
 | 3 | Analysis-cache blobs | `analysis_cache` (`ttl`, plaintext, local `link`) | gated on the load test |
 | 4 | Crash report bytes | `crash_files` | later |
 | 5 | Email archive | `email_archive` | later; has its own DB and retention semantics |
 | 6 | Alert hardcopies | `alert_files` | last; largest disk win and largest blast radius (node transfer, archive, hardlinks) |
 
-Steps 1 and 2 are built; the rest are not scheduled. [CAS-8]
+Step 2 is built and step 1 lands with SVS; the rest are not scheduled. [CAS-8]
 
 ## Prerequisites (phase 0)
 
