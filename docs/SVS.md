@@ -494,7 +494,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     refreshes the search payload, writes an audit line, and records the previous queue and that
     the move was SVS's.
 - **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS badge
-  instead. The automation user (`ace`, `automation_user_id`) counts as nobody here: setting
+  instead. The automation user (`ace`, `global.automation_user_id`) counts as nobody here: setting
   `SIMULATED` backfills `owner_id` with the dispositioning user, so without this exception a
   re-review could never move a test alert. [FR-15]
 - **`_apply_detection_queue` becomes a built-in router**, with its all-or-nothing rule unchanged

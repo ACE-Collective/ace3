@@ -8,7 +8,6 @@ from saq.configuration import get_config
 from saq.database.model import Alert, Comment, Tag, TagMapping
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, touch_alerts
-from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 
 
@@ -29,7 +28,7 @@ def test_export_alerts_to_csv_with_alerts(web_client, root_analysis):
     alert = ALERT(root_analysis)
     
     # Add a comment to test comments column
-    comment = Comment(uuid=alert.uuid, comment="Test comment", user_id=get_global_runtime_settings().automation_user_id)
+    comment = Comment(uuid=alert.uuid, comment="Test comment", user_id=get_config().global_settings.automation_user_id)
     get_db().add(comment)
     get_db().commit()
 

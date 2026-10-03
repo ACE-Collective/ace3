@@ -30,6 +30,9 @@ from saq.permissions.catalog import sync_permission_catalog
 
 PRIMARY_DATABASE = "ace"
 
+# the user ACE attributes its own actions to; global.automation_user_id must match it
+AUTOMATION_USER_ID = 1
+
 
 def _ensure(session: Session, model, unique_attr: str, values: list[str]) -> None:
     """Insert rows if they don't already exist, matching on a unique column."""
@@ -49,7 +52,7 @@ def seed(db_name: str = PRIMARY_DATABASE) -> None:
 
         # System users (have explicit PKs — merge is safe)
         session.merge(User(
-            id=1, username="ace", email="ace@localhost",
+            id=AUTOMATION_USER_ID, username="ace", email="ace@localhost",
             omniscience=0, display_name="automation",
         ))
         session.merge(User(
@@ -97,7 +100,7 @@ def seed(db_name: str = PRIMARY_DATABASE) -> None:
                 select(AuthUserPermission.user_id, AuthUserPermission.major, AuthUserPermission.minor)
             )
         }
-        for user_id, major, minor in [(1, "*", "*"), (2, "*", "*")]:
+        for user_id, major, minor in [(AUTOMATION_USER_ID, "*", "*"), (2, "*", "*")]:
             if (user_id, major, minor) not in existing_user_perms:
                 session.add(AuthUserPermission(user_id=user_id, major=major, minor=minor))
 

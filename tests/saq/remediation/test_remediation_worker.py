@@ -4,7 +4,7 @@ from saq.configuration.schema import RemediatorConfig
 from saq.constants import F_TEST
 from saq.database.model import Remediation, RemediationHistory
 from saq.database.pool import get_db
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.remediation.collector import create_remediation_work_item
 from saq.remediation.remediator import Remediator
 from saq.remediation.target import RemediationTarget
@@ -63,7 +63,7 @@ def test_remediate(worker):
         def restore(self, target: RemediationWorkItem) -> RemediatorResult:
             return RemediatorResult(status=RemediatorStatus.SUCCESS, message="TestRemediator.restore")
 
-    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
     remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
     work_item = create_remediation_work_item(remediation)
 
@@ -87,7 +87,7 @@ def test_remediate(worker):
     assert remediation.type == F_TEST
     assert remediation.key == "test"
     assert remediation.action == RemediationAction.REMOVE.value
-    assert remediation.user_id == get_global_runtime_settings().automation_user_id
+    assert remediation.user_id == get_config().global_settings.automation_user_id
     assert remediation.result == RemediatorStatus.SUCCESS.value
     assert remediation.restore_key == "restore_key"
     assert remediation.comment is None
@@ -108,7 +108,7 @@ def test_remediate_exception_handling(worker):
         def restore(self, target: RemediationWorkItem) -> RemediatorResult:
             raise RuntimeError("Simulated failure during remediation")
 
-    remediation_id = RemediationTarget("custom", F_TEST, "test_error").queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    remediation_id = RemediationTarget("custom", F_TEST, "test_error").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
     remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
     work_item = create_remediation_work_item(remediation)
 
@@ -131,7 +131,7 @@ def test_remediate_exception_handling(worker):
     assert remediation.type == F_TEST
     assert remediation.key == "test_error"
     assert remediation.action == RemediationAction.REMOVE.value
-    assert remediation.user_id == get_global_runtime_settings().automation_user_id
+    assert remediation.user_id == get_config().global_settings.automation_user_id
     assert remediation.result == RemediatorStatus.ERROR.value
     assert remediation.restore_key is None
     assert remediation.comment is None

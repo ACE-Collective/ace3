@@ -35,7 +35,6 @@ ACE_MP_CONTEXT = multiprocessing.get_context("fork")
 class GlobalRuntimeSettings(BaseModel):
     analyst_data_dir: str = Field(default="/opt/ace/signatures/analyst_data", description="a directory controlled by the analysts that contains various data and configuration files")
     api_prefix: Optional[str] = Field(default=None, description="what prefix other systems use to communicate to the API server for this node")
-    automation_user_id: Optional[int] = Field(default=None, description='global user ID for the "automation" user')
     ca_chain_path: Optional[str] = Field(default=None, description="path to the certifcate chain used by all SSL certs")
     company_id: Optional[int] = Field(default=None, description="the database id of the company this node belongs to")
     company_name: Optional[str] = Field(default=None, description="the company this node belongs to")
@@ -174,12 +173,11 @@ def initialize_environment(
     logging_config_path=None,
     relative_dir=None,
     encryption_password_plaintext=None,
-    skip_initialize_automation_user=False,
     force_alerts=False,
 ):
     """Initializes ACE."""
 
-    from saq.database import initialize_database, initialize_automation_user
+    from saq.database import initialize_database
     from saq.configuration import (
         get_config,
         initialize_configuration,
@@ -356,11 +354,6 @@ def initialize_environment(
 
     for cidr in get_config().network_configuration.managed_networks:
         get_global_runtime_settings().managed_network_cidrs.append(cidr.strip())
-
-    # make sure we've got the automation user set up
-    # XXX move this to database initialization time
-    if not skip_initialize_automation_user:
-        initialize_automation_user()
 
     # initialize other systems
     from saq.disposition import initialize_dispositions

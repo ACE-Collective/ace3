@@ -3,7 +3,7 @@ import pytest
 from saq.constants import F_TEST, F_IP, F_FQDN
 from saq.database.model import Remediation, RemediationHistory
 from saq.database.pool import get_db
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.remediation.database import get_remediation_history
 from saq.remediation.target import RemediationTarget
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
@@ -30,7 +30,7 @@ def test_get_remediation_history_single_entry():
         type=target.observable_type,
         key=target.observable_value,
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.IN_PROGRESS.value
     )
     get_db().add(remediation)
@@ -68,7 +68,7 @@ def test_get_remediation_history_multiple_entries():
         type=target.observable_type,
         key=target.observable_value,
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation)
@@ -119,7 +119,7 @@ def test_get_remediation_history_multiple_remediations_same_target():
         type=target.observable_type,
         key=target.observable_value,
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_1)
@@ -131,7 +131,7 @@ def test_get_remediation_history_multiple_remediations_same_target():
         type=target.observable_type,
         key=target.observable_value,
         action=RemediationAction.RESTORE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_2)
@@ -175,7 +175,7 @@ def test_get_remediation_history_filter_by_remediator_name():
         type=F_TEST,
         key="test_value",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_1)
@@ -187,7 +187,7 @@ def test_get_remediation_history_filter_by_remediator_name():
         type=F_TEST,
         key="test_value",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_2)
@@ -226,7 +226,7 @@ def test_get_remediation_history_filter_by_observable_type():
         type=F_IP,
         key="192.168.1.1",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_1)
@@ -238,7 +238,7 @@ def test_get_remediation_history_filter_by_observable_type():
         type=F_FQDN,
         key="192.168.1.1",  # Same value but different type
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_2)
@@ -277,7 +277,7 @@ def test_get_remediation_history_filter_by_observable_value():
         type=F_TEST,
         key="value1",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_1)
@@ -289,7 +289,7 @@ def test_get_remediation_history_filter_by_observable_value():
         type=F_TEST,
         key="value2",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation_2)
@@ -328,7 +328,7 @@ def test_get_remediation_history_no_match():
         type=F_TEST,
         key="existing_value",
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.COMPLETED.value
     )
     get_db().add(remediation)
@@ -362,7 +362,7 @@ def test_get_remediation_history_remediation_without_history():
         type=target.observable_type,
         key=target.observable_value,
         action=RemediationAction.REMOVE.value,
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
         status=RemediationStatus.NEW.value
     )
     get_db().add(remediation)
@@ -387,7 +387,7 @@ def test_get_remediation_history_complex_scenario():
             type=target.observable_type,
             key=target.observable_value,
             action=RemediationAction.REMOVE.value if i % 2 == 0 else RemediationAction.RESTORE.value,
-            user_id=get_global_runtime_settings().automation_user_id,
+            user_id=get_config().global_settings.automation_user_id,
             status=RemediationStatus.COMPLETED.value
         )
         get_db().add(remediation)

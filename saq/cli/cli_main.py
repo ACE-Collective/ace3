@@ -28,8 +28,6 @@ parser.add_argument('--trace', required=False, action='store_true', dest='trace'
     help="Enable execution tracing (debugging option).")
 parser.add_argument('-D', '--debug', required=False, action='store_true', dest='debug_on_error', default=False,
     help="Break into pdb if an unhanled exception is thrown or an assertion fails.")
-parser.add_argument('--skip-initialize-automation-user', action='store_true', dest='skip_initialize_automation_user', default=True,
-    help="Skip the step of initializing the automation user.")
 
 subparsers = parser.add_subparsers(dest='cmd')
 
@@ -66,7 +64,6 @@ def main():
         logging_config_path=args.logging_config_path,
         relative_dir=args.relative_dir,
         encryption_password_plaintext=encryption_password_plaintext,
-        skip_initialize_automation_user=args.skip_initialize_automation_user,
         force_alerts=args.force_alerts,
     )
 

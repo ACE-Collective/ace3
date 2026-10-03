@@ -5,7 +5,7 @@ from sqlalchemy import func
 from saq.constants import F_TEST
 from saq.database.model import Remediation
 from saq.database.pool import get_db
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.remediation.collector import RemediationCollector
 from saq.remediation.interface import RemediationListener
 from saq.remediation.target import RemediationTarget
@@ -31,7 +31,7 @@ def test_collect_single_work_item():
     assert not collector.collect_work_items()
 
     target = RemediationTarget("custom", F_TEST, "test")
-    target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # before registering a listener, we should not collect any remediations
     assert not collector.collect_work_items()
@@ -56,7 +56,7 @@ def test_collect_work_item_status(status, expected_value):
     collector.register_remediation_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
     remediation.status = status.value
@@ -71,7 +71,7 @@ def test_collect_locked_work_item():
     collector.register_remediation_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
 
     # lock the remediation
@@ -98,7 +98,7 @@ def test_collect_delayed_work_item():
     collector.register_remediation_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # set to in progress and delayed
     remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
@@ -125,7 +125,7 @@ def test_collect_delayed_and_locked_work_item():
     collector.register_remediation_listener("custom", TestRemediationListener())
 
     target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # set to in progress and delayed and locked
     remediation = get_db().query(Remediation).filter(Remediation.id == id).first()

@@ -3,7 +3,7 @@ import pytest
 from saq.constants import F_IP, F_TEST
 from saq.database.model import Remediation, RemediationHistory, User
 from saq.database.pool import get_db
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.remediation.target import (
     ObservableRemediationInterface,
     RemediationTarget,
@@ -31,7 +31,7 @@ def test_cancel_remediations_basic():
     # create a remediation
     target = RemediationTarget("custom", F_TEST, "test_value_1")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # verify initial state
@@ -69,7 +69,7 @@ def test_cancel_remediations_with_comment():
     """test cancelling remediations with a custom comment"""
     target = RemediationTarget("custom", F_TEST, "test_value_2")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # update status to IN_PROGRESS
@@ -97,7 +97,7 @@ def test_cancel_remediations_with_user_id():
     """test cancelling remediations with a user_id"""
     target = RemediationTarget("custom", F_TEST, "test_value_3")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # update status to IN_PROGRESS
@@ -109,7 +109,7 @@ def test_cancel_remediations_with_user_id():
     user = (
         get_db()
         .query(User)
-        .filter(User.id == get_global_runtime_settings().automation_user_id)
+        .filter(User.id == get_config().global_settings.automation_user_id)
         .first()
     )
     assert user is not None
@@ -134,12 +134,12 @@ def test_cancel_remediations_multiple():
     # create multiple remediations
     target1 = RemediationTarget("custom", F_TEST, "test_value_4")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     target2 = RemediationTarget("custom", F_TEST, "test_value_5")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # update both to IN_PROGRESS
@@ -165,13 +165,13 @@ def test_cancel_remediations_only_in_progress():
     # create a remediation that is NEW
     target1 = RemediationTarget("custom", F_TEST, "test_value_6")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # create a remediation that is IN_PROGRESS
     target2 = RemediationTarget("custom", F_TEST, "test_value_7")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
     remediation2 = get_db().query(Remediation).filter(Remediation.id == remediation_id2).first()
     remediation2.status = RemediationStatus.IN_PROGRESS.value
@@ -195,7 +195,7 @@ def test_retry_remediations():
     # create a remediation and mark it as completed
     target = RemediationTarget("custom", F_TEST, "test_value_8")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
@@ -223,12 +223,12 @@ def test_retry_remediations_multiple():
     # create multiple completed remediations
     target1 = RemediationTarget("custom", F_TEST, "test_value_9")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     target2 = RemediationTarget("custom", F_TEST, "test_value_10")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # mark both as completed
@@ -255,13 +255,13 @@ def test_retry_remediations_only_completed():
     # create a NEW remediation
     target1 = RemediationTarget("custom", F_TEST, "test_value_11")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # create a COMPLETED remediation
     target2 = RemediationTarget("custom", F_TEST, "test_value_12")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
     remediation2 = get_db().query(Remediation).filter(Remediation.id == remediation_id2).first()
     remediation2.status = RemediationStatus.COMPLETED.value
@@ -286,7 +286,7 @@ def test_restore_remediations():
     # create a completed REMOVE remediation
     target = RemediationTarget("custom", F_TEST, "test_value_13")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id, "restore_key_1"
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id, "restore_key_1"
     )
 
     remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
@@ -326,13 +326,13 @@ def test_restore_remediations_filters():
     # create a REMOVE remediation that is NEW
     target1 = RemediationTarget("custom", F_TEST, "test_value_14")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # create a REMOVE remediation that is COMPLETED but FAILED
     target2 = RemediationTarget("custom", F_TEST, "test_value_15")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
     remediation2 = get_db().query(Remediation).filter(Remediation.id == remediation_id2).first()
     remediation2.status = RemediationStatus.COMPLETED.value
@@ -342,7 +342,7 @@ def test_restore_remediations_filters():
     # create a RESTORE remediation
     target3 = RemediationTarget("custom", F_TEST, "test_value_16")
     remediation_id3 = target3.queue_remediation(
-        RemediationAction.RESTORE, get_global_runtime_settings().automation_user_id
+        RemediationAction.RESTORE, get_config().global_settings.automation_user_id
     )
     remediation3 = get_db().query(Remediation).filter(Remediation.id == remediation_id3).first()
     remediation3.status = RemediationStatus.COMPLETED.value
@@ -366,12 +366,12 @@ def test_restore_remediations_multiple():
     # create multiple completed REMOVE remediations
     target1 = RemediationTarget("custom", F_TEST, "test_value_17")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id, "restore_key_2"
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id, "restore_key_2"
     )
 
     target2 = RemediationTarget("custom", F_TEST, "test_value_18")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id, "restore_key_3"
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id, "restore_key_3"
     )
 
     # mark both as completed with success
@@ -398,7 +398,7 @@ def test_delete_remediations():
     # create a remediation
     target = RemediationTarget("custom", F_TEST, "test_value_19")
     remediation_id = target.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # verify it exists
@@ -420,12 +420,12 @@ def test_delete_remediations_multiple():
     # create multiple remediations
     target1 = RemediationTarget("custom", F_TEST, "test_value_20")
     remediation_id1 = target1.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     target2 = RemediationTarget("custom", F_TEST, "test_value_21")
     remediation_id2 = target2.queue_remediation(
-        RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id
+        RemediationAction.REMOVE, get_config().global_settings.automation_user_id
     )
 
     # delete both
@@ -458,7 +458,7 @@ def test_mass_remediate_targets():
     # mass remediate two IP addresses
     observable_values = ["192.168.1.1", "10.0.0.1"]
     count = mass_remediate_targets(
-        F_IP, observable_values, get_global_runtime_settings().automation_user_id
+        F_IP, observable_values, get_config().global_settings.automation_user_id
     )
 
     # should create 4 remediations (2 targets per observable * 2 observables)
@@ -496,7 +496,7 @@ def test_mass_remediate_targets_invalid_observable():
     # mix valid and invalid IP addresses
     observable_values = ["192.168.1.1", "not_an_ip", "10.0.0.1"]
     count = mass_remediate_targets(
-        F_IP, observable_values, get_global_runtime_settings().automation_user_id
+        F_IP, observable_values, get_config().global_settings.automation_user_id
     )
 
     # should create 2 remediations (1 target per valid observable * 2 valid observables)
@@ -515,13 +515,13 @@ def test_get_distinct_remediator_names():
 
     # create remediations with different remediator names
     target1 = RemediationTarget("remediator_a", F_TEST, "test_value_22")
-    target1.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target1.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     target2 = RemediationTarget("remediator_b", F_TEST, "test_value_23")
-    target2.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target2.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     target3 = RemediationTarget("remediator_a", F_TEST, "test_value_24")
-    target3.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target3.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # get distinct names
     names = get_distinct_remediator_names()
@@ -539,13 +539,13 @@ def test_get_distinct_remediation_types():
 
     # create remediations with different types
     target1 = RemediationTarget("custom", F_TEST, "test_value_25")
-    target1.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target1.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     target2 = RemediationTarget("custom", F_IP, "192.168.1.2")
-    target2.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target2.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     target3 = RemediationTarget("custom", F_TEST, "test_value_26")
-    target3.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target3.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # get distinct types
     types = get_distinct_remediation_types()
@@ -592,7 +592,7 @@ def test_get_distinct_analyst_names():
     """test getting distinct analyst names from remediations"""
     # create a remediation with the automation user
     target = RemediationTarget("custom", F_TEST, "test_value_27")
-    target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     # get analyst names
     names = get_distinct_analyst_names()
@@ -602,7 +602,7 @@ def test_get_distinct_analyst_names():
     user = (
         get_db()
         .query(User)
-        .filter(User.id == get_global_runtime_settings().automation_user_id)
+        .filter(User.id == get_config().global_settings.automation_user_id)
         .first()
     )
     assert user.display_name in names

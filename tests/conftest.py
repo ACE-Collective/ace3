@@ -20,7 +20,6 @@ from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVIC
 from saq.crypto import set_encryption_password
 from saq.database.admin import superuser_connection
 from saq.database.pool import get_db_connection, remove_all_sessions
-from saq.database.util.automation_user import initialize_automation_user
 from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
@@ -97,7 +96,6 @@ class DatabaseResetInformation:
     existing_nodes: Optional[list] = None
     existing_email_archive_server: Optional[list] = None
     existing_unit_test_user: Optional[tuple] = None
-    existing_automation_user: Optional[tuple] = None
     existing_db_config: Optional[list] = None
 
 DATABASE_RESET_INFORMATION: Optional[DatabaseResetInformation] = None
@@ -113,9 +111,6 @@ def record_database_reset_information():
         cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled FROM users WHERE username = 'unittest'")
         existing_unit_test_user = cursor.fetchone()
 
-        cursor.execute("SELECT id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled FROM users WHERE username = 'ace'")
-        existing_automation_user = cursor.fetchone()
-
         cursor.execute("SELECT `key`, `value` FROM `config`")
         existing_db_config = cursor.fetchall()
 
@@ -129,7 +124,6 @@ def record_database_reset_information():
         existing_nodes=existing_nodes,
         existing_email_archive_server=existing_email_archive_server,
         existing_unit_test_user=existing_unit_test_user,
-        existing_automation_user=existing_automation_user,
         existing_db_config=existing_db_config)
 
 def get_database_reset_information() -> DatabaseResetInformation:
@@ -194,9 +188,12 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM yara_qa_matches")
         cursor.execute("DELETE FROM yara_qa_signatures")
 
+        # the automation user, as saq.database.seed creates it, at the id the configuration names
+        automation_user_id = get_config().global_settings.automation_user_id
+        cursor.execute("INSERT INTO users (id, username, email, omniscience, display_name) VALUES (%s, %s, %s, %s, %s)", (automation_user_id, "ace", "ace@localhost", 0, "automation"))
+        cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (automation_user_id, "*", "*"))
+
         if database_reset_information is not None:
-            cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_automation_user)
-            cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (database_reset_information.existing_automation_user[0], "*", "*"))
             cursor.execute("INSERT INTO users (id, username, password_hash, email, omniscience, timezone, display_name, queue, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", database_reset_information.existing_unit_test_user)
             cursor.execute("INSERT INTO auth_user_permission (user_id, major, minor) VALUES (%s, %s, %s)", (database_reset_information.existing_unit_test_user[0], "*", "*"))
             for row in database_reset_information.existing_db_config:
@@ -274,7 +271,6 @@ def execute_global_setup():
     # clear the tracking
     clear_all_tracking()
 
-    initialize_automation_user()
     initialize_email_archive()
 
     # set a fake encryption password
