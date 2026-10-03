@@ -257,7 +257,6 @@ def manage():
                            sort_dir=session['event_sort_dir'],
                            tip=None,
                            statuses=statuses,
-                           dispositions=get_dispositions(),
                            tags=valid_tags,
                            types=types,
                            vectors=vectors,

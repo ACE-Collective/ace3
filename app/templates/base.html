@@ -236,7 +236,7 @@
                               </tr>
                             </table>
                             <select class="form-control" name="event_disposition" id="event_disposition" style="display:none;">
-                                {% for disposition in dispositions %}
+                                {% for disposition in selectable_dispositions %}
                                     <option value="{{disposition}}">{{disposition}}</option>
                                 {% endfor %}
                             </select>
@@ -277,7 +277,7 @@
                 <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
                     <div class="row" style="flex: 1; display: flex;">
                         <div class="col-md-4" style="display: flex; flex-direction: column;">
-                            {% for disposition in dispositions %}
+                            {% for disposition in selectable_dispositions %}
                                 <div class="form-check">
                                     <input
                                         type="radio"
@@ -286,14 +286,14 @@
                                         name="disposition"
                                         value="{{disposition}}"
                                         autocomplete="off"
-                                        {% if dispositions[disposition]['show_save_to_event'] %}
+                                        {% if selectable_dispositions[disposition]['show_save_to_event'] %}
                                             onclick="showSaveToEventButton(); document.querySelector('[name=comment]').focus();"
                                         {% else %}
                                             onclick="hideSaveToEventButton(); document.querySelector('[name=comment]').focus();"
                                         {% endif %}
                                     />
-                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="option_{{disposition}}">
-                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    <label class="form-check-label label-{{disposition_css(disposition)}}" for="option_{{disposition}}">
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}
@@ -347,7 +347,7 @@
                     <div class="row" id="review_incorrect_section" style="display: none; flex: 1; margin-top: 10px;">
                         <div class="col-md-4" style="display: flex; flex-direction: column;">
                             <p class="mb-1">Correct disposition:</p>
-                            {% for disposition in dispositions %}
+                            {% for disposition in selectable_dispositions %}
                                 <div class="form-check">
                                     <input
                                         type="radio"
@@ -357,8 +357,8 @@
                                         value="{{disposition}}"
                                         autocomplete="off"
                                     />
-                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="corrected_option_{{disposition}}">
-                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    <label class="form-check-label label-{{disposition_css(disposition)}}" for="corrected_option_{{disposition}}">
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}

@@ -6,9 +6,9 @@ from app.blueprints import analysis
 from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
-    VALID_DISPOSITIONS,
 )
 from saq.database.util.alert import set_disposition_reviews
+from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
 
 @analysis.route('/review_disposition', methods=['POST'])
@@ -33,7 +33,7 @@ def review_disposition():
 
     # marking a disposition incorrect requires a corrected disposition and a review comment
     if review_result == DISPOSITION_REVIEW_INCORRECT:
-        if corrected_disposition not in VALID_DISPOSITIONS:
+        if not is_selectable_disposition(corrected_disposition):
             flash("invalid corrected disposition: {0}".format(corrected_disposition))
             return redirect(url_for('analysis.manage'))
         if not review_comment:

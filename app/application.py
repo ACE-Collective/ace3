@@ -20,6 +20,7 @@ from flask_executor import Executor # XXX what is this for?
 from sqlalchemy import event
 
 from saq.database.pool import remove_all_sessions, set_db
+from saq.disposition import get_disposition_css, get_dispositions, get_selectable_dispositions
 from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
@@ -159,6 +160,17 @@ def create_app(testing: Optional[bool]=False):
         return {
             "ACE_VERSION": os.environ.get("ACE_VERSION", ""),
             "FAVICON_POLL_SECONDS": auto_refresh_seconds if auto_refresh_seconds > 0 else 30,
+        }
+
+    @flask_app.context_processor
+    def inject_dispositions():
+        # every page can render the disposition modals (base.html) and disposition badges.
+        # `dispositions` is every configured disposition (filters, badges); the modals offer
+        # only `selectable_dispositions`, the ones an analyst may set.
+        return {
+            "dispositions": get_dispositions(),
+            "selectable_dispositions": get_selectable_dispositions(),
+            "disposition_css": get_disposition_css,
         }
 
     @flask_app.context_processor

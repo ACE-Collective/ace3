@@ -27,12 +27,6 @@ from saq.database.util.alert import touch_alerts
 @require_permission('event', 'write')
 def add_to_event():
     analysis_page = False
-    disposition = request.form.get('disposition', None)
-    #if disposition not in VALID_DISPOSITIONS:
-        #flash("invalid alert disposition: {0}".format(disposition))
-        #return redirect(url_for('analysis.index'))
-
-    disposition_comment = request.form.get('disposition_comment', None)
     event_id = request.form.get('event', None)
     event_name = request.form.get('event_name', None).strip()
     event_comment = request.form.get('event_comment', None)
@@ -121,11 +115,6 @@ def add_to_event():
 
         touch_alerts(alert_uuids, cursor=cursor)
         dbm.commit()
-
-        # After the alerts are associated with the event, set the alert disposition based on what was chosen on the
-        # Set Disposition modal and injected into this form.
-        #if alert_uuids and disposition:
-            #set_dispositions(alert_uuids, disposition, current_user.id, disposition_comment)
 
         # generate wiki
         cursor.execute("""SELECT creation_date, name FROM events WHERE id = %s""", event_id)

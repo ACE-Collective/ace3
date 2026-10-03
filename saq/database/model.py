@@ -75,7 +75,7 @@ from saq.database.meta import Base, BrocessBase, CacheBase, EmailArchiveBase
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry, retry
 from saq.database.util.index import IndexSyncResult, sync_alert_index
-from saq.disposition import get_dispositions
+from saq.disposition import get_disposition_rank
 from saq.environment import get_global_runtime_settings
 from saq.util import find_all_url_domains, validate_uuid
 from saq.util.ui import get_tag_score
@@ -990,17 +990,17 @@ class Event(Base):
                 logging.warning(f"alert {alert_mapping.alert} added to event without disposition {alert_mapping.event_id}")
                 continue
 
-            try:
-                if get_dispositions()[alert_mapping.alert.disposition]['rank'] > get_dispositions()[disposition]['rank']:
-                    disposition = alert_mapping.alert.disposition
-            except:
-                pass
+            # a disposition that is no longer configured (stored before it was removed) has no
+            # rank, and so never wins the roll-up
+            rank = get_disposition_rank(alert_mapping.alert.disposition)
+            if rank is not None and rank > (get_disposition_rank(disposition) or 0):
+                disposition = alert_mapping.alert.disposition
 
         return disposition
 
     @property
     def disposition_rank(self):
-        return get_dispositions()[self.disposition]['rank']
+        return get_disposition_rank(self.disposition) or 0
 
     @property
     def sorted_tags(self) -> list[str]:

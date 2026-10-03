@@ -1,6 +1,8 @@
 import pytest
 from flask import url_for
 
+from saq.configuration.config import get_config
+from saq.configuration.schema import DispositionConfig
 from saq.constants import (
     DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_REVIEW_CORRECT,
@@ -189,3 +191,26 @@ def test_review_disposition_permission_denied(app):
 
     finally:
         delete_user("limited_reviewer")
+
+
+@pytest.mark.integration
+def test_review_disposition_rejects_a_correction_analysts_may_not_set(web_client, monkeypatch):
+    """A reviewer's corrected disposition is held to the same rule as any disposition an analyst
+    sets: it has to be configured and analyst_selectable."""
+    monkeypatch.setitem(get_config().dispositions, "WEAPONIZATION",
+                        DispositionConfig(rank=90, css="danger", analyst_selectable=False))
+    alert = insert_alert()
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+
+    response = web_client.post(url_for("analysis.review_disposition"), data={
+        "review_result": DISPOSITION_REVIEW_INCORRECT,
+        "corrected_disposition": DISPOSITION_WEAPONIZATION,
+        "comment": "should be rejected",
+        "alert_uuid": alert.uuid,
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.refresh(alert)
+    assert alert.disposition_review == DISPOSITION_REVIEW_UNREVIEWED
+    assert alert.disposition == DISPOSITION_FALSE_POSITIVE
