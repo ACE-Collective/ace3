@@ -1,6 +1,7 @@
 import os
 import shutil
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import Mock, patch
@@ -9,7 +10,6 @@ from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DISPOSITION_FALSE_POSITIVE,
     F_TEST,
-    QUEUE_DEFAULT,
     STATE_ANALYST_REQUESTED_ANALYSIS,
 )
 from saq.database.util.workload import request_analyst_analysis
@@ -329,76 +329,6 @@ class TestAnalysisOrchestratorFinallyBlock:
 
 
 @pytest.mark.unit
-class TestApplyDetectionQueue:
-    """Test AnalysisOrchestrator._apply_detection_queue — centralised, order-independent
-    resolution of a queue requested by detection meta (e.g. a yara rule's `queue` meta)."""
-
-    @pytest.fixture
-    def orchestrator(self):
-        config_manager = Mock(spec=ConfigurationManager)
-        config_manager.config = Mock()
-        return AnalysisOrchestrator(
-            configuration_manager=config_manager,
-            analysis_executor=Mock(spec=AnalysisExecutor),
-            workload_manager=Mock(),
-            lock_manager=Mock(),
-        )
-
-    def test_single_routed_detection_sets_queue(self, orchestrator):
-        root = create_root_analysis()
-        assert root.queue == QUEUE_DEFAULT
-        root.add_detection_point("yara hit", queue="experimental")
-
-        orchestrator._apply_detection_queue(root)
-
-        assert root.queue == "experimental"
-
-    def test_routed_plus_plain_detection_keeps_default(self, orchestrator):
-        """A co-occurring normal detection means it's a real alert -> stay in the default queue."""
-        root = create_root_analysis()
-        root.add_detection_point("yara hit", queue="experimental")
-        root.add_detection_point("real detection")  # no queue
-
-        orchestrator._apply_detection_queue(root)
-
-        assert root.queue == QUEUE_DEFAULT
-
-    def test_explicit_queue_not_clobbered(self, orchestrator):
-        root = create_root_analysis(queue="incoming")
-        assert root.queue == "incoming"
-        root.add_detection_point("yara hit", queue="experimental")
-
-        orchestrator._apply_detection_queue(root)
-
-        assert root.queue == "incoming"
-
-    def test_no_detections_leaves_default(self, orchestrator):
-        root = create_root_analysis()
-        orchestrator._apply_detection_queue(root)
-        assert root.queue == QUEUE_DEFAULT
-
-    def test_conflicting_queues_pick_sorted_first(self, orchestrator):
-        root = create_root_analysis()
-        root.add_detection_point("hit b", queue="bravo")
-        root.add_detection_point("hit a", queue="alpha")
-
-        orchestrator._apply_detection_queue(root)
-
-        assert root.queue == "alpha"
-
-    def test_routed_detection_on_observable(self, orchestrator):
-        """Detections attached to observables (the real yara path) are also resolved."""
-        root = create_root_analysis()
-        root.initialize_storage()
-        observable = root.add_observable_by_spec("yara_rule", "routed_rule")
-        observable.add_detection_point("yara hit", queue="experimental")
-
-        orchestrator._apply_detection_queue(root)
-
-        assert root.queue == "experimental"
-
-
-@pytest.mark.unit
 class TestSyncAlertToDatabaseBuildIndex:
     """_sync_alert_to_database must rebuild the observable index (build_index=True) whenever
     analysis was aborted, even while root.delayed is still True.
@@ -657,8 +587,8 @@ class TestCheckDispositionAnalystOverride:
              patch("saq.engine.analysis_orchestrator.get_db") as mock_db:
             mock_config.return_value.stop_analysis_on_any_alert_disposition = True
             mock_config.return_value.stop_analysis_on_dispositions = [DISPOSITION_FALSE_POSITIVE]
-            mock_db.return_value.query.return_value.filter.return_value.scalar.return_value = (
-                DISPOSITION_FALSE_POSITIVE)
+            mock_db.return_value.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+                disposition=DISPOSITION_FALSE_POSITIVE, queue=context.root.queue)
 
             assert orchestrator._check_disposition(context) is False   # granted
             assert orchestrator._check_disposition(context) is True    # back to normal

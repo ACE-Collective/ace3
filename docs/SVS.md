@@ -475,10 +475,12 @@ ACE itself, not only to SVS. [D-13, ART-15]
   - Engine-converted alerts arrive here fully analyzed, so they never appear in the wrong queue.
   - **`PRE_INSERT` routers are pure.** They return a decision and may write their own rows (the
     SVS router writes `svs_attributions`) in the caller's transaction, but they never touch the
-    tree. Every caller of `ALERT()` saves the root *before* the call and `ALERT()` does not save
-    it, so a tag or detection added here is indexed once and deleted by the next sync. This rule
-    is part of the `AlertRouter` contract in `docs/INTEGRATIONS.md`, because integration routers
-    hit the same trap. [FR-3]
+    tree. The tree belongs to the caller, and the routed queue is the only change `ALERT()`
+    makes on a router's behalf (it saves the caller's root again when a router changed the
+    queue). The mismatch
+    tag and detection therefore belong to `POST_ANALYSIS`, below. This rule is part of the
+    `AlertRouter` contract in `docs/INTEGRATIONS.md`, because integration routers hit the same
+    trap. [FR-3]
   - The alert row has no `id` until the session flushes, so attribution rows are keyed on the
     alert **uuid**. [FR-23]
 - **Stage `POST_ANALYSIS`**, in the orchestrator after each analysis pass, which owns the root.

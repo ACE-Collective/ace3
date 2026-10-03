@@ -42,3 +42,17 @@ hunter:
         python_class: ExampleEchoCommand
         # passed to the constructor
         kwargs: {}
+
+# an alert router: decides which queue a new alert goes to. this list is appended to core's
+# alert_routers (lists append when config files merge). routers run in ascending priority and the
+# first decision wins; core's detection queue router is 500. see "Routing alerts" in
+# docs/INTEGRATIONS.md
+alert_routers:
+  - name: example_tag_router
+    python_module: example.routing
+    python_class: ExampleTagRouter
+    priority: 400
+    # passed to the constructor after name and priority
+    kwargs:
+      tag: example_route
+      queue: example

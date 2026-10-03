@@ -2597,6 +2597,17 @@ timeline:
   timezone: America/New_York
 
 # disposition settings
+# Alert routers decide which queue an alert belongs in (docs/INTEGRATIONS.md, "Routing alerts").
+# They run in ascending priority in every process that creates or analyzes alerts, and the first
+# decision wins. The built-in detection queue router (a detection's `queue` meta) has priority 500.
+# This list is appended to when config files merge, so an integration adds its own entries.
+alert_routers: []
+#  - name: vendor_router
+#    python_module: vendor.routing
+#    python_class: VendorRouter
+#    priority: 200
+#    kwargs: {}
+
 # The alert dispositions: the only list of them there is. The order is the order the
 # disposition modals show them in.
 #   rank                -- rolls an event's alerts up to one disposition (the highest rank wins)
