@@ -10,8 +10,9 @@ from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.saved_filters import service as saved_filters_service
 from aceapi_v2.saved_filters.schemas import FilterEntry, ScratchFilterWrite
 from aceapi_v2.saved_filters.service import KIND_TEMP, KIND_WORKING
-from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
+from saq.constants import VALID_DISPOSITION_REVIEWS
 from saq.database.model import AnalysisType, DetectionPoint, DispositionBy, Observable, Owner, Tag
+from saq.disposition import get_dispositions
 from saq.gui import filter_query
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import (
@@ -82,7 +83,7 @@ def getFilters():
         'Analysis': AnalysisFilter(AnalysisType.module_path),
         'Description': TextFilter(GUIAlert.description),
         'Detection Point': DetectionPointFilter(DetectionPoint.signature_uuid),
-        'Disposition': MultiSelectFilter(GUIAlert.disposition, nullable=False, options=VALID_DISPOSITIONS),
+        'Disposition': MultiSelectFilter(GUIAlert.disposition, nullable=False, options=list(get_dispositions())),
         'Disposition By': SelectFilter(DispositionBy.display_name, nullable=True),
         'Disposition Date': DateRangeFilter(GUIAlert.disposition_time),
         'Event Date': DateRangeFilter(GUIAlert.event_time),

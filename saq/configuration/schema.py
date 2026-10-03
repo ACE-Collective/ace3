@@ -747,6 +747,30 @@ class ConfigApiKey(BaseModel):
     scope: list[str] = Field(default_factory=list, description='permission patterns ("major:minor") this key is limited to')
 
 
+class DispositionConfig(BaseModel):
+    """One alert disposition (the `dispositions:` block, keyed by name)."""
+    model_config = ConfigDict(extra="forbid")
+
+    rank: int = Field(..., description="rolls an event's alerts up to one disposition: the highest rank wins")
+    css: str = Field(..., description="bootstrap color of the disposition badge (light, success, secondary, warning, danger, ...)")
+    show_save_to_event: bool = Field(default=False, description="the disposition modal offers 'save to event' when this disposition is chosen")
+    analyst_selectable: bool = Field(default=True, description="analysts may set this disposition; when false only ACE sets it, and the server rejects it from analysts")
+
+
+# the per-disposition maps the `dispositions:` block replaced; a site overlay that still sets one
+# would otherwise be silently ignored
+REMOVED_DISPOSITION_CONFIG_KEYS = (
+    "valid_dispositions",
+    "disposition_rank",
+    "disposition_css",
+    "show_save_to_event",
+    "benign_dispositions",
+    "malicious_dispositions",
+)
+
+DISPOSITION_NAME_MAX_LENGTH = 64  # alerts.disposition
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
@@ -819,12 +843,35 @@ class ACEConfig(BaseModel):
     observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
     events: Optional[EventsConfig] = None
     timeline: Optional[TimelineConfig] = None
-    valid_dispositions: Optional[dict[str, bool]] = None
-    disposition_rank: Optional[dict[str, int]] = None
-    disposition_css: Optional[dict[str, str]] = None
-    show_save_to_event: Optional[dict[str, bool]] = None
-    benign_dispositions: Optional[dict[str, bool]] = None
-    malicious_dispositions: Optional[dict[str, bool]] = None
+    dispositions: dict[str, DispositionConfig] = Field(default_factory=dict, description="the alert dispositions, in the order the disposition modals show them; the only list of dispositions there is")
+    disposition_classification: dict[str, Literal["tp", "fp"]] = Field(default_factory=dict, description="disposition -> tp (the detections found malicious activity) or fp (they did not); a disposition not listed is unclassified")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_disposition_keys(cls, data):
+        if isinstance(data, dict):
+            removed = [key for key in REMOVED_DISPOSITION_CONFIG_KEYS if key in data]
+            if removed:
+                raise ValueError(
+                    f"{', '.join(removed)}: replaced by the dispositions: block (one entry per "
+                    f"disposition with rank, css, show_save_to_event, analyst_selectable) and "
+                    f"disposition_classification:; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="after")
+    def _check_dispositions(self):
+        for name in self.dispositions:
+            if name != name.upper() or not name or len(name) > DISPOSITION_NAME_MAX_LENGTH:
+                raise ValueError(
+                    f"disposition name {name!r} must be upper case and at most "
+                    f"{DISPOSITION_NAME_MAX_LENGTH} characters")
+
+        unknown = [name for name in self.disposition_classification if name not in self.dispositions]
+        if unknown:
+            raise ValueError(
+                f"disposition_classification names dispositions that are not configured in "
+                f"dispositions: {', '.join(unknown)}")
+        return self
 
     def model_post_init(self, __context: Any) -> None:
         """Initialize private fields after model validation."""

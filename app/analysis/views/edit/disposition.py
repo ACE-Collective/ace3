@@ -4,8 +4,8 @@ from flask_login import current_user
 from app.alert_ownership import confirmed_takes_from_form, describe_skipped
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.constants import VALID_DISPOSITIONS
 from saq.database.util.alert import set_dispositions
+from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
 
 @analysis.route('/set_disposition', methods=['POST'])
@@ -22,8 +22,9 @@ def set_disposition():
     if user_comment is not None:
         user_comment = user_comment.strip()
 
-    # check if disposition is valid
-    if disposition not in VALID_DISPOSITIONS:
+    # a configured disposition an analyst may set; the modal only offers those, so anything
+    # else is a stale page or a hand-made request
+    if not is_selectable_disposition(disposition):
         flash("invalid alert disposition: {0}".format(disposition))
         return redirect(url_for('analysis.index'))
 

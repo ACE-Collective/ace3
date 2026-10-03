@@ -1,6 +1,8 @@
 import pytest
 from flask import url_for
 
+from saq.configuration.config import get_config
+from saq.configuration.schema import DispositionConfig
 from saq.constants import (
     DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_REVIEW_CORRECT,
@@ -324,3 +326,22 @@ def test_manage_event_details_renders_select_all(web_client):
     assert "event_alerts_master_checkbox" not in response.text
     assert f'data-alert-uuid="{alert.uuid}"' in response.text
 
+
+
+def test_bulk_set_disposition_rejects_a_disposition_analysts_may_not_set(web_client, monkeypatch):
+    monkeypatch.setitem(get_config().dispositions, "GRAYWARE",
+                        DispositionConfig(rank=60, css="secondary", analyst_selectable=False))
+    alert = insert_alert()
+    db = get_db()
+    db.refresh(alert)
+    original_disposition = alert.disposition
+
+    response = web_client.post(url_for("events.bulk_set_disposition"), data={
+        "event_id": EVENT_ID,
+        "alert_uuids": alert.uuid,
+        "disposition": "GRAYWARE",
+    })
+
+    assert response.status_code == 302
+    db.refresh(alert)
+    assert alert.disposition == original_disposition

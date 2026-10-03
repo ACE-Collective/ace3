@@ -24,7 +24,6 @@ from saq.analysis.detection_chain import (
 from saq.database.database_observable import get_observable_disposition_histories
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
-from saq.disposition import get_dispositions
 from saq.error.reporting import report_exception
 from saq.remediation.coverage import get_remediation_coverage
 from saq.remediation.external.database import get_external_checks_for_alert
@@ -670,7 +669,6 @@ def index():
         companies=companies,
         campaigns=campaigns,
         all_users=all_users,
-        dispositions=get_dispositions(),
         domains=domains,
         domain_list=domain_list,
         domain_summary_str=domain_summary_str,

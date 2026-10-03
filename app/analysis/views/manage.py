@@ -52,7 +52,6 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.disposition import get_dispositions
 from saq.gui.alert import GUIAlert
 from saq.gui.manage_columns import MANAGE_COLUMNS_BY_ID
 from saq.remediation.coverage import get_remediation_coverage
@@ -275,7 +274,6 @@ def build_manage_list_context() -> dict:
         # settings
         'ace_config': get_config(),
         'session': session,
-        'dispositions': get_dispositions(),
 
         # filter
         'filters': getFilters(),

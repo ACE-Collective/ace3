@@ -73,7 +73,7 @@
 </td>
 {%- elif column.id == 'disposition' -%}
 <td data-col-id="disposition">
-    <span class="badge border border-dark text-bg-{{dispositions[alert.disposition]['css']}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}", true)'>{{alert.disposition}}</span>
+    <span class="badge border border-dark text-bg-{{disposition_css(alert.disposition)}}" style="cursor:pointer" onmousedown='apply_temp_filter([{"name":"Disposition","inverted":false,"values":["{{alert.disposition}}"]}], "Disposition: {{alert.disposition}}", "{{ url_for("analysis.apply_temp_filter") }}", "{{ url_for("analysis.manage") }}", true)'>{{alert.disposition}}</span>
 </td>
 {%- elif column.id == 'status' -%}
 <td data-col-id="status" style="white-space: nowrap;">{{alert.status}}</td>

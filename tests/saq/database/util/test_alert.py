@@ -28,7 +28,7 @@ from saq.database.util.alert import (
     touch_alerts,
 )
 from saq.database.util.user_management import add_user, delete_user
-from saq.disposition import get_malicious_dispositions
+from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, get_dispositions
 from saq.permissions.user import add_user_permission
 from tests.saq.helpers import create_root_analysis, insert_alert
 
@@ -233,7 +233,7 @@ def test_set_dispositions_malicious_leaves_observable_expiration_alone():
         db.add(ObservableMapping(observable_id=observable.id, alert_id=alert.id))
         db.commit()
 
-        malicious_disposition = next(iter(get_malicious_dispositions()))
+        malicious_disposition = next(d for d in get_dispositions() if get_disposition_class(d) == DISPOSITION_CLASS_TP)
         set_dispositions([alert.uuid], malicious_disposition, user.id)
 
         db.refresh(alert)

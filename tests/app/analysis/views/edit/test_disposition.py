@@ -2,7 +2,10 @@ import pytest
 from flask import url_for
 from unittest.mock import patch, MagicMock
 
-from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, VALID_DISPOSITIONS
+from saq.configuration.config import get_config
+from saq.configuration.schema import DispositionConfig
+from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
+from saq.disposition import get_dispositions
 from saq.database.model import Alert, Comment, Workload
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
@@ -321,9 +324,10 @@ def test_set_disposition_empty_uuid_list(web_client):
 @pytest.mark.integration 
 def test_set_disposition_all_valid_dispositions(web_client):
     """Test setting each valid disposition type."""
-    alerts = [insert_alert() for _ in VALID_DISPOSITIONS]
-    
-    for i, disposition in enumerate(VALID_DISPOSITIONS):
+    dispositions = list(get_dispositions())
+    alerts = [insert_alert() for _ in dispositions]
+
+    for i, disposition in enumerate(dispositions):
         alert = alerts[i]
         response = web_client.post(url_for("analysis.set_disposition"), data={
             "disposition": disposition,
@@ -451,3 +455,51 @@ def test_set_disposition_takes_confirmed_alert(web_client, analyst, other_analys
     row = db.get(Alert, owned.id)
     assert row.disposition == DISPOSITION_FALSE_POSITIVE
     assert row.owner_id == analyst
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("disposition", [
+    # configured once but never selectable, and removed with the disposition clean-up
+    "AUTHORIZED", "DATA_CONTROL",
+    # constants that were never configured, also removed
+    "INSIDER_DATA_CONTROL", "INSIDER_DATA_EXFIL", "APPROVED_BUSINESS", "APPROVED_PERSONAL",
+])
+def test_set_disposition_rejects_removed_dispositions(web_client, disposition):
+    """The configuration is the only list of dispositions; the server validates against it."""
+    alert = insert_alert()
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": disposition,
+        "alert_uuid": alert.uuid
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.refresh(alert)
+    assert alert.disposition != disposition
+
+
+@pytest.mark.integration
+def test_set_disposition_rejects_a_disposition_analysts_may_not_set(web_client, monkeypatch):
+    """analyst_selectable: false means only ACE sets it; the modal does not offer it and the
+    server refuses it from an analyst."""
+    monkeypatch.setitem(get_config().dispositions, "GRAYWARE",
+                        DispositionConfig(rank=60, css="secondary", analyst_selectable=False))
+    alert = insert_alert()
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": "GRAYWARE",
+        "alert_uuid": alert.uuid
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.refresh(alert)
+    assert alert.disposition != "GRAYWARE"
+
+    # and the disposition modal does not offer it
+    page = web_client.get(url_for("analysis.index", direct=alert.uuid))
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert 'id="option_GRAYWARE"' not in html
+    assert 'id="option_DELIVERY"' in html

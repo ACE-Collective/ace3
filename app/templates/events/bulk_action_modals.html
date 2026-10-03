@@ -78,11 +78,11 @@
                 <div class="modal-body" style="display: flex; flex-direction: column; min-height: 400px;">
                     <div class="row" style="flex: 1; display: flex;">
                         <div class="col-md-4" style="display: flex; flex-direction: column;">
-                            {% for disposition in dispositions %}
+                            {% for disposition in selectable_dispositions %}
                                 <div class="form-check">
                                     <input type="radio" class="form-check-input" id="event_option_{{disposition}}" name="disposition" value="{{disposition}}" autocomplete="off" />
-                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="event_option_{{disposition}}">
-                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    <label class="form-check-label label-{{disposition_css(disposition)}}" for="event_option_{{disposition}}">
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}
@@ -130,11 +130,11 @@
                     <div class="row" id="event_review_incorrect_section" style="display: none; flex: 1; margin-top: 10px;">
                         <div class="col-md-4" style="display: flex; flex-direction: column;">
                             <p class="mb-1">Correct disposition:</p>
-                            {% for disposition in dispositions %}
+                            {% for disposition in selectable_dispositions %}
                                 <div class="form-check">
                                     <input type="radio" class="form-check-input" id="event_corrected_option_{{disposition}}" name="corrected_disposition" value="{{disposition}}" autocomplete="off" />
-                                    <label class="form-check-label label-{{dispositions[disposition]['css']}}" for="event_corrected_option_{{disposition}}">
-                                        <span class="badge text-bg-{{dispositions[disposition]['css']}} border border-black"> {{disposition}} </span>
+                                    <label class="form-check-label label-{{disposition_css(disposition)}}" for="event_corrected_option_{{disposition}}">
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}

@@ -2597,95 +2597,47 @@ timeline:
   timezone: America/New_York
 
 # disposition settings
-valid_dispositions:
-  IGNORE: true
-  FALSE_POSITIVE: true
-  AUTHORIZED: true
-  UNKNOWN: true
-  REVIEWED: true
-  GRAYWARE: true
-  POLICY_VIOLATION: true
-  RECONNAISSANCE: true
-  WEAPONIZATION: true
-  DELIVERY: true
-  EXPLOITATION: true
-  INSTALLATION: true
-  COMMAND_AND_CONTROL: true
-  DATA_CONTROL: true
-  EXFIL: true
-  DAMAGE: true
+# The alert dispositions: the only list of them there is. The order is the order the
+# disposition modals show them in.
+#   rank                -- rolls an event's alerts up to one disposition (the highest rank wins)
+#   css                 -- bootstrap color of the badge
+#   show_save_to_event  -- the disposition modal offers "save to event" for it
+#   analyst_selectable  -- (default true) false means only ACE sets it; the server rejects it
+#                          from analysts
+dispositions:
+  OPEN:                {rank: 0,   css: light,     show_save_to_event: false}
+  FALSE_POSITIVE:      {rank: 20,  css: success,   show_save_to_event: false}
+  IGNORE:              {rank: 10,  css: light,     show_save_to_event: false}
+  UNKNOWN:             {rank: 40,  css: secondary, show_save_to_event: true}
+  REVIEWED:            {rank: 50,  css: secondary, show_save_to_event: true}
+  GRAYWARE:            {rank: 60,  css: secondary, show_save_to_event: false}
+  POLICY_VIOLATION:    {rank: 70,  css: warning,   show_save_to_event: false}
+  RECONNAISSANCE:      {rank: 80,  css: warning,   show_save_to_event: true}
+  WEAPONIZATION:       {rank: 90,  css: danger,    show_save_to_event: true}
+  DELIVERY:            {rank: 100, css: danger,    show_save_to_event: true}
+  EXPLOITATION:        {rank: 110, css: danger,    show_save_to_event: true}
+  INSTALLATION:        {rank: 120, css: danger,    show_save_to_event: true}
+  COMMAND_AND_CONTROL: {rank: 130, css: danger,    show_save_to_event: true}
+  EXFIL:               {rank: 150, css: danger,    show_save_to_event: true}
+  DAMAGE:              {rank: 160, css: danger,    show_save_to_event: true}
 
-disposition_rank:
-  IGNORE: 10
-  FALSE_POSITIVE: 20
-  AUTHORIZED: 30
-  UNKNOWN: 40
-  REVIEWED: 50
-  GRAYWARE: 60
-  POLICY_VIOLATION: 70
-  RECONNAISSANCE: 80
-  WEAPONIZATION: 90
-  DELIVERY: 100
-  EXPLOITATION: 110
-  INSTALLATION: 120
-  COMMAND_AND_CONTROL: 130
-  DATA_CONTROL: 140
-  EXFIL: 150
-  DAMAGE: 160
-
-disposition_css:
-  IGNORE: light
-  FALSE_POSITIVE: success
-  AUTHORIZED: success
-  UNKNOWN: secondary
-  REVIEWED: secondary
-  GRAYWARE: secondary
-  POLICY_VIOLATION: warning
-  RECONNAISSANCE: warning
-  WEAPONIZATION: danger
-  DELIVERY: danger
-  EXPLOITATION: danger
-  INSTALLATION: danger
-  COMMAND_AND_CONTROL: danger
-  DATA_CONTROL: danger
-  EXFIL: danger
-  DAMAGE: danger
-  OPEN: light
-
-# which dispositions to show the save to event button for
-show_save_to_event:
-  FALSE_POSITIVE: false
-  AUTHORIZED: true
-  UNKNOWN: true
-  REVIEWED: true
-  GRAYWARE: false
-  POLICY_VIOLATION: false
-  RECONNAISSANCE: true
-  WEAPONIZATION: true
-  DELIVERY: true
-  EXPLOITATION: true
-  INSTALLATION: true
-  COMMAND_AND_CONTROL: true
-  DATA_CONTROL: true
-  EXFIL: true
-  DAMAGE: true
-
-benign_dispositions:
-  FALSE_POSITIVE: true
-  AUTHORIZED: true
-
-malicious_dispositions:
-  GRAYWARE: true
-  POLICY_VIOLATION: true
-  RECONNAISSANCE: true
-  WEAPONIZATION: true
-  DELIVERY: true
-  EXPLOITATION: true
-  INSTALLATION: true
-  COMMAND_AND_CONTROL: true
-  DATA_CONTROL: true
-  EXFIL: true
-  DAMAGE: true
+# What a disposition says about the alert's detections (docs/SVS.md, Part 1):
+#   tp -- they detected malicious activity
+#   fp -- they did not
+# A disposition not listed here is unclassified and records nothing about its detections. The
+# map is logged at WARNING on every start: changing it relabels every detection at once.
+disposition_classification:
+  FALSE_POSITIVE: fp
+  GRAYWARE: tp
+  POLICY_VIOLATION: tp
+  RECONNAISSANCE: tp
+  WEAPONIZATION: tp
+  DELIVERY: tp
+  EXPLOITATION: tp
+  INSTALLATION: tp
+  COMMAND_AND_CONTROL: tp
+  EXFIL: tp
+  DAMAGE: tp
 
 config:
   git_repos_default: etc/saq.git_repos.default.yaml

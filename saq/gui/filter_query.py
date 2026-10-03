@@ -25,7 +25,7 @@ from functools import cached_property
 import pytz
 from sqlalchemy import LABEL_STYLE_TABLENAME_PLUS_COL, and_, exists, false, func, not_, or_, distinct
 
-from saq.constants import VALID_DISPOSITIONS, VALID_DISPOSITION_REVIEWS
+from saq.constants import VALID_DISPOSITION_REVIEWS
 from saq.database.model import (
     Alert,
     AnalysisMapping,
@@ -47,6 +47,7 @@ from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
 )
+from saq.disposition import get_dispositions
 from saq.gui.detection_point_value import parse_detection_point_value
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import parse_date_range
@@ -358,7 +359,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
         'Analysis': lambda: AnalysisFilter(AnalysisType.module_path, inverted=inverted, entity=entity),
         'Description': lambda: TextFilter(entity.description, inverted=inverted),
         'Detection Point': lambda: DetectionPointFilter(DetectionPoint.signature_uuid, inverted=inverted, entity=entity),
-        'Disposition': lambda: MultiSelectFilter(entity.disposition, nullable=False, options=list(VALID_DISPOSITIONS), inverted=inverted),
+        'Disposition': lambda: MultiSelectFilter(entity.disposition, nullable=False, options=list(get_dispositions()), inverted=inverted),
         'Disposition By': lambda: SelectFilter(DispositionBy.display_name, nullable=True, inverted=inverted),
         'Disposition Date': lambda: DateRangeFilter(entity.disposition_time, tz=tz, inverted=inverted),
         'Event Date': lambda: DateRangeFilter(entity.event_time, tz=tz, inverted=inverted),

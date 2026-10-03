@@ -10,12 +10,12 @@ from app.blueprints import events
 from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
-    VALID_DISPOSITIONS,
 )
 from saq.database.model import Comment
 from saq.database.pool import get_db
 from saq.database.util.alert import set_disposition_reviews, set_dispositions, touch_alerts
 from saq.database.util.locking import acquire_lock, release_lock
+from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
 from saq.gui.alert import GUIAlert
 from saq.search.tasks import submit_index_task
@@ -158,7 +158,7 @@ def bulk_set_disposition():
         flash("you must select one or more alerts")
         return redirection
 
-    if disposition not in VALID_DISPOSITIONS:
+    if not is_selectable_disposition(disposition):
         flash("invalid alert disposition: {0}".format(disposition))
         return redirection
 
@@ -199,7 +199,7 @@ def bulk_review_disposition():
         return redirection
 
     if review_result == DISPOSITION_REVIEW_INCORRECT:
-        if corrected_disposition not in VALID_DISPOSITIONS:
+        if not is_selectable_disposition(corrected_disposition):
             flash("invalid corrected disposition: {0}".format(corrected_disposition))
             return redirection
         if not review_comment:

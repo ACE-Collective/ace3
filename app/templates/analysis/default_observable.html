@@ -97,7 +97,7 @@
         <span 
             style="transition: text-decoration 0.1s; cursor: pointer;"
             onmousedown="apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [ ['{{_observable.type}}', decodeURIComponent(atob('{{_observable.value | b64escape}}'))] ]}, {'name': 'Disposition', 'inverted': false, 'values': ['{{disposition}}']}], 'Observable {{_observable.type}} / {{disposition}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')" 
-            class="badge border border-dark text-bg-{{dispositions[disposition]['css']}}"
+            class="badge border border-dark text-bg-{{disposition_css(disposition)}}"
             onmouseover="this.style.textDecoration='underline';"
             onmouseleave="this.style.textDecoration='';"
         >
