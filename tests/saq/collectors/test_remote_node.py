@@ -8,6 +8,7 @@ from saq.analysis.root import RootAnalysis
 from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_ACE, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE
 from saq.database.pool import execute_with_db_cursor, get_db_connection
+from saq.database.util.alert import get_alert_by_uuid
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
@@ -71,6 +72,10 @@ def test_submit_local_alert(root_analysis, remote_node):
     root.load()
     assert root.description == root_analysis.description
 
+    alert = get_alert_by_uuid(new_uuid)
+    assert alert is not None
+    assert alert.storage_dir == get_storage_dir(new_uuid)
+
 @pytest.mark.integration
 def test_submit_remote(root_analysis, remote_node, mock_api_call):
     new_uuid = remote_node.submit_remote(root_analysis.create_submission())
@@ -78,6 +83,23 @@ def test_submit_remote(root_analysis, remote_node, mock_api_call):
     root = RootAnalysis(storage_dir=get_storage_dir(new_uuid))
     root.load()
     assert root.description == root_analysis.description
+
+    # not a correlation-mode submission, so not an alert
+    assert get_alert_by_uuid(new_uuid) is None
+
+@pytest.mark.integration
+def test_submit_remote_alert(root_analysis, remote_node, mock_api_call):
+    """A correlation-mode submission sent to another node becomes an alert there, as it does
+    when submitted locally. The receiving node used to only schedule it, so it was analyzed and
+    never reached an analyst (FR-6)."""
+    root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
+    new_uuid = remote_node.submit_remote(root_analysis.create_submission())
+
+    alert = get_alert_by_uuid(new_uuid)
+    assert alert is not None
+    assert alert.storage_dir == get_storage_dir(new_uuid)
+    assert alert.location == get_global_runtime_settings().saq_node
+    assert alert.description == root_analysis.description
 
 def _local_node_id() -> int:
     """Returns the id of the local node, registering it if this process has not done so yet.

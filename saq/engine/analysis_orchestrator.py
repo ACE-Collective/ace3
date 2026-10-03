@@ -536,6 +536,11 @@ class AnalysisOrchestrator:
                 # make it into observable_mapping (and the alert becomes unsearchable by them).
                 build_index = (not execution_context.root.delayed) or execution_context.analysis_aborted
                 alert.sync(build_index=build_index)
+            else:
+                # every path that puts a root in correlation mode inserts its alerts row
+                # (ALERT()); a root here without one is an alert no analyst will ever see
+                logging.error(
+                    "correlation mode root has no alerts row", extra={"alert_uuid": execution_context.root.uuid})
         except Exception as e:
             logging.error(f"unable to sync alert {execution_context.root}: {e}")
             report_exception()

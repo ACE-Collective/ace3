@@ -9,11 +9,12 @@ import pytest
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
+from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock
-from saq.environment import get_temp_dir
+from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
 
@@ -233,3 +234,69 @@ def test_clear_unknown_uuid(test_client):
 
     # directory is still there
     assert os.path.exists(root.storage_dir)
+
+def _upload(test_client, root: RootAnalysis, **modifiers):
+    """Tars the root's storage directory and posts it to engine.upload."""
+    fp, tar_path = tempfile.mkstemp(suffix='.tar', prefix='upload_{}'.format(root.uuid), dir=get_temp_dir())
+    try:
+        with os.fdopen(fp, 'wb') as tar_fileobj, tarfile.open(fileobj=tar_fileobj, mode='w|') as tar:
+            tar.add(root.storage_dir, '.')
+
+        with open(tar_path, 'rb') as tar_fp:
+            return test_client.post(url_for('engine.upload', uuid=root.uuid), data={
+                'upload_modifiers': json.dumps(modifiers),
+                'archive': (tar_fp, os.path.basename(tar_path))}, headers={'x-ace-auth': get_config().api.api_key})
+    finally:
+        os.remove(tar_path)
+
+
+def _uploadable_root(analysis_mode: str) -> RootAnalysis:
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=analysis_mode,
+                                storage_dir=os.path.join(get_temp_dir(), f'test_upload_{uuid.uuid4()}'))
+    root.initialize_storage()
+    root.save()
+    return root
+
+
+def _alert_rows(alert_uuid: str) -> list[Alert]:
+    get_db().close()  # clear the stale session
+    return get_db().query(Alert).filter(Alert.uuid == alert_uuid).all()
+
+
+@pytest.mark.integration
+def test_upload_correlation_root_creates_the_alert(test_client):
+    """What RemoteNode.submit_remote sends (is_alert=False, sync=True): a correlation-mode root
+    is an alert, so the receiving node inserts its row, as submit_local does (FR-6)."""
+    root = _uploadable_root(ANALYSIS_MODE_CORRELATION)
+
+    result = _upload(test_client, root, overwrite=False, sync=True, move=False, is_alert=False)
+    assert result.status_code == 200
+
+    (alert,) = _alert_rows(root.uuid)
+    assert alert.storage_dir == get_storage_dir(root.uuid)
+    assert alert.storage_dir == result.get_json()['storage_dir']
+    assert alert.location == get_global_runtime_settings().saq_node
+    assert alert.description == root.description
+
+
+@pytest.mark.integration
+def test_upload_analysis_root_creates_no_alert(test_client):
+    root = _uploadable_root(ANALYSIS_MODE_ANALYSIS)
+
+    result = _upload(test_client, root, overwrite=False, sync=True, move=False, is_alert=False)
+    assert result.status_code == 200
+    assert _alert_rows(root.uuid) == []
+
+
+@pytest.mark.integration
+def test_upload_move_of_an_existing_alert_does_not_duplicate_it(test_client):
+    """A move or a drain carries an alert that already has its row; the row is repointed, never
+    inserted again."""
+    root = _uploadable_root(ANALYSIS_MODE_CORRELATION)
+    ALERT(root)
+
+    result = _upload(test_client, root, overwrite=False, sync=False, move=True, is_alert=True)
+    assert result.status_code == 200
+
+    (alert,) = _alert_rows(root.uuid)
+    assert alert.storage_dir == get_storage_dir(root.uuid)

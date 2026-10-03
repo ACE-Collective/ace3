@@ -17,7 +17,10 @@ import uuid as uuidlib
 
 from aceapi.json import json_result
 from saq.configuration.config import get_engine_config
-from saq.database.pool import get_db_connection
+from saq.constants import ANALYSIS_MODE_CORRELATION
+from saq.database.model import Alert
+from saq.database.pool import get_db, get_db_connection
+from saq.database.util.alert import ALERT
 from saq.environment import get_global_runtime_settings, get_temp_dir
 
 from saq.analysis import RootAnalysis
@@ -29,6 +32,10 @@ from flask import request, abort, Response, make_response
 
 KEY_UUID = 'uuid'
 KEY_LOCK_UUID = 'lock_uuid'
+
+
+def alert_exists(alert_uuid: str) -> bool:
+    return get_db().query(Alert.id).filter(Alert.uuid == alert_uuid).first() is not None
 
 @engine_bp.route('/download/<uuid>', methods=['GET'])
 @api_auth_check("engine", "download")
@@ -170,6 +177,15 @@ def upload(uuid):
                 db.commit()
 
             #root.sync()
+
+        # A correlation-mode root is an alert. submit_local() inserts its alerts row before
+        # scheduling it; a root uploaded from another node (RemoteNode.submit_remote, the remote
+        # branch of `ace correlate`) has to get its row here, on the node that now owns it --
+        # the engine only syncs an existing row, so without this the alert is analyzed and lost.
+        # A move or a drain carries an alert that already has its row.
+        if root.analysis_mode == ANALYSIS_MODE_CORRELATION and not alert_exists(uuid):
+            ALERT(root)
+            logging.info("created the alert row for an uploaded correlation root", extra={"alert_uuid": uuid})
 
         if sync:
             root.schedule()
