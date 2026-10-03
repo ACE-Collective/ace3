@@ -470,7 +470,7 @@ class TestSyncAlertToDatabaseBuildIndex:
 
         assert mock_alert.sync.called is expected_sync
 
-    def test_a_missing_alerts_row_is_a_warning(self, orchestrator, caplog):
+    def test_a_missing_alerts_row_is_an_error(self, orchestrator, caplog):
         """A correlation-mode root with no alerts row is an alert no analyst will see; it used
         to be skipped without a word (FR-6)."""
         mock_session = Mock()
@@ -482,11 +482,11 @@ class TestSyncAlertToDatabaseBuildIndex:
         context.analysis_aborted = False
         context.analysis_skipped = False
 
-        with caplog.at_level("WARNING"), patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
+        with caplog.at_level("ERROR"), patch("saq.engine.analysis_orchestrator.get_db", return_value=mock_session):
             orchestrator._sync_alert_to_database(context)
 
         (record,) = [r for r in caplog.records if "has no alerts row" in r.getMessage()]
-        assert record.levelname == "WARNING"
+        assert record.levelname == "ERROR"
         assert record.alert_uuid == context.root.uuid
 
 
