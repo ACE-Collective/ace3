@@ -697,6 +697,55 @@ def load_alert_by_storage_dir(storage_dir: str) -> Optional[Alert]:
 
     return alert
 
+class AlertQueueChange(Base):
+    """One move of an alert from one queue to another, made after (or as) the alert was created:
+    by an alert router (saq/alert_routing/) or by an analyst. The newest row for an alert says
+    who put it in its current queue and what queue it came from, which is what lets a manual
+    move be reversed and keeps a router from undoing a move someone else made."""
+
+    __tablename__ = 'alert_queue_changes'
+    __table_args__ = (
+        Index('ix_alert_queue_changes_alert_id', 'alert_id', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True)
+
+    alert_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    from_queue: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False)
+
+    to_queue: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False)
+
+    reason: Mapped[str] = mapped_column(
+        String(1024),
+        nullable=False)
+
+    # the alert router that made the move, NULL for a person
+    router: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True)
+
+    # who made the move, NULL for a router (or a user since deleted)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+
+    changed_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP(6)'))
+
+
 class Campaign(Base):
     __tablename__ = 'campaign'
     id: Mapped[int] = mapped_column(Integer, nullable=False, primary_key=True)

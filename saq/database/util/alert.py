@@ -2,6 +2,9 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sqlalchemy.orm import Session
+
+from saq.alert_routing import RouteDecision, RouteStage, route_alert
 from saq.analysis.root import RootAnalysis
 from saq.constants import (
     ANALYSIS_MODE_DISPOSITIONED,
@@ -10,7 +13,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_INCORRECT,
     REVIEW_COMMENT_PREFIX,
 )
-from saq.database.model import Alert, new_alert_version
+from saq.database.model import Alert, AlertQueueChange, new_alert_version
 from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
 from saq.environment import get_global_runtime_settings
@@ -166,13 +169,90 @@ def _log_ownership_taken(context: dict, taken_uuids: list, new_owner: str | None
 
 def ALERT(root: RootAnalysis, owner_id: int | None = None) -> Alert:
     """Converts the given RootAnalysis object to an Alert by inserting it into the database. Returns the (detached) Alert object.
+
+    The alert routers decide its queue first (RouteStage.PRE_INSERT, saq/alert_routing/), and a
+    decision is recorded in alert_queue_changes.
+
        :param owner_id: When given, the id of the User who owns the alert from the moment it exists."""
+    original_queue = root.queue
+    decision = route_alert(root, RouteStage.PRE_INSERT)
+    if decision is not None and decision.queue != root.queue:
+        # callers save the root before calling this; save it again so the copy on disk, which
+        # sync() reads back below, carries the routed queue. The tree is deliberately not handed
+        # to sync() in memory: the index has to be built from the serialized tree, the way every
+        # later sync builds it, or a detection whose details are not JSON-native (a datetime)
+        # would hash differently on its first sync and change identity on the next.
+        root.queue = decision.queue
+        root.save()
+
     alert = Alert.create_from_root_analysis(root)
     if owner_id is not None:
         alert.owner_id = owner_id
         alert.owner_time = datetime.now()
     alert.sync()
+
+    if decision is not None and root.queue != original_queue:
+        session = Session.object_session(alert) or get_db()
+        session.add(AlertQueueChange(
+            alert_id=alert.id, from_queue=original_queue, to_queue=root.queue,
+            reason=decision.reason, router=decision.router))
+        session.commit()
+
     return alert
+
+
+def move_alert_to_queue(
+    alert: Alert,
+    queue: str,
+    reason: str,
+    actor_user_id: int | None = None,
+    *,
+    router: str | None = None,
+    root: RootAnalysis | None = None,
+) -> bool:
+    """Moves an existing alert to another queue. Returns False when it is already there.
+
+    Updates the passed Alert in its own session (so a caller holding it, like the engine, never
+    writes the old queue back), rotates its version, records the move in alert_queue_changes
+    with who made it (a router, or the user actor_user_id), commits, refreshes the alert's
+    search payload and writes an audit line.
+
+    The analysis tree carries the queue too. Pass the root when the caller owns it (the engine,
+    which saves it next); otherwise the engine copies the queue into the tree on the alert's
+    next analysis pass. The alerts row is what counts in the meantime.
+    """
+    # the same rules a router's decision is held to
+    RouteDecision(queue=queue, reason=reason)
+    if alert.queue == queue:
+        return False
+
+    from_queue = alert.queue
+    session = Session.object_session(alert) or get_db()
+    alert.queue = queue
+    alert.version = new_alert_version()
+    if root is not None:
+        root.queue = queue
+
+    session.add(AlertQueueChange(
+        alert_id=alert.id, from_queue=from_queue, to_queue=queue, reason=reason,
+        router=router, actor_user_id=actor_user_id))
+    session.add(alert)
+    session.commit()
+
+    submit_payload_task(alert.uuid)
+    logging.info("AUDIT: alert moved to queue", extra={
+        "alert_uuid": alert.uuid, "from_queue": from_queue, "to_queue": queue,
+        "reason": reason, "router": router, "actor_user_id": actor_user_id})
+    return True
+
+
+def get_last_queue_change(alert_id: int) -> AlertQueueChange | None:
+    """The most recent queue move of an alert: who put it in its current queue (a router or a
+    person) and what queue it came from. None if it never moved."""
+    return (get_db().query(AlertQueueChange)
+            .filter(AlertQueueChange.alert_id == alert_id)
+            .order_by(AlertQueueChange.id.desc())
+            .first())
 
 def get_alert_by_uuid(uuid: str) -> Alert | None:
     """Given a UUID, this function will return the Alert object from the database, or None if it does not exist."""

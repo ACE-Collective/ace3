@@ -224,6 +224,15 @@ class CommandTypeConfig(BaseModel):
     python_class: str = Field(..., description="CorrelationCommand subclass name within python_module")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the CorrelationCommand subclass")
 
+class AlertRouterConfig(BaseModel):
+    """An alert router (saq/alert_routing/, docs/INTEGRATIONS.md "Routing alerts")."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="unique name of the router; recorded with every queue change it makes")
+    python_module: str = Field(..., description="dotted module path containing the AlertRouter subclass")
+    python_class: str = Field(..., description="AlertRouter subclass name within python_module")
+    priority: int = Field(..., description="routers run in ascending priority and the first decision wins; the built-in detection queue router is 500")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the AlertRouter subclass after name and priority")
+
 class ExecutableSandboxConfig(BaseModel):
     """limits for the Landlock sandbox a correlate `type: executable` command runs in (saq/collectors/hunter/correlation/sandbox.py)"""
     model_config = ConfigDict(extra="forbid")
@@ -843,6 +852,7 @@ class ACEConfig(BaseModel):
     observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
     events: Optional[EventsConfig] = None
     timeline: Optional[TimelineConfig] = None
+    alert_routers: list[AlertRouterConfig] = Field(default_factory=list, description="alert routers to load in every process that creates or analyzes alerts, next to the built-in ones (see docs/INTEGRATIONS.md)")
     dispositions: dict[str, DispositionConfig] = Field(default_factory=dict, description="the alert dispositions, in the order the disposition modals show them; the only list of dispositions there is")
     disposition_classification: dict[str, Literal["tp", "fp"]] = Field(default_factory=dict, description="disposition -> tp (the detections found malicious activity) or fp (they did not); a disposition not listed is unclassified")
 

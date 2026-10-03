@@ -21,7 +21,7 @@ class DetectionPoint:
         self.description = description
         self.details = details
         # an optional queue this detection requests the resulting alert be routed to
-        # (see saq.engine.analysis_orchestrator._apply_detection_queue)
+        # (see saq.alert_routing.detection_queue.DetectionQueueRouter)
         self.queue = queue
         # signature attribution: which signature produced this detection and at what version.
         # both are required (never null) - default in the constructor so this is the single

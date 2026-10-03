@@ -1077,12 +1077,19 @@ is passed to all three (§19.8). Two things follow from that:
 - whitelisted roots (unless `forced_alerts`).
 
 If `root.has_detections()` (or `forced_alerts`) and `alerting_enabled`, the mode
-is set to `correlation`. Just before that, `_apply_detection_queue` may reroute
-the alert: if the root is still on `QUEUE_DEFAULT` and **every** detection point
-(tree-wide plus the root's own) carries a `queue`, the alert is routed to the
-lowest-sorting requested queue. One plain detection anywhere keeps the default
-queue — the reasoning being that a "real" detection should stay where analysts
-look.
+is set to `correlation`, and `_convert_to_alert` creates the alert through
+`ALERT()`. The alert routers decide its queue there (`saq/alert_routing/`,
+`docs/INTEGRATIONS.md` "Routing alerts"). The built-in `DetectionQueueRouter`
+routes it when the root is still on `QUEUE_DEFAULT` and **every** detection
+point (tree-wide, the root's own included) carries a `queue`: the alert goes to
+the lowest-sorting requested queue. One plain detection anywhere keeps the
+default queue — the reasoning being that a "real" detection should stay where
+analysts look.
+
+On every later pass over the alert, `_check_disposition` copies the queue of the
+`alerts` row into the tree before analysis (a router or an analyst may have
+moved it), and `_sync_alert_to_database` lets the routers move an `OPEN`,
+unowned alert after the pass (`RouteStage.POST_ANALYSIS`).
 
 ### 13.3 Mode transitions
 

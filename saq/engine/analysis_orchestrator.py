@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 
+from saq.alert_routing import RouteStage, route_alert
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import (
     get_config,
@@ -12,13 +13,13 @@ from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     ANALYSIS_MODE_DISPOSITIONED,
     DISPOSITION_OPEN,
-    QUEUE_DEFAULT,
     STATE_ANALYST_REQUESTED_ANALYSIS,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry
-from saq.database.util.alert import ALERT
+from saq.database.util.alert import ALERT, move_alert_to_queue
+from saq.database.util.automation_user import lookup_automation_user_id
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.errors import AnalysisTimeoutError
@@ -191,12 +192,21 @@ class AnalysisOrchestrator:
             stop_analysis_on_dispositions = get_engine_config().stop_analysis_on_dispositions
 
             # Check to see if we need to stop analysis based on the settings
-            disposition = (
+            row = (
                 get_db()
-                .query(Alert.disposition)
+                .query(Alert.disposition, Alert.queue)
                 .filter(Alert.uuid == execution_context.root.uuid)
-                .scalar()
+                .first()
             )
+            disposition = row.disposition if row is not None else None
+
+            # the alerts row owns the queue once the alert exists (a router or an analyst can move
+            # it); copy it into the tree before analysis, so modules that check the queue see it
+            if row is not None and row.queue and row.queue != execution_context.root.queue:
+                logging.info(
+                    f"alert {execution_context.root} moved from queue {execution_context.root.queue} to {row.queue}",
+                    extra={"alert_uuid": execution_context.root.uuid, "queue": row.queue})
+                execution_context.root.queue = row.queue
             
             if (
                 disposition is not None
@@ -388,37 +398,9 @@ class AnalysisOrchestrator:
             logging.info(
                 f"{execution_context.root} has {reason} - changing mode to {ANALYSIS_MODE_CORRELATION}"
             )
-            # resolve a queue requested by detection meta only on the transition into an alert,
-            # when the full set of pre-alert detections is known (see _apply_detection_queue)
-            if execution_context.root.analysis_mode != ANALYSIS_MODE_CORRELATION:
-                self._apply_detection_queue(execution_context.root)
+            # the alert's queue is decided when ALERT() creates it (RouteStage.PRE_INSERT): the
+            # detection queue router there sees the full set of pre-alert detections
             execution_context.root.analysis_mode = ANALYSIS_MODE_CORRELATION
-
-    def _apply_detection_queue(self, root):
-        """Route the resulting alert to a queue requested by detection meta (e.g. a yara rule's
-        `queue` meta), but only when EVERY detection point is queue-routed. If any plain
-        (non-routed) detection exists the alert is "real" and stays in the normal queue so analysts
-        see it. An explicitly-set queue (from submission/hunter override) is never clobbered."""
-        if root.queue != QUEUE_DEFAULT:
-            return
-
-        # all_detection_points walks analyses and observables but omits the root's own detection
-        # points, so include them explicitly (modules such as tag.py add detections on the root)
-        detection_points = list(root.all_detection_points) + list(root.detections)
-        if not detection_points:
-            return
-
-        queues = {getattr(dp, "queue", None) for dp in detection_points}
-        if None in queues:
-            # at least one normal detection -> keep the default queue
-            return
-
-        requested = sorted(q for q in queues if q)
-        chosen = requested[0]
-        if len(requested) > 1:
-            logging.warning(f"{root} has multiple detection queues requested {requested}; routing to {chosen}")
-        logging.info(f"routing {root} to queue {chosen} based on detection meta")
-        root.queue = chosen
 
     def _handle_analysis_mode_changes(self, execution_context: EngineExecutionContext) -> bool:
         """Handle analysis mode changes and their consequences.
@@ -535,6 +517,7 @@ class AnalysisOrchestrator:
                 # root.delayed is stale, so force the rebuild now or the observables never
                 # make it into observable_mapping (and the alert becomes unsearchable by them).
                 build_index = (not execution_context.root.delayed) or execution_context.analysis_aborted
+                self._route_post_analysis(execution_context, alert)
                 alert.sync(build_index=build_index)
             else:
                 # every path that puts a root in correlation mode inserts its alerts row
@@ -547,6 +530,29 @@ class AnalysisOrchestrator:
         finally:
             if session:
                 session.close()
+
+    def _route_post_analysis(self, execution_context: EngineExecutionContext, alert: Alert):
+        """Let the alert routers move an existing alert after an analysis pass
+        (RouteStage.POST_ANALYSIS): for an alert inserted before analysis (a hunt, an API
+        submission) whose routing evidence only appears once it is analyzed.
+
+        Only an OPEN alert that nobody has taken is moved. Moving an alert out from under an
+        analyst working it is worse than leaving it; the automation user counts as nobody,
+        because setting a disposition as automation also makes it the owner."""
+        root = execution_context.root
+        decision = route_alert(root, RouteStage.POST_ANALYSIS)
+        if decision is None or decision.queue == alert.queue:
+            return
+
+        owned = alert.owner_id is not None and alert.owner_id != lookup_automation_user_id()
+        if alert.disposition != DISPOSITION_OPEN or owned:
+            logging.info(
+                f"not moving alert {root} to queue {decision.queue}: it is "
+                f"{'owned' if owned else 'dispositioned'}",
+                extra={"alert_uuid": root.uuid, "queue": decision.queue, "router": decision.router})
+            return
+
+        move_alert_to_queue(alert, decision.queue, decision.reason, router=decision.router, root=root)
 
     def _handle_cleanup(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
         """Handle cleanup if the analysis mode supports it."""

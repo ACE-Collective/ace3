@@ -72,6 +72,7 @@ Follow these steps to bulid a new integration.
 1. Create an `etc` directory and put your configuration files in here.
 1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 1. (optional) Add correlation hunt query sources or command types. See [Extending correlation hunts](#extending-correlation-hunts).
+1. (optional) Add an alert router that decides which queue an alert goes to. See [Routing alerts](#routing-alerts).
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
 
@@ -252,6 +253,73 @@ Checklist:
 
 `integrations.example/example/src/example/correlation.py` (`example_echo`) is a minimal working
 example.
+
+## Routing alerts
+
+An **alert router** decides which queue an alert belongs in (`saq/alert_routing/`). Routers run
+in every process that creates or analyzes alerts (engine workers, collectors, the API, the GUI
+and the CLI), in ascending `priority`, and the first one that returns a decision wins. Core
+ships one built-in router, `detection_queue` (priority 500), which routes a new alert to the
+queue its detections' `queue` meta requests when every detection requests one. Register yours
+from `etc/saq.integration.yaml`; the list is appended to core's (empty) `alert_routers` because
+lists append when config files merge:
+
+```yaml
+alert_routers:
+  - name: vendor_router         # unique; recorded with every queue change it makes
+    python_module: vendor.routing
+    python_class: VendorRouter
+    priority: 200               # below 500 runs before the detection queue router
+    kwargs: {}                  # constructor arguments after name and priority
+```
+
+Subclass `AlertRouter` (`saq/alert_routing/router.py`): accept `name` and `priority` (and your
+`kwargs`) in `__init__` and pass the first two to `super().__init__()`, and implement
+`route(root, stage) -> RouteDecision | None`. A decision is `RouteDecision(queue, reason)`; the
+registry fills in your router's name.
+
+The two stages:
+
+- **`RouteStage.PRE_INSERT`** runs inside `ALERT()`, the one function every alert insert goes
+  through, before the `alerts` row exists. The decision becomes the alert's queue, in the row
+  and in the saved tree, and is recorded in `alert_queue_changes`. Alerts the engine converts
+  arrive here fully analyzed; alerts inserted at submission time (hunts, the API) arrive before
+  any analysis.
+- **`RouteStage.POST_ANALYSIS`** runs in the engine after each analysis pass over an existing
+  alert, for routing evidence that only appears once the alert is analyzed. The decision moves
+  the alert through `move_alert_to_queue()`, but only while it is `OPEN` and nobody has taken it
+  (the automation user counts as nobody). An alert an analyst is working stays where it is.
+
+The contract:
+
+- **A router never changes the tree.** It reads the root and returns a decision. The tree
+  belongs to the caller (an engine worker, a collector, an API request), and the routed queue is
+  the only change `ALERT()` or the engine makes on a router's behalf. A tag or detection belongs
+  in an analysis module, which runs in the engine under the alert's lock and is indexed with the
+  rest of the analysis. A router may write rows of its own in the caller's transaction (key them
+  on the alert uuid: at `PRE_INSERT` the row has no id yet).
+- **A router should not raise.** If it does, or returns anything but a `RouteDecision` or
+  `None`, the exception is reported, the router is skipped and the next one runs. A router never
+  breaks an alert insert or an analysis pass.
+- **A router is shared by every thread of its process**, so `route()` must be thread-safe.
+  Build expensive clients lazily.
+- **A router is cheap when it has nothing to do.** It runs on every alert insert and every
+  analysis pass over an alert.
+- A router that fails to load (bad module, class or `kwargs`) is logged at startup, the others
+  load, and `saq.alert_routing.get_alert_router_load_errors()` reports why.
+
+To move an alert yourself (an analyst action, an API), call
+`saq.database.util.alert.move_alert_to_queue(alert, queue, reason, actor_user_id, router=...)`. It
+updates the row, records the move with who made it, refreshes the alert's search payload and
+writes an audit line; `get_last_queue_change(alert_id)` returns the newest move, which says what
+queue the alert came from.
+
+**Tests.** Call `saq.alert_routing.register_alert_router()` in a test and
+`reset_alert_routers()` after it (`tests/saq/alert_routing/conftest.py` does this for every
+test there), then call `route_alert(root, stage)` or `ALERT(root)`.
+
+`integrations.example/example/src/example/routing.py` (`ExampleTagRouter`) routes a new alert
+that carries one tag to one queue and does nothing to any other alert.
 
 ## Notes
 
