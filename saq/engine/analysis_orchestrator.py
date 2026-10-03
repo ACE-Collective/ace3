@@ -19,7 +19,6 @@ from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.alert import ALERT, move_alert_to_queue
-from saq.database.util.automation_user import lookup_automation_user_id
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.errors import AnalysisTimeoutError
@@ -544,7 +543,7 @@ class AnalysisOrchestrator:
         if decision is None or decision.queue == alert.queue:
             return
 
-        owned = alert.owner_id is not None and alert.owner_id != lookup_automation_user_id()
+        owned = alert.owner_id is not None and alert.owner_id != get_config().global_settings.automation_user_id
         if alert.disposition != DISPOSITION_OPEN or owned:
             logging.info(
                 f"not moving alert {root} to queue {decision.queue}: it is "

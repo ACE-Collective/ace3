@@ -19,6 +19,9 @@ global:
   # SELECT * FROM company
   company_name: default
   company_id: 1
+  # the database id of the automation user (username ace) that ACE attributes its own actions to
+  # this user is created by the database seed (saq/database/seed.py) and must match it
+  automation_user_id: 1
   # shows up in the GUI so you know which instance you're logged into
   # supplied by docker-compose.yml (x-common-env) so that two instances running on the same host
   # are distinguishable; see docs/MULTI_INSTANCE.md

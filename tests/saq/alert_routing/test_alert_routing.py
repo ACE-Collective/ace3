@@ -9,11 +9,11 @@ import pytest
 
 from saq.alert_routing import AlertRouter, RouteDecision, RouteStage, register_alert_router
 from saq.analysis.root import RootAnalysis, load_root
+from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, QUEUE_DEFAULT
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, get_last_queue_change, move_alert_to_queue
-from saq.database.util.automation_user import lookup_automation_user_id
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
@@ -218,7 +218,7 @@ class TestPostAnalysis:
         to move the alert."""
         root, alert = correlation_alert
         get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(
-            owner_id=lookup_automation_user_id()))
+            owner_id=get_config().global_settings.automation_user_id))
         get_db().commit()
 
         self._sync(root)

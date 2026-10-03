@@ -3,7 +3,7 @@ import pytest
 from saq.constants import F_TEST
 from saq.database.model import Observable, ObservableRemediationMapping, Remediation
 from saq.database.pool import get_db
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.remediation.target import DefaultObservableRemediationInterface, ObservableRemediationInterface, RemediationTarget, get_observable_remediation_interfaces, register_observable_remediation_interface
 from saq.remediation.types import RemediationAction, RemediationStatus
 
@@ -12,14 +12,14 @@ def test_queue_remediation():
     assert get_db().query(Remediation).count() == 0
     assert get_db().query(Observable).count() == 0
     target = RemediationTarget("custom", F_TEST, "test")
-    remediation_id = target.queue_remediation(RemediationAction.REMOVE, get_global_runtime_settings().automation_user_id)
+    remediation_id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
     remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
     assert remediation
     assert remediation.name == "custom"
     assert remediation.type == F_TEST
     assert remediation.key == "test"
     assert remediation.action == RemediationAction.REMOVE.value
-    assert remediation.user_id == get_global_runtime_settings().automation_user_id
+    assert remediation.user_id == get_config().global_settings.automation_user_id
     assert remediation.result is None
     assert remediation.restore_key is None
     assert remediation.comment is None

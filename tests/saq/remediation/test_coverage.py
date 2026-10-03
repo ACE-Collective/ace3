@@ -11,7 +11,7 @@ from saq.database.database_observable import upsert_observable
 from saq.database.model import ExternalRemediationCheck, ObservableRemediationMapping, Remediation
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.environment import get_global_runtime_settings
+from saq.configuration.config import get_config
 from saq.observables.generator import create_observable
 from saq.remediation.coverage import (
     ACE_SOURCE,
@@ -313,7 +313,7 @@ def test_get_remediation_coverage_reads_all_three_sources():
         action="remove",
         status="COMPLETED",
         result="SUCCESS",
-        user_id=get_global_runtime_settings().automation_user_id,
+        user_id=get_config().global_settings.automation_user_id,
     )
     db.add(remediation)
     db.flush()
