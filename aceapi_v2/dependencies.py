@@ -6,11 +6,11 @@ Supports dual authentication:
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Optional
 from urllib.parse import urlsplit
 
-from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi import Depends, HTTPException, Query, Request, Security, status
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from aceapi_v2.auth import (
     verify_flask_session,
 )
 from aceapi_v2.database import get_async_session
+from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS
 from saq.permissions.logic import key_scope_allows, user_has_permission_async
 
 # Security scheme - appears in the Swagger UI "Authorize" dialog
@@ -146,27 +147,84 @@ def require_permission(major: str, minor: str, auth_dependency: Callable | None 
         auth: Annotated[ApiAuthResult, Security(auth_dependency)],
         session: Annotated[AsyncSession, Depends(get_async_session)],
     ) -> ApiAuthResult:
-        # Effective permission is the intersection of the user's permissions and the key's scope.
-        # user_has_permission_async is unchanged, so group/user DENY is fully preserved; the key
-        # scope is a pure AND-narrowing on top. Config keys have no user to intersect with, so
-        # their scope decides alone (a None scope is the deprecated legacy bypass).
-        if auth.auth_type == API_AUTH_TYPE_USER:
-            if not await user_has_permission_async(session, auth.auth_user_id, major, minor):
-                logging.warning(
-                    f"user {auth.auth_user_id} does not have permission {major}.{minor}"
-                )
-                raise HTTPException(status_code=403, detail="Permission denied")
-
-        if auth.auth_type in (API_AUTH_TYPE_USER, API_AUTH_TYPE_CONFIG):
-            if auth.key_scope is not None and not key_scope_allows(auth.key_scope, major, minor):
-                logging.warning(
-                    f"api key '{auth.auth_name}' ({auth.auth_type}) scope does not permit {major}.{minor}"
-                )
-                raise HTTPException(status_code=403, detail="Permission denied")
-
+        await check_permission(session, auth, major, minor)
         return auth
 
     return permission_dependency
+
+
+async def check_permission(session: AsyncSession, auth: ApiAuthResult, major: str, minor: str) -> None:
+    """Raise 403 unless the caller holds the permission. require_permission() for a route whose
+    permission is only known once the request is read (a saved filter's screen, for instance)."""
+
+    # Effective permission is the intersection of the user's permissions and the key's scope.
+    # user_has_permission_async is unchanged, so group/user DENY is fully preserved; the key
+    # scope is a pure AND-narrowing on top. Config keys have no user to intersect with, so
+    # their scope decides alone (a None scope is the deprecated legacy bypass).
+    if auth.auth_type == API_AUTH_TYPE_USER:
+        if not await user_has_permission_async(session, auth.auth_user_id, major, minor):
+            logging.warning(
+                f"user {auth.auth_user_id} does not have permission {major}.{minor}"
+            )
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+    if auth.auth_type in (API_AUTH_TYPE_USER, API_AUTH_TYPE_CONFIG):
+        if auth.key_scope is not None and not key_scope_allows(auth.key_scope, major, minor):
+            logging.warning(
+                f"api key '{auth.auth_name}' ({auth.auth_type}) scope does not permit {major}.{minor}"
+            )
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+
+async def _holds(session: AsyncSession, auth: ApiAuthResult, major: str, minor: str) -> bool:
+    try:
+        await check_permission(session, auth, major, minor)
+    except HTTPException:
+        return False
+    return True
+
+
+def require_screen_permission(screen_name: Callable[..., Awaitable[Optional[str]]]) -> Callable:
+    """Factory for the gate on routes that act on a filter screen (saq/gui/filter_screens.py):
+    saved filters, and the screen's descriptor and share-link encoding.
+
+    A screen names the permission that reads its data, and its routes require that one, so which
+    permission applies is only known from the request. screen_name is a dependency that resolves
+    it (from a query or path parameter, or from the row a uuid names), returning None when it
+    names no registered screen. Then the caller must hold the permission of at least one screen:
+    the route answers the 404, but a credential that may use no filter screen at all (a scoped
+    API key for another task) is refused here, like on every other gated route.
+    """
+
+    async def screen_permission_dependency(
+        auth: Annotated[ApiAuthResult, Security(get_current_auth)],
+        session: Annotated[AsyncSession, Depends(get_async_session)],
+        name: Annotated[Optional[str], Depends(screen_name)],
+    ) -> ApiAuthResult:
+        screen = FILTER_SCREENS.get(name) if name else None
+        if screen is not None:
+            await check_permission(session, auth, *screen.permission)
+            return auth
+
+        for permission in sorted({s.permission for s in FILTER_SCREENS.values()}):
+            if await _holds(session, auth, *permission):
+                return auth
+
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    return screen_permission_dependency
+
+
+async def screen_from_query(
+    screen: Annotated[str, Query(max_length=32, description="the screen the saved filters belong to")] = ALERTS_SCREEN.name,
+) -> Optional[str]:
+    """The ?screen= of a request (default: the alert manage page)."""
+    return screen
+
+
+async def screen_from_path(screen: str) -> Optional[str]:
+    """The {screen} of a request's path."""
+    return screen
 
 
 def require_self_service(auth_dependency: Callable | None = None) -> Callable:

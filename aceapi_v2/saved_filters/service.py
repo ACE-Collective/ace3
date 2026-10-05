@@ -101,6 +101,13 @@ async def _get_row(session: AsyncSession, filter_uuid: str) -> SavedFilter | Non
     return result.scalar_one_or_none()
 
 
+async def get_saved_filter_screen(session: AsyncSession, filter_uuid: str) -> str | None:
+    """The screen a row belongs to, whoever owns it, or None for an unknown row. Used to check
+    the screen's permission before the row is touched."""
+    result = await session.execute(select(SavedFilter.screen).where(SavedFilter.uuid == filter_uuid))
+    return result.scalar_one_or_none()
+
+
 async def _owned_row(session: AsyncSession, filter_uuid: str, user_id: int) -> SavedFilter | None:
     row = await _get_row(session, filter_uuid)
     if row is None:

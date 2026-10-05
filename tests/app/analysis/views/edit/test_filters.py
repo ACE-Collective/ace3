@@ -33,11 +33,6 @@ def _names(filters):
     return [f["name"] for f in filters]
 
 
-def _saved_names():
-    from app.analysis.views.session.filters import get_saved_filter_list
-    return [f.name for f in get_saved_filter_list()]
-
-
 def _apply(web_client, filters):
     return web_client.post(url_for("analysis.set_filters"), data={"filters": json.dumps(filters)})
 
@@ -52,7 +47,6 @@ TAG = [{"name": "Tag", "inverted": False, "values": ["needs_research"]}]
 
 # an unparseable relative-date token: rejected by FilterEntry at write time
 BAD_DATE = [{"name": "Alert Date", "inverted": False, "values": ["-7dd"]}]
-UNKNOWN_NAME = [{"name": "Nonexistent", "inverted": False, "values": ["x"]}]
 
 
 @pytest.mark.integration
@@ -305,9 +299,9 @@ def test_overlay_on_a_temp_filter_builds_on_the_temp(web_client):
 
 
 @pytest.mark.integration
-def test_overlay_label_names_the_selected_filter(web_client):
+def test_overlay_label_names_the_selected_filter(web_client, analyst):
     _apply(web_client, QUEUE)
-    web_client.post(url_for("analysis.create_saved_filter"), data={"name": "My Queue"})
+    _save_as(web_client, analyst, "My Queue", QUEUE)
 
     _overlay(web_client, OBSERVABLE)
 
@@ -371,43 +365,61 @@ def test_overlay_rejects_an_invalid_filter(web_client):
 #
 # saved filters
 #
+# Saving, deleting and ordering saved filters goes through /api/v2/saved-filters
+# (static/js/saved_filters.js); the API's own tests cover validation and ownership. What the page
+# still does in Flask is SELECT a filter, which is session state: a Save as or a Save ends in
+# select_filter. These tests do what the page does: the call the API makes, then select_filter.
+#
+
+def _save_as(web_client, analyst, name, filters):
+    """Save as: the API creates the row, then the page selects it."""
+    from aceapi_v2.saved_filters import service
+    from aceapi_v2.saved_filters.schemas import SavedFilterCreate
+    from aceapi_v2.sync import run_async_with_session
+
+    saved = run_async_with_session(
+        service.create_saved_filter, analyst, SavedFilterCreate(name=name, filters=filters), screen="alerts")
+    assert web_client.post(url_for("analysis.select_filter", filter_uuid=saved.uuid)).status_code == 204
+    return saved.uuid
+
+
+def _save(web_client, analyst, filter_uuid, filters):
+    """Save: the API overwrites the row, then the page selects it again."""
+    from aceapi_v2.saved_filters import service
+    from aceapi_v2.saved_filters.schemas import SavedFilterUpdate
+    from aceapi_v2.sync import run_async_with_session
+
+    run_async_with_session(service.update_saved_filter, filter_uuid, analyst, SavedFilterUpdate(filters=filters))
+    assert web_client.post(url_for("analysis.select_filter", filter_uuid=filter_uuid)).status_code == 204
+
 
 @pytest.mark.integration
-def test_save_as_then_select(web_client):
+def test_save_as_then_select(web_client, analyst):
     _apply(web_client, TAG)
-    response = web_client.post(url_for("analysis.create_saved_filter"), data={"name": "Research"})
-    assert response.status_code == 200
+    filter_uuid = _save_as(web_client, analyst, "Research", TAG)
 
-    filter_uuid = response.get_json()["uuid"]
     state = _state(web_client)
     assert state["filter_base_uuid"] == filter_uuid
     assert state["filter_state"] == "clean"
 
     _apply(web_client, QUEUE)
     assert web_client.post(url_for("analysis.select_filter", filter_uuid=filter_uuid)).status_code == 204
-    assert [f["name"] for f in _effective(web_client)] == ["Tag"]
+    assert _names(_effective(web_client)) == ["Tag"]
 
 
 @pytest.mark.integration
-def test_duplicate_name_is_a_conflict(web_client):
-    _apply(web_client, TAG)
-    web_client.post(url_for("analysis.create_saved_filter"), data={"name": "Dupe"})
-    response = web_client.post(url_for("analysis.create_saved_filter"), data={"name": "Dupe"})
-    assert response.status_code == 409
+def test_deleting_the_selected_filter_leaves_a_usable_page(web_client, analyst):
+    """The API deletes the row and leaves the session alone. The dangling uuid must degrade to
+    the default set rather than 500 on a page the analyst cannot escape without clearing
+    cookies."""
+    from aceapi_v2.saved_filters import service
+    from aceapi_v2.sync import run_async_with_session
 
+    filter_uuid = _save_as(web_client, analyst, "Doomed", TAG)
+    assert run_async_with_session(service.delete_saved_filter, filter_uuid, analyst)
 
-@pytest.mark.integration
-def test_deleting_the_selected_filter_leaves_a_usable_page(web_client):
-    """A dangling uuid must degrade to the default set rather than 500 on a page the analyst
-    cannot escape without clearing cookies."""
-    _apply(web_client, TAG)
-    filter_uuid = web_client.post(
-        url_for("analysis.create_saved_filter"), data={"name": "Doomed"}).get_json()["uuid"]
-
-    assert web_client.post(
-        url_for("analysis.delete_saved_filter", filter_uuid=filter_uuid)).status_code == 204
-    assert _state(web_client)["filter_base_uuid"] is None
     assert web_client.get(url_for("analysis.manage")).status_code == 200
+    assert _state(web_client)["filter_base_uuid"] is None
 
 
 @pytest.mark.integration
@@ -415,45 +427,15 @@ def test_select_unknown_filter_is_a_404(web_client):
     assert web_client.post(url_for("analysis.select_filter", filter_uuid="nope")).status_code == 404
 
 
-#
-# WYSIWYG saves: what the Edit Filters dialog shows is what Save / Save as persists
-#
-# The editor posts its rows with the save. An ABSENT filters field still means "save
-# whatever is in effect" -- that is the temp-banner "Save a copy" path, and it is what a
-# browser holding pre-upgrade JS posts during a rolling deploy.
-#
-
 @pytest.mark.integration
-def test_save_as_stores_the_posted_filter_not_the_session_one(web_client):
-    """The reported bug: Reset, Edit, build a filter, Save as -- and the OLD filter was
-    saved, because the route read the session instead of the request."""
+def test_save_shows_what_was_saved(web_client, analyst):
+    """After Save the page shows the saved contents, with no unsaved-changes marker."""
     _apply(web_client, QUEUE)
+    filter_uuid = _save_as(web_client, analyst, "Mine", QUEUE)
 
-    response = web_client.post(url_for("analysis.create_saved_filter"),
-                               data={"name": "WYSIWYG", "filters": json.dumps(TAG)})
-    assert response.status_code == 200
-    filter_uuid = response.get_json()["uuid"]
-
-    assert _names(_stored(filter_uuid)) == ["Tag"]
-    # saving also applies: create_saved_filter selects what it just wrote
-    assert _names(_effective(web_client)) == ["Tag"]
-
-    state = _state(web_client)
-    assert state["filter_base_uuid"] == filter_uuid
-    assert state["filter_state"] == "clean"
-
-
-@pytest.mark.integration
-def test_save_overwrites_with_the_posted_filter(web_client):
-    """Save had the same bug, and worse: it wrote the pre-edit contents while clearing the
-    unsaved-changes marker, so the GUI confirmed a save that discarded the edit."""
-    _apply(web_client, QUEUE)
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Mine"}).get_json()["uuid"]
-
-    response = web_client.post(url_for("analysis.update_saved_filter", filter_uuid=filter_uuid),
-                               data={"save_current": "on", "filters": json.dumps(TAG)})
-    assert response.status_code == 204
+    _apply(web_client, TAG)
+    assert _state(web_client)["filter_state"] == "dirty"
+    _save(web_client, analyst, filter_uuid, TAG)
 
     assert _names(_stored(filter_uuid)) == ["Tag"]
     assert _names(_effective(web_client)) == ["Tag"]
@@ -461,103 +443,24 @@ def test_save_overwrites_with_the_posted_filter(web_client):
 
 
 @pytest.mark.integration
-def test_save_rejects_an_unparseable_posted_date_without_a_500(web_client):
-    """The filter read has to sit INSIDE the try. It was outside, which was safe only while
-    the payload came from storage; a client payload turns a 400 into a 500."""
-    _apply(web_client, QUEUE)
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Mine"}).get_json()["uuid"]
-
-    response = web_client.post(url_for("analysis.update_saved_filter", filter_uuid=filter_uuid),
-                               data={"save_current": "on", "filters": json.dumps(BAD_DATE)})
-    assert response.status_code == 400
-    assert _names(_stored(filter_uuid)) == ["Queue"], "a rejected save must write nothing"
-
-
-@pytest.mark.integration
-def test_save_as_rejects_an_unparseable_posted_date(web_client):
-    _apply(web_client, QUEUE)
-    response = web_client.post(url_for("analysis.create_saved_filter"),
-                               data={"name": "Bad", "filters": json.dumps(BAD_DATE)})
-    assert response.status_code == 400
-    assert _saved_names() == [], "a rejected save must not leave a partial row"
-
-
-@pytest.mark.integration
-def test_save_as_rejects_an_unknown_posted_filter_name(web_client):
-    _apply(web_client, QUEUE)
-    response = web_client.post(url_for("analysis.create_saved_filter"),
-                               data={"name": "Bad", "filters": json.dumps(UNKNOWN_NAME)})
-    assert response.status_code == 400
-    assert _saved_names() == []
-
-
-@pytest.mark.integration
-def test_save_as_rejects_an_empty_posted_filter(web_client):
-    """An empty list is NOT the same as an absent field. Clearing every row and saving is a
-    mistake, not a request to save "match everything"."""
-    _apply(web_client, QUEUE)
-    response = web_client.post(url_for("analysis.create_saved_filter"),
-                               data={"name": "Empty", "filters": json.dumps([])})
-    assert response.status_code == 400
-    assert _saved_names() == []
-
-
-@pytest.mark.integration
-def test_a_save_never_leaves_the_session_dirty(web_client):
+def test_a_save_never_leaves_the_session_dirty(web_client, analyst):
     """The * marker has to mean what it says: after a save there are no unsaved changes."""
     _apply(web_client, TAG)
     assert _state(web_client)["filter_state"] == "dirty"
 
-    response = web_client.post(url_for("analysis.create_saved_filter"),
-                               data={"name": "Clean", "filters": json.dumps(QUEUE)})
-    assert response.status_code == 200
+    _save_as(web_client, analyst, "Clean", QUEUE)
     assert _state(web_client)["filter_state"] == "clean"
 
 
 @pytest.mark.integration
-def test_save_as_without_a_filters_field_saves_the_effective_filter(web_client):
-    """The "Save a copy" path, and the rolling-deploy fallback. Must keep working."""
-    _apply(web_client, TAG)
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Copy"}).get_json()["uuid"]
-    assert _names(_stored(filter_uuid)) == ["Tag"]
-
-
-@pytest.mark.integration
-def test_save_without_a_filters_field_saves_the_effective_filter(web_client):
-    _apply(web_client, TAG)
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Mine"}).get_json()["uuid"]
-
-    _apply(web_client, QUEUE)
-    assert web_client.post(url_for("analysis.update_saved_filter", filter_uuid=filter_uuid),
-                           data={"save_current": "on"}).status_code == 204
-    assert _names(_stored(filter_uuid)) == ["Queue"]
-
-
-@pytest.mark.integration
-def test_metadata_only_update_does_not_touch_the_filter_contents(web_client):
-    """Rename and the quick-filter toggles must not need to know what the filter contains."""
-    _apply(web_client, TAG)
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Before"}).get_json()["uuid"]
-
-    assert web_client.post(url_for("analysis.update_saved_filter", filter_uuid=filter_uuid),
-                           data={"name": "After"}).status_code == 204
-    assert _names(_stored(filter_uuid)) == ["Tag"]
-
-
-@pytest.mark.integration
-def test_save_a_copy_of_a_pivot_ends_the_temporary_filter(web_client):
-    """Documents the existing behavior rather than changing it: claiming a pivot as a named
-    filter selects it, so the banner and its Revert are gone."""
+def test_save_a_copy_of_a_pivot_ends_the_temporary_filter(web_client, analyst):
+    """The temp banner's Save a copy saves the filter in effect (the bar carries it as
+    data-effective-filters) and selects it, so the banner and its Revert are gone."""
     _apply(web_client, QUEUE)
     web_client.post(url_for("analysis.apply_temp_filter"),
                     data={"filters": json.dumps(TAG), "label": "Tag"})
 
-    filter_uuid = web_client.post(url_for("analysis.create_saved_filter"),
-                                  data={"name": "Claimed"}).get_json()["uuid"]
+    filter_uuid = _save_as(web_client, analyst, "Claimed", _effective(web_client))
 
     assert _names(_stored(filter_uuid)) == ["Tag"]
     state = _state(web_client)
@@ -566,14 +469,12 @@ def test_save_a_copy_of_a_pivot_ends_the_temporary_filter(web_client):
 
 
 @pytest.mark.integration
-def test_save_as_from_the_editor_while_a_temp_is_active_saves_the_posted_rows(web_client):
+def test_save_as_from_the_editor_while_a_temp_is_active_saves_the_editors_rows(web_client, analyst):
     _apply(web_client, QUEUE)
     web_client.post(url_for("analysis.apply_temp_filter"),
                     data={"filters": json.dumps(TAG), "label": "Tag"})
 
-    filter_uuid = web_client.post(
-        url_for("analysis.create_saved_filter"),
-        data={"name": "Refined", "filters": json.dumps(QUEUE + TAG)}).get_json()["uuid"]
+    filter_uuid = _save_as(web_client, analyst, "Refined", QUEUE + TAG)
 
     assert _names(_stored(filter_uuid)) == ["Queue", "Tag"]
     assert _state(web_client)["filter_state"] == "clean"
@@ -606,13 +507,15 @@ def test_share_link_keeps_its_params_in_the_url(web_client):
 
 
 @pytest.mark.integration
-def test_share_link_survives_the_author_deleting_every_saved_filter(web_client):
+def test_share_link_survives_the_author_deleting_every_saved_filter(web_client, analyst):
     """The reason links are self-describing rather than a row id."""
+    from aceapi_v2.saved_filters import service
+    from aceapi_v2.sync import run_async_with_session
+
     params = encode_filter_query(TAG)
     _apply(web_client, TAG)
-    filter_uuid = web_client.post(
-        url_for("analysis.create_saved_filter"), data={"name": "Shared"}).get_json()["uuid"]
-    web_client.post(url_for("analysis.delete_saved_filter", filter_uuid=filter_uuid))
+    filter_uuid = _save_as(web_client, analyst, "Shared", TAG)
+    assert run_async_with_session(service.delete_saved_filter, filter_uuid, analyst)
 
     assert web_client.get(url_for("analysis.manage"), query_string={"f": params}).status_code == 200
     assert [f["name"] for f in _effective(web_client)] == ["Tag"]

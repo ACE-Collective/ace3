@@ -185,9 +185,11 @@ def _iter_effective_routes(app):
                 yield context.path, context.original_route.methods, context.dependant
 
 
-# The inner functions produced by the two gate factories in aceapi_v2/dependencies.py. Both apply
-# the credential's scope; matching on the name keeps the walk independent of how they are wired.
-_GATE_DEPENDENCY_NAMES = frozenset({"permission_dependency", "self_service_dependency"})
+# The inner functions produced by the three gate factories in aceapi_v2/dependencies.py. All
+# apply the credential's scope; matching on the name keeps the walk independent of how they are
+# wired. screen_permission_dependency requires the permission of the filter screen the request
+# names (require_screen_permission), and the permission of some screen when it names none.
+_GATE_DEPENDENCY_NAMES = frozenset({"permission_dependency", "self_service_dependency", "screen_permission_dependency"})
 
 
 def _dependant_has_gate(dependant, names=_GATE_DEPENDENCY_NAMES) -> bool:

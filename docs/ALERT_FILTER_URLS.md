@@ -177,6 +177,35 @@ address bar propagates the new format. Old links are never rewritten where they 
 they just stop spreading. This translation is permanent — do not remove the `GET` handler
 on `/set_filters`.
 
+## Filter screens and saved filters
+
+The alert manage page is one *filter screen*; other list screens (the SVS screens) are more. Each
+screen has its own filter names and slugs, its own saved filters and quick filters, and the
+permission that reads its data: `alert:read` for this page, `signature:read` for the SVS samples.
+
+- **Saved filters** are rows of `saved_filters`, keyed by screen, served by
+  `/api/v2/saved-filters?screen=<name>`. Every route there requires the screen's permission; a
+  route that names a row by uuid checks the permission of the row's own screen. A request that
+  names no registered screen (an unknown screen or row) is a 404 only to a caller who may use
+  some screen, and a 403 to anyone else. Rows are private to their owner.
+- **The screen itself** is described by `GET /api/v2/filter-screens/<name>`: every filter's
+  name and slug, and, for a screen built as a shell over the API, how a generic editor edits it
+  (`kind`: `text`, `multi`, `date_range` or `bool`, and a `multi` field's `options`). This page
+  has its own editor and describes none.
+- **Share links** are encoded and decoded by `POST /api/v2/filter-screens/<name>/encode` (a
+  filter list in, the `f` values out, refusing a filter the screen would refuse) and
+  `GET /api/v2/filter-screens/<name>/decode?f=...` (unknown slugs skipped with a warning, as on
+  this page). The encoding exists once, in `saq/gui/filter_url.py`; no page reimplements it in
+  JavaScript.
+
+In the GUI, `static/js/saved_filters.js` is the saved-filter component: the Save Filter and
+Manage Filters dialogs (`templates/saved_filters/_modals.html`), Save as, Save, delete, quick
+filter order and copy link, all through the API. A page hands it the filter list to save, so
+what is saved is exactly what the page shows. This page then selects the saved filter through
+`POST /ace/select_filter/<uuid>`, because which filter an analyst has selected is Flask session
+state; a screen that keeps its state in the URL instead (the SVS screens) has no session state
+and no `working`/`temp` rows.
+
 ## For developers
 
 - Grammar and codec: `saq/gui/filter_url.py`
@@ -185,7 +214,9 @@ on `/set_filters`.
   (`alerts` is this page): its entry model (which names and values it accepts, see
   `saq/gui/filter_entry.py`), its slugs and its pair filters. The codec takes a screen
   (default `alerts`), and `saved_filters` rows carry one, so names, the `working`/`temp`
-  scratch rows and quick filters are all per screen. The saved-filter API takes `?screen=`.
+  scratch rows and quick filters are all per screen. The saved-filter API takes `?screen=`,
+  and a screen names the permission it requires (`FilterScreen.permission`) and, optionally,
+  the fields a generic editor builds from (`FilterScreen.fields`).
 - API callers decode with `decode_filter_query(..., strict=True)`, which rejects an unknown
   slug instead of warning: there is no banner to show the warning on.
 - Filter classes and the query they build: `saq/gui/filter_query.py` (Flask-free, so the search

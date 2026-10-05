@@ -22,16 +22,7 @@ from app.analysis.views.session.filters import (
 )
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from aceapi_v2.saved_filters import service as saved_filters_service
-from aceapi_v2.saved_filters.schemas import (
-    FilterEntry,
-    QuickFilterOrder,
-    SavedFilterCreate,
-    SavedFilterUpdate,
-)
-from aceapi_v2.saved_filters.service import SavedFilterNameConflict
-from aceapi_v2.sync import run_async_with_session
-from saq.gui.filter_screens import ALERTS_SCREEN
+from aceapi_v2.saved_filters.schemas import FilterEntry
 from saq.gui.filter_url import FilterQueryError, decode_legacy_filter_json, encode_filter_query
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
 
@@ -44,32 +35,6 @@ def _validate(filters: list) -> list:
     reaches storage and then raises on EVERY subsequent /manage load, leaving the analyst's
     alert queue broken until someone resets their filters by hand."""
     return [FilterEntry.model_validate(entry).model_dump() for entry in filters]
-
-
-def _posted_filters_or_effective() -> list:
-    """Returns the filter list a save should persist."""
-
-    # The editor posts what is on screen, so Save and Save as are WYSIWYG -- they used to read
-    # the session instead, which meant building a filter and saving it without pressing Apply
-    # first silently saved the PREVIOUS filter.
-
-    # An ABSENT field still means "whatever is currently in effect". That is the "Save a copy"
-    # path on the temporary-filter banner, which must never read the editor's DOM, and it is
-    # also what a browser holding pre-upgrade JS posts during a rolling deploy -- so the
-    # fallback is not dead code.
-
-    # An empty list is NOT the same as an absent field: clearing every row and saving is a
-    # mistake, not a request to save "match everything".
-
-    raw = request.form.get('filters')
-    if raw is None:
-        return _validate(get_effective_filters())
-
-    filters = _validate(json.loads(raw))
-    if not filters:
-        raise ValueError("a saved filter needs at least one filter row")
-
-    return filters
 
 
 @analysis.route('/set_sort_filter', methods=['POST'])
@@ -143,7 +108,11 @@ def set_filters():
 @analysis.route('/select_filter/<filter_uuid>', methods=['POST'])
 @require_permission('alert', 'read')
 def select_filter(filter_uuid):
-    """Apply one of the analyst's own saved filters as their persistent selection."""
+    """Apply one of the analyst's own saved filters as their persistent selection.
+
+    Saved filters are saved, deleted and ordered through /api/v2/saved-filters
+    (static/js/saved_filters.js); selecting one is session state, so it stays here, and the page
+    calls it after a Save as or a Save."""
     if not select_saved_filter(filter_uuid):
         return ('', 404)
 
@@ -227,115 +196,6 @@ def new_filter_option():
                            session_filters=[{"name": "Description", "inverted": False, "values": [""]}])
 
 
-#
-# saved filter management
-#
-# Thin wrappers over the aceapi_v2 service (no HTTP hop -- run_async_with_session calls it
-# directly). Flask enforces the permission; the service enforces row ownership.
-#
-
-@analysis.route('/saved_filters', methods=['POST'])
-@require_permission('alert', 'read')
-def create_saved_filter():
-    """Save the current filter under a name. Also serves "Save a copy" from the temporary
-    filter banner."""
-    try:
-        body = SavedFilterCreate(
-            name=request.form['name'],
-            description=request.form.get('description') or None,
-            filters=_posted_filters_or_effective(),
-            quick_filter=request.form.get('quick_filter') == 'on',
-            quick_filter_indicator=request.form.get('quick_filter_indicator') == 'on',
-        )
-    except (ValidationError, KeyError, ValueError) as e:
-        return (f"That filter could not be saved: {e}", 400)
-
-    try:
-        saved = run_async_with_session(
-            saved_filters_service.create_saved_filter, current_user_id(), body,
-            screen=ALERTS_SCREEN.name)
-    except SavedFilterNameConflict as e:
-        return (str(e), 409)
-
-    select_saved_filter(saved.uuid)
-    return jsonify({"uuid": saved.uuid, "name": saved.name})
-
-
-@analysis.route('/saved_filters/<filter_uuid>', methods=['POST'])
-@require_permission('alert', 'read')
-def update_saved_filter(filter_uuid):
-    """Overwrite a saved filter, either its metadata or (on Save) its contents."""
-    fields = {}
-    if 'name' in request.form:
-        fields['name'] = request.form['name']
-    if 'description' in request.form:
-        fields['description'] = request.form.get('description') or None
-    if 'quick_filter_indicator' in request.form:
-        fields['quick_filter_indicator'] = request.form.get('quick_filter_indicator') == 'on'
-
-    # save_current, not the presence of `filters`, is what means "overwrite the contents" --
-    # a rename or a badge toggle has to be able to run without touching them.
-    try:
-        if request.form.get('save_current') == 'on':
-            fields['filters'] = _posted_filters_or_effective()
-        body = SavedFilterUpdate(**fields)
-    except (ValidationError, ValueError) as e:
-        return (f"That filter could not be saved: {e}", 400)
-
-    try:
-        saved = run_async_with_session(
-            saved_filters_service.update_saved_filter, filter_uuid, current_user_id(), body)
-    except PermissionError:
-        return ('', 403)
-    except SavedFilterNameConflict as e:
-        return (str(e), 409)
-
-    if saved is None:
-        return ('', 404)
-
-    # re-select so the page cannot show stale contents for the filter it says is active
-    if session.get('filter_base_uuid') == filter_uuid:
-        select_saved_filter(filter_uuid)
-
-    return ('', 204)
-
-
-@analysis.route('/saved_filters/<filter_uuid>/delete', methods=['POST'])
-@require_permission('alert', 'read')
-def delete_saved_filter(filter_uuid):
-    try:
-        deleted = run_async_with_session(
-            saved_filters_service.delete_saved_filter, filter_uuid, current_user_id())
-    except PermissionError:
-        return ('', 403)
-
-    if not deleted:
-        return ('', 404)
-
-    # the session points at uuids; leaving a dangling one would resolve to the default set
-    # on the next load without explanation, so clear it deliberately here
-    if session.get('filter_base_uuid') == filter_uuid:
-        session['filter_base_uuid'] = None
-    if session.get('filter_uuid') == filter_uuid:
-        _reset_filters()
-
-    return ('', 204)
-
-
-@analysis.route('/saved_filters/quick', methods=['POST'])
-@require_permission('alert', 'read')
-def set_quick_filters():
-    """Set which saved filters appear as badges, and in what order, in one call."""
-    try:
-        order = QuickFilterOrder(filter_uuids=request.form.getlist('filter_uuids'))
-        run_async_with_session(
-            saved_filters_service.set_quick_filters, current_user_id(), order, screen=ALERTS_SCREEN.name)
-    except (ValidationError, ValueError) as e:
-        return (f"Could not update quick filters: {e}", 400)
-
-    return ('', 204)
-
-
 @analysis.route('/resolve_date_range', methods=['GET'])
 @require_permission('alert', 'read')
 def resolve_date_range():
@@ -344,38 +204,3 @@ def resolve_date_range():
     Resolved server-side so the hint uses the same parser the query does -- a hint computed
     in JavaScript could disagree with what the filter actually matches."""
     return jsonify({"text": resolve_date_range_for_display(request.args.get('value', ''))})
-
-
-@analysis.route('/saved_filter_link/<filter_uuid>', methods=['GET'])
-@require_permission('alert', 'read')
-def saved_filter_link(filter_uuid):
-    """A durable share link for one of the analyst's saved filters.
-
-    The URL carries the filter itself, so it keeps working after this row is renamed,
-    edited, or deleted -- which is exactly why links are not row ids."""
-    saved = run_async_with_session(
-        saved_filters_service.get_saved_filter, filter_uuid, current_user_id(),
-        screen=ALERTS_SCREEN.name)
-    if saved is None:
-        return ('', 404)
-
-    return jsonify({"url": url_for(
-        'analysis.manage',
-        f=encode_filter_query([entry.model_dump() for entry in saved.filters]),
-        _external=True)})
-
-
-@analysis.route('/saved_filters_modal_body', methods=['GET'])
-@require_permission('alert', 'read')
-def saved_filters_modal_body():
-    """The Manage Filters modal body, refetched after each change so the modal updates
-    without a page reload."""
-    saved = run_async_with_session(
-        saved_filters_service.get_saved_filters_for_user, current_user_id(),
-        screen=ALERTS_SCREEN.name)
-    return render_template('analysis/_saved_filters_table.html', saved_filters=saved)
-
-
-def current_user_id() -> int:
-    from flask_login import current_user
-    return current_user.id

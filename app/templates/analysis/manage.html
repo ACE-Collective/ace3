@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
 {% block control_panel %}
 <div class="container-fluid">
     <!-- control panel -->
@@ -132,59 +133,9 @@
 </div>
 
 
-{# Save the current filter under a name. Also serves "Save a copy" from the temporary
-   filter banner. Kept OUTSIDE #manage_page so the 30s poll cannot morph away an open
-   modal mid-edit -- see docs/GUI_DATASTAR.md. #}
-<div class="modal fade" id="save_filter_modal" tabindex="-1" role="dialog" aria-hidden="true">
-    <form id="save_filter_form" onsubmit="return save_filter_as();">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h1 class="modal-title fs-5">Save Filter</h1>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-2">
-                    <label class="form-label" for="save_filter_name">Name</label>
-                    <input type="text" class="form-control" id="save_filter_name" name="name" required maxlength="255">
-                </div>
-                <div class="mb-2">
-                    <label class="form-label" for="save_filter_description">Description <span class="text-muted">(optional)</span></label>
-                    <input type="text" class="form-control" id="save_filter_description" name="description" maxlength="1024">
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="save_filter_quick" name="quick_filter">
-                    <label class="form-check-label" for="save_filter_quick">Show as a quick filter badge</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="save_filter_indicator" name="quick_filter_indicator">
-                    <label class="form-check-label" for="save_filter_indicator">Show an alert count on the badge</label>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
-                <button type="submit" class="btn btn-outline-primary">Save</button>
-            </div>
-        </div>
-    </div>
-    </form>
-</div>
-
-{# Manage saved filters: rename, delete, and choose which appear as badges and in what
-   order. Body is fetched from analysis.saved_filters_modal_body. #}
-<div class="modal fade modal-lg" id="manage_filters_modal" tabindex="-1" role="dialog" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h1 class="modal-title fs-5">Manage Filters</h1>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body" id="manage_filters_modal_body">
-                <p class="text-muted mb-0">Loading&hellip;</p>
-            </div>
-        </div>
-    </div>
-</div>
+{# Save Filter and Manage Filters (static/js/saved_filters.js). Kept OUTSIDE #manage_page so the
+   30s poll cannot morph away an open dialog mid-edit -- see docs/GUI_DATASTAR.md. #}
+{{ saved_filter_modals(quick_filter_noun="badge", supports_indicator=True) }}
 
 {# Take Ownership asks first when the selection holds alerts another analyst owns; without
    any, the button takes them straight away (see manage_alerts.js) #}
@@ -212,6 +163,8 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/manage_alerts.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/manage_columns.js') }}?version={{ ACE_VERSION }}"></script>
 <script>
@@ -219,6 +172,7 @@
     // column change re-renders the list through the refresh path.
     $(document).ready(function() {
         init_column_chooser(document.querySelector("#manage_columns_dropdown .column-chooser"), function() { refresh_manage_list(); });
+        init_saved_filters("{{ url_for('analysis.manage', _external=True) }}");
     });
 </script>
 {% endblock %}
