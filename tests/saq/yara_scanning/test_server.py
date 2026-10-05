@@ -466,13 +466,15 @@ def test_qa_matches_are_recorded_after_the_answer(make_server, rules_dir, target
     qa_context = _qa_context(target)
     assert _rules(_scan(server, target, qa=qa_context)) == {"rule_qa"}
 
-    wait_for_condition(lambda: len(match_rows()) == 1, timeout=30)
+    # the worker links the file into the spool before it answers, so the spool is not empty here,
+    # and the recorder empties it only after it has committed the rows. The recorder runs niced,
+    # so under load that can take a while after the rows are visible
+    wait_for_condition(lambda: os.listdir(qa_spool) == [], timeout=60)
+
     (row,) = match_rows()
     assert row.sha256 == qa_context["sha256"]
     assert (row.root_uuid, row.observable_uuid) == (qa_context["root_uuid"], qa_context["observable_uuid"])
     assert counter_row(SIGNATURE_VERSION_UNKNOWN).match_count == 1
-
-    wait_for_condition(lambda: os.listdir(qa_spool) == [], timeout=10)
 
 
 @pytest.mark.integration
