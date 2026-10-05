@@ -15,7 +15,8 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
-from saq.database.model import load_alert
+from saq.database.model import Alert, load_alert
+from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from tests import unittest_session
@@ -684,6 +685,31 @@ def insert_alert():
 
     alert = load_alert(root.uuid)
     assert alert.id is not None
+    return alert
+
+def insert_alert_with_detections(detections: list[dict], disposition: Union[str, None] = None):
+    """Creates and syncs an alert carrying the given detections, then sets its disposition.
+
+    Each detection is a dict with "description" and "signature_uuid", and optionally "fqdn": the
+    value of the fqdn observable it sits on (the root when absent). Returns the loaded Alert."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    for detection in detections:
+        node = root
+        if detection.get("fqdn"):
+            node = root.add_observable_by_spec(F_FQDN, detection["fqdn"])
+        node.add_detection_point(detection["description"], signature_uuid=detection["signature_uuid"])
+    root.save()
+    ALERT(root)
+
+    alert = load_alert(root.uuid)
+    if disposition is not None:
+        db = get_db()
+        db.execute(Alert.__table__.update().where(Alert.id == alert.id).values(disposition=disposition))
+        db.commit()
+        db.expire_all()
+        alert = load_alert(root.uuid)
+
     return alert
 
 def wait_for_process(process: Process):

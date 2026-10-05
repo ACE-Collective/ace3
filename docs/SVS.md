@@ -83,14 +83,17 @@ Only what an analyst explicitly set is stored. Everything else is derived when r
 effective(dp) =
     NULL                        if class(alert.disposition) is unclassified
     NULL                        if the alert is attributed to a run that is not Reviewed
-    FP   (inherited)            if class(alert.disposition) == fp         # overrides are masked
+    FP   (inherited_single)     if class(alert.disposition) == fp         # overrides are masked
     override (explicit)         if an override row exists                 # tp alerts only
     TP   (inherited_single)     if the alert has one signature
     TP   (inherited_multi)      otherwise
 ```
 
 - **On an FP alert every verdict is FP.** If the alert itself was wrong, the fix is to correct its
-  disposition (the review path), not to override a detection. [DP-3]
+  disposition (the review path), not to override a detection. [DP-3] Its source is
+  `inherited_single`, whatever the number of signatures: the alert-level FP covers each detection
+  directly, so an FP alert never has unconfirmed detections and its FP labels are not weakened in
+  label precedence (Part 2).
 - **An alert from a run that is not Reviewed has no verdicts.** *Close* sets `SIMULATED` on
   canceled, error and discarded runs too (Part 3), and `SIMULATED` is tp, so without this rule every
   detection on those alerts would count as TP in per-signature counts and in the detection-points
@@ -106,7 +109,12 @@ effective(dp) =
   regression, but per-signature TP/FP counts are useful everywhere. [DP-6]
 
 **Storage.** `detection_point_verdicts(alert_id, content_hash, signature_uuid, verdict, user_id,
-set_at)`, unique on `(alert_id, content_hash)`. The `detection_points` rows are synced as a delta
+set_at)`, unique on `(alert_id, content_hash)`. `set_at` is maintained by the server on every change
+of the row, so it doubles as the table's `updated_at`. The rule above lives in one module,
+`saq/detection_verdicts/effective.py`, as SQL expressions and as a Python function that the tests
+hold to agree; analyst writes go through `saq/detection_verdicts/store.py`, which accepts them only on
+a tp alert whose disposition analysts can set, and on a detection synced with its node identity. The
+`detection_points` rows are synced as a delta
 upsert keyed on `(alert_id, content_hash)`: a row whose detection disappears from the tree is
 deleted, and one that reappears gets a new `id`. So the verdict is keyed on `content_hash`, never
 on the row. [DP-1, FR-16]
@@ -886,8 +894,10 @@ These can't be rebuilt later, so they are recorded from day one. [RPT-4]
 2. **Daily coverage snapshots.** `etc/cron/daily/svs-coverage-snapshot` writes one row per
    technique × state per day.
 3. **Verdict history.** `detection_point_verdict_history` is append-only:
-   `(alert_id, content_hash, old_verdict, new_verdict, user_id, changed_at)`. It is written in the
-   same transaction as each change, including *Confirm*.
+   `(alert_id, content_hash, signature_uuid, old_verdict, new_verdict, user_id, changed_at)`. It is
+   written in the same transaction as each change, including *Confirm*. The verdicts are the stored
+   override values, NULL meaning none: setting one is NULL → tp|fp, clearing it tp|fp → NULL, a
+   *Confirm* NULL → tp; a write that changes nothing records nothing.
 
 ### Access
 

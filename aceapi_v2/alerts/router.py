@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated
 
 import pytz
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, Security
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, Security
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
@@ -27,6 +27,8 @@ from aceapi_v2.alerts.schemas import (
     BulkAddObservableRequest,
     BulkAddObservableResult,
 )
+from aceapi_v2.detection_points import service as detection_points_service
+from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
 from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
 
 logger = logging.getLogger(__name__)
@@ -304,3 +306,54 @@ async def view_alert_logs(
         media_type="text/plain; charset=utf-8",
         content_disposition_type="inline",
     )
+
+
+ContentHashParam = Annotated[str, Path(
+    pattern=r"^[0-9a-f]{64}$", description="the detection's content_hash")]
+
+
+@router.get("/{alert_uuid}/detection-points", response_model=list[DetectionPointRow])
+async def list_alert_detection_points(
+    alert_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> list[DetectionPointRow]:
+    """The alert's detections, each with its effective TP/FP verdict and where that verdict comes
+    from (docs/SVS.md, Part 1)."""
+    return await run_db_in_thread(detection_points_service.list_detection_points, alert_uuid)
+
+
+@router.put("/{alert_uuid}/detection-points/{content_hash}/verdict", response_model=DetectionPointRow)
+async def set_detection_point_verdict(
+    alert_uuid: str,
+    content_hash: ContentHashParam,
+    body: VerdictRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> DetectionPointRow:
+    """Store an explicit verdict on one detection of a TP alert: `fp` marks it as noise, `tp`
+    confirms it. 409 on an FP or unclassified alert (correct the alert's disposition instead) and
+    on an alert whose disposition only ACE sets."""
+    return await run_db_in_thread(
+        detection_points_service.set_detection_verdict, alert_uuid, content_hash, body.verdict,
+        auth.auth_user_id)
+
+
+@router.delete("/{alert_uuid}/detection-points/{content_hash}/verdict", response_model=DetectionPointRow)
+async def clear_detection_point_verdict(
+    alert_uuid: str,
+    content_hash: ContentHashParam,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> DetectionPointRow:
+    """Remove the explicit verdict on one detection, so it inherits from the alert again."""
+    return await run_db_in_thread(
+        detection_points_service.clear_detection_verdict, alert_uuid, content_hash, auth.auth_user_id)
+
+
+@router.post("/{alert_uuid}/detection-points/confirm", response_model=ConfirmResult)
+async def confirm_detection_point_verdicts(
+    alert_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> ConfirmResult:
+    """Confirm every unconfirmed inherited TP on the alert (source inherited_multi): each becomes
+    an explicit TP, which weighs more when signature changes are tested."""
+    return await run_db_in_thread(
+        detection_points_service.confirm_detection_verdicts, alert_uuid, auth.auth_user_id)
