@@ -4,14 +4,17 @@ from uuid import uuid4
 from flask import url_for
 import pytest
 
+from app.analysis.views.index import TreeNode, _prune, _recurse
+
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST
+from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
 from saq.database.model import Alert
 from saq.database.util.alert import ALERT
 from saq.observables.testing import TestObservable
 from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 
 @pytest.mark.skip(reason="skipping tests with api_server")
 @pytest.mark.system
@@ -886,3 +889,56 @@ def test_index_renders_disposition_history_badge(web_client, root_analysis, test
 
     body = result.data.decode("utf-8")
     assert f"{DISPOSITION_FALSE_POSITIVE} 100% (2)" in body
+
+
+def _pruned_tree(root_analysis):
+    display_tree = TreeNode(root_analysis)
+    _recurse(display_tree)
+    _prune(display_tree)
+    return display_tree
+
+
+def _node_of(tree, obj):
+    if tree.obj is obj:
+        return tree
+    for child in tree.children:
+        found = _node_of(child, obj)
+        if found is not None:
+            return found
+    return None
+
+
+def _yara_tree(root_analysis, with_detection: bool):
+    file_path = root_analysis.create_file_path("sample.txt")
+    with open(file_path, "wb") as fp:
+        fp.write(b"sample")
+    _file = root_analysis.add_file_observable(file_path)
+    analysis = _file.add_analysis(YaraScanResults_v3_4())
+    analysis.add_observable_by_spec(F_YARA_RULE, "some_rule")
+    if with_detection:
+        _file.add_detection_point(
+            f"{_file} matched yara rule some_rule",
+            details={"sha256": _file.value, "rule": "some_rule", "namespace": "phish", "rule_uuid": None})
+    return _file, analysis
+
+
+@pytest.mark.unit
+def test_pruned_view_keeps_the_yara_results_of_a_detected_file(root_analysis):
+    """The yara detection sits on the file, so the yara analysis below it (the rules that matched
+    and their strings) has to keep itself visible in the pruned view."""
+    _file, analysis = _yara_tree(root_analysis, with_detection=True)
+
+    tree = _pruned_tree(root_analysis)
+
+    assert _node_of(tree, _file).visible
+    assert _node_of(tree, analysis).visible
+
+
+@pytest.mark.unit
+def test_pruned_view_hides_yara_results_without_a_detection(root_analysis):
+    _file, analysis = _yara_tree(root_analysis, with_detection=False)
+
+    tree = _pruned_tree(root_analysis)
+
+    assert not _node_of(tree, _file).visible
+    assert not _node_of(tree, analysis).visible

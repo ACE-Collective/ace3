@@ -1,17 +1,22 @@
+import os
+
 import pytest
 import yara
 import yara_scanner
 
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_service_config
 from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
     F_SIGNATURE_ID,
     F_YARA_RULE,
+    SERVICE_YARA_SCANNER,
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
+from saq.signatures.builtin import YARA_RULE_MATCH
+from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
 from tests.saq.test_util import create_test_context
@@ -610,6 +615,86 @@ class TestYaraQueueMeta:
         assert root_analysis.all_detection_points == []
         assert not root_analysis.has_detections()
 
+
+class TestYaraDetectionOnFile:
+    """A match puts its detection on the file it matched, with structured details (docs/SVS.md,
+    Part 1, D-20), not on the yara_rule observable every file matching the rule shares."""
+
+    def _create_module(self, root):
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
+        return AnalysisModuleAdapter(module)
+
+    def _run(self, monkeypatch, root_analysis, matches, content=b"Hello, world!\n", name="test.txt"):
+        file_path = root_analysis.create_file_path(name)
+        with open(file_path, "wb") as fp:
+            fp.write(content)
+        observable = root_analysis.add_file_observable(file_path)
+
+        monkeypatch.setattr(
+            yara_client, "scan_file",
+            lambda path, meta_tags=None, qa=None: matches,
+        )
+
+        adapter = self._create_module(root_analysis)
+        assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        return observable
+
+    @pytest.mark.unit
+    def test_detection_sits_on_the_file_with_details(self, monkeypatch, root_analysis):
+        signature_dir = abs_path(get_service_config(SERVICE_YARA_SCANNER).signature_dir)
+        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
+        match = _yara_match("phish_rule", meta={"uuid": rule_uuid})
+        match["namespace"] = os.path.join(signature_dir, "phish")
+        observable = self._run(monkeypatch, root_analysis, [match])
+
+        assert len(observable.detections) == 1
+        detection = observable.detections[0]
+        assert detection.description == f"{observable} matched yara rule phish_rule"
+        assert detection.details == {
+            "sha256": observable.value,
+            "rule": "phish_rule",
+            "namespace": "phish",
+            "rule_uuid": rule_uuid,
+        }
+        assert detection.signature_uuid == rule_uuid
+        assert detection.signature_family == "yara"
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        yara_rule = analysis.get_observables_by_type(F_YARA_RULE)[0]
+        assert not yara_rule.detections
+        # the rules and their strings stay in the pruned alert view
+        assert analysis.always_visible()
+
+    @pytest.mark.unit
+    def test_rule_without_uuid_has_no_rule_uuid_and_the_builtin_family(self, monkeypatch, root_analysis):
+        observable = self._run(monkeypatch, root_analysis, [_yara_match("no_uuid_rule")])
+
+        detection = observable.detections[0]
+        assert detection.details["rule_uuid"] is None
+        # the scanner's default namespace, or none, is kept as it is
+        assert detection.details["namespace"] is None
+        assert detection.signature_uuid == YARA_RULE_MATCH.uuid
+        assert detection.signature_family == "builtin"
+
+    @pytest.mark.unit
+    def test_one_rule_matching_two_files_is_two_detections(self, monkeypatch, root_analysis):
+        first = self._run(monkeypatch, root_analysis, [_yara_match("shared_rule")], b"one", "one.txt")
+        second = self._run(monkeypatch, root_analysis, [_yara_match("shared_rule")], b"two", "two.txt")
+
+        assert [d.details["sha256"] for d in first.detections] == [first.value]
+        assert [d.details["sha256"] for d in second.detections] == [second.value]
+        assert len(root_analysis.all_detection_points) == 2
+
+    @pytest.mark.unit
+    def test_no_alert_rule_leaves_the_analysis_prunable(self, monkeypatch, root_analysis):
+        observable = self._run(
+            monkeypatch, root_analysis, [_yara_match("quiet_rule", meta={"modifiers": "no_alert"})])
+
+        assert not observable.detections
+        assert not observable.get_and_load_analysis(YaraScanResults_v3_4).always_visible()
 
 class TestYaraQAMatches:
     """QA matches are recorded by the yara scanner service, never by the module (docs/YARA_QA.md)."""

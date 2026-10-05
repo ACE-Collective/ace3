@@ -10,6 +10,7 @@ from typing import override
 import distorm3
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
@@ -59,6 +60,46 @@ def _yara_detection_signature(match_result: dict) -> tuple[str, str]:
     return rule_uuid, match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
 
 
+# the keys of the structured `details` of a YARA detection (docs/SVS.md, Part 1, D-20): the file
+# that matched (the detection sits on its observable), and the rule that matched it
+YARA_DETECTION_DETAIL_KEYS = frozenset({"sha256", "rule", "namespace", "rule_uuid"})
+
+
+def _relative_namespace(namespace: str | None, signature_dir: str) -> str | None:
+    """Returns a yara namespace relative to signature_dir, with posix separators.
+
+    The scanner names a namespace after the absolute path of the rule file or directory it came
+    from. That path differs between hosts and containers, and the namespace is part of the
+    detection's details, so of its identity (saq.analysis.detection_identity): an absolute path
+    would give the same match a different identity on each host. A namespace outside
+    signature_dir, or one that is not a path ("default"), is returned as it is."""
+    if not namespace or not os.path.isabs(namespace):
+        return namespace
+
+    signature_dir = os.path.abspath(signature_dir)
+    path = os.path.abspath(namespace)
+    if os.path.commonpath([path, signature_dir]) != signature_dir:
+        return namespace
+
+    return os.path.relpath(path, signature_dir).replace(os.sep, "/")
+
+
+def _yara_detection_details(file_observable: FileObservable, match_result: dict, signature_dir: str) -> dict:
+    """Returns the structured details of the detection a yara match puts on the file it matched."""
+    return {
+        "sha256": file_observable.value.lower(),
+        "rule": match_result["rule"],
+        "namespace": _relative_namespace(match_result.get("namespace"), signature_dir),
+        "rule_uuid": (match_result.get("meta") or {}).get("uuid") or None,
+    }
+
+
+def is_yara_detection(detection: DetectionPoint) -> bool:
+    """Returns True if the detection is one the yara module put on a file, with structured details.
+    Detections from before the details existed (D-3) return False."""
+    return isinstance(detection.details, dict) and YARA_DETECTION_DETAIL_KEYS <= detection.details.keys()
+
+
 def _parse_yara_string_key_id(string_key: str) -> int | None:
     """Extracts the trailing row id from a generated yara string key.
 
@@ -101,6 +142,14 @@ class YaraScanResults_v3_4(Analysis):
             return f"{self.display_name}: matched yara rules {format_item_list_for_summary([x['rule'] for x in self.scan_results])}"
 
         return None
+
+    @override
+    def always_visible(self):
+        # the detection sits on the file, so without this the pruned alert view would end at the
+        # file and hide the rules that matched it and their strings. Decided from the observable's
+        # detections, which are always loaded, rather than from this analysis's details.
+        return self.observable is not None and any(
+            is_yara_detection(detection) for detection in self.observable.detections)
 
 #
 # this module has two modes of operation
@@ -475,11 +524,14 @@ class YaraScanner_v3_4(AnalysisModule):
                         logging.error(f"unable to add observable value {value}: {e}")
 
 
-            # if this yara rule did not have the no_alert modifier then it becomes a detection point.
+            # if this yara rule did not have the no_alert modifier then it becomes a detection point,
+            # on the file that matched (not on the yara_rule observable, which is shared by every
+            # file the rule matched), with structured details naming the rule
             if yara_result['rule'] not in no_alert_rules:
                 detection_signature_uuid, detection_signature_version = _yara_detection_signature(yara_result)
-                rule_observable.add_detection_point(
+                _file.add_detection_point(
                     "{} matched yara rule {}".format(_file, yara_result['rule']),
+                    details=_yara_detection_details(_file, yara_result, self.signature_dir),
                     queue=_rule_queue(yara_result),
                     signature_uuid=detection_signature_uuid,
                     signature_version=detection_signature_version,

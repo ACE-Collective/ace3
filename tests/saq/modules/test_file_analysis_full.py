@@ -407,6 +407,26 @@ def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
     # defined in config as 30
     assert len(analysis.extracted_files) == 30
 
+
+def _assert_yara_detection_on_file(_file, analysis):
+    """The yara match put its detection on the file it matched, with structured details naming the
+    rule, and none on the shared yara_rule observable; the yara analysis stays visible."""
+    yara_rules = analysis.get_observables_by_type(F_YARA_RULE)
+    assert len(yara_rules) == 1
+    yara_rule = yara_rules[0]
+    assert not yara_rule.detections
+
+    assert len(_file.detections) == 1
+    detection = _file.detections[0]
+    assert set(detection.details) == {"sha256", "rule", "namespace", "rule_uuid"}
+    assert detection.details["sha256"] == _file.value
+    assert detection.details["rule"] == yara_rule.value
+    # relative to signature_dir, never the scanning host's absolute path
+    assert detection.details["namespace"] and not os.path.isabs(detection.details["namespace"])
+    assert analysis.always_visible()
+    return detection
+
+
 @pytest.mark.integration
 def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
     
@@ -436,12 +456,8 @@ def test_file_analysis_004_yara_001_local_scan(root_analysis, datadir):
     assert _file.has_directive(DIRECTIVE_SANDBOX)
     # and should have a single tag
     assert len(_file.tags) == 1
-    # the analysis should have a yara_rule observable
-    yara_rule = analysis.get_observables_by_type(F_YARA_RULE)
-    assert len(yara_rule) == 1
-    yara_rule = yara_rule[0]
-    # the yara rule should have detections
-    assert yara_rule.detections
+    # the detection is on the file, naming the rule
+    _assert_yara_detection_on_file(_file, analysis)
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_002_no_alert(yss_server, datadir):
@@ -471,8 +487,11 @@ def test_file_analysis_004_yara_002_no_alert(yss_server, datadir):
     yara_rule = analysis.get_observables_by_type(F_YARA_RULE)
     assert len(yara_rule) == 1
     yara_rule = yara_rule[0]
-    # the yara rule should NOT have detections
+    # neither the yara rule nor the file should have detections
     assert not yara_rule.detections
+    assert not _file.detections
+    # and with no detection the yara analysis is not forced into the pruned view
+    assert not analysis.always_visible()
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_003_directives(yss_server, datadir):
@@ -499,12 +518,8 @@ def test_file_analysis_004_yara_003_directives(yss_server, datadir):
 
     # the file should be instructed to go to the sandbox
     assert _file.has_directive(DIRECTIVE_SANDBOX)
-    # the analysis should have a yara_rule observable
-    yara_rule = analysis.get_observables_by_type(F_YARA_RULE)
-    assert len(yara_rule) == 1
-    yara_rule = yara_rule[0]
-    # the yara rule should have detections
-    assert yara_rule.detections
+    # the detection is on the file, naming the rule
+    _assert_yara_detection_on_file(_file, analysis)
 
     # and we should have an extra directive
     assert _file.has_directive(DIRECTIVE_EXTRACT_URLS)
@@ -534,12 +549,9 @@ def test_file_analysis_004_yara_004_directives_redirection(yss_server, root_anal
 
     # the parent file should be instructed to go to the sandbox
     assert parent_file_observable.has_directive(DIRECTIVE_SANDBOX)
-    # the child file analysis should have a yara_rule observable
-    yara_rule = analysis.get_observables_by_type(F_YARA_RULE)
-    assert len(yara_rule) == 1
-    yara_rule = yara_rule[0]
-    # the yara rule should have detections
-    assert yara_rule.detections
+    # the detection is on the child file that matched, not on the parent it redirects to
+    _assert_yara_detection_on_file(child_file_observable, analysis)
+    assert not parent_file_observable.detections
 
 @pytest.mark.integration
 def test_file_analysis_004_yara_006_whitelist(yss_server, root_analysis, datadir):
@@ -661,12 +673,8 @@ def test_file_analysis_004_yara_008_for_detection_legacy_obs_prefix(yss_server, 
 
     # the file should be instructed to go to the sandbox
     assert _file.has_directive(DIRECTIVE_SANDBOX)
-    # the analysis should have a yara_rule observable
-    yara_rule = analysis.get_observables_by_type(F_YARA_RULE)
-    assert len(yara_rule) == 1
-    yara_rule = yara_rule[0]
-    # the yara rule should have detections
-    assert yara_rule.detections
+    # the detection is on the file, naming the rule
+    _assert_yara_detection_on_file(_file, analysis)
 
     # we should have a single uri_path observable
     uri_path_observable = analysis.get_observables_by_type(F_URI_PATH)

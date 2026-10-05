@@ -38,10 +38,17 @@ YARA scanning is performed by the `YaraScanner_v3_4` analysis module
   when files change (every `update_frequency` seconds, default 60). You do not
   need to restart anything to deploy a new or edited rule.
 - **A match makes the file alertable.** When a rule matches (and it is not
-  suppressed by a modifier — see below), the file becomes a detection point, the
+  suppressed by a modifier — see below), the file gets a detection point, the
   matched rule is added as a `yara_rule` observable, and the file is given the
   `sandbox` directive. If the file was decomposed from another file, the
   *original* file is the one marked for sandboxing.
+- **The detection names the rule.** It sits on the file that matched (the fire
+  icon is on the file), with `details` of
+  `{"sha256", "rule", "namespace", "rule_uuid"}`; the namespace is relative to
+  `signature_dir`. A file whose detection came from YARA always shows its *Yara
+  Scan Results* in the alert view, so the rules and their strings stay visible.
+  SVS (`docs/SVS.md`) labels and captures samples from these details; detections
+  from alerts created before they existed carry none and SVS ignores them.
 
 ## Anatomy of an ACE YARA Rule
 
