@@ -144,7 +144,8 @@ class AnalysisOrchestrator:
             # workload in DISPOSITIONED mode even though the analysis_mode saved with the alert is CORRELATION
             current_analysis_mode = execution_context.root.analysis_mode
             execution_context.root.load()
-            # NOTE in the case of transfers from another node, current_analysis_mode will be None
+            # a work item transferred from another node carries its workload mode too (transfer_work_target),
+            # so None only means the caller queued the root without one
             if (
                 current_analysis_mode is not None
                 and execution_context.root.analysis_mode != current_analysis_mode

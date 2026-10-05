@@ -38,9 +38,10 @@ class WorkloadManagerInterface(ABC):
         pass
 
     @abstractmethod
-    def transfer_work_target(self, uuid: str, node_id: int) -> Optional[RootAnalysis]:
+    def transfer_work_target(self, uuid: str, node_id: int, analysis_mode: Optional[str] = None) -> Optional[RootAnalysis]:
         """Moves the given work target from the given remote node to the local node.
-        Returns the (unloaded) RootAnalysis for the object transferred."""
+        Returns the (unloaded) RootAnalysis for the object transferred, in the given analysis mode
+        (the mode of the selected workload item)."""
         pass
 
     @abstractmethod

@@ -1183,7 +1183,11 @@ If the winning workload row belongs to another node, `transfer_work_target`:
 5. load the root, set `root.location` to this node, save;
 6. best-effort `ace_api.clear(uuid, lock_uuid, remote_host=…)` to delete the
    remote copy — failures are logged and ignored, since the database already
-   points here.
+   points here;
+7. return the root in the analysis mode of the selected workload row, as a
+   local pull does. Without it the root would run in the mode saved on disk
+   (`correlation` for an alert), and a `dispositioned` item would wait for a
+   later pass.
 
 On failure the target dir is removed and the lock released.
 

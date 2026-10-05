@@ -1,8 +1,8 @@
 # Signature Validation System (SVS)
 
-> **Status: agreed design; phase 0 landed in v3.0.122, phase 1 in progress (2026-10-05). Parts 5
-> and 6 were added in review rounds 8–10, the pre-implementation review folded in and the design
-> reconciled with the v3.0.121 release on 2026-10-02.**
+> **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2 in
+> progress (2026-10-05). Parts 5 and 6 were added in review rounds 8–10, the pre-implementation
+> review folded in and the design reconciled with the v3.0.121 release on 2026-10-02.**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
@@ -192,10 +192,12 @@ the database, because roots don't carry it. [YR-5]
   set, which makes the audit column worthless. The module logs ERROR for every capture whose
   version is unknown. [FR-15]
 - **The work item keeps its mode.** The `dispositioned` requeue targets the alert's own node, but
-  any node of the same company may pull it, and `transfer_work_target` today returns the root
-  without the item's `analysis_mode`, so the orchestrator falls back to `correlation` and capture
-  silently does not run. The phase-2 PR fixes `transfer_work_target` to carry the mode, with a
-  test. [FR-5]
+  any node of the same company may pull it. `transfer_work_target` used to return the root without
+  the item's `analysis_mode`, so the orchestrator fell back to the `correlation` mode saved on
+  disk and capture did not run on that pass. The transfer moves every workload row of the alert
+  to the new node and the clear deletes only the row of the mode that ran, so the `dispositioned`
+  row ran on a later pass instead: capture was delayed, after a pointless correlation pass, not
+  lost. `transfer_work_target` now carries the selected item's mode. [FR-5]
 
 Each capture record stores: [YR-4]
 
@@ -932,17 +934,17 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | `archive()` frees derived hardcopies and keeps root-level files in subfolders, **landed** | Two defects: derived bytes were never freed; root files in `files/<dir>/` were deleted | YR-11 |
 | Dispositions: config as the single list, classification map, `analyst_selectable`, server-side validation, **landed** | Part 1 | TP-2, TP-3 |
 | Prevalence counts only the default queue, **landed** | Consistency with disposition history (PR #587) | ART-10 |
-| Detection identity includes the node | Part 1 | DP-7 |
-| YARA detections on the file | Part 1 | DP-4 |
+| Detection identity includes the node, **landed** | Part 1 | DP-7 |
+| YARA detections on the file, **landed** | Part 1 | DP-4 |
 | Alert-router registry, `move_alert_to_queue`, as their own PR (a refactor of `_apply_detection_queue` plus a new primitive), **landed** | Part 3 | ART-15, FR-2 |
 | CAS (`saq/cas/`), **landed** | Sample storage, and later every byte store. The shared backend a multi-node site needs for `svs_samples` is the site's to provide | `docs/CAS.md`, FR-1 |
 | Correlation-mode submissions to a remote node get an `alerts` row, **landed** | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
-| `transfer_work_target` carries the work item's `analysis_mode` | A `dispositioned` item pulled by another node ran in correlation mode, so capture silently did not run. Phase 2 | FR-5 |
+| `transfer_work_target` carries the work item's `analysis_mode`, **landed** | A `dispositioned` item pulled by another node ran in correlation mode first, which delayed capture. Phase 2 | FR-5 |
 | `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
 | Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
 | `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes, **landed** | Prerequisites for the CAS | F-13, F-18 to F-20 |
 | `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`), **landed** | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
-| `GET /api/v2/detection-points` and verdict history | No detection-point API exists | RPT-2, RPT-4 |
+| `GET /api/v2/detection-points` and verdict history, **landed** | No detection-point API exists | RPT-2, RPT-4 |
 | Saved filters per screen, **landed** | Saved filters for screens other than the manage page; unique key, scratch rows, name registry and query builder all become per screen | MGT-1, FR-18 |
 | Alert search excludes the SVS queue by default | Test alerts would dominate "similar alerts" | RPT-7 |
 | The hunt completion log line carries structured fields, **landed** | Debugging a missing hunt detection from the site's logs | MGT-9 |
@@ -1039,7 +1041,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 | Phase | Contents |
 |---|---|
 | **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
-| **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
+| **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
 | **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
 | **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |

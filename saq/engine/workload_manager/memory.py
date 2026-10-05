@@ -115,24 +115,25 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
             root.uuid, root.analysis_mode, getattr(root, 'company_id', self._current_company_id)))
 
-    def transfer_work_target(self, uuid: str, node_id: int) -> Optional[RootAnalysis]:
+    def transfer_work_target(self, uuid: str, node_id: int, analysis_mode: Optional[str] = None) -> Optional[RootAnalysis]:
         """Moves the given work target from the given remote node to the local node.
-        Returns the (unloaded) RootAnalysis for the object transferred."""
+        Returns the (unloaded) RootAnalysis for the object transferred, in the given analysis mode
+        (the mode of the selected workload item)."""
         # In memory implementation, we don't actually transfer between nodes
         # Just update the node_id to simulate transfer
         if uuid in self._workload_items:
-            root, old_node_id, analysis_mode, insert_date, company_id, storage_dir = self._workload_items[uuid]
+            root, old_node_id, item_analysis_mode, insert_date, company_id, storage_dir = self._workload_items[uuid]
             # Update to local node
             self._workload_items[uuid] = (
                 root,
                 self._current_node_id,
-                analysis_mode,
+                item_analysis_mode,
                 insert_date,
                 company_id,
                 storage_dir
             )
             logging.info(f"transferred work item {uuid} from node {old_node_id} to local node {self._current_node_id}")
-            return RootAnalysis(uuid=uuid, storage_dir=storage_dir)
+            return RootAnalysis(uuid=uuid, storage_dir=storage_dir, analysis_mode=analysis_mode or item_analysis_mode)
         
         logging.error(f"work item {uuid} not found for transfer")
         return None
@@ -222,7 +223,7 @@ class MemoryWorkloadManager(WorkloadManagerInterface):
                 
             # Handle remote work transfer
             if node_id != self._current_node_id:
-                return self.transfer_work_target(uuid, node_id)
+                return self.transfer_work_target(uuid, node_id, analysis_mode)
                 
             logging.info(f"got workload item uuid {uuid} for analysis mode {analysis_mode} with lock {self.lock_manager.lock_uuid}")
             return RootAnalysis(uuid=uuid, storage_dir=storage_dir, analysis_mode=analysis_mode)
