@@ -206,6 +206,33 @@ class TestCrud:
         assert json.loads(row.filters_json)[0]["values"] == ["-24h"]
 
 
+class TestWrites:
+    """What the manage page's Save as and Save rely on, now that they call the API."""
+
+    @pytest.mark.asyncio
+    async def test_an_empty_filter_is_refused(self, client: AsyncClient):
+        """Clearing every row and saving is a mistake, not a request to save "match everything"."""
+        assert (await client.post(f"{BASE}/", json={"name": "Empty", "filters": []})).status_code == 422
+        created = await _create(client, "Mine")
+        assert (await client.patch(f"{BASE}/{created['uuid']}", json={"filters": []})).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_update_leaves_the_filters_alone(self, client: AsyncClient):
+        """Rename and the quick-filter toggles must not need to know what the filter contains."""
+        created = await _create(client, "Before")
+        response = await client.patch(f"{BASE}/{created['uuid']}", json={"name": "After"})
+        assert response.json()["filters"] == QUEUE_FILTER
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_update_writes_nothing(self, client: AsyncClient):
+        created = await _create(client, "Mine")
+        bad = await client.patch(f"{BASE}/{created['uuid']}", json={
+            "name": "Renamed", "filters": [{"name": "Alert Date", "inverted": False, "values": ["-7dd"]}]})
+        assert bad.status_code == 422
+        stored = (await client.get(f"{BASE}/{created['uuid']}")).json()
+        assert (stored["name"], stored["filters"]) == ("Mine", QUEUE_FILTER)
+
+
 class TestOwnership:
     @pytest.mark.asyncio
     async def test_another_users_filter_is_not_readable(
@@ -604,3 +631,103 @@ class TestScreens:
         await service.ensure_default_saved_filters(session, test_user.id, screen="alerts")
         names = [f.name for f in await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")]
         assert names == ["Last 24h", "Last 7d"]
+
+
+# a screen whose data is read with signature:read, like the SVS samples
+SIGNATURE_SCREEN = FilterScreen(name="test_signature_screen", entry_model=_ColorEntry, slugs={"Color": "color"},
+                                permission=("signature", "read"))
+
+
+@pytest.fixture
+def signature_screen(monkeypatch):
+    monkeypatch.setitem(FILTER_SCREENS, SIGNATURE_SCREEN.name, SIGNATURE_SCREEN)
+    return SIGNATURE_SCREEN
+
+
+async def _client_with_permissions(session: AsyncSession, username: str, permissions: list[tuple[str, str]]):
+    user = User(username=username, email=f"{username}@e.com", display_name=username, password="pw")
+    session.add(user)
+    await session.flush()
+    for major, minor in permissions:
+        session.add(AuthUserPermission(user_id=user.id, major=major, minor=minor, effect="ALLOW"))
+    await session.flush()
+    return api_key_client(await make_api_key(session, user.id, inherit=True))
+
+
+@pytest_asyncio.fixture
+async def signature_reader(_override_db_session, session: AsyncSession):
+    """A user who may read signatures and nothing about alerts."""
+    async with await _client_with_permissions(session, "signature_reader", [("signature", "read")]) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def alert_reader(_override_db_session, session: AsyncSession):
+    """A user who may read alerts and nothing about signatures."""
+    async with await _client_with_permissions(session, "alert_reader", [("alert", "read")]) as client:
+        yield client
+
+
+SIG = f"{BASE}/?screen={SIGNATURE_SCREEN.name}"
+
+
+class TestScreenPermissions:
+    """Each screen's saved filters need the permission that reads the screen's data."""
+
+    @pytest.mark.asyncio
+    async def test_the_screens_permission_is_enough(self, signature_reader: AsyncClient, signature_screen):
+        created = await signature_reader.post(SIG, json={"name": "Mine", "filters": COLOR_FILTER, "quick_filter": True})
+        assert created.status_code == 201, created.text
+        filter_uuid = created.json()["uuid"]
+
+        assert [f["name"] for f in (await signature_reader.get(SIG)).json()["data"]] == ["Mine"]
+        assert (await signature_reader.get(f"{BASE}/{filter_uuid}")).status_code == 200
+        assert (await signature_reader.patch(f"{BASE}/{filter_uuid}", json={"name": "Renamed"})).status_code == 200
+        reorder = await signature_reader.put(f"{BASE}/quick-filters?screen={SIGNATURE_SCREEN.name}",
+                                             json={"filter_uuids": [filter_uuid]})
+        assert reorder.status_code == 200
+        scratch = await signature_reader.put(f"{BASE}/scratch/working?screen={SIGNATURE_SCREEN.name}",
+                                             json={"filters": COLOR_FILTER})
+        assert scratch.status_code == 200
+        assert (await signature_reader.delete(f"{BASE}/{filter_uuid}")).status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_another_screens_permission_is_not(self, signature_reader: AsyncClient, signature_screen):
+        assert (await signature_reader.get(f"{BASE}/")).status_code == 403
+        assert (await signature_reader.post(f"{BASE}/", json={"name": "x", "filters": QUEUE_FILTER})).status_code == 403
+        assert (await signature_reader.put(f"{BASE}/quick-filters", json={"filter_uuids": []})).status_code == 403
+        assert (await signature_reader.put(f"{BASE}/scratch/working", json={"filters": QUEUE_FILTER})).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_an_alert_reader_cannot_use_a_signature_screen(self, alert_reader: AsyncClient, signature_screen):
+        assert (await alert_reader.get(f"{BASE}/")).status_code == 200
+        assert (await alert_reader.get(SIG)).status_code == 403
+        assert (await alert_reader.post(SIG, json={"name": "x", "filters": COLOR_FILTER})).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_a_row_is_checked_against_its_own_screen(
+        self, alert_reader: AsyncClient, session: AsyncSession, signature_screen
+    ):
+        """A row addressed by uuid carries its screen; holding another screen's permission does
+        not reach it, even for its owner."""
+        mine = await _create(alert_reader, "Mine")
+        # the owner loses access to the row's screen: move the row to the signature screen
+        await session.execute(
+            update(SavedFilter).where(SavedFilter.uuid == mine["uuid"]).values(
+                screen=SIGNATURE_SCREEN.name, filters_json=json.dumps(COLOR_FILTER)))
+        await session.commit()
+
+        assert (await alert_reader.get(f"{BASE}/{mine['uuid']}")).status_code == 403
+        assert (await alert_reader.patch(f"{BASE}/{mine['uuid']}", json={"name": "x"})).status_code == 403
+        assert (await alert_reader.delete(f"{BASE}/{mine['uuid']}")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_row_is_404_to_a_user_of_some_screen(self, signature_reader: AsyncClient, signature_screen):
+        assert (await signature_reader.get(f"{BASE}/no-such-uuid")).status_code == 404
+        assert (await signature_reader.get(f"{BASE}/?screen=no_such_screen")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_a_user_of_no_screen_is_refused_even_an_unknown_row(self, signature_reader: AsyncClient):
+        """Without the signature screen registered, signature:read opens no screen at all."""
+        assert (await signature_reader.get(f"{BASE}/no-such-uuid")).status_code == 403
+        assert (await signature_reader.get(f"{BASE}/?screen=no_such_screen")).status_code == 403

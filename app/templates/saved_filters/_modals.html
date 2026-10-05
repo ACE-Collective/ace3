@@ -1,0 +1,59 @@
+{# The Save Filter and Manage Filters dialogs of a list screen, driven by
+   static/js/saved_filters.js through the page's SAVED_FILTERS instance (see that file).
+
+   quick_filter_noun is what the page calls a quick filter ("badge" on the alert manage page),
+   and supports_indicator offers a count on it. A page that morphs its content keeps these
+   OUTSIDE the morphed region, so a refresh cannot morph away an open dialog mid-edit
+   (docs/GUI_DATASTAR.md). #}
+{% macro saved_filter_modals(quick_filter_noun="quick filter", supports_indicator=False) %}
+<div class="modal fade" id="save_filter_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <form id="save_filter_form" onsubmit="return SAVED_FILTERS.saveAs();">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Save Filter</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <label class="form-label" for="save_filter_name">Name</label>
+                    <input type="text" class="form-control" id="save_filter_name" name="name" required maxlength="255">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label" for="save_filter_description">Description <span class="text-muted">(optional)</span></label>
+                    <input type="text" class="form-control" id="save_filter_description" name="description" maxlength="1024">
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="save_filter_quick" name="quick_filter">
+                    <label class="form-check-label" for="save_filter_quick">Show as a {{ quick_filter_noun }}</label>
+                </div>
+                {% if supports_indicator %}
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="save_filter_indicator" name="quick_filter_indicator">
+                    <label class="form-check-label" for="save_filter_indicator">Show a count on the {{ quick_filter_noun }}</label>
+                </div>
+                {% endif %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary">Save</button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
+{# rename, delete, and choose which saved filters are quick filters and in what order. The
+   body is rendered by SAVED_FILTERS.openManage() #}
+<div class="modal fade modal-lg" id="manage_filters_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Manage Filters</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="manage_filters_modal_body"></div>
+        </div>
+    </div>
+</div>
+{% endmacro %}

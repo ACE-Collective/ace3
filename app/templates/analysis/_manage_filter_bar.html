@@ -4,8 +4,9 @@
    matches on, so keep it stable. See docs/GUI_DATASTAR.md.
 
    Everything here uses inline handlers on purpose: this markup is re-rendered by the 30s
-   poll, so jQuery bindings attached to it would not survive the morph. #}
-<div class="col" id="manage_filter_bar">
+   poll, so jQuery bindings attached to it would not survive the morph. The filter list in
+   effect rides along as data-effective-filters, so "Save a copy" saves what the bar shows. #}
+<div class="col" id="manage_filter_bar" data-effective-filters='{{ effective_filters | tojson }}'>
     {% if temp_filter %}
     {# A pivot or a shared link is showing. The analyst's own filter is untouched and one
        click away -- this banner is what makes an accidental pivot recoverable instead of
@@ -19,7 +20,7 @@
     {% endif %}
     Filters |
     <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#filter_modal">Edit</span>
-    <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#manage_filters_modal" onmousedown="load_saved_filters_modal()">Manage&hellip;</span>
+    <span class="badge label-special" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#manage_filters_modal" onmousedown="SAVED_FILTERS.openManage()">Manage&hellip;</span>
     <span class="badge label-special" style="cursor:pointer" onmousedown='reset_filters()'>Reset</span>
     {% if current_filter.name %}<span class="ms-1">{{ current_filter.name }}{% if current_filter.state == 'dirty' %}<span title="unsaved changes">&nbsp;*</span>{% endif %}</span>{% endif %}
     |

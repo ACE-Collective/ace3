@@ -60,8 +60,8 @@ def test_no_python_reads_filter_contents_out_of_the_session():
 
 
 #
-# WYSIWYG saves: the browser half of the contract in
-# app/analysis/views/edit/filters.py::_posted_filters_or_effective
+# WYSIWYG saves: the page hands the saved-filter component (static/js/saved_filters.js) the
+# filter list to save, and the component sends exactly that to /api/v2/saved-filters
 #
 
 @pytest.mark.unit
@@ -81,14 +81,17 @@ def test_every_save_modal_trigger_declares_its_filter_source():
 
 @pytest.mark.unit
 def test_both_save_paths_send_the_on_screen_filter():
-    """Save and Save as must post what the editor shows. Without this, reverting the JS
-    half leaves the Python half reading a field nobody sends -- and the route falls back to
-    the session, which is the original bug, silently restored."""
+    """Save and Save as must send what the editor shows. Saving the filter the session last
+    applied instead was the original bug: building a filter and saving it without pressing
+    Apply first silently saved the PREVIOUS filter."""
     js = (APP / "static" / "js" / "manage_alerts.js").read_text()
+    component = (APP / "static" / "js" / "saved_filters.js").read_text()
 
     assert re.search(r"function save_current_filter\b[\s\S]*?compute_filter_settings\(", js), \
         "save_current_filter() must serialize the editor"
     assert re.search(r"function prepare_save\b[\s\S]*?compute_filter_settings\(", js), \
         "prepare_save('editor') must snapshot the editor before the modal handoff"
-    assert re.search(r"function save_filter_as\b[\s\S]*?append\('filters'", js), \
-        "save_filter_as() must post the snapshotted filter list"
+    assert re.search(r"function saveAs\b[\s\S]*?filters: pending_filters", component), \
+        "SavedFilters.saveAs() must send the snapshotted filter list"
+    assert re.search(r"function saveCurrent\(filter_uuid, filters\)[\s\S]*?\{filters: filters\}", component), \
+        "SavedFilters.saveCurrent() must send the filter list it is given"

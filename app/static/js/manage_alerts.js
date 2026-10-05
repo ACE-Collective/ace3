@@ -208,15 +208,6 @@ $(document).ready(function() {
         });
     }
 
-    // A fresh open is a fresh filter. Nothing else clears this form -- Bootstrap only hides
-    // the div, and a successful save is the only path that reloads the page -- so without
-    // this the name from a save that 409'd is still sitting in the box, focused, next time
-    // it opens. reset() rather than clearing by id so a field added here later cannot be
-    // forgotten, which is the very bug this fixes.
-    $('#save_filter_modal').on('show.bs.modal', function () {
-        document.getElementById('save_filter_form').reset();
-    });
-
     // show what Save will change before the dialog appears
     $('#disposition_modal').on('show.bs.modal', function() {
         SelectionGuard.render(document.getElementById("disposition_selection_guard"), selected_alert_descriptions(), {
@@ -1017,38 +1008,32 @@ function copy_filter_link(button) {
     copy_to_clipboard(button.dataset.shareUrl);
 }
 
-function copy_saved_filter_link(filter_uuid) {
-    (function() {
-        fetch('saved_filter_link/' + encodeURIComponent(filter_uuid), { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            return resp.json();
-        })
-        .then(function(data){ copy_to_clipboard(data.url); })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
 //
-// saved filter management
+// saved filter management (static/js/saved_filters.js)
 //
 
-function load_saved_filters_modal() {
-    (function() {
-        fetch('saved_filters_modal_body', { credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            return resp.text();
-        })
-        .then(function(html){ document.getElementById('manage_filters_modal_body').innerHTML = html; })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
+// The page's SavedFilters instance, created by init_saved_filters() once the page is ready.
+var SAVED_FILTERS = null;
+
+// Saving or opening a filter makes it the analyst's selection, which lives in the Flask session,
+// so both end in select_filter_by_uuid(), which selects it and reloads the page.
+function init_saved_filters(manage_url) {
+    SAVED_FILTERS = SavedFilters.create({
+        screen: "alerts",
+        quickFilterNoun: "badge",
+        supportsIndicator: true,
+        manageTipHtml: 'Tip: use <code>$USER_QUEUE</code> or <code>$USER</code> as a value to make a shared link adapt to whoever opens it.',
+        onOpen: function(saved) { select_filter_by_uuid(saved.uuid); },
+        onSaved: function(saved) { select_filter_by_uuid(saved.uuid); },
+        onQuickFiltersSaved: function() { window.location.replace('/ace/manage'); },
+        shareUrl: function(f) { return manage_url + aceApi.query({f: f}); },
+    });
 }
 
-// What the pending save will persist. null means "save whatever is in effect" -- the
-// temp-banner "Save a copy" path, which must never read the editor's DOM, since that DOM
-// can still hold rows the analyst abandoned with Cancel.
-var save_filter_payload = null;
+// The filter list in effect, as the filter bar was last rendered with it.
+function effective_filters() {
+    return JSON.parse(document.getElementById('manage_filter_bar').dataset.effectiveFilters);
+}
 
 // True while #filter_modal is being dismissed to hand off to #save_filter_modal, as opposed
 // to being cancelled.
@@ -1059,13 +1044,16 @@ var editor_handoff = false;
 // page reloads after every apply -- so this snapshot is always the applied filter.
 var filter_editor_html = null;
 
-// Called inline by every trigger that opens #save_filter_modal. It has to run on the
-// trigger's own click rather than on the modal's show event: Bootstrap's dismiss/toggle
-// chaining fires hidden.bs.modal on #filter_modal BEFORE show.bs.modal on
-// #save_filter_modal, so a show-time snapshot would race the editor reset below.
+// Called inline by every trigger that opens #save_filter_modal, with what Save as will persist:
+// the editor's rows (Save as) or the filter in effect (the temp banner's "Save a copy", which
+// must never read the editor's DOM, since that DOM can still hold rows the analyst abandoned
+// with Cancel). It has to run on the trigger's own click rather than on the modal's show
+// event: Bootstrap's dismiss/toggle chaining fires hidden.bs.modal on #filter_modal BEFORE
+// show.bs.modal on #save_filter_modal, so a show-time snapshot would race the editor reset
+// below.
 function prepare_save(source) {
     editor_handoff = (source === 'editor');
-    save_filter_payload = editor_handoff ? JSON.stringify(compute_filter_settings()) : null;
+    SAVED_FILTERS.prepareSave(editor_handoff ? compute_filter_settings() : effective_filters());
 }
 
 // Puts the editor back to the filter that is actually in effect, discarding rows the
@@ -1083,83 +1071,9 @@ function reset_filter_editor() {
     setup_daterange_pickers();
 }
 
-function save_filter_as() {
-    const body = new URLSearchParams();
-    body.append('name', document.getElementById('save_filter_name').value);
-    body.append('description', document.getElementById('save_filter_description').value);
-    if (document.getElementById('save_filter_quick').checked) { body.append('quick_filter', 'on'); }
-    if (document.getElementById('save_filter_indicator').checked) { body.append('quick_filter_indicator', 'on'); }
-    // Omitting the field is meaningful: it tells the server to save whatever is in effect,
-    // which is the "Save a copy" path. See prepare_save().
-    if (save_filter_payload !== null) { body.append('filters', save_filter_payload); }
-
-    (function() {
-        fetch('saved_filters', { method: 'POST', credentials: 'same-origin', body: body })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
-
-    return false; // prevents form from submitting
-}
-
 // Overwrites the named filter currently selected with what is on screen. Reachable only
 // from the Edit modal's footer, and it never dismisses that modal -- so it reads the editor
 // unconditionally and needs no handoff snapshot.
 function save_current_filter(filter_uuid) {
-    const body = new URLSearchParams({ save_current: 'on',
-                                       filters: JSON.stringify(compute_filter_settings()) });
-    (function() {
-        fetch('saved_filters/' + encodeURIComponent(filter_uuid), { method: 'POST', credentials: 'same-origin', body: body })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
-}
-
-function delete_saved_filter(filter_uuid, name) {
-    if (!confirm('Delete the saved filter "' + name + '"?')) { return; }
-    (function() {
-        fetch('saved_filters/' + encodeURIComponent(filter_uuid) + '/delete',
-              { method: 'POST', credentials: 'same-origin' })
-        .then(function(resp){
-            if (!resp.ok) { throw new Error(resp.statusText); }
-            load_saved_filters_modal();
-        })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
-// Reorder with up/down buttons rather than drag-and-drop: no library, and it is reachable
-// from the keyboard.
-function move_saved_filter(button, direction) {
-    var row = button.closest('tr');
-    var sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
-    if (!sibling) { return; }
-    if (direction < 0) { row.parentNode.insertBefore(row, sibling); }
-    else { row.parentNode.insertBefore(sibling, row); }
-}
-
-function save_quick_filter_order() {
-    const body = new URLSearchParams();
-    document.querySelectorAll('#saved_filters_table tbody tr').forEach(function(row){
-        if (row.querySelector('.quick-filter-pin').checked) {
-            body.append('filter_uuids', row.dataset.filterUuid);
-        }
-    });
-
-    (function() {
-        fetch('saved_filters/quick', { method: 'POST', credentials: 'same-origin', body: body })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace('/ace/manage');
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
-
-    return false; // prevents form from submitting
+    SAVED_FILTERS.saveCurrent(filter_uuid, compute_filter_settings());
 }

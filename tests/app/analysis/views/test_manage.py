@@ -1,3 +1,4 @@
+import html as html_lib
 import json
 import re
 
@@ -559,3 +560,38 @@ def test_manage_does_not_flag_a_single_queue_page(web_client, analyst):
     html = web_client.get(url_for("analysis.manage")).data.decode()
     assert 'alert_row_queue-single' in html
     assert 'id="manage_queue_mix"' not in html
+
+
+@pytest.mark.integration
+def test_manage_page_uses_the_saved_filter_component(web_client, analyst):
+    """Saved filters are saved, deleted and ordered through /api/v2/saved-filters by
+    static/js/saved_filters.js; the page renders its dialogs once, outside the morph fragments."""
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    for script in ("js/ace_api.js", "js/saved_filters.js", "js/manage_alerts.js"):
+        assert script in html
+    assert html.index("js/saved_filters.js") < html.index("js/manage_alerts.js")
+    assert html.count('id="save_filter_modal"') == 1
+    assert html.count('id="manage_filters_modal"') == 1
+    assert 'onsubmit="return SAVED_FILTERS.saveAs();"' in html
+    assert 'id="save_filter_indicator"' in html
+    assert 'onmousedown="SAVED_FILTERS.openManage()"' in html
+    assert "init_saved_filters(" in html
+
+    # "Save a copy" saves what the bar shows, so the bar carries the filter list in effect
+    refresh = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    for page in (html, refresh):
+        carried = re.search(r"data-effective-filters='([^']*)'", page).group(1)
+        assert isinstance(json.loads(html_lib.unescape(carried)), list)
+    assert 'id="save_filter_modal"' not in refresh
+
+
+@pytest.mark.unit
+def test_the_flask_saved_filter_routes_are_gone(app):
+    endpoints = {rule.endpoint for rule in app.url_map.iter_rules()}
+    for removed in ("create_saved_filter", "update_saved_filter", "delete_saved_filter",
+                    "set_quick_filters", "saved_filter_link", "saved_filters_modal_body"):
+        assert f"analysis.{removed}" not in endpoints
+    assert "analysis.select_filter" in endpoints

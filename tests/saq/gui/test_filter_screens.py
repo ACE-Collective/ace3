@@ -102,3 +102,18 @@ def test_unconfirmed_detections_takes_true_or_false():
     assert entry.values == ["True"]
     with pytest.raises(ValidationError):
         ALERTS_SCREEN.validate_entries([{"name": "Unconfirmed Detections", "values": ["yes"]}])
+
+
+def test_screens_default_to_the_alert_permission():
+    assert ALERTS_SCREEN.permission == ("alert", "read")
+    assert DETECTION_POINTS_SCREEN.permission == ("alert", "read")
+
+
+def test_fields_must_name_the_screens_filters():
+    from saq.gui.filter_screens import FilterField, FilterFieldKind
+
+    FilterScreen(name="ok", entry_model=FilterEntryBase, slugs={"Color": "color"},
+                 fields=(FilterField("Color", FilterFieldKind.MULTI, ("red", "blue")),))
+    with pytest.raises(ValueError, match="Shape"):
+        FilterScreen(name="bad", entry_model=FilterEntryBase, slugs={"Color": "color"},
+                     fields=(FilterField("Shape", FilterFieldKind.TEXT),))
