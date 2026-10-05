@@ -36,8 +36,8 @@ from saq.cas.errors import ObjectNotFound
 from saq.configuration.config import get_config
 from saq.database.model import Alert, YaraQAMatch
 from saq.environment import get_global_runtime_settings, get_temp_dir
+from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH, YaraInventory
 from saq.yara_qa.listing import QASignature, QASort, QAStatus, filter_and_sort, merge, version_rows_statement
-from saq.yara_qa.model import SIGNATURE_UUID_MAX_LENGTH, YaraInventory
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,9 @@ _RESERVED_ENTRY_NAMES = {"match.json", "manifest.json"}
 def _load_inventory() -> YaraInventory:
     # local import: the signature loaders import the hunter, and through it the engine, which
     # imports aceapi_v2 back (a circular import at startup)
-    from saq.yara_qa.inventory import get_yara_inventory
+    from saq.signatures.yara_inventory import get_yara_inventory
 
-    return get_yara_inventory()
+    return get_yara_inventory(get_config().yara_qa.inventory_refresh_seconds)
 
 
 def validate_signature_uuid(signature_uuid: str) -> None:

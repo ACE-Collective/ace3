@@ -7,8 +7,15 @@ see saq/signatures/loaders/.
 """
 
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Optional
+
+
+# the width of every signature uuid column (detection_points.signature_uuid, yara_qa_matches,
+# svs_yara_captures, ...): a uuid meta longer than this cannot be recorded against its rule
+SIGNATURE_UUID_MAX_LENGTH = 36
 
 
 class SignatureType(StrEnum):
@@ -90,3 +97,17 @@ class SignatureLocation:
 
     def exists(self) -> bool:
         return os.path.exists(self.path)
+
+
+@dataclass(frozen=True)
+class YaraInventory:
+    """The YARA rules this deployment loads, as saq/signatures/yara_inventory.py read them. Kept
+    here, apart from the loader, so that the API can import it: the signature loaders import the
+    hunter and, through it, the engine, which the API must not pull in at import time."""
+
+    # every yara rule with a uuid, by uuid
+    by_uuid: dict[str, Signature] = field(default_factory=dict)
+    # monotonic time it was built
+    built_at: float = field(default_factory=time.monotonic)
+    # why the inventory is empty or partial, for callers to pass on; None when it loaded cleanly
+    error: Optional[str] = None

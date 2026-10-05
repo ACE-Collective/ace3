@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 
 import pytest
@@ -6,10 +5,9 @@ import pytest
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import YaraQASignature
-from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
-from saq.yara_qa.inventory import get_yara_inventory
-from saq.yara_qa.listing import QASort, QAStatus, filter_and_sort, merge
-from saq.yara_qa.model import YaraInventory
+from saq.signatures.model import YaraInventory
+from saq.signatures.yara_inventory import get_yara_inventory
+from saq.yara_qa.listing import QASort, QAStatus, filter_and_sort, merge, qa_signatures
 
 QA_RULE_UUID = "5a0c7f1e-1c43-4a39-8d8e-2f1b3c4d5e6f"
 PLAIN_RULE_UUID = "6b1d8a2f-2d54-4b4a-9e9f-3a2c4d5e6f70"
@@ -63,6 +61,10 @@ def signature_dir(tmp_path, monkeypatch) -> str:
     return str(root)
 
 
+def _inventory() -> YaraInventory:
+    return get_yara_inventory(max_age_seconds=0)
+
+
 def _version_row(signature_uuid: str, version: str, rule_name: str, match_count: int, stored_count: int,
                  last_match_at: datetime) -> YaraQASignature:
     return YaraQASignature(
@@ -72,37 +74,13 @@ def _version_row(signature_uuid: str, version: str, rule_name: str, match_count:
 
 
 @pytest.mark.integration
-def test_inventory_lists_qa_rules(signature_dir):
-    inventory = get_yara_inventory()
-    assert inventory.error is None
-    assert set(inventory.by_uuid) == {QA_RULE_UUID, PLAIN_RULE_UUID, DISABLED_QA_UUID}
-    assert {s.name for s in inventory.qa_signatures} == {"never_matched_qa_rule", "disabled_qa_rule"}
-    assert inventory.by_uuid[DISABLED_QA_UUID].enabled is False
-    assert inventory.by_uuid[QA_RULE_UUID].version == SIGNATURE_VERSION_UNKNOWN
-
-
-@pytest.mark.integration
-def test_inventory_sees_changed_rule_files(signature_dir):
-    assert QA_RULE_UUID in {s.uuid for s in get_yara_inventory().qa_signatures}
-
-    # the tests run with inventory_refresh_seconds 0, so the next call rescans
-    with open(os.path.join(signature_dir, "unittest", "rules.yar"), "w") as fp:
-        fp.write(RULES.replace('modifiers = "qa"', 'modifiers = "no_alert"'))
-
-    assert QA_RULE_UUID not in {s.uuid for s in get_yara_inventory().qa_signatures}
-
-
-@pytest.mark.integration
-def test_inventory_reports_a_missing_signature_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(tmp_path / "nope"))
-    inventory = get_yara_inventory()
-    assert inventory.by_uuid == {}
-    assert "unable to load yara signatures" in inventory.error
+def test_qa_signatures(signature_dir):
+    assert {s.name for s in qa_signatures(_inventory())} == {"never_matched_qa_rule", "disabled_qa_rule"}
 
 
 @pytest.mark.integration
 def test_merge_statuses(signature_dir):
-    inventory = get_yara_inventory()
+    inventory = _inventory()
     rows = [
         # a rule in qa mode with matches under two versions
         _version_row(DISABLED_QA_UUID, "v1", "disabled_qa_rule", 5, 2, datetime(2026, 9, 1)),

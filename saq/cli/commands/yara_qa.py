@@ -21,12 +21,13 @@ yara_qa_sp = yara_qa_parser.add_subparsers(dest="yara_qa_cmd")
 
 def cli_list(args):
     """List YARA rules in QA mode, and rules with recorded QA matches, with their counts."""
-    from saq.yara_qa.db import transaction
-    from saq.yara_qa.inventory import get_yara_inventory
+    from saq.configuration.config import get_config
+    from saq.database.private_session import private_transaction
+    from saq.signatures.yara_inventory import get_yara_inventory
     from saq.yara_qa.listing import QASort, QAStatus, filter_and_sort, merge, version_rows_statement
 
-    inventory = get_yara_inventory()
-    with transaction() as session:
+    inventory = get_yara_inventory(get_config().yara_qa.inventory_refresh_seconds)
+    with private_transaction() as session:
         rows = session.execute(version_rows_statement()).scalars().all()
         signatures = filter_and_sort(
             merge(inventory, rows), q=args.q, status=QAStatus(args.status) if args.status else None,

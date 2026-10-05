@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from saq.cas import get_cas
-from saq.yara_qa.store import serialize_match_record
+from saq.yara_scanning.match_record import serialize_match_record
 from saq.yara_scanning import protocol, qa
 from saq.yara_scanning.qa import (
     CLAIMED_SUFFIX,

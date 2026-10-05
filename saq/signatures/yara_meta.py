@@ -13,6 +13,8 @@ vs `enabled = "false"`), from yara-python at match time and from plyara in the i
 from collections.abc import Mapping
 from typing import Any
 
+from saq.signatures.model import Signature
+
 META_ENABLED = "enabled"
 META_MODIFIERS = "modifiers"
 
@@ -49,3 +51,9 @@ def meta_modifiers(meta: Mapping[str, Any] | None) -> list[str]:
 def meta_is_qa(meta: Mapping[str, Any] | None) -> bool:
     """True when the rule runs in QA mode (`modifiers` includes `qa`)."""
     return MODIFIER_QA in meta_modifiers(meta)
+
+
+def is_qa_signature(signature: Signature) -> bool:
+    """True when an inventoried rule runs in QA mode. The inventory has already read its
+    `modifiers` meta with meta_modifiers()."""
+    return MODIFIER_QA in signature.modifiers

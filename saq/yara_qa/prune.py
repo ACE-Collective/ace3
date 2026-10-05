@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from saq.cas import get_cas
 from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch
-from saq.yara_qa.db import transaction
+from saq.database.private_session import private_transaction
 from saq.yara_qa.store import MatchRef, delete_match_rows, release_match_holds
 
 
@@ -40,14 +40,14 @@ def prune_expired(*, dry_run: bool = False) -> PruneStats:
     stats = PruneStats(dry_run=dry_run)
 
     if dry_run:
-        with transaction() as session:
+        with private_transaction() as session:
             stats.expired = session.execute(select(func.count()).select_from(YaraQAMatch).where(_expired())).scalar_one()
 
         return stats
 
     pool = get_cas().pool(config.pool)
     while True:
-        with transaction() as session:
+        with private_transaction() as session:
             rows = session.execute(
                 select(YaraQAMatch.id, YaraQAMatch.signature_uuid, YaraQAMatch.signature_version,
                        YaraQAMatch.sha256, YaraQAMatch.match_digest, YaraQAMatch.expires_at)

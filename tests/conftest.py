@@ -24,7 +24,7 @@ from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
-from saq.yara_qa.inventory import reset_yara_inventory
+from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.storage.factory import reset_storage_system
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 

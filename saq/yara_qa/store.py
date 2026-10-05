@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -45,12 +45,13 @@ from saq.cas.errors import ObjectDeleting, ObjectNotFound, PoolNotFound
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch, YaraQASignature
+from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.error.reporting import report_exception
 from saq.json_encoding import _JSONEncoder
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
-from saq.yara_qa.db import transaction
-from saq.yara_qa.model import SIGNATURE_UUID_MAX_LENGTH
+from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
+from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 
 if TYPE_CHECKING:
     # type hints only: importing saq.observables here would be circular at startup
@@ -102,57 +103,6 @@ class QARecordResult:
 
 def qa_hold(match_id: int, expires_at: datetime) -> Hold:
     return Hold(HOLDER_KIND, str(match_id), expires_at)
-
-
-def serialize_match_record(match_result: dict) -> bytes:
-    """The full match record as stored in the CAS: the same JSON the QA directory used to keep
-    beside each file, never truncated."""
-    return json.dumps(match_result, cls=_JSONEncoder).encode("utf-8")
-
-
-def _string_entry(entry: Any) -> Optional[tuple[str, int, Optional[int]]]:
-    """(identifier, instance count, first offset) of one entry of a match's strings list, which is
-    a (offset, identifier, data) tuple from yara_scanner, or a yara.StringMatch from newer
-    yara-python."""
-    if isinstance(entry, (tuple, list)) and len(entry) >= 2:
-        return str(entry[1]), 1, entry[0] if isinstance(entry[0], int) else None
-
-    identifier = getattr(entry, "identifier", None)
-    if identifier is None:
-        return None
-
-    instances = list(getattr(entry, "instances", None) or [])
-    first_offset = getattr(instances[0], "offset", None) if instances else None
-    return str(identifier), len(instances), first_offset
-
-
-def summarize_match_record(match_result: dict) -> dict:
-    """What the match list shows about a match without loading the record: the rule, its meta and
-    tags, and for each string identifier how many times it matched and where it first matched.
-    Its size depends on the rule, not on the file, so it needs no limit."""
-    strings: dict[str, dict] = {}
-    total = 0
-    for entry in match_result.get("strings") or []:
-        parsed = _string_entry(entry)
-        if parsed is None:
-            continue
-
-        identifier, count, offset = parsed
-        total += count
-        summary = strings.setdefault(identifier, {"identifier": identifier, "count": 0, "first_offset": None})
-        summary["count"] += count
-        if offset is not None and (summary["first_offset"] is None or offset < summary["first_offset"]):
-            summary["first_offset"] = offset
-
-    return {
-        "rule": match_result.get("rule"),
-        "namespace": match_result.get("namespace"),
-        "commit": match_result.get("commit"),
-        "tags": list(match_result.get("tags") or []),
-        "meta": match_result.get("meta") or {},
-        "string_match_count": total,
-        "strings": sorted(strings.values(), key=lambda s: s["identifier"]),
-    }
 
 
 def _truncate(value: Optional[str], length: int) -> Optional[str]:
@@ -317,7 +267,7 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
     expires_at = now + timedelta(days=config.retention_days)
 
     # committed on its own, so the match is counted whatever happens to the storage below
-    with transaction() as session:
+    with private_transaction() as session:
         _count_match(session, signature_uuid, signature_version, rule_name, namespace, now)
 
     renewed = _renew(pool, signature_uuid, signature_version, sha256, file_path, match_result, now, expires_at)
@@ -326,7 +276,7 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
 
     summary = json.dumps(summarize_match_record(match_result), cls=_JSONEncoder)
     try:
-        with transaction() as session:
+        with private_transaction() as session:
             if not _reserve_slot(session, signature_uuid, signature_version):
                 logging.debug("yara qa file cap reached for rule %s (%s @ %s)", rule_name, signature_uuid, signature_version)
                 return QARecordResult(QARecordStatus.CAPPED)
@@ -351,12 +301,12 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
         match_digest = pool.put(serialize_match_record(match_result), hold=hold)
     except Exception:
         release_match_holds(pool, match_ref)
-        with transaction() as session:
+        with private_transaction() as session:
             delete_match_rows(session, [match_ref])
 
         raise
 
-    with transaction() as session:
+    with private_transaction() as session:
         session.execute(
             update(YaraQAMatch).where(YaraQAMatch.id == match_ref.id).values(match_digest=match_digest)
             .execution_options(synchronize_session=False))
@@ -370,7 +320,7 @@ def _renew(pool: CASPool, signature_uuid: str, signature_version: str, sha256: s
            match_result: dict, now: datetime, expires_at: datetime) -> Optional[QARecordResult]:
     """If this file is already stored for this version, count the hit and renew its expiry and
     holds. Returns None when there is no such row."""
-    with transaction() as session:
+    with private_transaction() as session:
         result = session.execute(
             update(YaraQAMatch)
             .where(YaraQAMatch.signature_uuid == signature_uuid,
@@ -396,7 +346,7 @@ def _renew(pool: CASPool, signature_uuid: str, signature_version: str, sha256: s
             # the object is gone (its hold lapsed before this match came in): store this match's
             # record in its place
             new_digest = pool.put(serialize_match_record(match_result), hold=hold)
-            with transaction() as session:
+            with private_transaction() as session:
                 session.execute(
                     update(YaraQAMatch).where(YaraQAMatch.id == match_id)
                     .values(match_digest=new_digest,
