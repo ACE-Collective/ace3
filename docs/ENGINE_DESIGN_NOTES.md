@@ -34,6 +34,7 @@ still resolve.
 - [19.14 `ORDER BY RAND() ... LIMIT 128` on the workload query](#1914-order-by-rand--limit-128-on-the-workload-query) — *open*
 - [19.15 Two context objects for one execution](#1915-two-context-objects-for-one-execution--fixed)
 - [19.16 Config reload on SIGHUP is not implemented](#1916-config-reload-on-sighup-is-not-implemented) — *open*
+- [19.17 The post-analysis COMPLETED skip never fired](#1917-the-post-analysis-completed-skip-never-fired--fixed)
 
 ---
 
@@ -1046,3 +1047,45 @@ than `saq.engine.executor` now that the method lives there.
 and re-instantiate every module on start, module *code* and module *config*
 changes do take effect — but only because the fork re-reads the already-parsed
 config in a fresh process. The parent's `CONFIG` is never refreshed.
+
+## 19.17 The post-analysis COMPLETED skip never fired — **fixed**
+
+`_execute_post_analysis` skipped a module when
+`root.state["post_analysis_executed"][name] == AnalysisExecutionResult.COMPLETED`,
+and the base `execute_post_analysis` docstring promised that a module returning
+COMPLETED would not be called again. The comparison never matched. Within one
+pass post-analysis runs once, so the in-memory enum was never compared, and
+across passes the state is read back from `data.json`, where `_JSONEncoder` wrote
+the enum as the string `"completed"`, which never equals the enum. The check had
+been dead since the v1 port. Post-analysis actually ran at the end of **every**
+pass that left no delayed analysis outstanding: the first pass, every analysis
+mode change (the root is requeued and reloaded), every disposition
+(`set_dispositions` requeues the alert in `dispositioned` mode), analyst-requested
+analysis, and the timeout path.
+
+*Fix.* The skip is removed rather than repaired, and the docstrings now describe
+the behavior every existing module was written against. Repairing the comparison
+would have silently changed the behavior of every module that returns COMPLETED,
+and each in-tree one depends on running again:
+
+- `observable_modifier` pops its per-root caches and rule-cost stats, which live on
+  the long-lived module instance, in post-analysis. Skipping it after the first
+  mode leaks those entries in the worker and drops the cost metrics of later passes.
+- `alert_added_to_event` would check `EventMapping` only on the first disposition
+  pass, so an alert added to an event later would never move to `event` mode.
+- `correlated_tag_analyzer` and `configuration_defined_tagging` would complete in
+  `analysis`/`email` mode and never see the tags that correlation-mode modules add.
+
+`svs_yara_sample_capture` (always INCOMPLETE), `email_logger` (returns `True`) and
+`email_archiver` (returns `None`) never matched COMPLETED and are unaffected.
+Integration modules, maintained in separate repos, were also written against the
+rerun behavior.
+
+The result is still recorded per module in `root.state["post_analysis_executed"]`,
+so a root's `data.json` shows what each module last returned, but nothing reads
+it. `execute_post_analysis` must be idempotent.
+
+*Regression guard.* `test_post_analysis_runs_every_pass` in
+`tests/saq/engine/test_functionality.py` runs a COMPLETED-returning module through
+two engine passes over the same root. It asserts that the state reads back as the
+string `"completed"` and that post-analysis ran both times.

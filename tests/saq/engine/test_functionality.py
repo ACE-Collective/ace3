@@ -14,7 +14,7 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_TEST, F_USER
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
@@ -3158,6 +3158,34 @@ def test_post_analysis_multi_mode():
 
     assert log_count('execute_post_analysis called') == 3
     assert log_count('executing post analysis routines for') == 3
+
+@pytest.mark.integration
+def test_post_analysis_runs_every_pass():
+    # post analysis runs at the end of every pass, even for a module that returned COMPLETED
+    # see docs/ENGINE_DESIGN_NOTES.md §19.17
+    root_uuid = str(uuid.uuid4())
+    root = create_root_analysis(uuid=root_uuid, analysis_mode='test_single', storage_dir=get_storage_dir(root_uuid))
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, 'test')
+    root.save()
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(local_analysis_modes=["test_single"]))
+    engine.configuration_manager.enable_module('test_post_analysis', "test_single")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    assert log_count('execute_post_analysis called') == 1
+
+    # the result comes back from disk as a string, not the enum
+    root = load_root(get_storage_dir(root_uuid))
+    assert root.state[STATE_POST_ANALYSIS_EXECUTED]['test_post_analysis'] == 'completed'
+    root.schedule()
+
+    engine = Engine(config=EngineConfiguration(local_analysis_modes=["test_single"]))
+    engine.configuration_manager.enable_module('test_post_analysis', "test_single")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    assert log_count('execute_post_analysis called') == 2
 
 @pytest.mark.integration
 def test_post_analysis_delayed_analysis():
