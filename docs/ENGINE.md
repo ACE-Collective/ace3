@@ -508,8 +508,10 @@ Everything below is `saq/engine/executor.py::AnalysisExecutor`.
    objects re-pointed at each root** — module instance state persists across work
    items within a worker process;
 3. ensure `root.state[STATE_PRE_ANALYSIS_EXECUTED]` and
-   `[STATE_POST_ANALYSIS_EXECUTED]` dicts exist (these make pre/post analysis
-   idempotent across multiple passes over the same root);
+   `[STATE_POST_ANALYSIS_EXECUTED]` dicts exist. Pre-analysis runs once per module
+   per root, because a module already present in its dict is skipped. Post-analysis
+   runs at the end of every pass that leaves nothing delayed, and its dict only
+   records each module's last result (§19.17);
 4. attach a `FileHandler` writing `<storage_dir>/saq.log` — every log line
    produced while analyzing this root also lands next to the root;
 5. seed `root.state["total_analysis_time_seconds"]` and
@@ -1486,6 +1488,7 @@ comments throughout the tests and source.
 | [19.14](ENGINE_DESIGN_NOTES.md#1914-order-by-rand--limit-128-on-the-workload-query) | `ORDER BY RAND() ... LIMIT 128` on the workload query | **open** |
 | [19.15](ENGINE_DESIGN_NOTES.md#1915-two-context-objects-for-one-execution--fixed) | Two context objects for one execution | fixed |
 | [19.16](ENGINE_DESIGN_NOTES.md#1916-config-reload-on-sighup-is-not-implemented) | Config reload on SIGHUP is not implemented | **open** |
+| [19.17](ENGINE_DESIGN_NOTES.md#1917-the-post-analysis-completed-skip-never-fired--fixed) | The post-analysis COMPLETED skip never fired | fixed |
 
 ---
 

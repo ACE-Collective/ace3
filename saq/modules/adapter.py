@@ -133,8 +133,8 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         """This is called once at the very beginning of analysis."""
         self._module.execute_pre_analysis()
     
-    def execute_post_analysis(self) -> bool:
-        """This is called after all analysis work has been performed."""
+    def execute_post_analysis(self) -> AnalysisExecutionResult:
+        """Called at the end of every analysis pass over the root that leaves no delayed analysis outstanding."""
         return self._module.execute_post_analysis()
 
     def on_cache_hit(self, root, observable) -> None:

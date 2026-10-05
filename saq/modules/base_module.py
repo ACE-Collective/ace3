@@ -744,9 +744,12 @@ class AnalysisModule(FileWatcherMixin):
         return AnalysisExecutionResult.COMPLETED
 
     def execute_post_analysis(self) -> AnalysisExecutionResult:
-        """This is called after all analysis work has been performed and no outstanding work is left.
-        Return COMPLETED if analysis has completed. The engine will not call this function again for this target.
-        Return INCOMPLETE if analysis has NOT completed. The engine could potentially call this function again if the analysis mode changes."""
+        """Called at the end of every analysis pass over the root that leaves no delayed analysis
+        outstanding: the first pass, every analysis mode change, every disposition, analyst requested
+        analysis and after an analysis timeout. It must therefore be idempotent.
+
+        The return value (COMPLETED or INCOMPLETE) is recorded in root.state["post_analysis_executed"]
+        for diagnostics only; it does not stop the engine calling this again on a later pass."""
         return AnalysisExecutionResult.COMPLETED
 
     def on_cache_hit(self, root: RootAnalysisInterface, observable: Observable) -> None:

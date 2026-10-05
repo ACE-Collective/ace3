@@ -423,15 +423,8 @@ class AnalysisExecutor:
             self.get_analysis_modules_by_mode(context.root.analysis_mode),
             key=attrgetter("priority"),
         ):
-            if analysis_module.name not in state:
-                state[analysis_module.name] = None
-
-            # has this post analysis already executed and completed?
-            if (
-                state[analysis_module.name] == AnalysisExecutionResult.COMPLETED
-            ):
-                continue
-
+            # post analysis runs at the end of every pass that leaves nothing delayed; the
+            # result is recorded for diagnostics only and never consulted
             try:
                 # give the modules an opportunity to do something after all analysis has completed
                 logging.debug(

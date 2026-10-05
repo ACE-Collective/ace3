@@ -1058,7 +1058,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
     def execute_post_analysis(self) -> AnalysisExecutionResult:
         """Emit accumulated per-rule evaluation cost metrics for this root.
 
-        Called once per root after all analysis completes. Pops the root's
+        Called at the end of every analysis pass over a root. Pops the root's
         stats so the accumulator stays bounded and a stray re-call is a no-op.
         The whole body is guarded so metrics emission can never fail the root.
         """
