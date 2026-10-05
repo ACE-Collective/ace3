@@ -273,7 +273,33 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
         npm install -g cline; \
     fi
 
+# ------------------------------------------------------------------------------------------------
+# headless browser for agent-driven GUI testing (see docs/GUI_TESTING.md)
+# ------------------------------------------------------------------------------------------------
+
+# keep these two pinned to versions that use the same chromium revision so only one browser is installed
+# (compare the "chromium" revision in browsers.json of the playwright pip package and of the
+# playwright-core bundled with @playwright/mcp)
+ARG PLAYWRIGHT_VERSION=1.63.0
+ARG PLAYWRIGHT_MCP_VERSION=0.0.80
+
+# browsers go outside of /home/ace because that is a named volume that hides whatever the image puts there
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+USER ace
+RUN if [ "$BUILD_TYPE" = "development" ]; then \
+        . /venv/bin/activate && \
+        pip install --no-cache-dir playwright==${PLAYWRIGHT_VERSION} && \
+        npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}; \
+    fi
+
 USER root
+RUN if [ "$BUILD_TYPE" = "development" ]; then \
+        /venv/bin/playwright install --with-deps chromium && \
+        chown -R ace:ace /opt/ms-playwright && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ARG ACE_VERSION=3.0.122
 LABEL version="${ACE_VERSION}"

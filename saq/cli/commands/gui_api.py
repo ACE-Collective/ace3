@@ -1,9 +1,16 @@
 import argparse
+import atexit
+import ctypes
 import logging
 import os
+import signal
+import socket
+import subprocess
 import sys
 
 from saq.cli.cli_main import get_cli_subparsers
+from saq.constants import ENV_ACE_LOG_CONFIG_PATH
+from saq.environment import get_base_dir
 
 
 # ============================================================================
@@ -85,6 +92,51 @@ def create_api_v2_proxy():
 
     return proxy_app
 
+# linux prctl option: the signal the kernel sends a process when its parent exits
+PR_SET_PDEATHSIG = 1
+
+def find_free_port() -> int:
+    """Returns a TCP port on 127.0.0.1 that nothing is listening on right now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def _terminate_with_parent():
+    # runs in the child between fork and exec: have the kernel send SIGTERM when the GUI exits,
+    # however it exits (Ctrl-C, pkill, SIGKILL), so a private API server is never left behind
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+
+def start_api_v2_server(port: int, logging_config_path: str | None) -> subprocess.Popen:
+    """Starts a private API v2 server (uvicorn with --reload) from this checkout on 127.0.0.1:port.
+
+    Its output goes wherever the GUI's goes. It logs with the same logging config as the GUI when one was
+    given with -L."""
+    env = os.environ.copy()
+    if logging_config_path:
+        env[ENV_ACE_LOG_CONFIG_PATH] = logging_config_path
+
+    command = [
+        sys.executable, "-m", "uvicorn", "api_uvicorn:application",
+        "--host", "127.0.0.1",
+        "--port", str(port),
+        "--reload",
+        # without these watchfiles watches everything under SAQ_HOME, data/ included
+        "--reload-dir", "aceapi_v2",
+        "--reload-dir", "saq",
+    ]
+
+    return subprocess.Popen(command, cwd=get_base_dir(), env=env, preexec_fn=_terminate_with_parent)
+
+def stop_api_v2_server(process: subprocess.Popen):
+    if process.poll() is not None:
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
 def start_gui(args):
     from app import create_app
     from werkzeug.serving import run_simple
@@ -94,6 +146,16 @@ def start_gui(args):
     def not_found(environ, start_response):
         response = Response("unknown page", status=404)
         return response(environ, start_response)
+
+    # the werkzeug reloader runs this function again in a child process (WERKZEUG_RUN_MAIN=true) every time
+    # it reloads; only the outer process starts the API server, and the child inherits the proxy settings
+    if args.api_v2 and not args.print_uri_paths and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        api_v2_port = args.api_v2_port or find_free_port()
+        api_v2_process = start_api_v2_server(api_v2_port, args.logging_config_path)
+        atexit.register(stop_api_v2_server, api_v2_process)
+        os.environ["ACE_API_V2_HOST"] = "127.0.0.1"
+        os.environ["ACE_API_V2_PORT"] = str(api_v2_port)
+        logging.info("API v2 for this GUI: http://127.0.0.1:%s (pid %s)", api_v2_port, api_v2_process.pid)
 
     app = create_app()
     app.jinja_env.auto_reload = True
@@ -147,6 +209,11 @@ start_gui_parser.add_argument("--address", default=None, help="Address to bind t
 start_gui_parser.add_argument("--port", default=None, type=int, help="Port to bind to. Defaults to configuration setting.")
 start_gui_parser.add_argument('--print-uri-paths', default=False, action='store_true',
     help="Print all of the availble URL paths and exit, without starting the GUI.")
+start_gui_parser.add_argument("--api-v2", default=False, action="store_true",
+    help="Start a private API v2 server (uvicorn --reload) from this checkout and proxy /api/v2 to it "
+         "instead of the http-api-v2 container. It stops when the GUI stops.")
+start_gui_parser.add_argument("--api-v2-port", default=None, type=int,
+    help="Port for the private API v2 server started by --api-v2. Defaults to a free port.")
 start_gui_parser.set_defaults(func=start_gui)
 
 # ============================================================================
