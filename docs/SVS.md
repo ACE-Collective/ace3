@@ -1,8 +1,8 @@
 # Signature Validation System (SVS)
 
-> **Status: agreed design, not implemented (2026-10-02; Parts 5 and 6 added in review rounds 8–10,
-> the pre-implementation review folded in and the design reconciled with the v3.0.121 release on
-> 2026-10-02).**
+> **Status: agreed design; phase 0 landed in v3.0.122, phase 1 in progress (2026-10-05). Parts 5
+> and 6 were added in review rounds 8–10, the pre-implementation review folded in and the design
+> reconciled with the v3.0.121 release on 2026-10-02.**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
@@ -111,16 +111,25 @@ upsert keyed on `(alert_id, content_hash)`: a row whose detection disappears fro
 deleted, and one that reappears gets a new `id`. So the verdict is keyed on `content_hash`, never
 on the row. [DP-1, FR-16]
 
-**Detection identity** (prerequisite, before the first verdict is written). Today
-`content_hash = sha256(signature_uuid, description, details)`, which ignores the node the detection
-sits on. Detections whose description doesn't name their object therefore collapse into one row,
-and would share one verdict. The node's identity is folded into the hash and stored as a column:
-- observable nodes: `('observable', type, sha256(value))`;
+**Detection identity** (prerequisite, before the first verdict is written). Before phase 1,
+`content_hash = sha256(signature_uuid, description, details)` ignored the node the detection sat
+on. Detections whose description doesn't name their object collapsed into one row, and would have
+shared one verdict. The node's identity is folded into the hash (`saq/analysis/detection_identity.py`)
+and stored in the `node_kind`, `node_type`, `node_value_sha256` and `node_module_path` columns:
+- observable nodes: `('observable', type, value hash)`;
 - the root: `('root')`;
-- analysis nodes: `('analysis', module path, parent observable type + value hash)`.
+- analysis nodes: `('analysis', module path, parent observable type, parent value hash)`.
 
-The formula is pinned by a unit test and never changes afterwards, because a changed formula
-orphans every override. [DP-7]
+The value hash is the observable's key in the `observables` table: `sha256(value)` for every type
+except `file`, whose value already is the content sha256 and is used as it is. So
+`(node_type, node_value_sha256)` joins to `observables(type, sha256)`, and a file detection's node
+is its sample's sha256. Analysis nodes use `Analysis.module_path` (an `Analysis` doesn't carry its
+config module name); in core only the clicker detection puts detections on them.
+
+The formula is pinned by a unit test (`tests/saq/analysis/test_detection_identity.py`) and never
+changes afterwards, because a changed formula orphans every override. Rows synced under the earlier
+formula carry NULL node columns and are re-keyed on the alert's next sync, which is harmless while
+no verdict exists. [DP-7]
 
 **YARA detections sit on the file** that matched, not on the shared `yara_rule` observable. [D-20]
 - They carry structured `details`: `{"sha256", "rule", "namespace", "rule_uuid"}`.
@@ -160,8 +169,8 @@ the database, because roots don't carry it. [YR-5]
   the bytes again.
 - **Idempotent** on `(alert, sha256, rule uuid)`.
 - **Missing data** is logged at ERROR and counted per rule, and the count is shown on the SVS page.
-- **Capture is the only chance.** Once the phase-0 archive fix lands [YR-11], `archive()` removes an
-  FP alert's derived files after `fp_days`. IGNORE alerts are deleted after a day.
+- **Capture is the only chance.** Since the phase-0 archive fix [YR-11], `archive()` removes an FP
+  alert's derived files after `fp_days`. IGNORE alerts are deleted after a day.
 - **Alerts from unreviewed runs are skipped.** An alert attributed to a run (one join from
   `svs_attributions` to `svs_runs.state`) is captured only when that run is *Reviewed*. Closed,
   Canceled and Error runs set `SIMULATED` too (Part 3), and their alerts are the least
@@ -905,23 +914,23 @@ Several agreed changes are general-purpose and ship as their own PRs:
 
 | Change | Why | Item |
 |---|---|---|
-| `archive()` frees derived hardcopies and keeps root-level files in subfolders | Two defects: derived bytes were never freed; root files in `files/<dir>/` were deleted | YR-11 |
-| Dispositions: config as the single list, classification map, `analyst_selectable`, server-side validation | Part 1 | TP-2, TP-3 |
-| Prevalence counts only the default queue | Consistency with disposition history (PR #587) | ART-10 |
+| `archive()` frees derived hardcopies and keeps root-level files in subfolders, **landed** | Two defects: derived bytes were never freed; root files in `files/<dir>/` were deleted | YR-11 |
+| Dispositions: config as the single list, classification map, `analyst_selectable`, server-side validation, **landed** | Part 1 | TP-2, TP-3 |
+| Prevalence counts only the default queue, **landed** | Consistency with disposition history (PR #587) | ART-10 |
 | Detection identity includes the node | Part 1 | DP-7 |
 | YARA detections on the file | Part 1 | DP-4 |
-| Alert-router registry, `move_alert_to_queue`, as their own PR (a refactor of `_apply_detection_queue` plus a new primitive) | Part 3 | ART-15, FR-2 |
+| Alert-router registry, `move_alert_to_queue`, as their own PR (a refactor of `_apply_detection_queue` plus a new primitive), **landed** | Part 3 | ART-15, FR-2 |
 | CAS (`saq/cas/`), **landed** | Sample storage, and later every byte store. The shared backend a multi-node site needs for `svs_samples` is the site's to provide | `docs/CAS.md`, FR-1 |
-| Correlation-mode submissions to a remote node get an `alerts` row | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
+| Correlation-mode submissions to a remote node get an `alerts` row, **landed** | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
 | `transfer_work_target` carries the work item's `analysis_mode` | A `dispositioned` item pulled by another node ran in correlation mode, so capture silently did not run. Phase 2 | FR-5 |
 | `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
 | Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
-| `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes | Prerequisites for the CAS | F-13, F-18 to F-20 |
-| `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`) | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
+| `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes, **landed** | Prerequisites for the CAS | F-13, F-18 to F-20 |
+| `GET /api/v2/alerts` and `alerts.updated_at` (server-side `ON UPDATE`), **landed** | No alert export API exists; the search listing pages by OFFSET | RPT-2, RPT-3, RPT-7, FR-17 |
 | `GET /api/v2/detection-points` and verdict history | No detection-point API exists | RPT-2, RPT-4 |
-| Saved filters per screen | Saved filters for screens other than the manage page; unique key, scratch rows, name registry and query builder all become per screen | MGT-1, FR-18 |
+| Saved filters per screen, **landed** | Saved filters for screens other than the manage page; unique key, scratch rows, name registry and query builder all become per screen | MGT-1, FR-18 |
 | Alert search excludes the SVS queue by default | Test alerts would dominate "similar alerts" | RPT-7 |
-| The hunt completion log line carries structured fields | Debugging a missing hunt detection from the site's logs | MGT-9 |
+| The hunt completion log line carries structured fields, **landed** | Debugging a missing hunt detection from the site's logs | MGT-9 |
 
 ## Data model (sketch)
 
@@ -1014,7 +1023,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 
 | Phase | Contents |
 |---|---|
-| **0: prerequisites** (independent PRs, each useful without SVS) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (**landed**; the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
+| **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels** | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
 | **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
 | **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |

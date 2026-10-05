@@ -5,12 +5,13 @@ import logging
 import os
 import time
 import traceback
-from typing import TYPE_CHECKING, Callable, Optional, Union
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Union
 from uuid import uuid4
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.analysis_tree.analysis_tree_manager import AnalysisTreeManager
 from saq.analysis.dependency import AnalysisDependency
+from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.event_bus import AnalysisEventBus
 from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
@@ -902,6 +903,16 @@ class RootAnalysis(Analysis):
             result.extend(o.detections)
 
         return result
+
+    def detection_points_by_node(self) -> Iterator[tuple[Union[Analysis, Observable], DetectionPoint]]:
+        """Yields (node, detection) for every DetectionPoint in the tree, with the node it sits on:
+        this RootAnalysis, an Analysis or an Observable."""
+        for a in self.all_analysis:
+            for dp in a.detections:
+                yield a, dp
+        for o in self.all_observables:
+            for dp in o.detections:
+                yield o, dp
 
     def has_detections(self):
         """Returns True if this RootAnalysis could become an Alert (has at least one DetectionPoint somewhere.)"""

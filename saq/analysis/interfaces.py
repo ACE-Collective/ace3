@@ -157,7 +157,7 @@ class RootAnalysisInterface(Protocol):
         ...
 
     def add_detection_point(self, description, details=None, queue=None,
-                            signature_uuid=None, signature_version=None):
+                            signature_uuid=None, signature_version=None, signature_family=None):
         """Add a detection point to the analysis."""
         ...
 

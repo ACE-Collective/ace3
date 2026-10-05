@@ -1,11 +1,13 @@
-import json
+from typing import Optional
 
 from saq.signatures.builtin import (
     BUILTIN_SIGNATURE_UUID,
+    BUILTIN_SIGNATURES,
     LEGACY_SIGNATURE_UUID,
     LEGACY_SIGNATURE_VERSION,
     get_builtin_signature_version,
 )
+from saq.signatures.model import SignatureType
 from saq.util import sha256_str
 
 KEY_DESCRIPTION = 'description'
@@ -13,11 +15,20 @@ KEY_DETAILS = 'details'
 KEY_QUEUE = 'queue'
 KEY_SIGNATURE_UUID = 'signature_uuid'
 KEY_SIGNATURE_VERSION = 'signature_version'
+KEY_SIGNATURE_FAMILY = 'signature_family'
+
+
+def default_signature_family(signature_uuid: str) -> Optional[str]:
+    """Returns the family of a detection whose producer did not name one: `builtin` for a built-in
+    signature (including LEGACY and the YARA_RULE_MATCH fallback), otherwise None (unknown)."""
+    return SignatureType.BUILTIN.value if signature_uuid in BUILTIN_SIGNATURES else None
+
 
 class DetectionPoint:
     """Represents an observation that would result in a detection."""
 
-    def __init__(self, description=None, details=None, queue=None, signature_uuid=None, signature_version=None):
+    def __init__(self, description=None, details=None, queue=None, signature_uuid=None, signature_version=None,
+                 signature_family=None):
         self.description = description
         self.details = details
         # an optional queue this detection requests the resulting alert be routed to
@@ -30,6 +41,11 @@ class DetectionPoint:
         # built-in version is resolved from ACE_VERSION at creation time.
         self.signature_uuid = signature_uuid or BUILTIN_SIGNATURE_UUID
         self.signature_version = signature_version or get_builtin_signature_version()
+        # which kind of signature produced this detection (a saq.signatures.model.SignatureType
+        # value). Producers of non-built-in signatures name it; a built-in uuid implies `builtin`.
+        # It is metadata: not part of the detection's identity (saq.analysis.detection_identity)
+        # and not compared by __eq__.
+        self.signature_family = signature_family or default_signature_family(self.signature_uuid)
 
     @property
     def json(self):
@@ -38,7 +54,8 @@ class DetectionPoint:
             KEY_DETAILS: self.details,
             KEY_QUEUE: self.queue,
             KEY_SIGNATURE_UUID: self.signature_uuid,
-            KEY_SIGNATURE_VERSION: self.signature_version }
+            KEY_SIGNATURE_VERSION: self.signature_version,
+            KEY_SIGNATURE_FAMILY: self.signature_family }
 
     @json.setter
     def json(self, value):
@@ -55,6 +72,8 @@ class DetectionPoint:
         # from freshly-created un-attributed ones (which get the generic built-in).
         self.signature_uuid = value.get(KEY_SIGNATURE_UUID) or LEGACY_SIGNATURE_UUID
         self.signature_version = value.get(KEY_SIGNATURE_VERSION) or LEGACY_SIGNATURE_VERSION
+        # detections serialized before the family existed fall back to the derived default
+        self.signature_family = value.get(KEY_SIGNATURE_FAMILY) or default_signature_family(self.signature_uuid)
 
     @staticmethod
     def from_json(dp_json):
@@ -73,15 +92,6 @@ class DetectionPoint:
     @property
     def id(self):
         return sha256_str(str(self))
-
-    @property
-    def content_hash(self):
-        """Stable data identity for idempotent DB upsert. Distinct from `id`
-        (the UI/DOM display identity): folds in the signature attribution and a
-        canonical rendering of details so the upsert key is content-addressed.
-        Both the analysis and database layers compute this the same way."""
-        details = json.dumps(self.details, sort_keys=True, default=str) if self.details else ""
-        return sha256_str(self.signature_uuid + "\n" + str(self.description) + "\n" + details)
 
     def __str__(self):
         return "DetectionPoint({})".format(self.description)

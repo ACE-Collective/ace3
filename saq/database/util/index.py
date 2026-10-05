@@ -11,13 +11,18 @@ multiple nodes share the database, and `_sync_alert_to_database` re-queries the 
 on every pass, so there is no in-memory snapshot that could be trusted.
 """
 
-import json
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
 from saq.analysis.analysis import Analysis, UnknownAnalysis
+from saq.analysis.detection_identity import (
+    NodeIdentity,
+    detection_content_hash,
+    detection_details_json,
+    node_identity,
+)
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.analysis.observable import Observable
@@ -102,6 +107,14 @@ def _row_placeholders(rows: int, columns: int) -> str:
 
 
 @dataclass(frozen=True)
+class DesiredDetection:
+    """A detection together with the identity of the node it sits on."""
+
+    identity: NodeIdentity
+    detection: DetectionPoint
+
+
+@dataclass(frozen=True)
 class DesiredIndex:
     """What the analysis tree says the alert's index rows should be."""
 
@@ -110,7 +123,8 @@ class DesiredIndex:
     # tag key -> the original (unfolded) name, which is what we INSERT
     tags: dict[str, str]
     observable_tags: set[tuple[ObservableKey, str]]
-    detection_points: dict[str, DetectionPoint]
+    # content hash (saq.analysis.detection_identity) -> the detection and its node
+    detection_points: dict[str, DesiredDetection]
     # module path -> dropdown label, for every analysis type the tree shows
     analysis_types: dict[str, str]
 
@@ -186,7 +200,11 @@ def build_desired_index(root_analysis: RootAnalysis) -> DesiredIndex:
     # observable_tags is guaranteed to be resolvable through this map.
     tags = {tag_key(name): name for name in root_analysis.all_tags}
 
-    detection_points = {dp.content_hash: dp for dp in root_analysis.all_detection_points}
+    # keyed on a hash that includes the node, so the same detection on two nodes is two rows
+    detection_points: dict[str, DesiredDetection] = {}
+    for node, dp in root_analysis.detection_points_by_node():
+        identity = node_identity(node)
+        detection_points.setdefault(detection_content_hash(identity, dp), DesiredDetection(identity, dp))
 
     return DesiredIndex(
         observables=observables,
@@ -415,23 +433,27 @@ def sync_observable_tag_index(c, alert_id: int, desired: set[tuple[int, int]],
     result.observable_tag_index_removed += len(removed)
 
 
-def sync_detection_points(c, alert_id: int, desired: dict[str, DetectionPoint],
+def sync_detection_points(c, alert_id: int, desired: dict[str, DesiredDetection],
                           result: IndexSyncResult):
     """Reconciles the detection_points rows for this alert, writing only the delta."""
-    # content_hash = sha256(signature_uuid + description + details_json), so a matching
-    # hash already implies description, details and signature_uuid match. Only queue and
-    # signature_version can drift, so those are the only columns worth reading back --
-    # which also keeps the MEDIUMTEXT `details` column off the wire entirely.
-    c.execute("""SELECT content_hash, queue, signature_version
+    # content_hash = sha256(node identity + signature_uuid + description + details_json)
+    # (saq.analysis.detection_identity), so a matching hash already implies the node,
+    # description, details and signature_uuid match. Only queue, signature_version and
+    # signature_family can drift, so those are the only columns worth reading back -- which
+    # also keeps the MEDIUMTEXT `details` column off the wire entirely. A row written under
+    # an earlier formula has a hash the tree no longer produces, so it is deleted and its
+    # detection inserted again under the current one.
+    c.execute("""SELECT content_hash, queue, signature_version, signature_family
                  FROM detection_points WHERE alert_id = %s""", (alert_id,))
-    current = {content_hash: (queue, signature_version)
-               for content_hash, queue, signature_version in c.fetchall()}
+    current = {content_hash: (queue, signature_version, signature_family)
+               for content_hash, queue, signature_version, signature_family in c.fetchall()}
 
     removed = sorted(content_hash for content_hash in current if content_hash not in desired)
     to_write = sorted(
-        content_hash for content_hash, dp in desired.items()
+        content_hash for content_hash, d in desired.items()
         if content_hash not in current
-        or current[content_hash] != (dp.queue, dp.signature_version))
+        or current[content_hash] != (d.detection.queue, d.detection.signature_version,
+                                     d.detection.signature_family))
 
     for chunk in chunked(removed):
         c.execute(
@@ -440,30 +462,43 @@ def sync_detection_points(c, alert_id: int, desired: dict[str, DetectionPoint],
             (alert_id, *chunk))
 
     for chunk in chunked(to_write):
-        # ON DUPLICATE KEY UPDATE rather than INSERT IGNORE so rows whose queue or
-        # signature_version drifted are actually corrected, and so a row another worker
-        # inserted between our SELECT and this INSERT still ends up with our values.
+        # ON DUPLICATE KEY UPDATE rather than INSERT IGNORE so rows whose queue,
+        # signature_version or signature_family drifted are actually corrected, and so a row
+        # another worker inserted between our SELECT and this INSERT still ends up with our
+        # values.
         sql = """INSERT INTO detection_points
-                    ( alert_id, description, details, queue, signature_uuid, signature_version, content_hash )
+                    ( alert_id, description, details, queue, signature_uuid, signature_version,
+                      signature_family, node_kind, node_type, node_value_sha256, node_module_path,
+                      content_hash )
                  VALUES {}
                  ON DUPLICATE KEY UPDATE
                     description = VALUES(description),
                     details = VALUES(details),
                     queue = VALUES(queue),
                     signature_uuid = VALUES(signature_uuid),
-                    signature_version = VALUES(signature_version)""".format(
-                    _row_placeholders(len(chunk), 7))
+                    signature_version = VALUES(signature_version),
+                    signature_family = VALUES(signature_family),
+                    node_kind = VALUES(node_kind),
+                    node_type = VALUES(node_type),
+                    node_value_sha256 = VALUES(node_value_sha256),
+                    node_module_path = VALUES(node_module_path)""".format(
+                    _row_placeholders(len(chunk), 12))
 
         parameters = []
         for content_hash in chunk:
-            dp = desired[content_hash]
+            dp = desired[content_hash].detection
+            identity = desired[content_hash].identity
             parameters.append(alert_id)
             parameters.append(dp.description)
-            parameters.append(
-                json.dumps(dp.details, sort_keys=True, default=str) if dp.details else None)
+            parameters.append(detection_details_json(dp))
             parameters.append(dp.queue)
             parameters.append(dp.signature_uuid)
             parameters.append(dp.signature_version)
+            parameters.append(dp.signature_family)
+            parameters.append(identity.kind)
+            parameters.append(identity.type)
+            parameters.append(identity.value_sha256)
+            parameters.append(identity.module_path)
             parameters.append(content_hash)
 
         c.execute(sql, tuple(parameters))

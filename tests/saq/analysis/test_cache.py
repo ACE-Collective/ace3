@@ -735,14 +735,15 @@ class TestCollectStats:
 @pytest.mark.integration
 def test_cache_replay_preserves_queue_and_signature():
     """Guards the cache.py replay-fidelity fix: a detection's queue + signature
-    fields must survive capture->replay, not silently revert to defaults."""
+    fields (family included) must survive capture->replay, not silently revert to defaults."""
     from saq.analysis.cache import _apply_root_diff
     from saq.analysis.detection_point import DetectionPoint
     from tests.saq.helpers import create_root_analysis
 
     # a detection with non-default queue + signature, serialized as the cache stores it
     dp = DetectionPoint("hunt matched", queue="experimental",
-                        signature_uuid="sig-xyz", signature_version="deadbeef")
+                        signature_uuid="sig-xyz", signature_version="deadbeef",
+                        signature_family="hunt")
     det_dict = dp.json
 
     root = create_root_analysis()
@@ -756,3 +757,4 @@ def test_cache_replay_preserves_queue_and_signature():
     assert replayed[0].queue == "experimental"
     assert replayed[0].signature_uuid == "sig-xyz"
     assert replayed[0].signature_version == "deadbeef"
+    assert replayed[0].signature_family == "hunt"

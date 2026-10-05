@@ -16,6 +16,7 @@ from saq.environment import get_base_dir
 from saq.git import get_commit_hash, git_dir_contains
 from saq.modules import AnalysisModule
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.model import SignatureType
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.type_hierarchy import get_type_hierarchy
 
@@ -512,7 +513,8 @@ class RuleActions:
         if self.add_detection_points:
             for desc in self.add_detection_points:
                 observable.add_detection_point(
-                    desc, signature_uuid=signature_uuid, signature_version=signature_version)
+                    desc, signature_uuid=signature_uuid, signature_version=signature_version,
+                    signature_family=SignatureType.OBSERVABLE_MODIFIER.value if signature_uuid else None)
             applied["add_detection_points"] = self.add_detection_points
 
         if self.exclude_analysis:

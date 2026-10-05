@@ -5,6 +5,7 @@ import hashlib
 import pytest
 
 from saq.analysis.analysis import Analysis, UnknownAnalysis
+from saq.analysis.detection_identity import NODE_KIND_ROOT, NodeIdentity, detection_content_hash
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.presenter import analysis_presenter
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter
@@ -134,7 +135,7 @@ def test_build_desired_index_keeps_original_tag_name_for_insert(root_analysis: R
 
 
 @pytest.mark.unit
-def test_build_desired_index_dedupes_detection_points_by_content_hash(root_analysis: RootAnalysis):
+def test_build_desired_index_keys_detection_points_on_their_node(root_analysis: RootAnalysis):
     observable = root_analysis.add_observable_by_spec(F_TEST, "detected")
     observable.add_detection_point("same detection")
     root_analysis.add_detection_point("same detection")
@@ -142,9 +143,25 @@ def test_build_desired_index_dedupes_detection_points_by_content_hash(root_analy
 
     desired = build_desired_index(root_analysis)
 
-    assert len(desired.detection_points) == 2
-    expected = DetectionPoint(description="same detection").content_hash
-    assert expected in desired.detection_points
+    # the same detection on the root and on an observable is two rows
+    assert len(desired.detection_points) == 3
+    expected = detection_content_hash(NodeIdentity(kind=NODE_KIND_ROOT), DetectionPoint("same detection"))
+    assert desired.detection_points[expected].detection.description == "same detection"
+
+
+@pytest.mark.unit
+def test_build_desired_index_dedupes_a_repeated_detection_on_one_node(root_analysis: RootAnalysis):
+    # two observables with one type and value share a node identity, as they share one
+    # observables row, so the same detection on both is one row
+    first = root_analysis.add_observable_by_spec(F_TEST, "detected", o_time="2026-01-01T00:00:00+00:00")
+    second = root_analysis.add_observable_by_spec(F_TEST, "detected", o_time="2026-01-02T00:00:00+00:00")
+    assert first is not second
+    first.add_detection_point("same detection")
+    second.add_detection_point("same detection")
+
+    desired = build_desired_index(root_analysis)
+
+    assert len(desired.detection_points) == 1
 
 
 class FoundTestAnalysis(Analysis):

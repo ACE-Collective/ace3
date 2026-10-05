@@ -26,6 +26,7 @@ from saq.collectors.submission_file_manager import get_staging_tmp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
+from saq.signatures.model import SignatureType
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -512,7 +513,8 @@ class QueryHunt(Hunt):
             root.add_detection_point(
                 "hunt {} ({}) matched".format(self.name, self.type),
                 signature_uuid=self.uuid,
-                signature_version=self.signature_version)
+                signature_version=self.signature_version,
+                signature_family=SignatureType.HUNT.value)
 
         for tag in self.tags:
             try:
