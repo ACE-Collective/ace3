@@ -613,7 +613,7 @@ class TestCASPoolMonitor:
 
         emitted = {c[0][1]["pool"]: c[0][1] for c in mock_emit.call_args_list}
         assert {c[0][0].path for c in mock_emit.call_args_list} == {"cas.pool"}
-        # yara_qa is the pool saq.default.yaml defines out of the box (docs/YARA_QA.md)
-        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa"}
+        # yara_qa and svs_samples are the pools saq.default.yaml defines out of the box
+        assert set(emitted) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples"}
         assert emitted["test_plain"]["objects_present"] == 1
         assert emitted["test_plain"]["size_bytes"] == len(b"monitored")

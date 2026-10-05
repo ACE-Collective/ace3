@@ -777,6 +777,11 @@ yara_qa:
   prune_batch_pause_seconds: 0
   inventory_refresh_seconds: 0
 
+# svs samples (tests/saq/svs): no inventory refresh interval, as for yara_qa above
+svs:
+  samples:
+    inventory_refresh_seconds: 0
+
 storage:
   target: local
   base_dir: data_unittest/main/storage

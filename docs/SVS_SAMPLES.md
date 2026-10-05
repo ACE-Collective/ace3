@@ -1,0 +1,152 @@
+# SVS YARA samples
+
+When an analyst grades an alert, ACE keeps every file a YARA rule matched on it, with the match.
+These **samples** are the corpus SVS checks YARA rule changes against (`docs/SVS.md`, Part 2): a
+file graded as a real hit should keep matching, and a file graded as a false positive should stop.
+A sample's grade, its **label**, is not stored with it. It is derived from the verdicts on the
+alert's detections whenever it is read, so a later disposition change or verdict override relabels
+the sample without touching its bytes.
+
+This document covers how samples are captured and stored. The design and its reasoning are in
+`docs/SVS.md`.
+
+## What is captured, and when
+
+The `svs_yara_sample_capture` analysis module (`saq/modules/svs.py`) runs in the `dispositioned`
+analysis mode. Both disposition writers requeue an alert into that mode whenever its disposition is
+set (except `IGNORE`), so the module sees every graded alert.
+
+It captures when the alert's disposition classifies **tp** or **fp** (`disposition_classification`,
+`docs/SVS.md` Part 1). An alert that is `OPEN`, `REVIEWED`, `UNKNOWN` or `IGNORE` is not captured;
+if it is graded later, the next dispositioned pass captures it.
+
+On such an alert it captures one sample per **(file sha256, rule uuid)** pair named by a YARA
+detection, whatever the verdict on that detection:
+
+- The detection must be one the YARA module puts **on the file** with structured details (`sha256`,
+  `rule`, `namespace`, `rule_uuid`; `docs/SVS.md` Part 1). Alerts created before that change carry
+  older detections and contribute nothing.
+- The rule must have a `uuid` meta. A rule without one is attributed to a shared built-in signature,
+  so its matches are not captured.
+- Rules in `no_alert` or `qa` mode make no detection and are not captured. QA matches have their own
+  store (`docs/YARA_QA.md`).
+- The same bytes under two names in one alert are one sample; the first file observable wins.
+
+The module works in post-analysis. It analyzes no observable and does not change the alert's
+analysis tree. It always returns INCOMPLETE, so it runs again on every later dispositioned pass, and
+capturing is idempotent. Post-analysis waits for any delayed analysis of the alert, so an alert
+dispositioned while a sandbox is still running is captured when the sandbox finishes.
+
+**Capture is the only chance.** `archive()` removes a false positive's extracted files after
+`fp_days`, and `IGNORE` alerts are deleted after a day. A sample captured before that keeps its
+bytes for as long as its capture record exists.
+
+## Storage
+
+The bytes live in the content-addressed store (`docs/CAS.md`), in the pool named by
+`svs.samples.pool` (default `svs_samples`), encrypted with the system key. Each capture stores two
+objects:
+
+- **The file.** Its digest is the file's sha256.
+- **The match record.** This is the alert's `scan_results` entry for the rule, as the alert saved
+  it, serialized and summarized by `saq/yara_scanning/match_record.py`. Its match strings went through the alert's JSON encoder, which decodes bytes lossily, so the
+  record is for audit and for "why did this match". When SVS rescans a sample it gets exact strings.
+
+`svs_yara_captures` (`saq/database/model.py`) has one row per (alert uuid, sha256, rule uuid). Only
+`saq/svs` writes to it. The row holds both objects with `Hold("svs_capture", <row id>)`, with no
+expiry. The same file captured from two alerts, or for two rules, is stored once and held once per
+capture.
+
+Each row records what a rescan needs to scan the file the way it was scanned:
+
+| Column | Why |
+|---|---|
+| `file_path` | The path relative to the alert's `files/` directory. Rebuilds the `filename`, `filepath` and `extension` externals and the `file_name`, `full_path` and `file_ext` filters. |
+| `yara_meta_tags` | The file's `yara_meta:` directives as `name=value` strings. Rebuilds `meta_tags`. |
+| `rule_uuid`, `rule_name`, `namespace` | What the sample is labeled for. The namespace is relative to the signature directory. |
+| `signature_version` | The commit of the rule's repository when it matched, or `unknown`. |
+| `rule_content_hash` | The rule's content hash in the YARA rule inventory (`saq/signatures/yara_inventory.py`) at capture time. The inventory is cached per engine process for up to `svs.samples.inventory_refresh_seconds`. |
+| `yara_python_version`, `yara_scanner_version` | The libraries of the node that captured it. |
+| `alert_uuid`, `observable_uuid` | Where it came from. |
+| `node` | The node that stored the bytes. |
+
+**There is no foreign key to `alerts`.** An alert can be deleted (`ace alert delete`, or an alert
+re-dispositioned `IGNORE`), and its captures outlive it, or their holds would never be released. A
+capture whose alert is gone has no label.
+
+## States
+
+A capture row is `pending` while it is being stored, `stored` once the bytes are held, and `missing`
+when they could not be. `missing_reason` says why:
+
+| `state` | `missing_reason` | Meaning |
+|---|---|---|
+| `stored` | none | The file and the match record are held. |
+| `stored` | `match_record` | The file is held, but the alert's YARA analysis was gone (the alert was archived). A later pass that has the record adds it. |
+| `missing` | `file` | The file was gone and the pool did not have the same bytes from another alert. |
+| `missing` | `storage` | The CAS refused the bytes. Retried on the alert's next dispositioned pass. |
+
+Missing captures are counted per rule, so a rule whose samples keep going missing is visible.
+
+## Logs
+
+Each record carries `alert_uuid`, `sha256` and `rule_uuid` as `extra={}` fields (`missing_reason`
+too where it applies), so the site's log tooling can search on them.
+
+| Event | Level |
+|---|---|
+| A sample was captured | INFO |
+| A capture is missing for the first time (`file`) | ERROR |
+| A capture is still missing on a later pass | INFO |
+| The CAS refused a capture (`storage`) | ERROR, with an error report |
+| A capture was stored without its match record | ERROR |
+| A capture was stored with signature version `unknown` | ERROR |
+
+A signature version of `unknown` means the rule's repository is not listed in
+`service_yara.git_repo_dirs`. The capture is still kept, but which version of the rule it was
+graded under is lost. A site that wants SVS to work lists its signature repositories there.
+
+## Nodes
+
+The default pool uses the `local` backend, so the bytes are only on the node that stored them, and
+capture runs on whichever node owns the alert. That is right for a single node.
+
+A multi-node site does one of two things before relying on samples:
+- redefines the `svs_samples` pool in its own configuration, with a backend every node can reach and
+  `shared: true`, as it does for `yara_qa` (`docs/YARA_QA.md`, *Nodes*); or
+- disables capture with `analysis_module_svs_yara_sample_capture.enabled: false` until it has one.
+
+With a node-local pool, a node that captures bytes it still has writes them to its own pool
+directory, even when another node stored the same bytes first. A node whose copy of the file is
+gone can only take a hold on the object another node stored; its capture then records that node
+as the one that has the bytes.
+
+## Configuration
+
+```yaml
+cas:
+  pools:
+    svs_samples:
+      backend: local
+      encryption: system
+      retention: held
+      grace_seconds: 86400
+      shared: false
+
+svs:
+  samples:
+    pool: svs_samples
+    max_bulk_download_files: 500           # sample downloads (the Samples API)
+    max_bulk_download_bytes: 1073741824
+    inventory_refresh_seconds: 300         # how old a YARA rule inventory capture accepts
+
+analysis_module_svs_yara_sample_capture:
+  name: svs_yara_sample_capture
+  python_module: saq.modules.svs
+  python_class: YaraSampleCapture
+  enabled: true
+
+analysis_mode_dispositioned:
+  enabled_modules:
+    - svs_yara_sample_capture
+```

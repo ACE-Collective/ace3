@@ -196,15 +196,18 @@ cas:
       retention: held
       grace_seconds: 86400
       shared: false
-  # example: the SVS sample pool (docs/SVS.md). encrypted with the system key, kept while a capture
-  # record holds it. backend: local is fine for a single-node instance; a multi-node deployment needs
-  # shared: true, which requires a backend every node can reach (not implemented yet).
-  #  svs_samples:
-  #    backend: local          # local | custom (python_module/python_class/config under `custom`)
-  #    encryption: system      # none | system
-  #    retention: held         # held | permanent  (ttl is reserved, not implemented)
-  #    grace_seconds: 86400
-  #    shared: false
+    # the YARA samples SVS captures from dispositioned alerts, and their match records
+    # (docs/SVS_SAMPLES.md). live malware, so encrypted; kept for as long as a capture record holds
+    # them. backend: local is enough for a single node. a multi-node site redefines this pool in its
+    # own config with a backend every node can reach and shared: true (the same one it gives
+    # yara_qa), or disables analysis_module_svs_yara_sample_capture: captures happen on whichever
+    # node owns the alert, and SVS validation reads every sample from one node.
+    svs_samples:
+      backend: local
+      encryption: system
+      retention: held
+      grace_seconds: 86400
+      shared: false
 
 # files matched by YARA rules in QA mode (`modifiers = "qa"`), kept in the CAS pool below so analysts
 # can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
@@ -223,6 +226,17 @@ yara_qa:
   max_bulk_download_bytes: 1073741824
   # how often the API rescans the rule files for rules in QA mode
   inventory_refresh_seconds: 60
+
+# the Signature Validation System (docs/SVS.md)
+svs:
+  # the YARA samples captured from dispositioned alerts (Signatures -> Samples, /api/v2/svs/samples).
+  # docs/SVS_SAMPLES.md
+  samples:
+    pool: svs_samples
+    max_bulk_download_files: 500
+    max_bulk_download_bytes: 1073741824
+    # how old a YARA rule inventory capture accepts when it records a rule's content hash
+    inventory_refresh_seconds: 300
 
 # analysis result cache (Phase 2+) configuration
 analysis_cache:
@@ -2103,6 +2117,15 @@ analysis_module_alert_added_to_event:
   python_class: AlertAddedToEventAnalyzer
   enabled: false
 
+# captures every YARA-matched file of an alert dispositioned tp or fp into the svs_samples pool, for
+# SVS to check YARA rule changes against (docs/SVS_SAMPLES.md). runs in dispositioned mode. a
+# multi-node site gives svs_samples a shared backend first, or sets enabled: false
+analysis_module_svs_yara_sample_capture:
+  name: svs_yara_sample_capture
+  python_module: saq.modules.svs
+  python_class: YaraSampleCapture
+  enabled: true
+
 analysis_module_dhash:
   name: dhash
   python_module: saq.modules.dhash
@@ -2548,6 +2571,7 @@ analysis_mode_dispositioned:
   cleanup: false
   enabled_modules:
     - alert_added_to_event
+    - svs_yara_sample_capture
   # faster cumulative timeouts for dispositioned mode
 
 analysis_mode_event:

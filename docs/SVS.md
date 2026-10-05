@@ -174,14 +174,22 @@ no verdict exists. [DP-7]
 
 A module, `svs_yara_sample_capture`, runs in `analysis_mode_dispositioned`. Both disposition
 writers already requeue into that mode, run review and close set `SIMULATED` through one of them
-(Part 3), and today the mode runs nothing by default. The module reads `alerts.disposition` from
-the database, because roots don't carry it. [YR-5]
+(Part 3), and before phase 2 the mode ran nothing by default. The module reads `alerts.disposition`
+from the database, because roots don't carry it. [YR-5] It works in post-analysis, analyzes no
+observable and leaves the tree as it is, and it always returns INCOMPLETE, so every later
+dispositioned pass runs it again (REVIEWED corrected to `FALSE_POSITIVE`, for instance). Post-analysis
+waits for delayed analysis, so an alert dispositioned while a sandbox is still running is captured
+when the sandbox finishes. Operating it is described in `docs/SVS_SAMPLES.md`.
 
 - **What gets captured:** every YARA-matched file on an alert whose disposition classifies tp or
   fp, whatever the per-detection verdict. A verdict set later needs only a database write, never
   the bytes again.
 - **Idempotent** on `(alert, sha256, rule uuid)`.
-- **Missing data** is logged at ERROR and counted per rule, and the count is shown on the SVS page.
+- **Missing data** is logged at ERROR and counted per rule, and the count is shown on the Samples
+  card. A capture whose bytes could not be kept stays as a `missing` row with its reason (`file`:
+  gone, and not in the pool from another alert; `storage`: the CAS refused it) and is retried on the
+  alert's next dispositioned pass. A capture whose match record was gone (the alert was archived)
+  keeps the bytes and is marked `match_record`.
 - **Capture is the only chance.** Since the phase-0 archive fix [YR-11], `archive()` removes an FP
   alert's derived files after `fp_days`. IGNORE alerts are deleted after a day.
 - **Alerts from unreviewed runs are skipped.** An alert attributed to a run (one join from
@@ -208,7 +216,7 @@ Each capture record stores: [YR-4]
 | `yara_meta_tags` | Rebuilds `meta_tags`. |
 | rule uuid, name, namespace | What the sample is labeled for. |
 | `signature_version`, rule `content_hash` at capture | Audit. |
-| original match record (strings, offsets) | Audit, and "why did this match" in reports. |
+| original match record (strings, offsets) | Audit, and "why did this match" in reports. It is the `scan_results` entry as the alert saved it, so its match strings have been through the alert's JSON encoder, which decodes bytes lossily. A replay scans the file again and gets exact strings. |
 | alert uuid, file observable uuid | Provenance; label derivation. |
 | yara-python and yara_scanner versions | Explains library-driven differences. |
 
@@ -225,22 +233,26 @@ same shape, not a second consumer of that one: QA records every match of a QA ru
 in the service, keyed on `(rule uuid, rule version, sha256)`, capped and expiring; capture runs at
 disposition time, in the engine, only on classified alerts, keyed on `(alert, sha256, rule uuid)`,
 and holds for as long as the capture record exists. `svs_yara_captures` stays its own table and
-reuses the building blocks: the hold idiom and the one-statement conditional UPDATE, the scanner
-protocol's base64 encoding of match strings for the stored record (`saq/yara_scanning/protocol.py`;
-the QA store's `_JSONEncoder` path decodes string bytes lossily, so it is not copied),
-`signature_version` taken exactly as QA takes it, the namespace stored relative to the signature
-directory (the match carries the absolute rule directory, which a replay tree does not have), the
-`wrong_node` answer for bytes on another node's local pool, and the infected-password zips of
-`aceapi_v2/common/archive.py` for downloads. [FR-27]
+reuses the building blocks: the hold idiom, the row written before the CAS puts in private
+sessions, the record's serialization and summary, `signature_version` taken exactly as QA takes it,
+the namespace stored relative to the signature directory (the match carries the absolute rule
+directory, which a replay tree does not have), the `wrong_node` answer for bytes on another node's
+local pool, and the infected-password zips of `aceapi_v2/common/archive.py` for downloads. [FR-27]
+FR-27 also chose the scanner protocol's byte-exact base64 encoding of match strings for the stored
+record. Capture cannot have it: it runs at disposition time and reads the match from the alert's
+saved JSON, whose strings were already decoded lossily when the alert was saved. The record is
+kept as the alert has it, the YARA module is unchanged, and phase 3's replay produces exact strings.
 
 **Sample storage on a multi-node site.** Capture runs in the engine of whichever node owns the
 alert and validation runs in `service_svs` on one node, so the `svs_samples` pool has to be
 reachable from every node (`shared: true`). The CAS ships only the `local` backend, which is enough
 for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
 backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
-ACE does not build one as an SVS prerequisite, and the capture module stays disabled on a
-multi-node site until the pool exists. The `yara_qa` pool already works this way (`docs/YARA_QA.md`,
-*Nodes*): a site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
+ACE does not build one as an SVS prerequisite. Capture is enabled by default with a `local` pool,
+which is right for a single node. A multi-node site gives `svs_samples` a shared backend, or sets
+`analysis_module_svs_yara_sample_capture.enabled: false` until it has one; otherwise each node keeps
+the bytes it captured. The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
+site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
 
 The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output
 depends on file name and `meta_tags`, which are not in the cache key. Moving its detections onto
@@ -1010,6 +1022,9 @@ cas:
       retention: held
 
 svs:
+  samples:                          # docs/SVS_SAMPLES.md
+    pool: svs_samples
+    max_bulk_download_files: 500
   queue: svs
   simulated_days: 30                # SIMULATED alerts are archived after this, like FP alerts after fp_days [FR-7]
   runs:
@@ -1042,7 +1057,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 |---|---|
 | **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. A multi-node site provides its shared `svs_samples` backend before enabling capture [FR-1] |
+| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
 | **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
@@ -1077,6 +1092,11 @@ be selected in the GUI. Update any report or script that names them.
   signature changes are tested.
 - If the whole alert was dispositioned wrong, correct the alert's disposition instead. On a
   `FALSE_POSITIVE` alert every detection is FP.
+
+**Files YARA matched on graded alerts are kept** (analysts, detection engineers; phase 2). When you
+disposition an alert `FALSE_POSITIVE` or any TP disposition, ACE keeps every file a YARA rule
+matched on it, with the match, so future rule changes can be tested against it. Nothing changes in
+how you disposition. The kept files are listed under *Signatures → Samples*.
 
 **YARA hits appear on the file** (analysts; phase 1). The fire icon sits on the file that matched,
 and the YARA results under it are always shown.
