@@ -120,12 +120,14 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
         assert isinstance(root, RootAnalysis)
         return add_workload(root)
 
-    def transfer_work_target(self, uuid: str, node_id: int) -> Optional[RootAnalysis]:
+    def transfer_work_target(self, uuid: str, node_id: int, analysis_mode: Optional[str] = None) -> Optional[RootAnalysis]:
         """Moves the given work target from the given remote node to the local node.
-        Returns the (unloaded) RootAnalysis for the object transferred."""
+        Returns the (unloaded) RootAnalysis for the object transferred, in analysis_mode: the mode of
+        the workload row that was selected. Without it the orchestrator would run the root in the
+        mode saved on disk, so a dispositioned item pulled from another node would run in correlation."""
         from ace_api import download, clear
 
-        logging.info("downloading work target {} from {}".format(uuid, node_id))
+        logging.info("downloading work target {} from {} for analysis mode {}".format(uuid, node_id, analysis_mode))
 
         # get a lock on the target we want to transfer
         if not self.lock_manager.acquire_lock(uuid):
@@ -239,7 +241,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 )
             )
 
-        return RootAnalysis(uuid=uuid, storage_dir=target_dir)
+        return RootAnalysis(uuid=uuid, storage_dir=target_dir, analysis_mode=analysis_mode)
 
     def get_delayed_analysis_work_target(self) -> Optional[DelayedAnalysisRequest]:
         """Returns the next DelayedAnalysisRequest that is ready, or None if none are ready."""
@@ -413,7 +415,7 @@ LIMIT 128""".format(
                 # is this work item on a different node?
                 if node_id != get_global_runtime_settings().saq_node_id:
                     # go grab it
-                    transferred = self.transfer_work_target(uuid, node_id)
+                    transferred = self.transfer_work_target(uuid, node_id, analysis_mode)
                     if not transferred:
                         # ensure lock is released
                         self.lock_manager.release_lock(uuid, ignore_lock_failure=True)

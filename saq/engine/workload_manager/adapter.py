@@ -43,10 +43,11 @@ class WorkloadManagerAdapter(WorkloadManagerInterface):
         """Add a RootAnalysis to the workload queue."""
         return self._workload_manager.add_workload(root)
 
-    def transfer_work_target(self, uuid: str, node_id: int) -> Optional[RootAnalysis]:
+    def transfer_work_target(self, uuid: str, node_id: int, analysis_mode: Optional[str] = None) -> Optional[RootAnalysis]:
         """Moves the given work target from the given remote node to the local node.
-        Returns the (unloaded) RootAnalysis for the object transferred."""
-        return self._workload_manager.transfer_work_target(uuid, node_id)
+        Returns the (unloaded) RootAnalysis for the object transferred, in the given analysis mode
+        (the mode of the selected workload item)."""
+        return self._workload_manager.transfer_work_target(uuid, node_id, analysis_mode)
 
     def get_delayed_analysis_work_target(self) -> Optional[DelayedAnalysisRequest]:
         """Returns the next DelayedAnalysisRequest that is ready, or None if none are ready."""

@@ -7,6 +7,10 @@ it reported an exception (one error.report record per failure -- a flood during
 a mass node drain), deleted the freshly-downloaded local copy the database now
 pointed at, and leaked the work lock. The remote clear is best-effort cleanup;
 a failure there must not fail the (already committed) transfer.
+
+They also cover the work item's analysis mode, which the transfer must carry: a
+``dispositioned`` item pulled from another node used to come back without one, so it
+ran in the ``correlation`` mode saved on disk (FR-5 in docs/SVS_FINAL_REVIEW.md).
 """
 
 import os
@@ -16,9 +20,13 @@ from unittest.mock import Mock
 import pytest
 import requests
 
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, NODE_STATUS_RUNNING
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
+from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.execution_context import EngineExecutionContext
+from saq.engine.executor import AnalysisExecutor
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
@@ -48,16 +56,23 @@ def insert_remote_node() -> int:
         return cursor.lastrowid
 
 
-def insert_workload(uuid: str, node_id: int) -> None:
+def insert_workload(uuid: str, node_id: int, mode: str = ANALYSIS_MODE) -> None:
     with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute(
             """INSERT INTO workload ( uuid, node_id, analysis_mode, company_id, storage_dir, insert_date )
                VALUES ( %s, %s, %s, %s, %s, NOW() )""",
-            (uuid, node_id, ANALYSIS_MODE, get_global_runtime_settings().company_id,
+            (uuid, node_id, mode, get_global_runtime_settings().company_id,
              storage_dir_from_uuid(uuid)),
         )
         db.commit()
+
+
+def workload_modes(uuid: str) -> list[str]:
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT analysis_mode FROM workload WHERE uuid = %s ORDER BY analysis_mode", (uuid,))
+        return [row[0] for row in cursor.fetchall()]
 
 
 def workload_node_id(uuid: str):
@@ -78,7 +93,11 @@ def lock_row(uuid: str):
 def make_manager(lock_manager: DistributedLockManager) -> DatabaseWorkloadManager:
     config_manager = Mock(spec=ConfigurationManager)
     config_manager.config = Mock()
+    # get_work_target filters on these, and a bare Mock attribute is truthy
+    config_manager.config.local_analysis_modes = []
+    config_manager.config.excluded_analysis_modes = []
     node_manager = Mock(spec=NodeManagerInterface)
+    node_manager.target_nodes = []
     return DatabaseWorkloadManager(
         lock_manager=lock_manager,
         configuration_manager=config_manager,
@@ -86,12 +105,17 @@ def make_manager(lock_manager: DistributedLockManager) -> DatabaseWorkloadManage
     )
 
 
-def fake_download(uuid, target_dir, remote_host=None):
+def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE):
     """Materialize a valid root at the transfer target directory, standing in
     for pulling it off the remote node."""
-    root = create_root_analysis(uuid=uuid, storage_dir=target_dir, analysis_mode=ANALYSIS_MODE)
+    root = create_root_analysis(uuid=uuid, storage_dir=target_dir, analysis_mode=saved_mode)
     root.initialize_storage()
     root.save()
+
+
+def fake_alert_download(uuid, target_dir, remote_host=None):
+    """An alert as it is saved on disk after its correlation pass."""
+    fake_download(uuid, target_dir, remote_host, saved_mode=ANALYSIS_MODE_CORRELATION)
 
 
 def abs_target(uuid: str) -> str:
@@ -190,3 +214,74 @@ def test_transfer_bails_and_releases_lock_when_target_dir_exists(item, monkeypat
 
     assert result is False
     assert lock_row(uuid) is None
+
+
+@pytest.fixture
+def dispositioned_item(monkeypatch):
+    """An alert dispositioned on a remote node: its workload row is in dispositioned mode,
+    while the root saved on disk is still in correlation mode."""
+    import ace_api
+
+    uuid = str(uuidlib.uuid4())
+    remote_id = insert_remote_node()
+    insert_workload(uuid, remote_id, ANALYSIS_MODE_DISPOSITIONED)
+    monkeypatch.setattr(ace_api, "download", fake_alert_download)
+    monkeypatch.setattr(ace_api, "clear", lambda *a, **k: True)
+    return uuid, remote_id
+
+
+def make_orchestrator(manager: DatabaseWorkloadManager) -> AnalysisOrchestrator:
+    return AnalysisOrchestrator(
+        configuration_manager=manager.configuration_manager,
+        analysis_executor=Mock(spec=AnalysisExecutor),
+        workload_manager=manager,
+        lock_manager=manager.lock_manager,
+    )
+
+
+def test_transfer_carries_the_work_item_mode(dispositioned_item):
+    uuid, remote_id = dispositioned_item
+
+    manager = make_manager(DistributedLockManager())
+    result = manager.transfer_work_target(uuid, remote_id, ANALYSIS_MODE_DISPOSITIONED)
+
+    assert result.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+    assert result.original_analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+
+
+def test_get_work_target_transfers_with_the_row_mode(dispositioned_item, monkeypatch):
+    """A dispositioned item pulled from another node runs in dispositioned mode, not in the
+    correlation mode saved on disk, and clearing it removes its own workload row."""
+    from saq.engine.workload_manager import database as db_module
+
+    uuid, _ = dispositioned_item
+    # only a running node pulls work from other nodes
+    monkeypatch.setattr(db_module, "get_node_status_cached", lambda: NODE_STATUS_RUNNING)
+
+    manager = make_manager(DistributedLockManager())
+    result = manager.get_work_target(priority=False, local=False)
+
+    assert result is not None and result.uuid == uuid
+    assert result.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+
+    # the orchestrator loads the root and keeps the workload mode over the saved one
+    context = EngineExecutionContext(result)
+    assert make_orchestrator(manager)._process_work_item(context)
+    assert context.root.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
+
+    manager.clear_work_target(context.root)
+    assert workload_modes(uuid) == []
+
+
+def test_clear_after_transfer_keeps_the_other_mode(dispositioned_item):
+    """A transfer moves every workload row of the uuid; clearing the dispositioned item
+    leaves a correlation row of the same alert alone."""
+    uuid, remote_id = dispositioned_item
+    insert_workload(uuid, remote_id, ANALYSIS_MODE_CORRELATION)
+
+    manager = make_manager(DistributedLockManager())
+    result = manager.transfer_work_target(uuid, remote_id, ANALYSIS_MODE_DISPOSITIONED)
+    manager.clear_work_target(result)
+
+    assert workload_modes(uuid) == [ANALYSIS_MODE_CORRELATION]
+    assert workload_node_id(uuid) == local_node_id()

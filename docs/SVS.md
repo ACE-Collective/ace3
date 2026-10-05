@@ -192,10 +192,12 @@ the database, because roots don't carry it. [YR-5]
   set, which makes the audit column worthless. The module logs ERROR for every capture whose
   version is unknown. [FR-15]
 - **The work item keeps its mode.** The `dispositioned` requeue targets the alert's own node, but
-  any node of the same company may pull it, and `transfer_work_target` today returns the root
-  without the item's `analysis_mode`, so the orchestrator falls back to `correlation` and capture
-  silently does not run. The phase-2 PR fixes `transfer_work_target` to carry the mode, with a
-  test. [FR-5]
+  any node of the same company may pull it. `transfer_work_target` used to return the root without
+  the item's `analysis_mode`, so the orchestrator fell back to the `correlation` mode saved on
+  disk and capture did not run on that pass. The transfer moves every workload row of the alert
+  to the new node and the clear deletes only the row of the mode that ran, so the `dispositioned`
+  row ran on a later pass instead: capture was delayed, after a pointless correlation pass, not
+  lost. `transfer_work_target` now carries the selected item's mode. [FR-5]
 
 Each capture record stores: [YR-4]
 
@@ -937,7 +939,7 @@ Several agreed changes are general-purpose and ship as their own PRs:
 | Alert-router registry, `move_alert_to_queue`, as their own PR (a refactor of `_apply_detection_queue` plus a new primitive), **landed** | Part 3 | ART-15, FR-2 |
 | CAS (`saq/cas/`), **landed** | Sample storage, and later every byte store. The shared backend a multi-node site needs for `svs_samples` is the site's to provide | `docs/CAS.md`, FR-1 |
 | Correlation-mode submissions to a remote node get an `alerts` row, **landed** | `submit_remote` never calls `ALERT()` and the receiving node only schedules the root, so such a submission is analyzed and lost. Any hunt whose collector submits remotely produces no alert, test or not. Phase 0 | FR-6 |
-| `transfer_work_target` carries the work item's `analysis_mode` | A `dispositioned` item pulled by another node ran in correlation mode, so capture silently did not run. Phase 2 | FR-5 |
+| `transfer_work_target` carries the work item's `analysis_mode`, **landed** | A `dispositioned` item pulled by another node ran in correlation mode first, which delayed capture. Phase 2 | FR-5 |
 | `SIMULATED` alerts are archived after `svs.simulated_days`, never deleted; `SIMULATED` in `stop_analysis_on_dispositions` | Nothing else frees test alerts, and deleting them would orphan their verdicts, labels and attributions | FR-7 |
 | Vendored ATT&CK extract (`etc/attack/`) and `bin/update-attack-catalog` | Part 4 | FR-14 |
 | `saq/storage` fixes (TLS, 403 vs missing, atomic local writes) and `saq/crypto` fixes, **landed** | Prerequisites for the CAS | F-13, F-18 to F-20 |
