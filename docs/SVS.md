@@ -176,9 +176,9 @@ A module, `svs_yara_sample_capture`, runs in `analysis_mode_dispositioned`. Both
 writers already requeue into that mode, run review and close set `SIMULATED` through one of them
 (Part 3), and before phase 2 the mode ran nothing by default. The module reads `alerts.disposition`
 from the database, because roots don't carry it. [YR-5] It works in post-analysis, analyzes no
-observable and leaves the tree as it is, and it always returns INCOMPLETE, so every later
-dispositioned pass runs it again (REVIEWED corrected to `FALSE_POSITIVE`, for instance). Post-analysis
-waits for delayed analysis, so an alert dispositioned while a sandbox is still running is captured
+observable and leaves the tree as it is. Post-analysis runs at the end of every pass, so every
+later dispositioned pass runs it again (REVIEWED corrected to `FALSE_POSITIVE`, for instance), and
+capture is idempotent. Post-analysis waits for delayed analysis, so an alert dispositioned while a sandbox is still running is captured
 when the sandbox finishes. Operating it is described in `docs/SVS_SAMPLES.md`.
 
 - **What gets captured:** every YARA-matched file on an alert whose disposition classifies tp or

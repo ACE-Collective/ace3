@@ -33,8 +33,8 @@ detection, whatever the verdict on that detection:
 - The same bytes under two names in one alert are one sample; the first file observable wins.
 
 The module works in post-analysis. It analyzes no observable and does not change the alert's
-analysis tree. It always returns INCOMPLETE, so it runs again on every later dispositioned pass, and
-capturing is idempotent. Post-analysis waits for any delayed analysis of the alert, so an alert
+analysis tree. Post-analysis runs at the end of every pass, so it runs again on every later
+dispositioned pass, and capturing is idempotent. Post-analysis waits for any delayed analysis of the alert, so an alert
 dispositioned while a sandbox is still running is captured when the sandbox finishes.
 
 **Capture is the only chance.** `archive()` removes a false positive's extracted files after

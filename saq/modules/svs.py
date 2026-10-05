@@ -22,12 +22,9 @@ class YaraSampleCapture(AnalysisModule):
     svs_samples pool (docs/SVS_SAMPLES.md).
 
     It runs in dispositioned mode, where both disposition writers requeue the alert, and does its
-    work in post-analysis: it analyzes no observable and changes nothing in the tree. Every later
-    dispositioned pass (a disposition changed from REVIEWED to FALSE_POSITIVE, a review correction)
-    must run it again, and capture is idempotent, so it always returns INCOMPLETE. The executor
-    skips a module whose post-analysis state in the tree is COMPLETED; today that state comes back
-    from disk as a string that never equals the enum, so the module would run again anyway, but
-    capture must not depend on that."""
+    work in post-analysis: it analyzes no observable and changes nothing in the tree. Post-analysis
+    runs at the end of every pass, so every later dispositioned pass (a disposition changed from
+    REVIEWED to FALSE_POSITIVE, a review correction) runs it again, and capture is idempotent."""
 
     def verify_environment(self):
         pool = get_config().svs.samples.pool
@@ -42,15 +39,15 @@ class YaraSampleCapture(AnalysisModule):
 
         if row is None:
             logging.debug("%s has no alert row - nothing to capture", root)
-            return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
 
         # alerts of a test run that is not Reviewed teach nothing (docs/SVS.md, Part 2)
         if get_disposition_class(row.disposition) is None or row.unreviewed:
-            return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
 
         candidates = candidates_from_root(root)
         if not candidates:
-            return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
 
         pool_name = get_config().svs.samples.pool
         try:
@@ -58,7 +55,7 @@ class YaraSampleCapture(AnalysisModule):
         except PoolNotFound:
             logging.error("cas pool %s is not configured - %s yara samples of %s are not captured",
                           pool_name, len(candidates), root)
-            return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
 
         for candidate in candidates:
             try:
@@ -70,4 +67,4 @@ class YaraSampleCapture(AnalysisModule):
                                      "rule_uuid": candidate.rule_uuid})
                 report_exception()
 
-        return AnalysisExecutionResult.INCOMPLETE
+        return AnalysisExecutionResult.COMPLETED
