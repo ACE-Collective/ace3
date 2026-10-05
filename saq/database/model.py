@@ -1398,6 +1398,9 @@ class DetectionPoint(Base):
     __table_args__ = (
         UniqueConstraint('alert_id', 'content_hash', name='uq_detection_points_alert_content'),
         Index('ix_detection_points_signature', 'signature_uuid', 'signature_version'),
+        # answers "does this alert have a detection from another signature?" (an effective
+        # verdict's inherited_single vs inherited_multi) from the index alone
+        Index('ix_detection_points_alert_signature', 'alert_id', 'signature_uuid'),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -1432,6 +1435,88 @@ class DetectionPoint(Base):
         server_default=text('CURRENT_TIMESTAMP'))
 
     alert: Mapped["Alert"] = relationship('Alert', backref='detection_points')
+
+
+class DetectionPointVerdict(Base):
+    """An analyst's explicit TP/FP verdict on one detection (docs/SVS.md, Part 1).
+
+    Only what a person said is stored; every other verdict is derived from the alert's disposition
+    when it is read (saq/detection_verdicts/effective.py). The row is keyed on the detection's
+    content hash, not on its detection_points row, because that row is deleted and inserted again
+    whenever the detection leaves and re-enters the tree; the hash is stable."""
+
+    __tablename__ = 'detection_point_verdicts'
+    __table_args__ = (
+        UniqueConstraint('alert_id', 'content_hash', name='uq_detection_point_verdicts_alert_content'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    alert_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    # saq.analysis.detection_identity.detection_content_hash
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # copied from the detection, so labels can be counted per signature without the tree
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+
+    verdict: Mapped[str] = mapped_column(Enum('tp', 'fp'), nullable=False)
+
+    # who set it, NULL once that user is deleted
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+
+    # when the current value was set: maintained by the server on every change of the row, so it
+    # is also the row's updated_at for incremental pulls and the SVS corpus version
+    set_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[user_id])
+
+
+class DetectionPointVerdictHistory(Base):
+    """Append-only record of every change to a detection's stored verdict (docs/SVS.md, Part 6,
+    RPT-4), written in the same transaction as the change. old_verdict and new_verdict are the
+    stored override values, NULL meaning none: setting one is NULL -> tp|fp, clearing it is
+    tp|fp -> NULL, and a Confirm is NULL -> tp."""
+
+    __tablename__ = 'detection_point_verdict_history'
+    __table_args__ = (
+        Index('ix_detection_point_verdict_history_detection', 'alert_id', 'content_hash', 'changed_at'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    alert_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('alerts.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    old_verdict: Mapped[Optional[str]] = mapped_column(Enum('tp', 'fp'), nullable=True)
+
+    new_verdict: Mapped[Optional[str]] = mapped_column(Enum('tp', 'fp'), nullable=True)
+
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+
+    changed_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP(6)'))
 
 class CompanyMapping(Base):
 
