@@ -5,7 +5,8 @@ import pytest
 
 import yara_scanner
 
-from saq.modules.file_analysis.yara import _yara_detection_signature
+from saq.analysis.detection_point import DetectionPoint
+from saq.modules.file_analysis.yara import _relative_namespace, _yara_detection_signature, is_yara_detection
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 
 
@@ -46,6 +47,32 @@ def test_yara_detection_signature_no_uuid_falls_back(caplog):
     assert sig_version == "abc123"
     assert any("has no uuid meta" in r.message for r in caplog.records)
 
+
+
+@pytest.mark.unit
+def test_relative_namespace_inside_signature_dir():
+    assert _relative_namespace("/opt/ace/signatures/yara/phish", "/opt/ace/signatures/yara") == "phish"
+    assert _relative_namespace("/opt/ace/signatures/yara/a/b.yar", "/opt/ace/signatures/yara/") == "a/b.yar"
+
+
+@pytest.mark.unit
+def test_relative_namespace_passes_other_values_through():
+    # the scanner's default namespace, a path outside signature_dir, and no namespace at all
+    assert _relative_namespace("default", "/opt/ace/signatures/yara") == "default"
+    assert _relative_namespace("/srv/rules/x", "/opt/ace/signatures/yara") == "/srv/rules/x"
+    # a sibling sharing a prefix is outside, not inside
+    assert _relative_namespace("/opt/ace/signatures/yara2/x", "/opt/ace/signatures/yara") == "/opt/ace/signatures/yara2/x"
+    assert _relative_namespace(None, "/opt/ace/signatures/yara") is None
+
+
+@pytest.mark.unit
+def test_is_yara_detection():
+    details = {"sha256": "a" * 64, "rule": "r", "namespace": "phish", "rule_uuid": None}
+    assert is_yara_detection(DetectionPoint("x matched yara rule r", details=details))
+    # a detection from before the details existed, or another module's detection
+    assert not is_yara_detection(DetectionPoint("x matched yara rule r"))
+    assert not is_yara_detection(DetectionPoint("x", details={"rule": "r"}))
+    assert not is_yara_detection(DetectionPoint("x", details="text"))
 
 UUID_RULE = """\
 rule signature_version_rule
