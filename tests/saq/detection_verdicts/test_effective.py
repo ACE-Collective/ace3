@@ -6,13 +6,8 @@ from sqlalchemy import update
 from saq.configuration.config import get_config
 from saq.database.model import Alert, DetectionPointVerdict, User
 from saq.database.pool import get_db
-from saq.detection_verdicts.effective import (
-    SOURCE_EXPLICIT,
-    SOURCE_INHERITED_MULTI,
-    SOURCE_INHERITED_SINGLE,
-    compute_effective,
-    disposition_class_lists,
-)
+from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, SOURCE_INHERITED_SINGLE
+from saq.detection_verdicts.effective import compute_effective, disposition_class_lists
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.disposition import get_disposition_class
 from tests.saq.helpers import insert_alert_with_detections

@@ -163,8 +163,11 @@ async def download_signature_matches(
     signature_uuid: str,
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("signature", "download"))],
+    # default_factory rather than a `= []` default, so no list is shared between calls
+    match_id: Annotated[list[int], Query(
+        default_factory=list,
+        description="only these matches (repeat the parameter); every one must belong to this signature")],
     version: Annotated[Optional[str], Query(description="only matches under this version of the rule")] = None,
-    match_id: Annotated[list[int], Query(description="only these matches (repeat the parameter); every one must belong to this signature")] = [],
 ) -> ZipFileResponse:
     """Download stored files of one signature, with their match records and a manifest, as one
     zip encrypted with password 'infected'.

@@ -13,7 +13,7 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.detection_verdicts import store
-from saq.detection_verdicts.effective import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI
+from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import (
     DetectionNotFound,

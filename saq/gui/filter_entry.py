@@ -8,8 +8,10 @@ import pytz
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from saq.analysis.module_path import IS_MODULE_PATH
+from saq.detection_verdicts.constants import SOURCES, VERDICTS
 from saq.gui.detection_point_value import normalize_detection_point_value
-from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, FILTER_NAMES
+from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, DETECTION_POINT_FILTER_SLUGS, FILTER_NAMES
+from saq.signatures.model import SignatureType
 from saq.util.relative_time import parse_date_range
 
 
@@ -71,5 +73,60 @@ class FilterEntry(FilterEntryBase):
                 parse_date_range(value, now=now, tz=pytz.utc)
             except ValueError as e:
                 raise ValueError(f"invalid date range {value!r}: {e}") from None
+
+        return values
+
+
+# the Verdict filter's value for a detection with no effective verdict (an unclassified alert)
+VERDICT_FILTER_NONE = "none"
+
+
+class DetectionPointFilterEntry(FilterEntryBase):
+    """A filter entry of the detection points screen (GET /api/v2/detection-points)."""
+
+    name: str = Field(description="a filter name of the detection points screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in DETECTION_POINT_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(DETECTION_POINT_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Signature":
+            # normalize_detection_point_value raises ValueError, which pydantic reports
+            return [normalize_detection_point_value(value) for value in values]
+
+        if name == "Alert Date":
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "Family": [signature_type.value for signature_type in SignatureType],
+            "Verdict": [*VERDICTS, VERDICT_FILTER_NONE],
+            "Source": list(SOURCES),
+            "Has Override": ["true", "false"],
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
 
         return values

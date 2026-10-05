@@ -34,8 +34,9 @@ async def update_event_status(
 @router.get("/export", response_class=CsvResponse)
 async def export_events(
     auth: Annotated[None, Depends(require_permission("event", "read"))],
+    # default_factory rather than a `= []` default, so no list is shared between calls
+    event_ids: Annotated[list[int], Query(alias="checked_events[]", default_factory=list)],
     type: ExportFormat = ExportFormat.csv,
-    event_ids: Annotated[list[int], Query(alias="checked_events[]")] = [],
 ) -> CsvResponse:
     # ExportFormat currently only has csv; FastAPI rejects other values with 422.
     csv_text = await service.export_events_to_csv(event_ids)

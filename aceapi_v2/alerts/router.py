@@ -84,7 +84,9 @@ async def bulk_add_observable(
 
 
 # the listing's query parameters, shared by the page and the exports
+# default_factory rather than a `= []` default, so no list is shared between calls
 FilterParam = Annotated[list[str], Query(
+    default_factory=list,
     description="a filter in the manage page's share-link encoding (`[!]slug:v1,v2`, see "
                 "docs/ALERT_FILTER_URLS.md); repeat for more. Filters are ANDed.")]
 ChangedSinceParam = Annotated[datetime | None, Query(
@@ -123,7 +125,7 @@ async def _fetch_page(listing: service.AlertListing, cursor: str | None, limit: 
 @router.get("/", response_model=AlertListPage)
 async def list_alerts(
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
-    f: FilterParam = [],
+    f: FilterParam,
     changed_since: ChangedSinceParam = None,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
     limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
@@ -183,7 +185,7 @@ def _attachment(filename: str) -> dict:
 @router.get("/export/ndjson", response_class=NdjsonStreamResponse)
 async def export_alerts_ndjson(
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
-    f: FilterParam = [],
+    f: FilterParam,
     changed_since: ChangedSinceParam = None,
     tz: TimezoneParam = "UTC",
 ) -> NdjsonStreamResponse:
@@ -207,7 +209,7 @@ async def export_alerts_ndjson(
 @router.get("/export/csv", response_class=CsvStreamResponse)
 async def export_alerts_csv(
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
-    f: FilterParam = [],
+    f: FilterParam,
     changed_since: ChangedSinceParam = None,
     tz: TimezoneParam = "UTC",
 ) -> CsvStreamResponse:

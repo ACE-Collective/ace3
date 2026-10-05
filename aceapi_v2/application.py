@@ -10,6 +10,7 @@ from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.common.router import router as common_router
 from aceapi_v2.crashes.router import router as crashes_router
 from aceapi_v2.detection.router import router as detection_router
+from aceapi_v2.detection_points.router import router as detection_points_router
 from aceapi_v2.events.router import router as events_router
 from aceapi_v2.health.router import router as health_router
 from aceapi_v2.nodes.router import router as nodes_router
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(common_router, prefix="/common", tags=["common"])
     app.include_router(crashes_router, prefix="/crashes", tags=["crashes"])
     app.include_router(detection_router, prefix="/detection", tags=["detection"])
+    app.include_router(detection_points_router, prefix="/detection-points", tags=["detection-points"])
     app.include_router(events_router, prefix="/events", tags=["events"])
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(nodes_router, prefix="/nodes", tags=["nodes"])
