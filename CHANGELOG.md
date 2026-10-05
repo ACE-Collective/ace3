@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.122] - 2026-10-05
+
+- [Seed the automation user and read its id from config](https://github.com/ACE-Collective/ace3/pull/649)
+- [Add the alert-router registry and move_alert_to_queue](https://github.com/ACE-Collective/ace3/pull/648)
+- [Make the configuration the single list of dispositions, with a classification](https://github.com/ACE-Collective/ace3/pull/647)
+- [Create the alert row for correlation submissions sent to a remote node](https://github.com/ACE-Collective/ace3/pull/645)
+- [Add GET /api/v2/alerts and alerts.updated_at](https://github.com/ACE-Collective/ace3/pull/644)
+- [Make saved filters per screen](https://github.com/ACE-Collective/ace3/pull/643)
+- [Make archive() free derived files and keep the files that came with the alert](https://github.com/ACE-Collective/ace3/pull/642)
+- [Fix saq/storage: S3 TLS settings, 403 vs missing, confined atomic local writes](https://github.com/ACE-Collective/ace3/pull/641)
+- [Count only default-queue alerts as "seen before"](https://github.com/ACE-Collective/ace3/pull/639)
+- [Log the hunt completion record with structured fields](https://github.com/ACE-Collective/ace3/pull/638)
+- [JS deobfuscator: run scripts in the document and at the URL they belong to; phishkit: report only page downloads](https://github.com/ACE-Collective/ace3/pull/637)
+
 ## [3.0.121] - 2026-10-02
 
 - [remove the ACE mailbox collector (AMC) and the local email-ingest collectors](https://github.com/ACE-Collective/ace3/pull/635)
