@@ -64,10 +64,23 @@ FILTER_NAMES_BY_SLUG = {slug: name for name, slug in FILTER_SLUGS.items()}
 # GUI renames it. Never remove or repoint an entry; only add.
 LEGACY_FILTER_NAME_ALIASES = dict(FILTER_SLUGS)
 
+# The filters of the detection points screen (GET /api/v2/detection-points, docs/SVS_API.md):
+# display name -> URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+DETECTION_POINT_FILTER_SLUGS = {
+    'Alert Date': 'alert_date',
+    'Family': 'family',
+    'Has Override': 'has_override',
+    'Queue': 'queue',
+    'Signature': 'signature',
+    'Source': 'source',
+    'Verdict': 'verdict',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
     "FILTER_SLUGS",
     "FILTER_NAMES_BY_SLUG",
     "LEGACY_FILTER_NAME_ALIASES",
+    "DETECTION_POINT_FILTER_SLUGS",
 ]

@@ -53,3 +53,14 @@ class VerdictRequest(BaseModel):
 
 class ConfirmResult(BaseModel):
     confirmed: int = Field(description="how many unconfirmed (inherited_multi) detections were confirmed")
+
+
+class DetectionPointListPage(BaseModel):
+    data: list[DetectionPointRow]
+    next_cursor: str | None = Field(
+        default=None,
+        description="pass as ?cursor= with the same filters for the next page; null on the last page")
+
+
+# the CSV export's columns, in order; details are written as JSON
+DETECTION_POINT_ROW_CSV_FIELDS = tuple(DetectionPointRow.model_fields)

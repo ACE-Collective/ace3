@@ -134,6 +134,9 @@ Alerts that existed before `updated_at` was added carry the time of that migrati
 one response, with the same parameters and order and no paging: one `AlertRow` per line, or a
 header line and one row per alert.
 
+`GET /api/v2/detection-points` lists detections with their verdicts in the same encoding, with the
+slugs of its own screen (`signature`, `verdict`, `source`, …); see `docs/SVS_API.md`.
+
 ## The same slugs in the search box
 
 The manage-page search box understands these slugs too, so `queue:default` means the same

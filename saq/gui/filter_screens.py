@@ -10,8 +10,8 @@ from typing import Iterable, Mapping
 
 from pydantic import BaseModel
 
-from saq.gui.filter_entry import FilterEntry, FilterEntryBase
-from saq.gui.filter_names import FILTER_SLUGS
+from saq.gui.filter_entry import DetectionPointFilterEntry, FilterEntry, FilterEntryBase
+from saq.gui.filter_names import DETECTION_POINT_FILTER_SLUGS, FILTER_SLUGS
 
 
 class UnknownFilterScreen(LookupError):
@@ -52,7 +52,17 @@ ALERTS_SCREEN = FilterScreen(
     pair_filter_names=frozenset(["Observable"]),
 )
 
-FILTER_SCREENS: dict[str, FilterScreen] = {ALERTS_SCREEN.name: ALERTS_SCREEN}
+# detections with their verdicts (GET /api/v2/detection-points, docs/SVS_API.md)
+DETECTION_POINTS_SCREEN = FilterScreen(
+    name="detection_points",
+    entry_model=DetectionPointFilterEntry,
+    slugs=DETECTION_POINT_FILTER_SLUGS,
+)
+
+FILTER_SCREENS: dict[str, FilterScreen] = {
+    ALERTS_SCREEN.name: ALERTS_SCREEN,
+    DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
+}
 
 
 def register_filter_screen(screen: FilterScreen) -> None:

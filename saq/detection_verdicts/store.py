@@ -13,13 +13,8 @@ from sqlalchemy import select
 
 from saq.database.model import Alert, DetectionPoint, DetectionPointVerdict, DetectionPointVerdictHistory
 from saq.database.pool import get_db
-from saq.detection_verdicts.effective import (
-    SOURCE_INHERITED_MULTI,
-    VERDICT_TP,
-    VERDICTS,
-    verdict_join_condition,
-    verdict_source_expr,
-)
+from saq.detection_verdicts.constants import SOURCE_INHERITED_MULTI, VERDICT_TP, VERDICTS
+from saq.detection_verdicts.effective import verdict_join_condition, verdict_source_expr
 from saq.disposition import DISPOSITION_CLASS_FP, DISPOSITION_CLASS_TP, get_disposition_class, is_selectable_disposition
 
 

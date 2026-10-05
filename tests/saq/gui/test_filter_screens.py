@@ -3,10 +3,11 @@
 import pytest
 from pydantic import ValidationError
 
-from saq.gui.filter_entry import FilterEntry, FilterEntryBase
+from saq.gui.filter_entry import DetectionPointFilterEntry, FilterEntry, FilterEntryBase
 from saq.gui.filter_names import FILTER_NAMES, FILTER_SLUGS
 from saq.gui.filter_screens import (
     ALERTS_SCREEN,
+    DETECTION_POINTS_SCREEN,
     FILTER_SCREENS,
     FilterScreen,
     UnknownFilterScreen,
@@ -59,3 +60,38 @@ def test_entry_base_checks_shape_only():
         FilterEntryBase.model_validate({"name": "x", "values": []})
     with pytest.raises(ValidationError):
         FilterEntryBase.model_validate({"name": "x", "values": ["y"], "extra": 1})
+
+
+def test_the_detection_points_screen():
+    assert get_filter_screen("detection_points") is DETECTION_POINTS_SCREEN
+    assert DETECTION_POINTS_SCREEN.entry_model is DetectionPointFilterEntry
+    assert DETECTION_POINTS_SCREEN.names_by_slug["verdict"] == "Verdict"
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Signature", ["AAAAAAAA-aaaa-aaaa-aaaa-aaaaaaaaaaaa:abc123"], ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:abc123"]),
+    ("Family", ["YARA", "hunt"], ["yara", "hunt"]),
+    ("Verdict", ["TP", "none"], ["tp", "none"]),
+    ("Source", ["inherited_multi"], ["inherited_multi"]),
+    ("Has Override", ["True"], ["true"]),
+    ("Queue", ["default"], ["default"]),
+    ("Alert Date", ["-90d"], ["-90d"]),
+])
+def test_detection_points_values_are_normalized(name, values, expected):
+    (entry,) = DETECTION_POINTS_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Signature", ["not-a-uuid"]),
+    ("Family", ["sigma"]),
+    ("Verdict", ["maybe"]),
+    ("Source", ["inherited"]),
+    ("Has Override", ["yes"]),
+    ("Alert Date", ["not a date"]),
+    ("Queue", [["pair", "value"]]),
+    ("Tag", ["x"]),
+])
+def test_detection_points_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        DETECTION_POINTS_SCREEN.validate_entries([{"name": name, "values": values}])
