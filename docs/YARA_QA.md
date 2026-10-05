@@ -147,10 +147,11 @@ The status values mean:
 - `missing`: no loaded rule has this uuid any more.
 
 **Where the rule list comes from.** The list of QA rules is read from rule source through the
-signature inventory (`saq/signatures/loaders/yara.py`), at `service_yara.signature_dir`. QA mode and
-`enabled` are interpreted by the same helpers the scanner uses (`saq/signatures/yara_meta.py`).
-Parsing every rule file takes seconds, so each API process caches the result. It rescans at most
-every `yara_qa.inventory_refresh_seconds`, and parses again only the files that changed.
+YARA rule inventory (`saq/signatures/yara_inventory.py`, which uses the loader in
+`saq/signatures/loaders/yara.py`), at `service_yara.signature_dir`. QA mode and `enabled` are
+interpreted by the same helpers the scanner uses (`saq/signatures/yara_meta.py`). Parsing every rule
+file takes seconds, so each process caches the inventory. The QA listing accepts one up to
+`yara_qa.inventory_refresh_seconds` old, and a rebuild parses again only the files that changed.
 
 **Downloads.** Every download is a zip encrypted with the password `infected`
 (`aceapi_v2/common/archive.py`), laid out as:

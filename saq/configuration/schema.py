@@ -737,6 +737,22 @@ class YaraQAConfig(BaseModel):
     inventory_refresh_seconds: int = Field(default=60, ge=0, description="how often the API rescans the YARA rule files for rules in QA mode (only changed files are parsed again)")
 
 
+class SVSSamplesConfig(BaseModel):
+    """The YARA samples SVS captures from dispositioned alerts (docs/SVS_SAMPLES.md): every file a
+    YARA rule matched on an alert whose disposition classifies tp or fp, with its match record."""
+    model_config = ConfigDict(extra="forbid")
+    pool: str = Field(default="svs_samples", description="the CAS pool (cas.pools.<name>) that holds the captured files and match records. A multi-node site redefines this pool with a shared backend, or disables analysis_module_svs_yara_sample_capture")
+    max_bulk_download_files: int = Field(default=500, ge=1, description="most files one bulk sample download may contain")
+    max_bulk_download_bytes: int = Field(default=1024 * 1024 * 1024, ge=1, description="most plaintext bytes one bulk sample download may contain")
+    inventory_refresh_seconds: int = Field(default=300, ge=0, description="how old a YARA rule inventory capture accepts when it records a rule's content hash. Each engine process caches its own and parses only changed rule files again")
+
+
+class SVSConfig(BaseModel):
+    """The Signature Validation System (docs/SVS.md)."""
+    model_config = ConfigDict(extra="forbid")
+    samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
+
+
 class NRDConfig(BaseModel):
     """Configuration for the newly-registered-domains (NRD) ingestion pipeline."""
     enabled: bool = Field(default=True, description="kill switch for the refresh script; when false, `ace nrd refresh` exits as a no-op before any DB or HTTP work. Does not affect the analyzer (controlled by `analysis_module_nrd_analyzer.enabled`).")
@@ -836,6 +852,7 @@ class ACEConfig(BaseModel):
     crash_reporting: CrashReportingConfig = Field(default_factory=CrashReportingConfig, description="analysis module crash report configuration")
     cas: CASConfig = Field(default_factory=CASConfig, description="content-addressed storage configuration (docs/CAS.md)")
     yara_qa: YaraQAConfig = Field(default_factory=YaraQAConfig, description="storage of files matched by YARA rules in QA mode (docs/YARA_QA.md)")
+    svs: SVSConfig = Field(default_factory=SVSConfig, description="the Signature Validation System (docs/SVS.md)")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None

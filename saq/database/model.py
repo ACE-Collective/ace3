@@ -1811,6 +1811,74 @@ class YaraQAMatch(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class SVSYaraCapture(Base):
+    """One YARA-matched file captured from a dispositioned alert for one rule (docs/SVS.md, Part 2;
+    docs/SVS_SAMPLES.md). These are the samples SVS checks YARA rule changes against.
+
+    One row per (alert, sha256, rule uuid), written by saq/svs/capture.py when an alert whose
+    disposition classifies tp or fp is analyzed in dispositioned mode. The file and the match
+    record are objects in the svs_samples CAS pool, each held by Hold("svs_capture", str(id)) for
+    as long as the row exists. There is no foreign key to alerts: an alert can be deleted (ace
+    alert delete, the IGNORE cleanup), and its captures must outlive it, or their holds would never
+    be released. The sample's label is not stored; it is derived from the verdicts on the alert's
+    detections when it is read.
+
+    state is pending while the row is being stored, stored once the bytes are held, and missing
+    when they could not be: missing_reason says why (file: the file was gone and the pool did not
+    have it; storage: the CAS refused it). A stored row whose match record was gone (the alert was
+    archived) keeps missing_reason 'match_record'. A missing row is retried on the alert's next
+    dispositioned pass. Only saq/svs writes this table.
+    """
+
+    __tablename__ = 'svs_yara_captures'
+    __table_args__ = (
+        UniqueConstraint('alert_uuid', 'sha256', 'rule_uuid', name='uq_svs_yara_captures_alert_sample'),
+        Index('i_svs_yara_captures_sample', 'sha256', 'rule_uuid'),
+        Index('i_svs_yara_captures_rule_missing', 'rule_uuid', 'missing_reason'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    alert_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the file observable the file was captured from
+    observable_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the file's sha256, which is also its digest in the pool
+    sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    # the rule's uuid meta: the signature_uuid of the detection
+    rule_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    rule_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    # relative to the signature directory, as in the detection's details
+    namespace: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # the commit of the rule's repository when it matched, or 'unknown'
+    signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # saq.signatures.loaders.util.content_hash of the rule as the inventory read it at capture time
+    rule_content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # relative to the alert's files/ directory: rebuilds the path externals and filters on replay
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # the file's yara_meta directives as "name=value" strings, JSON-serialized: rebuilds meta_tags
+    yara_meta_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the match record's digest in the pool (the scan_results entry as the alert saved it)
+    record_digest: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # JSON-serialized saq.yara_scanning.match_record.summarize_match_record of the record
+    match_summary: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    yara_python_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    yara_scanner_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # the node that stored the bytes; with a node-local pool they are only there
+    node: Mapped[str] = mapped_column(String(1024), nullable=False)
+    state: Mapped[str] = mapped_column(Enum('pending', 'stored', 'missing'), nullable=False)
+    missing_reason: Mapped[Optional[str]] = mapped_column(Enum('file', 'match_record', 'storage'), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    stored_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # maintained by the server on every change of the row, for incremental pulls and the SVS
+    # corpus version
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

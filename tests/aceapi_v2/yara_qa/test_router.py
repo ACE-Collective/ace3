@@ -21,7 +21,7 @@ from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.environment import get_global_runtime_settings
-from saq.yara_qa.store import serialize_match_record, summarize_match_record
+from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 
 pytestmark = pytest.mark.integration

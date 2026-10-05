@@ -20,8 +20,8 @@ def _by_pool() -> dict[str, dict]:
 
 def test_empty_pools_are_still_reported():
     records = _by_pool()
-    # yara_qa is the pool saq.default.yaml defines out of the box (docs/YARA_QA.md)
-    assert set(records) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa"}
+    # yara_qa and svs_samples are the pools saq.default.yaml defines out of the box
+    assert set(records) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples"}
     plain = records["test_plain"]
     assert plain["configured"] is True
     assert (plain["backend"], plain["encryption"], plain["retention"]) == ("local", "none", "held")
@@ -93,7 +93,7 @@ def test_node_stats(enc_pool, tmp_path):
     assert "node" in cache
 
     pools = {record["pool"]: record for record in records if record["kind"] == "pool"}
-    assert set(pools) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa"}
+    assert set(pools) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples"}
     assert pools["test_encrypted"]["path"] == enc_pool.backend.root
     assert all(record["fs_total_bytes"] > 0 for record in pools.values())
 

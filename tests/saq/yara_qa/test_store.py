@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 
@@ -9,13 +8,8 @@ from saq.configuration.config import get_config
 from saq.environment import get_global_runtime_settings
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.yara_qa import store
-from saq.yara_qa.store import (
-    QARecordStatus,
-    QATarget,
-    record_qa_match,
-    serialize_match_record,
-    summarize_match_record,
-)
+from saq.yara_qa.store import QARecordStatus, QATarget, record_qa_match
+from saq.yara_scanning.match_record import serialize_match_record
 from tests.saq.yara_qa.conftest import (
     QA_UUID,
     VERSION_A,
@@ -256,21 +250,3 @@ def test_losing_the_insert_race_renews_the_winner(make_file, root_analysis, monk
     assert row.hit_count == 2
     counters = counter_row()
     assert (counters.match_count, counters.stored_count) == (2, 1)
-
-
-@pytest.mark.unit
-def test_summary_of_string_match_objects():
-    """Newer yara-python returns StringMatch objects with instances instead of tuples."""
-    match_result = {
-        "rule": "r", "namespace": "n", "commit": None, "tags": [], "meta": {},
-        "strings": [
-            SimpleNamespace(identifier="$a", instances=[SimpleNamespace(offset=40), SimpleNamespace(offset=90)]),
-            SimpleNamespace(identifier="$b", instances=[]),
-        ],
-    }
-    summary = summarize_match_record(match_result)
-    assert summary["string_match_count"] == 2
-    assert summary["strings"] == [
-        {"identifier": "$a", "count": 2, "first_offset": 40},
-        {"identifier": "$b", "count": 0, "first_offset": None},
-    ]

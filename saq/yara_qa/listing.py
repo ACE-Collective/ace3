@@ -15,8 +15,13 @@ from typing import Iterable, Optional
 from sqlalchemy import Select, select
 
 from saq.database.model import YaraQASignature
-from saq.signatures.model import Signature
-from saq.yara_qa.model import YaraInventory, is_qa_signature
+from saq.signatures.model import Signature, YaraInventory
+from saq.signatures.yara_meta import is_qa_signature
+
+
+def qa_signatures(inventory: YaraInventory) -> list[Signature]:
+    """The inventoried rules that are in QA mode now."""
+    return [signature for signature in inventory.by_uuid.values() if is_qa_signature(signature)]
 
 
 class QAStatus(StrEnum):
@@ -94,7 +99,7 @@ def merge(inventory: YaraInventory, version_rows: Iterable[YaraQASignature]) -> 
             enabled=signature.enabled, current_version=signature.version,
             source_path=signature.source_path, tags=signature.tags)
 
-    for signature in inventory.qa_signatures:
+    for signature in qa_signatures(inventory):
         by_uuid[signature.uuid] = from_inventory(signature.uuid, signature, signature.name)
 
     for row in version_rows:

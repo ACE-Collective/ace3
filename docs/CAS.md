@@ -289,10 +289,10 @@ cas:
 The schema (`CASConfig`, `CASPoolConfig` in `saq/configuration/schema.py`) rejects unknown keys
 explicitly (`extra="forbid"`; most of the rest of the config silently ignores them). Paths are
 relative to the data directory, like `crash_reporting.directory`, which is what gives every test
-slot its own store. `etc/saq.default.yaml` carries the defaults, the `yara_qa` pool (the one pool
-defined out of the box, `docs/YARA_QA.md`) and a commented `svs_samples` example. A site redefines a
-pool by overriding its keys in its own configuration, for example to give `yara_qa` a shared backend
-on a multi-node install.
+slot its own store. `etc/saq.default.yaml` carries the defaults and the two pools defined out of
+the box, `yara_qa` (`docs/YARA_QA.md`) and `svs_samples` (`docs/SVS_SAMPLES.md`). A site redefines a
+pool by overriding its keys in its own configuration, for example to give `yara_qa` and
+`svs_samples` a shared backend on a multi-node install.
 
 ## Permissions, CLI, cron
 
@@ -375,14 +375,14 @@ message text, so the monitor records are the place to look. Definitions are in
 
 | Order | Store | Pool | Status |
 |---|---|---|---|
-| 1 | SVS YARA samples | `svs_samples` (`held`, encrypted, shared) | the CAS was built for it; the pool is defined when SVS phase 2 lands (`docs/SVS.md`) |
+| 1 | SVS YARA samples | `svs_samples` (`held`, encrypted, local by default) | **done** (`docs/SVS_SAMPLES.md`): the files YARA rules matched on alerts graded tp or fp, and their match records, held for as long as their capture records exist. A multi-node site gives it a shared backend |
 | 2 | YARA `qa_dir` | `yara_qa` (`held`, encrypted, local by default) | **done** (`docs/YARA_QA.md`): the files and full match records of QA-mode rules, held for 30 days after the last match, capped per rule |
 | 3 | Analysis-cache blobs | `analysis_cache` (`ttl`, plaintext, local `link`) | gated on the load test |
 | 4 | Crash report bytes | `crash_files` | later |
 | 5 | Email archive | `email_archive` | later; has its own DB and retention semantics |
 | 6 | Alert hardcopies | `alert_files` | last; largest disk win and largest blast radius (node transfer, archive, hardlinks) |
 
-Step 2 is built and step 1 lands with SVS; the rest are not scheduled. [CAS-8]
+Steps 1 and 2 are built; the rest are not scheduled. [CAS-8]
 
 ## Prerequisites (phase 0)
 
