@@ -302,6 +302,8 @@
                             <textarea class="form-control" name="comment" style="flex: 1; resize: vertical; min-height: 300px;"></textarea>
                         </div>
                     </div>
+                    {# more for the dialog to ask on one page (the alert page: detection verdicts) #}
+                    {% block disposition_extra %}{% endblock disposition_extra %}
                     {# what Save will change, and the confirmation for alerts other analysts own;
                        filled in by static/js/selection_guard.js when the dialog opens #}
                     <div id="disposition_selection_guard" class="mt-3" data-current-user-id="{{ current_user.id }}"></div>

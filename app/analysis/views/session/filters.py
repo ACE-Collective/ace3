@@ -3,7 +3,7 @@ from flask import g, session
 from flask_login import current_user
 import pytz
 
-from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter
+from app.filters import AnalysisFilter, AutoTextFilter, DateRangeFilter, DetectionPointFilter, MultiSelectFilter, SelectFilter, TextFilter, TypeValueFilter, UnconfirmedDetectionsFilter
 from saq.configuration.config import get_config
 from aceapi_v2.sync import run_async, run_async_with_session
 from aceapi_v2.observable_types.service import get_observable_types
@@ -95,6 +95,7 @@ def getFilters():
         #'Remediated Date': DateRangeFilter(GUIAlert.removal_time),
         #'Remediation Status': BoolFilter(Remediation.status, nullable=True, option_names=REMEDIATION_STATUS_GUI),
         'Tag': AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True),
+        'Unconfirmed Detections': UnconfirmedDetectionsFilter(entity=GUIAlert),
     }
 
 def build_alert_query(filters: list):

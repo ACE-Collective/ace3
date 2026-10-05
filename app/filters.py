@@ -24,6 +24,7 @@ from saq.gui.filter_query import (
     SelectFilter,
     TextFilter,
     TypeValueFilter,
+    UnconfirmedDetectionsFilter,
     build_alert_query,
     count_alerts,
     create_filter,

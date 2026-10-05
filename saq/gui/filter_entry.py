@@ -15,6 +15,10 @@ from saq.signatures.model import SignatureType
 from saq.util.relative_time import parse_date_range
 
 
+# the values of the alert screen's Unconfirmed Detections filter
+UNCONFIRMED_DETECTIONS_OPTIONS = ("True", "False")
+
+
 class FilterEntryBase(BaseModel):
     """The shape of a filter entry, valid for any screen. Which names and values a screen
     accepts is that screen's entry model (saq/gui/filter_screens.py)."""
@@ -54,6 +58,12 @@ class FilterEntry(FilterEntryBase):
             for value in values:
                 if not isinstance(value, str) or not IS_MODULE_PATH(value):
                     raise ValueError(f"analysis values must be module paths (module:Class[:instance]), got {value!r}")
+            return values
+
+        if info.data.get("name") == "Unconfirmed Detections":
+            for value in values:
+                if value not in UNCONFIRMED_DETECTIONS_OPTIONS:
+                    raise ValueError(f"unconfirmed detections values must be True or False, got {value!r}")
             return values
 
         if info.data.get("name") == "Detection Point":

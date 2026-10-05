@@ -449,11 +449,13 @@
                     <b>{{node.obj.display_type}}</b><span> : </span>
                 {% endif %}
 
-                {# add detection points #}
+                {# add detection points, each with its verdict chip (static/js/detection_verdicts.js) #}
                 {% for dp in node.obj.detections %}
-                    <button type="button" id="detection_{{ dp.id }}" class="btn btn-danger btn-xs" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}">
+                    {% set dp_hash = detection_content_hash(node.obj, dp) %}
+                    <button type="button" id="detection_{{ dp_hash }}" class="btn btn-danger btn-xs" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}">
                         <span class="bi bi-fire" aria-hidden="true"></span>
                     </button>
+                    <span class="detection-verdict" data-content-hash="{{ dp_hash }}"></span>
                 {% endfor %}
 
                 {% if node.is_analysis %}

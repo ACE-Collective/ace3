@@ -18,9 +18,13 @@ from saq.database.pool import get_db
 from saq.analysis.detection_chain import (
     build_detection_chains,
     build_merged_detection_tree,
+    build_root_detections,
     module_display_name,
     observable_display_value,
 )
+from saq.analysis.detection_identity import detection_content_hash, node_identity
+from saq.detection_verdicts.query import list_alert_detection_points
+from saq.disposition import get_disposition_class, get_selectable_dispositions, is_selectable_disposition
 from saq.database.database_observable import get_observable_disposition_histories
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
@@ -410,6 +414,42 @@ def _resolve_references(node):
     node.walk(_resolve)
 
 
+def _detection_label(node) -> str:
+    """What a detection sits on, for the disposition dialog's list of detections."""
+    if isinstance(node, RootAnalysis):
+        return "the alert"
+    if isinstance(node, Observable):
+        return f"{node.display_type}: {observable_display_value(node)}"
+    return module_display_name(node)
+
+
+def detection_verdict_context(alert) -> dict:
+    """What the alert page needs to show detection verdicts (docs/SVS.md, Part 1): the content
+    hash of each detection in the tree, which the verdict chips are keyed on, and the detections
+    the disposition dialog lists when a TP alert has several signatures. The chips themselves are
+    filled from GET /api/v2/alerts/{uuid}/detection-points by static/js/detection_verdicts.js."""
+    labels = {detection_content_hash(node_identity(node), dp): _detection_label(node)
+              for node, dp in alert.root_analysis.detection_points_by_node()}
+    rows = list_alert_detection_points(alert.id)
+    signature_count = len({row["signature_uuid"] for row in rows})
+
+    return {
+        "detection_content_hash": lambda node, dp: detection_content_hash(node_identity(node), dp),
+        "verdict_signature_count": signature_count,
+        # listed only where the dialog offers them: a TP disposition on a multi-signature alert
+        "verdict_modal_detections": [
+            {"content_hash": row["content_hash"], "description": row["description"],
+             "label": labels.get(row["content_hash"], row["node_type"] or ""),
+             "override": row["override"]}
+            for row in rows] if signature_count > 1 else [],
+        "current_alert_disposition_class": get_disposition_class(alert.disposition),
+        "current_alert_disposition_selectable": is_selectable_disposition(alert.disposition),
+        # which selectable disposition classifies how, so the dialog knows when to offer the step
+        "selectable_disposition_classes": {
+            name: get_disposition_class(name) for name in get_selectable_dispositions()},
+    }
+
+
 @analysis.route('/analysis', methods=['GET', 'POST'])
 @require_permission("alert", "read")
 def index():
@@ -481,6 +521,7 @@ def index():
     observable_detections = get_all_observable_detections(alert.root_analysis)
 
     detection_chain_merged_tree = build_merged_detection_tree(build_detection_chains(alert.root_analysis))
+    detection_chain_root_detections = build_root_detections(alert.root_analysis)
 
     # get all observable comments for the analysis tree
     all_observables = list(alert.root_analysis.all_observables)
@@ -685,6 +726,8 @@ def index():
         interesting_observable_list=interesting_observable_list,
         observable_types=run_async(get_observable_types()),
         detection_chain_merged_tree=detection_chain_merged_tree,
+        detection_chain_root_detections=detection_chain_root_detections,
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
+        **detection_verdict_context(alert),
     )

@@ -37,7 +37,7 @@
                             <option value="{{module_path}}" title="{{module_path}}" {% if (name == filter_name and module_path == value) or (name != filter_name and loop.first) %}SELECTED{% endif %}>{{label}}</option>
                         {% endfor %}
                         </select>
-                    {% elif filters[name].__class__.__name__ in ['SelectFilter', 'BoolFilter'] %}
+                    {% elif filters[name].__class__.__name__ in ['SelectFilter', 'BoolFilter', 'UnconfirmedDetectionsFilter'] %}
                         <select class="form-control" name="filter_{{unique_reference}}_value_{{name}}">
                         {% for option in filters[name].options %}
                             <option value="{{option}}" {% if (name == filter_name and option == value) or (name != filter_name and loop.first) %}SELECTED{% endif %}>{{option}}</option>

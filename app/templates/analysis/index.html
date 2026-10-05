@@ -5,6 +5,39 @@
 <input type="hidden" id="alert_uuid" name="alert_uuid" value="{{alert.uuid}}"></input>
 {% endblock disposition_form %}
 
+{# Detection verdicts (docs/SVS.md, Part 1): on a TP alert where several signatures fired, every
+   detection inherits TP; the analyst can mark the ones that were noise, or confirm the rest.
+   Shown only while a tp disposition is selected (static/js/detection_verdicts.js), and its inputs
+   stay disabled until it is opened, so a dialog submitted without opening it changes nothing. #}
+{% block disposition_extra %}
+{% if verdict_modal_detections %}
+<div id="detection_verdicts_section" class="mt-3 d-none">
+    <a role="button" data-bs-toggle="collapse" href="#detection_verdicts_list" aria-expanded="false" aria-controls="detection_verdicts_list">
+        {{ verdict_signature_count }} signatures inherit TP. Mark any that were noise.
+    </a>
+    <div class="collapse mt-2" id="detection_verdicts_list">
+        <input type="hidden" name="verdict_listed" value="1" disabled>
+        <table class="table table-sm mb-2">
+            <thead><tr><th>Noise (FP)</th><th>Detection</th><th>On</th></tr></thead>
+            <tbody>
+            {% for detection in verdict_modal_detections %}
+                <tr>
+                    <td><input class="form-check-input" type="checkbox" name="verdict_fp" value="{{ detection.content_hash }}" id="verdict_fp_{{ detection.content_hash }}" {% if detection.override == 'fp' %}checked{% endif %} disabled></td>
+                    <td><label for="verdict_fp_{{ detection.content_hash }}">{{ detection.description }}</label></td>
+                    <td class="text-muted">{{ detection.label }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="verdict_confirm" value="1" id="verdict_confirm" disabled>
+            <label class="form-check-label" for="verdict_confirm">Confirm the others as TP</label>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock disposition_extra %}
+
 {% block review_form %}
 <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"></input>
 {% endblock review_form %}
@@ -268,6 +301,14 @@
     var current_alert_queue = {{ alert.queue | tojson }};
     var current_alert_disposition = {{ alert.disposition | tojson }};
     var current_user_id = {{ current_user.id }};
+    // detection verdicts (static/js/detection_verdicts.js)
+    var detection_verdicts_alert_uuid = {{ alert.uuid | tojson }};
+    var current_alert_disposition_class = {{ current_alert_disposition_class | tojson }};
+    var current_alert_disposition_selectable = {{ current_alert_disposition_selectable | tojson }};
+    var selectable_disposition_classes = {{ selectable_disposition_classes | tojson }};
+    var current_user_can_write_alerts = {{ has_permission('alert', 'write') | tojson }};
+    var current_user_can_review_alerts = {{ has_permission('alert', 'review') | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}
