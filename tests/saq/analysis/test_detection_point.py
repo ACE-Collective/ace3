@@ -116,17 +116,34 @@ def test_id_unchanged_by_signature():
 
 
 @pytest.mark.unit
-def test_content_hash_stable_and_sensitive():
-    a = DetectionPoint("d", details={"b": 1, "a": 2}, signature_uuid="u")
-    # insensitive to details key order (canonical JSON)
-    b = DetectionPoint("d", details={"a": 2, "b": 1}, signature_uuid="u")
-    assert a.content_hash == b.content_hash
-    # differs when signature_uuid changes
-    assert a.content_hash != DetectionPoint("d", details={"a": 2, "b": 1}, signature_uuid="v").content_hash
-    # differs when description changes
-    assert a.content_hash != DetectionPoint("d2", details={"a": 2, "b": 1}, signature_uuid="u").content_hash
-    # differs when details change
-    assert a.content_hash != DetectionPoint("d", details={"a": 2, "b": 9}, signature_uuid="u").content_hash
+def test_signature_family_defaults_from_uuid():
+    # a built-in uuid implies the builtin family; any other uuid is unknown unless named
+    assert DetectionPoint("d").signature_family == "builtin"
+    assert DetectionPoint("d", signature_uuid=LEGACY_SIGNATURE_UUID).signature_family == "builtin"
+    assert DetectionPoint("d", signature_uuid="not-a-builtin").signature_family is None
+    assert DetectionPoint("d", signature_uuid="not-a-builtin", signature_family="yara").signature_family == "yara"
+
+
+@pytest.mark.unit
+def test_signature_family_round_trips_through_json():
+    dp = DetectionPoint("d", signature_uuid="u", signature_family="hunt")
+    assert DetectionPoint.from_json(dp.json).signature_family == "hunt"
+
+
+@pytest.mark.unit
+def test_old_serialized_form_derives_signature_family():
+    # detections serialized before the family existed fall back to the derived default
+    assert DetectionPoint.from_json({"description": "d"}).signature_family == "builtin"
+    assert DetectionPoint.from_json(
+        {"description": "d", "signature_uuid": "u", "signature_version": "v"}).signature_family is None
+
+
+@pytest.mark.unit
+def test_equality_ignores_signature_family():
+    # the family is metadata, not part of what the detection is
+    a = DetectionPoint("d", signature_uuid="u", signature_family="yara")
+    b = DetectionPoint("d", signature_uuid="u")
+    assert a == b
 
 
 @pytest.mark.unit

@@ -47,6 +47,8 @@ pytest tests/test_external_integration_*  # run all integration tests
 
 Use `-n auto` unless there is a technical reason not to.
 
+Do NOT use `-p no:cacheprovider`. Some tests rely on the cache provider.
+
 Markers are strict (`pytest.ini`): `unit`, `integration`, `system`, `functional`, `subcutaneous`, `slow`. Tests marked `integration`/`system` trigger a full environment + database reset in `tests/conftest.py`; `unit` tests do not.
 
 Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.yaml` (`instance_type: UNITTEST`).

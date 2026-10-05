@@ -111,16 +111,25 @@ upsert keyed on `(alert_id, content_hash)`: a row whose detection disappears fro
 deleted, and one that reappears gets a new `id`. So the verdict is keyed on `content_hash`, never
 on the row. [DP-1, FR-16]
 
-**Detection identity** (prerequisite, before the first verdict is written). Today
-`content_hash = sha256(signature_uuid, description, details)`, which ignores the node the detection
-sits on. Detections whose description doesn't name their object therefore collapse into one row,
-and would share one verdict. The node's identity is folded into the hash and stored as a column:
-- observable nodes: `('observable', type, sha256(value))`;
+**Detection identity** (prerequisite, before the first verdict is written). Before phase 1,
+`content_hash = sha256(signature_uuid, description, details)` ignored the node the detection sat
+on. Detections whose description doesn't name their object collapsed into one row, and would have
+shared one verdict. The node's identity is folded into the hash (`saq/analysis/detection_identity.py`)
+and stored in the `node_kind`, `node_type`, `node_value_sha256` and `node_module_path` columns:
+- observable nodes: `('observable', type, value hash)`;
 - the root: `('root')`;
-- analysis nodes: `('analysis', module path, parent observable type + value hash)`.
+- analysis nodes: `('analysis', module path, parent observable type, parent value hash)`.
 
-The formula is pinned by a unit test and never changes afterwards, because a changed formula
-orphans every override. [DP-7]
+The value hash is the observable's key in the `observables` table: `sha256(value)` for every type
+except `file`, whose value already is the content sha256 and is used as it is. So
+`(node_type, node_value_sha256)` joins to `observables(type, sha256)`, and a file detection's node
+is its sample's sha256. Analysis nodes use `Analysis.module_path` (an `Analysis` doesn't carry its
+config module name); in core only the clicker detection puts detections on them.
+
+The formula is pinned by a unit test (`tests/saq/analysis/test_detection_identity.py`) and never
+changes afterwards, because a changed formula orphans every override. Rows synced under the earlier
+formula carry NULL node columns and are re-keyed on the alert's next sync, which is harmless while
+no verdict exists. [DP-7]
 
 **YARA detections sit on the file** that matched, not on the shared `yara_rule` observable. [D-20]
 - They carry structured `details`: `{"sha256", "rule", "namespace", "rule_uuid"}`.

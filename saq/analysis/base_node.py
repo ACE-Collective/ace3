@@ -106,12 +106,14 @@ class BaseNode():
         return len(self.detections) != 0
 
     def add_detection_point(self, description: str, details=None, queue=None,
-                            signature_uuid=None, signature_version=None) -> DetectionPoint:
+                            signature_uuid=None, signature_version=None,
+                            signature_family=None) -> DetectionPoint:
         """Adds the given detection point to this object."""
         assert isinstance(description, str)
         assert description
 
-        detection = DetectionPoint(description, details, queue, signature_uuid, signature_version)
+        detection = DetectionPoint(description, details, queue, signature_uuid, signature_version,
+                                   signature_family)
 
         if detection in self.detections:
             return detection

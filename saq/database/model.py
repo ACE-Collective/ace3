@@ -1410,8 +1410,21 @@ class DetectionPoint(Base):
     queue: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
     signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    # stable identity for idempotent upsert across repeated Alert.sync() calls;
-    # matches DetectionPoint.content_hash in the analysis layer.
+    # the kind of signature (saq.signatures.model.SignatureType: yara, hunt,
+    # observable_modifier, builtin); NULL when the producer did not say
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # the node the detection sits on (saq.analysis.detection_identity.NodeIdentity):
+    # node_kind is root, observable or analysis; node_type and node_value_sha256 are the
+    # observable's type and its `observables.sha256` key in hex (for an analysis node, those
+    # of the observable it analyzed); node_module_path is set for analysis nodes only. All
+    # NULL on rows synced before the node became part of the identity.
+    node_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    node_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    node_value_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    node_module_path: Mapped[Optional[str]] = mapped_column(
+        String(512, collation='utf8mb4_bin'), nullable=True)
+    # the detection's identity (saq.analysis.detection_identity.detection_content_hash): the
+    # key of idempotent upserts across repeated Alert.sync() calls and of analyst verdicts
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     insert_date: Mapped[datetime] = mapped_column(
         TIMESTAMP,

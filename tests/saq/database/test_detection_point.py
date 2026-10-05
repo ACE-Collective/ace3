@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from datetime import datetime
@@ -6,6 +7,12 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.analysis import Analysis
+from saq.analysis.detection_identity import (
+    NODE_KIND_OBSERVABLE,
+    NODE_KIND_ROOT,
+    NodeIdentity,
+    detection_content_hash,
+)
 from saq.analysis.detection_point import DetectionPoint
 from saq.constants import F_FQDN, F_URL
 from saq.database import db_DetectionPoint
@@ -20,6 +27,11 @@ from tests.saq.test_database import capture_dml
 class ProviderAnalysis(Analysis):
     """stand-in for a clicker-style provider analysis whose detections we later delete."""
     pass
+
+
+ROOT = NodeIdentity(kind=NODE_KIND_ROOT)
+EVIL_FQDN = NodeIdentity(kind=NODE_KIND_OBSERVABLE, type=F_FQDN,
+                         value_sha256=hashlib.sha256(b"evil.example.com").hexdigest())
 
 
 def _rows_for(alert_id):
@@ -135,7 +147,8 @@ def _alert_with_detections():
         details={"rule": "r"},
         queue="experimental",
         signature_uuid=YARA_SIGNATURE_UUID,
-        signature_version=YARA_SIGNATURE_VERSION)
+        signature_version=YARA_SIGNATURE_VERSION,
+        signature_family="yara")
 
     root.save()
     ALERT(root)  # creates the alert and syncs (build_index=True by default)
@@ -154,19 +167,29 @@ def test_sync_writes_detection_points():
     yara_dp = DetectionPoint(
         "yara hit", details={"rule": "r"},
         signature_uuid=YARA_SIGNATURE_UUID, signature_version=YARA_SIGNATURE_VERSION)
-    yara_row = by_hash[yara_dp.content_hash]
+    yara_row = by_hash[detection_content_hash(EVIL_FQDN, yara_dp)]
     assert yara_row.description == "yara hit"
     assert yara_row.queue == "experimental"
     assert yara_row.signature_uuid == YARA_SIGNATURE_UUID
     assert yara_row.signature_version == YARA_SIGNATURE_VERSION
+    assert yara_row.signature_family == "yara"
     assert json.loads(yara_row.details) == {"rule": "r"}
+    # the node the detection sits on
+    assert yara_row.node_kind == NODE_KIND_OBSERVABLE
+    assert yara_row.node_type == F_FQDN
+    assert yara_row.node_value_sha256 == EVIL_FQDN.value_sha256
+    assert yara_row.node_module_path is None
 
     builtin_dp = DetectionPoint("real detection")
-    builtin_row = by_hash[builtin_dp.content_hash]
+    builtin_row = by_hash[detection_content_hash(ROOT, builtin_dp)]
     assert builtin_row.description == "real detection"
     assert builtin_row.signature_uuid == BUILTIN_SIGNATURE_UUID
     assert builtin_row.signature_version == get_builtin_signature_version()
+    assert builtin_row.signature_family == "builtin"
     assert builtin_row.details is None
+    assert builtin_row.node_kind == NODE_KIND_ROOT
+    assert builtin_row.node_type is None
+    assert builtin_row.node_value_sha256 is None
 
 
 @pytest.mark.integration
@@ -197,10 +220,10 @@ def test_sync_writes_nothing_when_detections_unchanged():
 
 @pytest.mark.integration
 def test_sync_detection_point_queue_change_updates_row():
-    # content_hash folds in signature_uuid, description and details -- but NOT queue or
-    # signature_version. Those are the only columns that can drift under a stable hash,
-    # so they are the one case the "compare only queue + signature_version" read could
-    # get wrong.
+    # content_hash folds in the node, signature_uuid, description and details -- but NOT
+    # queue, signature_version or signature_family. Those are the only columns that can
+    # drift under a stable hash, so they are the one case the "compare only the metadata"
+    # read could get wrong.
     alert = _alert_with_detections()
 
     yara_dp = next(dp for dp in alert.root_analysis.all_detection_points
@@ -215,7 +238,7 @@ def test_sync_detection_point_queue_change_updates_row():
 
     get_db().expire_all()
     rows = {r.content_hash: r for r in _rows_for(alert.id)}
-    assert rows[yara_dp.content_hash].queue == "internal"
+    assert rows[detection_content_hash(EVIL_FQDN, yara_dp)].queue == "internal"
     # updated in place -- the row was not deleted and re-created
     assert {h: r.id for h, r in rows.items()} == before
 
@@ -361,7 +384,7 @@ def test_sync_reconciles_deleted_analysis_detection_points():
     # the provider's detection is gone; the root-level detection survives
     rows = _rows_for(alert.id)
     assert len(rows) == 1
-    assert rows[0].content_hash == DetectionPoint("real detection").content_hash
+    assert rows[0].content_hash == detection_content_hash(ROOT, DetectionPoint("real detection"))
 
     get_db().expire_all()
     assert get_db().query(Alert).filter(Alert.id == alert.id).one().detection_count == 1
@@ -389,3 +412,64 @@ def test_sync_reconciles_to_zero_when_all_detections_removed():
     alert.sync()
 
     assert _rows_for(alert.id) == []
+
+
+@pytest.mark.integration
+def test_sync_detection_point_family_change_updates_row():
+    alert = _alert_with_detections()
+
+    yara_dp = next(dp for dp in alert.root_analysis.all_detection_points
+                   if dp.queue == "experimental")
+    before = {r.content_hash: r.id for r in _rows_for(alert.id)}
+
+    yara_dp.signature_family = "observable_modifier"
+    result = alert.rebuild_index()
+
+    assert result.detection_points_written == 1
+    get_db().expire_all()
+    rows = {r.content_hash: r for r in _rows_for(alert.id)}
+    assert rows[detection_content_hash(EVIL_FQDN, yara_dp)].signature_family == "observable_modifier"
+    assert {h: r.id for h, r in rows.items()} == before
+
+
+@pytest.mark.integration
+def test_sync_rekeys_rows_written_under_the_old_formula():
+    # a row synced before the node was part of the identity has a hash the tree no longer
+    # produces and no node columns: the next sync replaces it with the current row
+    alert = _alert_with_detections()
+    get_db().query(db_DetectionPoint).filter(db_DetectionPoint.alert_id == alert.id).delete()
+    get_db().add(_make_row(alert.id, content_hash="0" * 64, description="real detection",
+                           details=None, queue=None, signature_uuid=BUILTIN_SIGNATURE_UUID))
+    get_db().commit()
+
+    result = alert.rebuild_index()
+
+    assert result.detection_points_removed == 1
+    assert result.detection_points_written == 2
+    get_db().expire_all()
+    rows = _rows_for(alert.id)
+    assert {r.content_hash for r in rows} == {
+        detection_content_hash(ROOT, DetectionPoint("real detection")),
+        detection_content_hash(EVIL_FQDN, DetectionPoint(
+            "yara hit", details={"rule": "r"}, signature_uuid=YARA_SIGNATURE_UUID)),
+    }
+    assert all(r.node_kind is not None for r in rows)
+
+
+@pytest.mark.integration
+def test_sync_writes_analysis_node_identity():
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    obs = root.add_observable_by_spec(F_FQDN, "evil.example.com")
+    analysis = obs.add_analysis(ProviderAnalysis())
+    analysis.add_detection_point("provider says so")
+    root.save()
+    ALERT(root)
+    alert = load_alert(root.uuid)
+
+    rows = _rows_for(alert.id)
+    assert len(rows) == 1
+    assert rows[0].node_kind == "analysis"
+    assert rows[0].node_module_path == "tests.saq.database.test_detection_point:ProviderAnalysis"
+    assert rows[0].node_type == F_FQDN
+    assert rows[0].node_value_sha256 == EVIL_FQDN.value_sha256

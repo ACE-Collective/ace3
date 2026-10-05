@@ -449,10 +449,12 @@ class ActionTracker:
     def add_tag(self, t):
         self.tags.append(t)
 
-    def add_detection_point(self, desc, signature_uuid=None, signature_version=None):
+    def add_detection_point(self, desc, signature_uuid=None, signature_version=None, signature_family=None):
         self.detection_points.append(desc)
         self.detection_signatures = getattr(self, "detection_signatures", [])
         self.detection_signatures.append((signature_uuid, signature_version))
+        self.detection_families = getattr(self, "detection_families", [])
+        self.detection_families.append(signature_family)
 
 
 @pytest.mark.unit
@@ -498,6 +500,16 @@ def test_actions_add_detection_points():
     applied = actions.apply(tracker)
     assert tracker.detection_points == ["suspicious file detected", "known malware pattern"]
     assert applied["add_detection_points"] == ["suspicious file detected", "known malware pattern"]
+    # without a rule uuid the detection is not attributed to a rule, so it names no family
+    assert tracker.detection_families == [None, None]
+
+
+@pytest.mark.unit
+def test_actions_add_detection_points_name_the_observable_modifier_family():
+    actions = RuleActions(add_detection_points=["suspicious file detected"])
+    tracker = ActionTracker()
+    actions.apply(tracker, signature_uuid="22222222-2222-2222-2222-222222222222", signature_version="abc")
+    assert tracker.detection_families == ["observable_modifier"]
 
 
 @pytest.mark.unit

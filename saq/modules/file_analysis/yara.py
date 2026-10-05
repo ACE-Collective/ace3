@@ -22,6 +22,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
@@ -481,7 +482,11 @@ class YaraScanner_v3_4(AnalysisModule):
                     "{} matched yara rule {}".format(_file, yara_result['rule']),
                     queue=_rule_queue(yara_result),
                     signature_uuid=detection_signature_uuid,
-                    signature_version=detection_signature_version)
+                    signature_version=detection_signature_version,
+                    # a rule with no uuid meta is attributed to a built-in signature, and the
+                    # detection takes the built-in family from that uuid
+                    signature_family=SignatureType.YARA.value
+                        if detection_signature_uuid != YARA_RULE_MATCH.uuid else None)
 
             # yara rules can get generated automatically from SIP data using the ace export-sip-yara-rules output_dir command
             # so if the name of the rule starts with SIP_ then we also want to add indicators as observables
