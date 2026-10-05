@@ -34,6 +34,10 @@ f = [!] <slug> : <value> [, <value> ...]
 | `disposition` | Disposition | | `reviewed` | Reviewed |
 | `disposition_by` | Disposition By | | `tag` | Tag |
 | `disposition_date` | Disposition Date | | `detection_point` | Detection Point |
+| `unconfirmed_detections` | Unconfirmed Detections | | | |
+
+`unconfirmed_detections:True` finds alerts with a detection whose verdict nobody has confirmed: an
+inherited TP on a TP alert where several signatures fired (`docs/SVS.md`, Part 1); `False` the rest.
 
 ### Escaping
 

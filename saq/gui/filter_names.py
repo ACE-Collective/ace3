@@ -19,6 +19,7 @@ FILTER_NAMES = frozenset([
     'Queue',
     'Reviewed',
     'Tag',
+    'Unconfirmed Detections',
 ])
 
 # The filter names whose values are time windows, parsed by DateRangeFilter. Broken out so
@@ -51,6 +52,7 @@ FILTER_SLUGS = {
     'Queue': 'queue',
     'Reviewed': 'reviewed',
     'Tag': 'tag',
+    'Unconfirmed Detections': 'unconfirmed_detections',
 }
 
 FILTER_NAMES_BY_SLUG = {slug: name for name, slug in FILTER_SLUGS.items()}

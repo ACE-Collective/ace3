@@ -158,10 +158,15 @@ no verdict exists. [DP-7]
   any time. On an FP alert the chip reads *"FP (from alert). If the alert was wrong, correct its
   disposition"* and offers no TP option. [DP-3] On a `SIMULATED` alert the chips are read-only:
   the run review owns those verdicts (Part 3), so an analyst override and a run re-review never
-  fight over the same row. [FR-15]
+  fight over the same row. [FR-15] The chips sit next to each detection in the analysis tree and
+  in the Detection Chains card, which also lists the detections on the alert itself (hunts,
+  alertable tags), since those have no place in the tree. A chip offers *mark as noise (FP)*,
+  *confirm as TP* and *inherit from the alert*; it reads and writes through
+  `/api/v2/alerts/{uuid}/detection-points` (`app/static/js/detection_verdicts.js`).
 - **Manage page.** A filter for *has unconfirmed detections*, i.e. detections whose verdict source
   is `inherited_multi`. (Under D-6 nearly every detection on a classified alert has a verdict, so
-  "unlabeled" would be an empty filter.) [FR-15]
+  "unlabeled" would be an empty filter.) [FR-15] It is *Unconfirmed Detections*, slug
+  `unconfirmed_detections`, and the same filter works in `GET /api/v2/alerts`.
 
 ## Part 2 — YARA static regression
 

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Union
 
 from saq.analysis.analysis import Analysis
+from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -19,6 +20,8 @@ class DetectionChain:
     detection: DetectionPoint
     owner: Union[Observable, Analysis]
     steps: list[ChainStep] = field(default_factory=list)
+    # the detection's identity (saq.analysis.detection_identity), which its verdict is keyed on
+    content_hash: str = ""
 
 
 def _walk_to_root(observable: Observable) -> list[ChainStep]:
@@ -77,9 +80,20 @@ def build_detection_chains(root_analysis: RootAnalysis) -> list[DetectionChain]:
                     continue
 
             steps = _walk_to_root(carrier)
-            chains.append(DetectionChain(detection=detection, owner=node, steps=steps))
+            chains.append(DetectionChain(
+                detection=detection, owner=node, steps=steps,
+                content_hash=detection_content_hash(node_identity(node), detection)))
 
     return chains
+
+
+def build_root_detections(root_analysis: RootAnalysis) -> list[DetectionChain]:
+    """The detections on the alert itself (hunts, alertable tags), which have no extraction chain:
+    build_detection_chains() leaves them out."""
+    identity = node_identity(root_analysis)
+    return [DetectionChain(detection=detection, owner=root_analysis,
+                           content_hash=detection_content_hash(identity, detection))
+            for detection in root_analysis.detections]
 
 
 def module_display_name(analysis: Analysis) -> str:
@@ -96,7 +110,9 @@ def module_display_name(analysis: Analysis) -> str:
 class MergedTreeNode:
     observable: Observable
     extracted_by: Optional[Analysis]
-    detections: list[DetectionPoint] = field(default_factory=list)
+    # the chains ending here, one per detection (detections on an analysis of this observable
+    # included); distinct by content hash, so the same description on two nodes stays two
+    detections: list[DetectionChain] = field(default_factory=list)
     children: dict[str, "MergedTreeNode"] = field(default_factory=dict)
 
 
@@ -119,8 +135,8 @@ def build_merged_detection_tree(chains: list[DetectionChain]) -> list[MergedTree
             container = node.children
 
         if node is not None:
-            if chain.detection not in node.detections:
-                node.detections.append(chain.detection)
+            if all(existing.content_hash != chain.content_hash for existing in node.detections):
+                node.detections.append(chain)
 
     return list(roots.values())
 

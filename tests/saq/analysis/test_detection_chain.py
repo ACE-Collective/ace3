@@ -1,9 +1,11 @@
 import pytest
 
 from saq.analysis.analysis import Analysis
+from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.detection_chain import (
     build_detection_chains,
     build_merged_detection_tree,
+    build_root_detections,
     module_display_name,
     observable_display_value,
 )
@@ -142,6 +144,44 @@ def test_detection_on_root_analysis_itself_is_skipped():
 
 
 @pytest.mark.unit
+def test_chains_carry_the_detection_content_hash():
+    root = RootAnalysis()
+    top = root.add_observable_by_spec(F_TEST, "top")
+    detection = top.add_detection_point("on top")
+
+    (chain,) = build_detection_chains(root)
+    assert chain.content_hash == detection_content_hash(node_identity(top), detection)
+
+
+@pytest.mark.unit
+def test_root_detections_are_listed_with_their_hash():
+    root = RootAnalysis()
+    root.add_observable_by_spec(F_TEST, "dummy")
+    detection = root.add_detection_point("hunt matched")
+
+    (chain,) = build_root_detections(root)
+    assert chain.detection is detection
+    assert chain.owner is root and chain.steps == []
+    assert chain.content_hash == detection_content_hash(node_identity(root), detection)
+
+
+@pytest.mark.unit
+def test_merged_tree_keeps_the_same_description_on_two_nodes_apart():
+    # a detection on the observable and one on its analysis share a carrier node but are two
+    # detections, with two verdicts
+    root = RootAnalysis()
+    top = root.add_observable_by_spec(F_TEST, "top")
+    analysis = EmailAnalysis()
+    top.add_analysis(analysis)
+    top.add_detection_point("same words")
+    analysis.add_detection_point("same words")
+
+    (node,) = build_merged_detection_tree(build_detection_chains(root))
+    assert len(node.detections) == 2
+    assert len({c.content_hash for c in node.detections}) == 2
+
+
+@pytest.mark.unit
 def test_merged_tree_shares_common_prefix():
     root = RootAnalysis()
     top = root.add_observable_by_spec(F_TEST, "top")
@@ -169,13 +209,13 @@ def test_merged_tree_shares_common_prefix():
     nested_node = list(root_node.children.values())[0]
     assert nested_node.observable is nested
     assert nested_node.extracted_by is email_a
-    assert any(d.description == "nested detection" for d in nested_node.detections)
+    assert any(c.detection.description == "nested detection" for c in nested_node.detections)
 
     assert len(nested_node.children) == 1
     html_node = list(nested_node.children.values())[0]
     assert html_node.observable is html
     assert html_node.extracted_by is email_b
-    assert any(d.description == "html detection" for d in html_node.detections)
+    assert any(c.detection.description == "html detection" for c in html_node.detections)
 
 
 @pytest.mark.unit

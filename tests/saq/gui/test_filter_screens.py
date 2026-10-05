@@ -95,3 +95,10 @@ def test_detection_points_values_are_normalized(name, values, expected):
 def test_detection_points_rejects_bad_entries(name, values):
     with pytest.raises(ValidationError):
         DETECTION_POINTS_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+def test_unconfirmed_detections_takes_true_or_false():
+    (entry,) = ALERTS_SCREEN.validate_entries([{"name": "Unconfirmed Detections", "values": ["True"]}])
+    assert entry.values == ["True"]
+    with pytest.raises(ValidationError):
+        ALERTS_SCREEN.validate_entries([{"name": "Unconfirmed Detections", "values": ["yes"]}])

@@ -28,7 +28,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from saq.configuration.config import get_config
-from saq.database.model import DetectionPoint
+from saq.database.model import DetectionPoint, DetectionPointVerdict
 from saq.detection_verdicts.constants import (
     SOURCE_EXPLICIT,
     SOURCE_INHERITED_MULTI,
@@ -132,3 +132,18 @@ def verdict_source_expr(alert, dp, verdict) -> ColumnElement:
         (is_tp, literal(SOURCE_INHERITED_SINGLE)),
         else_=None)
 
+
+
+def has_unconfirmed_detections(alert) -> ColumnElement[bool]:
+    """True for an alert with at least one unconfirmed detection (source inherited_multi): the
+    manage page's *Unconfirmed Detections* filter. Correlated to `alert`, the entity (or alias)
+    the outer query selects."""
+    dp = aliased(DetectionPoint)
+    verdict = aliased(DetectionPointVerdict)
+    return exists(
+        select(literal(1))
+        .select_from(dp)
+        .outerjoin(verdict, verdict_join_condition(dp, verdict))
+        .where(dp.alert_id == alert.id)
+        .where(verdict_source_expr(alert, dp, verdict) == SOURCE_INHERITED_MULTI)
+    ).correlate(alert)

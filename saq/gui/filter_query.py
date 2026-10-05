@@ -47,7 +47,9 @@ from saq.database.util.observable_detection import (
     InvalidDetectionValue,
     resolve_observable_identity,
 )
+from saq.detection_verdicts.effective import has_unconfirmed_detections
 from saq.disposition import get_dispositions
+from saq.gui.filter_entry import UNCONFIRMED_DETECTIONS_OPTIONS
 from saq.gui.detection_point_value import parse_detection_point_value
 from saq.observables.type_hierarchy import get_all_valid_types
 from saq.util.relative_time import parse_date_range
@@ -341,6 +343,20 @@ class BoolFilter(SelectFilter):
             return query.filter(or_(*conditions))
 
 
+# alerts with detections nobody has confirmed: an inherited TP on an alert where several
+# signatures fired (docs/SVS.md, Part 1). The backlog of whoever curates the labels.
+class UnconfirmedDetectionsFilter(SelectFilter):
+    def __init__(self, inverted=False, entity=None):
+        super().__init__(None, options=list(UNCONFIRMED_DETECTIONS_OPTIONS), inverted=inverted, entity=entity)
+
+    def apply(self, query, values):
+        condition = has_unconfirmed_detections(self.entity)
+        conditions = [condition if value == "True" else not_(condition) for value in values]
+        if self.inverted:
+            return query.filter(not_(or_(*conditions)))
+        return query.filter(or_(*conditions))
+
+
 def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=None):
     """Builds the filter that applies `filter_name` to a query.
 
@@ -368,6 +384,7 @@ def create_filter(filter_name: str, inverted: bool = False, *, tz=None, entity=N
         'Queue': lambda: SelectFilter(entity.queue, inverted=inverted),
         'Reviewed': lambda: MultiSelectFilter(entity.disposition_review, nullable=False, options=list(VALID_DISPOSITION_REVIEWS), inverted=inverted),
         'Tag': lambda: AutoTextFilter(Tag.name, case_sensitive=False, wildcardable=True, inverted=inverted, entity=entity),
+        'Unconfirmed Detections': lambda: UnconfirmedDetectionsFilter(inverted=inverted, entity=entity),
     }[filter_name]()
 
 

@@ -30,7 +30,7 @@ from saq.gui.filter_query import (
     filter_alert_uuids,
     get_analysis_type_labels,
 )
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
 
@@ -374,3 +374,14 @@ class TestAliasedEntity:
     def test_analysis(self, analyzed):
         qr, qr_and_urls, _, _ = analyzed
         assert self._aliased_uuids(_analysis_filter(QR_CODE_ANALYSIS)) == {qr.uuid, qr_and_urls.uuid}
+
+    def test_unconfirmed_detections(self):
+        detections = [{"description": "a", "signature_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+                      {"description": "b", "signature_uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}]
+        unconfirmed = insert_alert_with_detections(detections, disposition="DELIVERY")
+        single = insert_alert_with_detections(detections[:1], disposition="DELIVERY")
+
+        entry = {"name": "Unconfirmed Detections", "inverted": False, "values": ["True"]}
+        assert self._aliased_uuids([entry]) == {unconfirmed.uuid}
+        assert _uuids([entry]) == {unconfirmed.uuid}
+        assert single.uuid in self._aliased_uuids([dict(entry, values=["False"])])

@@ -4,13 +4,18 @@ from uuid import uuid4
 from flask import url_for
 import pytest
 
+from sqlalchemy import update
+
 from app.analysis.views.index import TreeNode, _prune, _recurse
 
+from saq.analysis.analysis import Analysis
+from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
 from saq.database.model import Alert
+from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.observables.testing import TestObservable
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -942,3 +947,52 @@ def test_pruned_view_hides_yara_results_without_a_detection(root_analysis):
 
     assert not _node_of(tree, _file).visible
     assert not _node_of(tree, analysis).visible
+
+
+class VerdictTestAnalysis(Analysis):
+    pass
+
+
+@pytest.mark.integration
+def test_alert_page_keys_every_detection_on_its_content_hash(web_client, root_analysis):
+    """Each detection in the tree and in the Detection Chains card carries the content hash its
+    verdict is keyed on -- on an observable, on an analysis and on the alert itself, which has no
+    place in the tree -- and a TP alert with several signatures offers the verdict step."""
+    observable = root_analysis.add_observable_by_spec(F_TEST, "detected")
+    analysis = observable.add_analysis(VerdictTestAnalysis())
+    on_observable = observable.add_detection_point("on the observable", signature_uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    on_analysis = analysis.add_detection_point("on the analysis", signature_uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    on_root = root_analysis.add_detection_point("on the alert")
+    root_analysis.save()
+    ALERT(root_analysis)
+    get_db().execute(update(Alert).where(Alert.uuid == root_analysis.uuid).values(disposition="DELIVERY"))
+    get_db().commit()
+
+    with web_client.session_transaction() as sess:
+        sess['prune'] = False
+        sess['prune_volatile'] = False
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    body = result.data.decode()
+
+    for node, detection in ((observable, on_observable), (analysis, on_analysis), (root_analysis, on_root)):
+        content_hash = detection_content_hash(node_identity(node), detection)
+        assert f'class="detection-verdict" data-content-hash="{content_hash}"' in body
+    # the alert's own detection is in the Detection Chains card
+    assert f'href="#detection_{detection_content_hash(node_identity(root_analysis), on_root)}"' in body
+
+    assert 'id="detection_verdicts_section"' in body
+    assert "3 signatures inherit TP" in body
+    assert 'var current_alert_disposition_class = "tp";' in body
+
+
+@pytest.mark.integration
+def test_alert_page_has_no_verdict_step_for_one_signature(web_client, root_analysis):
+    root_analysis.add_observable_by_spec(F_TEST, "one").add_detection_point("same rule", signature_uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    root_analysis.add_observable_by_spec(F_TEST, "two").add_detection_point("same rule", signature_uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    assert 'id="detection_verdicts_section"' not in result.data.decode()

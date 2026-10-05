@@ -340,3 +340,10 @@ def test_another_screen_uses_its_own_slugs_and_pair_filters():
         encode_filter_query([{"name": "Queue", "inverted": False, "values": ["default"]}], screen=screen)
     with pytest.raises(FilterQueryError):
         decode_filter_query(["color:red"], strict=True)
+
+
+@pytest.mark.unit
+def test_unconfirmed_detections_slug():
+    filters = [{"name": "Unconfirmed Detections", "inverted": False, "values": ["True"]}]
+    assert encode_filter_query(filters) == ["unconfirmed_detections:True"]
+    assert _roundtrip(filters) == filters

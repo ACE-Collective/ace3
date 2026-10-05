@@ -15,7 +15,8 @@ from saq.database.model import Alert, AuthUserPermission, Company, DetectionPoin
 from saq.database.pool import get_db
 from saq.database.util.alert import touch_alerts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import insert_alert
+from saq.detection_verdicts.store import confirm_alert
+from tests.saq.helpers import insert_alert, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
 
@@ -183,6 +184,30 @@ class TestFilters:
 
         rows = (await client.get("/alerts/", params={"f": "!queue:external"})).json()["data"]
         assert [row["uuid"] for row in rows] == [default.uuid]
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_detections(self, client: AsyncClient):
+        """An alert with an unconfirmed detection: an inherited TP on an alert where several
+        signatures fired (docs/SVS.md, Part 1). Confirming it, a single signature, an FP alert
+        and an unclassified one take an alert out."""
+        detections = [{"description": "a", "signature_uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+                      {"description": "b", "signature_uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}]
+        unconfirmed = insert_alert_with_detections(detections, disposition="DELIVERY")
+        confirmed = insert_alert_with_detections(detections, disposition="DELIVERY")
+        insert_alert_with_detections(detections[:1], disposition="DELIVERY")
+        insert_alert_with_detections(detections, disposition="FALSE_POSITIVE")
+        insert_alert_with_detections(detections)
+        user_id = get_db().query(User.id).filter(User.username == "unittest").scalar()
+        confirm_alert(confirmed.id, user_id)
+
+        rows = (await client.get("/alerts/", params={"f": "unconfirmed_detections:True"})).json()["data"]
+        assert [row["uuid"] for row in rows] == [unconfirmed.uuid]
+
+        rows = (await client.get("/alerts/", params={"f": "!unconfirmed_detections:True"})).json()["data"]
+        assert unconfirmed.uuid not in [row["uuid"] for row in rows] and len(rows) == 4
+
+        response = await client.get("/alerts/", params={"f": "unconfirmed_detections:maybe"})
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_filters_are_anded(self, client: AsyncClient):
