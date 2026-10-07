@@ -69,6 +69,14 @@ async def execute_query(
         except ValidationError as e:
             reject(f"invalid extras: {e.errors(include_url=False)}")
 
+    if backend.windowed and (body.start_time is None or body.end_time is None):
+        reject(f"backend {backend.name} requires start_time and end_time")
+
+    if not backend.windowed and (body.start_time is not None or body.end_time is not None):
+        # refused rather than ignored: an ignored window would read as a bounded search
+        reject(f"backend {backend.name} has no time window; remove start_time and end_time and put "
+               "any time filter in the query itself")
+
     if body.timeout_seconds is not None and body.timeout_seconds > limits.max_query_timeout:
         reject(f"timeout_seconds exceeds the maximum of {limits.max_query_timeout}")
 
@@ -76,8 +84,8 @@ async def execute_query(
 
     ai_request = AIQueryRequest(
         query=body.query,
-        start_time=body.start_time.astimezone(timezone.utc),
-        end_time=body.end_time.astimezone(timezone.utc),
+        start_time=body.start_time.astimezone(timezone.utc) if body.start_time is not None else None,
+        end_time=body.end_time.astimezone(timezone.utc) if body.end_time is not None else None,
         limit=body.limit,
         timeout_seconds=effective_timeout,
         extras=body.extras,

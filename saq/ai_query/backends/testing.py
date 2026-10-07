@@ -1,8 +1,8 @@
 """A canned-response backend for engine-free AI API tests.
 
-Registered in etc/saq.unittest.default.yaml as ai_query_backend_fake so the aceapi_ai app can be
-built and exercised without any vendor client. The extras knobs drive the failure modes the
-endpoint contract must surface.
+Registered in etc/saq.unittest.default.yaml as ai_query_backend_fake (and, not windowed, as
+ai_query_backend_fake_unwindowed) so the aceapi_ai app can be built and exercised without any
+vendor client. The extras knobs drive the failure modes the endpoint contract must surface.
 """
 
 import time
@@ -52,7 +52,7 @@ class FakeAIQueryBackend(AIQueryBackend):
         if not request.query.strip():
             raise AIQueryRejected("query must not be empty")
 
-        if request.start_time >= request.end_time:
+        if self.windowed and request.start_time >= request.end_time:
             raise AIQueryRejected("start_time must be before end_time")
 
         extras = FakeQueryExtras.model_validate(request.extras)
@@ -87,3 +87,7 @@ class FakeAIQueryBackend(AIQueryBackend):
             duration_ms=int(extras.sleep_seconds * 1000),
             meta={"fake": True},
         )
+
+
+class FakeUnwindowedAIQueryBackend(FakeAIQueryBackend):
+    windowed = False

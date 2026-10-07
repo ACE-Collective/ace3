@@ -841,6 +841,13 @@ ai_query_backend_fake:
   python_module: saq.ai_query.backends.testing
   python_class: FakeAIQueryBackend
 
+# the same canned backend without a time window, for the not-windowed request contract
+ai_query_backend_fake_unwindowed:
+  name: fake_unwindowed
+  enabled: true
+  python_module: saq.ai_query.backends.testing
+  python_class: FakeUnwindowedAIQueryBackend
+
 # the core splunk backend against the test splunk config; execute() is always mocked in tests
 ai_query_backend_splunk:
   name: splunk
