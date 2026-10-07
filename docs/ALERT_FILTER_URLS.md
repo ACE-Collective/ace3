@@ -139,7 +139,8 @@ one response, with the same parameters and order and no paging: one `AlertRow` p
 header line and one row per alert.
 
 `GET /api/v2/detection-points` lists detections with their verdicts in the same encoding, with the
-slugs of its own screen (`signature`, `verdict`, `source`, …); see `docs/SVS_API.md`.
+slugs of its own screen (`signature`, `verdict`, `source`, …), and `GET /api/v2/svs/samples` lists
+the SVS YARA samples with theirs (`label`, `sha256`, `missing_data`, …); see `docs/SVS_API.md`.
 
 ## The same slugs in the search box
 

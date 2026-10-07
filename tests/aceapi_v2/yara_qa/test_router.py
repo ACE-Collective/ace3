@@ -15,7 +15,6 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aceapi_v2.yara_qa.service import safe_file_name
 from saq.cas import get_cas
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
@@ -383,19 +382,3 @@ async def test_expired_object_is_reported_as_gone(client: AsyncClient, session: 
     get_cas().pool("yara_qa").purge(row.sha256, reason="unittest", actor="unittest")
     response = await client.get(f"/signatures/yara-qa/matches/{row.id}/download")
     assert response.status_code == 404
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("file_name, expected", [
-    ("invoice.doc", "invoice.doc"),
-    ("../../etc/passwd", "passwd"),
-    ("dir/sub/..hidden", "hidden"),
-    ("with spaces & $(stuff).exe", "with_spaces_stuff_.exe"),
-    ("", "file"),
-    ("...", "file"),
-    ("match.json", "file_match.json"),
-    ("manifest.json", "file_manifest.json"),
-    ("x" * 300, "x" * 128),
-])
-def test_safe_file_name(file_name, expected):
-    assert safe_file_name(file_name) == expected

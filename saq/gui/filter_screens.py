@@ -16,8 +16,16 @@ from typing import Iterable, Mapping
 
 from pydantic import BaseModel
 
-from saq.gui.filter_entry import DetectionPointFilterEntry, FilterEntry, FilterEntryBase
-from saq.gui.filter_names import DETECTION_POINT_FILTER_SLUGS, FILTER_SLUGS
+from saq.detection_verdicts.constants import SOURCES
+from saq.gui.filter_entry import (
+    SAMPLE_BOOL_OPTIONS,
+    DetectionPointFilterEntry,
+    FilterEntry,
+    FilterEntryBase,
+    SampleFilterEntry,
+)
+from saq.gui.filter_names import DETECTION_POINT_FILTER_SLUGS, FILTER_SLUGS, SVS_SAMPLE_FILTER_SLUGS
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS
 
 
 class UnknownFilterScreen(LookupError):
@@ -92,9 +100,32 @@ DETECTION_POINTS_SCREEN = FilterScreen(
     slugs=DETECTION_POINT_FILTER_SLUGS,
 )
 
+# the YARA samples SVS captured, with their labels (GET /api/v2/svs/samples, docs/SVS_API.md);
+# part of the Signatures area, so it is read with signature:read
+SVS_SAMPLES_SCREEN = FilterScreen(
+    name="svs_samples",
+    entry_model=SampleFilterEntry,
+    slugs=SVS_SAMPLE_FILTER_SLUGS,
+    permission=("signature", "read"),
+    fields=(
+        FilterField("Signature", FilterFieldKind.TEXT),
+        FilterField("Rule", FilterFieldKind.TEXT),
+        FilterField("SHA256", FilterFieldKind.TEXT),
+        FilterField("Alert", FilterFieldKind.TEXT),
+        FilterField("File Name", FilterFieldKind.TEXT),
+        FilterField("Label", FilterFieldKind.MULTI, (*LABELS, LABEL_FILTER_NONE)),
+        FilterField("Label Source", FilterFieldKind.MULTI, SOURCES),
+        FilterField("Last Captured", FilterFieldKind.DATE_RANGE),
+        FilterField("Stored", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Missing Data", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Unknown Version", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
 FILTER_SCREENS: dict[str, FilterScreen] = {
     ALERTS_SCREEN.name: ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
+    SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
 }
 
 

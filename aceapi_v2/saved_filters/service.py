@@ -26,7 +26,7 @@ from aceapi_v2.saved_filters.schemas import (
     ScratchFilterWrite,
 )
 from saq.database.model import SavedFilter
-from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS, FilterScreen, get_filter_screen
+from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS, SVS_SAMPLES_SCREEN, FilterScreen, get_filter_screen
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,28 @@ DEFAULT_ALERT_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS samples screen: the two lists that need someone's attention
+DEFAULT_SVS_SAMPLE_SAVED_FILTERS = (
+    {
+        "name": "Conflicted",
+        "description": "Samples whose votes disagree; excluded from validation until relabeled",
+        "filters": [
+            {"name": "Label", "inverted": False, "values": ["conflicted"]},
+        ],
+    },
+    {
+        "name": "Missing data",
+        "description": "Samples with a capture that lacks its file or its match record",
+        "filters": [
+            {"name": "Missing Data", "inverted": False, "values": ["true"]},
+        ],
+    },
+)
+
 # screen name -> the saved filters a user starts with on that screen
 DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
+    SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
 }
 
 

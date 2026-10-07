@@ -10,10 +10,7 @@ redefines the pool with a shared backend (shared: true) never sees that.
 import json
 import logging
 import os
-import re
-import shutil
 import tempfile
-from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -21,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from aceapi_v2.common.archive import add_to_encrypted_zip
+from aceapi_v2.common.archive import MANIFEST_NAME, CASArchiveEntry, create_encrypted_cas_zip, safe_file_name
 from aceapi_v2.yara_qa.schemas import (
     QAMatch,
     QAMatchDetail,
@@ -36,17 +33,13 @@ from saq.cas.errors import ObjectNotFound
 from saq.configuration.config import get_config
 from saq.database.model import Alert, YaraQAMatch
 from saq.environment import get_global_runtime_settings, get_temp_dir
-from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH, YaraInventory
+from saq.signatures.model import SIGNATURE_UUID_PATTERN, YaraInventory
 from saq.yara_qa.listing import QASignature, QASort, QAStatus, filter_and_sort, merge, version_rows_statement
 
 logger = logging.getLogger(__name__)
 
-# rule uuids are uuids in practice, but the meta is free text; this is what the store accepts and
-# nothing that can reach a path or a query outside a bound parameter
-_SIGNATURE_UUID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0," + str(SIGNATURE_UUID_MAX_LENGTH - 1) + r"}$")
-_SAFE_FILE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
-_MAX_FILE_NAME_LENGTH = 128
-_RESERVED_ENTRY_NAMES = {"match.json", "manifest.json"}
+_MATCH_RECORD_NAME = "match.json"
+_RESERVED_ENTRY_NAMES = {_MATCH_RECORD_NAME, MANIFEST_NAME}
 
 
 def _load_inventory() -> YaraInventory:
@@ -58,7 +51,7 @@ def _load_inventory() -> YaraInventory:
 
 
 def validate_signature_uuid(signature_uuid: str) -> None:
-    if not _SIGNATURE_UUID_PATTERN.match(signature_uuid):
+    if not SIGNATURE_UUID_PATTERN.match(signature_uuid):
         raise HTTPException(status_code=400, detail="invalid signature uuid")
 
 
@@ -273,17 +266,6 @@ async def resolve_bulk_download(session: AsyncSession, signature_uuid: str, *, v
     return local, remote
 
 
-def safe_file_name(file_name: str) -> str:
-    """A name for the file inside the zip that cannot be anything but a plain file name: the stored
-    name came from the analyzed data."""
-    name = _SAFE_FILE_NAME.sub("_", os.path.basename(file_name or "")).lstrip(".")[:_MAX_FILE_NAME_LENGTH]
-    if not name:
-        return "file"
-    if name in _RESERVED_ENTRY_NAMES:
-        return f"file_{name}"
-    return name
-
-
 def _manifest_entry(row: YaraQAMatch) -> dict:
     return {
         "match_id": row.id, "signature_uuid": row.signature_uuid, "signature_version": row.signature_version,
@@ -302,48 +284,19 @@ def create_encrypted_zip(label: str, rows: list[YaraQAMatch], remote: list[YaraQ
     Layout, under one top-level directory named after label:
         manifest.json                       what is in the zip, and what was skipped and why
         <match id>-<sha256>/<file name>     the file, under a sanitized version of its name
-        <match id>-<sha256>/match.json      the full match record
+        <match id>-<sha256>/match.json      the full match record"""
+    entries = []
+    for row in rows:
+        entry_dir = f"{row.id}-{row.sha256}"
+        file_name = safe_file_name(row.file_name, reserved=_RESERVED_ENTRY_NAMES)
+        entries.append(CASArchiveEntry(
+            directory=entry_dir,
+            members=((file_name, row.sha256), (_MATCH_RECORD_NAME, row.match_digest)),
+            manifest=_manifest_entry(row),
+            included={**_manifest_entry(row), "path": f"{entry_dir}/{file_name}",
+                      "match_record": f"{entry_dir}/{_MATCH_RECORD_NAME}"}))
 
-    The plaintext copies are deleted as soon as the zip is written."""
-    pool = get_cas().pool(get_config().yara_qa.pool)
-    staging = tempfile.mkdtemp(prefix="yara-qa-", dir=get_temp_dir())
-    try:
-        top = os.path.join(staging, label)
-        os.mkdir(top)
-
-        included, skipped = [], [
-            {**_manifest_entry(row), "reason": "wrong_node"} for row in remote]
-        for row in rows:
-            entry_dir = f"{row.id}-{row.sha256}"
-            entry_path = os.path.join(top, entry_dir)
-            file_name = safe_file_name(row.file_name)
-            os.mkdir(entry_path)
-            try:
-                pool.materialize(row.sha256, os.path.join(entry_path, file_name))
-                pool.materialize(row.match_digest, os.path.join(entry_path, "match.json"))
-            except ObjectNotFound:
-                # expired and collected since the row was read
-                shutil.rmtree(entry_path, ignore_errors=True)
-                skipped.append({**_manifest_entry(row), "reason": "no_longer_stored"})
-                continue
-
-            included.append({**_manifest_entry(row), "path": f"{entry_dir}/{file_name}",
-                             "match_record": f"{entry_dir}/match.json"})
-
-        if not included:
-            raise HTTPException(status_code=404, detail="none of the requested files are stored any more")
-
-        with open(os.path.join(top, "manifest.json"), "w") as fp:
-            json.dump({
-                "generated_at": datetime.now().isoformat(), "generated_by": actor,
-                "generated_on": _local_node(), "password": "infected",
-                "matches": included, "skipped": skipped,
-            }, fp, indent=2)
-
-        zip_path = os.path.join(staging, f"{label}.zip")
-        add_to_encrypted_zip(zip_path, staging, label, f"yara qa {label}")
-        shutil.rmtree(top, ignore_errors=True)
-        return zip_path, staging
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+    return create_encrypted_cas_zip(
+        label, get_cas().pool(get_config().yara_qa.pool), entries,
+        [{**_manifest_entry(row), "reason": "wrong_node"} for row in remote],
+        manifest_key="matches", description=f"yara qa {label}", actor=actor, node=_local_node())

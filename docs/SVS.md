@@ -266,6 +266,12 @@ precedence is `explicit` > `inherited_single` > `inherited_multi`. Votes of equa
 disagree make the pair **conflicted**: shown in reports, and excluded from results until someone
 relabels it. The newest vote never silently wins. [YR-6, DP-2]
 
+The contributing detections of a sample are, on each alert it was captured from, the detections of
+its rule on a file node with its sha256; the strongest strength that has any vote decides, so
+disagreement at a weaker strength does not matter. The rule lives in `saq/svs/labels.py`, as SQL and
+as a Python twin the tests hold to agree, and the labels are read through `/api/v2/svs/samples`
+(`docs/SVS_API.md`, *Samples*).
+
 ### Validation
 
 **Trigger.** The signature repo's CI calls ACE. ACE never talks to the forge. [YR-3]

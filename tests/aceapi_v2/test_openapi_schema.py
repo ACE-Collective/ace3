@@ -22,6 +22,8 @@ V2_BINARY_ROUTES = {
     "/events/export": "text/csv",
     "/signatures/yara-qa/matches/{match_id}/download": "application/zip",
     "/signatures/yara-qa/{signature_uuid}/download": "application/zip",
+    "/svs/samples/download": "application/zip",
+    "/svs/samples/{sha256}/{rule_uuid}/download": "application/zip",
 }
 
 AI_BINARY_ROUTES = {
