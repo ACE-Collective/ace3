@@ -108,6 +108,45 @@ class TestQueryContract:
         assert response.status_code == 404
 
 
+class TestTimeWindow:
+    @pytest.mark.asyncio
+    async def test_windowed_backend_requires_window(self, client):
+        body = query_body()
+        del body["start_time"]
+        response = await client.post("/query/fake", json=body)
+        assert response.status_code == 400
+        assert "requires start_time and end_time" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_unwindowed_backend_runs_without_window(self, client):
+        response = await client.post("/query/fake_unwindowed", json={"query": "search something"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["row_count"] == 2
+        # nothing was bounded, so no window is echoed back
+        assert data["window_start"] is None
+        assert data["window_end"] is None
+
+    @pytest.mark.asyncio
+    async def test_unwindowed_backend_refuses_window(self, client):
+        # an ignored window would read as a bounded search, so it is refused
+        response = await client.post("/query/fake_unwindowed", json=query_body())
+        assert response.status_code == 400
+        assert "has no time window" in response.json()["detail"]
+
+        body = query_body()
+        del body["start_time"]
+        response = await client.post("/query/fake_unwindowed", json=body)
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_backends_describe_windowed(self, client):
+        response = await client.get("/backends")
+        by_name = {b["name"]: b for b in response.json()}
+        assert by_name["fake"]["describe"]["windowed"] is True
+        assert by_name["fake_unwindowed"]["describe"]["windowed"] is False
+
+
 class TestAudit:
     @pytest.mark.asyncio
     async def test_query_emits_audit_line(self, client, caplog):

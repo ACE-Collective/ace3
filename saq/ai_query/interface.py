@@ -13,7 +13,10 @@ The result contract encodes the behaviors an investigation endpoint must preserv
 * Error and empty are distinct: a request the backend refuses raises AIQueryRejected (HTTP 400),
   a backend failure raises AIBackendError (HTTP 5xx), and an empty result is a normal response
   with row_count 0.
-* The window actually covered is echoed back, because some backends bound it out-of-band.
+* The window actually covered is echoed back, because some backends bound it out-of-band. A
+  backend whose data has no time axis (current inventory or state) declares windowed = False: it
+  is never sent a window, a request carrying one is refused rather than silently ignored, and its
+  result echoes none.
 * Rows carry the raw backend field names untouched -- client-side tooling keys on them.
 """
 
@@ -30,8 +33,8 @@ from saq.configuration.schema import AIQueryBackendConfig
 @dataclass
 class AIQueryRequest:
     query: str
-    start_time: datetime  # timezone-aware, UTC
-    end_time: datetime    # timezone-aware, UTC
+    start_time: datetime | None = None  # timezone-aware, UTC; None exactly when the backend is not windowed
+    end_time: datetime | None = None    # timezone-aware, UTC; None exactly when the backend is not windowed
     limit: int | None = None            # None -> backend default_limit
     timeout_seconds: int | None = None  # None -> backend default_query_timeout
     extras: dict[str, Any] = field(default_factory=dict)
@@ -43,8 +46,8 @@ class AIQueryResult:
     row_count: int
     truncated: bool
     truncation_reason: str | None  # "limit" | "backend_cap" | None
-    window_start: datetime            # the window the backend actually covered
-    window_end: datetime
+    window_start: datetime | None     # the window the backend actually covered; None when not windowed
+    window_end: datetime | None
     duration_ms: int
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -74,6 +77,10 @@ class AIQueryBackend(ABC):
     execute() called concurrently, so per-request state (e.g. a SplunkClient) belongs inside
     execute(), not on self.
     """
+
+    # False for a backend whose data has no time axis; the API then refuses a request carrying a
+    # window instead of ignoring it, so a reader never mistakes current state for a bounded search
+    windowed: bool = True
 
     def __init__(self, config: AIQueryBackendConfig):
         self.config = config
@@ -126,6 +133,7 @@ class AIQueryBackend(ABC):
         extras_class = self.get_extras_class()
         return {
             "name": self.name,
+            "windowed": self.windowed,
             "limits": self.config.limits.model_dump(),
             "extras_schema": extras_class.model_json_schema() if extras_class else None,
         }

@@ -6,17 +6,18 @@ from pydantic import BaseModel, Field, field_validator
 
 class AIQueryRequestBody(BaseModel):
     query: str
-    start_time: datetime
-    end_time: datetime
+    # required by a windowed backend and refused by one that is not (see GET /backends)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     limit: int | None = Field(default=None, ge=1)
     timeout_seconds: int | None = Field(default=None, ge=1)
     extras: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("start_time", "end_time")
     @classmethod
-    def require_timezone(cls, value: datetime) -> datetime:
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
         # naive datetimes silently shift the window by the reader's assumption; refuse them
-        if value.tzinfo is None:
+        if value is not None and value.tzinfo is None:
             raise ValueError("must be timezone-aware (use an explicit UTC offset, e.g. 2026-01-01T00:00:00Z)")
         return value
 
@@ -27,8 +28,8 @@ class AIQueryResponse(BaseModel):
     row_count: int
     truncated: bool
     truncation_reason: str | None
-    window_start: datetime
-    window_end: datetime
+    window_start: datetime | None
+    window_end: datetime | None
     duration_ms: int
     meta: dict[str, Any]
 
