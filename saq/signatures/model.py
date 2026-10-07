@@ -7,6 +7,7 @@ see saq/signatures/loaders/.
 """
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -16,6 +17,11 @@ from typing import Optional
 # the width of every signature uuid column (detection_points.signature_uuid, yara_qa_matches,
 # svs_yara_captures, ...): a uuid meta longer than this cannot be recorded against its rule
 SIGNATURE_UUID_MAX_LENGTH = 36
+
+# what an API accepts as a signature uuid in a path or a filter. Rule uuids are uuids in practice,
+# but the meta is free text; this is what the stores accept, and nothing that can reach a path or a
+# query outside a bound parameter
+SIGNATURE_UUID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0," + str(SIGNATURE_UUID_MAX_LENGTH - 1) + r"}$")
 
 
 class SignatureType(StrEnum):

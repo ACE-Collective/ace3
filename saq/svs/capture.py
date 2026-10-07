@@ -46,6 +46,8 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
 from saq.signatures.yara_inventory import get_yara_inventory
+from saq.svs.constants import CaptureState, MissingReason
+from saq.svs.samples import bytes_nodes_statement
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 
 # cas_holds.holder_kind of every capture hold; the holder_id is the svs_yara_captures row id, which
@@ -56,18 +58,6 @@ HOLDER_KIND = "svs_capture"
 _RULE_NAME_MAX_LENGTH = 256
 _NAMESPACE_MAX_LENGTH = 256
 _FILE_PATH_MAX_LENGTH = 1024
-
-
-class CaptureState(StrEnum):
-    PENDING = "pending"
-    STORED = "stored"
-    MISSING = "missing"
-
-
-class MissingReason(StrEnum):
-    FILE = "file"                  # the file was gone and the pool did not have it
-    MATCH_RECORD = "match_record"  # stored, but the match record was gone (the alert was archived)
-    STORAGE = "storage"            # the CAS refused the bytes
 
 
 class CaptureStatus(StrEnum):
@@ -215,12 +205,9 @@ def _bytes_node(sha256: str) -> str:
     backend, but a hold on an object another capture stored does not, so with a node-local pool a
     capture that only took a hold has its bytes wherever the first capture put them."""
     with private_transaction() as session:
-        node = session.execute(
-            select(SVSYaraCapture.node)
-            .where(SVSYaraCapture.sha256 == sha256, SVSYaraCapture.state == CaptureState.STORED)
-            .order_by(SVSYaraCapture.id).limit(1)).scalar()
+        row = session.execute(bytes_nodes_statement([sha256]).limit(1)).first()
 
-    return node or get_global_runtime_settings().saq_node
+    return row.node if row is not None else get_global_runtime_settings().saq_node
 
 
 def _rule_content_hash(rule_uuid: str) -> Optional[str]:

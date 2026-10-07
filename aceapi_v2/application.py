@@ -20,6 +20,7 @@ from aceapi_v2.observables.router import router as observables_router
 from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
+from aceapi_v2.svs.samples.router import router as svs_samples_router
 from aceapi_v2.threat_types.router import router as threat_types_router
 from aceapi_v2.observable_comments.router import router as observable_comments_router
 from aceapi_v2.threats.router import router as threats_router
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(saved_filters_router, prefix="/saved-filters", tags=["saved-filters"])
     app.include_router(search_router, prefix="/search", tags=["search"])
     app.include_router(secrets_router, prefix="/secrets", tags=["secrets"])
+    app.include_router(svs_samples_router, prefix="/svs/samples", tags=["svs"])
     app.include_router(yara_qa_router, prefix="/signatures/yara-qa", tags=["signatures"])
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])

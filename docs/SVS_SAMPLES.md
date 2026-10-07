@@ -7,8 +7,8 @@ A sample's grade, its **label**, is not stored with it. It is derived from the v
 alert's detections whenever it is read, so a later disposition change or verdict override relabels
 the sample without touching its bytes.
 
-This document covers how samples are captured and stored. The design and its reasoning are in
-`docs/SVS.md`.
+This document covers how samples are captured, stored, labeled and read. The design and its
+reasoning are in `docs/SVS.md`; the API's data dictionary is in `docs/SVS_API.md`, *Samples*.
 
 ## What is captured, and when
 
@@ -106,6 +106,41 @@ A signature version of `unknown` means the rule's repository is not listed in
 `service_yara.git_repo_dirs`. The capture is still kept, but which version of the rule it was
 graded under is lost. A site that wants SVS to work lists its signature repositories there.
 
+## Labels
+
+A sample is one (file sha256, rule uuid) pair, over every alert it was captured from. Its label is
+derived when it is read (`saq/svs/labels.py`), from the verdicts (`docs/SVS.md`, Part 1) of its
+**contributing detections**: on each of those alerts, the detections of its rule on a file with its
+sha256. Each detection with a verdict votes, with the strength of its verdict source, and the
+strongest strength present decides: `explicit` beats `inherited_single`, which beats
+`inherited_multi`. Votes of that strength that disagree make the sample **conflicted**.
+
+| Contributing detections | Label |
+|---|---|
+| On an alert dispositioned `FALSE_POSITIVE` | `fp` (`inherited_single`) |
+| On a TP alert where only this rule fired | `tp` (`inherited_single`) |
+| On a TP alert where several signatures fired | `tp` (`inherited_multi`), unless an analyst set or confirmed a verdict |
+| One FP alert and one unconfirmed multi-signature TP alert | `fp`: the FP alert is the stronger vote |
+| An FP alert and a single-signature TP alert | `conflicted` |
+| Only on alerts that are unclassified, deleted, or from an unreviewed test run | no label |
+
+So a disposition change or a verdict override relabels a sample at once, and nothing about the
+sample itself is written. The label is reported with its votes, so a reader can tell a sample ten
+analysts graded from one inherited once.
+
+## Reading samples
+
+Samples are read through `/api/v2/svs/samples` (`docs/SVS_API.md`, *Samples*). Reading samples, their labels and match records needs
+`signature:read`; the files need `signature:download` and come only in zips encrypted with the
+password `infected`, with their match records and a manifest. Every download is logged at INFO as
+an `AUDIT:` line naming the user and the files.
+
+The API filters with the `svs_samples` filter screen (label, label source, missing data, unknown
+version, …), whose saved filters are per user like the alert manage page's. Its defaults are
+*Conflicted* (samples someone has to relabel) and *Missing data* (captures that lost their file or
+match record). `GET /api/v2/svs/samples/missing`
+counts the missing captures per rule and reason.
+
 ## Nodes
 
 The default pool uses the `local` backend, so the bytes are only on the node that stored them, and
@@ -120,6 +155,11 @@ With a node-local pool, a node that captures bytes it still has writes them to i
 directory, even when another node stored the same bytes first. A node whose copy of the file is
 gone can only take a hold on the object another node stored; its capture then records that node
 as the one that has the bytes.
+
+That is also why a multi-node site must not keep the default pool: the API serves bytes only from
+the node that has them (409 `wrong_node` elsewhere), and it takes a capture's match record to be on
+the capture's `node`. In the one case above it is not: the capture whose file was gone wrote its
+match record on its own node, while its `node` names the node with the file.
 
 ## Configuration
 
@@ -136,7 +176,7 @@ cas:
 svs:
   samples:
     pool: svs_samples
-    max_bulk_download_files: 500           # sample downloads (the Samples API)
+    max_bulk_download_files: 500           # one bulk download (GET /api/v2/svs/samples/download)
     max_bulk_download_bytes: 1073741824
     inventory_refresh_seconds: 300         # how old a YARA rule inventory capture accepts
 

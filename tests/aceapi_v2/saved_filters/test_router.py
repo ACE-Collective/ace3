@@ -430,6 +430,20 @@ class TestSeeding:
         assert [f.quick_filter_order for f in seeded] == [0, 1]
 
     @pytest.mark.asyncio
+    async def test_each_screen_seeds_its_own_defaults(self, session: AsyncSession, test_user):
+        from aceapi_v2.saved_filters import service
+
+        await service.ensure_default_saved_filters(session, test_user.id, screen="svs_samples")
+        samples = await service.get_saved_filters_for_user(session, test_user.id, screen="svs_samples")
+        assert [(f.name, f.quick_filter_order) for f in samples] == [("Conflicted", 0), ("Missing data", 1)]
+        assert [e.model_dump() for e in samples[0].filters] == [
+            {"name": "Label", "inverted": False, "values": ["conflicted"]}]
+
+        # seeding one screen does not count as having been seeded on another
+        alerts = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
+        assert not [f for f in alerts if f.name in ("Conflicted", "Missing data")]
+
+    @pytest.mark.asyncio
     async def test_seeded_defaults_use_relative_tokens(self, session: AsyncSession, test_user):
         from aceapi_v2.saved_filters import service
 
@@ -727,7 +741,10 @@ class TestScreenPermissions:
         assert (await signature_reader.get(f"{BASE}/?screen=no_such_screen")).status_code == 404
 
     @pytest.mark.asyncio
-    async def test_a_user_of_no_screen_is_refused_even_an_unknown_row(self, signature_reader: AsyncClient):
-        """Without the signature screen registered, signature:read opens no screen at all."""
+    async def test_a_user_of_no_screen_is_refused_even_an_unknown_row(self, signature_reader: AsyncClient, monkeypatch):
+        """Without a screen gated by signature:read registered, signature:read opens no screen at all."""
+        for name, screen in list(FILTER_SCREENS.items()):
+            if screen.permission == ("signature", "read"):
+                monkeypatch.delitem(FILTER_SCREENS, name)
         assert (await signature_reader.get(f"{BASE}/no-such-uuid")).status_code == 403
         assert (await signature_reader.get(f"{BASE}/?screen=no_such_screen")).status_code == 403

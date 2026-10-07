@@ -1,6 +1,7 @@
 """One entry of a filter list: the {name, inverted, values} shape the GUI's filter editor
 produces, the database stores, and a share URL encodes."""
 
+import re
 from datetime import datetime
 from typing import Union
 
@@ -10,8 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from saq.analysis.module_path import IS_MODULE_PATH
 from saq.detection_verdicts.constants import SOURCES, VERDICTS
 from saq.gui.detection_point_value import normalize_detection_point_value
-from saq.gui.filter_names import DATE_RANGE_FILTER_NAMES, DETECTION_POINT_FILTER_SLUGS, FILTER_NAMES
-from saq.signatures.model import SignatureType
+from saq.gui.filter_names import (
+    DATE_RANGE_FILTER_NAMES,
+    DETECTION_POINT_FILTER_SLUGS,
+    FILTER_NAMES,
+    SVS_SAMPLE_FILTER_SLUGS,
+)
+from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS
+from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
 
 
@@ -130,6 +138,79 @@ class DetectionPointFilterEntry(FilterEntryBase):
             "Verdict": [*VERDICTS, VERDICT_FILTER_NONE],
             "Source": list(SOURCES),
             "Has Override": ["true", "false"],
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+
+        return values
+
+
+# the values of the SVS samples screen's boolean filters
+SAMPLE_BOOL_OPTIONS = ("true", "false")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+class SampleFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS samples screen (GET /api/v2/svs/samples)."""
+
+    name: str = Field(description="a filter name of the SVS samples screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_SAMPLE_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_SAMPLE_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Signature":
+            for value in values:
+                if not SIGNATURE_UUID_PATTERN.match(value):
+                    raise ValueError(f"invalid signature uuid {value!r}")
+            return values
+
+        if name == "SHA256":
+            values = [value.strip().lower() for value in values]
+            for value in values:
+                if not _SHA256_HEX.match(value):
+                    raise ValueError(f"invalid sha256 {value!r} (expected 64 hex characters)")
+            return values
+
+        if name == "Alert":
+            values = [value.strip().lower() for value in values]
+            for value in values:
+                if not UUID_REGEX.fullmatch(value):
+                    raise ValueError(f"invalid alert uuid {value!r}")
+            return values
+
+        if name == "Last Captured":
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "Label": [*LABELS, LABEL_FILTER_NONE],
+            "Label Source": list(SOURCES),
+            "Stored": list(SAMPLE_BOOL_OPTIONS),
+            "Missing Data": list(SAMPLE_BOOL_OPTIONS),
+            "Unknown Version": list(SAMPLE_BOOL_OPTIONS),
         }.get(name)
         if allowed is None:
             return values

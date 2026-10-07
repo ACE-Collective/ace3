@@ -84,6 +84,15 @@ class TestAccess:
         assert (await signature_reader.get(f"{BASE}/alerts")).status_code == 403
 
     @pytest.mark.asyncio
+    async def test_the_svs_samples_screen_is_for_signature_readers(self, signature_reader: AsyncClient):
+        body = (await signature_reader.get(f"{BASE}/svs_samples")).json()
+        kinds = {f["slug"]: (f["kind"], f["options"]) for f in body["filters"]}
+        assert kinds["label"] == ("multi", ["tp", "fp", "conflicted", "none"])
+        assert kinds["last_captured"] == ("date_range", [])
+        assert kinds["missing_data"] == ("bool", ["true", "false"])
+        assert kinds["sha256"] == ("text", [])
+
+    @pytest.mark.asyncio
     async def test_unknown_screen_is_404(self, client: AsyncClient):
         assert (await client.get(f"{BASE}/nope")).status_code == 404
 

@@ -78,6 +78,22 @@ DETECTION_POINT_FILTER_SLUGS = {
     'Verdict': 'verdict',
 }
 
+# The filters of the SVS samples screen (GET /api/v2/svs/samples, docs/SVS_API.md): display
+# name -> URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_SAMPLE_FILTER_SLUGS = {
+    'Alert': 'alert',
+    'File Name': 'file_name',
+    'Label': 'label',
+    'Label Source': 'label_source',
+    'Last Captured': 'last_captured',
+    'Missing Data': 'missing_data',
+    'Rule': 'rule',
+    'SHA256': 'sha256',
+    'Signature': 'signature',
+    'Stored': 'stored',
+    'Unknown Version': 'unknown_version',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
@@ -85,4 +101,5 @@ __all__ = [
     "FILTER_NAMES_BY_SLUG",
     "LEGACY_FILTER_NAME_ALIASES",
     "DETECTION_POINT_FILTER_SLUGS",
+    "SVS_SAMPLE_FILTER_SLUGS",
 ]
