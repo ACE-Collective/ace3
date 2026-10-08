@@ -207,6 +207,14 @@ what is saved is exactly what the page shows. This page then selects the saved f
 state; a screen that keeps its state in the URL instead (the SVS screens) has no session state
 and no `working`/`temp` rows.
 
+A screen built as a shell over the API uses `static/js/filter_list_page.js` (`FilterListPage`)
+for the whole list: the filter bar, a generic editor built from the screen's descriptor, quick
+filters, the table with its sort headers, keyset paging, and an export menu. Everything a reader
+can share is in the page URL (`f`, `sort`, `desc`, `limit`, and `saved` for the open saved
+filter), so back and forward work and a copied address bar is a share link. The URL's `f` values
+go to the list API as they are; the controller decodes them only to show them, and encodes the
+editor's filters, through the routes above. *Signatures → Samples* is the first such screen.
+
 ## For developers
 
 - Grammar and codec: `saq/gui/filter_url.py`

@@ -9,9 +9,12 @@ page shell and nothing else.
 # the whole area, and a page can layer its own permission on top.
 from app.signatures.views import access  # noqa: F401
 from app.signatures.views.hub import signatures_hub
+from app.signatures.views.samples import sample_detail, samples
 from app.signatures.views.yara_qa import yara_qa
 
 __all__ = [
+    'sample_detail',
+    'samples',
     'signatures_hub',
     'yara_qa',
 ]

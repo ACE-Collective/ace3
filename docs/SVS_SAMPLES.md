@@ -141,6 +141,60 @@ version, …), whose saved filters are per user like the alert manage page's. It
 match record). `GET /api/v2/svs/samples/missing`
 counts the missing captures per rule and reason.
 
+## In the GUI
+
+*Signatures → Samples* (`app/signatures/views/samples.py`) lists the samples, for anyone with
+`signature:read`. Like *Yara QA Results*, it is a shell: everything on it comes from
+`/api/v2/svs/samples`, through the list controller `static/js/filter_list_page.js`.
+
+**The list.** One row per sample:
+- the label, drawn like a detection verdict (`TP · inherited`, `FP · explicit`). A conflicted
+  sample says *conflicted* in red, and a sample with no label shows a dash;
+- the rule and its namespace, linking to the sample's page;
+- the file's path and size in the latest capture, and its sha256;
+- how many captures it has, and how many of them are missing;
+- its votes, `TP n · FP m`, with each strength in the tooltip;
+- when it was first and last captured;
+- an icon when a capture has signature version `unknown`, and another when a capture is missing
+  its file or match record.
+
+The newest captures come first. A column header sorts by that column, and clicking it again
+reverses the order. Pages are keyset pages of 25 to 250 rows.
+
+**Filters.** *Edit* opens an editor with one row per value: a filter, *NOT*, and the value. Rows
+for the same filter are ORed, and different filters are ANDed. The filters are the screen's:
+signature (rule uuid), rule name, sha256, alert uuid, file name, label, label source, last
+captured, stored, missing data and unknown version. Clicking a filter's name in the bar removes
+it, and clicking a value removes that value.
+
+**Saved filters and links.** Saved filters work as on the alert manage page (*Save as*, *Save*,
+*Manage…*), but belong to this screen. Pinned ones show as buttons on the filter bar. Every user
+starts with *Conflicted* and *Missing data*. The address bar always holds the filters, the order
+and the page size, so the address is a link to the same view, and back and forward work. The
+copy button copies a link with the filters only. A link that names a filter that no longer exists
+still opens, without it, and says so.
+
+**Missing data.** When captures have lost their file or match record, a banner above the list
+counts them. It links to those samples, and to the rules with the most.
+
+**Export.** The *Export* menu has CSV and NDJSON (every sample the filters match, in the list's
+order), and *Copy API URL*, the list API with the same filters, for a script with an API key.
+With `signature:download` it also has *Download files*: the files of every sample the filters
+match, in one zip, up to `svs.samples.max_bulk_download_files` files and
+`svs.samples.max_bulk_download_bytes` bytes.
+
+**A sample's page** (`/ace/signatures/samples/<sha256>/<rule uuid>`) shows:
+- the rule, the file and the sample's label;
+- its votes at each strength;
+- a link to every sample of the rule, and, with `signature:download`, *Download sample*;
+- every capture, newest first. Each row has its alert, the file's path and meta tags, the
+  signature version, the state (and why a capture is missing), and the verdict of each
+  contributing detection ("alert deleted" when the alert is gone). It also has the match summary
+  (strings, offsets, rule meta) and a link to the full match record.
+
+Files, records and downloads stored on another node's local pool are named with that node, not
+linked.
+
 ## Nodes
 
 The default pool uses the `local` backend, so the bytes are only on the node that stored them, and

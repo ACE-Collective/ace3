@@ -1,0 +1,24 @@
+{# What both Samples pages hand their script (static/js/signatures_samples.js). The pages are
+   shells: everything comes from the API named here. #}
+{% macro samples_page_attributes() -%}
+data-api="/api/v2/svs/samples"
+data-screen="{{ samples_screen }}"
+data-list-url="{{ url_for('signatures.samples') }}"
+data-alert-url="{{ url_for('analysis.index') }}"
+data-tz="{{ current_user.timezone or 'UTC' }}"
+data-can-download="{{ 'true' if has_permission('signature', 'download') else 'false' }}"
+data-max-bulk-files="{{ max_bulk_download_files }}"
+{%- endmacro %}
+
+{# the list page also needs the list controller and saved filters #}
+{% macro samples_page_scripts(list_page=False) %}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+{% if list_page %}
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
+{% endif %}
+<script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
+{% if list_page %}
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
+{% endif %}
+<script src="{{ url_for('static', filename='js/signatures_samples.js') }}?version={{ ACE_VERSION }}"></script>
+{% endmacro %}

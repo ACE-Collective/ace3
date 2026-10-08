@@ -748,3 +748,10 @@ span.multiselect-native-select select {
 .search-hit-observable { border-left-color: #0f766e; }
 .search-hit-tag        { border-left-color: #997404; }
 .search-hit-uuid       { border-left-color: #495057; }
+
+/* list screens built on static/js/filter_list_page.js */
+.filter-list-chip { cursor: pointer; }
+.filter-list-chip:hover { text-decoration: underline; }
+.filter-list-table { table-layout: fixed; width: 100%; }
+.filter-list-table td, .filter-list-table th { vertical-align: top; }
+.filter-list-table .text-break-all { overflow-wrap: anywhere; }

@@ -12,6 +12,13 @@ SIGNATURE_MODULES = [
         "major": "signature",
         "minor": "read",
     },
+    {
+        "endpoint": "signatures.samples",
+        "title": "Samples",
+        "description": "Files YARA rules matched on alerts graded TP or FP, with their labels. These are what rule changes are tested against.",
+        "major": "signature",
+        "minor": "read",
+    },
 ]
 
 

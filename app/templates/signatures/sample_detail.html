@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "signatures/_samples_page.html" import samples_page_attributes, samples_page_scripts with context %}
+
+{% block page_content %}
+<div id="sample_detail_page" {{ samples_page_attributes() }}
+     data-sha256="{{ sha256 }}"
+     data-rule-uuid="{{ rule_uuid }}">
+    <p class="mb-2"><a href="{{ url_for('signatures.samples') }}"><span class="bi bi-arrow-left"></span> Samples</a></p>
+    <div id="sample_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="sample_detail"><span class="text-muted">Loading…</span></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{{ samples_page_scripts() }}
+{% endblock %}
