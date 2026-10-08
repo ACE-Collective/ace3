@@ -1,4 +1,4 @@
-"""sandbox_launcher.py on its own, and run_sandboxed driving it.
+"""launcher.py on its own, and run_sandboxed driving it.
 
 Most of this needs no Landlock: the launcher is run around plain commands, without the prlimit and
 setpriv stages build_sandbox_argv adds. The TCP port and signal-scope tests are the exception and
@@ -15,20 +15,14 @@ import uuid
 
 import pytest
 
-from saq.collectors.hunter.correlation.sandbox import (
-    LAUNCHER,
-    SETPRIV,
-    _launcher_python,
-    build_sandbox_argv,
-    get_sandbox_config,
-    run_sandboxed,
-)
-from saq.collectors.hunter.correlation.sandbox_launcher import (
+from saq.configuration.schema import SandboxConfig
+from saq.sandbox.launcher import (
     EXIT_SANDBOX_FAILURE,
     NET_ABI,
     SCOPE_ABI,
     landlock_abi,
 )
+from saq.sandbox.runner import LAUNCHER, SETPRIV, build_sandbox_argv, run_sandboxed, sandbox_python
 from tests.saq.helpers import wait_for_condition
 
 PYTHON = sys.executable
@@ -46,7 +40,7 @@ def _launcher_argv(*command: str, max_processes: int = 16, deadline: float = 60,
     options = [f"--max-processes={max_processes}", f"--deadline={deadline}"]
     if tcp_ports is not None:
         options.append(f"--tcp-ports={tcp_ports}")
-    return [_launcher_python(), "-I", "-S", LAUNCHER, *options, "--", *command]
+    return [sandbox_python(), "-I", "-S", LAUNCHER, *options, "--", *command]
 
 
 def _launch(*command: str, stdin: str | None = None, timeout: float = 30, cwd: str | None = None, **kwargs) -> subprocess.CompletedProcess:
@@ -86,7 +80,7 @@ class TestExitStatus:
         assert "cannot run /nonexistent/command" in result.stderr
 
     def test_malformed_arguments(self):
-        result = subprocess.run([_launcher_python(), "-I", "-S", LAUNCHER, "--", "/bin/true"],
+        result = subprocess.run([sandbox_python(), "-I", "-S", LAUNCHER, "--", "/bin/true"],
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == EXIT_SANDBOX_FAILURE
         assert "usage" in result.stderr
@@ -188,7 +182,7 @@ class TestTcpPorts:
         assert result.stdout.split() == [f"{listeners[0]}:PermissionError"]
 
     def test_build_sandbox_argv_passes_the_configured_ports(self, tmpdir):
-        config = get_sandbox_config().model_copy(update={"allowed_tcp_ports": [443, 53]})
+        config = SandboxConfig(allowed_tcp_ports=[443, 53])
         argv = build_sandbox_argv(["/bin/true"], str(tmpdir), config, datetime.timedelta(seconds=5))
         assert "--tcp-ports=443,53" in argv[:argv.index("--")]
 

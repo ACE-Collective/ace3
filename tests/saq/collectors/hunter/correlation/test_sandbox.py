@@ -1,4 +1,3 @@
-import datetime
 import json
 import os
 import shutil
@@ -10,20 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from saq.collectors.hunter.correlation import sandbox
 from saq.collectors.hunter.correlation.commands import execute_command
-from saq.collectors.hunter.correlation.sandbox import (
-    get_hunt_source_roots,
-    get_read_dirs,
-    get_read_files,
-    get_sandbox_config,
-    get_sandbox_root,
-    sweep_stale_workdirs,
-)
-from saq.collectors.hunter.correlation.sandbox_launcher import NET_ABI, SCOPE_ABI, landlock_abi
+from saq.collectors.hunter.correlation.sandbox import get_hunt_source_roots, get_sandbox_config, get_sandbox_root
 from saq.collectors.hunter.correlation.schema import CommandConfig
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.environment import get_base_dir, get_data_dir
+from saq.sandbox.launcher import NET_ABI, SCOPE_ABI, landlock_abi
+from saq.sandbox.runner import get_read_dirs, get_read_files, landlock_available
 from saq.util import local_time
 from tests.saq.helpers import wait_for_condition
 
@@ -394,27 +386,4 @@ class TestFailClosed:
 
     def test_landlock_is_available_here(self):
         # the rest of this file proves nothing if the probe is wrong
-        assert sandbox.landlock_available()
-
-
-@pytest.mark.unit
-class TestSweep:
-    def test_removes_only_stale_workdirs(self, tmp_path):
-        # a temp directory, not the real sandbox root: that sits under data_unittest/, a bind mount
-        # in the dev container, where a mode-000 directory cannot be chmodded from inside the
-        # container -- it would outlive a failed sweep and break every later data directory reset
-        root = str(tmp_path)
-        stale = os.path.join(root, f"cmd-stale-{uuid.uuid4().hex}")
-        fresh = os.path.join(root, f"cmd-fresh-{uuid.uuid4().hex}")
-        os.makedirs(os.path.join(stale, "locked"))
-        os.makedirs(fresh)
-        # a command may leave a directory it made unwritable
-        os.chmod(os.path.join(stale, "locked"), 0)
-        old = (datetime.datetime.now() - datetime.timedelta(days=2)).timestamp()
-        os.utime(stale, (old, old))
-
-        with patch("saq.collectors.hunter.correlation.sandbox.get_sandbox_root", return_value=root):
-            sweep_stale_workdirs()
-
-        assert not os.path.exists(stale)
-        assert os.path.exists(fresh)
+        assert landlock_available()

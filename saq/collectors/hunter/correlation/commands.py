@@ -10,17 +10,11 @@ from saq.collectors.hunter.correlation.cache import CorrelateQueryRecorder, get_
 from saq.collectors.hunter.correlation.command_types import CommandContext, CorrelationCommand, get_command_type
 from saq.collectors.hunter.correlation.expressions import build_jinja_context
 from saq.collectors.hunter.correlation.registry import get_query_source
-from saq.collectors.hunter.correlation.sandbox import (
-    build_sandbox_argv,
-    create_workdir,
-    get_sandbox_config,
-    landlock_available,
-    run_sandboxed,
-    stage_executable,
-)
+from saq.collectors.hunter.correlation.sandbox import get_sandbox_config, get_sandbox_root, stage_executable
 from saq.collectors.hunter.correlation.schema import CommandConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.timespec import parse_timespec
 from saq.collectors.hunter.correlation.trace import sanitize_value
+from saq.sandbox.runner import build_sandbox_argv, create_workdir, landlock_available, run_sandboxed
 
 _jinja_env = SandboxedEnvironment()
 
@@ -348,7 +342,7 @@ def _execute_executable(
         raise RuntimeError("landlock is unavailable; executable commands cannot run")
 
     sandbox_config = get_sandbox_config()
-    with create_workdir() as workdir:
+    with create_workdir(get_sandbox_root()) as workdir:
         # the workdir is the only place the command can write, so point its home and temp dir there
         env_vars["HOME"] = workdir
         env_vars["TMPDIR"] = workdir
