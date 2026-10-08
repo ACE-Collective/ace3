@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
+{% from "signatures/_samples_page.html" import samples_page_attributes, samples_page_scripts with context %}
+
+{% block page_content %}
+<div id="samples_page" {{ samples_page_attributes() }}>
+    <h2 class="mb-1">Samples</h2>
+    <p class="text-muted mb-3">
+        Files YARA rules matched on alerts graded TP or FP, kept so rule changes can be tested against them. A sample
+        is one file and one rule; its label comes from the verdicts on the detections behind it, so a disposition
+        change or a verdict override relabels it.
+        {% if has_permission('signature', 'download') %}Downloads are zips protected with the password <code>infected</code>.{% endif %}
+    </p>
+
+    <div id="samples_missing" class="alert alert-warning d-none" role="alert"></div>
+    <div id="samples_list"></div>
+</div>
+
+{{ saved_filter_modals() }}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{{ samples_page_scripts(list_page=True) }}
+{% endblock %}

@@ -310,5 +310,6 @@
     var current_user_can_review_alerts = {{ has_permission('alert', 'review') | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}

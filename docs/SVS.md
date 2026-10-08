@@ -1,8 +1,9 @@
 # Signature Validation System (SVS)
 
-> **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2 in
-> progress (2026-10-05). Parts 5 and 6 were added in review rounds 8–10, the pre-implementation
-> review folded in and the design reconciled with the v3.0.121 release on 2026-10-02.**
+> **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2
+> landed (PRs #658–#664 and the Samples card, 2026-10-07). Parts 5 and 6 were added in review
+> rounds 8–10, the pre-implementation review folded in and the design reconciled with the v3.0.121
+> release on 2026-10-02.**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
@@ -1063,7 +1064,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 |---|---|
 | **0: prerequisites** (independent PRs, each useful without SVS). **Landed** in v3.0.122 (PRs #638–#648) | `archive()` fix; disposition clean-up; prevalence default-queue change; `saq/storage` and `saq/crypto` fixes; the CAS with the `svs_samples` pool (the pool itself is defined in phase 2 [FR-29]); `GET /api/v2/alerts` with `alerts.updated_at`; saved filters per screen; the structured hunt completion record; remote-node correlation submissions get an `alerts` row [FR-6]; the alert-router registry and `move_alert_to_queue` [FR-2] |
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
-| **2: YARA capture** | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
+| **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
 | **3: YARA validation** | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |

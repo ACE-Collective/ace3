@@ -18,22 +18,11 @@
 // The page sets detection_verdicts_alert_uuid (saq_analysis.js owns current_alert_uuid and only
 // fills it in once the document is ready), current_alert_disposition_class,
 // current_alert_disposition_selectable, selectable_disposition_classes,
-// current_user_can_write_alerts and current_user_can_review_alerts.
+// current_user_can_write_alerts and current_user_can_review_alerts. The chips themselves look the
+// way verdicts.js draws them, which the page loads first.
 
 (function() {
     "use strict";
-
-    const SOURCE_LABELS = {
-        explicit: "explicit",
-        inherited_single: "inherited",
-        inherited_multi: "unconfirmed",
-    };
-
-    const SOURCE_TITLES = {
-        explicit: "set by an analyst",
-        inherited_single: "inherited from the alert's disposition",
-        inherited_multi: "inherited from the alert's disposition, on an alert where several signatures fired; nobody has confirmed it",
-    };
 
     function api_url(content_hash) {
         let url = "/api/v2/alerts/" + encodeURIComponent(detection_verdicts_alert_uuid) + "/detection-points";
@@ -65,26 +54,13 @@
             && current_alert_disposition_selectable;
     }
 
-    function badge(text, css, title) {
-        const element = document.createElement("span");
-        element.className = "badge border border-dark ms-1 " + css;
-        element.style.fontSize = "0.75rem";
-        element.textContent = text;
-        if (title) {
-            element.title = title;
-        }
-        return element;
-    }
-
     function verdict_badge(row) {
-        const css = row.verdict === "fp" ? "text-bg-success" : "text-bg-warning";
-        return badge(row.verdict.toUpperCase() + " · " + SOURCE_LABELS[row.verdict_source], css,
-                     SOURCE_TITLES[row.verdict_source]);
+        return aceVerdicts.badge(row.verdict, row.verdict_source);
     }
 
     // an FP alert: every detection is FP, and a wrong one is fixed by correcting the alert
     function fp_alert_chip() {
-        const element = badge("FP (from alert)", "text-bg-success",
+        const element = aceVerdicts.chip("FP (from alert)", aceVerdicts.css("fp"),
                               "If the alert was wrong, correct its disposition");
         element.setAttribute("role", "button");
         element.addEventListener("click", function() {

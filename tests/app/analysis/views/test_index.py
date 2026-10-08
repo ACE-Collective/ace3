@@ -984,6 +984,8 @@ def test_alert_page_keys_every_detection_on_its_content_hash(web_client, root_an
     assert 'id="detection_verdicts_section"' in body
     assert "3 signatures inherit TP" in body
     assert 'var current_alert_disposition_class = "tp";' in body
+    # the chips are drawn by verdicts.js, which detection_verdicts.js uses
+    assert body.index("/js/verdicts.js?") < body.index("/js/detection_verdicts.js?")
 
 
 @pytest.mark.integration
