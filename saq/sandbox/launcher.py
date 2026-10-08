@@ -1,8 +1,8 @@
-"""Supervises one sandboxed correlate command. sandbox.py starts this instead of the command.
+"""Supervises one sandboxed command. runner.py starts this instead of the command.
 
 It runs as a script, with the venv's python in isolated mode, so it uses the standard library only:
 
-    python3 -I -S sandbox_launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 -- prlimit ... -- setpriv ... -- command
+    python3 -I -S launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 -- prlimit ... -- setpriv ... -- command
 
 Before the exec, the child enters a Landlock domain for what setpriv cannot express (setpriv then
 nests its filesystem rules inside it):
@@ -12,9 +12,9 @@ nests its filesystem rules inside it):
   instance credentials would undo the rest of the sandbox, and off ACE's own services. UDP, and so
   ordinary DNS, is not affected. On a kernel that cannot enforce it the command is not run.
 - Signal scoping. Nothing the command starts can signal, or connect to an abstract unix socket
-  of, a process outside the domain (Landlock ABI 6, Linux 6.12): not the ACE process that ran the
-  hunt, not the other API workers, not this launcher. On an older kernel the scope is skipped, and
-  prepare_sandbox() logs that at startup.
+  of, a process outside the domain (Landlock ABI 6, Linux 6.12): not the ACE process that started
+  it, not the other API workers, not this launcher. On an older kernel the scope is skipped, and
+  each caller says so at startup (the hunter's prepare_sandbox(), for one).
 
 The domain restricts no filesystem access; restrict_self() says why it still needs one filesystem rule.
 
@@ -290,7 +290,7 @@ def _parse_arguments(argv: list[str]) -> tuple[int, float, list[int] | None, lis
 
     Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP connection.
 
-    Parsed by hand: sandbox.py is the only caller, and argparse costs more to start than
+    Parsed by hand: runner.py is the only caller, and argparse costs more to start than
     everything else the launcher does.
     """
     if "--" not in argv:

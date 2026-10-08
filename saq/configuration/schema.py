@@ -234,15 +234,19 @@ class AlertRouterConfig(BaseModel):
     priority: int = Field(..., description="routers run in ascending priority and the first decision wins; the built-in detection queue router is 500")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="constructor kwargs passed to the AlertRouter subclass after name and priority")
 
-class ExecutableSandboxConfig(BaseModel):
-    """limits for the Landlock sandbox a correlate `type: executable` command runs in (saq/collectors/hunter/correlation/sandbox.py)"""
+class SandboxConfig(BaseModel):
+    """limits for a command run in the Landlock sandbox (saq/sandbox/runner.py)"""
     model_config = ConfigDict(extra="forbid")
-    work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     memory_limit: int = Field(default=4 * 1024 ** 3, gt=0, description="address space limit in bytes (RLIMIT_AS)")
     file_size_limit: int = Field(default=256 * 1024 ** 2, gt=0, description="largest file the command may write, in bytes (RLIMIT_FSIZE)")
     open_files_limit: int = Field(default=1024, gt=0, description="maximum open file descriptors (RLIMIT_NOFILE)")
-    max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed and the step fails")
-    max_processes: int = Field(default=64, gt=0, description="most processes a command may have alive at once, counting everything it starts; a command that starts more is killed and the step fails")
+    max_output_bytes: int = Field(default=64 * 1024 ** 2, gt=0, description="maximum bytes read from each of stdout and stderr; a command that writes more is killed")
+    max_processes: int = Field(default=64, gt=0, description="most processes a command may have alive at once, counting everything it starts; a command that starts more is killed")
+    allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=list, description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); an empty list allows no TCP at all. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
+
+class ExecutableSandboxConfig(SandboxConfig):
+    """limits for the Landlock sandbox a correlate `type: executable` command runs in (saq/collectors/hunter/correlation/sandbox.py)"""
+    work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
 class CorrelationConfig(BaseModel):
