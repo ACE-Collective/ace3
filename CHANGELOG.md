@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.123] - 2026-10-08
+
+- [SVS: the Samples card in the Signatures hub](https://github.com/ACE-Collective/ace3/pull/665)
+- [SVS sample labels and the samples API (SVS phase 2)](https://github.com/ACE-Collective/ace3/pull/664)
+- [AI query backends without a time window](https://github.com/ACE-Collective/ace3/pull/663)
+- [Headless browser tooling for testing GUI changes in the dev container](https://github.com/ACE-Collective/ace3/pull/662)
+- [Saved filters per screen, through the API, as a reusable component (SVS phase 2)](https://github.com/ACE-Collective/ace3/pull/661)
+- [Remove the post-analysis COMPLETED skip that never fired](https://github.com/ACE-Collective/ace3/pull/660)
+- [Capture the YARA-matched files of graded alerts as SVS samples (SVS phase 2)](https://github.com/ACE-Collective/ace3/pull/659)
+- [Carry the work item's analysis mode through transfer_work_target (SVS phase 2, FR-5)](https://github.com/ACE-Collective/ace3/pull/658)
+- [Fix flaky test_qa_matches_are_recorded_after_the_answer](https://github.com/ACE-Collective/ace3/pull/657)
+- [Drop the badges from the Detection Chains card](https://github.com/ACE-Collective/ace3/pull/656)
+- [Show and edit detection verdicts in the GUI](https://github.com/ACE-Collective/ace3/pull/655)
+- [Add GET /api/v2/detection-points and docs/SVS_API.md](https://github.com/ACE-Collective/ace3/pull/654)
+- [Put a YARA detection on the file it matched](https://github.com/ACE-Collective/ace3/pull/652)
+- [Include the node in a detection's identity](https://github.com/ACE-Collective/ace3/pull/651)
+
 ## [3.0.122] - 2026-10-05
 
 - [Seed the automation user and read its id from config](https://github.com/ACE-Collective/ace3/pull/649)
