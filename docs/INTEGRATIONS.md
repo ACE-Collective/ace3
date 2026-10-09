@@ -321,6 +321,43 @@ test there), then call `route_alert(root, stage)` or `ALERT(root)`.
 `integrations.example/example/src/example/routing.py` (`ExampleTagRouter`) routes a new alert
 that carries one tag to one queue and does nothing to any other alert.
 
+## Adding buttons to the alert toolbar
+
+An integration adds a button to the alert page's toolbar with an **alert action**
+(`saq/gui/alert_actions.py`), the alert-level counterpart of `register_observable_action()`.
+Subclass `AlertAction` and register the class when your package is imported:
+
+```python
+from saq.gui.alert_actions import AlertAction, register_alert_action
+
+class VendorAlertAction(AlertAction):
+    name = "vendor_action"                       # [a-z0-9_]+, unique; the button is #alert_action_vendor_action
+    description = "Vendor Action"                # the button's label, required
+    icon = "lightning"                           # optional Bootstrap Icons name, without "bi-"
+    action_path = "vendor/alert_action.html"     # included once on the page; wires the button up
+    modifies_analysis = True                     # disabled while the alert is locked for analysis
+    permission = ("alert", "write")              # hidden from users without it
+
+    def is_available(self, alert) -> bool:      # shown only where it applies
+        return alert.root_analysis.has_tag("vendor")
+
+register_alert_action(VendorAlertAction)
+```
+
+- **The button does nothing by itself.** `action_path` is a template in your integration's
+  templates, rendered once into the alert page's body, after the toolbar, with `action` and
+  `alert` in its context. Put the button's modal and script there, and have the script post to a
+  route in your own blueprint. Check the permission again in the route: hiding a button is not
+  access control. If the template is missing or fails to render, the button is left out and the
+  error is logged.
+- **`is_available()` runs on every render of the alert page**, so keep it cheap. If it, or the
+  action's `__init__`, raises, the button is left out and the error is logged; the page still
+  renders.
+- Buttons appear after the core buttons, in registration order.
+
+**Tests.** Patch `saq.gui.alert_actions._ALERT_ACTION_REGISTRY` to an empty list and register
+your action, as `tests/app/analysis/views/test_index.py` does, then render the alert page.
+
 ## Notes
 
 - Python analyzers in vscode/cursor have to be updated to reference the `src` directories in the integrations.

@@ -3,6 +3,8 @@ import logging
 from typing import NamedTuple
 from uuid import uuid4
 from flask import flash, redirect, render_template, request, session, url_for
+from flask_login import current_user
+from markupsafe import Markup
 from app.analysis.views.session.alert import get_current_alert
 from app.analysis.views.session.filters import filter_special_tags
 from app.auth.permissions import require_permission
@@ -29,6 +31,8 @@ from saq.database.database_observable import get_observable_disposition_historie
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.error.reporting import report_exception
+from saq.gui.alert_actions import get_alert_actions
+from saq.permissions.logic import user_has_permission
 from saq.remediation.coverage import get_remediation_coverage
 from saq.remediation.external.database import get_external_checks_for_alert
 from saq.remediation.external.events import summarize_alert_checks
@@ -450,6 +454,27 @@ def detection_verdict_context(alert) -> dict:
     }
 
 
+def alert_action_context(alert) -> dict:
+    """The integration buttons on the alert toolbar (saq/gui/alert_actions.py) and their rendered
+    templates, which the page puts in its body after the toolbar. An action whose template is
+    missing or fails to render is left out, button and all, so an integration's bug cannot break
+    the alert page."""
+    actions = []
+    templates = []
+    for action in get_alert_actions(
+            alert, lambda major, minor: user_has_permission(current_user.id, major, minor)):
+        if action.action_path:
+            try:
+                templates.append(Markup(render_template(action.action_path, action=action, alert=alert)))
+            except Exception:
+                logging.warning("alert action failed to render its template",
+                                extra={"alert_action": action.name}, exc_info=True)
+                continue
+        actions.append(action)
+
+    return {"alert_actions": actions, "alert_action_templates": templates}
+
+
 @analysis.route('/analysis', methods=['GET', 'POST'])
 @require_permission("alert", "read")
 def index():
@@ -729,5 +754,6 @@ def index():
         detection_chain_root_detections=detection_chain_root_detections,
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
+        **alert_action_context(alert),
         **detection_verdict_context(alert),
     )

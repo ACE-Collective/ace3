@@ -57,6 +57,10 @@
         <button type="button" name="btn-show-remove-tags" class="btn btn-outline-dark btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#tag_remove_modal"><span class="bi bi-tags"></span> Remove Tag(s)</button>
         <button type="button" class="btn btn-outline-dark btn-sm" onclick="show_remediation_targets(['{{alert.uuid}}'])"><span class="bi bi-magic"></span> Remediation</button>
         <button id="btn-open-event-modal" type="button" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#event_modal"><span class="bi bi-plus"></span> Add to Event</button>
+        {# buttons registered by integrations (saq/gui/alert_actions.py) #}
+        {% for action in alert_actions %}
+        <button id="alert_action_{{ action.name }}" type="button" class="btn btn-outline-dark btn-sm{% if action.modifies_analysis %} lock-dependent{% endif %}">{% if action.icon %}<span class="bi bi-{{ action.icon }}"></span> {% endif %}{{ action.description }}</button>
+        {% endfor %}
         {% if alert.root_analysis.has_tag('needs_research') %}
         <button type="button" class="btn btn-outline-danger btn-sm lock-dependent" data-bs-toggle="modal" data-bs-target="#research_complete_modal"><span class="bi bi-check2-square"></span> Research Complete</button>
         {% else %}
@@ -282,6 +286,12 @@
         </form>
     </div>
 </div>
+
+{# templates of the integration buttons on the toolbar, rendered by alert_action_context()
+   into the page body, after the toolbar, so their scripts find the buttons #}
+{% for action_template in alert_action_templates %}
+{{ action_template }}
+{% endfor %}
 
 {% endblock %}
 
