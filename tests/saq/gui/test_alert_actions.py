@@ -87,6 +87,20 @@ def test_a_failing_action_does_not_break_the_others(caplog):
     assert any(getattr(record, "alert_action", None) == "broken" for record in caplog.records)
 
 
+def test_an_action_that_fails_to_construct_does_not_break_the_others(caplog):
+    class FailsInInit(AlertAction):
+        name = "fails_in_init"
+        description = "Fails in init"
+
+        def __init__(self):
+            raise KeyError("missing integration config")
+
+    register_alert_action(FailsInInit)
+    register_alert_action(Always)
+    assert names(get_alert_actions(FakeAlert(), allow_all)) == ["always"]
+    assert any(getattr(record, "alert_action", None) == "fails_in_init" for record in caplog.records)
+
+
 def test_registering_twice_is_harmless():
     register_alert_action(Always)
     register_alert_action(Always)
@@ -96,6 +110,7 @@ def test_registering_twice_is_harmless():
 def test_names_must_be_unique():
     class AlsoAlways(AlertAction):
         name = "always"
+        description = "Also always"
 
     register_alert_action(Always)
     with pytest.raises(ValueError, match="already registered"):
@@ -110,6 +125,36 @@ def test_names_must_be_safe_in_an_element_id(name):
     Bad.name = name
     with pytest.raises(ValueError):
         register_alert_action(Bad)
+
+
+def test_a_description_is_required():
+    class Unlabeled(AlertAction):
+        name = "unlabeled"
+
+    with pytest.raises(ValueError, match="description"):
+        register_alert_action(Unlabeled)
+
+
+@pytest.mark.parametrize("icon", ["star d-none", "x lock-dependent", 'star"', "Star"])
+def test_icons_must_be_a_single_icon_name(icon):
+    class BadIcon(AlertAction):
+        name = "bad_icon"
+        description = "Bad icon"
+
+    BadIcon.icon = icon
+    with pytest.raises(ValueError, match="icon"):
+        register_alert_action(BadIcon)
+
+
+@pytest.mark.parametrize("icon", ["", "star", "box-arrow-up-right", "1-circle"])
+def test_icon_names(icon):
+    class GoodIcon(AlertAction):
+        name = "good_icon"
+        description = "Good icon"
+
+    GoodIcon.icon = icon
+    register_alert_action(GoodIcon)
+    assert names(get_alert_actions(FakeAlert(), allow_all)) == ["good_icon"]
 
 
 def test_only_alert_actions_can_be_registered():

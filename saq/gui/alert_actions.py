@@ -3,7 +3,7 @@
 An integration subclasses ``AlertAction`` and passes the class to ``register_alert_action()``
 when its package is imported. The alert page renders one toolbar button for every registered
 action that the user is permitted and that is available for the alert, then includes each
-action's template once.
+action's template once in the page body.
 """
 
 import logging
@@ -11,6 +11,8 @@ import re
 from collections.abc import Callable
 
 _NAME = re.compile(r"[a-z0-9_]+")
+# Bootstrap Icons names are lowercase words joined by dashes; anything else would add classes
+_ICON = re.compile(r"[a-z0-9-]*")
 
 
 class AlertAction:
@@ -46,6 +48,10 @@ def register_alert_action(action_class: type[AlertAction]) -> None:
         raise TypeError(f"{action_class!r} is not an AlertAction subclass")
     if not _NAME.fullmatch(action_class.name or ""):
         raise ValueError(f"alert action {action_class.__name__} needs a name of [a-z0-9_]+")
+    if not action_class.description:
+        raise ValueError(f"alert action {action_class.__name__} needs a description for its label")
+    if not _ICON.fullmatch(action_class.icon or ""):
+        raise ValueError(f"alert action {action_class.__name__} needs an icon of [a-z0-9-]+")
     if action_class in _ALERT_ACTION_REGISTRY:
         return
     if any(registered.name == action_class.name for registered in _ALERT_ACTION_REGISTRY):
@@ -56,19 +62,19 @@ def register_alert_action(action_class: type[AlertAction]) -> None:
 def get_alert_actions(alert, has_permission: Callable[[str, str], bool]) -> list[AlertAction]:
     """The actions to show on this alert's page, for a user with these permissions.
 
-    An action whose ``is_available()`` raises is left out and logged: an integration's bug must
-    not break the alert page.
+    An action that raises while it is created or decides its availability is left out and logged:
+    an integration's bug must not break the alert page.
     """
     actions = []
     for action_class in _ALERT_ACTION_REGISTRY:
-        action = action_class()
-        if action.permission and not has_permission(*action.permission):
-            continue
         try:
+            action = action_class()
+            if action.permission and not has_permission(*action.permission):
+                continue
             available = action.is_available(alert)
         except Exception:
             logging.warning("alert action failed to decide its availability",
-                            extra={"alert_action": action.name}, exc_info=True)
+                            extra={"alert_action": action_class.name}, exc_info=True)
             continue
         if available:
             actions.append(action)

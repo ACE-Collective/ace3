@@ -332,8 +332,8 @@ from saq.gui.alert_actions import AlertAction, register_alert_action
 
 class VendorAlertAction(AlertAction):
     name = "vendor_action"                       # [a-z0-9_]+, unique; the button is #alert_action_vendor_action
-    description = "Vendor Action"                # the button's label
-    icon = "lightning"                           # Bootstrap Icons name, without "bi-"
+    description = "Vendor Action"                # the button's label, required
+    icon = "lightning"                           # optional Bootstrap Icons name, without "bi-"
     action_path = "vendor/alert_action.html"     # included once on the page; wires the button up
     modifies_analysis = True                     # disabled while the alert is locked for analysis
     permission = ("alert", "write")              # hidden from users without it
@@ -345,11 +345,14 @@ register_alert_action(VendorAlertAction)
 ```
 
 - **The button does nothing by itself.** `action_path` is a template in your integration's
-  templates, included once at the end of the alert page with `action` and `alert` in its
-  context. Put the button's modal and script there, and have the script post to a route in your
-  own blueprint. Check the permission again in the route: hiding a button is not access control.
-- **`is_available()` runs on every render of the alert page**, so keep it cheap. If it raises,
-  the button is left out and the error is logged; the page still renders.
+  templates, rendered once into the alert page's body, after the toolbar, with `action` and
+  `alert` in its context. Put the button's modal and script there, and have the script post to a
+  route in your own blueprint. Check the permission again in the route: hiding a button is not
+  access control. If the template is missing or fails to render, the button is left out and the
+  error is logged.
+- **`is_available()` runs on every render of the alert page**, so keep it cheap. If it, or the
+  action's `__init__`, raises, the button is left out and the error is logged; the page still
+  renders.
 - Buttons appear after the core buttons, in registration order.
 
 **Tests.** Patch `saq.gui.alert_actions._ALERT_ACTION_REGISTRY` to an empty list and register

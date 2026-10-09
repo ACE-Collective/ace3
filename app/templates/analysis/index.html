@@ -287,6 +287,12 @@
     </div>
 </div>
 
+{# templates of the integration buttons on the toolbar, rendered by alert_action_context()
+   into the page body, after the toolbar, so their scripts find the buttons #}
+{% for action_template in alert_action_templates %}
+{{ action_template }}
+{% endfor %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -316,7 +322,4 @@
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>
-{% for action in alert_actions if action.action_path %}
-{% include action.action_path %}
-{% endfor %}
 {% endblock %}

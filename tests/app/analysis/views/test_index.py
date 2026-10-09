@@ -1009,7 +1009,10 @@ def toolbar_actions(monkeypatch, app):
     """An empty alert-action registry, and a template for actions to include."""
     monkeypatch.setattr(alert_actions, "_ALERT_ACTION_REGISTRY", [])
     monkeypatch.setattr(app.jinja_env, "loader", ChoiceLoader([
-        DictLoader({"test/alert_action.html": '<div id="included_{{ action.name }}">{{ alert.uuid }}</div>'}),
+        DictLoader({
+            "test/alert_action.html": '<div id="included_{{ action.name }}">{{ alert.uuid }}</div>',
+            "test/broken_alert_action.html": "{{ alert.no_such_attribute.anything }}",
+        }),
         app.jinja_env.loader,
     ]))
 
@@ -1020,6 +1023,18 @@ class ToolbarAction(AlertAction):
     icon = "star"
     action_path = "test/alert_action.html"
     modifies_analysis = True
+
+
+class MissingTemplateAction(AlertAction):
+    name = "test_missing_template_action"
+    description = "Missing Template"
+    action_path = "test/no_such_template.html"
+
+
+class BrokenTemplateAction(AlertAction):
+    name = "test_broken_template_action"
+    description = "Broken Template"
+    action_path = "test/broken_alert_action.html"
 
 
 class UnavailableAction(AlertAction):
@@ -1044,6 +1059,25 @@ def test_index_renders_alert_actions(web_client, root_analysis, toolbar_actions)
     assert "bi-star" in page and "Toolbar Test Action" in page
     assert f'<div id="included_test_toolbar_action">{root_analysis.uuid}</div>' in page
     assert "test_unavailable_action" not in page and "Never Shown" not in page
+    # in the body, after the toolbar button it wires up
+    assert page.index("</head>") < page.index('id="alert_action_test_toolbar_action"') \
+        < page.index('<div id="included_test_toolbar_action">')
+
+
+@pytest.mark.integration
+def test_index_leaves_out_actions_whose_template_fails(web_client, root_analysis, toolbar_actions):
+    register_alert_action(MissingTemplateAction)
+    register_alert_action(BrokenTemplateAction)
+    register_alert_action(ToolbarAction)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    page = result.data.decode()
+    assert "alert_action_test_missing_template_action" not in page
+    assert "alert_action_test_broken_template_action" not in page
+    assert 'id="alert_action_test_toolbar_action"' in page
 
 
 @pytest.mark.integration
