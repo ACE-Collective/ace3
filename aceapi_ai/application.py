@@ -2,7 +2,8 @@
 
 A deliberately small app: the query routes for the configured read-only backends, backend
 discovery, alert reads (alert + version token, saq.log, package download), the ACE Event read,
-alert search (the RAG surface for agentic triage), and health. It runs in its own container with no encryption capability (see
+alert search (the RAG surface for agentic triage), the bulk export of alerts and observables for
+offline analysis, and health. It runs in its own container with no encryption capability (see
 aceapi_ai.startup_checks, enforced by the entrypoint) -- nothing here may depend on decrypting
 a secret.
 """
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from aceapi_ai.alerts.router import router as alerts_router
 from aceapi_ai.events.router import router as events_router
+from aceapi_ai.export.router import router as export_router
 from aceapi_ai.health.router import router as health_router
 from aceapi_ai.query.router import build_query_router
 from aceapi_ai.search.router import router as search_router
@@ -45,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     app.include_router(events_router, prefix="/events", tags=["events"])
     app.include_router(search_router, prefix="/search", tags=["search"])
+    app.include_router(export_router, prefix="/export", tags=["export"])
     app.include_router(health_router, prefix="/health", tags=["health"])
 
     return app

@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 import pytest_asyncio
 
-from aceapi_ai.ratelimit import RateLimitExceeded, RateLimitUnavailable
+from aceapi_ai.ratelimit import RateLimitExceeded, RateLimitUnavailable, rate_limiter
 from aceapi_v2.search import service as v2_service
 from saq.search.types import AlertSearchResult, SearchResponse
 
@@ -93,7 +93,7 @@ async def test_rate_limited_search_is_429_with_retry_after(search_client, monkey
         assert backend_name == service_module.SEARCH_LIMIT_NAME
         raise RateLimitExceeded("rate", "simulated exhaustion", retry_after_seconds=17)
 
-    monkeypatch.setattr(service_module.rate_limiter, "check_request", refuse)
+    monkeypatch.setattr(rate_limiter, "check_request", refuse)
     with caplog.at_level("INFO", logger="ace.ai_audit"):
         response = await search_client.post("/search/alerts", json={"query": "x"})
 
@@ -105,10 +105,8 @@ async def test_rate_limited_search_is_429_with_retry_after(search_client, monkey
 
 @pytest.mark.asyncio
 async def test_unavailable_limiter_is_503(search_client, monkeypatch):
-    import aceapi_ai.search.service as service_module
-
     def unavailable(backend_name, limits):
         raise RateLimitUnavailable("redis down")
 
-    monkeypatch.setattr(service_module.rate_limiter, "check_request", unavailable)
+    monkeypatch.setattr(rate_limiter, "check_request", unavailable)
     assert (await search_client.post("/search/alerts", json={"query": "x"})).status_code == 503
