@@ -58,6 +58,7 @@ from saq.svs.samples import (
     get_capture,
     get_captures,
     get_sample,
+    is_local,
     keyset_condition,
     missing_by_rule,
     order_by,
@@ -99,16 +100,6 @@ def _local_node() -> Optional[str]:
 
 def _pool_name() -> str:
     return get_config().svs.samples.pool
-
-
-def pool_is_shared() -> bool:
-    pool_config = get_config().cas.pools.get(_pool_name())
-    return pool_config is not None and pool_config.shared
-
-
-def is_local(node: Optional[str]) -> bool:
-    """Whether this node can read bytes stored by `node`: always with a shared pool."""
-    return pool_is_shared() or (node is not None and node == _local_node())
 
 
 def _raise_wrong_node(node: str, what: str) -> None:

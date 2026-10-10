@@ -661,13 +661,13 @@ def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
     import saq.signatures.loaders.yara as yara_loader
 
     parsed = []
-    original = yara_loader._parse_rule_file
+    original = yara_loader.parse_rule_file
 
     def counting_parse(path, git_context):
         parsed.append(os.path.basename(path))
         return original(path, git_context)
 
-    monkeypatch.setattr(yara_loader, "_parse_rule_file", counting_parse)
+    monkeypatch.setattr(yara_loader, "parse_rule_file", counting_parse)
     cache = {}
 
     first = load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache)

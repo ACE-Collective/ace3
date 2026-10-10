@@ -237,6 +237,26 @@ svs:
     max_bulk_download_bytes: 1073741824
     # how old a YARA rule inventory capture accepts when it records a rule's content hash
     inventory_refresh_seconds: 300
+  # validating changes to YARA rules against the samples (docs/SVS_VALIDATION.md)
+  yara:
+    # the git_repo_<name> sections whose commits may be validated
+    repositories: []
+    # how long compiling and scanning one commit's rules over the whole corpus may take
+    scan_timeout_seconds: 1800
+    max_concurrent_validations: 1
+    # how long fetching a repository into its mirror may take (the first fetch clones it)
+    fetch_timeout_seconds: 600
+    # optional caps on the export of one commit; unset means no limit
+    # max_archive_bytes: 536870912
+    # max_archive_members: 100000
+    # relative to DATA_DIR. work_dir holds a plaintext copy of every sample while a validation
+    # runs, must allow execution and must have no '.' in its path
+    mirror_dir: svs/mirrors
+    work_dir: svs/work
+    # the sandbox the compile and the scan run in; no network
+    sandbox:
+      memory_limit: 4294967296
+      allowed_tcp_ports: []
 
 # analysis result cache (Phase 2+) configuration
 analysis_cache:

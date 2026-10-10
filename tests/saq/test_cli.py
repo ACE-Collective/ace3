@@ -46,7 +46,7 @@ def test_cli_commands_registered():
 
     # commands that live in other modules but must remain registered too
     for external in ("perm", "phishkit", "storage", "search", "nrd",
-                     "observables", "signatures"):
+                     "observables", "signatures", "svs"):
         assert external in registered, f"missing external CLI subcommand: {external}"
 
 
@@ -99,3 +99,4 @@ def test_cli_subcommands_registered():
     assert {"update-organization"} <= choices("user")
     assert {"build-db"} <= choices("signatures")
     assert {"display", "clear"} <= choices("remediation")
+    assert {"yara"} <= choices("svs")

@@ -26,14 +26,14 @@ GIT_COMMAND_TIMEOUT = 30  # seconds
 GIT_NO_DETACH_ARGS = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"]
 
 
-def _git_argv(*args: str) -> list[str]:
+def git_argv(*args: str) -> list[str]:
     """Builds the argv for a git command, including the options that keep git from
-    daemonizing its auto-maintenance. Every git invocation in this module goes through
-    here."""
+    daemonizing its auto-maintenance. Every git command ACE runs goes through here
+    (this module, and SVS's mirror clones in saq/svs/yara/repository.py)."""
     return ["git", *GIT_NO_DETACH_ARGS, *args]
 
 
-def _kill_timed_out_process(process: subprocess.Popen) -> None:
+def kill_timed_out_process(process: subprocess.Popen) -> None:
     """SIGKILLs the whole process group of a git command that hit its timeout.
 
     git forks helpers of its own -- ssh, git-remote-https, sub-git processes -- and they
@@ -59,7 +59,7 @@ def get_commit_hash(git_dir: str) -> Optional[str]:
         return None
     try:
         p = subprocess.run(
-            _git_argv("-C", git_dir, "rev-parse", "HEAD"),
+            git_argv("-C", git_dir, "rev-parse", "HEAD"),
             text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT)
     except Exception as e:
         logging.warning("failed to get commit hash for %s: %s", git_dir, e)
@@ -78,7 +78,7 @@ def get_repo_root(path: str) -> Optional[str]:
         return None
     try:
         p = subprocess.run(
-            _git_argv("-C", path, "rev-parse", "--show-toplevel"),
+            git_argv("-C", path, "rev-parse", "--show-toplevel"),
             text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT, check=False)
     except Exception as e:
         logging.warning("failed to get repo root for %s: %s", path, e)
@@ -100,7 +100,7 @@ def get_remote_url(path: str, remote: str = "origin") -> Optional[str]:
     def _run(args: list[str]) -> Optional[str]:
         try:
             p = subprocess.run(
-                _git_argv("-C", path, *args),
+                git_argv("-C", path, *args),
                 text=True, capture_output=True, timeout=GIT_COMMAND_TIMEOUT, check=False)
         except Exception as e:
             logging.warning("failed to run git %s for %s: %s", " ".join(args), path, e)
@@ -159,19 +159,19 @@ class GitRepo:
         Returns (returncode, stdout, stderr). When check is True a non-zero return code
         raises RuntimeError instead of being returned."""
         with subprocess.Popen(
-            _git_argv(*args),
+            git_argv(*args),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self.env,
             # give git its own process group so that a timeout can take out the helpers
-            # it forked along with it -- see _kill_timed_out_process
+            # it forked along with it -- see kill_timed_out_process
             start_new_session=True,
         ) as process:
             try:
                 stdout, stderr = process.communicate(timeout=self.config.git_command_timeout)
             except subprocess.TimeoutExpired:
-                _kill_timed_out_process(process)
+                kill_timed_out_process(process)
                 try:
                     # bounded: everything holding our pipes has been killed, so this
                     # returns immediately. the timeout is only here so that a git

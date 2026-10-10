@@ -18,7 +18,7 @@ from saq.git import (
     GIT_NO_DETACH_ARGS,
     GitManagerService,
     GitRepo,
-    _git_argv,
+    git_argv,
     get_commit_hash,
     get_configured_repos,
     get_remote_url,
@@ -1272,7 +1272,7 @@ class TestNoDetachOptions:
         ))
 
     def test_git_argv_prepends_the_no_detach_options(self):
-        argv = _git_argv("-C", "/path/to/repo", "fetch", "--all")
+        argv = git_argv("-C", "/path/to/repo", "fetch", "--all")
 
         assert argv == ["git", *GIT_NO_DETACH_ARGS, "-C", "/path/to/repo", "fetch", "--all"]
         assert "gc.autoDetach=false" in argv
@@ -1418,7 +1418,7 @@ class TestGitCommandTimeout:
         started = time.monotonic()
         # run it through bash rather than as an executable: pytest's tmpdir lives under
         # /tmp, which is mounted noexec
-        with patch("saq.git._git_argv", side_effect=lambda *args: ["/bin/bash", str(shim), *args]):
+        with patch("saq.git.git_argv", side_effect=lambda *args: ["/bin/bash", str(shim), *args]):
             with pytest.raises(subprocess.TimeoutExpired):
                 repo._run_git_command(["fetch", "--all"], "fetch failed")
         elapsed = time.monotonic() - started
