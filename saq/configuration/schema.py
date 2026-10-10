@@ -751,10 +751,27 @@ class SVSSamplesConfig(BaseModel):
     inventory_refresh_seconds: int = Field(default=300, ge=0, description="how old a YARA rule inventory capture accepts when it records a rule's content hash. Each engine process caches its own and parses only changed rule files again")
 
 
+class SVSYaraConfig(BaseModel):
+    """Validating a change to YARA rules against the captured samples (docs/SVS.md, Part 2,
+    *Validation*): both commits of a repository are compiled the way the yara service loads rules
+    and scanned over every stored sample, in the Landlock sandbox."""
+    model_config = ConfigDict(extra="forbid")
+    repositories: list[str] = Field(default_factory=list, description="the git_repo_<name> sections whose commits may be validated, by name. Each one's local_path must hold rules the yara service loads: service_yara.signature_dir is inside it, or entries of signature_dir are (or link to) directories inside it")
+    scan_timeout_seconds: int = Field(default=1800, gt=0, description="how long compiling and scanning one commit's rules over the whole corpus may take")
+    max_concurrent_validations: int = Field(default=1, ge=1, description="how many validations run at once")
+    fetch_timeout_seconds: int = Field(default=600, gt=0, description="how long fetching a repository into its mirror may take (the first fetch clones it)")
+    max_archive_bytes: Optional[int] = Field(default=None, gt=0, description="the largest export of one commit, in bytes; unset for no limit")
+    max_archive_members: Optional[int] = Field(default=None, gt=0, description="the most files and directories in the export of one commit; unset for no limit")
+    mirror_dir: str = Field(default="svs/mirrors", description="where SVS keeps its own bare clone of each repository (relative to DATA_DIR). It is never the checkout the yara service loads rules from")
+    work_dir: str = Field(default="svs/work", description="where each validation gets its private working directory (relative to DATA_DIR): both commits' rules and a plaintext copy of every sample, deleted when the validation ends. Must allow execution (not a noexec tmpfs) and have no '.' in its path, which would change the extension YARA sees for a file without one")
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed process that compiles and scans; allowed_tcp_ports stays empty (no network)")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
+    yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
 
 
 class NRDConfig(BaseModel):

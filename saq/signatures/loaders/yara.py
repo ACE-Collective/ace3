@@ -83,8 +83,10 @@ def _rule_source(source_lines: list[str], parsed_rule: dict) -> str | None:
     return "".join(source_lines[start_line - 1:stop_line])
 
 
-def _parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
-    """Returns every trackable rule in one .yar file."""
+def parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
+    """Returns every trackable rule in one .yar file. git_context stamps the version and makes
+    source_path relative; SVS validation (saq/svs/yara/replay.py) passes its own for an exported
+    commit, which is in no git repository."""
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
         source = fp.read()
 
@@ -139,13 +141,13 @@ def _file_identity(path: str) -> FileIdentity:
 
 
 def _parse_rule_file_cached(path: str, git_context: GitContext, parse_cache: ParseCache) -> list[Signature]:
-    """_parse_rule_file, reusing the rules parsed from an unchanged file. The version and remote
+    """parse_rule_file, reusing the rules parsed from an unchanged file. The version and remote
     are stamped from git_context either way, because a commit that touched some other file still
     moves the version of every rule in the repo."""
     identity = _file_identity(path)
     cached = parse_cache.get(path)
     if cached is None or cached[0] != identity:
-        signatures = _parse_rule_file(path, git_context)
+        signatures = parse_rule_file(path, git_context)
         parse_cache[path] = (identity, signatures)
         return signatures
 
@@ -218,7 +220,7 @@ def load_yara_signatures(signature_dir: str, git_repo_dirs: list[str] | None = N
             seen_files.add(rule_file)
             try:
                 if parse_cache is None:
-                    result.extend(_parse_rule_file(rule_file, git_context))
+                    result.extend(parse_rule_file(rule_file, git_context))
                 else:
                     result.extend(_parse_rule_file_cached(rule_file, git_context, parse_cache))
             except Exception as e:

@@ -14,6 +14,7 @@ from sqlalchemy import Select, and_, case, exists, func, literal, or_, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
+from saq.configuration.config import get_config
 from saq.database.model import (
     Alert,
     DetectionPoint,
@@ -22,6 +23,7 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.detection_verdicts.query import detection_points_select
+from saq.environment import get_global_runtime_settings
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState
 from saq.svs.labels import (
@@ -274,6 +276,16 @@ def bytes_nodes(sha256s: Iterable[str]) -> dict[str, str]:
     for row in get_db().execute(bytes_nodes_statement(sha256s)):
         result.setdefault(row.sha256, row.node)
     return result
+
+
+def pool_is_shared() -> bool:
+    pool_config = get_config().cas.pools.get(get_config().svs.samples.pool)
+    return pool_config is not None and pool_config.shared
+
+
+def is_local(node: Optional[str]) -> bool:
+    """Whether this node can read bytes stored by `node`: always with a shared pool."""
+    return pool_is_shared() or (node is not None and node == get_global_runtime_settings().saq_node)
 
 
 def missing_by_rule() -> list[dict[str, Any]]:
