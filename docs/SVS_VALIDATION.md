@@ -127,7 +127,8 @@ file's.
 
 Before any of that:
 - A rule in neither commit belongs to another repository and is left out.
-- A sample retired for its rule is only counted (`retired`).
+- A sample retired for its rule is only counted (`retired`). Retiring is an analyst action on the
+  sample (`docs/SVS_SAMPLES.md`, *Actions*); it is how an intended regression stops being reported.
 - A rule whose uuid two rules of head share is `not_testable`: their samples cannot tell them apart.
 - A sample of a rule head no longer has is `rule_removed`.
 - A scan that failed or timed out in the rule's namespace is `scan_error`, never a miss.
@@ -157,7 +158,8 @@ ace svs yara layout
 ace svs yara validate --repository signatures --base <merge base> --head <head commit> [--branch <head branch>] [--json]
 ```
 
-`validate` prints the report, or the whole result as JSON with `--json`. It exits 1 when the
+`validate` prints the report, or the whole result as JSON with `--json`. It counts the samples
+retired at the time it runs as `retired`. It exits 1 when the
 validation could not run (an unknown repository or commit, no Landlock, a failed export or scan).
 
 ## Configuration

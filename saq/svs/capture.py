@@ -16,6 +16,10 @@ saved, which decodes bytes lossily, so the record is for audit; a replay produce
 The row is inserted first, in a private session, then the CAS puts run, then the row is updated. A
 capture that cannot store its bytes keeps its row as `missing`, so it is counted per rule and
 retried on the alert's next dispositioned pass, and capture is idempotent on the row's unique key.
+
+A file deleted from SVS (saq.svs.actions.delete_sample) is never captured again: its audit row in
+svs_sample_deletions is checked before a capture starts, and again once it has stored, because a
+deletion can commit while a capture is between the two; such a capture removes what it wrote.
 """
 
 import json
@@ -28,11 +32,10 @@ from typing import Optional
 
 import yara
 import yara_scanner
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.root import RootAnalysis
-from saq.cas import Hold
 from saq.cas.errors import ObjectDeleting, ObjectNotFound
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
@@ -48,11 +51,8 @@ from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
 from saq.signatures.yara_inventory import get_yara_inventory
 from saq.svs.constants import CaptureState, MissingReason
 from saq.svs.samples import bytes_nodes_statement
+from saq.svs.storage import capture_hold, is_deleted, purge_deleted_file, release_capture_holds
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-
-# cas_holds.holder_kind of every capture hold; the holder_id is the svs_yara_captures row id, which
-# holds both the file and the match record
-HOLDER_KIND = "svs_capture"
 
 # column widths in svs_yara_captures
 _RULE_NAME_MAX_LENGTH = 256
@@ -64,12 +64,14 @@ class CaptureStatus(StrEnum):
     STORED = "stored"      # the file is now held for this capture
     ALREADY = "already"    # it already was
     MISSING = "missing"    # it could not be; the row says why
+    DELETED = "deleted"    # the file was deleted from SVS; there is no row
 
 
 @dataclass(frozen=True)
 class CaptureResult:
     status: CaptureStatus
-    capture_id: int
+    # None when the file was deleted from SVS
+    capture_id: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -89,10 +91,6 @@ class CaptureCandidate:
 
     def __str__(self) -> str:
         return f"{self.file_path} ({self.sha256}) for rule {self.rule_name} ({self.rule_uuid})"
-
-
-def capture_hold(capture_id: int) -> Hold:
-    return Hold(HOLDER_KIND, str(capture_id))
 
 
 def _truncate(value: Optional[str], length: int) -> Optional[str]:
@@ -220,20 +218,39 @@ def _rule_content_hash(rule_uuid: str) -> Optional[str]:
     return signature.content_hash if signature is not None else None
 
 
-def _release(pool: CASPool, digests: list[str], hold: Hold) -> None:
-    for digest in digests:
-        try:
-            pool.release(digest, hold)
-        except ObjectNotFound:
-            pass
-        except Exception as e:
-            logging.warning("unable to release svs capture hold %s on %s: %s", hold.holder_id, digest, e)
+def _abandon(pool: CASPool, capture_id: int, candidate: CaptureCandidate) -> None:
+    """Undoes a capture of a file that was deleted from SVS while it ran: its holds, its row, and
+    the bytes, which its put may have stored again after the deletion purged them."""
+    with private_transaction() as session:
+        record_digest = session.execute(
+            select(SVSYaraCapture.record_digest).where(SVSYaraCapture.id == capture_id)).scalar_one_or_none()
+        session.execute(delete(SVSYaraCapture).where(SVSYaraCapture.id == capture_id)
+                        .execution_options(synchronize_session=False))
+
+    release_capture_holds(pool, capture_id, [candidate.sha256] + ([record_digest] if record_digest else []))
+    purge_deleted_file(pool, candidate.sha256, reason="svs sample deletion: captured while it was deleted", actor=None)
 
 
 def capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> CaptureResult:
     """Capture one candidate of the alert: hold its file and its match record in the pool and record
     them in svs_yara_captures. Idempotent: a capture that is already stored is left as it is, and a
-    pending or missing one is tried again."""
+    pending or missing one is tried again. A file deleted from SVS is not captured."""
+    if is_deleted(candidate.sha256):
+        logging.info("svs sample %s of alert %s was deleted from svs; it is not captured again", candidate, alert_uuid,
+                     extra=_log_extra(alert_uuid, candidate))
+        return CaptureResult(CaptureStatus.DELETED, None)
+
+    result = _capture(pool, alert_uuid, candidate)
+    if result.status != CaptureStatus.ALREADY and is_deleted(candidate.sha256):
+        _abandon(pool, result.capture_id, candidate)
+        logging.info("svs sample %s of alert %s was deleted from svs while it was captured; the capture is removed",
+                     candidate, alert_uuid, extra=_log_extra(alert_uuid, candidate))
+        return CaptureResult(CaptureStatus.DELETED, None)
+
+    return result
+
+
+def _capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> CaptureResult:
     now = datetime.now()
     capture_id, existing = _claim_row(alert_uuid, candidate, now)
     if existing is not None and existing.state == CaptureState.STORED:
@@ -270,7 +287,7 @@ def capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> Capt
 
         file_size = pool.stat(candidate.sha256).size
     except Exception as e:
-        _release(pool, held, hold)
+        release_capture_holds(pool, capture_id, held)
         _set_row(capture_id, state=CaptureState.MISSING, missing_reason=MissingReason.STORAGE)
         logging.error("unable to store svs capture %s of alert %s: %s", candidate, alert_uuid, e,
                       extra=_log_extra(alert_uuid, candidate, missing_reason=MissingReason.STORAGE.value))

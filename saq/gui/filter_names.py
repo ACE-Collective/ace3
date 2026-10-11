@@ -87,6 +87,7 @@ SVS_SAMPLE_FILTER_SLUGS = {
     'Label Source': 'label_source',
     'Last Captured': 'last_captured',
     'Missing Data': 'missing_data',
+    'Retired': 'retired',
     'Rule': 'rule',
     'SHA256': 'sha256',
     'Signature': 'signature',

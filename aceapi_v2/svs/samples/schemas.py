@@ -50,6 +50,10 @@ class SampleRow(BaseModel):
     label_source: VerdictSource | None = Field(
         default=None, description="the strength that decided the label: explicit > inherited_single > inherited_multi")
     votes: SampleVotes
+    retired: bool = Field(description="whether the sample is retired for its rule: YARA validation only counts it")
+    retired_by: str | None = Field(default=None, description="who retired it, while it is retired")
+    retired_at: datetime | None = None
+    retired_reason: str | None = None
     local: bool = Field(description="whether this node can serve the file: always with a shared pool")
 
 
@@ -114,3 +118,66 @@ class MissingCount(BaseModel):
     rule_name: str
     reason: MissingReason
     count: int
+
+
+#
+# actions (docs/SVS_SAMPLES.md, *Actions*)
+#
+
+class LabelRequest(BaseModel):
+    verdict: Verdict = Field(description="the explicit verdict to store on every contributing detection that can take one")
+
+
+class ReasonRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000, description="why; recorded with the action")
+
+
+class SkippedDetection(BaseModel):
+    alert_uuid: str
+    content_hash: str
+    reason: str = Field(description="why this detection could not take the verdict")
+
+
+class LabelActionResult(BaseModel):
+    """What a relabel, reset or confirm wrote, and the sample's label afterwards."""
+    changed: int = Field(description="how many contributing detections changed")
+    unchanged: int = Field(description="how many already were as asked")
+    skipped: list[SkippedDetection] = Field(
+        description="the contributing detections that cannot take an analyst's verdict (on a false positive, "
+                    "unclassified or test alert), each with why")
+    label: Label | None = None
+    label_source: VerdictSource | None = None
+
+
+class Retirement(BaseModel):
+    sha256: str
+    rule_uuid: str
+    retired: bool = Field(description="whether it is retired now (false once unretired)")
+    reason: str
+    retired_by: str | None = None
+    retired_at: datetime
+    unretired_by: str | None = None
+    unretired_at: datetime | None = None
+    updated_at: datetime
+
+
+class SampleDeletion(BaseModel):
+    """The audit of a sample file deleted from SVS."""
+    sha256: str
+    rule_uuids: list[str] = Field(description="the rules the file had captures for")
+    capture_count: int = Field(description="how many captures were removed")
+    deleted_by: str | None = None
+    reason: str
+    deleted_at: datetime
+    node: str = Field(description="the node the file's bytes were on")
+    purged_at: datetime | None = Field(
+        default=None,
+        description="when the file's bytes were purged; null while they are not (a legal hold, a storage failure): "
+                    "deleting the sample again retries")
+    updated_at: datetime
+
+
+class SampleDeletionPage(BaseModel):
+    data: list[SampleDeletion]
+    next_cursor: str | None = Field(
+        default=None, description="pass as ?cursor= (with the same changed_since) for the next page; null on the last page")

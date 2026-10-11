@@ -138,6 +138,11 @@ changes can be tested against it (`docs/SVS.md`, Part 2; `docs/SVS_SAMPLES.md`).
 | `GET /api/v2/svs/samples/missing` | `signature:read` | How many captures of each rule lack something, by reason |
 | `GET /api/v2/svs/samples/{sha256}/{rule_uuid}/download` | `signature:download` | The file and its match records, in a zip |
 | `GET /api/v2/svs/samples/download?f=…` | `signature:download` | The files of every sample the filters match, in one zip |
+| `GET /api/v2/svs/samples/deletions` | `signature:read` | The audit of deleted sample files (*Sample deletions*) |
+| `PUT`, `DELETE /api/v2/svs/samples/{sha256}/{rule_uuid}/label` | `signature:read` + `alert:write` | Relabel, or reset to inherited (*Sample actions*) |
+| `POST /api/v2/svs/samples/{sha256}/{rule_uuid}/confirm` | `signature:read` + `alert:write` | Confirm its unconfirmed TPs |
+| `PUT`, `DELETE /api/v2/svs/samples/{sha256}/{rule_uuid}/retirement` | `svs:admin` | Retire, or unretire |
+| `DELETE /api/v2/svs/samples/{sha256}` | `svs:admin` | Delete the file from SVS, for every rule |
 
 The listing takes `sort` (`last_captured`, the default, `first_captured`, `capture_count`, `rule`,
 `label` or `sha256`) and `desc` (default `true`). A cursor belongs to its sort and direction; using
@@ -165,6 +170,8 @@ download lists them as skipped.
 | `label` | `tp`, `fp`, `conflicted`, or null (below). |
 | `label_source` | The strength that decided the label: `explicit`, `inherited_single` or `inherited_multi`. |
 | `votes` | How many contributing detections vote TP or FP at each strength: `tp_explicit`, `fp_explicit`, `tp_inherited_single`, … |
+| `retired` | Whether the sample is retired for its rule: a YARA validation only counts it. |
+| `retired_by`, `retired_at`, `retired_reason` | Who retired it, when and why, while it is retired. |
 | `local` | Whether this node can serve the file. Always true with a shared pool. |
 
 A capture (in a sample's detail) carries its `alert_uuid`, `observable_uuid`, `signature_version`,
@@ -210,16 +217,55 @@ no votes.
 | `stored` | Stored | `true`, `false`: whether any capture holds the file |
 | `missing_data` | Missing Data | `true`, `false`: whether any capture lacks its file or match record |
 | `unknown_version` | Unknown Version | `true`, `false` |
+| `retired` | Retired | `true`, `false` |
 
 `!` inverts a filter, including rows whose value is null: `!label:tp` returns FP, conflicted and
 unlabeled samples.
 
 ### Incremental pulls
 
-With `changed_since`, a sample is returned when a capture of it was added or changed, a
-contributing alert's row changed (a disposition change relabels it), or a contributing detection's
-verdict was set or cleared. Deleting an alert removes its votes without changing anything a pull can
-see; a report that must notice that pulls everything again.
+With `changed_since`, a sample is returned when a capture of it was added or changed, it was retired
+or unretired, a contributing alert's row changed (a disposition change relabels it), or a
+contributing detection's verdict was set or cleared. Deleting an alert removes its votes without
+changing anything a pull can see; a report that must notice that pulls everything again. A deleted
+sample is gone from the listing; `GET /api/v2/svs/samples/deletions?changed_since=…` says which.
+
+### Sample actions
+
+What each action means is in `docs/SVS_SAMPLES.md`, *Actions*. Every action records who took it,
+so it needs a user's API key or session; a config key gets 422.
+
+- **`PUT …/label`** `{"verdict": "tp" | "fp"}`, **`DELETE …/label`** and **`POST …/confirm`**
+  answer what they did:
+  - `changed` and `unchanged` count the contributing detections (for a reset, only those with an
+    explicit verdict);
+  - `skipped` lists the ones that cannot take an analyst's verdict, each with its `alert_uuid`,
+    `content_hash` and `reason`;
+  - `label` and `label_source` are the sample's label afterwards.
+
+  They answer 409 when no contributing detection can take the verdict, and 404 for an unknown
+  sample.
+- **`PUT …/retirement`** `{"reason": …}` and **`DELETE …/retirement`** answer the retirement:
+  `retired`, `reason`, `retired_by`, `retired_at`, `unretired_by`, `unretired_at`. Retiring a
+  retired sample changes nothing. Unretiring one that is not retired is a 404.
+- **`DELETE /api/v2/svs/samples/{sha256}`** `{"reason": …}` answers the deletion's audit row
+  (below). A 409 carries `{"error": "wrong_node", "node": …}` when the bytes are on another node's
+  local pool, and `{"error": "legal_hold"}` when the file is under legal hold. Deleting a deleted
+  file retries an unfinished purge and answers the same row.
+
+### Sample deletions
+
+`GET /api/v2/svs/samples/deletions` lists the audit of deleted sample files, oldest change first,
+in keyset pages (`limit`, `cursor`, `changed_since`). A row is:
+
+| Field | Meaning |
+|---|---|
+| `sha256` | The deleted file. |
+| `rule_uuids`, `capture_count` | The rules it had samples for, and how many captures were removed. |
+| `deleted_by`, `reason`, `deleted_at` | Who deleted it, why and when. |
+| `node` | The node its bytes were on. |
+| `purged_at` | When its bytes were purged; null while they are not (deleting again retries). |
+| `updated_at` | The row's last change: its creation, then its purge. |
 
 ### Joins
 

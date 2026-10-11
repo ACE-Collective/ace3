@@ -7,7 +7,7 @@ A sample's grade, its **label**, is not stored with it. It is derived from the v
 alert's detections whenever it is read, so a later disposition change or verdict override relabels
 the sample without touching its bytes.
 
-This document covers how samples are captured, stored, labeled and read. The design and its
+This document covers how samples are captured, stored, labeled, read and acted on. The design and its
 reasoning are in `docs/SVS.md`; the API's data dictionary is in `docs/SVS_API.md`, *Samples*.
 
 ## What is captured, and when
@@ -141,6 +141,69 @@ version, …), whose saved filters are per user like the alert manage page's. It
 match record). `GET /api/v2/svs/samples/missing`
 counts the missing captures per rule and reason.
 
+## Actions
+
+Five actions change what SVS makes of a sample (`saq/svs/actions.py`). Each is a call to the API
+(`docs/SVS_API.md`, *Sample actions*), records who took it, and is logged at INFO as an `AUDIT:`
+line. A config API key has no user, so it cannot take any of them (422).
+
+| Action | Permission | What it does |
+|---|---|---|
+| **Relabel TP / FP** | `signature:read` + `alert:write` | Stores an explicit verdict on every contributing detection that can take one |
+| **Reset to inherited** | `signature:read` + `alert:write` | Clears the explicit verdicts on its contributing detections |
+| **Confirm** | `signature:read` + `alert:write` | Stores an explicit TP on each unconfirmed (`inherited_multi`) TP detection |
+| **Retire / Unretire** | `svs:admin` | Marks the sample as no longer expected to match its rule, or expected again |
+| **Delete sample** | `svs:admin` | Removes the file from SVS, for every rule |
+
+**Relabel, reset and confirm write verdicts, never a label.** A label is always derived from the
+verdicts of the sample's contributing detections (*Labels*), so these change those verdicts through
+the same store the alert page uses (`saq/detection_verdicts/store.py`, `docs/SVS.md` Part 1), all
+in one transaction. Each change is in the verdict history, like a change made on the alert page.
+- A relabel writes explicit verdicts, which outweigh every inherited vote, so it is how a
+  conflicted sample is resolved.
+- Detections that cannot take an analyst's verdict are skipped and listed with why: those on a
+  `FALSE_POSITIVE` alert (correct the alert's disposition instead), on an unclassified alert, on an
+  alert whose disposition only ACE sets (`SIMULATED`), and rows synced before detection identity.
+  When nothing can take the verdict, the action is refused (409).
+- So relabelling TP a sample that is also on an FP alert writes TP on its TP alerts only. The
+  label becomes TP, because an explicit vote outweighs the FP alert's inherited one, and the FP
+  alert itself stays FP.
+- A reset only touches the detections that have an explicit verdict, so the detections of an FP
+  alert, whose verdict is inherited, are never listed as skipped.
+- Confirm leaves detections someone has set alone. Confirming or resetting nothing is not an
+  error.
+
+**Retire** a sample for its rule when the rule is meant to stop matching it, for instance when an
+intended regression has merged. A YARA validation then only counts the pair (`retired`,
+`docs/SVS_VALIDATION.md`), and it stops showing as *already broken on base*. A reason is required.
+Unretiring is soft: the row keeps who unretired it and when, and retiring again reuses it with the
+new reason. Retirements are listed with the sample (`retired`, `retired_by`, `retired_at`,
+`retired_reason`) and filtered with *Retired*.
+
+**Delete sample** is for legal or privacy requests. It works on the file: every rule's sample of
+that sha256 goes. In order:
+1. It refuses when the file's bytes are on another node's local pool (409 `wrong_node`: delete it
+   on that node) or when the file is under a CAS legal hold (409 `legal_hold`: release the hold
+   first, `cas:hold`).
+2. It commits an audit row in `svs_sample_deletions`: who, why, when, the rules and the number of
+   captures. From then on capture never stores the file again, including a capture that was
+   already running.
+3. It deletes every capture of the file and its retirements.
+4. It releases the captures' holds on their match records and purges the file's bytes from the
+   pool, which also records the purge in `cas_purges`.
+
+If the purge fails (a legal hold taken meanwhile, a storage failure), the audit row has no
+`purged_at` and the bytes stay. Deleting the sample again retries the purge. The deletion audit is
+read through `GET /api/v2/svs/samples/deletions`.
+
+Deletion does not reach:
+- the alerts' own copies of the file, under their storage directories;
+- the YARA QA store (`docs/YARA_QA.md`), which has its own retention;
+- the plaintext copies in each node's CAS read cache, until they are evicted;
+- with a node-local pool, a copy another node wrote of the same bytes, until that node's
+  `ace cas orphans` sweep;
+- the match records, until CAS GC collects them once they are unheld (`grace_seconds` later).
+
 ## In the GUI
 
 *Signatures → Samples* (`app/signatures/views/samples.py`) lists the samples, for anyone with
@@ -155,8 +218,9 @@ counts the missing captures per rule and reason.
 - how many captures it has, and how many of them are missing;
 - its votes, `TP n · FP m`, with each strength in the tooltip;
 - when it was first and last captured;
-- an icon when a capture has signature version `unknown`, and another when a capture is missing
-  its file or match record.
+- an icon when a capture has signature version `unknown`, another when a capture is missing
+  its file or match record, and another when the sample is retired (who, when and why in its
+  tooltip).
 
 The newest captures come first. A column header sorts by that column, and clicking it again
 reverses the order. Pages are keyset pages of 25 to 250 rows.
@@ -164,7 +228,7 @@ reverses the order. Pages are keyset pages of 25 to 250 rows.
 **Filters.** *Edit* opens an editor with one row per value: a filter, *NOT*, and the value. Rows
 for the same filter are ORed, and different filters are ANDed. The filters are the screen's:
 signature (rule uuid), rule name, sha256, alert uuid, file name, label, label source, last
-captured, stored, missing data and unknown version. Clicking a filter's name in the bar removes
+captured, stored, missing data, unknown version and retired. Clicking a filter's name in the bar removes
 it, and clicking a value removes that value.
 
 **Saved filters and links.** Saved filters work as on the alert manage page (*Save as*, *Save*,
@@ -184,9 +248,14 @@ match, in one zip, up to `svs.samples.max_bulk_download_files` files and
 `svs.samples.max_bulk_download_bytes` bytes.
 
 **A sample's page** (`/ace/signatures/samples/<sha256>/<rule uuid>`) shows:
-- the rule, the file and the sample's label;
+- the rule, the file and the sample's label, and whether it is retired;
 - its votes at each strength;
 - a link to every sample of the rule, and, with `signature:download`, *Download sample*;
+- the actions its user may take: *Relabel TP*, *Relabel FP*, *Reset to inherited* (when there are
+  explicit votes) and *Confirm* (when there are unconfirmed ones) with `alert:write`; *Retire* or
+  *Unretire*, and *Delete sample*, with `svs:admin`. Retire and Delete ask for a reason, and Delete
+  says what it removes and what it does not. After a relabel, the page lists the detections that
+  were skipped and why;
 - every capture, newest first. Each row has its alert, the file's path and meta tags, the
   signature version, the state (and why a capture is missing), and the verdict of each
   contributing detection ("alert deleted" when the alert is gone). It also has the match summary

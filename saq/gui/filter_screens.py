@@ -119,6 +119,7 @@ SVS_SAMPLES_SCREEN = FilterScreen(
         FilterField("Stored", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
         FilterField("Missing Data", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
         FilterField("Unknown Version", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Retired", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
     ),
 )
 

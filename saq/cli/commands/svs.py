@@ -116,10 +116,12 @@ def print_report(result) -> None:
 
 def cli_validate(args):
     """Validate a commit of a rule repository against another."""
+    from saq.svs.actions import retired_pairs
     from saq.svs.yara.replay import ReplayError, run_replay
 
     try:
-        result = run_replay(args.repository, args.base, args.head, branch=args.branch)
+        # a retired sample is only counted, as the validation service counts it
+        result = run_replay(args.repository, args.base, args.head, branch=args.branch, retired=retired_pairs())
     except ReplayError as e:
         print(f"validation failed: {e}", file=sys.stderr)
         return 1

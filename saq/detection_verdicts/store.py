@@ -7,6 +7,8 @@ detection_point_verdict_history in the same transaction (RPT-4).
 """
 
 import logging
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Optional
 
 from sqlalchemy import select
@@ -135,13 +137,122 @@ def clear_verdict(alert_id: int, content_hash: str, user_id: int, *, analyst: bo
     return _change(alert_id, content_hash, None, user_id, analyst)
 
 
+class SkipCause(StrEnum):
+    ALERT = "alert"            # the alert's disposition does not take analyst verdicts
+    DETECTION = "detection"    # the detection predates detection identity
+    GONE = "gone"              # the detection left its alert's tree
+    SOURCE = "source"          # its verdict source is not the one asked for (only_source)
+
+
+@dataclass(frozen=True)
+class SkippedDetection:
+    alert_id: int
+    content_hash: str
+    cause: SkipCause
+    reason: str
+
+
+@dataclass
+class VerdictBatch:
+    """What set_verdicts() did: how many detections changed, how many already had the verdict,
+    and the ones it could not write, each with why."""
+    changed: int = 0
+    unchanged: int = 0
+    skipped: list[SkippedDetection] = field(default_factory=list)
+
+
+_GONE = "the detection is gone from its alert"
+
+
+def _source_of(session, detection: DetectionPoint) -> Optional[str]:
+    return session.execute(
+        select(verdict_source_expr(Alert, DetectionPoint, DetectionPointVerdict))
+        .select_from(DetectionPoint)
+        .join(Alert, Alert.id == DetectionPoint.alert_id)
+        .outerjoin(DetectionPointVerdict, verdict_join_condition(DetectionPoint, DetectionPointVerdict))
+        .where(DetectionPoint.id == detection.id)).scalar_one()
+
+
+def set_verdicts(targets: list[tuple[int, str]], verdict: Optional[str], user_id: int, *, analyst: bool = True,
+                 only_source: Optional[str] = None, refuse: frozenset[SkipCause] = frozenset()) -> VerdictBatch:
+    """Stores verdict ('tp' or 'fp'; None clears) on every (alert_id, content_hash) detection of
+    targets, in one transaction: any error rolls back the whole batch. A detection that cannot take
+    the verdict (its alert is not a tp alert analysts can grade, it predates detection identity,
+    or it is gone) is skipped with the reason, not an error. With only_source, a detection whose
+    verdict source is not that one once it is locked is skipped too, so a Confirm (only_source
+    inherited_multi) never overwrites a verdict someone set in the meantime. A skip whose cause is
+    in refuse raises VerdictNotAllowed instead, and nothing is written."""
+    if verdict is not None and verdict not in VERDICTS:
+        raise ValueError(f"invalid verdict {verdict!r}")
+
+    batch = VerdictBatch()
+    if not targets:
+        return batch
+
+    session = get_db()
+    try:
+        # the detections are locked in (alert id, detection id) order, the order confirm_alert has
+        # always locked one alert's in, so two batches never wait on each other in a cycle
+        wanted = set(targets)
+        rows = session.execute(
+            select(DetectionPoint.alert_id, DetectionPoint.content_hash, DetectionPoint.id)
+            .where(DetectionPoint.alert_id.in_({alert_id for alert_id, _ in wanted}))
+            .order_by(DetectionPoint.alert_id, DetectionPoint.id)).all()
+        ordered = [(row.alert_id, row.content_hash) for row in rows if (row.alert_id, row.content_hash) in wanted]
+        for alert_id, content_hash in sorted(wanted - set(ordered)):
+            batch.skipped.append(SkippedDetection(alert_id, content_hash, SkipCause.GONE, _GONE))
+
+        alert_refusals: dict[int, Optional[str]] = {}
+        for alert_id, content_hash in ordered:
+            try:
+                detection = _lock_detection(session, alert_id, content_hash)
+            except DetectionNotFound:
+                batch.skipped.append(SkippedDetection(alert_id, content_hash, SkipCause.GONE, _GONE))
+                continue
+
+            if alert_id not in alert_refusals:
+                try:
+                    _check_alert(_alert_disposition(session, alert_id), analyst)
+                    alert_refusals[alert_id] = None
+                except VerdictNotAllowed as e:
+                    alert_refusals[alert_id] = str(e)
+
+            skip: Optional[tuple[SkipCause, str]] = None
+            if alert_refusals[alert_id] is not None:
+                skip = (SkipCause.ALERT, alert_refusals[alert_id])
+            else:
+                try:
+                    _check_detection(detection)
+                except VerdictNotAllowed as e:
+                    skip = (SkipCause.DETECTION, str(e))
+
+            if skip is None and only_source is not None:
+                source = _source_of(session, detection)
+                if source != only_source:
+                    skip = (SkipCause.SOURCE, f"its verdict source is {source}, not {only_source}")
+
+            if skip is not None and skip[0] in refuse:
+                raise VerdictNotAllowed(skip[1])
+            if skip is not None:
+                batch.skipped.append(SkippedDetection(alert_id, content_hash, *skip))
+            elif _write(session, detection, verdict, user_id):
+                batch.changed += 1
+            else:
+                batch.unchanged += 1
+
+        session.commit()
+        return batch
+    except Exception:
+        session.rollback()
+        raise
+
+
 def confirm_alert(alert_id: int, user_id: int, *, analyst: bool = True) -> int:
     """Confirms every unconfirmed (inherited_multi) TP on the alert: stores an explicit TP on each,
     which does not change the verdict but upgrades its source. Returns how many were confirmed."""
     session = get_db()
     try:
-        disposition = _alert_disposition(session, alert_id)
-        _check_alert(disposition, analyst)
+        _check_alert(_alert_disposition(session, alert_id), analyst)
 
         hashes = session.execute(
             select(DetectionPoint.content_hash)
@@ -150,17 +261,17 @@ def confirm_alert(alert_id: int, user_id: int, *, analyst: bool = True) -> int:
             .outerjoin(DetectionPointVerdict, verdict_join_condition(DetectionPoint, DetectionPointVerdict))
             .where(DetectionPoint.alert_id == alert_id)
             .where(verdict_source_expr(Alert, DetectionPoint, DetectionPointVerdict) == SOURCE_INHERITED_MULTI)
-            .order_by(DetectionPoint.id)).scalars().all()
-
-        confirmed = 0
-        for content_hash in hashes:
-            detection = _lock_detection(session, alert_id, content_hash)
-            _check_detection(detection)
-            if _write(session, detection, VERDICT_TP, user_id):
-                confirmed += 1
-
-        session.commit()
-        return confirmed
+            ).scalars().all()
+        if not hashes:
+            session.commit()
+            return 0
     except Exception:
         session.rollback()
         raise
+
+    # a detection that is gone, or no longer unconfirmed (someone set it meanwhile), has nothing
+    # to confirm; anything else refuses the whole confirm, as it always has
+    batch = set_verdicts([(alert_id, content_hash) for content_hash in hashes], VERDICT_TP, user_id,
+                         analyst=analyst, only_source=SOURCE_INHERITED_MULTI,
+                         refuse=frozenset({SkipCause.ALERT, SkipCause.DETECTION}))
+    return batch.changed

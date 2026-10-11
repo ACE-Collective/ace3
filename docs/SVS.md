@@ -362,12 +362,15 @@ label: check that the sample was ever a real hit for this rule"*. [DP-2]
 
 **Analyst actions on a sample:**
 - **Relabel.** This writes verdict overrides on the contributing detections, so it has the same
-  source of truth as Part 1.
+  source of truth as Part 1. **Reset** clears them again, so the label is inherited from the alerts.
 - **Confirm label.**
 - **Retire** for one rule, with who and why. The sample is no longer expected to match that rule.
 - **Download**, one sample or a selection, as a zip with the password `infected`, exactly as the
   Yara QA Results page does. It needs `signature:download`. [FR-28]
-- **Delete sample.** A CAS purge plus rows, audited, for legal or privacy requests.
+- **Delete sample.** A CAS purge plus rows, audited, for legal or privacy requests. It removes the
+  file for every rule, and the audit row keeps capture from storing it again.
+
+How each action behaves is in `docs/SVS_SAMPLES.md`, *Actions*.
 
 Nothing changes automatically when a PR merges. An accepted regression keeps showing as *already
 broken on base* until it is retired or relabeled.
@@ -977,7 +980,8 @@ tables are on the main chain.
 |---|---|
 | `detection_point_verdicts` | Explicit verdicts (Part 1) |
 | `svs_yara_captures` | One row per `(alert, sha256, rule uuid)`, with scan context; each holds its CAS object |
-| `svs_sample_retirements` | Retire actions: `(sha256, rule uuid, who, why, when)` |
+| `svs_sample_retirements` | Retire actions: `(sha256, rule uuid, who, why, when)`; unretiring is soft |
+| `svs_sample_deletions` | The sample deletion audit: `(sha256, who, why, when, rules, captures, purged when)` |
 | `svs_validations`, `svs_validation_results` | A validation request and its per-`(sample, rule)` outcome and category; a request is served from an earlier validation with the same `(repository, base_sha, head_sha, corpus version)` [FR-13] |
 | `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips` (Part 3) [FR-15] |
 | `svs_catalog_tests` | The ART catalog: guid, repository, technique, name, platforms, commit |
