@@ -482,6 +482,7 @@ class AIApiConfig(BaseModel):
     """Settings for the AI investigation API app (aceapi_ai)."""
     rate_limit_fail_open: bool = Field(default=False, description="when redis is unreachable, serve queries without rate limiting (true) or refuse them with 503 (false); the limiter protects vendor quotas shared with production analysis, so failing closed is the default")
     search_limits: AIQueryBackendLimits = Field(default_factory=AIQueryBackendLimits, description="rate limits applied to the AI API search endpoints (only the concurrency, per-minute, hourly and query timeout fields are used)")
+    export_limits: AIQueryBackendLimits = Field(default_factory=lambda: AIQueryBackendLimits(requests_per_minute=60, hourly_budget=1200), description="rate limits applied to the AI API export endpoints (only the concurrency, per-minute, hourly and query timeout fields are used); higher than the search defaults because a first pull pages through every alert and observable")
 
 class APIQueryDefaultsConfig(BaseModel):
     name: str = Field(..., description="The name of the API query defaults.")

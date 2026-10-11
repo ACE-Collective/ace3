@@ -532,6 +532,16 @@ def fetch_alert_page(
 ) -> tuple[list[AlertRow], str | None]:
     """One page of the listing after `cursor` (the first page when None), and the cursor of
     the next page (None on the last). Raises InvalidCursor."""
+    alert_ids, next_cursor = fetch_alert_page_ids(listing, cursor, limit)
+    return load_alert_rows(alert_ids), next_cursor
+
+
+def fetch_alert_page_ids(
+    listing: AlertListing, cursor: str | None, limit: int
+) -> tuple[list[int], str | None]:
+    """The alert ids of one page of the listing, in page order, and the cursor of the next
+    page: fetch_alert_page() without the rows, for callers that load their own. Raises
+    InvalidCursor."""
     statement = listing.statement
     if listing.order == LISTING_ORDER_UPDATED:
         settled = func.timestampadd(text("MICROSECOND"), -CHANGED_SINCE_SETTLE_SECONDS * 1000000, func.now(6))
@@ -556,7 +566,7 @@ def fetch_alert_page(
         last_id, last_updated_at = keys[-1]
         next_cursor = encode_listing_cursor(listing.order, last_id, last_updated_at)
 
-    return load_alert_rows([alert_id for alert_id, _ in keys]), next_cursor
+    return [alert_id for alert_id, _ in keys], next_cursor
 
 
 def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
