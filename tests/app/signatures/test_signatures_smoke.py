@@ -71,6 +71,13 @@ def signature_downloader():
     delete_user("sig_downloader")
 
 
+@pytest.fixture
+def signature_actor():
+    _make_user("sig_actor", [("signature", "read"), ("alert", "write"), ("svs", "admin")])
+    yield "sig_actor"
+    delete_user("sig_actor")
+
+
 class TestSignaturesIsPagesOnly:
     def test_page_views_exist(self, app):
         for endpoint in PAGE_VIEWS:
@@ -186,6 +193,28 @@ class TestSamplesPages:
             _login(client, signature_downloader)
             for page_url in _sample_pages():
                 assert b'data-can-download="true"' in client.get(page_url).data
+
+    def test_action_controls_follow_their_permissions(self, app, signature_reader, signature_actor):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            for page_url in _sample_pages():
+                page = client.get(page_url).data
+                assert b'data-can-relabel="false"' in page
+                assert b'data-can-admin="false"' in page
+
+        with app.test_client() as client:
+            _login(client, signature_actor)
+            for page_url in _sample_pages():
+                page = client.get(page_url).data
+                assert b'data-can-relabel="true"' in page
+                assert b'data-can-admin="true"' in page
+
+    def test_only_the_detail_page_asks_for_a_reason(self, app, signature_reader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            assert b'id="sample_reason_modal"' in client.get(
+                url_for("signatures.sample_detail", sha256=SHA256, rule_uuid=RULE_UUID)).data
+            assert b'id="sample_reason_modal"' not in client.get(url_for("signatures.samples")).data
 
     def test_list_page_seeds_the_default_saved_filters_once(self, app, signature_reader):
         assert _saved_filter_names(signature_reader, "svs_samples") == []

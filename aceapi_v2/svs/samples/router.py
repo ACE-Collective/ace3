@@ -7,6 +7,10 @@ was captured from, with a TP/FP label derived from the verdicts on those alerts'
 Reading samples, their labels and match records needs signature:read. Anything that returns the
 files needs signature:download: they are live malware, and they are served only inside zips
 encrypted with the password 'infected'.
+
+The analyst actions (docs/SVS_SAMPLES.md, *Actions*): relabel, reset and confirm write verdicts on
+the sample's detections, so they need alert:write as well as signature:read; retire and delete need
+svs:admin. Each records who took it, so a config API key (no user) gets 422.
 """
 
 import json
@@ -26,7 +30,18 @@ from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, CsvStreamResponse, NdjsonStreamResponse, ZipFileResponse
 from aceapi_v2.svs.samples import service
-from aceapi_v2.svs.samples.schemas import MissingCount, SampleDetail, SampleListPage, SampleRow
+from aceapi_v2.svs.samples.schemas import (
+    LabelActionResult,
+    LabelRequest,
+    MissingCount,
+    ReasonRequest,
+    Retirement,
+    SampleDeletion,
+    SampleDeletionPage,
+    SampleDetail,
+    SampleListPage,
+    SampleRow,
+)
 from aceapi_v2.sync import run_db_in_thread
 from saq.svs.samples import SampleSort
 
@@ -39,7 +54,7 @@ FilterParam = Annotated[list[str], Query(
     default_factory=list,
     description="a filter in the share-link encoding (`[!]slug:v1,v2`) with the samples screen's slugs: "
                 "signature, rule, sha256, alert, file_name, label, label_source, last_captured, stored, "
-                "missing_data, unknown_version (see docs/SVS_API.md); repeat for more. Filters are ANDed, "
+                "missing_data, unknown_version, retired (see docs/SVS_API.md); repeat for more. Filters are ANDed, "
                 "the values of one ORed.")]
 SortParam = Annotated[SampleSort, Query(description="what the listing is ordered by")]
 DescendingParam = Annotated[bool, Query(description="descending order")]
@@ -238,6 +253,23 @@ async def get_capture_record(
     )
 
 
+@router.get("/deletions", response_model=SampleDeletionPage)
+async def list_deletions(
+    auth: Annotated[ApiAuthResult, Depends(require_permission("signature", "read"))],
+    changed_since: Annotated[datetime | None, Query(
+        description="only deletions recorded or changed (their purge finished) at or after this time (UTC if no "
+                    "offset is given)")] = None,
+    cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
+    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+) -> SampleDeletionPage:
+    """The audit of sample files deleted from SVS, oldest change first: who deleted each, why, which
+    rules it had captures for, and whether its bytes are purged yet."""
+    try:
+        return await run_db_in_thread(service.list_deletions, changed_since, cursor, limit)
+    except service.InvalidCursor as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def _zip_response(label: str, zip_path: str, staging: str) -> ZipFileResponse:
     return ZipFileResponse(
         zip_path,
@@ -298,3 +330,85 @@ async def download_sample(
     label = f"svs-sample-{download.sha256s[0]}"
     zip_path, staging = await run_in_threadpool(service.create_sample_zip, label, download, auth.auth_name)
     return _zip_response(label, zip_path, staging)
+
+
+#
+# actions
+#
+
+@router.put("/{sha256}/{rule_uuid}/label", response_model=LabelActionResult,
+            dependencies=[Depends(require_permission("signature", "read"))])
+async def relabel_sample(
+    sha256: str,
+    rule_uuid: str,
+    body: LabelRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> LabelActionResult:
+    """Relabel the sample: store the explicit verdict on every contributing detection that can take
+    an analyst's verdict, in one transaction. Detections on false positive, unclassified or test
+    alerts are skipped and listed with why; 409 when none can take it (correct the alert's
+    disposition instead)."""
+    return await run_db_in_thread(service.relabel_sample, sha256, rule_uuid, body.verdict, auth.auth_user_id)
+
+
+@router.delete("/{sha256}/{rule_uuid}/label", response_model=LabelActionResult,
+               dependencies=[Depends(require_permission("signature", "read"))])
+async def reset_sample_label(
+    sha256: str,
+    rule_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> LabelActionResult:
+    """Reset the sample's label to inherited: clear the explicit verdicts on its contributing
+    detections, so they inherit from their alerts' dispositions again."""
+    return await run_db_in_thread(service.reset_sample_label, sha256, rule_uuid, auth.auth_user_id)
+
+
+@router.post("/{sha256}/{rule_uuid}/confirm", response_model=LabelActionResult,
+             dependencies=[Depends(require_permission("signature", "read"))])
+async def confirm_sample(
+    sha256: str,
+    rule_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> LabelActionResult:
+    """Confirm the sample's unconfirmed TP detections (verdict source inherited_multi): an explicit
+    TP on each, which makes them weigh as a person's verdict. Nothing to confirm is not an error."""
+    return await run_db_in_thread(service.confirm_sample, sha256, rule_uuid, auth.auth_user_id)
+
+
+@router.put("/{sha256}/{rule_uuid}/retirement", response_model=Retirement)
+async def retire_sample(
+    sha256: str,
+    rule_uuid: str,
+    body: ReasonRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
+) -> Retirement:
+    """Retire the sample for its rule: it is no longer expected to match, and YARA validation only
+    counts it. Retiring a retired sample changes nothing."""
+    return await run_db_in_thread(service.retire_sample, sha256, rule_uuid, body.reason, auth.auth_user_id)
+
+
+@router.delete("/{sha256}/{rule_uuid}/retirement", response_model=Retirement)
+async def unretire_sample(
+    sha256: str,
+    rule_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
+) -> Retirement:
+    """Unretire the sample: it is expected to match its rule again. 404 when it is not retired."""
+    return await run_db_in_thread(service.unretire_sample, sha256, rule_uuid, auth.auth_user_id)
+
+
+@router.delete("/{sha256}", response_model=SampleDeletion)
+async def delete_sample(
+    sha256: str,
+    body: ReasonRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
+) -> SampleDeletion:
+    """Delete the file from SVS, for every rule: its captures and retirements are removed, its
+    bytes purged from the pool, and an audit row is kept (GET /svs/samples/deletions) that also
+    keeps the file from being captured again. Not reached: the alerts' own files and the YARA QA
+    store.
+
+    Deleting a deleted sample retries an unfinished purge. 409 wrong_node when the bytes are on
+    another node's local pool, 409 legal_hold when the file is under legal hold."""
+    logger.info("AUDIT: user %s deleting svs sample %s: %s", auth.auth_name, sha256, body.reason)
+    return await run_db_in_thread(service.delete_sample_file, sha256, body.reason, auth.auth_user_id, auth.auth_name)

@@ -1879,6 +1879,81 @@ class SVSYaraCapture(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSSampleRetirement(Base):
+    """A sample retired for its rule (docs/SVS_SAMPLES.md, *Actions*): the file is no longer
+    expected to match the rule, so a YARA validation only counts it. One row per (sha256, rule
+    uuid). Unretiring is soft (unretired_at is set), so incremental pulls and the SVS corpus
+    version see it; retiring again reuses the row. Only saq/svs/actions.py writes this table."""
+
+    __tablename__ = 'svs_sample_retirements'
+    __table_args__ = (
+        UniqueConstraint('sha256', 'rule_uuid', name='uq_svs_sample_retirements_sample'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    rule_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # who retired it, NULL once that user is deleted
+    retired_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    retired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # set while the sample is not retired
+    unretired_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    unretired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # maintained by the server on every change of the row, for incremental pulls and the SVS
+    # corpus version
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    retired_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[retired_by])
+    unretired_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[unretired_by])
+
+
+class SVSSampleDeletion(Base):
+    """The audit of a deleted sample file (docs/SVS_SAMPLES.md, *Actions*): every capture of the
+    sha256, for every rule, was removed and its bytes purged from the svs_samples pool. The row is
+    kept, and while it exists capture never stores the sha256 again. purged_at is NULL until the
+    file's bytes are gone; deleting again retries the purge. Only saq/svs writes this table."""
+
+    __tablename__ = 'svs_sample_deletions'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
+    # who deleted it, NULL once that user is deleted
+    deleted_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # JSON-serialized list of the rule uuids the file had captures for
+    rule_uuids: Mapped[str] = mapped_column(Text, nullable=False)
+    capture_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # the node the file's bytes were on: with a node-local pool, where a retried purge has to run
+    node: Mapped[str] = mapped_column(String(1024), nullable=False)
+    purged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # maintained by the server on every change of the row, for incremental pulls and the SVS
+    # corpus version
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    deleted_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[deleted_by])
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

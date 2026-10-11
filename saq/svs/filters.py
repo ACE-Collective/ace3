@@ -84,6 +84,8 @@ def sample_filter_condition(samples, entry: dict, tz: tzinfo = pytz.utc) -> Colu
         condition = _flag(samples.c.missing_data, values)
     elif name == "Unknown Version":
         condition = _flag(samples.c.unknown_version, values)
+    elif name == "Retired":
+        condition = _flag(samples.c.retired, values)
     else:
         raise ValueError(f"unknown samples filter {name!r}")
 

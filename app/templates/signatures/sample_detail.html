@@ -7,7 +7,32 @@
      data-rule-uuid="{{ rule_uuid }}">
     <p class="mb-2"><a href="{{ url_for('signatures.samples') }}"><span class="bi bi-arrow-left"></span> Samples</a></p>
     <div id="sample_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="sample_notice" class="alert alert-info d-none" role="status"></div>
     <div id="sample_detail"><span class="text-muted">Loading…</span></div>
+</div>
+
+{# Retire and Delete ask why; signatures_samples.js fills in the title, the text and the button #}
+<div class="modal fade" id="sample_reason_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <form id="sample_reason_form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="sample_reason_title"></h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="sample_reason_text" class="mb-2"></div>
+                <label class="form-label" for="sample_reason">Reason</label>
+                <textarea class="form-control" id="sample_reason" name="reason" rows="3" required maxlength="4000"></textarea>
+                <div id="sample_reason_error" class="text-danger small mt-2 d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn" id="sample_reason_submit"></button>
+            </div>
+        </div>
+    </div>
+    </form>
 </div>
 {% endblock %}
 

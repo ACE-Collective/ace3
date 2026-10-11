@@ -5,6 +5,10 @@
 // Files are plain links to the API: the browser saves the zip, which is encrypted with the
 // password "infected". Every value shown came from analyzed data or rule files, so it is placed
 // as text, never markup.
+//
+// A sample's page also offers the actions (docs/SVS_SAMPLES.md, Actions) its user may take:
+// relabel, reset and confirm with alert:write, retire and delete with svs:admin. The API checks
+// the permissions again; the page only leaves out what would be refused.
 
 (function() {
     "use strict";
@@ -141,8 +145,15 @@
             alert_url: data.alertUrl,
             tz: data.tz,
             can_download: data.canDownload === "true",
+            can_relabel: data.canRelabel === "true",
+            can_admin: data.canAdmin === "true",
             max_bulk_files: data.maxBulkFiles,
         };
+    }
+
+    function retired_title(row) {
+        return "retired for this rule by " + (row.retired_by || "a deleted user") + " on " + date(row.retired_at) +
+            " UTC: " + row.retired_reason + ". YARA validations only count it.";
     }
 
     function detail_url(settings, sha256, rule_uuid) {
@@ -190,8 +201,11 @@
             }},
             {label: "First captured", sort: "first_captured", width: "10rem", title: "UTC", render: function(row) { return date(row.first_captured); }},
             {label: "Last captured", sort: "last_captured", width: "10rem", title: "UTC", render: function(row) { return date(row.last_captured); }},
-            {label: "", width: "3.5rem", render: function(row) {
+            {label: "", width: "4.5rem", render: function(row) {
                 const cell = el("span", "text-nowrap");
+                if (row.retired) {
+                    append(cell, icon("bi-archive", retired_title(row), "text-muted me-1"));
+                }
                 if (row.unknown_version) {
                     append(cell, icon("bi-exclamation-triangle", row.unknown_version +
                         " capture(s) with signature version unknown: the rule's repository is not in service_yara.git_repo_dirs",
@@ -293,15 +307,235 @@
         const sha256 = page.dataset.sha256;
         const rule_uuid = page.dataset.ruleUuid;
         const error = document.getElementById("sample_error");
+        const notice = document.getElementById("sample_notice");
         const target = document.getElementById("sample_detail");
 
-        aceApi.get(settings.path + "/" + encodeURIComponent(sha256) + "/" + encodeURIComponent(rule_uuid))
-            .then(function(sample) { render_detail(settings, target, sample); })
-            .catch(function(err) {
-                target.replaceChildren();
-                error.textContent = "Unable to load the sample: " + err.message;
+        const context = {
+            settings: settings,
+            // the API paths of the sample, and of its file (deletion is per file, for every rule)
+            path: settings.path + "/" + encodeURIComponent(sha256) + "/" + encodeURIComponent(rule_uuid),
+            file_path: settings.path + "/" + encodeURIComponent(sha256),
+            reload: load,
+            // a message above the sample: kind "error" or "info", text or nodes
+            notify: function(kind, content) {
+                const box = kind === "error" ? error : notice;
+                (kind === "error" ? notice : error).classList.add("d-none");
+                box.replaceChildren();
+                append.apply(null, [box].concat(content));
+                box.classList.remove("d-none");
+            },
+        };
+
+        function load() {
+            return aceApi.get(context.path)
+                .then(function(sample) { render_detail(context, target, sample); })
+                .catch(function(err) {
+                    target.replaceChildren();
+                    context.notify("error", "Unable to load the sample: " + err.message);
+                });
+        }
+
+        setup_reason_modal();
+        load();
+    }
+
+    //
+    // actions
+    //
+
+    // what the reason dialog does on submit: a function(reason) returning a promise
+    let reason_action = null;
+
+    function setup_reason_modal() {
+        const form = document.getElementById("sample_reason_form");
+        if (!form) {
+            return;
+        }
+        form.addEventListener("submit", function(event) {
+            event.preventDefault();
+            const reason = document.getElementById("sample_reason").value.trim();
+            const error = document.getElementById("sample_reason_error");
+            if (!reason) {
+                error.textContent = "A reason is required.";
                 error.classList.remove("d-none");
+                return;
+            }
+            const submit = document.getElementById("sample_reason_submit");
+            submit.disabled = true;
+            reason_action(reason)
+                .then(function() {
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById("sample_reason_modal")).hide();
+                })
+                .catch(function(err) {
+                    error.textContent = err.message;
+                    error.classList.remove("d-none");
+                })
+                .finally(function() { submit.disabled = false; });
+        });
+    }
+
+    // options: title, text (text or nodes), button, button_css, submit(reason) -> promise
+    function open_reason(options) {
+        document.getElementById("sample_reason_title").textContent = options.title;
+        const text = document.getElementById("sample_reason_text");
+        text.replaceChildren();
+        append.apply(null, [text].concat(options.text));
+        const submit = document.getElementById("sample_reason_submit");
+        submit.textContent = options.button;
+        submit.className = "btn " + options.button_css;
+        document.getElementById("sample_reason").value = "";
+        document.getElementById("sample_reason_error").classList.add("d-none");
+        reason_action = options.submit;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("sample_reason_modal")).show();
+    }
+
+    function action_button(text, css, title, onclick) {
+        const button = el("button", "btn btn-sm " + css, text);
+        button.type = "button";
+        button.title = title;
+        button.addEventListener("click", onclick);
+        return button;
+    }
+
+    // what a relabel, reset or confirm did, and the detections it could not write
+    function label_result(context, result) {
+        const content = [result.changed + " detection(s) changed" +
+            (result.unchanged ? ", " + result.unchanged + " already as asked" : "") + "."];
+        if (result.skipped.length) {
+            content.push(" " + result.skipped.length + " skipped:");
+            const list = el("ul", "mb-0 small");
+            result.skipped.forEach(function(skipped) {
+                const item = el("li");
+                const alert_link = link(context.settings.alert_url + "?direct=" + encodeURIComponent(skipped.alert_uuid), "alert");
+                alert_link.title = skipped.alert_uuid;
+                alert_link.target = "_blank";
+                alert_link.rel = "noopener";
+                append(item, alert_link, ": " + skipped.reason);
+                list.appendChild(item);
             });
+            content.push(list);
+        }
+        context.notify("info", content);
+        return context.reload();
+    }
+
+    function label_action(context, question, request) {
+        return function() {
+            if (!window.confirm(question)) {
+                return;
+            }
+            request()
+                .then(function(result) { return label_result(context, result); })
+                .catch(function(err) { context.notify("error", err.message); });
+        };
+    }
+
+    function action_buttons(context, sample) {
+        const settings = context.settings;
+        const buttons = [];
+        const votes = sample.votes;
+
+        if (settings.can_relabel) {
+            ["tp", "fp"].forEach(function(verdict) {
+                const name = verdict.toUpperCase();
+                buttons.push(action_button("Relabel " + name, "btn-outline-dark",
+                    "store an explicit " + name + " on every detection of this rule on this file",
+                    label_action(context,
+                        "Relabel this sample " + name + "? This stores an explicit " + name + " verdict on every detection of " +
+                        "this rule on this file, on every alert it was captured from that analysts can grade.",
+                        function() { return aceApi.put(context.path + "/label", {verdict: verdict}); })));
+            });
+            if (votes.tp_explicit + votes.fp_explicit > 0) {
+                buttons.push(action_button("Reset to inherited", "btn-outline-dark",
+                    "clear the explicit verdicts, so the label follows the alerts' dispositions again",
+                    label_action(context,
+                        "Reset this sample's label? This clears the explicit verdicts on its detections, so they inherit " +
+                        "from their alerts' dispositions again.",
+                        function() { return aceApi.del(context.path + "/label"); })));
+            }
+            if (votes.tp_inherited_multi > 0) {
+                buttons.push(action_button("Confirm", "btn-outline-dark",
+                    "confirm the unconfirmed TP detections, so they weigh as a person's verdict",
+                    label_action(context,
+                        "Confirm this sample's unconfirmed TP detections? They were inherited on alerts where several " +
+                        "signatures fired; confirming stores an explicit TP on each.",
+                        function() { return aceApi.post(context.path + "/confirm"); })));
+            }
+        }
+
+        if (settings.can_admin) {
+            if (sample.retired) {
+                buttons.push(action_button("Unretire", "btn-outline-dark", "expect this file to match the rule again",
+                    function() {
+                        if (!window.confirm("Unretire this sample? YARA validations will expect it to match this rule again.")) {
+                            return;
+                        }
+                        aceApi.del(context.path + "/retirement")
+                            .then(function() { context.notify("info", "The sample is no longer retired."); return context.reload(); })
+                            .catch(function(err) { context.notify("error", err.message); });
+                    }));
+            } else {
+                buttons.push(action_button("Retire", "btn-outline-dark", "no longer expect this file to match the rule",
+                    function() {
+                        open_reason({
+                            title: "Retire sample",
+                            text: "Retire this sample for " + sample.rule_name + ": it is no longer expected to match this " +
+                                  "rule, and YARA validations only count it. It can be unretired later.",
+                            button: "Retire",
+                            button_css: "btn-outline-primary",
+                            submit: function(reason) {
+                                return aceApi.put(context.path + "/retirement", {reason: reason}).then(function() {
+                                    context.notify("info", "The sample is retired for this rule.");
+                                    return context.reload();
+                                });
+                            },
+                        });
+                    }));
+            }
+            buttons.push(action_button("Delete sample", "btn-outline-danger",
+                "delete the file from SVS, for every rule (legal or privacy requests)",
+                function() { open_delete(context, sample); }));
+        }
+
+        return buttons;
+    }
+
+    function open_delete(context, sample) {
+        const rules = el("p", "mb-2", "This file has samples for every rule it was captured for; all of them are deleted.");
+        aceApi.get(context.settings.path + "/" + aceApi.query({f: "sha256:" + sample.sha256, limit: 1000}))
+            .then(function(page) {
+                rules.textContent = "This file has samples for " + page.data.length + " rule(s); all of them are deleted.";
+            })
+            .catch(function() { /* the generic sentence stays */ });
+
+        const removes = el("ul", "small mb-2");
+        ["its captures and retirements, for every rule",
+         "its stored bytes (its match records are released and removed by storage cleanup)"].forEach(function(text) {
+            removes.appendChild(el("li", null, text));
+        });
+        const keeps = el("ul", "small mb-2");
+        ["the alerts' own copies of the file",
+         "YARA QA results",
+         "copies in other nodes' read caches, until they are evicted"].forEach(function(text) {
+            keeps.appendChild(el("li", null, text));
+        });
+
+        open_reason({
+            title: "Delete sample file",
+            text: [rules, el("div", "fw-semibold small", "Removed:"), removes, el("div", "fw-semibold small", "Not removed:"), keeps,
+                   el("p", "small mb-0", "An audit record of who deleted it and why is kept, and the file is never captured again.")],
+            button: "Delete",
+            button_css: "btn-danger",
+            submit: function(reason) {
+                return aceApi.request("DELETE", context.file_path, {reason: reason}).then(function(deletion) {
+                    if (!deletion.purged_at) {
+                        window.alert("The sample is deleted, but its file could not be purged yet (a legal hold or a storage " +
+                                     "failure). Delete it again later to retry.");
+                    }
+                    window.location = context.settings.list_url + aceApi.query({f: "sha256:" + sample.sha256});
+                });
+            },
+        });
     }
 
     function definition_list(items) {
@@ -318,7 +552,8 @@
         return list;
     }
 
-    function render_detail(settings, target, sample) {
+    function render_detail(context, target, sample) {
+        const settings = context.settings;
         const header = el("div", "mb-3");
         append(header, el("h2", "mb-1 text-break", sample.rule_name));
 
@@ -344,6 +579,11 @@
                 "votes of the strongest strength (" + aceVerdicts.SOURCE_LABELS[sample.label_source] + ") disagree"));
         }
         body.appendChild(heading);
+        if (sample.retired) {
+            const retired = el("div", "small mb-2");
+            append(retired, icon("bi-archive", "retired", "me-1"), "R" + retired_title(sample).substring(1));
+            body.appendChild(retired);
+        }
 
         const votes = el("table", "table table-sm table-bordered w-auto small mb-2");
         const head = votes.createTHead().insertRow();
@@ -378,6 +618,7 @@
                 actions.appendChild(el("span", "text-muted small", "The file is stored on another node; download it there."));
             }
         }
+        action_buttons(context, sample).forEach(function(button) { actions.appendChild(button); });
         body.appendChild(actions);
         label.appendChild(body);
 

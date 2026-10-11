@@ -33,21 +33,29 @@ from sqlalchemy import Select, select, tuple_
 from aceapi_v2.common.archive import MANIFEST_NAME, CASArchiveEntry, create_encrypted_cas_zip, safe_file_name
 from aceapi_v2.svs.samples.schemas import (
     SAMPLE_ROW_CSV_FIELDS,
+    LabelActionResult,
     MissingCount,
+    Retirement,
     SampleCapture,
+    SampleDeletion,
+    SampleDeletionPage,
     SampleDetail,
     SampleDetection,
     SampleRow,
+    SkippedDetection,
 )
 from saq.cas import get_cas
-from saq.cas.errors import ObjectNotFound
+from saq.cas.errors import LegalHoldActive, ObjectNotFound
 from saq.configuration.config import get_config
-from saq.database.model import SVSYaraCapture
+from saq.database.model import SVSSampleDeletion, SVSSampleRetirement, SVSYaraCapture
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.gui.filter_screens import SVS_SAMPLES_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
+from saq.detection_verdicts.store import VerdictNotAllowed
 from saq.signatures.model import SIGNATURE_UUID_PATTERN
+from saq.svs import actions
+from saq.svs.actions import LabelChange, NotRetired, SampleNotFound
 from saq.svs.constants import CaptureState
 from saq.svs.filters import sample_filter_conditions
 from saq.svs.samples import (
@@ -122,11 +130,17 @@ def _raise_wrong_node(node: str, what: str) -> None:
 # validation
 #
 
-def validate_sample_key(sha256: str, rule_uuid: str) -> str:
-    """The sha256, lowercased. 400 on a malformed sha256 or rule uuid."""
+def _validate_sha256(sha256: str) -> str:
+    """The sha256, lowercased. 400 when it is malformed."""
     sha256 = sha256.lower()
     if not _SHA256_PATTERN.match(sha256):
         raise HTTPException(status_code=400, detail="invalid sha256")
+    return sha256
+
+
+def validate_sample_key(sha256: str, rule_uuid: str) -> str:
+    """The sha256, lowercased. 400 on a malformed sha256 or rule uuid."""
+    sha256 = _validate_sha256(sha256)
     if not SIGNATURE_UUID_PATTERN.match(rule_uuid):
         raise HTTPException(status_code=400, detail="invalid rule uuid")
     return sha256
@@ -468,3 +482,140 @@ def create_sample_zip(label: str, download: SampleDownload, actor: Optional[str]
     return create_encrypted_cas_zip(
         label, get_cas().pool(_pool_name()), entries, skipped,
         manifest_key="files", description=f"svs samples {label}", actor=actor, node=_local_node())
+
+
+#
+# actions (docs/SVS_SAMPLES.md, *Actions*): saq.svs.actions does the work
+#
+
+def _require_user(user_id: int | None) -> int:
+    # every action records who took it; a config API key belongs to nobody
+    if user_id is None:
+        raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
+
+    return user_id
+
+
+def _label_result(change: LabelChange) -> LabelActionResult:
+    return LabelActionResult(
+        changed=change.changed, unchanged=change.unchanged,
+        skipped=[SkippedDetection(alert_uuid=skipped.alert_uuid, content_hash=skipped.content_hash,
+                                  reason=skipped.reason) for skipped in change.skipped],
+        label=change.label, label_source=change.label_source)
+
+
+def _label_action(action, sha256: str, rule_uuid: str, user_id: int | None, *args) -> LabelActionResult:
+    user_id = _require_user(user_id)
+    sha256 = validate_sample_key(sha256, rule_uuid)
+    try:
+        return _label_result(action(sha256, rule_uuid, *args, user_id))
+    except SampleNotFound:
+        raise HTTPException(status_code=404, detail="sample not found")
+    except VerdictNotAllowed as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def relabel_sample(sha256: str, rule_uuid: str, verdict: str, user_id: int | None) -> LabelActionResult:
+    return _label_action(actions.relabel, sha256, rule_uuid, user_id, verdict)
+
+
+def reset_sample_label(sha256: str, rule_uuid: str, user_id: int | None) -> LabelActionResult:
+    return _label_action(actions.reset_label, sha256, rule_uuid, user_id)
+
+
+def confirm_sample(sha256: str, rule_uuid: str, user_id: int | None) -> LabelActionResult:
+    return _label_action(actions.confirm, sha256, rule_uuid, user_id)
+
+
+def _username(user) -> Optional[str]:
+    return user.username if user is not None else None
+
+
+def _retirement(row: SVSSampleRetirement) -> Retirement:
+    return Retirement(
+        sha256=row.sha256, rule_uuid=row.rule_uuid, retired=row.unretired_at is None, reason=row.reason,
+        retired_by=_username(row.retired_by_user), retired_at=row.retired_at,
+        unretired_by=_username(row.unretired_by_user), unretired_at=row.unretired_at, updated_at=row.updated_at)
+
+
+def retire_sample(sha256: str, rule_uuid: str, reason: str, user_id: int | None) -> Retirement:
+    user_id = _require_user(user_id)
+    sha256 = validate_sample_key(sha256, rule_uuid)
+    try:
+        actions.retire(sha256, rule_uuid, user_id, reason)
+    except SampleNotFound:
+        raise HTTPException(status_code=404, detail="sample not found")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # read back, for the server-maintained updated_at
+    get_db().commit()
+    return _retirement(actions.get_retirement(sha256, rule_uuid))
+
+
+def unretire_sample(sha256: str, rule_uuid: str, user_id: int | None) -> Retirement:
+    user_id = _require_user(user_id)
+    sha256 = validate_sample_key(sha256, rule_uuid)
+    try:
+        actions.unretire(sha256, rule_uuid, user_id)
+    except NotRetired:
+        raise HTTPException(status_code=404, detail="the sample is not retired")
+
+    get_db().commit()
+    return _retirement(actions.get_retirement(sha256, rule_uuid))
+
+
+def _deletion(row: SVSSampleDeletion) -> SampleDeletion:
+    return SampleDeletion(
+        sha256=row.sha256, rule_uuids=parse_json_column(row.rule_uuids, []), capture_count=row.capture_count,
+        deleted_by=_username(row.deleted_by_user), reason=row.reason, deleted_at=row.deleted_at, node=row.node,
+        purged_at=row.purged_at, updated_at=row.updated_at)
+
+
+def delete_sample_file(sha256: str, reason: str, user_id: int | None, actor: Optional[str]) -> SampleDeletion:
+    user_id = _require_user(user_id)
+    sha256 = _validate_sha256(sha256)
+    try:
+        return _deletion(actions.delete_sample(sha256, user_id, reason, actor=actor))
+    except SampleNotFound:
+        raise HTTPException(status_code=404, detail="sample not found")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except actions.WrongNode as e:
+        _raise_wrong_node(e.node, f"the file of sample {sha256}")
+    except LegalHoldActive:
+        raise HTTPException(status_code=409, detail={
+            "error": "legal_hold",
+            "message": f"the file of sample {sha256} is under legal hold; release the hold (cas:hold) before deleting it",
+        })
+
+
+def _encode_deletion_cursor(row: SVSSampleDeletion) -> str:
+    payload = json.dumps({"v": _CURSOR_VERSION, "k": [row.updated_at.isoformat(), row.id]}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def _decode_deletion_cursor(cursor: str) -> tuple[datetime, int]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        if payload["v"] != _CURSOR_VERSION:
+            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+        updated_at, row_id = payload["k"]
+        return datetime.fromisoformat(updated_at), int(row_id)
+    except InvalidCursor:
+        raise
+    except Exception as e:
+        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+
+def list_deletions(changed_since: datetime | None, cursor: str | None, limit: int) -> SampleDeletionPage:
+    """One page of the deletion audit in (updated_at, id) order. Raises InvalidCursor."""
+    after = _decode_deletion_cursor(cursor) if cursor is not None else None
+    rows = actions.deletions_page(changed_since, after, limit + 1)
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = _encode_deletion_cursor(rows[-1])
+
+    return SampleDeletionPage(data=[_deletion(row) for row in rows], next_cursor=next_cursor)

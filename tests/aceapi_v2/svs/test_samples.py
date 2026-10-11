@@ -9,13 +9,14 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
 from aceapi_v2.svs.samples import service
-from saq.cas import get_cas
+from saq.cas import Hold, get_cas
 from saq.configuration.config import get_config
 from saq.database.model import Alert, DetectionPoint, SVSYaraCapture, User
 from saq.database.pool import get_db
@@ -262,6 +263,14 @@ class TestFilters:
     async def test_by_sha256_and_alert(self, client: AsyncClient, samples):
         assert self._names(await _get(client, f"sha256:{samples['tp'].upper()}"), samples) == ["tp", "tp2"]
         assert self._names(await _get(client, f"alert:{samples['fp_alert'].uuid}"), samples) == ["fp"]
+
+    @pytest.mark.asyncio
+    async def test_retired(self, client: AsyncClient, samples):
+        response = await client.put(f"/svs/samples/{samples['tp']}/{RULE_UUID}/retirement", json={"reason": "obsolete"})
+        assert response.status_code == 200, response.text
+        assert self._names(await _get(client, "retired:true"), samples) == ["tp"]
+        assert self._names(await _get(client, "!retired:true"), samples) == ["fp", "missing", "none", "tp2"]
+        assert self._names(await _get(client, "retired:false"), samples) == ["fp", "missing", "none", "tp2"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("filter_param", [
@@ -529,3 +538,229 @@ async def test_worked_example_conflicted_samples_per_rule(client: AsyncClient):
 
     # the TP alert where both rules fired is inherited_multi, which the FP alert outweighs
     assert conflicted == {"svs_rule": 1}
+
+
+#
+# actions (docs/SVS_SAMPLES.md, *Actions*)
+#
+
+def _writes(sha256: str = "ab" * 32) -> list[tuple[str, str, dict | None]]:
+    """(method, path, body) of every action route."""
+    return [
+        ("PUT", f"/svs/samples/{sha256}/{RULE_UUID}/label", {"verdict": "fp"}),
+        ("DELETE", f"/svs/samples/{sha256}/{RULE_UUID}/label", None),
+        ("POST", f"/svs/samples/{sha256}/{RULE_UUID}/confirm", None),
+        ("PUT", f"/svs/samples/{sha256}/{RULE_UUID}/retirement", {"reason": "obsolete"}),
+        ("DELETE", f"/svs/samples/{sha256}/{RULE_UUID}/retirement", None),
+        ("DELETE", f"/svs/samples/{sha256}", {"reason": "privacy"}),
+    ]
+
+
+async def _send(client: AsyncClient, method: str, path: str, body: dict | None = None):
+    return await client.request(method, path, json=body)
+
+
+class TestActionAccess:
+    LABEL_ROUTES = 3
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        for method, path, body in _writes():
+            assert (await _send(unauth_client, method, path, body)).status_code == 401, path
+        assert (await unauth_client.get("/svs/samples/deletions")).status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_requires_permissions(self, noperm_client: AsyncClient):
+        for method, path, body in _writes():
+            assert (await _send(noperm_client, method, path, body)).status_code == 403, path
+        assert (await noperm_client.get("/svs/samples/deletions")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_reading_is_not_acting(self, _override_db_session, session: AsyncSession, test_user):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+        key = await make_api_key(session, test_user.id, inherit=False, scope=[("signature", "read")])
+        async with api_key_client(key) as client:
+            for method, path, body in _writes(sha256):
+                assert (await _send(client, method, path, body)).status_code == 403, path
+            assert (await client.get("/svs/samples/deletions")).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_relabeling_needs_alert_write_and_signature_read(self, _override_db_session, session: AsyncSession,
+                                                                   test_user):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+        writes = _writes(sha256)
+        key = await make_api_key(session, test_user.id, inherit=False, scope=[("signature", "read"), ("alert", "write")])
+        async with api_key_client(key) as client:
+            for method, path, body in writes[:self.LABEL_ROUTES]:
+                assert (await _send(client, method, path, body)).status_code == 200, path
+            for method, path, body in writes[self.LABEL_ROUTES:]:
+                assert (await _send(client, method, path, body)).status_code == 403, path
+
+        key = await make_api_key(session, test_user.id, inherit=False, scope=[("alert", "write")])
+        async with api_key_client(key) as client:
+            method, path, body = writes[0]
+            assert (await _send(client, method, path, body)).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_svs_admin_retires_and_deletes(self, _override_db_session, session: AsyncSession, test_user):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+        writes = _writes(sha256)
+        key = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "admin")])
+        async with api_key_client(key) as client:
+            for method, path, body in writes[:self.LABEL_ROUTES]:
+                assert (await _send(client, method, path, body)).status_code == 403, path
+            for method, path, body in writes[self.LABEL_ROUTES:]:
+                assert (await _send(client, method, path, body)).status_code == 200, path
+
+    def test_a_key_without_a_user_cannot_act(self):
+        # a config API key authenticates with no user, and every action records who took it
+        calls = [
+            lambda: service.relabel_sample("ab" * 32, RULE_UUID, "fp", None),
+            lambda: service.reset_sample_label("ab" * 32, RULE_UUID, None),
+            lambda: service.confirm_sample("ab" * 32, RULE_UUID, None),
+            lambda: service.retire_sample("ab" * 32, RULE_UUID, "obsolete", None),
+            lambda: service.unretire_sample("ab" * 32, RULE_UUID, None),
+            lambda: service.delete_sample_file("ab" * 32, "privacy", None, None),
+        ]
+        for call in calls:
+            with pytest.raises(HTTPException) as error:
+                call()
+            assert error.value.status_code == 422
+
+
+class TestLabelActions:
+    @pytest.mark.asyncio
+    async def test_relabel_reset_and_confirm(self, client: AsyncClient):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
+        path = f"/svs/samples/{sha256}/{RULE_UUID}"
+
+        response = await client.post(f"{path}/confirm")
+        assert response.status_code == 200, response.text
+        assert response.json() == {"changed": 1, "unchanged": 0, "skipped": [], "label": "tp", "label_source": "explicit"}
+
+        response = await client.put(f"{path}/label", json={"verdict": "fp"})
+        assert response.status_code == 200, response.text
+        assert (response.json()["changed"], response.json()["label"]) == (1, "fp")
+        assert (await client.get(path)).json()["votes"]["fp_explicit"] == 1
+
+        response = await client.delete(f"{path}/label")
+        assert response.status_code == 200, response.text
+        assert (response.json()["label"], response.json()["label_source"]) == ("tp", "inherited_multi")
+
+    @pytest.mark.asyncio
+    async def test_skipped_detections_say_why(self, client: AsyncClient):
+        content = b"svs api relabel across classes"
+        fp_alert, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID], content=content)
+        graded_alert("DELIVERY", {"invoice.doc": [RULE_UUID]}, contents={"invoice.doc": content})
+
+        response = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "tp"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["changed"] == 1
+        (skipped,) = body["skipped"]
+        assert skipped["alert_uuid"] == fp_alert.uuid
+        assert "correct its disposition" in skipped["reason"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_writable_is_409(self, client: AsyncClient):
+        _, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID])
+        response = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "tp"})
+        assert response.status_code == 409
+        assert "correct its disposition" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_bad_requests(self, client: AsyncClient):
+        assert (await client.put(f"/svs/samples/{'ab' * 32}/{RULE_UUID}/label", json={"verdict": "tp"})).status_code == 404
+        assert (await client.put(f"/svs/samples/abc/{RULE_UUID}/label", json={"verdict": "tp"})).status_code == 400
+        assert (await client.put(f"/svs/samples/{'ab' * 32}/{RULE_UUID}/label", json={"verdict": "maybe"})).status_code == 422
+
+
+class TestRetirement:
+    @pytest.mark.asyncio
+    async def test_retire_and_unretire(self, client: AsyncClient):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+        path = f"/svs/samples/{sha256}/{RULE_UUID}"
+
+        response = await client.put(f"{path}/retirement", json={"reason": "the rule moved on"})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["retired"], body["reason"], body["retired_by"]) == (True, "the rule moved on", "unittest")
+        row = (await client.get(path)).json()
+        assert (row["retired"], row["retired_by"], row["retired_reason"]) == (True, "unittest", "the rule moved on")
+
+        response = await client.delete(f"{path}/retirement")
+        assert response.status_code == 200, response.text
+        assert (response.json()["retired"], response.json()["unretired_by"]) == (False, "unittest")
+        assert (await client.get(path)).json()["retired"] is False
+        assert (await client.delete(f"{path}/retirement")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_bad_requests(self, client: AsyncClient):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+        path = f"/svs/samples/{sha256}/{RULE_UUID}/retirement"
+        assert (await client.put(path)).status_code == 422
+        assert (await client.put(path, json={"reason": ""})).status_code == 422
+        assert (await client.put(path, json={"reason": "   "})).status_code == 422
+        assert (await client.put(f"/svs/samples/{sha256}/{OTHER_RULE_UUID}/retirement",
+                                 json={"reason": "nope"})).status_code == 404
+
+
+class TestDeletion:
+    @pytest.mark.asyncio
+    async def test_delete(self, client: AsyncClient):
+        _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
+
+        response = await client.request("DELETE", f"/svs/samples/{sha256.upper()}", json={"reason": "legal request"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["sha256"] == sha256
+        assert body["rule_uuids"] == sorted([RULE_UUID, OTHER_RULE_UUID])
+        assert (body["capture_count"], body["deleted_by"], body["reason"]) == (2, "unittest", "legal request")
+        assert body["purged_at"] is not None
+        assert (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).status_code == 404
+        assert not get_cas().pool("svs_samples").exists(sha256)
+
+        deletions = (await client.get("/svs/samples/deletions")).json()
+        assert [row["sha256"] for row in deletions["data"]] == [sha256]
+
+    @pytest.mark.asyncio
+    async def test_wrong_node_and_legal_hold_are_409(self, client: AsyncClient):
+        _, elsewhere, _ = _sample("DELIVERY", [RULE_UUID])
+        with private_transaction() as private:
+            private.execute(update(SVSYaraCapture).where(SVSYaraCapture.sha256 == elsewhere).values(node="other_node"))
+        response = await client.request("DELETE", f"/svs/samples/{elsewhere}", json={"reason": "privacy"})
+        assert response.status_code == 409
+        assert (response.json()["detail"]["error"], response.json()["detail"]["node"]) == ("wrong_node", "other_node")
+
+        _, held, _ = _sample("DELIVERY", [RULE_UUID])
+        get_cas().pool("svs_samples").hold(held, Hold.legal("case-1"))
+        response = await client.request("DELETE", f"/svs/samples/{held}", json={"reason": "privacy"})
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "legal_hold"
+
+    @pytest.mark.asyncio
+    async def test_bad_requests(self, client: AsyncClient):
+        assert (await client.request("DELETE", f"/svs/samples/{'ab' * 32}", json={"reason": "privacy"})).status_code == 404
+        assert (await client.request("DELETE", "/svs/samples/abc", json={"reason": "privacy"})).status_code == 400
+        assert (await client.request("DELETE", f"/svs/samples/{'ab' * 32}")).status_code == 422
+        assert (await client.request("DELETE", f"/svs/samples/{'ab' * 32}", json={"reason": " "})).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_the_deletion_audit_pages(self, client: AsyncClient):
+        deleted = []
+        for _ in range(3):
+            _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
+            assert (await client.request("DELETE", f"/svs/samples/{sha256}", json={"reason": "privacy"})).status_code == 200
+            deleted.append(sha256)
+
+        first = (await client.get("/svs/samples/deletions", params={"limit": 2})).json()
+        assert len(first["data"]) == 2 and first["next_cursor"]
+        rest = (await client.get("/svs/samples/deletions", params={"limit": 2, "cursor": first["next_cursor"]})).json()
+        assert rest["next_cursor"] is None
+        assert sorted(row["sha256"] for row in first["data"] + rest["data"]) == sorted(deleted)
+
+        later = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        assert (await client.get("/svs/samples/deletions", params={"changed_since": later})).json()["data"] == []
+        assert (await client.get("/svs/samples/deletions", params={"cursor": "garbage"})).status_code == 400

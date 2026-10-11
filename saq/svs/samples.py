@@ -19,7 +19,9 @@ from saq.database.model import (
     Alert,
     DetectionPoint,
     DetectionPointVerdictHistory,
+    SVSSampleRetirement,
     SVSYaraCapture,
+    User,
 )
 from saq.database.pool import get_db
 from saq.detection_verdicts.query import detection_points_select
@@ -48,7 +50,9 @@ def samples_subquery():
     - unknown_version: how many were captured with signature version 'unknown';
     - first_captured, last_captured, updated_at: over its captures;
     - latest_capture_id and that capture's rule_name, namespace, file_path and file_size;
-    - the vote counts (VOTE_COLUMNS), label and label_source.
+    - the vote counts (VOTE_COLUMNS), label and label_source;
+    - retired (1 while it is retired for its rule, else 0), retired_by (a username),
+      retired_at and retired_reason.
 
     Filters and sorts name the columns of the returned subquery (.c)."""
     capture = SVSYaraCapture
@@ -71,6 +75,8 @@ def samples_subquery():
 
     latest = aliased(SVSYaraCapture, name="latest_capture")
     votes = sample_votes_subquery()
+    retirement = aliased(SVSSampleRetirement, name="retirement")
+    retired_by = aliased(User, name="retired_by_user")
     return (
         select(
             grouped,
@@ -81,10 +87,19 @@ def samples_subquery():
             *[func.coalesce(votes.c[name], 0).label(name) for name, _, _ in VOTE_COLUMNS],
             label_expr(votes.c).label("label"),
             label_source_expr(votes.c).label("label_source"),
+            case((retirement.id.is_not(None), 1), else_=0).label("retired"),
+            retired_by.username.label("retired_by"),
+            retirement.retired_at.label("retired_at"),
+            retirement.reason.label("retired_reason"),
         )
         .select_from(grouped)
         .join(latest, latest.id == grouped.c.latest_capture_id)
         .outerjoin(votes, and_(votes.c.sha256 == grouped.c.sha256, votes.c.rule_uuid == grouped.c.rule_uuid))
+        .outerjoin(retirement, and_(
+            retirement.sha256 == grouped.c.sha256,
+            retirement.rule_uuid == grouped.c.rule_uuid,
+            retirement.unretired_at.is_(None)))
+        .outerjoin(retired_by, retired_by.id == retirement.retired_by)
         .subquery("samples"))
 
 
@@ -93,7 +108,7 @@ def captures_of(samples) -> ColumnElement[bool]:
     return and_(SVSYaraCapture.sha256 == samples.c.sha256, SVSYaraCapture.rule_uuid == samples.c.rule_uuid)
 
 
-def _to_utc_naive(value: datetime) -> datetime:
+def to_utc_naive(value: datetime) -> datetime:
     # the capture timestamps are naive UTC, and TIMESTAMP columns compare in the session time
     # zone, which ACE runs as UTC
     if value.tzinfo is None:
@@ -103,10 +118,11 @@ def _to_utc_naive(value: datetime) -> datetime:
 
 def changed_since_condition(samples, value: datetime) -> ColumnElement[bool]:
     """A sample whose data may have changed at or after `value`: a capture of it changed (or was
-    added), a contributing alert's row changed (a disposition, which relabels it), or a
-    contributing detection's stored verdict was set or cleared (a cleared verdict leaves no row of
-    its own, which is why the history is the signal). An alert that is deleted bumps nothing."""
-    value = _to_utc_naive(value)
+    added), it was retired or unretired, a contributing alert's row changed (a disposition, which
+    relabels it), or a contributing detection's stored verdict was set or cleared (a cleared
+    verdict leaves no row of its own, which is why the history is the signal). An alert that is
+    deleted bumps nothing."""
+    value = to_utc_naive(value)
     history = (
         select(literal(1))
         .where(DetectionPointVerdictHistory.alert_id == DetectionPoint.alert_id)
@@ -121,7 +137,12 @@ def changed_since_condition(samples, value: datetime) -> ColumnElement[bool]:
             contributing_detection_condition(SVSYaraCapture, DetectionPoint)))
         .where(captures_of(samples))
         .where(or_(Alert.updated_at >= value, exists(history))))
-    return or_(samples.c.updated_at >= value, exists(contributing))
+    retirement = (
+        select(literal(1))
+        .where(SVSSampleRetirement.sha256 == samples.c.sha256)
+        .where(SVSSampleRetirement.rule_uuid == samples.c.rule_uuid)
+        .where(SVSSampleRetirement.updated_at >= value))
+    return or_(samples.c.updated_at >= value, exists(retirement), exists(contributing))
 
 
 #
@@ -209,6 +230,7 @@ def sample_record(record: dict) -> dict[str, Any]:
     result = {key: value for key, value in record.items() if key not in {name for name, _, _ in VOTE_COLUMNS}}
     for name in ("capture_count", "stored", "missing", "missing_data", "unknown_version"):
         result[name] = int(result[name])
+    result["retired"] = bool(result["retired"])
     result["votes"] = votes_of(record).as_dict()
     return result
 

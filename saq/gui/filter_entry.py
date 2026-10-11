@@ -211,6 +211,7 @@ class SampleFilterEntry(FilterEntryBase):
             "Stored": list(SAMPLE_BOOL_OPTIONS),
             "Missing Data": list(SAMPLE_BOOL_OPTIONS),
             "Unknown Version": list(SAMPLE_BOOL_OPTIONS),
+            "Retired": list(SAMPLE_BOOL_OPTIONS),
         }.get(name)
         if allowed is None:
             return values

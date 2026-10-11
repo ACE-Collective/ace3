@@ -7,6 +7,8 @@ data-list-url="{{ url_for('signatures.samples') }}"
 data-alert-url="{{ url_for('analysis.index') }}"
 data-tz="{{ current_user.timezone or 'UTC' }}"
 data-can-download="{{ 'true' if has_permission('signature', 'download') else 'false' }}"
+data-can-relabel="{{ 'true' if has_permission('alert', 'write') else 'false' }}"
+data-can-admin="{{ 'true' if has_permission('svs', 'admin') else 'false' }}"
 data-max-bulk-files="{{ max_bulk_download_files }}"
 {%- endmacro %}
 
