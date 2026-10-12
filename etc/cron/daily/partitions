@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# maintain the date-partitioned tables of the email archive and analysis result cache databases
+# (docs/DATABASE_PARTITIONS.md): drop the partitions past retention and provision the coming ones.
+# it exits 1 when a table needs `ace partitions rebuild`, and does nothing unless ACE_IS_PRIMARY_NODE
+# is 1, because the databases are shared.
+ace partitions maintain

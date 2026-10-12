@@ -41,8 +41,8 @@ A failing task does not stop the others.
 Every node runs every task. A task that changes shared state (database DDL, a shared bucket, an
 external upload) must exit 0 unless `ACE_IS_PRIMARY_NODE` is `1`. Shell tasks check the variable
 directly, defaulting to `1` so that a single-node install needs no setting; Python code calls
-`is_primary_node()` (`saq/database/util/node.py`). `bin/manage-email-archive-partitions.sh`, run
-by `weekly/email-archive-partitions`, is an example.
+`is_primary_node()` (`saq/database/util/node.py`). `ace partitions maintain`, run by
+`daily/partitions`, is an example.
 
 ## Integrations
 

@@ -34,6 +34,7 @@ from saq.cli.commands import ( # noqa: F401
     search,
     nrd,
     observables,
+    partitions,
     signatures,
     svs,
     yara,

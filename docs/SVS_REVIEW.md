@@ -2035,12 +2035,11 @@ defects (F-13, F-18, F-19) should be fixed regardless, since crash replication u
 > **Round 3 (reviewer):** Reviewed. Your instinct is right, and it changes the proposal, though not
 > for SVS's own pool.
 >
-> **What the email archive does now** (`bin/manage-email-archive-partitions.sh`, fixed in
-> PR #601). `archive`, `archive_index` and `email_history` are `PARTITION BY RANGE COLUMNS(insert_date)`
+> **What the email archive does now** (`ace partitions maintain`, docs/DATABASE_PARTITIONS.md;
+> originally a shell script fixed in PR #601). `archive`, `archive_index` and `email_history` are `PARTITION BY RANGE COLUMNS(insert_date)`
 > with one partition per ISO week plus a `p_catchall`. A weekly cron drops whole partitions older
 > than 30 days (`ALTER TABLE … DROP PARTITION`) and creates the next weeks ahead. The analysis cache
-> does the same with daily partitions for `blob_refs`
-> (`bin/manage-analysis-result-cache-partitions.sh`).
+> does the same with daily partitions for `blob_refs`.
 >
 > **Why that works:** dropping a partition is a metadata operation. It takes no row locks, writes
 > no undo log, and doesn't block inserts. The `DELETE … WHERE insert_date < cutoff` it replaced

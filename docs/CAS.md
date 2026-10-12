@@ -185,9 +185,11 @@ batches. High-churn expiry uses partition drops, never row deletes. [CAS-7, D-18
 
 This is not hypothetical. The email archive once pruned with `DELETE … WHERE insert_date < cutoff`.
 It ran for a long time and blocked inserts while it did. It was replaced by weekly range partitions
-dropped with `ALTER TABLE … DROP PARTITION` (`bin/manage-email-archive-partitions.sh`, PR #601),
+dropped with `ALTER TABLE … DROP PARTITION` (`ace partitions maintain`, docs/DATABASE_PARTITIONS.md),
 which is a metadata operation: no row locks and no undo log. The analysis cache's `blob_refs` uses
-the same pattern daily. Any new high-volume table in ACE should start from that pattern, not arrive
+the same pattern daily. Splitting a partition is the opposite: it copies every row in the partition
+and blocks writes to the table while it runs, so the pattern only works while the `p_catchall`
+partition new partitions are split from stays empty. Any new high-volume table in ACE should start from that pattern, not arrive
 at it after an incident.
 
 **The load test gates high-churn pools.** Before the first `ttl` pool (the analysis cache) goes
@@ -309,8 +311,8 @@ pool by overriding its keys in its own configuration, for example to give `yara_
   - `etc/cron/hourly/cas-gc`;
   - `etc/cron/hourly/cas-node-stats`, which runs on **every** node (it describes the node);
   - `etc/cron/weekly/cas-verify` and `cas-orphans`;
-  - for `ttl` pools, when they exist, a partition-management task shaped like
-    `bin/manage-email-archive-partitions.sh`.
+  - for `ttl` pools, when they exist, partition maintenance by adding the table to
+    `saq/database/partitions.py` (docs/DATABASE_PARTITIONS.md).
 
   All the others run on the primary node only: the commands exit 0 without doing anything unless
   `ACE_IS_PRIMARY_NODE` is `1` (`is_primary_node()`), and `--force` overrides that for a dry run

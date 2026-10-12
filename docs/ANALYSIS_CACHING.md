@@ -518,7 +518,7 @@ lifecycle job against an empty table.
 > PR #279 (merged 2026-05-27, after the Phase 2 bake) moved it to a dedicated
 > `analysis-result-cache` database, made it append-only/daily-partitioned, and
 > replaced the delete sweep with partition drops. The "delete expired entries"
-> job above is now `bin/manage-analysis-result-cache-partitions.sh`. See §4 and
+> job above is now `ace partitions maintain` (docs/DATABASE_PARTITIONS.md). See §4 and
 > §A8 for the current design.
 
 ### Phase 2.5 — Write-only opt-in bake
@@ -1488,24 +1488,25 @@ window.
 
 #### Mechanism: daily partition maintenance + read-time safety check
 
-**Primary — partition maintenance via cron.** A single shell script,
-`bin/manage-analysis-result-cache-partitions.sh`, runs **daily at 04:00**
-(`etc/cron.yaml`, `concurrencyPolicy: Forbid`). Each run, for both
-`analysis_result_cache` and `blob_refs`:
+**Primary — partition maintenance via cron.** `ace partitions maintain`
+(`saq/database/partitions.py`, docs/DATABASE_PARTITIONS.md) runs **daily** from
+`etc/cron/daily/partitions`, and once more at startup from
+`docker/startup/setup.sh`. Each run, for both `analysis_result_cache` and
+`blob_refs`:
 
 1. **Drops** partitions older than `analysis_cache.partition_retention_days`
    (default 35). Dropping `pYYYYMMDD` for an aged day reclaims every cache
    row created that day in one metadata operation — no row scan, no undo log.
-2. **Reorganizes the catchall** — splits any rows that landed in `p_catchall`
-   (because their day-partition hadn't been provisioned yet) out into the
-   correct daily partitions, by reading the catchall's `created_at` range and
-   `REORGANIZE PARTITION p_catchall INTO (...)`.
-3. **Provisions ahead** — ensures partitions exist for today and the next 7
-   days, so incoming inserts always have a real partition to land in and a
-   missed cron run doesn't dump a backlog into the catchall.
+2. **Provisions ahead** — splits partitions for today and the next 7 days off
+   `p_catchall`, so incoming inserts always have a real partition to land in
+   and a missed cron run doesn't dump a backlog into the catchall.
 
-The script reads `partition_retention_days` from `ace config` and **refuses to
-run with a window `< 31`**. The retention window MUST exceed the longest module
+Splitting copies every row in the partition being split and blocks writes to
+the table while it runs, so maintenance only splits a catchall holding a few
+thousand rows at most. A catchall holding more makes the run fail and needs
+`ace partitions rebuild` (docs/DATABASE_PARTITIONS.md).
+
+Maintenance **refuses to run with a window `< 31`**. The retention window MUST exceed the longest module
 `cache_ttl` (currently 30 days) — otherwise dropping a partition could delete
 cache rows still inside their TTL. This invariant replaces the old "the sweep
 deletes exactly the rows past `expires_at`" guarantee: a row now physically
@@ -1561,7 +1562,7 @@ Recommended cron cadence:
 
 | Job | Schedule | Purpose | Node scope |
 |-----|----------|---------|------------|
-| `analysis cache partition maintenance` (`bin/manage-analysis-result-cache-partitions.sh`) | `0 4 * * *` | Drop partitions older than `partition_retention_days`, reorganize the catchall, provision the next 7 days | primary only (shared-DB DDL; the script exits 0 unless `ACE_IS_PRIMARY_NODE=1`) |
+| `daily/partitions` (`ace partitions maintain`) | daily, 05:00 | Drop partitions older than `partition_retention_days`, provision the next 7 days | primary only (shared-DB DDL; the command exits 0 unless `ACE_IS_PRIMARY_NODE=1`) |
 | `analysis-cache-stats` | `*/15 * * * *` | Emit the `cache_stats` heartbeat from `INFORMATION_SCHEMA.PARTITIONS` (calls `emit_cache_stats`, which gates on `is_primary_node()`) | primary only |
 | `analysis-cache-gc` | `0 * * * *` | Delete blob bytes with zero refs older than `blob_gc_grace_seconds` (calls `blob_store.maintain_global`) | primary only |
 | `analysis-cache-local-maintenance` | `*/15 * * * *` | Evict stale/excess blobs from this node's local cache tier (calls `blob_store.maintain_local`; no-op for `LocalHardlinkBlobStore`) | every node |
@@ -2467,7 +2468,7 @@ list updated for PR #279 — the cache is now append-only and partition-managed)
   uncompressed
 - `"failed to write analysis cache entry"` — any DB-side failure;
   baseline should be zero
-- partition-maintenance log (`bin/manage-analysis-result-cache-partitions.sh`)
+- partition-maintenance log (`daily-partitions` cron job, `ace partitions maintain`)
   — confirm the daily run drops aged partitions and provisions future ones;
   this is what bounds table growth now (there is no `prune_backlog` warning)
 
