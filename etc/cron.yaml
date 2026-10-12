@@ -39,15 +39,10 @@ jobs:
     concurrencyPolicy: Forbid
   
   #
-  # these three jobs only do anything on the primary node (ACE_IS_PRIMARY_NODE=1) and exit 0
+  # these two jobs only do anything on the primary node (ACE_IS_PRIMARY_NODE=1) and exit 0
   # everywhere else, so every node can run this file as it is
   #
 
-  - name: analysis cache partition maintenance
-    command: /opt/ace/bin/run-cron-job analysis-cache-partitions /opt/ace/bin/manage-analysis-result-cache-partitions.sh
-    shell: /bin/bash
-    schedule: "0 4 * * *"
-    concurrencyPolicy: Forbid
   - name: analysis cache stats
     command: /opt/ace/bin/run-cron-job analysis-cache-stats /opt/ace/bin/analysis-cache-stats
     shell: /bin/bash

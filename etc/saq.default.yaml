@@ -272,7 +272,7 @@ analysis_cache:
   # refuse to cache deltas whose compressed payload exceeds this many bytes
   max_compressed_bytes: 1048576
   # retention window (in days) for analysis_result_cache / blob_refs partitions
-  # partitions older than this are dropped by bin/manage-analysis-result-cache-partitions.sh
+  # partitions older than this are dropped by `ace partitions maintain` (docs/DATABASE_PARTITIONS.md)
   # MUST exceed the longest module cache_ttl or partition drops would delete live rows
   partition_retention_days: 35
 
@@ -836,6 +836,13 @@ email_archive:
   s3_bucket: ace-email-archive
   # the region to use for the email archive
   s3_region:
+  # days of archive and archive_index rows to keep. these tables are partitioned by week and
+  # `ace partitions maintain` drops a week once all of it is older than this
+  # (docs/DATABASE_PARTITIONS.md)
+  partition_retention_days: 30
+  # days of email_history rows to keep, the same way. this is who received each message-id, which
+  # remediation looks up to find the mailboxes to remediate, so it is set separately
+  email_history_retention_days: 30
 
 memcached:
   # the address of the memcached system used by ACE

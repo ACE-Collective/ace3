@@ -55,3 +55,9 @@ then
 else
     echo "encryption password verified"
 fi
+
+# provision the partitions of the date-partitioned tables while a new install's tables are still
+# empty, and again on every start (docs/DATABASE_PARTITIONS.md). a table that needs a rebuild is
+# reported here and by the daily cron task, but it does not stop startup
+echo "running partition maintenance..."
+ace partitions maintain || echo "WARNING: partition maintenance needs attention -- run: ace partitions status"
