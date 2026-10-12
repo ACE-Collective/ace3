@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -137,11 +138,15 @@ def read_corpus() -> Corpus:
     return corpus
 
 
-def write_units(corpus: Corpus, pool: CASPool, files_root: str) -> None:
-    """Write every unit this node can read under files_root; record the rest in corpus.skipped."""
+def write_units(corpus: Corpus, pool: CASPool, files_root: str, cancel: Optional[threading.Event] = None) -> None:
+    """Write every unit this node can read under files_root; record the rest in corpus.skipped.
+    Stops early, leaving the rest unwritten, once cancel is set."""
     written: dict[str, str] = {}
     refused: set[str] = set()
     for unit in corpus.units:
+        if cancel is not None and cancel.is_set():
+            return
+
         if unit.sha256 in refused:
             continue
 

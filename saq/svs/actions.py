@@ -26,7 +26,7 @@ from saq.cas import get_cas
 from saq.cas.errors import LegalHoldActive
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
-from saq.database.model import SVSSampleDeletion, SVSSampleRetirement, SVSYaraCapture
+from saq.database.model import SVSSampleDeletion, SVSSampleRetirement, SVSValidationResult, SVSYaraCapture
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, VERDICT_TP
@@ -270,7 +270,7 @@ def _record_deletion(sha256: str, user_id: int, reason: str, node: str) -> None:
 
 
 def _remove_rows(sha256: str) -> list[tuple[int, Optional[str]]]:
-    """Deletes every capture and retirement of the sha256. Returns the (id, record_digest) of the
+    """Deletes every capture, retirement and validation result of the sha256. Returns the (id, record_digest) of the
     captures removed."""
     with private_transaction() as session:
         captures = [(row.id, row.record_digest) for row in session.execute(
@@ -280,6 +280,9 @@ def _remove_rows(sha256: str) -> list[tuple[int, Optional[str]]]:
         session.execute(delete(SVSYaraCapture).where(SVSYaraCapture.sha256 == sha256)
                         .execution_options(synchronize_session=False))
         session.execute(delete(SVSSampleRetirement).where(SVSSampleRetirement.sha256 == sha256)
+                        .execution_options(synchronize_session=False))
+        # a validation report never names a deleted file
+        session.execute(delete(SVSValidationResult).where(SVSValidationResult.sha256 == sha256)
                         .execution_options(synchronize_session=False))
         return captures
 

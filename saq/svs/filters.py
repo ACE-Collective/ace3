@@ -38,7 +38,7 @@ def _any_capture(samples, condition_for_value, values: list[str]) -> ColumnEleme
         .where(or_(*[condition_for_value(value) for value in values])))
 
 
-def _date_range(column, values: list[str], tz: tzinfo) -> ColumnElement[bool]:
+def date_range_condition(column, values: list[str], tz: tzinfo) -> ColumnElement[bool]:
     now = datetime.now(pytz.utc)
     conditions = []
     for value in values:
@@ -48,7 +48,7 @@ def _date_range(column, values: list[str], tz: tzinfo) -> ColumnElement[bool]:
     return or_(*conditions)
 
 
-def _flag(count_column, values: list[str]) -> ColumnElement[bool]:
+def flag_condition(count_column, values: list[str]) -> ColumnElement[bool]:
     if values == ["true"]:
         return count_column > 0
     if values == ["false"]:
@@ -77,15 +77,15 @@ def sample_filter_condition(samples, entry: dict, tz: tzinfo = pytz.utc) -> Colu
     elif name == "Label Source":
         condition = samples.c.label_source.in_(values)
     elif name == "Last Captured":
-        condition = _date_range(samples.c.last_captured, values, tz)
+        condition = date_range_condition(samples.c.last_captured, values, tz)
     elif name == "Stored":
-        condition = _flag(samples.c.stored, values)
+        condition = flag_condition(samples.c.stored, values)
     elif name == "Missing Data":
-        condition = _flag(samples.c.missing_data, values)
+        condition = flag_condition(samples.c.missing_data, values)
     elif name == "Unknown Version":
-        condition = _flag(samples.c.unknown_version, values)
+        condition = flag_condition(samples.c.unknown_version, values)
     elif name == "Retired":
-        condition = _flag(samples.c.retired, values)
+        condition = flag_condition(samples.c.retired, values)
     else:
         raise ValueError(f"unknown samples filter {name!r}")
 

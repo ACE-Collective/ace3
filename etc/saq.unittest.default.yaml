@@ -794,6 +794,9 @@ storage:
 service_search_indexer:
   enabled: false
 
+service_svs:
+  enabled: false
+
 qdrant:
   collection_prefix: ace3-alerts-unittest
 

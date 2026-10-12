@@ -26,7 +26,14 @@ from aceapi_v2.saved_filters.schemas import (
     ScratchFilterWrite,
 )
 from saq.database.model import SavedFilter
-from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS, SVS_SAMPLES_SCREEN, FilterScreen, get_filter_screen
+from saq.gui.filter_screens import (
+    ALERTS_SCREEN,
+    FILTER_SCREENS,
+    SVS_SAMPLES_SCREEN,
+    SVS_VALIDATIONS_SCREEN,
+    FilterScreen,
+    get_filter_screen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +81,29 @@ DEFAULT_SVS_SAMPLE_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS validations screen: the reports that need someone's attention
+DEFAULT_SVS_VALIDATION_SAVED_FILTERS = (
+    {
+        "name": "Has regressions",
+        "description": "Validations whose head no longer matches samples labeled TP",
+        "filters": [
+            {"name": "Has Regressions", "inverted": False, "values": ["true"]},
+        ],
+    },
+    {
+        "name": "Failed",
+        "description": "Validations that could not run",
+        "filters": [
+            {"name": "State", "inverted": False, "values": ["failed"]},
+        ],
+    },
+)
+
 # screen name -> the saved filters a user starts with on that screen
 DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
+    SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
 }
 
 

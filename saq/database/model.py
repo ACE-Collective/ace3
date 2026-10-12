@@ -1954,6 +1954,98 @@ class SVSSampleDeletion(Base):
     deleted_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[deleted_by])
 
 
+class SVSValidation(Base):
+    """A YARA validation (docs/SVS_VALIDATION.md): a request to replay the sample corpus under
+    base_sha and head_sha of a repository, queued until service_svs claims it, and its report once
+    it has run. A completed validation answers a later request for the same commits while the
+    corpus and the engine are unchanged. Only saq/svs/validations.py writes this table."""
+
+    __tablename__ = 'svs_validations'
+    __table_args__ = (
+        Index('ix_svs_validations_state_created', 'state', 'created_at'),
+        Index('ix_svs_validations_commits', 'repository', 'base_sha', 'head_sha'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    # a git_repo_<name> section listed in svs.yara.repositories
+    repository: Mapped[str] = mapped_column(String(256), nullable=False)
+    base_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    branch: Mapped[str] = mapped_column(String(256), nullable=False)
+    pr_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    # who requested it, NULL once that user is deleted
+    requested_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    state: Mapped[str] = mapped_column(Enum('queued', 'running', 'completed', 'failed'), nullable=False)
+    # sha256 of (repository, base_sha, head_sha) while queued or running, NULL after: the unique
+    # index makes concurrent identical requests share one validation
+    active_key: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True, unique=True)
+    # the lease of the service worker running it (saq.svs.validations.claim)
+    claim_token: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # what the report was computed from, set when the run starts
+    corpus_version: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    engine_fingerprint: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # JSON-serialized {category: count}, every category included
+    counts: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON-serialized ReplayResult.to_dict() without its rows, which are svs_validation_results
+    report: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    # derived from counts and report, for filters
+    regressions: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    new_fps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    compile_errors: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    diffed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # maintained by the server on every change of the row, for incremental pulls
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    requested_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[requested_by])
+
+
+class SVSValidationResult(Base):
+    """One (sample, rule uuid) pair of a validation whose category is listed in the report
+    (saq.svs.yara.diff), with the sample's label as it was when the validation ran [FR-15]. Pairs
+    in counted-only categories are in the validation's counts only."""
+
+    __tablename__ = 'svs_validation_results'
+    __table_args__ = (
+        Index('ix_svs_validation_results_category', 'validation_id', 'category', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    validation_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_validations.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False, index=True)
+    rule_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    rule_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    namespace: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    label: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    label_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # the outcome under each commit: match, miss or error
+    base: Mapped[str] = mapped_column(String(8), nullable=False)
+    head: Mapped[str] = mapped_column(String(8), nullable=False)
+    # whether the rule matched at all, before enabled and the qa/no_alert modifiers
+    raw_base: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    raw_head: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

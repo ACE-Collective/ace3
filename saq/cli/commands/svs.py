@@ -1,8 +1,10 @@
 """``ace svs`` -- the Signature Validation System (docs/SVS.md).
 
 ``yara validate`` replays every stored sample under two commits of a rule repository and prints
-what changed, synchronously and without storing anything (docs/SVS_VALIDATION.md). ``yara layout``
-prints which directories of each repository in svs.yara.repositories the yara service loads.
+what changed, synchronously and without storing anything (docs/SVS_VALIDATION.md); the queued
+validations CI requests are run by service_svs instead. ``yara layout`` prints which directories of
+each repository in svs.yara.repositories the yara service loads. ``yara prune`` removes the
+validations older than svs.yara.retention_days (daily cron).
 """
 
 import json
@@ -168,3 +170,24 @@ def cli_layout(args):
 
 layout_parser = svs_yara_sp.add_parser("layout", help="Print which directories of each repository the yara service loads.")
 layout_parser.set_defaults(func=cli_layout)
+
+
+def cli_prune(args):
+    """Remove the finished validations older than svs.yara.retention_days."""
+    from saq.database.util.node import is_primary_node
+    from saq.svs.validations import prune
+
+    # the validations are shared state: the primary node prunes them
+    if not (is_primary_node() or args.force):
+        print("skipping: not the primary node (use --force to prune anyway)")
+        return 0
+
+    count = prune(dry_run=args.dry_run)
+    print(f"{'would remove' if args.dry_run else 'removed'} {count} validations")
+    return 0
+
+
+prune_parser = svs_yara_sp.add_parser("prune", help="Remove the validations older than svs.yara.retention_days.")
+prune_parser.add_argument("--dry-run", action="store_true", default=False, help="Count them without removing anything.")
+prune_parser.add_argument("--force", action="store_true", default=False, help="Prune even when this is not the primary node.")
+prune_parser.set_defaults(func=cli_prune)

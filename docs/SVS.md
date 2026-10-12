@@ -278,8 +278,9 @@ as a Python twin the tests hold to agree, and the labels are read through `/api/
 **Trigger.** The signature repo's CI calls ACE. ACE never talks to the forge. [YR-3]
 
 ```
-POST /api/v2/svs/yara/validations   {repository, base_sha, head_sha, branch, pr_url?}
-GET  /api/v2/svs/yara/validations/{id}
+POST /api/v2/svs/yara/validations              {repository, base_sha, head_sha, branch, pr_url?}
+GET  /api/v2/svs/yara/validations/{id}/status  (CI: svs:validate)
+GET  /api/v2/svs/yara/validations/{id}         (the report: signature:read)
 ```
 
 - **`repository`** names an existing `git_repo_<name>` section, so ACE uses credentials it already
@@ -288,7 +289,8 @@ GET  /api/v2/svs/yara/validations/{id}
   can't read samples.
 - **The response** carries counts, rule names and uuids only; sample content and file names never
   leave ACE. CI posts a **neutral** check and a comment with the counts and the link to the ACE
-  report. **Validation warns and never blocks.**
+  report. **Validation warns and never blocks.** The CI's status and the readers' report are
+  separate routes, because a route has one permission gate.
 
 **Fetching rules.** SVS keeps its own mirror clone per repository (same URL and SSH key), separate
 from the `GitManagerService` checkout production loads rules from. It fetches `branch`, verifies
@@ -301,12 +303,19 @@ and the `yara_scanner_v2` library (3.0.0) only compiles, tracks and filters rule
 uses it the way the module's fallback scanner does.
 - **Validations are a queue.** `service_svs` runs one scan at a time by default
   (`svs.yara.max_concurrent_validations`), and a result is cached per `(repository, base_sha,
-  head_sha, corpus version)`, so a CI retry does not rescan. [FR-13] The **corpus version** is the
-  greatest `updated_at` over `svs_yara_captures`, `detection_point_verdicts`,
-  `svs_sample_retirements`, the sample deletion audit and the `alerts` rows the captures reference
-  (`alerts.updated_at`, Part 6). So a new capture, a relabel, a confirm, a retirement, a sample
-  deletion or a disposition correction changes the version and the next request rescans, and
-  nothing else does.
+  head_sha, corpus version)`, so a CI retry does not rescan. [FR-13] The **corpus version** is a
+  digest of the greatest change time *and the row count* of `svs_yara_captures`, the verdict
+  history, `svs_sample_retirements`, the sample deletion audit and the `alerts` rows the captures
+  reference (`alerts.updated_at`, Part 6). So a new capture, a relabel, a reset, a confirm, a
+  retirement, a sample deletion, a disposition correction or a deleted alert changes the version
+  and the next request rescans, and nothing else does. The counts are there because a cleared
+  verdict and a deleted alert bump no change time. The cache key also has an **engine
+  fingerprint** (the replay's code, the YARA libraries, the disposition classification), so an
+  upgrade rescans too.
+- **Workers hold a lease.** `is_primary_node()` is true by default, so the service may run on more
+  than one node: a worker claims a validation with a conditional update and keeps a heartbeat on it,
+  and a validation whose worker died is taken over after the lease expires. A stopping service
+  cancels its scan and requeues the validation (`docs/SVS_VALIDATION.md`, *The svs service*).
 - **Compile the way production loads.** The production loader compiles each file on its own and
   drops only a file that fails; then it compiles the survivors once per namespace, and if that
   fails (two files defining the same rule name, for instance) the whole ruleset is dropped and the

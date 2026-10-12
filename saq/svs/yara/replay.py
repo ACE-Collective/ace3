@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -35,6 +36,7 @@ from saq.sandbox.runner import (
     build_sandbox_argv,
     create_workdir,
     landlock_available,
+    SandboxCancelled,
     run_sandboxed,
     sandbox_python,
     sweep_stale_workdirs,
@@ -56,6 +58,15 @@ HEAD = "head"
 
 class ReplayError(RuntimeError):
     """The replay could not run; the message is safe to show."""
+
+
+class ReplayCancelled(ReplayError):
+    """The caller's cancel event was set; the replay stopped and its working directory is gone."""
+
+
+def _check_cancel(cancel: Optional[threading.Event]) -> None:
+    if cancel is not None and cancel.is_set():
+        raise ReplayCancelled("the validation was cancelled")
 
 
 @dataclass(frozen=True)
@@ -179,7 +190,7 @@ def _resolve(mirror: Mirror, sha: str) -> str:
 
 
 def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpus: Corpus,
-               sandbox_config: SandboxConfig) -> dict:
+               sandbox_config: SandboxConfig, cancel: Optional[threading.Event] = None) -> dict:
     job = {
         "version": child.PROTOCOL_VERSION,
         "tree_root": tree,
@@ -200,7 +211,10 @@ def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpu
     argv = build_sandbox_argv(
         [sandbox_python(), "-I", os.path.join(workdir, "child.py"), side_dir], workdir, sandbox_config, timeout)
     try:
-        result = run_sandboxed(argv, None, _sandbox_env(workdir), workdir, timeout, sandbox_config.max_output_bytes)
+        result = run_sandboxed(argv, None, _sandbox_env(workdir), workdir, timeout, sandbox_config.max_output_bytes,
+                               cancel=cancel)
+    except SandboxCancelled:
+        raise ReplayCancelled("the validation was cancelled") from None
     except RuntimeError as e:
         raise ReplayError(f"{e}{_progress(side_dir)}") from None
 
@@ -309,10 +323,13 @@ def _first_ref(rule_uuid: str, scan: SideScan, by_file: dict[str, list[RuleRef]]
 
 
 def run_replay(repository: str, base_sha: str, head_sha: str, *, branch: Optional[str] = None,
-               retired: frozenset[tuple[str, str]] = frozenset()) -> ReplayResult:
+               retired: frozenset[tuple[str, str]] = frozenset(),
+               cancel: Optional[threading.Event] = None) -> ReplayResult:
     """Validate head_sha against base_sha of the repository (a name in svs.yara.repositories).
     branch is the branch head_sha is on; the repository's configured branch is fetched too.
-    retired holds the (sha256, rule uuid) pairs that are only counted. Raises ReplayError."""
+    retired holds the (sha256, rule uuid) pairs that are only counted. Raises ReplayError, and
+    ReplayCancelled soon after cancel is set from another thread (a git fetch in progress finishes
+    first; a scan is stopped)."""
     started = time.monotonic()
     config = get_config().svs.yara
     for sha in (base_sha, head_sha):
@@ -337,6 +354,7 @@ def run_replay(repository: str, base_sha: str, head_sha: str, *, branch: Optiona
     with create_workdir(work_root) as workdir:
         trees = {}
         skipped_members = {}
+        _check_cancel(cancel)
         try:
             with mirror.lock():
                 mirror.ensure([branch or repo_config.branch, repo_config.branch])
@@ -347,15 +365,18 @@ def run_replay(repository: str, base_sha: str, head_sha: str, *, branch: Optiona
         except RepositoryError as e:
             raise ReplayError(str(e)) from None
 
+        _check_cancel(cancel)
         corpus = read_corpus()
-        write_units(corpus, get_cas().pool(get_config().svs.samples.pool), os.path.join(workdir, "u"))
+        write_units(corpus, get_cas().pool(get_config().svs.samples.pool), os.path.join(workdir, "u"), cancel)
+        _check_cancel(cancel)
         shutil.copyfile(child.__file__, os.path.join(workdir, "child.py"))
 
         reports, scans, no_uuid, source = {}, {}, {}, {}
         versions = {}
         for side in (BASE, HEAD):
             layout = tree_layout(repo_layout, trees[side])
-            output = _run_child(workdir, os.path.join(workdir, side), trees[side], layout, corpus, config.sandbox)
+            output = _run_child(workdir, os.path.join(workdir, side), trees[side], layout, corpus, config.sandbox,
+                                cancel)
             versions = {key: output.get(key) for key in ("yara_python_version", "yara_scanner_version")}
             source[side] = _source_rules(layout, trees[side], resolved[side])
             reports[side], scans[side], no_uuid[side] = _side(

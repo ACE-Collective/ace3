@@ -100,3 +100,5 @@ def test_cli_subcommands_registered():
     assert {"build-db"} <= choices("signatures")
     assert {"display", "clear"} <= choices("remediation")
     assert {"yara"} <= choices("svs")
+    svs_yara = sp.choices["svs"]._subparsers._group_actions[0].choices["yara"]
+    assert {"validate", "layout", "prune"} <= set(svs_yara._subparsers._group_actions[0].choices.keys())

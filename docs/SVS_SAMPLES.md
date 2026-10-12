@@ -188,7 +188,8 @@ that sha256 goes. In order:
 2. It commits an audit row in `svs_sample_deletions`: who, why, when, the rules and the number of
    captures. From then on capture never stores the file again, including a capture that was
    already running.
-3. It deletes every capture of the file and its retirements.
+3. It deletes every capture of the file, its retirements, and its rows in every YARA validation
+   report (`docs/SVS_VALIDATION.md`); a report's counts stay as they were.
 4. It releases the captures' holds on their match records and purges the file's bytes from the
    pool, which also records the purge in `cas_purges`.
 

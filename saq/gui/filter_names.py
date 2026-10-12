@@ -95,6 +95,19 @@ SVS_SAMPLE_FILTER_SLUGS = {
     'Unknown Version': 'unknown_version',
 }
 
+# The filters of the SVS validations screen (GET /api/v2/svs/yara/validations,
+# docs/SVS_API.md): display name -> URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_VALIDATION_FILTER_SLUGS = {
+    'Branch': 'branch',
+    'Compile Errors': 'compile_errors',
+    'Created': 'created',
+    'Has New FP': 'has_new_fp',
+    'Has Regressions': 'has_regressions',
+    'Head': 'head',
+    'Repository': 'repository',
+    'State': 'state',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
@@ -103,4 +116,5 @@ __all__ = [
     "LEGACY_FILTER_NAME_ALIASES",
     "DETECTION_POINT_FILTER_SLUGS",
     "SVS_SAMPLE_FILTER_SLUGS",
+    "SVS_VALIDATION_FILTER_SLUGS",
 ]
