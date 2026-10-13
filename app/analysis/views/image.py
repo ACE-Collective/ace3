@@ -39,11 +39,20 @@ def image():
         logging.info(f"attempted to display {_file.path} as image but file does not exist")
         return "unknown file", 404
 
+    # this route feeds <img> tags, but its URL can also be opened as a page: a file from an alert
+    # served as anything other than an image, or an SVG allowed to run its scripts, would render
+    # on the GUI origin with the analyst's session
+    if not _file.is_image:
+        logging.info(f"attempted to display {_file.path} as image but it is {_file.mime_type}")
+        return "not an image", 404
+
     with open(_file.path, 'rb') as fp:
         result = fp.read()
 
     response = make_response(result)
     response.headers['Content-Type'] = _file.mime_type
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Security-Policy'] = 'sandbox'
     return response
 
 @analysis.route('/image_full', methods=['GET'])

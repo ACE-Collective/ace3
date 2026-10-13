@@ -136,8 +136,8 @@ server.
   row (the alert's status, its date) goes on the `<tr>` as a `data-*` attribute, never
   read out of a cell by id. The analyst chooses which columns the alert list shows
   (`saq/gui/manage_columns.py`, the `manage_columns` preference), so a cell may simply
-  not be there. `select_event_name_candidate_from_manage_view()` in `ace.js` is the
-  example: it reads `row.dataset.status` and `row.dataset.insertDate`.
+  not be there. `selected_alert_descriptions()` in `manage_alerts.js` is the
+  example: it reads the queue, owner and disposition from `row.dataset`.
 - Controls that must keep a jQuery binding (the column chooser's sortable list) live
   outside both fragments — the manage page keeps it in the search row of `manage.html`.
 

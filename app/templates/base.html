@@ -223,12 +223,11 @@
                     </div>
                 <br>
                     <div class="radio modal-body" id="event-secondary-container">
-                        <label><input type="radio" name="event" value="NEW" id="option_NEW" onclick="toggleNewEventDialog();showEventSaveButton();autofill_event_name()"> New Event </label>
+                        <label><input type="radio" name="event" value="NEW" id="option_NEW" onclick="toggleNewEventDialog();showEventSaveButton()"> New Event </label>
                         <div id="new_event_dialog" style="display:none;">
                             <table style="width:100%;table-layout:auto;">
                               <tr><th>Name</th>
                                   <td><textarea class="form-control" type="text" id="event_name" name="event_name" value="" rows="2" style="height: 80px;resize: vertical"></textarea></td>
-                                  <td style="text-align: center"><button title="Reset Event Name" onclick="autofill_event_name()" type="button" class="bi bi-arrow-clockwise"></button></td>
                               </tr>
                               <tr><th>Comment</th>
                                   <td><textarea class="form-control" type="text" id="event_comment" name="event_comment" style="resize: vertical"></textarea>

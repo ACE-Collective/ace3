@@ -51,12 +51,10 @@
                 </thead>
                 <tbody>
                     {% for alert in alerts %}
-                    {# we can use this ID to modify an alert row. data-status and data-insert-date
-                       feed select_event_name_candidate_from_manage_view() in ace.js; the queue,
-                       owner and disposition feed the selection guard of the bulk actions
-                       (selected_alert_descriptions() in manage_alerts.js) #}
-                    <tr id="alert_row_{{alert.uuid}}" data-status="{{ alert.status }}" data-insert-date="{{ alert.insert_date }}"
-                        data-queue="{{ alert.queue }}" data-disposition="{{ alert.disposition or '' }}"
+                    {# we can use this ID to modify an alert row. the queue, owner and disposition
+                       feed the selection guard of the bulk actions (selected_alert_descriptions() in
+                       manage_alerts.js) #}
+                    <tr id="alert_row_{{alert.uuid}}" data-queue="{{ alert.queue }}" data-disposition="{{ alert.disposition or '' }}"
                         data-owner-id="{{ alert.owner_id if alert.owner_id is not none else '' }}"
                         data-owner-name="{{ alert.owner.gui_display if alert.owner else '' }}"
                         data-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}">

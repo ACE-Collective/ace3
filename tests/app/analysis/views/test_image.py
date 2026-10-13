@@ -80,6 +80,8 @@ def test_image_success(web_client, root_analysis, tmpdir):
                           })
     assert result.status_code == 200
     assert result.headers['Content-Type'] == 'image/png'
+    assert result.headers['X-Content-Type-Options'] == 'nosniff'
+    assert result.headers['Content-Security-Policy'] == 'sandbox'
     assert result.data == image_data
 
 
@@ -276,3 +278,53 @@ def test_image_rejects_non_file_observable(web_client):
 
     assert result.status_code == 404
     assert b"unknown file" in result.data
+
+
+#
+# The URL of an image can be opened as a page, so a file from an alert must never come back from
+# it as something the browser renders as a document on the GUI origin.
+#
+
+@pytest.mark.integration
+def test_image_rejects_a_file_that_is_not_an_image(tmpdir, web_client):
+    root = create_root_analysis()
+    target_path = tmpdir / "page.html"
+    target_path.write_text("<html><body><script>alert(1)</script></body></html>", encoding="utf8")
+    file_observable = root.add_file_observable(str(target_path))
+    assert file_observable.mime_type == "text/html"
+    root.save()
+    alert = ALERT(root)
+
+    result = web_client.get(url_for("analysis.image"),
+                          query_string={
+                              'alert_uuid': alert.uuid,
+                              'observable_uuid': file_observable.uuid,
+                          })
+
+    assert result.status_code == 404
+    assert b"<script>" not in result.data
+
+
+@pytest.mark.integration
+def test_image_serves_svg_sandboxed(tmpdir, web_client):
+    """An SVG is an image and is served, but opened as a page it could run scripts: the sandbox
+    policy is what stops them."""
+    root = create_root_analysis()
+    target_path = tmpdir / "image.svg"
+    target_path.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><script>alert(1)</script></svg>',
+                           encoding="utf8")
+    file_observable = root.add_file_observable(str(target_path))
+    assert file_observable.mime_type == "image/svg+xml"
+    root.save()
+    alert = ALERT(root)
+
+    result = web_client.get(url_for("analysis.image"),
+                          query_string={
+                              'alert_uuid': alert.uuid,
+                              'observable_uuid': file_observable.uuid,
+                          })
+
+    assert result.status_code == 200
+    assert result.headers['Content-Type'] == 'image/svg+xml'
+    assert result.headers['Content-Security-Policy'] == 'sandbox'
+    assert result.headers['X-Content-Type-Options'] == 'nosniff'

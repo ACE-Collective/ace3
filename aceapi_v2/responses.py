@@ -63,6 +63,12 @@ class CsvStreamResponse(StreamingResponse):
     media_type = "text/csv"
 
 
+class Rfc822StreamResponse(StreamingResponse):
+    """A streamed email in its original RFC 822 form (an archived email)."""
+
+    media_type = "message/rfc822"
+
+
 # Describes the body of the zip download endpoints for generators that look at the schema
 # rather than only at the content type. FastAPI merges this into the operation without
 # mutating or aliasing it, so one shared dict across routes is safe.

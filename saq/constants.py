@@ -383,7 +383,6 @@ DIRECTIVE_SCAN_URLSCAN = 'scan_urlscan'
 DIRECTIVE_SUBMIT_AS_NEW = 'submit_as_new'
 DIRECTIVE_TRACKED = 'tracked'
 DIRECTIVE_TRIAGE = 'triage'
-DIRECTIVE_VIEW_IN_BROWSER = 'view_in_browser'
 DIRECTIVE_WHITELISTED = 'whitelisted'
 DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 
@@ -421,7 +420,6 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_SUBMIT_AS_NEW: 'submit the observable as new with flag to bypass any existing analysis',
     DIRECTIVE_TRACKED: 'indicates this observable should be tracked across different analysis requests',
     DIRECTIVE_TRIAGE: 'send this observable to tria.ge for analysis',
-    DIRECTIVE_VIEW_IN_BROWSER: 'allows a file observable to be opened inside the browser',
     DIRECTIVE_WHITELISTED: 'indicates this observable was whitelisted, causing the entire analysis to also become whitelisted',
 }
 
@@ -547,15 +545,12 @@ ACTION_SYMANTEC_DLP_ALLOW_WEB_DOMAIN = 'symantec_dlp_allow_web_domain'
 ACTION_SYMANTEC_DLP_ALLOW_SENDER = 'symantec_dlp_allow_sender'
 ACTION_SYMANTEC_DLP_ALLOW_RECIPIENT = 'symantec_dlp_allow_recipient'
 ACTION_SYMANTEC_DLP_ALLOW_RECIPIENT_DOMAIN = 'symantec_dlp_allow_recipient_domain'
-ACTION_FILE_DOWNLOAD = 'file_download'
 ACTION_FILE_DOWNLOAD_AS_ZIP = 'file_download_as_zip'
 ACTION_FILE_UPLOAD_VT = 'file_upload_vt'
 ACTION_FILE_UPLOAD_FALCON_SANDBOX = 'file_upload_falcon_sandbox'
 ACTION_FILE_UPLOAD_VX = 'file_upload_vx'
 ACTION_FILE_VIEW_AS_HEX = 'file_view_as_hex'
 ACTION_FILE_VIEW_AS_TEXT = 'file_view_as_text'
-ACTION_FILE_VIEW_AS_HTML = 'file_view_as_html'
-ACTION_FILE_VIEW_IN_BROWSER = 'file_view_in_browser'
 ACTION_FILE_VIEW_VT = 'file_view_vt'
 ACTION_FILE_VIEW_FALCON_SANDBOX = 'file_view_falcon_sandbox'
 ACTION_FILE_VIEW_VX = 'file_view_vx'

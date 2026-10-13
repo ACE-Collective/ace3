@@ -131,12 +131,12 @@ def test_automation_scope_still_denies_out_of_scope_endpoints(test_client, autom
     """The automation scope must be a real narrowing, not a bypass.
 
     Guards against "fixing" a future scope failure with scope: ["*:*"] or by reverting to the
-    bare-string form -- either would make the three tests above pass vacuously. get_archived_email
-    requires email:read (aceapi/email.py), which the node key must not have.
+    bare-string form -- either would make the three tests above pass vacuously. get_analysis
+    requires alert:read (aceapi/analysis.py), which the node key must not have: it shares the alert
+    major with the key's alert:create, so this also fails if the scope is widened to alert:*.
     """
     result = test_client.get(
-        "/email/get_archived_email",
-        query_string={"message_id": "<test@example.com>"},
+        url_for("analysis.get_analysis", uuid=str(uuid.uuid4())),
         headers=automation_api_key,
     )
     assert result.status_code == 403

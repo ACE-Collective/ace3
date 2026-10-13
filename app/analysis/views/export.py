@@ -10,7 +10,7 @@ import smtplib
 from subprocess import PIPE, Popen
 from uuid import uuid4
 import zipfile
-from flask import flash, make_response, redirect, request, send_from_directory, session, url_for
+from flask import flash, make_response, redirect, request, session, url_for
 from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert, load_current_alert
 from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_effective_filters
@@ -104,19 +104,13 @@ def download_file():
         logging.error("unable to load alert {0}".format(alert))
         return redirect(url_for('analysis.index'))
 
-    if request.method == "POST":
-        file_uuid = request.form['file_uuid']
-    else:
-        file_uuid = request.args.get('file_uuid', None)
+    file_uuid = request.args.get('file_uuid', None)
 
     if file_uuid is None:
         logging.error("missing file_uuid")
         return "missing file_uuid", 500
 
-    if request.method == "POST":
-        mode = request.form['mode']
-    else:
-        mode = request.args.get('mode', None)
+    mode = request.args.get('mode', None)
 
     if mode is None:
         logging.error("missing mode")
@@ -146,18 +140,7 @@ def download_file():
         flash("internal error")
         return redirect(url_for('analysis.index'))
 
-    if mode == 'raw':
-        return send_from_directory(os.path.dirname(full_path), 
-                                   os.path.basename(full_path), 
-                                   as_attachment=True,
-                                   attachment_filename=os.path.basename(full_path).encode().decode('latin-1', errors='ignore'))
-    elif mode == 'view':
-        return send_from_directory(os.path.dirname(full_path), 
-                                   os.path.basename(full_path), 
-                                   as_attachment=False,
-                                   attachment_filename=os.path.basename(full_path).encode().decode('latin-1', errors='ignore'))
-
-    elif mode == 'hex':
+    if mode == 'hex':
         p = Popen(['hexdump', '-C', full_path], stdout=PIPE)
         (stdout, stderr) = p.communicate()
         response = make_response(stdout)
@@ -192,14 +175,6 @@ def download_file():
         response = make_response(result)
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'
         return response
-    elif mode == 'html':
-        with open(full_path, 'rb') as fp:
-            result = fp.read()
-
-        response = make_response(result)
-        response.headers['Content-Type'] = 'text/html; charset=utf-8'
-        return response
-
     return "", 404
 
 @analysis.route('/get_alert_meta', methods=['GET'])
