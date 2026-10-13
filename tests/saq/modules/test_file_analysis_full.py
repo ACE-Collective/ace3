@@ -18,6 +18,8 @@ from saq.environment import get_data_dir
 from saq.modules.file_analysis.archive import ArchiveAnalysis
 from saq.modules.file_analysis.html import MHTMLAnalysis
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_ole_file
+from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3
+from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2
 from saq.modules.file_analysis.pdf import PDFAnalysis
 from saq.modules.file_analysis.upx import UPXAnalysis
 from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
@@ -26,6 +28,7 @@ from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
@@ -907,7 +910,11 @@ def test_officeparser_macro_extraction_merged(root_analysis, datadir):
     for macro_name in [ 'D6imzn9bmimax3kt20.bas', 'Vufp3qemgme18z3.cls', 'Yan8boy3v12dg.frm' ]:
         assert root_analysis.find_observable(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == macro_name) is None
 
-    assert root_analysis.find_observable(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == 'macros.bas')
+    # added once, after every macro was merged into it, so its value is the hash of the whole file
+    (merged,) = root_analysis.find_observables(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == 'macros.bas')
+    assert merged.value == sha256_file(merged.full_path)
+    extracted_files = {os.path.basename(f) for f in _file.get_and_load_analysis(OfficeParserAnalysis3).extracted_files}
+    assert {'D6imzn9bmimax3kt20.bas', 'Vufp3qemgme18z3.cls', 'Yan8boy3v12dg.frm'} <= extracted_files
 
 @pytest.mark.integration
 def test_olevba_macro_extraction(root_analysis, datadir):
@@ -959,7 +966,12 @@ def test_olevba_macro_extraction_merged(root_analysis, datadir):
     for macro_name in ['macro_0.bas', 'macro_1.bas', 'macro_2.bas']:
         assert alert.root_analysis.find_observable(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == macro_name) is None
 
-    assert alert.root_analysis.find_observable(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == 'macros.bas')
+    # added once, after every macro was merged into it, so its value is the hash of the whole file
+    (merged,) = alert.root_analysis.find_observables(lambda o: o.type == F_FILE and os.path.basename(o.file_name) == 'macros.bas')
+    assert merged.value == sha256_file(merged.full_path)
+    macros = _file.get_and_load_analysis(OLEVBA_Analysis_v1_2).macros
+    assert len(macros) == 3
+    assert {macro['local_path'] for macro in macros} == {merged.value}
 
 @pytest.mark.integration
 def test_upx(root_analysis, datadir):

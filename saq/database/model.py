@@ -1824,8 +1824,8 @@ class SVSYaraCapture(Base):
     detections when it is read.
 
     state is pending while the row is being stored, stored once the bytes are held, and missing
-    when they could not be: missing_reason says why (file: the file was gone and the pool did not
-    have it; storage: the CAS refused it). A stored row whose match record was gone (the alert was
+    when they could not be: missing_reason says why (file: the file was gone, or no longer hashed to
+    sha256, and the pool did not have it; storage: the CAS refused it). A stored row whose match record was gone (the alert was
     archived) keeps missing_reason 'match_record'. A missing row is retried on the alert's next
     dispositioned pass. Only saq/svs writes this table.
     """

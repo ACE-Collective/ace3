@@ -83,7 +83,7 @@ when they could not be. `missing_reason` says why:
 |---|---|---|
 | `stored` | none | The file and the match record are held. |
 | `stored` | `match_record` | The file is held, but the alert's YARA analysis was gone (the alert was archived). A later pass that has the record adds it. |
-| `missing` | `file` | The file was gone and the pool did not have the same bytes from another alert. |
+| `missing` | `file` | The file was gone, or no longer hashed to the capture's `sha256`, and the pool did not have the same bytes from another alert. |
 | `missing` | `storage` | The CAS refused the bytes. Retried on the alert's next dispositioned pass. |
 
 Missing captures are counted per rule, so a rule whose samples keep going missing is visible.
@@ -96,7 +96,7 @@ too where it applies), so the site's log tooling can search on them.
 | Event | Level |
 |---|---|
 | A sample was captured | INFO |
-| A capture is missing for the first time (`file`) | ERROR |
+| A capture is missing for the first time (`file`) | ERROR, saying whether the file was gone or hashed to something else |
 | A capture is still missing on a later pass | INFO |
 | The CAS refused a capture (`storage`) | ERROR, with an error report |
 | A capture was stored without its match record | ERROR |
