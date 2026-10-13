@@ -14,7 +14,7 @@ rule:
   offset: '00:05:00'
   full_coverage: yes
   group_by: field1
-  search: hunts/test/splunk/test_includes.query
+  search: tests/data/hunts/test/splunk/test_includes.query
   use_index_time: yes
 
   observable_mapping:
