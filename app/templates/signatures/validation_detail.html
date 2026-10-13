@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "signatures/_validations_page.html" import validations_page_attributes, validations_page_scripts with context %}
+
+{% block page_content %}
+<div id="validation_detail_page" {{ validations_page_attributes() }}
+     data-validation-uuid="{{ validation_uuid }}">
+    <p class="mb-2"><a href="{{ url_for('signatures.validations') }}"><span class="bi bi-arrow-left"></span> Validations</a></p>
+    <div id="validation_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="validation_detail"><span class="text-muted">Loading…</span></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{{ validations_page_scripts() }}
+{% endblock %}

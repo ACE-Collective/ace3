@@ -19,6 +19,13 @@ SIGNATURE_MODULES = [
         "major": "signature",
         "minor": "read",
     },
+    {
+        "endpoint": "signatures.validations",
+        "title": "Validations",
+        "description": "Reports on YARA rule changes, replayed against every graded sample: regressions, new false positives and what else a change does.",
+        "major": "signature",
+        "minor": "read",
+    },
 ]
 
 

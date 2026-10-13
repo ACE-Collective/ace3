@@ -2,7 +2,8 @@
 
 Like /admin, the area renders pages and nothing else: the Yara QA Results page is a shell whose
 script gets everything from /api/v2/signatures/yara-qa (covered by tests/aceapi_v2/yara_qa/), and
-the Samples pages are shells over /api/v2/svs/samples (tests/aceapi_v2/svs/). These tests assert
+the Samples pages are shells over /api/v2/svs/samples and the Validations pages over
+/api/v2/svs/yara/validations (tests/aceapi_v2/svs/). These tests assert
 that boundary, and the signature:read gate on the area and its nav link.
 """
 
@@ -10,6 +11,7 @@ import pytest
 from flask import url_for
 from sqlalchemy import select
 
+from aceapi_v2.svs.yara.validations.service import report_path
 from saq.constants import QUEUE_DEFAULT
 from saq.database.model import SavedFilter, User
 from saq.database.pool import get_db
@@ -18,10 +20,12 @@ from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
-PAGE_VIEWS = ("signatures.signatures_hub", "signatures.yara_qa", "signatures.samples", "signatures.sample_detail")
+PAGE_VIEWS = ("signatures.signatures_hub", "signatures.yara_qa", "signatures.samples", "signatures.sample_detail",
+              "signatures.validations", "signatures.validation_detail")
 
 SHA256 = "a" * 64
 RULE_UUID = "00000000-0000-0000-0000-000000000001"
+VALIDATION_UUID = "00000000-0000-0000-0000-0000000000aa"
 
 # the nav link is `<a ... >Signatures</a>`; the hub heading is an <h2>, so this matches only the link
 SIGNATURES_NAV_LINK = b">Signatures</a>"
@@ -48,6 +52,11 @@ def _login(client, username):
 def _sample_pages():
     return (url_for("signatures.samples"),
             url_for("signatures.sample_detail", sha256=SHA256, rule_uuid=RULE_UUID))
+
+
+def _validation_pages():
+    return (url_for("signatures.validations"),
+            url_for("signatures.validation_detail", validation_uuid=VALIDATION_UUID))
 
 
 def _saved_filter_names(username, screen):
@@ -230,6 +239,85 @@ class TestSamplesPages:
         assert _saved_filter_names(signature_reader, "alerts") == []
 
 
+class TestValidationsPages:
+    def test_hub_shows_the_validations_card(self, app, signature_reader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            hub = client.get(url_for("signatures.signatures_hub")).data
+            assert b"<h5 class=\"card-title\">Validations</h5>" in hub
+            assert url_for("signatures.validations").encode() in hub
+
+    def test_the_report_is_where_ci_links_to(self, app):
+        # CI's comment links to report_path(); the page must be served there (the GUI is mounted at
+        # /ace, which the test app leaves out)
+        assert report_path(VALIDATION_UUID) == "/ace" + url_for("signatures.validation_detail", validation_uuid=VALIDATION_UUID)
+
+    def test_pages_render_for_a_signature_reader(self, app, signature_reader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            for page_url in _validation_pages():
+                page = client.get(page_url)
+                assert page.status_code == 200, page_url
+                assert b'data-api="/api/v2/svs/yara/validations"' in page.data
+                assert b'data-screen="svs_validations"' in page.data
+                assert b'data-tz="UTC"' in page.data
+                assert f'data-samples-url="{url_for("signatures.samples")}"'.encode() in page.data
+                assert b"signatures_validations.js" in page.data
+                assert b"verdicts.js" in page.data
+
+    def test_list_page_is_a_filter_list_page_with_saved_filters(self, app, signature_reader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            page = client.get(url_for("signatures.validations")).data
+            # the order matters: each script uses the ones before it
+            positions = [page.index(script) for script in (b"js/ace_api.js", b"js/saved_filters.js", b"js/verdicts.js",
+                                                             b"js/filter_list_page.js", b"js/signatures_validations.js")]
+            assert positions == sorted(positions)
+            assert b'id="save_filter_modal"' in page
+            assert b'id="manage_filters_modal"' in page
+
+    def test_report_page_carries_the_validation_uuid(self, app, signature_reader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            page = client.get(url_for("signatures.validation_detail", validation_uuid=VALIDATION_UUID)).data
+            assert f'data-validation-uuid="{VALIDATION_UUID}"'.encode() in page
+            # one validation has no list and no saved filters
+            assert b"filter_list_page.js" not in page
+            assert b'id="save_filter_modal"' not in page
+
+    def test_report_page_escapes_the_uuid(self, app, signature_reader):
+        # the uuid is validated by the API, not the page, so the page must never trust it
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            page = client.get(url_for("signatures.validation_detail", validation_uuid='x"><script>'))
+            assert page.status_code == 200
+            assert b'x"><script>' not in page.data
+
+    def test_download_controls_follow_signature_download(self, app, signature_reader, signature_downloader):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            for page_url in _validation_pages():
+                assert b'data-can-download="false"' in client.get(page_url).data
+
+        with app.test_client() as client:
+            _login(client, signature_downloader)
+            for page_url in _validation_pages():
+                assert b'data-can-download="true"' in client.get(page_url).data
+
+    def test_list_page_seeds_the_default_saved_filters_once(self, app, signature_reader):
+        assert _saved_filter_names(signature_reader, "svs_validations") == []
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            client.get(url_for("signatures.validations"))
+            assert _saved_filter_names(signature_reader, "svs_validations") == ["Failed", "Has regressions"]
+
+            client.get(url_for("signatures.validations"))
+            assert _saved_filter_names(signature_reader, "svs_validations") == ["Failed", "Has regressions"]
+
+        # each screen seeds its own defaults
+        assert _saved_filter_names(signature_reader, "svs_samples") == []
+
+
 class TestSignaturesAreaGate:
     def test_without_signature_read_the_area_is_closed(self, app):
         _make_user("sig_none", [("alert", "read")])
@@ -238,7 +326,7 @@ class TestSignaturesAreaGate:
                 _login(client, "sig_none")
                 assert client.get(url_for("signatures.signatures_hub")).status_code == 403
                 assert client.get(url_for("signatures.yara_qa")).status_code == 403
-                for page_url in _sample_pages():
+                for page_url in _sample_pages() + _validation_pages():
                     assert client.get(page_url).status_code == 403, page_url
 
                 # the nav link is gated too, so it is absent on a page they can load
@@ -253,5 +341,5 @@ class TestSignaturesAreaGate:
         assert hub.status_code == 200
         assert SIGNATURES_NAV_LINK in hub.data
         assert web_client.get(url_for("signatures.yara_qa")).status_code == 200
-        for page_url in _sample_pages():
+        for page_url in _sample_pages() + _validation_pages():
             assert web_client.get(page_url).status_code == 200, page_url
