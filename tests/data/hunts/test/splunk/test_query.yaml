@@ -14,7 +14,7 @@ rule:
   offset: '00:05:00'
   full_coverage: yes
   group_by: process_id
-  search: hunts/test/splunk/test_query.query
+  search: tests/data/hunts/test/splunk/test_query.query
   use_index_time: yes
 
   observable_mapping:
