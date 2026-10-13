@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
+from aceapi_v2.common import listing
 from aceapi_v2.svs.samples import service
 from saq.cas import Hold, get_cas
 from saq.configuration.config import get_config
@@ -320,7 +321,7 @@ async def test_changed_since(client: AsyncClient):
 class TestExport:
     @pytest.mark.asyncio
     async def test_ndjson(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         for _ in range(3):
             _sample("FALSE_POSITIVE", [RULE_UUID])
 
@@ -332,7 +333,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_csv(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         for _ in range(3):
             _sample("REVIEWED", [RULE_UUID])
 

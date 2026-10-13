@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import update
 
 from aceapi_v2.application import app
+from aceapi_v2.common import listing
 from aceapi_v2.detection_points import service
 from saq.database.model import Alert, DetectionPoint, User
 from saq.database.pool import get_db
@@ -203,7 +204,7 @@ class TestChangedSince:
 class TestExport:
     @pytest.mark.asyncio
     async def test_ndjson(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         alert = insert_alert_with_detections(
             [_detection(SIG_A, f"{n}.example.com") for n in range(3)], disposition="DELIVERY")
 
@@ -215,7 +216,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_csv(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         root = insert_alert_with_detections([_detection(SIG_A, f"{n}.example.com") for n in range(3)])
 
         response = await client.get("/detection-points/export/csv")
@@ -227,7 +228,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_a_failure_part_way_ends_with_an_error_line(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 1)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 1)
         insert_alert_with_detections([_detection(SIG_A, "one.example.com"), _detection(SIG_B)])
 
         original = service.fetch_detection_point_page
