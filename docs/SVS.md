@@ -1205,8 +1205,9 @@ probably suppressed.
 
 ## Related
 
-- **Operating documents.** `docs/SVS_SAMPLES.md` covers the captured samples and
-  `docs/SVS_VALIDATION.md` the YARA validation; `docs/SVS_API.md` is the API's data dictionary.
+- **Operating documents.** `docs/SVS_SAMPLES.md` covers the captured samples,
+  `docs/SVS_VALIDATION.md` the YARA validation and `docs/SVS_RUNS.md` the test runs and their
+  alerts; `docs/SVS_API.md` is the API's data dictionary.
 - **Hunt validation.** `lib/signature_validator` (`validate-hunt` → `POST /api/hunt/validate`)
   compiles and ad-hoc-executes a hunt from a repository's CI. SVS's YARA validation follows the same
   direction (the repository's CI calls ACE), but the two are separate systems. [D-11]

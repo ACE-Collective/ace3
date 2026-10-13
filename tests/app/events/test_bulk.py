@@ -27,7 +27,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, make_simulated
 
 pytestmark = pytest.mark.integration
 
@@ -345,3 +345,51 @@ def test_bulk_set_disposition_rejects_a_disposition_analysts_may_not_set(web_cli
     assert response.status_code == 302
     db.refresh(alert)
     assert alert.disposition == original_disposition
+
+
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as sess:
+        return [message for _category, message in sess.get("_flashes", [])]
+
+
+def test_bulk_set_disposition_skips_and_reports_a_simulated_alert(web_client):
+    simulated = insert_alert()
+    make_simulated(simulated)
+    other = insert_alert()
+
+    response = web_client.post(url_for("events.bulk_set_disposition"), data={
+        "event_id": EVENT_ID,
+        "alert_uuids": f"{simulated.uuid},{other.uuid}",
+        "disposition": DISPOSITION_FALSE_POSITIVE,
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    assert db.get(Alert, simulated.id).disposition == "SIMULATED"
+    assert db.get(Alert, other.id).disposition == DISPOSITION_FALSE_POSITIVE
+    assert _flashes(web_client) == [
+        "disposition set for 1 alerts; left 1 SIMULATED alert alone (only ACE sets that disposition)"]
+
+
+def test_bulk_review_disposition_skips_and_reports_a_simulated_alert(web_client):
+    simulated = insert_alert()
+    make_simulated(simulated)
+    other = insert_alert()
+    set_dispositions([other.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+
+    response = web_client.post(url_for("events.bulk_review_disposition"), data={
+        "event_id": EVENT_ID,
+        "alert_uuids": f"{simulated.uuid},{other.uuid}",
+        "review_result": DISPOSITION_REVIEW_INCORRECT,
+        "corrected_disposition": DISPOSITION_WEAPONIZATION,
+        "comment": "actually malicious",
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    assert db.get(Alert, simulated.id).disposition == "SIMULATED"
+    assert db.get(Alert, other.id).disposition == DISPOSITION_WEAPONIZATION
+    assert _flashes(web_client) == [
+        "disposition review recorded for 1 alerts; left 1 SIMULATED alert alone (only ACE sets that disposition)"]

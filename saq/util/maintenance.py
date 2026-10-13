@@ -15,7 +15,7 @@ from saq.analysis.blob_store import (
 )
 from saq.analysis.cache import collect_stats as collect_cache_stats
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
+from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, DISPOSITION_SIMULATED
 from saq.database import Alert, get_db, retry_sql_on_deadlock
 from saq.database.pool import get_db_connection
 from saq.database.util.node import is_primary_node
@@ -25,16 +25,20 @@ from saq.search.tasks import submit_delete_task
 
 from sqlalchemy.sql.expression import select, delete
 
-def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[int]=None, dry_run: Optional[bool]=False, distribute_days_old: Optional[int]=None):
+def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[int]=None, dry_run: Optional[bool]=False,
+                   distribute_days_old: Optional[int]=None, simulated_days_old: Optional[int]=None):
     """Cleans up the alerts stored in the ACE system. 
-       Alerts dispositioned as FALSE_POSITIVE are archived (see :method:`saq.database.Alert.archive`)
-       Alerts dispositioned as IGNORE as deleted.
+       Alerts dispositioned as FALSE_POSITIVE or SIMULATED are archived (see :method:`saq.database.Alert.archive`)
+       Alerts dispositioned as IGNORE as deleted. SIMULATED alerts are never deleted: their
+       detections are what SVS's verdicts, sample labels and attributions derive from.
        This is intended to be called from an external maintenance script.
 
        :param int fp_days_old: By default the age of the alerts to be considered for cleanup
        is stored in the configuration file. Setting this overrides these settings.
        :param int ignore_days_old: By default the age of the alerts to be considered for cleanup
        is stored in the configuration file. Setting this overrides these settings.
+       :param int simulated_days_old: The age of the SIMULATED alerts to archive; defaults to
+       svs.simulated_days.
        :param bool dry_run: Setting this to True will simply print the number of alerts would
        be archived and deleted. Defaults to False.
     """
@@ -49,6 +53,9 @@ def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[in
     if distribute_days_old is None:
         distribute_days_old = get_config().global_settings.distribute_days_old
 
+    if simulated_days_old is None:
+        simulated_days_old = get_config().svs.simulated_days
+
     try:
         cleanup_ignored_alerts(ignore_days_old, dry_run)
     except Exception as e:
@@ -59,6 +66,12 @@ def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[in
         archive_fp_alerts(fp_days_old, dry_run)
     except Exception as e:
         logging.error(f"error archiving fp alerts: {e}")
+        report_exception()
+
+    try:
+        archive_simulated_alerts(simulated_days_old, dry_run)
+    except Exception as e:
+        logging.error(f"error archiving simulated alerts: {e}")
         report_exception()
 
     try:
@@ -98,18 +111,26 @@ def cleanup_ignored_alerts(days: int, dry_run: bool):
 
 def archive_fp_alerts(days: int, dry_run: bool):
     # archive alerts dispositioned as False Positive older than N days
+    _archive_alerts(DISPOSITION_FALSE_POSITIVE, days, dry_run)
+
+def archive_simulated_alerts(days: int, dry_run: bool):
+    # archive test-run alerts older than N days; they are never deleted (docs/SVS_RUNS.md)
+    _archive_alerts(DISPOSITION_SIMULATED, days, dry_run)
+
+def _archive_alerts(disposition: str, days: int, dry_run: bool):
+    # archive this node's alerts with the disposition, dispositioned more than N days ago
     dry_run_count = 0
     for alert in get_db().query(Alert).filter(
         Alert.location == get_global_runtime_settings().saq_node,
         Alert.archived == False,
-        Alert.disposition == DISPOSITION_FALSE_POSITIVE,
+        Alert.disposition == disposition,
         Alert.disposition_time < datetime.datetime.now() - datetime.timedelta(days=days)):
     
         if dry_run:
             dry_run_count += 1
             continue
 
-        logging.info(f"resetting false positive {alert}")
+        logging.info(f"archiving {disposition} alert {alert}")
 
         try:
             alert.load()
@@ -121,7 +142,7 @@ def archive_fp_alerts(days: int, dry_run: bool):
         alert.sync()
         
     if dry_run:
-        logging.info(f"{dry_run_count} fp alerts would be archived")
+        logging.info(f"{dry_run_count} {disposition} alerts would be archived")
 
 def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, max_count: Optional[int]=0) -> int:
     assert isinstance(days, int)

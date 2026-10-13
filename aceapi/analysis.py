@@ -20,6 +20,7 @@ from saq.environment import get_local_timezone
 
 from saq.analysis import RootAnalysis
 from saq.database import get_db_connection, ALERT
+from saq.database.util.alert import ensure_uuid_not_frozen
 from saq.error import report_exception
 from saq.observables.generator import create_observable_from_dict
 from saq.util import parse_event_time, storage_dir_from_uuid, validate_uuid, workload_storage_dir
@@ -254,6 +255,8 @@ def resubmit(uuid):
     reject_if_node_draining()
 
     try:
+        # a SIMULATED alert is never reset (AlertFrozen is reported as the error)
+        ensure_uuid_not_frozen(uuid)
         root = RootAnalysis(storage_dir=get_storage_dir(uuid))
         root.load()
         root.reset()

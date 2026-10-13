@@ -27,7 +27,7 @@ from saq.environment import get_base_dir
 from saq.gui.icon import KEY_ICON_CONFIGURATION
 from saq.modules.test import BasicTestAnalysis
 from saq.util.uuid import get_storage_dir, storage_dir_from_uuid
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, make_simulated, workload_count
 
 
 @pytest.mark.integration
@@ -115,6 +115,34 @@ def test_analyze_schedules_the_alert_in_correlation_mode(root_analysis):
     get_db().expire_all()
     workload = get_db().query(Workload).filter(Workload.uuid == root_analysis.uuid).one()
     assert workload.analysis_mode == ANALYSIS_MODE_CORRELATION
+
+
+@pytest.mark.integration
+def test_reset_refuses_a_simulated_alert(root_analysis, caplog):
+    """A SIMULATED alert is never reset (docs/SVS_RUNS.md); the other directories still are."""
+    root_analysis.add_observable_by_spec(F_TEST, "test")
+    root_analysis.state = {"key": "value"}
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+    make_simulated(alert)
+    storage_dir = get_storage_dir(root_analysis.uuid)
+
+    reset_alerts(Namespace(dirs=[storage_dir]))
+
+    assert load_root(storage_dir).state == {"key": "value"}
+    assert f"alert {alert.uuid} is SIMULATED" in caplog.text
+
+
+@pytest.mark.integration
+def test_analyze_refuses_a_simulated_alert(root_analysis, caplog):
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+    make_simulated(alert)
+
+    reload_alerts(Namespace(uuids=[alert.uuid]))
+
+    assert workload_count(alert.uuid) == 0
+    assert f"alert {alert.uuid} is SIMULATED" in caplog.text
 
 
 def _alert_inserted_days_ago(days: int, observable_value: str = None) -> str:

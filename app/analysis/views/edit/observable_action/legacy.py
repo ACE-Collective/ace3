@@ -7,6 +7,7 @@ from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_RENDER, ACTION_URL_CRAWL, DIRECTIVE_COLLECT_FILE, DIRECTIVE_CRAWL
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.error.reporting import report_exception
@@ -21,6 +22,12 @@ def observable_action():
     alert = get_current_alert()
     observable_uuid = request.form.get('observable_uuid')
     action_id = request.form.get('action_id')
+
+    # every action here changes the alert's tree or queues it for analysis again
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        return str(e), 409
 
     lock_uuid = str(uuid.uuid4())
     if not acquire_lock(alert.uuid, lock_uuid):

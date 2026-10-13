@@ -12,6 +12,7 @@ from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_
 from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import DIRECTIVE_CLICKER_DETECTION, F_FQDN, F_URL
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.error.reporting import report_exception
@@ -30,6 +31,11 @@ def observable_action_check_for_clickers():
     alert = get_current_alert()
     if alert is None:
         return jsonify({"status": "error", "message": "alert not found"}), 404
+
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        return jsonify({"status": "error", "message": str(e)}), 409
 
     observable_uuid = request.form.get("observable_uuid")
     if not observable_uuid:

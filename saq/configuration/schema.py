@@ -777,6 +777,7 @@ class SVSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
+    simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
 
 
 class NRDConfig(BaseModel):

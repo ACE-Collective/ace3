@@ -16,7 +16,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, make_simulated
 
 
 @pytest.mark.integration
@@ -214,3 +214,26 @@ def test_review_disposition_rejects_a_correction_analysts_may_not_set(web_client
     db.refresh(alert)
     assert alert.disposition_review == DISPOSITION_REVIEW_UNREVIEWED
     assert alert.disposition == DISPOSITION_FALSE_POSITIVE
+
+
+@pytest.mark.integration
+def test_review_disposition_does_not_correct_a_simulated_alert(web_client):
+    simulated = insert_alert()
+    make_simulated(simulated)
+
+    response = web_client.post(url_for("analysis.review_disposition"), data={
+        "review_result": DISPOSITION_REVIEW_INCORRECT,
+        "corrected_disposition": DISPOSITION_WEAPONIZATION,
+        "comment": "this was real",
+        "alert_uuids": simulated.uuid,
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.refresh(simulated)
+    assert simulated.disposition == "SIMULATED"
+    assert simulated.incorrect_disposition is None
+    with web_client.session_transaction() as sess:
+        flashes = [message for _category, message in sess.get("_flashes", [])]
+    assert flashes == ["disposition review recorded for 0 alerts; "
+                       "left 1 SIMULATED alert alone (only ACE sets that disposition)"]
