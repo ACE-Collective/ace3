@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
+{% from "signatures/_validations_page.html" import validations_page_attributes, validations_page_scripts with context %}
+
+{% block page_content %}
+<div id="validations_page" {{ validations_page_attributes() }}>
+    <h2 class="mb-1">Validations</h2>
+    <p class="text-muted mb-3">
+        A YARA rule repository's CI asks ACE to check a change: every sample is scanned with the rules of the base
+        commit and of the head commit, and the report lists what the change does to them. Validation warns and never
+        blocks. A report is reused while the samples, their labels and the scanner are unchanged.
+    </p>
+
+    <div id="validations_list"></div>
+</div>
+
+{{ saved_filter_modals() }}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{{ validations_page_scripts(list_page=True) }}
+{% endblock %}

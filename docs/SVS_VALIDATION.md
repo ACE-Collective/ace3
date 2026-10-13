@@ -12,7 +12,8 @@ This document covers how a validation runs and what it reports. The design and i
 The signature repository's CI requests a validation through the API (`validate-yara`, below);
 `service_svs` runs it from a queue and stores the report, which CI summarizes on the pull request
 with a link to ACE. `ace svs yara validate` runs one from the command line instead, synchronously,
-storing nothing.
+storing nothing. The reports are read under *Signatures → Validations*
+([In the GUI](#in-the-gui)).
 
 ## Which rules are validated
 
@@ -60,7 +61,8 @@ of the rule repository:
 3. It polls the status until the validation completes or fails, or `--timeout` (default 3600
    seconds) passes.
 4. It prints a Markdown summary, and writes it to `--summary-file`: the counts, the regressions and
-   new false positives by rule, the files that do not compile, and the link to the report in ACE.
+   new false positives by rule, the files that do not compile, and the link to the report in ACE
+   ([In the GUI](#in-the-gui)).
 
 Validation warns and never blocks. `validate-yara` exits 0 whatever the validation found, also when
 it failed or is still running at the timeout; it exits 2 only when it could not ask (a missing
@@ -281,6 +283,60 @@ For head it also lists:
   CSV.
 - `GET /{uuid}/download`, with `signature:download`: the files of a selection of the rows, in an
   `infected` zip, as the Samples download serves them.
+
+## In the GUI
+
+*Signatures → Validations* (`app/signatures/views/validations.py`) lists the validations, for
+anyone with `signature:read`. Like *Samples*, it is a shell: everything on it comes from
+`/api/v2/svs/yara/validations`, through the list controller `static/js/filter_list_page.js`.
+
+**The list.** One row per validation, newest first, in keyset pages of 25 to 250 rows:
+- when it was requested, linking to its report;
+- its state (*queued*, *running*, *completed*, *failed*), with a failure's error in the tooltip;
+- the repository, and the branch with a link to the pull request when CI sent one;
+- the base and head commits;
+- who requested it;
+- the regressions, new false positives and compile errors, in red when not zero, and a dash until
+  it completes.
+
+**Filters, saved filters and links** work as on the Samples page. The filters are repository,
+branch, head commit (a prefix), state, has regressions, has new FP, compile errors and created.
+Every user starts with the saved filters *Has regressions* and *Failed*. *Export* has CSV and
+NDJSON and *Copy API URL*; there is no bulk download from the list.
+
+**A report** (`/ace/signatures/validations/<uuid>`, the link CI posts) shows:
+- the header: state, error, repository, branch and pull request, both commits, who requested it,
+  when it was requested and ran, and how many rules head adds, removes and changes. A queued or
+  running validation's page refreshes every 15 seconds until it ends;
+- a red banner when a ruleset would not load, so nothing was compared. For head, that means the
+  yara service would keep serving its previous rules;
+- the bands, most urgent first: regressions; regressions on unconfirmed labels; new false
+  positives, and new false positives on another rule's sample; compile problems (files that do not
+  compile and the rules they drop, a ruleset that would not load, includes compiled as empty); scan
+  errors; samples of rules the change removes; recovered; improvements; already broken on base;
+  new matches on files that are a real hit for another rule; and unlabeled changes. Each band has
+  its count and a line on what to do with it. The urgent ones are open, the others are opened with
+  a click, and an empty band is left out;
+- under the bands, the counted categories: known false positives still matching, retired, not
+  testable and unchanged;
+- *Details*: the rules the change adds, removes and changes, rules that cannot be tested and
+  why, rules that filter on `full_path`, head's compiler warnings, rule files the yara service would
+  not load, refused archive members, samples that were not scanned, the scan time per namespace
+  under base and head, and the run (sizes, duration, library versions, worker, corpus version and
+  engine fingerprint).
+
+A band lists 50 rows at a time, with *Show more*. Each row has the rule and its namespace, the
+file's sha256, the sample's label for the rule (drawn like a detection verdict), the outcome under
+base and under head, and a note (for example, why a match makes no detection). An icon marks a
+rule that matched where its meta makes no detection. The rule links to the sample's page, where
+the actions are (`docs/SVS_SAMPLES.md`, *Actions*: retire an intended regression, relabel a wrong
+label). In the bands whose file is not a sample of that rule (new false positives on another
+rule's sample, new matches on a real-hit file, unlabeled changes, scan errors), it links to the
+Samples list filtered on the file's sha256 instead.
+
+Each band exports its rows as CSV or NDJSON, and so does the whole report. With
+`signature:download`, each band and the whole report also have *Download files*: the files of
+those rows that are stored on this node, in a zip with the password `infected`.
 
 ## Command line
 
