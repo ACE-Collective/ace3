@@ -1,8 +1,5 @@
 """Alert service for ACE API v2."""
 
-import base64
-import csv
-import io
 import json
 import logging
 import os
@@ -46,6 +43,7 @@ from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import ALERT_ROW_CSV_FIELDS, AlertRow, BulkAddObservableResult
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
+from aceapi_v2.common.listing import InvalidCursor, InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -413,30 +411,12 @@ async def bulk_add_observable(
 LISTING_ORDER_ID = "id"
 LISTING_ORDER_UPDATED = "updated_at"
 
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
 # A changed_since pull only returns rows whose updated_at is at least this old. updated_at is
 # stamped when the UPDATE runs, not when it commits, so a row can appear with a timestamp
 # older than a cursor that was already handed out; waiting until no transaction can still be
 # writing a value that old is what makes the (updated_at, id) keyset safe. Delivery is
 # at-least-once: a client that resumes from changed_since may see a row twice, never miss one.
 CHANGED_SINCE_SETTLE_SECONDS = 5
-
-_CURSOR_VERSION = 1
-
-
-class InvalidListingRequest(ValueError):
-    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
-
-    def __init__(self, detail):
-        super().__init__(str(detail))
-        self.detail = detail
-
-
-class InvalidCursor(ValueError):
-    """The cursor is malformed, or belongs to a listing in another order."""
-
 
 @dataclass(frozen=True)
 class AlertListing:
@@ -500,17 +480,12 @@ def prepare_alert_listing(
 
 def encode_listing_cursor(order: str, alert_id: int, updated_at: datetime) -> str:
     key = [alert_id] if order == LISTING_ORDER_ID else [updated_at.isoformat(), alert_id]
-    payload = json.dumps({"v": _CURSOR_VERSION, "o": order, "k": key}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(o=order, k=key)
 
 
 def decode_listing_cursor(cursor: str, order: str) -> list:
     """The keyset values a cursor carries. Raises InvalidCursor."""
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> list:
         if payload["o"] != order:
             raise InvalidCursor(
                 f"this cursor pages a listing ordered by {payload['o']}, not {order}: "
@@ -521,10 +496,8 @@ def decode_listing_cursor(cursor: str, order: str) -> list:
             return [int(alert_id)]
         updated_at, alert_id = key
         return [datetime.fromisoformat(updated_at), int(alert_id)]
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def fetch_alert_page(
@@ -637,12 +610,7 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
 
 def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(ALERT_ROW_CSV_FIELDS)
-    for row in rows:
-        values = row.model_dump(mode="json")
-        values["tags"] = ",".join(row.tags)
-        writer.writerow([values[name] if values[name] is not None else "" for name in ALERT_ROW_CSV_FIELDS])
-    return buffer.getvalue()
+    def flatten(values: dict) -> None:
+        values["tags"] = ",".join(values["tags"])
+
+    return rows_to_csv(rows, ALERT_ROW_CSV_FIELDS, header=header, flatten=flatten)

@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import text
 
 from aceapi_v2.alerts import service
+from aceapi_v2.common import listing
 from saq.database.model import Alert, AuthUserPermission, Company, DetectionPoint, Tag, TagMapping, User
 from saq.database.pool import get_db
 from saq.database.util.alert import touch_alerts
@@ -169,7 +170,7 @@ class TestKeysetPaging:
     @pytest.mark.asyncio
     async def test_limit_bounds(self, client: AsyncClient):
         assert (await client.get("/alerts/", params={"limit": 0})).status_code == 422
-        assert (await client.get("/alerts/", params={"limit": service.LISTING_MAX_PAGE_SIZE + 1})).status_code == 422
+        assert (await client.get("/alerts/", params={"limit": listing.LISTING_MAX_PAGE_SIZE + 1})).status_code == 422
 
 
 class TestFilters:
@@ -335,7 +336,7 @@ class TestExport:
     @pytest.mark.asyncio
     async def test_ndjson(self, client: AsyncClient, monkeypatch):
         # small pages so the stream crosses several of them
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         alerts = [insert_alert() for _ in range(5)]
 
         response = await client.get("/alerts/export/ndjson")
@@ -347,7 +348,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_csv(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         alerts = [insert_alert() for _ in range(3)]
         _set(alerts[1], queue="external")
 
@@ -373,7 +374,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_a_failure_part_way_ends_with_an_error_line(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 1)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 1)
         insert_alert()
         insert_alert()
 
@@ -396,7 +397,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_a_failure_part_way_truncates_the_csv(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 1)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 1)
         first = insert_alert()
         insert_alert()
 

@@ -13,10 +13,6 @@ sample stored elsewhere; a multi-node site gives the pool a shared backend (shar
 sees that.
 """
 
-import base64
-import csv
-import io
-import json
 import logging
 import os
 import re
@@ -31,6 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, select, tuple_
 
 from aceapi_v2.common.archive import MANIFEST_NAME, CASArchiveEntry, create_encrypted_cas_zip, safe_file_name
+from aceapi_v2.common.listing import InvalidCursor, InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.svs.samples.schemas import (
     SAMPLE_ROW_CSV_FIELDS,
     LabelActionResult,
@@ -79,23 +76,7 @@ from saq.svs.samples import (
 
 logger = logging.getLogger(__name__)
 
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
-_CURSOR_VERSION = 1
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
-
-class InvalidListingRequest(ValueError):
-    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
-
-    def __init__(self, detail):
-        super().__init__(str(detail))
-        self.detail = detail
-
-
-class InvalidCursor(ValueError):
-    """The cursor is malformed, or belongs to a listing in another order."""
 
 
 #
@@ -193,27 +174,19 @@ def prepare_sample_listing(
 
 
 def encode_listing_cursor(listing: SampleListing, key: list) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "o": listing.sort.value, "d": listing.descending, "k": key},
-                         separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(o=listing.sort.value, d=listing.descending, k=key)
 
 
 def decode_listing_cursor(cursor: str, listing: SampleListing) -> list:
     """The keyset values a cursor carries. Raises InvalidCursor."""
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> list:
         if payload["o"] != listing.sort.value or bool(payload["d"]) != listing.descending:
             raise InvalidCursor(
                 f"this cursor pages a listing sorted by {payload['o']} ({'desc' if payload['d'] else 'asc'}): "
                 "pass the same sort and desc as the request that returned it")
         return parse_sort_key(payload["k"], listing.sort)
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def _to_rows(records: list[dict]) -> list[SampleRow]:
@@ -241,15 +214,10 @@ def fetch_sample_page(listing: SampleListing, cursor: str | None, limit: int) ->
 
 def sample_rows_to_csv(rows: list[SampleRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked; the votes are flattened."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(SAMPLE_ROW_CSV_FIELDS)
-    for row in rows:
-        values = row.model_dump(mode="json")
+    def flatten(values: dict) -> None:
         values.update(values.pop("votes"))
-        writer.writerow([values[name] if values[name] is not None else "" for name in SAMPLE_ROW_CSV_FIELDS])
-    return buffer.getvalue()
+
+    return rows_to_csv(rows, SAMPLE_ROW_CSV_FIELDS, header=header, flatten=flatten)
 
 
 #
@@ -597,22 +565,15 @@ def delete_sample_file(sha256: str, reason: str, user_id: int | None, actor: Opt
 
 
 def _encode_deletion_cursor(row: SVSSampleDeletion) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "k": [row.updated_at.isoformat(), row.id]}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(k=[row.updated_at.isoformat(), row.id])
 
 
 def _decode_deletion_cursor(cursor: str) -> tuple[datetime, int]:
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> tuple[datetime, int]:
         updated_at, row_id = payload["k"]
         return datetime.fromisoformat(updated_at), int(row_id)
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def list_deletions(changed_since: datetime | None, cursor: str | None, limit: int) -> SampleDeletionPage:
