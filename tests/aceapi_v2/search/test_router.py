@@ -148,6 +148,41 @@ class TestSearchAlerts:
         assert search.call_args.kwargs["post_filter"] is service.node_scope_post_filter
 
 
+class TestTestAlerts:
+    """Test-run alerts are left out unless asked for, and the response says how many
+    (docs/SVS_RUNS.md)."""
+
+    @pytest.mark.asyncio
+    async def test_left_out_by_default_and_counted(self, client: AsyncClient, monkeypatch):
+        search, _ = _stub_response(monkeypatch, [])
+        search.return_value.excluded_test_alerts = 4
+
+        response = await client.post("/search/alerts", json={"query": "mimikatz"})
+        assert response.status_code == 200, response.text
+        assert response.json()["excluded_test_alerts"] == 4
+        assert search.call_args[0][0].include_test_alerts is False
+
+    @pytest.mark.asyncio
+    async def test_include_test_alerts(self, client: AsyncClient, monkeypatch):
+        search, _ = _stub_response(monkeypatch, [])
+
+        response = await client.post("/search/alerts", json={"query": "mimikatz", "include_test_alerts": True})
+        assert response.status_code == 200, response.text
+        assert response.json()["excluded_test_alerts"] is None
+        assert search.call_args[0][0].include_test_alerts is True
+
+    @pytest.mark.asyncio
+    async def test_similar(self, client: AsyncClient, monkeypatch):
+        source = insert_alert()
+        _, similar = _stub_response(monkeypatch, [])
+        similar.return_value.excluded_test_alerts = 2
+
+        response = await client.post("/search/similar", json={"alert_uuid": source.uuid, "include_test_alerts": True})
+        assert response.status_code == 200, response.text
+        assert response.json()["excluded_test_alerts"] == 2
+        assert similar.call_args.kwargs["include_test_alerts"] is True
+
+
 class TestSimilarAlerts:
     @pytest.mark.asyncio
     async def test_invalid_and_missing_alert(self, client: AsyncClient):

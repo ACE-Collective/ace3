@@ -777,6 +777,7 @@ class SVSConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
+    queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
 
 

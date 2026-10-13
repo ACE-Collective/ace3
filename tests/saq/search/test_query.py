@@ -315,3 +315,109 @@ class TestQdrantCalls:
         assert query.similar_search("alert-1", SearchFilters(), limit=5, group_size=2).dense == []
         response = query.similar_alerts("alert-1")
         assert response.total == 0 and response.query == "similar:alert-1"
+
+
+class TestTestAlerts:
+    """Test-run alerts (svs.queue) are left out of a search that says nothing about queues, and
+    counted (docs/SVS_RUNS.md, RPT-7)."""
+
+    @pytest.fixture
+    def calls(self, monkeypatch):
+        """Records the filters each lane run sees; the test-queue run finds one alert."""
+        seen = []
+
+        def semantic(text, filters, **kwargs):
+            seen.append(filters)
+            if filters.queues == ("svs",) and not filters.queues_inverted:
+                return SemanticLane(dense=[("t", [])], dense_scores={"t": 0.5})
+            return SemanticLane(dense=[("a", []), ("b", [])], dense_scores={"a": 0.6, "b": 0.5})
+
+        monkeypatch.setattr(query, "semantic_search", semantic)
+        monkeypatch.setattr(query, "lexical_search", lambda *a, **k: [])
+        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
+        return seen
+
+    def test_leave_out_test_alerts(self):
+        filters, test_filters = query.leave_out_test_alerts(SearchFilters(dispositions=("OPEN",)), include=False)
+        assert (filters.queues, filters.queues_inverted) == (("svs",), True)
+        assert (test_filters.queues, test_filters.queues_inverted) == (("svs",), False)
+        # everything else is the request's own
+        assert filters.dispositions == test_filters.dispositions == ("OPEN",)
+
+    @pytest.mark.parametrize("filters", [
+        SearchFilters(queues=("default",)),
+        SearchFilters(queues=("default",), queues_inverted=True),
+        SearchFilters(filter_list=({"name": "Queue", "inverted": True, "values": ["external"]},)),
+    ])
+    def test_a_request_that_names_a_queue_gets_what_it_asked_for(self, filters):
+        assert query.leave_out_test_alerts(filters, include=False) == (filters, None)
+
+    def test_asking_for_test_alerts(self):
+        filters = SearchFilters()
+        assert query.leave_out_test_alerts(filters, include=True) == (filters, None)
+
+    def test_the_configured_queue(self, monkeypatch):
+        monkeypatch.setattr(get_config().svs, "queue", "atomic")
+        filters, _ = query.leave_out_test_alerts(SearchFilters(), include=False)
+        assert filters.queues == ("atomic",)
+
+    def test_search_leaves_them_out_and_counts_them(self, calls):
+        response = query.search_alerts(SearchRequest(query="mimikatz"))
+        assert response.alert_uuids == ["a", "b"]
+        assert response.excluded_test_alerts == 1
+        assert [(f.queues, f.queues_inverted) for f in calls] == [(("svs",), True), (("svs",), False)]
+        assert "excluded_test_alerts" in response.timings_ms
+
+    def test_no_counting_pass_while_no_test_alert_exists(self, calls, monkeypatch):
+        monkeypatch.setattr(query, "_any_test_alerts", lambda: False)
+        response = query.search_alerts(SearchRequest(query="mimikatz"))
+        assert response.excluded_test_alerts == 0
+        assert len(calls) == 1
+
+    def test_a_typed_queue_term_brings_them_back(self, calls):
+        response = query.search_alerts(SearchRequest(query="mimikatz queue:svs"))
+        assert response.alert_uuids == ["t"]
+        assert response.excluded_test_alerts is None
+        assert len(calls) == 1
+
+    def test_include_test_alerts(self, calls):
+        response = query.search_alerts(SearchRequest(query="mimikatz", include_test_alerts=True))
+        assert response.excluded_test_alerts is None
+        assert calls[0].queues == ()
+
+    def test_the_count_respects_the_post_filter(self, calls):
+        """Node scoping applies to the count too: an alert this node can't show isn't counted."""
+        response = query.search_alerts(SearchRequest(query="mimikatz"), post_filter=lambda uuids: [u for u in uuids if u != "t"])
+        assert response.excluded_test_alerts == 0
+
+    def test_a_listing_counts_them_too(self, monkeypatch):
+        seen = []
+
+        def fake_listing(filters, *, limit, offset, post_filter=None, timings=None):
+            seen.append((filters.queues, filters.queues_inverted, limit))
+            total = 4 if not filters.queues_inverted else 9
+            return SearchResponse(query="", total=total, offset=offset, limit=limit)
+
+        monkeypatch.setattr(query, "filter_listing", fake_listing)
+        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
+        response = query.search_alerts(SearchRequest(query="disposition:OPEN", limit=20))
+        assert response.total == 9 and response.excluded_test_alerts == 4
+        assert seen == [(("svs",), True, 20), (("svs",), False, 0)]
+
+    def test_similar_alerts(self, monkeypatch):
+        seen = []
+
+        def similar(alert_uuid, filters, **kwargs):
+            seen.append(filters)
+            if not filters.queues_inverted:
+                return SemanticLane(dense=[("t1", []), ("t2", [])])
+            return SemanticLane(dense=[("a", [])])
+
+        monkeypatch.setattr(query, "similar_search", similar)
+        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
+        response = query.similar_alerts("x")
+        assert response.alert_uuids == ["a"] and response.excluded_test_alerts == 2
+
+        seen.clear()
+        response = query.similar_alerts("x", include_test_alerts=True)
+        assert response.excluded_test_alerts is None and seen[0].queues == ()

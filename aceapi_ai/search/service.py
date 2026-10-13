@@ -28,16 +28,20 @@ async def _run_limited(event: str, auth: ApiAuthResult, request: Request, fn: Ca
 
 
 async def search_alerts(body: AlertSearchRequest, auth: ApiAuthResult, request: Request) -> AlertSearchResponse:
-    fields = dict(query=body.query, filters=body.filters.model_dump(mode="json"), limit=body.limit, offset=body.offset, lanes=list(body.lanes))
+    fields = dict(query=body.query, filters=body.filters.model_dump(mode="json"), limit=body.limit, offset=body.offset,
+                  lanes=list(body.lanes), include_test_alerts=body.include_test_alerts)
     response = await _run_limited("search", auth, request, lambda: v2_service.search_alerts_sync(body), **fields)
     audit_event("search", auth, request, **fields, result_count=len(response.results), total=response.total,
+                excluded_test_alerts=response.excluded_test_alerts,
                 result_uuids=[r.alert.uuid for r in response.results], status=200)
     return response
 
 
 async def similar_alerts(body: SimilarAlertsRequest, auth: ApiAuthResult, request: Request) -> AlertSearchResponse:
-    fields = dict(alert_uuid=body.alert_uuid, filters=body.filters.model_dump(mode="json"), limit=body.limit, offset=body.offset)
+    fields = dict(alert_uuid=body.alert_uuid, filters=body.filters.model_dump(mode="json"), limit=body.limit,
+                  offset=body.offset, include_test_alerts=body.include_test_alerts)
     response = await _run_limited("similar", auth, request, lambda: v2_service.similar_alerts_sync(body), **fields)
     audit_event("similar", auth, request, **fields, result_count=len(response.results), total=response.total,
+                excluded_test_alerts=response.excluded_test_alerts,
                 result_uuids=[r.alert.uuid for r in response.results], status=200)
     return response

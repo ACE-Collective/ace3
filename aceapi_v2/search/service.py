@@ -146,6 +146,7 @@ def to_response(response: SearchResponse) -> AlertSearchResponse:
         results=results,
         lanes_used=sorted(response.lanes_used),
         timings_ms=response.timings_ms,
+        excluded_test_alerts=response.excluded_test_alerts,
         errors=list(response.errors),
     )
 
@@ -158,6 +159,7 @@ def search_alerts_sync(body: AlertSearchRequest) -> AlertSearchResponse:
         offset=body.offset,
         include_hits=body.include_hits,
         lanes=frozenset(body.lanes),
+        include_test_alerts=body.include_test_alerts,
     )
     return to_response(search_alerts(request, post_filter=node_scope_post_filter))
 
@@ -175,6 +177,7 @@ def similar_alerts_sync(body: SimilarAlertsRequest) -> AlertSearchResponse:
         limit=body.limit,
         offset=body.offset,
         include_hits=body.include_hits,
+        include_test_alerts=body.include_test_alerts,
         post_filter=node_scope_post_filter,
     )
     return to_response(response)

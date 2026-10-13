@@ -118,6 +118,18 @@ function clear_search() {
     submit_search('');
 }
 
+// includes the test-run alerts the search left out, or leaves them out again (docs/SVS_RUNS.md)
+function toggle_search_tests(button) {
+    fetch(button.data('url'), { credentials: 'same-origin', method: 'POST', body: new URLSearchParams({ include: button.data('include') }) })
+    .then(function(resp){
+        if (!resp.ok) { throw new Error(resp.statusText); }
+        window.location.replace($("#alert-search").data('manage-url'));
+    })
+    .catch(function(err){
+        alert('search failed: ' + err.message);
+    });
+}
+
 // Shows the "Show more" button under each comment block whose content overflows the
 // collapsed height. Layout measurement only -- the click handling and expanded state
 // live in Datastar attributes on the elements themselves ($_openComments signal).
@@ -572,6 +584,10 @@ $(document).ready(function() {
 
     $("#alert-search-clear").click(function(e) {
         clear_search();
+    });
+
+    $("#alert-search-tests-toggle").click(function(e) {
+        toggle_search_tests($(this));
     });
 
     $("#alert-search").on("keyup", function(e) {
