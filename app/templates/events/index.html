@@ -21,7 +21,7 @@
                             <div class="card-body">
                                 <div class="row mb-2">
                                     <div class="col-md-12">
-                                        <button class="btn btn-outline-dark btn-sm" type="button" onclick="close_event()" title="Close Event">
+                                        <button class="btn btn-outline-dark btn-sm" type="button" data-event-id="{{ event.id }}" data-closed-status="{{ closed_status }}" onclick="close_event(this.dataset.eventId, this.dataset.closedStatus)" title="Close Event">
                                             <span class="bi bi-folder-check"></span> Close Event
                                         </button>
                                         <button class="btn btn-outline-dark btn-sm" type="button" onclick="edit_event('{{event.id}}')" title="Edit Event">
@@ -162,5 +162,6 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/events.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}
