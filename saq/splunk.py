@@ -157,9 +157,43 @@ def splunk_gui_path(app: Optional[str] = None) -> str:
     return 'en-US/app/search/search' if app is None or app == '-' else f'en-US/app/{app}/search'
 
 
+# a double-quoted SPL string (kept as is), or a ```comment``` together with the whitespace around it
+SPL_STRING_OR_COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|(\s*)```.*?```(\s*)', re.DOTALL)
+
+
+def strip_spl_comments(query: str) -> str:
+    """Removes the ```comment``` blocks from an SPL query.
+
+    Splunk ignores comments, but they can make up a large part of a heavily tuned query, and Splunk web
+    rejects a search link whose URL is too long. A ``` inside a double-quoted string is not a comment and an
+    unterminated ``` is not removed. The whitespace around a comment collapses to a single separator: a
+    newline, keeping the indentation of the line the next token is on, when it held a line break, and a
+    space otherwise.
+
+    Args:
+        query (str): the SPL query
+
+    Returns:
+        str: the query without comments
+    """
+    def _replace(match: re.Match) -> str:
+        before, after = match.group(1), match.group(2)
+        if before is None:
+            return match.group(0)  # a quoted string
+
+        if "\n" in after:
+            return "\n" + after.rsplit("\n", 1)[1]
+        if "\n" in before:
+            return "\n" + before.rsplit("\n", 1)[1]
+        return " "
+
+    return SPL_STRING_OR_COMMENT.sub(_replace, query).strip()
+
+
 def encode_splunk_query_link(host: str, gui_path: str, query: str, start_time: Optional[datetime] = None,
                              end_time: Optional[datetime] = None, use_index_time: bool = False) -> str:
     """Builds a Splunk web search URL for the given query and time range without needing a live connection.
+    The query in the link has its comments removed (see strip_spl_comments).
 
     Args:
         host (str): the Splunk web host
@@ -172,7 +206,8 @@ def encode_splunk_query_link(host: str, gui_path: str, query: str, start_time: O
     Returns:
         str: the gui link to the query over the given time range
     """
-    is_generating_command = query.lstrip().startswith("|")
+    query = strip_spl_comments(query)
+    is_generating_command = query.startswith("|")
 
     # add search to start of query if missing (skip for generating commands starting with |)
     if not is_generating_command and not query.lstrip().lower().startswith("search"):

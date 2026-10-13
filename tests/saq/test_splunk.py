@@ -16,6 +16,7 @@ from saq.splunk import (
     SplunkQueryObject,
     _proxy_handler,
     extract_event_timestamp,
+    strip_spl_comments,
 )
 from tests.saq.mock_datetime import MOCK_NOW
 
@@ -1063,6 +1064,50 @@ def test_link_pipe_query_with_index_time():
         # URL time params should still be present
         assert "earliest=" in link
         assert "latest=" in link
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("query, expected", [
+    # a comment on its own line takes the blank lines around it with it
+    ('index=a\n\n``` why ```\n\nNOT x="1"', 'index=a\nNOT x="1"'),
+    # a trailing comment keeps the next line and its indentation
+    ('| eval e=floor(_time) ``` carve ```\n  | fields *', '| eval e=floor(_time)\n  | fields *'),
+    ('| search NOT (a AND\n    ``` why ```\n    b)', '| search NOT (a AND\n    b)'),
+    # a comment inside a line leaves one space
+    ('NOT a ``` why ``` NOT b', 'NOT a NOT b'),
+    ('NOT a```why```NOT b', 'NOT a NOT b'),
+    # a comment spanning lines
+    ('index=a\n``` one\n  two ```\nNOT b', 'index=a\nNOT b'),
+    # a quote inside a comment does not start a string
+    ('index=a ``` the "x ```\nNOT b ``` y ```', 'index=a\nNOT b'),
+    # ``` inside a string is not a comment
+    ('index=a msg="x ``` y ``` z"', 'index=a msg="x ``` y ``` z"'),
+    ('index=a msg="say \\"```\\"" ``` why ``` NOT b', 'index=a msg="say \\"```\\"" NOT b'),
+    # an unterminated ``` is left alone
+    ('index=a ``` oops', 'index=a ``` oops'),
+    # leading and trailing comments
+    ('``` header ```\n| tstats count\n``` footer ```', '| tstats count'),
+    ('index=a | stats count by `macro(x)`', 'index=a | stats count by `macro(x)`'),
+])
+def test_strip_spl_comments(query, expected):
+    assert strip_spl_comments(query) == expected
+
+
+@pytest.mark.unit
+def test_link_strips_comments():
+    """Verify encoded_query_link() leaves SPL comments out of the link."""
+    mock_client = Mock()
+
+    with patch("saq.splunk.client.connect", return_value=mock_client):
+        splunk = SplunkQueryObject(host="test.com", port=8089, username="test", password="test")
+
+        link = splunk.encoded_query_link('index=test ``` why ```\nNOT field="```x```" | table field')
+        assert link == 'https://test.com/en-US/app/search/search?q=search+index%3Dtest%0ANOT+field%3D%22%60%60%60x%60%60%60%22+%7C+table+field'
+
+        # a comment ahead of a generating command does not hide the leading pipe
+        link = splunk.encoded_query_link("``` header ```\n| tstats count where index=main")
+        assert "q=%7C+tstats" in link
+        assert "search+" not in link
 
 
 @pytest.mark.unit
