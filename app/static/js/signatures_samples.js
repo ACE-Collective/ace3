@@ -20,7 +20,7 @@
     ];
 
     const MISSING_REASONS = {
-        file: "the file was gone",
+        file: "the file was gone or had changed",
         storage: "the store refused the file",
         match_record: "the match record was gone",
     };

@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Type, override
+from typing import Optional, Type, override
 from pydantic import ConfigDict, Field, model_validator
 from oletools.olevba import VBA_Parser, filter_vba
 from saq.analysis.analysis import Analysis
@@ -108,6 +108,20 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
     def merge_macros(self):
         return self.config.merge_macros
 
+    def _add_macro_file(self, analysis: OLEVBA_Analysis_v1_2, _file: FileObservable, path: str) -> Optional[FileObservable]:
+        """Adds an extracted macro file, which must be complete: its value is the hash of what is on disk now."""
+        file_observable = analysis.add_file_observable(path, volatile=True)
+        if file_observable:
+            file_observable.redirection = _file
+            file_observable.add_tag('macro')
+            file_observable.add_directive(DIRECTIVE_SANDBOX)
+            file_observable.add_yara_meta("type", "script.macro.vba")
+
+            # this analysis module will analyze it's own output so we need to not do that
+            file_observable.exclude_analysis(self)
+
+        return file_observable
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
 
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -155,6 +169,7 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
 
             current_macro_index = None
             output_dir = None
+            merged_macros = []
 
             if parser.detect_vba_macros():
                 analysis.scan_results = parser.analyze_macros(
@@ -183,22 +198,29 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                     with open(output_path, 'a') as fp:
                         fp.write(vba_code)
 
-                    file_observable = analysis.add_file_observable(output_path, volatile=True)
-                    if file_observable:
-                        file_observable.redirection = _file
-                        file_observable.add_tag('macro')
-                        file_observable.add_directive(DIRECTIVE_SANDBOX)
-                        file_observable.add_yara_meta("type", "script.macro.vba")
-                        analysis.macros.append({'file_name': file_name,
-                                                'stream_path': stream_path,
-                                                'vba_filename': vba_filename,
-                                                'vba_code': vba_code,
-                                                'local_path': file_observable.value})
+                    macro = {'file_name': file_name,
+                             'stream_path': stream_path,
+                             'vba_filename': vba_filename,
+                             'vba_code': vba_code}
 
-                        # this analysis module will analyze it's own output so we need to not do that
-                        file_observable.exclude_analysis(self)
+                    if self.merge_macros:
+                        # the merged file is added once every macro is in it, so its value is the hash of all of them
+                        merged_macros.append(macro)
+                    else:
+                        file_observable = self._add_macro_file(analysis, _file, output_path)
+                        if file_observable:
+                            macro['local_path'] = file_observable.value
+                            analysis.macros.append(macro)
 
                     current_macro_index += 1
+
+                if merged_macros:
+                    file_observable = self._add_macro_file(analysis, _file, os.path.join(output_dir, 'macros.bas'))
+                    if file_observable:
+                        for macro in merged_macros:
+                            macro['local_path'] = file_observable.value
+
+                        analysis.macros.extend(merged_macros)
 
                 if analysis.scan_results:
                     analysis.keyword_summary = {}

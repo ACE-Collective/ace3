@@ -154,6 +154,32 @@ def test_combined_buffer_with_unaddable_file_observable(root_analysis, datadir, 
 
 
 @pytest.mark.integration
+def test_combined_buffer_value_is_its_hash(root_analysis, datadir):
+    # regression: the combined buffer was added as an observable while it was still open for writing,
+    # so its value was the hash of a partial file (usually the .headers file's hash) and svs capture
+    # failed with "content hashed to X but Y was expected"
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(datadir / "emails/splunk_logging.email.rfc822"))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("file_type", "test_groups")
+    engine.configuration_manager.enable_module("email_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    (combined,) = [o for o in root_analysis.all_observables if o.type == F_FILE and o.file_name.endswith(".combined")]
+    (headers,) = [o for o in root_analysis.all_observables if o.type == F_FILE and o.file_name.endswith(".headers")]
+
+    assert combined.value == sha256_file(combined.full_path)
+    assert headers.value == sha256_file(headers.full_path)
+    assert combined.value != headers.value
+
+
+@pytest.mark.integration
 def test_mailbox_whitelisted(root_analysis, datadir):
     # make sure that we do not process whitelisted emails
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX

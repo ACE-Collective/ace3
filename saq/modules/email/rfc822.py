@@ -1806,12 +1806,13 @@ class EmailAnalyzer(AnalysisModule):
                                 logging.error(f"unable to copy {attachment_path} to {combined_path}: {e}")
                                 report_exception()
 
-                    combined_file = analysis.add_file_observable(combined_path)
+                # added only once the file is closed: the observable's value is the hash of what is on disk
+                combined_file = analysis.add_file_observable(combined_path)
 
-                    # we don't want to analyze this with the email analyzer
-                    if combined_file:
-                        combined_file.exclude_analysis(self)
-                        combined_file.add_yara_meta("type", "email.combined")
+                # we don't want to analyze this with the email analyzer
+                if combined_file:
+                    combined_file.exclude_analysis(self)
+                    combined_file.add_yara_meta("type", "email.combined")
 
         # are we renaming the root analysis?
         if _file.has_directive(DIRECTIVE_RENAME_ANALYSIS):

@@ -14,7 +14,7 @@ class CaptureState(StrEnum):
 
 
 class MissingReason(StrEnum):
-    FILE = "file"                  # the file was gone and the pool did not have it
+    FILE = "file"                  # the file was gone, or no longer had that sha256, and the pool did not have it
     MATCH_RECORD = "match_record"  # stored, but the match record was gone (the alert was archived)
     STORAGE = "storage"            # the CAS refused the bytes
 

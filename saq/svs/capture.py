@@ -36,7 +36,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.root import RootAnalysis
-from saq.cas.errors import ObjectDeleting, ObjectNotFound
+from saq.cas.errors import DigestMismatch, ObjectDeleting, ObjectNotFound
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
 from saq.database.model import SVSYaraCapture
@@ -264,16 +264,25 @@ def _capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> Cap
     held: list[str] = []
     node = get_global_runtime_settings().saq_node
     try:
+        problem = "its file is gone"
+        stored = False
         if os.path.exists(candidate.full_path):
-            pool.put(candidate.full_path, hold=hold, digest=candidate.sha256)
-        else:
+            try:
+                pool.put(candidate.full_path, hold=hold, digest=candidate.sha256)
+                stored = True
+            except DigestMismatch as e:
+                # the file at the path is not the one the detection names: its observable was hashed
+                # before the file was complete, or the file was written again since
+                problem = f"its file now hashes to {e.actual}"
+
+        if not stored:
             # the bytes may be in the pool already, from another alert
             try:
                 node = _bytes_node(candidate.sha256)
                 pool.hold(candidate.sha256, hold)
             except (ObjectNotFound, ObjectDeleting):
                 _set_row(capture_id, state=CaptureState.MISSING, missing_reason=MissingReason.FILE)
-                _log_missing(alert_uuid, candidate, MissingReason.FILE, was_missing)
+                _log_missing(alert_uuid, candidate, MissingReason.FILE, problem, was_missing)
                 return CaptureResult(CaptureStatus.MISSING, capture_id)
 
         held.append(candidate.sha256)
@@ -324,9 +333,11 @@ def _capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> Cap
     return CaptureResult(CaptureStatus.STORED, capture_id)
 
 
-def _log_missing(alert_uuid: str, candidate: CaptureCandidate, reason: MissingReason, was_missing: bool) -> None:
+def _log_missing(alert_uuid: str, candidate: CaptureCandidate, reason: MissingReason, problem: str,
+                 was_missing: bool) -> None:
     extra = _log_extra(alert_uuid, candidate, missing_reason=reason.value)
     if was_missing:
-        logging.info("svs sample %s of alert %s is still missing (%s)", candidate, alert_uuid, reason, extra=extra)
+        logging.info("svs sample %s of alert %s is still missing (%s: %s)", candidate, alert_uuid, reason, problem,
+                     extra=extra)
     else:
-        logging.error("unable to capture svs sample %s of alert %s: its file is gone", candidate, alert_uuid, extra=extra)
+        logging.error("unable to capture svs sample %s of alert %s: %s", candidate, alert_uuid, problem, extra=extra)

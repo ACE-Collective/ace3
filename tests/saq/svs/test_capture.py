@@ -202,6 +202,44 @@ def test_a_missing_file_is_recorded_and_reported_once(root_analysis, svs_pool, c
 
 
 @pytest.mark.integration
+def test_a_file_that_no_longer_has_its_sha256_is_missing_and_reported_once(root_analysis, svs_pool, caplog):
+    # an observable hashed before its file was complete (the email analyzer's .combined buffer did that)
+    _file, candidate = _candidate(root_analysis)
+    with open(_file.full_path, "ab") as fp:
+        fp.write(b" and more bytes")
+
+    result = capture(svs_pool, root_analysis.uuid, candidate)
+
+    assert result.status == CaptureStatus.MISSING
+    (row,) = capture_rows()
+    assert row.state == CaptureState.MISSING
+    assert row.missing_reason == MissingReason.FILE
+    assert svs_pool.holds(candidate.sha256) == []
+    assert _extras(caplog, "unable to store svs capture") == []
+    (record,) = _extras(caplog, "its file now hashes to")
+    assert record.missing_reason == "file"
+
+    # the next pass tries again, and does not report it again
+    caplog.clear()
+    assert capture(svs_pool, root_analysis.uuid, candidate).status == CaptureStatus.MISSING
+    assert _extras(caplog, "unable to capture svs sample") == []
+
+
+@pytest.mark.integration
+def test_a_file_that_no_longer_has_its_sha256_is_held_from_another_alert(root_analysis, svs_pool):
+    _file, candidate = _candidate(root_analysis)
+    assert capture(svs_pool, root_analysis.uuid, candidate).status == CaptureStatus.STORED
+
+    # another alert names the same sha256, but its copy of the file has other bytes now
+    with open(_file.full_path, "ab") as fp:
+        fp.write(b" and more bytes")
+    result = capture(svs_pool, "00000000-0000-0000-0000-000000000001", candidate)
+
+    assert result.status == CaptureStatus.STORED
+    assert capture_hold(result.capture_id) in svs_pool.holds(candidate.sha256)
+
+
+@pytest.mark.integration
 def test_a_capture_without_its_record_keeps_the_file(root_analysis, svs_pool, caplog):
     _file, candidate = _candidate(root_analysis, record=False)
     assert candidate.match_record is None

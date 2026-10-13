@@ -72,6 +72,32 @@ class OfficeParserAnalyzer3(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
 
+    def _add_extracted_file(self, analysis: OfficeParserAnalysis3, _file: FileObservable, full_path: str, output_files: list[str]) -> None:
+        """Adds a file extracted from _file, which must be complete: its value is the hash of what is on
+        disk now. output_files are the manifest entries it holds (more than one for macros.bas)."""
+        # and then FILE type indicators are relative to the alert storage directory
+        file_observable = analysis.add_file_observable(full_path, volatile=True)
+
+        if not file_observable:
+            return
+
+        analysis.extracted_files.extend(output_files)
+
+        # add a relationship back to the original file
+        file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+
+        # extract URLs from these files
+        file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+
+        # point actions back at the source ole file
+        file_observable.redirection = _file
+
+        if is_macro_ext(full_path):
+            file_observable.add_tag('macro')
+            # always sandbox office documents tagged with macros
+            file_observable.add_directive(DIRECTIVE_SANDBOX)
+            file_observable.add_yara_meta("type", "script.macro")
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
 
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -157,6 +183,8 @@ class OfficeParserAnalyzer3(AnalysisModule):
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, OfficeParserAnalysis3)
 
+        # the macros merged into macros.bas
+        merged_files: list[str] = []
         with open(manifest_path, 'rb') as fp:
             while True:
                 try:
@@ -207,30 +235,13 @@ class OfficeParserAnalyzer3(AnalysisModule):
                             with open(full_path, 'rb') as fp_in:
                                 shutil.copyfileobj(fp_in, fp_out)
 
-                        # switch the file we're looking at to this macros.bas we appended to
-                        full_path = macro_path
+                        # macros.bas is added once every macro is in it (below), so its value is the hash of all of them
+                        merged_files.append(output_file)
+                        continue
 
-                # and then FILE type indicators are relative to the alert storage directory
-                file_observable = analysis.add_file_observable(full_path, volatile=True)
+                self._add_extracted_file(analysis, _file, full_path, [output_file])
 
-                if not file_observable:
-                    continue
-
-                analysis.extracted_files.append(output_file)
-
-                # add a relationship back to the original file
-                file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-
-                # extract URLs from these files
-                file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-
-                # point actions back at the source ole file
-                file_observable.redirection = _file
-
-                if is_macro_ext(output_file):
-                    file_observable.add_tag('macro')
-                    # always sandbox office documents tagged with macros
-                    file_observable.add_directive(DIRECTIVE_SANDBOX)
-                    file_observable.add_yara_meta("type", "script.macro")
+            if merged_files:
+                self._add_extracted_file(analysis, _file, os.path.join(officeparser_output_dir, 'macros.bas'), merged_files)
 
             return AnalysisExecutionResult.COMPLETED
