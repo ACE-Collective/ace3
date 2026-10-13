@@ -72,5 +72,5 @@ columns and renders each through the macros in `_manage_columns.html`; adding a 
 means a `ColumnSpec` in the registry and a branch in each macro, and
 `tests/saq/gui/test_manage_columns.py` checks the two agree. The column chooser
 (`_manage_column_chooser.html` + `js/manage_columns.js`) is shared by the manage page and
-the preferences page. Narrowing the list to a single disposition still hides the
-disposition column, as an override on top of the preference.
+the preferences page. The filters never change which columns are shown: the disposition
+column stays visible when the list is narrowed to one disposition.
