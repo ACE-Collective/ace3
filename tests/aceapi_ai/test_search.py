@@ -86,6 +86,21 @@ async def test_similar_audits_alert_uuid(search_client, monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
+async def test_the_audit_records_test_alerts(search_client, monkeypatch, caplog):
+    """What the agent asked for and what was left out are in the audit trail (docs/SVS_RUNS.md)."""
+    _stub(monkeypatch, [])
+    v2_service.search_alerts.return_value.excluded_test_alerts = 3
+
+    with caplog.at_level("INFO", logger="ace.ai_audit"):
+        response = await search_client.post("/search/alerts", json={"query": "mimikatz"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["excluded_test_alerts"] == 3
+    event = json.loads([r.message for r in caplog.records if r.name == "ace.ai_audit"][0].removeprefix("AI_AUDIT "))
+    assert event["include_test_alerts"] is False and event["excluded_test_alerts"] == 3
+
+
+@pytest.mark.asyncio
 async def test_rate_limited_search_is_429_with_retry_after(search_client, monkeypatch, caplog):
     import aceapi_ai.search.service as service_module
 

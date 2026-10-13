@@ -6,8 +6,8 @@ incidents. Reviewing a run teaches SVS which signatures detect which techniques 
 Part 3).
 
 This document covers how runs work in ACE and how to operate them. It grows with phase 4. Today it
-covers what happens to a test run's alerts once SVS closes them. The design and its reasoning are in
-`docs/SVS.md`.
+covers what happens to a test run's alerts once SVS closes them, and how search treats them. The
+design and its reasoning are in `docs/SVS.md`.
 
 ## Test alerts and `SIMULATED`
 
@@ -49,6 +49,30 @@ whose current disposition is configured that way is *frozen* (`is_frozen_disposi
 - **Its verdict chips are read-only.** The run review owns those verdicts (`docs/SVS.md`, Part 1).
 
 Tags, comments and ownership changes still work on a frozen alert.
+
+### Test alerts in search
+
+Test-run alerts are routed to their own queue, `svs.queue` (default `svs`; the routing arrives
+later in phase 4). Alert search and *similar alerts* leave that queue out whenever a request says
+nothing about queues, so "have we seen this before?" is answered from real alerts, and they say
+how many test alerts they left out (`docs/SEARCH.md`, *Read path*):
+
+- **The manage page's search box** shows *"3 test-run alerts left out. Include them"* under the
+  result count; *Include them* re-runs the search with them, and *Leave them out* undoes it.
+- **`POST /api/v2/search/alerts` and `/similar`**, and the AI API's `/ai/v1/search/*`, take
+  `include_test_alerts` and answer `excluded_test_alerts`.
+- **`ace search query` and `ace search similar`** take `--include-tests`.
+- **Naming a queue** (`queue:svs`, a Queue filter, the `queues` field) always gets exactly that
+  queue, test queue included.
+
+`GET /api/v2/alerts`, the export listing, returns test alerts like any other; leaving them out is
+the caller's choice. Prevalence and disposition history count only the `default` queue, so test
+alerts were never in those.
+
+```yaml
+svs:
+  queue: svs
+```
 
 ### Retention
 

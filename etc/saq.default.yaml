@@ -229,6 +229,9 @@ yara_qa:
 
 # the Signature Validation System (docs/SVS.md)
 svs:
+  # the queue test-run alerts are routed to. Alert search and "similar alerts" leave it out unless
+  # a request names a queue or asks for test alerts (docs/SVS_RUNS.md)
+  queue: svs
   # SIMULATED (test-run) alerts older than this many days are archived by ace alert cleanup, like
   # FALSE_POSITIVE alerts after fp_days; they are never deleted (docs/SVS_RUNS.md)
   simulated_days: 30

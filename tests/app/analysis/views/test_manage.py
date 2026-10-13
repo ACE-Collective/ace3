@@ -294,6 +294,93 @@ def test_search_endpoint_sets_and_clears_the_spec(web_client, analyst):
 
 
 @pytest.mark.integration
+def test_the_test_alert_toggle(web_client, analyst):
+    """docs/SVS_RUNS.md: the analyst can bring back the test-run alerts a search left out."""
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, page_offset=100)
+        sess['search'] = {'mode': 'query', 'query': 'invoice'}
+
+    url = url_for("analysis.search_include_tests")
+    assert web_client.post(url, data={"include": "1"}).status_code == 204
+    with web_client.session_transaction() as sess:
+        assert sess['search'] == {'mode': 'query', 'query': 'invoice', 'include_tests': True}
+        assert sess['page_offset'] == 0
+
+    assert web_client.post(url, data={"include": "0"}).status_code == 204
+    with web_client.session_transaction() as sess:
+        assert sess['search'] == {'mode': 'query', 'query': 'invoice'}
+
+    # a new search starts without it
+    web_client.post(url, data={"include": "1"})
+    web_client.post(url_for("analysis.search"), data={"search": "other"})
+    with web_client.session_transaction() as sess:
+        assert sess['search'] == {'mode': 'query', 'query': 'other'}
+
+
+@pytest.mark.integration
+def test_the_test_alert_toggle_without_a_search(web_client, analyst):
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    assert web_client.post(url_for("analysis.search_include_tests"), data={"include": "1"}).status_code == 204
+    with web_client.session_transaction() as sess:
+        assert not sess.get('search')
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("include_tests,excluded,expected", [
+    (False, 3, ["3 test-run alerts left out.", 'data-include="1"', "Include them"]),
+    (False, 1, ["1 test-run alert left out."]),
+    (True, None, ["Test-run alerts are included.", 'data-include="0"', "Leave them out"]),
+])
+def test_manage_search_says_what_it_left_out(web_client, analyst, monkeypatch, include_tests, excluded, expected):
+    from unittest.mock import Mock
+
+    response = _search_response([])
+    response.excluded_test_alerts = excluded
+    search = Mock(return_value=response)
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        sess['search'] = {'mode': 'query', 'query': 'mimikatz', **({'include_tests': True} if include_tests else {})}
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    for text in expected:
+        assert text in html
+    assert search.call_args[0][0].include_test_alerts is include_tests
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("excluded", [0, None])
+def test_manage_search_says_nothing_when_nothing_was_left_out(web_client, analyst, monkeypatch, excluded):
+    response = _search_response([])
+    response.excluded_test_alerts = excluded
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", lambda request, **kwargs: response)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        sess['search'] = {'mode': 'query', 'query': 'mimikatz'}
+
+    assert 'id="alert-search-tests"' not in web_client.get(url_for("analysis.manage")).data.decode()
+
+
+@pytest.mark.integration
+def test_similar_mode_passes_include_tests(web_client, analyst, monkeypatch):
+    from unittest.mock import Mock
+
+    similar = Mock(return_value=_search_response([]))
+    monkeypatch.setattr("app.analysis.views.manage.similar_alerts", similar)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+        sess['search'] = {'mode': 'similar', 'alert_uuid': 'x', 'description': 'd', 'include_tests': True}
+
+    web_client.get(url_for("analysis.manage"))
+    assert similar.call_args.kwargs['include_test_alerts'] is True
+
+
+@pytest.mark.integration
 def test_search_endpoint_requires_alert_read(app):
     from saq.database.util.user_management import add_user, delete_user
 
@@ -303,6 +390,7 @@ def test_search_endpoint_requires_alert_read(app):
             client.post(url_for("auth.login"), data={"username": "noperm", "password": "password"})
             assert client.post(url_for("analysis.search"), data={"search": "x"}).status_code == 403
             assert client.get(url_for("analysis.search_similar", alert_uuid="x")).status_code == 403
+            assert client.post(url_for("analysis.search_include_tests"), data={"include": "1"}).status_code == 403
     finally:
         delete_user("noperm")
 

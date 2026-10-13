@@ -93,13 +93,22 @@ def _print_response(response, as_json: bool):
             print(f"       {hit.lane}/{hit.kind} {hit.title or ''}: {snippet}")
 
 
+def _print_excluded(response, as_json: bool):
+    # in --json the count is the response's excluded_test_alerts field
+    if response.excluded_test_alerts and not as_json:
+        plural = "" if response.excluded_test_alerts == 1 else "s"
+        print(f"{response.excluded_test_alerts} test alert{plural} left out (--include-tests to include them)",
+              file=sys.stderr)
+
+
 def cli_query(args):
     from saq.search.query import search_alerts
     from saq.search.syntax import parse_search_query
     from saq.search.types import ALL_LANES, SearchRequest
 
     lanes = frozenset([args.lane]) if args.lane else ALL_LANES
-    response = search_alerts(SearchRequest(query=args.query, limit=args.limit, lanes=lanes))
+    response = search_alerts(SearchRequest(query=args.query, limit=args.limit, lanes=lanes,
+                                           include_test_alerts=args.include_tests))
     if response.errors:
         # nothing was searched -- exit non-zero so a script does not read "0 results" as an
         # answer to the question it asked
@@ -108,6 +117,7 @@ def cli_query(args):
         return 1
 
     _print_response(response, args.json)
+    _print_excluded(response, args.json)
     hint = parse_search_query(args.query).hint()
     if hint and not args.json:
         print(hint, file=sys.stderr)
@@ -126,13 +136,18 @@ query_parser.add_argument(
 query_parser.add_argument("--limit", type=int, default=20)
 query_parser.add_argument("--lane", choices=["semantic", "lexical"], default=None, help="Run only one lane.")
 query_parser.add_argument("--json", action="store_true", default=False)
+query_parser.add_argument(
+    "--include-tests", action="store_true", default=False,
+    help="Include test-run alerts (the svs.queue queue), which are left out unless the query names a queue.")
 query_parser.set_defaults(func=cli_query)
 
 
 def cli_similar(args):
     from saq.search.query import similar_alerts
 
-    _print_response(similar_alerts(args.uuid, limit=args.limit), args.json)
+    response = similar_alerts(args.uuid, limit=args.limit, include_test_alerts=args.include_tests)
+    _print_response(response, args.json)
+    _print_excluded(response, args.json)
     return 0
 
 
@@ -140,6 +155,9 @@ similar_parser = search_sp.add_parser("similar", help="Find alerts similar to an
 similar_parser.add_argument("uuid", help="The UUID of the alert.")
 similar_parser.add_argument("--limit", type=int, default=10)
 similar_parser.add_argument("--json", action="store_true", default=False)
+similar_parser.add_argument(
+    "--include-tests", action="store_true", default=False,
+    help="Include test-run alerts (the svs.queue queue), which are left out by default.")
 similar_parser.set_defaults(func=cli_similar)
 
 

@@ -119,6 +119,10 @@ def build_manage_list_context() -> dict:
     search_mode = None
     search_notices: list[str] = []
     search_result_mapping: dict[str, AlertSearchResult] = {}
+    # how many test-run alerts the search left out (None: none were left out), and whether the
+    # analyst asked for them (docs/SVS_RUNS.md)
+    search_excluded_test_alerts = None
+    search_include_tests = False
 
     if search_spec:
         search_mode = search_spec["mode"]
@@ -135,12 +139,16 @@ def build_manage_list_context() -> dict:
         else:
             search_query = search_spec["query"]
 
+        search_include_tests = bool(search_spec.get("include_tests"))
+
         def run_search(offset: int):
             if search_mode == SEARCH_MODE_SIMILAR:
-                return similar_alerts(search_spec["alert_uuid"], search_filters, limit=session['page_size'], offset=offset, post_filter=post_filter)
+                return similar_alerts(search_spec["alert_uuid"], search_filters, limit=session['page_size'], offset=offset,
+                                      include_test_alerts=search_include_tests, post_filter=post_filter)
 
             return search_alerts(
-                SearchRequest(query=search_query, filters=search_filters, limit=session['page_size'], offset=offset),
+                SearchRequest(query=search_query, filters=search_filters, limit=session['page_size'], offset=offset,
+                              include_test_alerts=search_include_tests),
                 post_filter=post_filter,
             )
 
@@ -164,6 +172,7 @@ def build_manage_list_context() -> dict:
                 response = run_search(page_offset)
 
         page_uuids = response.alert_uuids
+        search_excluded_test_alerts = response.excluded_test_alerts
         search_result_mapping = {result.alert_uuid: result for result in response.results}
         if page_uuids:
             query = query.filter(GUIAlert.uuid.in_(page_uuids)).group_by(GUIAlert.id)
@@ -270,6 +279,8 @@ def build_manage_list_context() -> dict:
         'search_query': search_query,
         'search_mode': search_mode,
         'search_notices': search_notices,
+        'search_excluded_test_alerts': search_excluded_test_alerts,
+        'search_include_tests': search_include_tests,
         'saved_filters': saved_filters,
         'quick_filters': get_quick_filter_display_data(saved_filters),
         'current_filter': get_current_filter(),

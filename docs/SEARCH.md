@@ -205,6 +205,18 @@ as the whole query on the listing path, and as a post-filter otherwise. The call
 `post_filter` runs last and is authoritative: the GUI passes its full filter query, the API
 passes node scoping.
 
+**Test-run alerts are left out unless asked for.** A search or "similar alerts" request whose
+filters say nothing about queues (neither `queues` nor a Queue filter-list entry, nor a typed
+`queue:` term in either direction) gets `svs.queue` as an inverted queue pre-filter
+(`leave_out_test_alerts()`): "have we seen this before?" means real alerts, the same split
+prevalence makes by counting only the default queue (`docs/SVS_RUNS.md`). Naming any queue, or
+`include_test_alerts`, gets exactly what was asked for. What was left out is counted, so "no
+earlier alerts" can't hide "3 earlier test alerts": `excluded_test_alerts` is the total the same
+search finds in `svs.queue` alone (a second pass through the same lanes and post-filter, so it is
+scoped and capped the same way), and `null` when nothing was left out. The second pass runs only
+while some alert is in that queue (one indexed lookup), so a site without test runs pays nothing.
+`GET /api/v2/alerts`, the export listing, is not a search and leaves nothing out.
+
 **Observables are matched on `(type, sha256)`** -- the `i_type_sha256` unique key -- with the
 value first normalized by its own observable class (`resolve_observable_identity`).
 `email_address:Bob@Example.com` therefore matches the stored `bob@example.com`.
@@ -224,7 +236,10 @@ row directly above uses badges for tags and disposition, and a badge here read a
 styling lives under `.search-tier*` / `.search-hit*` in `app/static/css/saq.css`). A result with
 no tier and no hits -- a filter-only listing -- gets no evidence row at all. Auto-refresh is
 off during a search; Clear resets it. Query-language errors and the "did you mean" hint are
-rendered above the result count as `search_notices`.
+rendered above the result count as `search_notices`. When the search left test-run alerts out, the
+count line says how many, with *Include them* (`POST /ace/search/include_tests`, which sets
+`"include_tests": true` on the spec; *Leave them out* clears it, and a new search starts without
+it).
 
 **API v2** (`aceapi_v2/search/`, `alert:read`):
 
@@ -242,10 +257,10 @@ POST /api/v2/search/alerts
 {"filters": {"detection_points": ["6f3a…", "9b21…:4e5d6c7"]}, "limit": 50}
 
 POST /api/v2/search/similar
-{"alert_uuid": "…", "limit": 5}
+{"alert_uuid": "…", "limit": 5, "include_test_alerts": true}
 
 → {"query": "…", "total": 7, "offset": 0, "limit": 10, "lanes_used": ["lexical", "semantic"], "timings_ms": {…},
-   "errors": [],
+   "excluded_test_alerts": 2, "errors": [],
    "results": [{"alert": {"uuid": "…", "description": "…", "alert_type": "…", "disposition": "DELIVERY",
                           "disposition_time": "…", "insert_date": "…", "owner": "…", "queue": "…", "tags": […]},
                 "rank": 1, "tier": "exact", "score": 0.033, "lanes": ["lexical"],
@@ -260,20 +275,22 @@ all of them, values normalized on the way in and 400 if one is impossible for it
 the `detection_points` table; the split is at the first colon, no version means any version, and
 a malformed value is a 422), and `filters` (the raw `{name, inverted, values}` entries for the rest of the manage-page
 vocabulary, validated against `FILTER_NAMES`). `lanes` selects `semantic` and/or `lexical`;
-`include_hits`. `errors` is non-empty when the query language rejected something, and then
-nothing was searched.
+`include_hits`; `include_test_alerts` (both routes) brings back the test-run alerts left out by
+default, and `excluded_test_alerts` in the response counts them (null when none were left out).
+`errors` is non-empty when the query language rejected something, and then nothing was searched.
 
 **AI API** (`aceapi_ai/search/`, permission `ai:search`): the same two routes at
 `/ai/v1/search/alerts` and `/ai/v1/search/similar`, rate limited by `ai_api.search_limits`
 (concurrency slot first, then per-minute/hourly; 429 with `Retry-After`, 503 when the limiter is
-unavailable, 504 on timeout) and audited (`AI_AUDIT` lines with the full query, filters and the
-returned uuids). This is the RAG surface for agentic triage: each result carries the alert's
+unavailable, 504 on timeout) and audited (`AI_AUDIT` lines with the full query, filters,
+`include_test_alerts`, `excluded_test_alerts` and the returned uuids). This is the RAG surface for agentic triage: each result carries the alert's
 disposition, and `GET /ai/v1/alerts/{uuid}` fetches the full tree for anything worth a closer look.
 
 **CLI.** `ace search index [-u UUID | --all | STORAGE_DIR] [--sync] [-v]`,
-`ace search query "<text or field terms>" [--lane semantic|lexical] [--limit N] [--json]`
+`ace search query "<text or field terms>" [--lane semantic|lexical] [--limit N] [--json] [--include-tests]`
 (exits 1 and prints the reason to stderr when the query cannot be parsed),
-`ace search similar <uuid>`, `ace search status`, `ace search reset [--yes]`.
+`ace search similar <uuid> [--include-tests]` (both print how many test-run alerts they left out
+to stderr), `ace search status`, `ace search reset [--yes]`.
 
 ## 5. Configuration
 

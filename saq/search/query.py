@@ -24,6 +24,10 @@ score, whether a term matched), never from its position in the result set.
 Callers supply a post_filter that applies whatever SQL-only scoping they need (node visibility,
 GUI filters the payload cannot express); it runs on the capped fused list before pagination so
 `total` is honest.
+
+Test-run alerts (svs.queue) are left out of a search and of "similar alerts" whose filters say
+nothing about queues, and counted: the response's excluded_test_alerts is the total the same
+search finds in that queue alone (leave_out_test_alerts).
 """
 
 import logging
@@ -519,29 +523,45 @@ def filter_listing(
     )
 
 
-def search_alerts(request: SearchRequest, *, post_filter: Optional[PostFilter] = None, client: Optional[QdrantClient] = None, model=None) -> SearchResponse:
-    """Parses request.query, runs the lanes it calls for, and returns one page of results."""
+def names_queues(filters: SearchFilters) -> bool:
+    """True if the filters say anything about queues, either way round: the typed queue filter
+    or a Queue entry in the filter list."""
+    return bool(filters.queues) or any(entry["name"] == "Queue" for entry in filters.filter_list)
+
+
+def leave_out_test_alerts(filters: SearchFilters, include: bool) -> tuple[SearchFilters, Optional[SearchFilters]]:
+    """The filters to search with, and the filters that select the test-run alerts they leave out
+    (None when none are left out).
+
+    "Have we seen this before?" means real alerts, so a request that doesn't filter on queues
+    leaves out svs.queue, the queue test-run alerts are routed to (docs/SVS_RUNS.md). One that
+    names any queue, or asks for test alerts, gets exactly what it asked for. Prevalence and
+    disposition history make the same split by counting only the default queue.
+    """
+    if include or names_queues(filters):
+        return filters, None
+
+    test_queue = (get_config().svs.queue,)
+    return (replace(filters, queues=test_queue, queues_inverted=True),
+            replace(filters, queues=test_queue, queues_inverted=False))
+
+
+def _any_test_alerts() -> bool:
+    """Whether any alert is in the test queue at all: the indexed check that spares every search
+    the counting pass while no test runs exist."""
+    return get_db().query(Alert.id).filter(Alert.queue == get_config().svs.queue).first() is not None
+
+
+def _run_search(query: str, parsed: ParsedQuery, filters: SearchFilters, request: SearchRequest, *,
+                limit: int, offset: int, include_hits: bool, post_filter: Optional[PostFilter],
+                client: Optional[QdrantClient], model, timings: dict[str, int]) -> SearchResponse:
+    """The lanes the parsed query calls for, under these filters, fused and paged."""
     config = get_config().search
-    timings: dict[str, int] = {}
-    query = (request.query or "").strip()
-
-    parsed = parse_search_query(query)
-    if parsed.errors:
-        # A query that cannot be honored returns nothing and says why. Searching the part we
-        # understood would quietly answer a different question than the one that was asked.
-        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit,
-                              errors=parsed.errors)
-
-    filters = merge_parsed_filters(request.filters, parsed)
     effective_post_filter = _sql_post_filter(filters, post_filter)
-
-    if parsed.is_empty() and filters.is_empty():
-        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit)
 
     if not parsed.text and not parsed.exact:
         # filters only -- a listing, not a search
-        return filter_listing(filters, limit=request.limit, offset=request.offset,
-                              post_filter=post_filter, timings=timings)
+        return filter_listing(filters, limit=limit, offset=offset, post_filter=post_filter, timings=timings)
 
     lexical: Optional[LaneResult] = None
     semantic: Optional[SemanticLane] = None
@@ -566,23 +586,50 @@ def search_alerts(request: SearchRequest, *, post_filter: Optional[PostFilter] =
             semantic = SemanticLane()
         timings[LANE_SEMANTIC] = int((time.time() - start) * 1000)
 
-    return _assemble(query, lexical=lexical, semantic=semantic, limit=request.limit, offset=request.offset,
-                     include_hits=request.include_hits, post_filter=effective_post_filter, timings=timings)
+    return _assemble(query, lexical=lexical, semantic=semantic, limit=limit, offset=offset,
+                     include_hits=include_hits, post_filter=effective_post_filter, timings=timings)
 
 
-def similar_alerts(
-    alert_uuid: str,
-    filters: SearchFilters = SearchFilters(),
-    *,
-    limit: int = 10,
-    offset: int = 0,
-    include_hits: bool = True,
-    post_filter: Optional[PostFilter] = None,
-    client: Optional[QdrantClient] = None,
-) -> SearchResponse:
-    """Alerts most similar to alert_uuid (the alert itself is excluded)."""
-    config = get_config().search
+def search_alerts(request: SearchRequest, *, post_filter: Optional[PostFilter] = None, client: Optional[QdrantClient] = None, model=None) -> SearchResponse:
+    """Parses request.query, runs the lanes it calls for, and returns one page of results.
+
+    Test-run alerts are left out unless the request filters on queues or asks for them, and the
+    response counts how many matched (see leave_out_test_alerts)."""
     timings: dict[str, int] = {}
+    query = (request.query or "").strip()
+
+    parsed = parse_search_query(query)
+    if parsed.errors:
+        # A query that cannot be honored returns nothing and says why. Searching the part we
+        # understood would quietly answer a different question than the one that was asked.
+        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit,
+                              errors=parsed.errors)
+
+    filters = merge_parsed_filters(request.filters, parsed)
+    if parsed.is_empty() and filters.is_empty():
+        return SearchResponse(query=query, total=0, offset=request.offset, limit=request.limit)
+
+    filters, test_filters = leave_out_test_alerts(filters, request.include_test_alerts)
+    response = _run_search(query, parsed, filters, request, limit=request.limit, offset=request.offset,
+                           include_hits=request.include_hits, post_filter=post_filter, client=client,
+                           model=model, timings=timings)
+
+    if test_filters is not None:
+        response.excluded_test_alerts = 0
+        if _any_test_alerts():
+            # the same search over the test queue alone; its total is what was left out
+            start = time.time()
+            response.excluded_test_alerts = _run_search(
+                query, parsed, test_filters, request, limit=0, offset=0, include_hits=False,
+                post_filter=post_filter, client=client, model=model, timings={}).total
+            timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+
+    return response
+
+
+def _similar(alert_uuid: str, filters: SearchFilters, *, limit: int, offset: int, include_hits: bool,
+             post_filter: Optional[PostFilter], client: Optional[QdrantClient], timings: dict[str, int]) -> SearchResponse:
+    config = get_config().search
     start = time.time()
     try:
         semantic = similar_search(alert_uuid, filters, limit=config.semantic_limit, group_size=config.semantic_group_size, client=client)
@@ -593,3 +640,33 @@ def similar_alerts(
 
     return _assemble(f"similar:{alert_uuid}", lexical=None, semantic=semantic, limit=limit, offset=offset,
                      include_hits=include_hits, post_filter=_sql_post_filter(filters, post_filter), timings=timings)
+
+
+def similar_alerts(
+    alert_uuid: str,
+    filters: SearchFilters = SearchFilters(),
+    *,
+    limit: int = 10,
+    offset: int = 0,
+    include_hits: bool = True,
+    include_test_alerts: bool = False,
+    post_filter: Optional[PostFilter] = None,
+    client: Optional[QdrantClient] = None,
+) -> SearchResponse:
+    """Alerts most similar to alert_uuid (the alert itself is excluded). Test-run alerts are
+    left out and counted as search_alerts() does."""
+    timings: dict[str, int] = {}
+    filters, test_filters = leave_out_test_alerts(filters, include_test_alerts)
+    response = _similar(alert_uuid, filters, limit=limit, offset=offset, include_hits=include_hits,
+                        post_filter=post_filter, client=client, timings=timings)
+
+    if test_filters is not None:
+        response.excluded_test_alerts = 0
+        if _any_test_alerts():
+            start = time.time()
+            response.excluded_test_alerts = _similar(
+                alert_uuid, test_filters, limit=0, offset=0, include_hits=False, post_filter=post_filter,
+                client=client, timings={}).total
+            timings["excluded_test_alerts"] = int((time.time() - start) * 1000)
+
+    return response

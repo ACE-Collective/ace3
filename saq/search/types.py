@@ -84,6 +84,8 @@ class SearchRequest:
     offset: int = 0
     include_hits: bool = True
     lanes: frozenset[str] = ALL_LANES
+    # test-run alerts (the svs.queue) are left out unless the filters name a queue or this is set
+    include_test_alerts: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,10 @@ class SearchResponse:
     # cannot be honored is reported rather than dropped: dropping it would silently return
     # MORE alerts than the analyst asked for.
     errors: tuple[str, ...] = ()
+    # how many test-run alerts (svs.queue) matched and were left out; None when none were left
+    # out because the request named a queue or asked for them. "No earlier alerts" must not
+    # hide "3 earlier test alerts"
+    excluded_test_alerts: Optional[int] = None
 
     @property
     def alert_uuids(self) -> list[str]:
