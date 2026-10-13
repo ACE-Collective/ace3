@@ -243,7 +243,11 @@ svs:
     repositories: []
     # how long compiling and scanning one commit's rules over the whole corpus may take
     scan_timeout_seconds: 1800
+    # how many validations service_svs runs at once
     max_concurrent_validations: 1
+    # how long a finished validation and its report are kept (ace svs yara prune, daily cron)
+    retention_days: 90
+    prune_batch_size: 100
     # how long fetching a repository into its mirror may take (the first fetch clones it)
     fetch_timeout_seconds: 600
     # optional caps on the export of one commit; unset means no limit
@@ -311,6 +315,23 @@ service_search_indexer:
   enabled: true
   # the number of worker processes to spawn (each loads its own copy of the embedding model)
   worker_count: 2
+
+# runs the queued SVS YARA validations (docs/SVS_VALIDATION.md); it idles while
+# svs.yara.repositories is empty, and off the primary node
+service_svs:
+  name: svs
+  python_module: saq.svs.service
+  python_class: SVSService
+  description: SVS - runs the queued YARA validations
+  enabled: true
+  # a stopping worker cancels its scan and returns its validation to the queue
+  shutdown_deadline_seconds: 30
+  poll_interval_seconds: 5
+  # a worker renews its lease every heartbeat_interval_seconds; after lease_seconds without one,
+  # another worker may take the validation over, at most max_attempts times
+  heartbeat_interval_seconds: 30
+  lease_seconds: 300
+  max_attempts: 3
 
 # cron settings
 service_cron:

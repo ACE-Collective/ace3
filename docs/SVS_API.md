@@ -3,8 +3,8 @@
 ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can be pulled through
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
-with each SVS phase; today it covers alerts and detections (phases 0 and 1) and the YARA samples
-(phase 2).
+with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
+(phase 2) and the YARA validations (phase 3).
 
 ## Conventions
 
@@ -23,9 +23,10 @@ with each SVS phase; today it covers alerts and detections (phases 0 and 1) and 
 - **Incremental pulls** take `changed_since` (ISO 8601, UTC if no offset). Delivery is
   at-least-once: a row can come again, never be missed.
 - **Timestamps** are UTC. Relative date filters (`-7d`, `@d`) resolve in the `tz` parameter's zone.
-- **Scope.** Alert data is scoped to the alerts this node shows, as the GUI is. SVS data (samples)
-  is global.
-- **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`.
+- **Scope.** Alert data is scoped to the alerts this node shows, as the GUI is. SVS data (samples,
+  validations) is global.
+- **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`,
+  validation UUID.
 
 ## Alerts
 
@@ -272,6 +273,103 @@ in keyset pages (`limit`, `cursor`, `changed_since`). A row is:
 - **Sample → detections:** each capture's `alert_uuid`, plus `signature_uuid = rule_uuid`,
   `node_type = file` and `node_value_sha256 = sha256` in `GET /api/v2/detection-points`.
 - **Sample → alerts:** the captures' `alert_uuid`.
+
+## Validations
+
+A validation replays every stored sample under two commits of a YARA rule repository and reports
+what the change does (`docs/SVS_VALIDATION.md`). The signature repository's CI requests it with an
+`svs:validate` key, which reads counts and rule names only; the reports, which name the samples,
+are read with `signature:read`.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `POST /api/v2/svs/yara/validations` `{repository, base_sha, head_sha, branch, pr_url?}` | `svs:validate` | 202 and a new queued validation, or 200 and the one that already answers the request: its status |
+| `GET /api/v2/svs/yara/validations/{uuid}/status` | `svs:validate` | The status: state, counts, rules per category, compile errors. Names no sample |
+| `GET /api/v2/svs/yara/validations` | `signature:read` | Validations, newest first, filtered and paged |
+| `GET /api/v2/svs/yara/validations/export/ndjson`, `/export/csv` | `signature:read` | The same, streamed (the CSV leaves out `counts`) |
+| `GET /api/v2/svs/yara/validations/{uuid}` | `signature:read` | One validation with its report |
+| `GET /api/v2/svs/yara/validations/{uuid}/results` `?category=…&rule_uuid=…` | `signature:read` | The pairs its report lists, in a stable order, paged |
+| `GET /api/v2/svs/yara/validations/{uuid}/results/export/ndjson`, `/export/csv` | `signature:read` | The same, streamed |
+| `GET /api/v2/svs/yara/validations/{uuid}/download` `?category=…&rule_uuid=…` | `signature:download` | The files of the selected pairs and their samples' match records, in an `infected` zip |
+
+**Requests.** `repository` is a `git_repo_<name>` section listed in `svs.yara.repositories`;
+`base_sha` and `head_sha` are full commit ids (40 or 64 hex characters), because an abbreviation
+would not be recognized as the same commit by the next request. A request with the same repository
+and commits gets the validation that is queued or running, or a completed one while the corpus
+version and engine fingerprint are unchanged (`docs/SVS_VALIDATION.md`, *The svs service*); a
+failed one is never reused. A config key (no user) gets 422.
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `uuid` | The validation. |
+| `state` | `queued`, `running`, `completed`, or `failed` with `error` saying why. |
+| `repository`, `base_sha`, `head_sha`, `branch`, `pr_url` | What was requested. |
+| `requested_by` | The user whose key requested it. |
+| `created_at`, `started_at`, `finished_at` | When it was requested, last claimed by a worker, and finished. |
+| `diffed` | False when either commit's rules would not load, so nothing was compared. |
+| `counts` | `{category: pairs}`, every category included; null until completed. |
+| `regressions`, `new_fps`, `compile_errors` | `regression` + `regression_unconfirmed`; `new_fp` + `new_fp_other_rule`; the head's rule files that do not compile, plus one if its rules would not load together. Null until completed. |
+| `updated_at` | The row's last change. |
+
+`GET …/{uuid}` adds `attempts`, `claimed_by`, `corpus_version`, `engine_fingerprint` and the
+`report`: `ReplayResult.to_dict()` (`saq/svs/yara/replay.py`) without its rows. It holds, per commit
+(`base`, `head`), the namespaces, the files that do not compile and the rules they drop, whether
+the ruleset would load (`loads`, `ruleset_error`), the include problems, the files the yara service
+would not load, the archive members refused, the compiler warnings and the timings per namespace;
+and the rules added, removed and changed, the rules that cannot be tested, the rules that filter on
+`full_path`, the samples skipped (with why), and the corpus size.
+
+`GET …/{uuid}/status` carries the request, the state, `diffed`, `counts`, `rules` (per listed
+category, the rules with samples in it, most samples first: `{rule_uuid, rule_name, count}`), the
+head's `compile_errors` (`{file, error}`, the file relative to the repository root) and
+`ruleset_error`, and `report_path`, the report's page in the ACE GUI relative to its host.
+
+A result row is one (sample, rule uuid) pair the report lists:
+
+| Field | Meaning |
+|---|---|
+| `id` | The row; results page by it. |
+| `sha256`, `rule_uuid`, `rule_name`, `namespace` | The file, and the rule with its name and namespace. |
+| `label`, `label_source` | The sample's label when the validation ran (null for another rule's sample). |
+| `base`, `head` | The outcome under each commit: `match` (the rule would make a detection), `miss` or `error`. |
+| `raw_base`, `raw_head` | Whether the rule matched at all, before `enabled` and the `qa`/`no_alert` modifiers. |
+| `category` | Below. |
+| `note` | Why a raw match makes no detection, when it does not. |
+
+The listed categories, most urgent first: `regression`, `regression_unconfirmed`, `new_fp`,
+`new_fp_other_rule`, `rule_removed`, `scan_error`, `recovered`, `improvement`, `already_broken`,
+`new_match_real_hit`, `unlabeled_change`. `known_fp`, `retired`, `not_testable` and `unchanged` are
+only counted. What each means is in `docs/SVS_VALIDATION.md`, *The report*.
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `repository` | Repository | text the repository name contains |
+| `branch` | Branch | text the branch contains |
+| `head` | Head | the start of the head commit id (at least 4 hex characters) |
+| `state` | State | `queued`, `running`, `completed`, `failed` |
+| `has_regressions` | Has Regressions | `true`, `false` |
+| `has_new_fp` | Has New FP | `true`, `false` |
+| `compile_errors` | Compile Errors | `true`, `false` |
+| `created` | Created | a date range (`-30d`, an absolute range) |
+
+The count filters are false for a validation that has not completed, and `!` keeps those rows.
+
+### Incremental pulls
+
+With `changed_since`, a validation is returned when it was requested, claimed, completed or failed
+at or after that time. A validation removed by retention (`svs.yara.retention_days`) just
+disappears; deleting a sample removes its rows from every report.
+
+### Joins
+
+- **Result → sample:** `sha256` and `rule_uuid` in `GET /api/v2/svs/samples/{sha256}/{rule_uuid}`
+  (a `new_fp_other_rule` or `new_match_real_hit` row has no sample of its own rule: use `sha256` with
+  `f=sha256:…`).
+- **Result → detections:** as for a sample.
 
 ## Worked examples
 

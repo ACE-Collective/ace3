@@ -17,13 +17,8 @@ from zoneinfo import ZoneInfo
 import requests
 import yaml
 
-try:
-    from requests_pkcs12 import post as pkcs12_post
-    PKCS12_AVAILABLE = True
-except ImportError:
-    PKCS12_AVAILABLE = False
-
 from hunt_compiler import compile_hunt
+from hunt_compiler.ace_client import Connection, add_connection_arguments, validate_connection_arguments
 
 warnings.simplefilter("ignore", urllib3.exceptions.SecurityWarning)
 
@@ -134,64 +129,7 @@ def parse_args():
         help="Directory to scan for *.yaml hunt files (excluding template.yaml). "
              "Mutually exclusive with positional file paths.",
     )
-    parser.add_argument(
-        "-r",
-        "--remote-host",
-        type=str,
-        help="The remote host to connect to",
-        default=os.environ.get("ACE_API_HOST", "aceatu.com:443"),
-    )
-    parser.add_argument(
-        "-u",
-        "--ui-host",
-        type=str,
-        help="The UI host to link to",
-        default=os.environ.get("ACE_UI_HOST", "aceatu.com:443"),
-    )
-    parser.add_argument(
-        "-k",
-        "--api-key",
-        type=str,
-        help="The api key to use",
-        default=os.environ.get("ACE_API_KEY", None),
-    )
-    parser.add_argument(
-        "-V",
-        "--disable-ssl-verification",
-        action="store_true",
-        help="Whether to disable the ssl certificate verification",
-        default=False,
-    )
-    parser.add_argument(
-        "--ca-bundle",
-        type=str,
-        help="Path to a custom root CA bundle file for SSL certificate verification",
-        default=os.environ.get("ACE_CA_BUNDLE", None),
-    )
-    parser.add_argument(
-        "--client-cert",
-        type=str,
-        help="Path to a client SSL certificate file (can be combined cert+key or specify --client-key separately)",
-        default=os.environ.get("ACE_CLIENT_CERT", None),
-    )
-    parser.add_argument(
-        "--client-key",
-        type=str,
-        help="Path to a client SSL certificate key file (required if --client-cert is not a combined file)",
-        default=os.environ.get("ACE_CLIENT_KEY", None),
-    )
-    parser.add_argument(
-        "--client-p12",
-        type=str,
-        help="Path to a PKCS#12 (.p12/.pfx) client certificate file (alternative to --client-cert)",
-        default=os.environ.get("ACE_CLIENT_P12", None),
-    )
-    parser.add_argument(
-        "--client-p12-password",
-        type=str,
-        help="Password for the PKCS#12 file (can also be set via ACE_CLIENT_P12_PASSWORD env var)",
-        default=os.environ.get("ACE_CLIENT_P12_PASSWORD", None),
-    )
+    add_connection_arguments(parser)
 
     parser.add_argument(
         "-s",
@@ -348,21 +286,7 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.signature_dir and not os.path.isdir(args.signature_dir):
         raise ValueError(f"--signature-dir path is not a directory: {args.signature_dir}")
 
-    if args.api_key is None:
-        raise ValueError(
-            "The API key is not set! Please set the ACE_API_KEY environment variable."
-        )
-
-    # Validate that PEM and p12 options are not both specified
-    if args.client_cert and args.client_p12:
-        raise ValueError(
-            "Cannot specify both --client-cert and --client-p12. Use one or the other."
-        )
-
-    if args.client_p12 and not PKCS12_AVAILABLE:
-        raise ValueError(
-            "requests-pkcs12 library is not installed. Install it with: pip install requests-pkcs12"
-        )
+    validate_connection_arguments(args)
 
     # When using --query-results-file the API skips the data-source query, so time
     # arguments are not needed (and relative-time flags would be misleading).
@@ -498,41 +422,17 @@ def validate_hunt(
             execution_arguments["correlate_results"] = correlate_results
         json_data["execution_arguments"] = execution_arguments
 
-    # Configure SSL verification
-    if disable_ssl_verification:
-        verify_setting = False
-    elif ca_bundle:
-        verify_setting = ca_bundle
-    else:
-        verify_setting = True
-
-    # Make the request - use requests_pkcs12 if p12 file is provided, otherwise use regular requests
-    if client_p12:
-        # Use requests_pkcs12 for PKCS#12 files
-        response = pkcs12_post(
-            "https://{}/api/hunt/validate".format(remote_host),
-            json=json_data,
-            headers={"x-ace-auth": api_key},
-            verify=verify_setting,
-            pkcs12_filename=client_p12,
-            pkcs12_password=client_p12_password,
-        )
-    else:
-        # Use regular requests for PEM certificates
-        cert_setting = None
-        if client_cert:
-            if client_key:
-                cert_setting = (client_cert, client_key)
-            else:
-                cert_setting = client_cert
-
-        response = requests.post(
-            "https://{}/api/hunt/validate".format(remote_host),
-            json=json_data,
-            headers={"x-ace-auth": api_key},
-            verify=verify_setting,
-            cert=cert_setting,
-        )
+    connection = Connection(
+        remote_host=remote_host,
+        api_key=api_key,
+        disable_ssl_verification=disable_ssl_verification,
+        ca_bundle=ca_bundle,
+        client_cert=client_cert,
+        client_key=client_key,
+        client_p12=client_p12,
+        client_p12_password=client_p12_password,
+    )
+    response = connection.request("POST", "/api/hunt/validate", json=json_data)
 
     try:
         response.raise_for_status()

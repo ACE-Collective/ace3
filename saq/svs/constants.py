@@ -27,3 +27,14 @@ LABELS = (LABEL_TP, LABEL_FP, LABEL_CONFLICTED)
 
 # the Label filter's value for a sample with no label (no contributing detection has a verdict)
 LABEL_FILTER_NONE = "none"
+
+
+class ValidationState(StrEnum):
+    """Where a YARA validation is (docs/SVS_VALIDATION.md, *The svs service*)."""
+    QUEUED = "queued"          # waiting for a service_svs worker
+    RUNNING = "running"        # a worker holds its lease
+    COMPLETED = "completed"    # its report is stored
+    FAILED = "failed"          # it could not run; error says why
+
+
+VALIDATION_STATES = tuple(state.value for state in ValidationState)

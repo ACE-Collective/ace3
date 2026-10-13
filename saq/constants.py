@@ -709,6 +709,7 @@ SERVICE_EXTERNAL_REMEDIATION_CHECK = "external_remediation_check"
 SERVICE_REMOTE_EMAIL_COLLECTOR = "remote_email_collector"
 SERVICE_YARA_SCANNER = "yara"
 SERVICE_MONITORING = "monitoring"
+SERVICE_SVS = "svs"
 
 SERVICE_STATUS_RUNNING = 'running'
 SERVICE_STATUS_STOPPED = 'stopped'

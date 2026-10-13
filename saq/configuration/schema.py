@@ -768,6 +768,8 @@ class SVSYaraConfig(BaseModel):
     mirror_dir: str = Field(default="svs/mirrors", description="where SVS keeps its own bare clone of each repository (relative to DATA_DIR). It is never the checkout the yara service loads rules from")
     work_dir: str = Field(default="svs/work", description="where each validation gets its private working directory (relative to DATA_DIR): both commits' rules and a plaintext copy of every sample, deleted when the validation ends. Must allow execution (not a noexec tmpfs) and have no '.' in its path, which would change the extension YARA sees for a file without one")
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed process that compiles and scans; allowed_tcp_ports stays empty (no network)")
+    retention_days: int = Field(default=90, ge=1, description="how long a finished validation and its report are kept; ace svs yara prune (daily cron) removes older ones")
+    prune_batch_size: int = Field(default=100, ge=1, le=1000, description="how many validations one prune transaction removes (their results go with them)")
 
 
 class SVSConfig(BaseModel):

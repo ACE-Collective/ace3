@@ -23,9 +23,15 @@ from saq.gui.filter_entry import (
     FilterEntry,
     FilterEntryBase,
     SampleFilterEntry,
+    ValidationFilterEntry,
 )
-from saq.gui.filter_names import DETECTION_POINT_FILTER_SLUGS, FILTER_SLUGS, SVS_SAMPLE_FILTER_SLUGS
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS
+from saq.gui.filter_names import (
+    DETECTION_POINT_FILTER_SLUGS,
+    FILTER_SLUGS,
+    SVS_SAMPLE_FILTER_SLUGS,
+    SVS_VALIDATION_FILTER_SLUGS,
+)
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
 
 
 class UnknownFilterScreen(LookupError):
@@ -123,10 +129,30 @@ SVS_SAMPLES_SCREEN = FilterScreen(
     ),
 )
 
+# the YARA validations and their reports (GET /api/v2/svs/yara/validations, docs/SVS_API.md); part
+# of the Signatures area, so it is read with signature:read
+SVS_VALIDATIONS_SCREEN = FilterScreen(
+    name="svs_validations",
+    entry_model=ValidationFilterEntry,
+    slugs=SVS_VALIDATION_FILTER_SLUGS,
+    permission=("signature", "read"),
+    fields=(
+        FilterField("Repository", FilterFieldKind.TEXT),
+        FilterField("Branch", FilterFieldKind.TEXT),
+        FilterField("Head", FilterFieldKind.TEXT),
+        FilterField("State", FilterFieldKind.MULTI, VALIDATION_STATES),
+        FilterField("Has Regressions", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has New FP", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Compile Errors", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Created", FilterFieldKind.DATE_RANGE),
+    ),
+)
+
 FILTER_SCREENS: dict[str, FilterScreen] = {
     ALERTS_SCREEN.name: ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
     SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
+    SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
 }
 
 

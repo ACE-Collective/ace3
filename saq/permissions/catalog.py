@@ -73,6 +73,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode and the SVS YARA samples (live malware, in zips protected with the password infected)."),
     CatalogEntry("signature", "read", "Access the Signatures area and read YARA QA results (rules in QA mode, match counts and match records) and the SVS YARA samples (their labels, captures and match records)."),
     CatalogEntry("svs", "admin", "Administer SVS: retire SVS YARA samples for a rule and delete sample files (their bytes are purged, audited)."),
+    CatalogEntry("svs", "validate", "Request SVS YARA validations of a rule repository's commits and read their status (counts, rule names and uuids only; the CI key's permission)."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),

@@ -4,13 +4,20 @@ import pytest
 from pydantic import ValidationError
 
 from aceapi_v2.saved_filters.service import DEFAULT_SAVED_FILTERS
-from saq.gui.filter_entry import DetectionPointFilterEntry, FilterEntry, FilterEntryBase, SampleFilterEntry
+from saq.gui.filter_entry import (
+    DetectionPointFilterEntry,
+    FilterEntry,
+    FilterEntryBase,
+    SampleFilterEntry,
+    ValidationFilterEntry,
+)
 from saq.gui.filter_names import FILTER_NAMES, FILTER_SLUGS
 from saq.gui.filter_screens import (
     ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN,
     FILTER_SCREENS,
     SVS_SAMPLES_SCREEN,
+    SVS_VALIDATIONS_SCREEN,
     FilterScreen,
     UnknownFilterScreen,
     get_filter_screen,
@@ -170,6 +177,54 @@ def test_svs_sample_values_are_normalized(name, values, expected):
 def test_svs_samples_rejects_bad_entries(name, values):
     with pytest.raises(ValidationError):
         SVS_SAMPLES_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+def test_the_svs_validations_screen():
+    assert get_filter_screen("svs_validations") is SVS_VALIDATIONS_SCREEN
+    assert SVS_VALIDATIONS_SCREEN.entry_model is ValidationFilterEntry
+    assert SVS_VALIDATIONS_SCREEN.permission == ("signature", "read")
+    assert {f.name for f in SVS_VALIDATIONS_SCREEN.fields} == SVS_VALIDATIONS_SCREEN.filter_names
+
+
+def test_the_svs_validation_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_VALIDATIONS_SCREEN.slugs) == {
+        "Branch": "branch",
+        "Compile Errors": "compile_errors",
+        "Created": "created",
+        "Has New FP": "has_new_fp",
+        "Has Regressions": "has_regressions",
+        "Head": "head",
+        "Repository": "repository",
+        "State": "state",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Head", [" ABCD1234"], ["abcd1234"]),
+    ("State", ["Completed", "failed"], ["completed", "failed"]),
+    ("Has Regressions", ["True"], ["true"]),
+    ("Compile Errors", ["false"], ["false"]),
+    ("Created", ["-7d"], ["-7d"]),
+    ("Repository", ["Signatures"], ["Signatures"]),
+])
+def test_svs_validation_values_are_normalized(name, values, expected):
+    (entry,) = SVS_VALIDATIONS_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Head", ["abc"]),
+    ("Head", ["not-hex!"]),
+    ("State", ["done"]),
+    ("Has New FP", ["yes"]),
+    ("Created", ["not a date"]),
+    ("Branch", [["pair", "value"]]),
+    ("Label", ["tp"]),
+])
+def test_svs_validations_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_VALIDATIONS_SCREEN.validate_entries([{"name": name, "values": values}])
 
 
 @pytest.mark.parametrize("screen", sorted(DEFAULT_SAVED_FILTERS))

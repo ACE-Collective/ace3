@@ -1,0 +1,225 @@
+"""service_svs: runs the queued YARA validations (docs/SVS_VALIDATION.md, *The svs service*).
+
+Each worker thread claims a validation (saq.svs.validations.claim), runs the replay
+(saq.svs.yara.replay.run_replay) while a heartbeat keeps its lease, and stores the report. The
+replay's sandboxed scan is cancelled when the service stops, and the validation goes back to the
+queue; when the lease is lost (another worker took over) the scan is cancelled too and its result
+dropped. svs.yara.max_concurrent_validations workers run, on the primary node only.
+"""
+
+import logging
+import threading
+from typing import Optional, Type
+
+from pydantic import Field, model_validator
+
+from saq.configuration.config import get_config, get_service_config
+from saq.configuration.schema import ServiceConfig
+from saq.constants import SERVICE_SVS
+from saq.database.pool import remove_all_sessions
+from saq.database.util.node import is_primary_node
+from saq.environment import get_global_runtime_settings
+from saq.error.reporting import log_loop_exception
+from saq.sandbox.runner import LAUNCHER_STOP_SECONDS
+from saq.service import ACEServiceInterface
+from saq.svs.actions import retired_pairs
+from saq.svs.validations import (
+    Claim,
+    LeaseLost,
+    claim,
+    complete,
+    corpus_version,
+    engine_fingerprint,
+    fail,
+    fail_abandoned,
+    heartbeat,
+    release,
+)
+from saq.svs.yara.layout import LayoutError
+from saq.svs.yara.replay import ReplayCancelled, ReplayError, run_replay
+
+# what a stopping worker needs beyond the sandbox launcher's own stop: release its claim
+SHUTDOWN_MARGIN_SECONDS = 5
+
+INTERNAL_ERROR = "internal error; see the svs service log"
+
+
+class SVSServiceConfig(ServiceConfig):
+    poll_interval_seconds: float = Field(default=5, gt=0, description="how long an idle worker waits before it looks for a queued validation again")
+    heartbeat_interval_seconds: int = Field(default=30, gt=0, description="how often a worker running a validation renews its lease")
+    lease_seconds: int = Field(default=300, gt=0, description="how long a lease lasts without a heartbeat; after that another worker may take the validation over")
+    max_attempts: int = Field(default=3, ge=1, description="how many times a validation is claimed before one whose worker stopped heartbeating is failed instead")
+
+    @model_validator(mode="after")
+    def _timings_fit(self) -> "SVSServiceConfig":
+        if self.heartbeat_interval_seconds * 3 > self.lease_seconds:
+            raise ValueError(
+                f"heartbeat_interval_seconds ({self.heartbeat_interval_seconds}) times 3 must not exceed "
+                f"lease_seconds ({self.lease_seconds}): one late heartbeat must not lose the lease")
+
+        if self.shutdown_deadline_seconds < LAUNCHER_STOP_SECONDS + SHUTDOWN_MARGIN_SECONDS:
+            raise ValueError(
+                f"shutdown_deadline_seconds ({self.shutdown_deadline_seconds}) must be at least "
+                f"{LAUNCHER_STOP_SECONDS + SHUTDOWN_MARGIN_SECONDS}: a stopping worker cancels its scan "
+                "and releases its validation")
+        return self
+
+
+class ValidationWorker:
+    """Claims and runs validations one at a time until stopped."""
+
+    def __init__(self, config: SVSServiceConfig, node: str, shutdown: threading.Event, name: str):
+        self.config = config
+        self.node = node
+        self.shutdown = shutdown
+        self.name = name
+        self.thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._cancel: Optional[threading.Event] = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.loop, name=self.name, daemon=True)
+        self.thread.start()
+
+    def cancel(self):
+        """Stops the validation running now, if any."""
+        with self._lock:
+            if self._cancel is not None:
+                self._cancel.set()
+
+    def loop(self):
+        while not self.shutdown.is_set():
+            ran = False
+            try:
+                ran = self.run_once()
+            except Exception as e:
+                log_loop_exception(e, "svs validation worker failed")
+            finally:
+                remove_all_sessions()
+
+            if not ran:
+                self.shutdown.wait(self.config.poll_interval_seconds)
+
+    def run_once(self) -> bool:
+        """Runs one validation if one is waiting. Returns whether it did."""
+        fail_abandoned(lease_seconds=self.config.lease_seconds, max_attempts=self.config.max_attempts)
+        claimed = claim(self.node, lease_seconds=self.config.lease_seconds, max_attempts=self.config.max_attempts)
+        if claimed is None:
+            return False
+
+        self.execute(claimed)
+        return True
+
+    def execute(self, claimed: Claim):
+        cancel = threading.Event()
+        with self._lock:
+            self._cancel = cancel
+        if self.shutdown.is_set():
+            cancel.set()
+
+        lost = threading.Event()
+        done = threading.Event()
+
+        def _keep_lease():
+            while not done.wait(self.config.heartbeat_interval_seconds):
+                try:
+                    alive = heartbeat(claimed)
+                except Exception as e:
+                    # a failed heartbeat is not a lost lease; the next one may succeed
+                    log_loop_exception(e, f"unable to renew the lease on svs validation {claimed.uuid}")
+                    continue
+                finally:
+                    remove_all_sessions()
+
+                if not alive:
+                    lost.set()
+                    cancel.set()
+                    return
+
+        keeper = threading.Thread(target=_keep_lease, name=f"{self.name}-lease", daemon=True)
+        keeper.start()
+        extra = {"svs_validation": claimed.uuid, "repository": claimed.repository,
+                 "base_sha": claimed.base_sha, "head_sha": claimed.head_sha, "attempt": claimed.attempts}
+        logging.info("running svs validation %s", claimed.uuid, extra=extra)
+        try:
+            # taken before the replay reads the corpus, so a change while it runs makes the next
+            # request run again
+            version, fingerprint = corpus_version(), engine_fingerprint(claimed.repository)
+            result = run_replay(claimed.repository, claimed.base_sha, claimed.head_sha, branch=claimed.branch,
+                                retired=retired_pairs(), cancel=cancel)
+            complete(claimed, result, corpus_version_=version, engine_fingerprint_=fingerprint)
+            logging.info("svs validation %s completed in %.0fs", claimed.uuid, result.duration_seconds,
+                         extra={**extra, "counts": result.counts, "diffed": result.diffed})
+        except ReplayCancelled:
+            if lost.is_set():
+                logging.warning("svs validation %s was taken over by another worker", claimed.uuid, extra=extra)
+            elif release(claimed):
+                logging.info("svs validation %s returned to the queue: the service is stopping", claimed.uuid,
+                             extra=extra)
+        except LeaseLost:
+            logging.warning("svs validation %s was taken over by another worker before it completed",
+                            claimed.uuid, extra=extra)
+        except (ReplayError, LayoutError) as e:
+            logging.warning("svs validation %s failed: %s", claimed.uuid, e, extra=extra)
+            fail(claimed, str(e))
+        except Exception as e:
+            log_loop_exception(e, f"svs validation {claimed.uuid} failed")
+            fail(claimed, INTERNAL_ERROR)
+        finally:
+            done.set()
+            keeper.join(timeout=5)
+            with self._lock:
+                self._cancel = None
+
+
+class SVSService(ACEServiceInterface):
+
+    @classmethod
+    def get_config_class(cls) -> Type[ServiceConfig]:
+        return SVSServiceConfig
+
+    def __init__(self):
+        self.shutdown = threading.Event()
+        self.workers: list[ValidationWorker] = []
+
+    def _workers(self) -> list[ValidationWorker]:
+        config = get_service_config(SERVICE_SVS)
+        node = get_global_runtime_settings().saq_node
+        return [ValidationWorker(config, node, self.shutdown, f"svs-validation-{index}")
+                for index in range(get_config().svs.yara.max_concurrent_validations)]
+
+    def start(self):
+        if not is_primary_node():
+            # the queue is shared; one node runs it
+            logging.info("svs validations run on the primary node only; this service stays idle")
+            return
+
+        self.workers = self._workers()
+        for worker in self.workers:
+            worker.start()
+
+    def wait_for_start(self, timeout: float = 5) -> bool:
+        return True
+
+    def start_single_threaded(self):
+        """Runs every waiting validation, one at a time, then returns."""
+        worker = self._workers()[0]
+        while not self.shutdown.is_set():
+            try:
+                if not worker.run_once():
+                    break
+            finally:
+                remove_all_sessions()
+
+    def stop(self):
+        self.shutdown.set()
+        for worker in self.workers:
+            worker.cancel()
+
+    def wait(self):
+        # the service runs until it is stopped, idle or not: `ace service start` reads a wait()
+        # that returns as the service having finished. It bounds this wait once it stops us
+        self.shutdown.wait()
+        for worker in self.workers:
+            if worker.thread is not None:
+                worker.thread.join()

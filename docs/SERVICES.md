@@ -200,5 +200,6 @@ docker compose logs -f myservice
 | `network_semaphore`  | `saq.network_semaphore.service.NetworkSemaphoreService` | `service_network_semaphore` |
 | `monitoring`         | `saq.monitoring.service.ACEMonitoringService`  | `service_monitoring`         |
 | `search_indexer`     | `saq.search.service.SearchIndexService`        | `service_search_indexer`     |
+| `svs`                | `saq.svs.service.SVSService`                   | `service_svs`                |
 
 `saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.

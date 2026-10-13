@@ -86,7 +86,7 @@ STALE_WORKDIR_AGE = datetime.timedelta(hours=24)
 _READER_JOIN_SECONDS = 5
 
 # how long the launcher gets to kill what the command started once it is told to stop
-_LAUNCHER_STOP_SECONDS = 10
+LAUNCHER_STOP_SECONDS = 10
 
 # the launcher kills the command itself this long after its timeout, for when the ACE process
 # that started it is gone (a recycled or killed API worker) and cannot tell it to stop
@@ -170,6 +170,14 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
     ]
 
 
+# how often a wait for the launcher checks the cancel event
+_CANCEL_POLL_SECONDS = 0.5
+
+
+class SandboxCancelled(RuntimeError):
+    """The caller's cancel event was set while the command ran; everything it started is gone."""
+
+
 @dataclass
 class SandboxResult:
     returncode: int
@@ -192,6 +200,25 @@ def _stop(process: subprocess.Popen):
         pass
 
 
+def _wait_or_cancel(process: subprocess.Popen, timeout: datetime.timedelta, cancel: threading.Event) -> bool:
+    """Waits for the launcher like process.wait(timeout) does, but returns True as soon as cancel
+    is set while it still runs."""
+    deadline = time.monotonic() + timeout.total_seconds()
+    while True:
+        if cancel.is_set():
+            return process.poll() is None
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout.total_seconds())
+
+        try:
+            process.wait(timeout=min(remaining, _CANCEL_POLL_SECONDS))
+            return False
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def run_sandboxed(
     argv: list[str],
     stdin_data: str | None,
@@ -199,14 +226,16 @@ def run_sandboxed(
     workdir: str,
     timeout: datetime.timedelta,
     max_output_bytes: int,
+    cancel: threading.Event | None = None,
 ) -> SandboxResult:
     """Run an argv wrapped by build_sandbox_argv and collect its output.
 
-    Whatever happens -- a normal exit, a timeout, too much output -- the launcher has killed
-    everything the command started before this returns, so a process the command left in the
-    background does not survive it. With no stdin_data the command reads /dev/null rather than
-    inheriting ACE's stdin. env is the command's whole environment: pass only what it needs, never
-    os.environ (Landlock does not filter the environment, and ACE's carries secrets).
+    Whatever happens -- a normal exit, a timeout, too much output, the cancel event being set --
+    the launcher has killed everything the command started before this returns, so a process the
+    command left in the background does not survive it. With no stdin_data the command reads
+    /dev/null rather than inheriting ACE's stdin. env is the command's whole environment: pass only
+    what it needs, never os.environ (Landlock does not filter the environment, and ACE's carries
+    secrets). Setting cancel (from another thread) stops the command and raises SandboxCancelled.
     """
     process = subprocess.Popen(
         argv,
@@ -255,15 +284,19 @@ def run_sandboxed(
         thread.start()
 
     timed_out = False
+    cancelled = False
     try:
-        process.wait(timeout=timeout.total_seconds())
+        if cancel is None:
+            process.wait(timeout=timeout.total_seconds())
+        else:
+            cancelled = _wait_or_cancel(process, timeout, cancel)
     except subprocess.TimeoutExpired:
         timed_out = True
     finally:
         # a no-op when the launcher has already exited: it cleaned up when the command did
         _stop(process)
         try:
-            process.wait(timeout=_LAUNCHER_STOP_SECONDS)
+            process.wait(timeout=LAUNCHER_STOP_SECONDS)
         except subprocess.TimeoutExpired:
             # the launcher itself is stuck; it is still unreaped, so its pid is still its session's
             logging.warning("sandbox launcher for %s did not exit when stopped", argv[-1])
@@ -280,6 +313,9 @@ def run_sandboxed(
             stream.close()
         except OSError:
             pass
+
+    if cancelled:
+        raise SandboxCancelled("command cancelled")
 
     if timed_out:
         raise RuntimeError(f"command timed out after {timeout}")

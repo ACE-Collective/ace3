@@ -804,6 +804,11 @@ steps, and creating alerts when asked.
     supplied events or saved correlate results replaced the queries
   - `result`: the number of roots and events, and the uuids of the alerts or analyses it created
 
+YARA rules have a counterpart in SVS: `validate-yara`, in the same package, asks ACE to replay the
+graded samples under a pull request's rules and summarizes what changed
+(`docs/SVS_VALIDATION.md`). Both go the same direction, the repository's CI calling ACE, but they
+are separate systems with their own APIs and permissions.
+
 ## Hunt completion record
 
 Every scheduled execution of a hunt ends with one INFO record, `completed hunt <name>`, whose

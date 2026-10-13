@@ -2,6 +2,8 @@
 
 import datetime
 import os
+import threading
+import time
 import uuid
 
 import pytest
@@ -10,6 +12,7 @@ from saq.configuration.schema import SandboxConfig
 from saq.environment import get_base_dir
 from saq.sandbox.launcher import NET_ABI, landlock_abi
 from saq.sandbox.runner import (
+    SandboxCancelled,
     build_sandbox_argv,
     create_workdir,
     landlock_available,
@@ -106,3 +109,58 @@ def test_sweep_removes_only_stale_workdirs(tmp_path):
 @pytest.mark.unit
 def test_sweep_of_a_missing_root_is_a_no_op(tmp_path):
     sweep_stale_workdirs(str(tmp_path / "never-created"))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_cancel_stops_the_command_and_everything_it_started(tmp_path):
+    # the command starts a child that outlives it in the background, then sleeps
+    code = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)\n"
+        "open('child.pid', 'w').write(str(child.pid))\n"
+        "time.sleep(60)"
+    )
+    cancel = threading.Event()
+    with create_workdir(str(tmp_path)) as workdir:
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", code], workdir, SandboxConfig(), datetime.timedelta(seconds=60))
+        env = {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}
+        pid_file = os.path.join(workdir, "child.pid")
+        threading.Thread(target=lambda: (_wait_for(pid_file), cancel.set()), daemon=True).start()
+
+        started = time.monotonic()
+        with pytest.raises(SandboxCancelled):
+            run_sandboxed(argv, None, env, workdir, datetime.timedelta(seconds=60), 1024 * 1024, cancel=cancel)
+
+        assert time.monotonic() - started < 30
+        with open(pid_file) as fp:
+            child_pid = int(fp.read())
+
+    assert not _alive(child_pid)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_an_unset_cancel_event_changes_nothing(tmp_path):
+    with create_workdir(str(tmp_path)) as workdir:
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", "print('done')"], workdir, SandboxConfig(),
+                                  datetime.timedelta(seconds=30))
+        result = run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
+                               datetime.timedelta(seconds=30), 1024 * 1024, cancel=threading.Event())
+
+    assert (result.returncode, result.stdout.strip()) == (0, "done")
+
+
+def _wait_for(path: str, timeout: float = 20) -> None:
+    deadline = time.monotonic() + timeout
+    while not os.path.exists(path) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as fp:
+            # a zombie is dead, it only waits for its parent to reap it
+            return fp.read().split(")")[-1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False

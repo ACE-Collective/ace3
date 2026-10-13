@@ -9,8 +9,10 @@ stops matching is a **regression**; a file graded as a false positive that start
 This document covers how a validation runs and what it reports. The design and its reasoning are in
 `docs/SVS.md`, Part 2, *Validation* and *Report and baseline*.
 
-Today a validation runs from the command line (`ace svs yara validate`), synchronously, and stores
-nothing. The validation queue, its API and the CI client come next.
+The signature repository's CI requests a validation through the API (`validate-yara`, below);
+`service_svs` runs it from a queue and stores the report, which CI summarizes on the pull request
+with a link to ACE. `ace svs yara validate` runs one from the command line instead, synchronously,
+storing nothing.
 
 ## Which rules are validated
 
@@ -30,6 +32,123 @@ directory. A repository can feed it in one of two ways:
 
 A repository that feeds neither way holds no rules the yara service loads, and validating it is an
 error. `ace svs yara layout` prints what SVS derived for each configured repository.
+
+## Requesting a validation (CI)
+
+The repository's CI calls ACE; ACE never talks to the forge. The CI holds an API key of a dedicated
+automation user that has only `svs:validate`, so a leaked key can request validations and read
+their counts, and nothing else: no sample, file name or alert leaves ACE through it.
+
+```bash
+ace user add svs-ci svs-ci@example.com
+ace perm user add svs-ci svs:validate
+ace user add-api-key svs-ci --scope svs:validate --name ci    # printed once: the CI's secret
+```
+
+A scoped key can do only what both its scope and its user's grants allow, so the key is limited to
+`svs:validate` even if the user later gains more.
+
+`validate-yara` (`lib/signature_validator`, next to `validate-hunt`) does the rest from a checkout
+of the rule repository:
+
+1. It works out the commits: `--head` (default `HEAD`) and `--base` (default: the merge base of the
+   head and `origin/<--target-branch>`), both as full commit ids, and the head's `--branch`.
+2. It requests the validation (`POST /api/v2/svs/yara/validations`). An identical request (same
+   repository and commits) shares the validation that is queued or running, or gets the completed
+   one back while the samples, their labels and the validation code are unchanged, so a re-run CI
+   job does not rescan.
+3. It polls the status until the validation completes or fails, or `--timeout` (default 3600
+   seconds) passes.
+4. It prints a Markdown summary, and writes it to `--summary-file`: the counts, the regressions and
+   new false positives by rule, the files that do not compile, and the link to the report in ACE.
+
+Validation warns and never blocks. `validate-yara` exits 0 whatever the validation found, also when
+it failed or is still running at the timeout; it exits 2 only when it could not ask (a missing
+argument, git, the connection, or a key ACE refused), so a broken setup shows.
+
+It takes the same connection arguments and environment as `validate-hunt` (`ACE_API_HOST`,
+`ACE_UI_HOST`, `ACE_API_KEY`, `ACE_CA_BUNDLE`, the PEM or PKCS#12 client certificate), plus
+`ACE_SVS_REPOSITORY` for `--repository`.
+
+An example GitHub Actions workflow for the rule repository:
+
+```yaml
+name: SVS YARA validation
+on:
+  pull_request:
+    paths: ["yara/**"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0              # the merge base must be in the clone
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "git+https://github.com/ACE-Collective/ace3.git#subdirectory=lib/signature_validator"
+      - name: Validate
+        env:
+          ACE_API_HOST: ace.example.com:443
+          ACE_UI_HOST: ace.example.com:443
+          ACE_API_KEY: ${{ secrets.ACE_SVS_VALIDATE_KEY }}
+          ACE_SVS_REPOSITORY: signatures
+        # the checkout is a merge commit; validate the pull request's own head
+        run: |
+          validate-yara --head "${{ github.event.pull_request.head.sha }}" \
+            --pr-url "${{ github.event.pull_request.html_url }}" --summary-file svs-summary.md
+          cat svs-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment
+        if: hashFiles('svs-summary.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file svs-summary.md \
+            || gh pr comment "${{ github.event.pull_request.number }}" --body-file svs-summary.md
+```
+
+The job passes whatever the validation found; the comment and the job summary are the signal. It
+fails only when `validate-yara` could not ask, which is worth fixing. SVS's YARA validation and
+`validate-hunt` (`docs/HUNTS.md`, *Validation API*) go the same direction, the repository's CI
+calling ACE, but they are separate systems.
+
+## The svs service
+
+`service_svs` (`saq/svs/service.py`, its own `svs` container) runs the queue
+(`saq/svs/validations.py`). It runs `svs.yara.max_concurrent_validations` workers (one by default)
+on the primary node only; on any other node it stays idle.
+
+- **The queue.** A request is a row in `svs_validations`, `queued`. A worker claims the oldest one
+  with a conditional UPDATE that repeats the condition, so two workers never both take it, and
+  holds a **lease** on it: it renews a heartbeat every `heartbeat_interval_seconds` while it runs.
+  A validation whose worker stopped heartbeating for `lease_seconds` (the node died, say) is taken
+  over by another worker; after `max_attempts` claims it is `failed` instead. The lease times come
+  from the database clock.
+- **Running.** The worker runs the replay (below) with the samples retired at that moment, and
+  stores the report: its counts, the commits' compile results, the rules added, removed and changed,
+  the skipped samples and timings in `svs_validations`, and each listed pair, with the sample's label
+  as it was when the validation ran, in `svs_validation_results`. A validation that could not run is
+  `failed` with the reason (the message of the replay's error; anything unexpected is logged and
+  reads "internal error").
+- **The cache.** A completed validation records the **corpus version** and the **engine
+  fingerprint** it ran with. The corpus version is a digest of the latest change time and the row
+  count of the stored captures, the verdict history, the retirements, the sample deletions and the
+  alerts the captures come from; the counts catch what bumps no change time (a cleared verdict, a
+  deleted alert). The engine fingerprint covers the replay's code, the YARA library versions, the
+  disposition classification, the per-file scan timeout and the repository's layout. A request for
+  the same commits is answered from a completed validation while both are unchanged; a failed one is
+  never reused.
+- **Stopping.** When the service stops, a worker cancels its sandboxed scan (the sandbox kills
+  everything the scan started) and returns its validation to the queue without counting the
+  attempt. A worker that loses its lease cancels its scan and drops its result.
+- **Retention.** `ace svs yara prune` (daily, `etc/cron/daily/svs-validations-prune`, primary node)
+  removes the validations that finished more than `svs.yara.retention_days` ago, with their rows.
+  Deleting a sample (`docs/SVS_SAMPLES.md`, *Actions*) removes its rows from every report.
 
 ## How a validation runs
 
@@ -151,16 +270,31 @@ For head it also lists:
 - rules that filter on `full_path`. The original path held the alert's storage directory, so a
   replay cannot reproduce that filter.
 
+## API
+
+`/api/v2/svs/yara/validations` (`docs/SVS_API.md`, *Validations*):
+
+- `POST /` and `GET /{uuid}/status`, with `svs:validate`: what CI uses. The status carries the
+  state, the counts, and the rules (names and uuids) in each listed category, never a sample.
+- `GET /`, `GET /{uuid}` and `GET /{uuid}/results`, with `signature:read`: the validations, a
+  report, and the pairs it lists with their samples' sha256s; each list also exports as NDJSON and
+  CSV.
+- `GET /{uuid}/download`, with `signature:download`: the files of a selection of the rows, in an
+  `infected` zip, as the Samples download serves them.
+
 ## Command line
 
 ```bash
 ace svs yara layout
 ace svs yara validate --repository signatures --base <merge base> --head <head commit> [--branch <head branch>] [--json]
+ace svs yara prune [--dry-run] [--force]
 ```
 
-`validate` prints the report, or the whole result as JSON with `--json`. It counts the samples
-retired at the time it runs as `retired`. It exits 1 when the
-validation could not run (an unknown repository or commit, no Landlock, a failed export or scan).
+`validate` runs a validation synchronously, without the queue, and prints the report, or the whole
+result as JSON with `--json`; it stores nothing. It counts the samples retired at the time it runs
+as `retired`. It exits 1 when the validation could not run (an unknown repository or commit, no
+Landlock, a failed export or scan). `prune` removes the finished validations older than
+`svs.yara.retention_days`; it does nothing off the primary node unless given `--force`.
 
 ## Configuration
 
@@ -169,7 +303,9 @@ svs:
   yara:
     repositories: []              # git_repo_<name> sections whose commits may be validated
     scan_timeout_seconds: 1800    # compiling and scanning one commit's rules over the corpus
-    max_concurrent_validations: 1
+    max_concurrent_validations: 1 # service_svs workers
+    retention_days: 90            # how long a finished validation and its report are kept
+    prune_batch_size: 100         # validations one prune transaction removes
     fetch_timeout_seconds: 600    # fetching into the mirror; the first fetch clones it
     # max_archive_bytes: 536870912  # optional cap on the export of one commit; unset means no limit
     # max_archive_members: 100000   # optional cap on its files and directories; unset means no limit
@@ -178,6 +314,14 @@ svs:
     sandbox:
       memory_limit: 4294967296
       allowed_tcp_ports: []
+
+service_svs:
+  enabled: true                   # idle while svs.yara.repositories is empty, and off the primary node
+  shutdown_deadline_seconds: 30   # a stopping worker cancels its scan and requeues its validation
+  poll_interval_seconds: 5
+  heartbeat_interval_seconds: 30  # at most a third of lease_seconds
+  lease_seconds: 300
+  max_attempts: 3
 ```
 
 `work_dir` must not have a `.` in its path. The `extension` external and the `file_ext` filter take

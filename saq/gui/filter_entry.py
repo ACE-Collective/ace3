@@ -16,9 +16,10 @@ from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
     FILTER_NAMES,
     SVS_SAMPLE_FILTER_SLUGS,
+    SVS_VALIDATION_FILTER_SLUGS,
 )
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
 from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
 
@@ -212,6 +213,63 @@ class SampleFilterEntry(FilterEntryBase):
             "Missing Data": list(SAMPLE_BOOL_OPTIONS),
             "Unknown Version": list(SAMPLE_BOOL_OPTIONS),
             "Retired": list(SAMPLE_BOOL_OPTIONS),
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+
+        return values
+
+
+_SHA_PREFIX = re.compile(r"^[0-9a-f]{4,64}$")
+
+
+class ValidationFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS validations screen (GET /api/v2/svs/yara/validations)."""
+
+    name: str = Field(description="a filter name of the SVS validations screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_VALIDATION_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_VALIDATION_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Head":
+            values = [value.strip().lower() for value in values]
+            for value in values:
+                if not _SHA_PREFIX.match(value):
+                    raise ValueError(f"invalid commit {value!r} (expected at least 4 hex characters)")
+            return values
+
+        if name == "Created":
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "State": list(VALIDATION_STATES),
+            "Has Regressions": list(SAMPLE_BOOL_OPTIONS),
+            "Has New FP": list(SAMPLE_BOOL_OPTIONS),
+            "Compile Errors": list(SAMPLE_BOOL_OPTIONS),
         }.get(name)
         if allowed is None:
             return values

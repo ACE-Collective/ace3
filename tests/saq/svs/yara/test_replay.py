@@ -1,6 +1,7 @@
 """A whole validation: a real repository, the real sandbox and real samples (saq.svs.yara.replay)."""
 
 import os
+import threading
 import uuid
 from unittest.mock import patch
 
@@ -10,8 +11,9 @@ from saq.cli.commands.svs import print_report
 from saq.configuration.config import get_config
 from saq.environment import get_data_dir
 from saq.sandbox.runner import landlock_available
+from saq.svs.yara import replay
 from saq.svs.yara.diff import Category, Outcome
-from saq.svs.yara.replay import ReplayError, run_replay
+from saq.svs.yara.replay import ReplayCancelled, ReplayError, run_replay
 from tests.saq.svs.yara.conftest import REPOSITORY, rule, stored_sample
 
 pytestmark = pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
@@ -140,3 +142,36 @@ def test_an_unknown_commit_fails(svs_repository):
 
     with pytest.raises(ReplayError, match="not in svs.yara.repositories"):
         run_replay("elsewhere", sha, sha)
+
+
+@pytest.mark.integration
+def test_a_cancelled_replay_stops_and_leaves_nothing(svs_repository):
+    stored_sample("DELIVERY", b"alpha evil", [R1])
+    sha = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(ReplayCancelled):
+        run_replay(REPOSITORY, sha, sha, cancel=cancel)
+
+    assert _work_dirs() == []
+
+
+@pytest.mark.integration
+def test_a_replay_cancelled_during_the_scan_stops_it(svs_repository):
+    stored_sample("DELIVERY", b"alpha evil", [R1])
+    sha = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
+    cancel = threading.Event()
+
+    real_run_child = replay._run_child
+
+    # the scan sees the event set once it has started
+    def _run_child(*args):
+        cancel.set()
+        return real_run_child(*args)
+
+    with patch("saq.svs.yara.replay._run_child", side_effect=_run_child):
+        with pytest.raises(ReplayCancelled):
+            run_replay(REPOSITORY, sha, sha, cancel=cancel)
+
+    assert _work_dirs() == []

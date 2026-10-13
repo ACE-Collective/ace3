@@ -387,15 +387,21 @@ def resolve_sample_download(sha256: str, rule_uuid: str) -> SampleDownload:
 
 
 def resolve_bulk_download(filter_params: list[str], *, tz) -> SampleDownload:
-    """The files of every sample the filters match, with their match records, after enforcing the
-    bulk limits on the files this node can serve: svs.samples.max_bulk_download_files distinct
-    files and max_bulk_download_bytes bytes (413 past either). Files on another node's local pool
-    are listed in the manifest as skipped. Raises InvalidListingRequest."""
-    config = get_config().svs.samples
+    """The files of every sample the filters match, with their match records (bulk_download).
+    Raises InvalidListingRequest."""
     listing = prepare_sample_listing(filter_params, sort=SampleSort.SHA256, descending=False,
                                      changed_since=None, tz=tz)
-    samples = listing.samples
-    selected = listing.statement.where(samples.c.stored > 0)
+    return bulk_download(listing.samples, listing.statement)
+
+
+def bulk_download(samples, statement: Select) -> SampleDownload:
+    """The files of every sample statement (a select over samples, a samples_subquery()) selects,
+    with their match records, after enforcing the bulk limits on the files this node can serve:
+    svs.samples.max_bulk_download_files distinct files and max_bulk_download_bytes bytes (413 past
+    either). Files on another node's local pool are listed in the manifest as skipped; 404 when no
+    selected sample holds its file, 409 wrong_node when none is here."""
+    config = get_config().svs.samples
+    selected = statement.where(samples.c.stored > 0)
 
     # one more than the limit is enough to know it was exceeded
     sha256s = get_db().execute(
