@@ -16,6 +16,8 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IP
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
+from saq.email_archive import archive_email
+from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.observables.file import FileObservable
 from saq.util.time import local_time, parse_event_time
@@ -806,3 +808,13 @@ def test_update_event_status(mock_api_call):
     result = ace_api.update_event_status(event_id, 'CLOSED')
     assert result
     assert result['status'] == 'CLOSED'
+
+@pytest.mark.integration
+def test_iter_archived_email(mock_api_call, tmpdir, monkeypatch):
+    monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: EmailArchiveTargetType.LOCAL)
+    content = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body"
+    email = tmpdir / "test_email.eml"
+    email.write_binary(content)
+    archive_email(str(email), "<test-message-id@example.com>", ["test@local"], local_time())
+
+    assert b"".join(ace_api.iter_archived_email("<test-message-id@example.com>")) == content

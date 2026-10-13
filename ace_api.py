@@ -1872,7 +1872,7 @@ set_observables_parser.set_defaults(func=_cli_set_observables)
 
 def iter_archived_email(message_id: str, *args, **kwargs):
     response = _execute_api_call(
-        "email/get_archived_email",
+        "v2/email/archive",
         method=METHOD_GET,
         params={ "message_id": message_id },
         stream=True,

@@ -82,17 +82,15 @@ function toggle_max_hit_observables_visible() {
 
 }
 
-function close_event() {
+// closed_status is the configured events.closed_status, passed in by the page
+function close_event(event_id, closed_status) {
     if (! confirm("Are you sure you want to close this event?")) {
         return;
     }
 
-    (function() {
-        fetch('close_event', { method: 'POST', credentials: 'same-origin' })
-        .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
+    aceApi.patch('/events/' + event_id, { status: closed_status })
         .then(function(){ location.reload(); })
         .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
 }
 
 function update_event_status_message(message) {

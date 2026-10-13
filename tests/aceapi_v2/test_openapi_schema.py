@@ -19,6 +19,7 @@ V2_BINARY_ROUTES = {
     "/alerts/{alert_uuid}/download": "application/zip",
     "/alerts/{alert_uuid}/logs": "text/plain",
     "/crashes/{crash_id}/download": "application/zip",
+    "/email/archive": "message/rfc822",
     "/events/export": "text/csv",
     "/signatures/yara-qa/matches/{match_id}/download": "application/zip",
     "/signatures/yara-qa/{signature_uuid}/download": "application/zip",

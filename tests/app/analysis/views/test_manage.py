@@ -453,8 +453,8 @@ def test_manage_table_follows_the_column_preference(web_client, analyst):
     expected = ["status", "description", "disposition", "remediation"]
     assert _header_columns(html) == expected
     assert _row_columns(html, alert.uuid) == expected
-    assert f'id="alert_row_{alert.uuid}" data-status="' in html
-    assert 'data-insert-date="2023-01-01 00:00:00"' in html
+    assert f'id="alert_row_{alert.uuid}" data-queue="{QUEUE_DEFAULT}"' in html
+    assert 'data-owner-id=""' in html
 
 
 @pytest.mark.integration

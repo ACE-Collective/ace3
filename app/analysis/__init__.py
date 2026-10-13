@@ -20,10 +20,9 @@ from app.analysis.views.edit.observable_action.whitelist import observable_actio
 from app.analysis.views.edit.observable_action.detection import observable_action_set_for_detection, observable_action_adjust_expiration
 from app.analysis.views.edit.observable_action.legacy import observable_action
 from app.analysis.views.edit.observable_action.clicker import observable_action_check_for_clickers, observable_action_open_clicker_search_splunk
-from app.analysis.views.edit.event import add_to_event, load_more_events, get_analysis_event_name_candidate
+from app.analysis.views.edit.event import add_to_event, load_more_events
 from app.analysis.views.search import search, search_similar
 from app.analysis.views.misc import upload_file, analyze_alert
-from app.analysis.views.archive import download_archive
 from app.analysis.views.image import image, image_full
 from app.analysis.views.remediation import remediation_targets
 from app.analysis.views.context_processor import generic_functions, add_header

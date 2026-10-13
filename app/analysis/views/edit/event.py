@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 from uuid import uuid4
 
@@ -7,8 +6,6 @@ from flask_login import current_user
 
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.analysis.root import RootAnalysis
-from saq.configuration.config import get_engine_config
 from saq.constants import CLOSED_EVENT_LIMIT
 from saq.database.model import (
     Event,
@@ -163,19 +160,3 @@ def load_more_events():
         added_events = events[cur_closed_event_count:new_cur_closed_event_count]
 
     return render_template('analysis/load_more_events.html', events=added_events, end_of_list=at_end_of_list)
-
-@analysis.route('/<uuid>/event_name_candidate', methods=['GET'])
-@require_permission('event', 'read')
-def get_analysis_event_name_candidate(uuid):
-    from saq.util import storage_dir_from_uuid, workload_storage_dir
-
-    storage_dir = storage_dir_from_uuid(uuid)
-    if get_engine_config().work_dir and not os.path.isdir(storage_dir):
-        storage_dir = workload_storage_dir(uuid)
-
-    if not os.path.exists(storage_dir):
-        return ''
-
-    root = RootAnalysis(storage_dir=storage_dir)
-    root.load()
-    return "Event"
