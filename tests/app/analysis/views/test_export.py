@@ -121,7 +121,7 @@ def test_download_file_invalid_uuid(web_client, root_analysis):
                           query_string={
                               'direct': alert.uuid,
                               'file_uuid': str(uuid4()),
-                              'mode': 'raw'
+                              'mode': 'text'
                           })
     assert result.status_code == 302
     assert url_for('analysis.index') in result.location
@@ -169,6 +169,29 @@ def test_download_file_hex_mode(web_client, root_analysis, tmpdir):
                             })
     assert result.status_code == 200
     assert result.headers['Content-Type'] == 'text/plain'
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mode", ["raw", "view", "html"])
+def test_download_file_removed_modes(web_client, root_analysis, tmpdir, mode):
+    """The modes that served an alert's file as-is are gone: an HTML file from an alert must never
+    render on the GUI origin."""
+    target_path = tmpdir / "page.html"
+    target_path.write_text("<html><body><script>alert(1)</script></body></html>", encoding="utf8")
+
+    file_observable = root_analysis.add_file_observable(target_path)
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.download_file"),
+                            query_string={
+                                'direct': alert.uuid,
+                                'file_uuid': file_observable.uuid,
+                                'mode': mode
+                            })
+    assert result.status_code == 404
+    assert b"<script>" not in result.data
+
 
 @pytest.mark.integration
 def test_get_alert_metadata_no_alert(web_client):
