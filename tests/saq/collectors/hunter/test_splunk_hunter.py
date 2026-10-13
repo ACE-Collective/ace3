@@ -123,24 +123,12 @@ def test_no_timespec(manager_kwargs):
 
 @pytest.mark.integration
 def test_load_hunt_with_includes(manager_kwargs):
-    ips_txt = 'hunts/test/splunk/ips.txt'
-    with open(ips_txt, 'w') as fp:
-        fp.write('1.1.1.1\n')
-
     manager = HuntManager(**manager_kwargs)
     manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'query_test_includes')
     hunt = manager.get_hunt_by_name('query_test_includes')
     assert hunt
-    # same as above except that ip address comes from a different file
+    # same as above except that ip address comes from tests/data/hunts/test/splunk/ips.txt
     assert hunt.query == 'index=proxy src_ip=1.1.1.1\n'
-
-    # and then change it and it should have a different value
-    with open(ips_txt, 'a') as fp:
-        fp.write('1.1.1.2\n')
-
-    assert hunt.query, 'index=proxy src_ip=1.1.1.1\n1.1.1.2\n'
-
-    os.remove(ips_txt)
 
 @pytest.mark.integration
 def test_splunk_query(manager_kwargs, datadir):
