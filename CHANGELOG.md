@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.124] - 2026-10-13
+
+- [SVS: the Validations card in the Signatures hub](https://github.com/ACE-Collective/ace3/pull/676)
+- [Keep the Disposition column visible under a disposition filter](https://github.com/ACE-Collective/ace3/pull/675)
+- [SVS: the YARA validation queue, service_svs, its API and validate-yara](https://github.com/ACE-Collective/ace3/pull/674)
+- [Safe maintenance for the date-partitioned tables](https://github.com/ACE-Collective/ace3/pull/673)
+- [Merge the two ace Alembic heads](https://github.com/ACE-Collective/ace3/pull/672)
+- [SVS: analyst actions on samples (relabel, reset, confirm, retire, delete)](https://github.com/ACE-Collective/ace3/pull/671)
+- [AI API: bulk export of alerts and observables (ai:export)](https://github.com/ACE-Collective/ace3/pull/670)
+- [SVS: the YARA replay engine and ace svs yara validate](https://github.com/ACE-Collective/ace3/pull/669)
+- [SVS: a neutral Landlock sandbox in saq/sandbox](https://github.com/ACE-Collective/ace3/pull/668)
+- [Add an alert-action registry for integration toolbar buttons](https://github.com/ACE-Collective/ace3/pull/667)
+
 ## [3.0.123] - 2026-10-08
 
 - [SVS: the Samples card in the Signatures hub](https://github.com/ACE-Collective/ace3/pull/665)
