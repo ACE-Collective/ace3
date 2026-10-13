@@ -1,14 +1,6 @@
-from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_DOWNLOAD, ACTION_FILE_DOWNLOAD_AS_ZIP, ACTION_FILE_RENDER, ACTION_FILE_VIEW_AS_HEX, ACTION_FILE_VIEW_AS_HTML, ACTION_FILE_VIEW_AS_TEXT, ACTION_FILE_VIEW_IN_BROWSER
+from saq.constants import ACTION_COLLECT_FILE, ACTION_FILE_DOWNLOAD_AS_ZIP, ACTION_FILE_RENDER, ACTION_FILE_VIEW_AS_HEX, ACTION_FILE_VIEW_AS_TEXT
 from saq.gui.observable_actions.base import ObservableAction
 
-
-class ObservableActionDownloadFile(ObservableAction):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name = ACTION_FILE_DOWNLOAD
-        self.description = "Download File"
-        self.action_path = 'analysis/observable_actions/download_file.html'
-        self.icon = 'download-alt'
 
 class ObservableActionDownloadFileAsZip(ObservableAction):
     def __init__(self, *args, **kwargs):
@@ -33,22 +25,6 @@ class ObservableActionViewAsText(ObservableAction):
         self.description = "View As Text"
         self.action_path = 'analysis/observable_actions/view_as_text.html'
         self.icon = 'file'
-
-class ObservableActionViewAsHtml(ObservableAction):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name = ACTION_FILE_VIEW_AS_HTML
-        self.description = "Open"
-        self.action_path = 'analysis/observable_actions/view_as_html.html'
-        self.icon = 'new-window'
-
-class ObservableActionViewInBrowser(ObservableAction):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.name = ACTION_FILE_VIEW_IN_BROWSER
-        self.description = "Open"
-        self.action_path = 'analysis/observable_actions/view_in_browser.html'
-        self.icon = 'new-window'
 
 class ObservableActionCollectFile(ObservableAction):
     def __init__(self, *args, **kwargs):

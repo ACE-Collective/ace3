@@ -9,8 +9,8 @@ from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.analysis.serialize.observable_serializer import KEY_VALUE
 from saq.configuration.config import get_config
-from saq.constants import DIRECTIVE_VIEW_IN_BROWSER, DIRECTIVE_YARA_META_PREFIX, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
-from saq.gui import ObservableActionCollectFile, ObservableActionDownloadFile, ObservableActionDownloadFileAsZip, ObservableActionFileRender, ObservableActionSeparator, ObservableActionUploadToVt, ObservableActionViewAsHex, ObservableActionViewAsHtml, ObservableActionViewAsText, ObservableActionViewInBrowser, ObservableActionViewInVt
+from saq.constants import DIRECTIVE_YARA_META_PREFIX, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
+from saq.gui import ObservableActionCollectFile, ObservableActionSeparator
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
 from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256, is_sha256_hex
@@ -340,32 +340,6 @@ class FileObservable(Observable):
         return "{:.4g} {}".format(self.size / (1 << (order * 10)), _suffixes[order])
 
     @property
-    def jinja_available_actions(self):
-        result = []
-        if self.exists:
-            if self.has_directive("view_as_html"):
-                result.append(ObservableActionViewAsHtml())
-                result.append(ObservableActionSeparator())
-            elif self.has_directive(DIRECTIVE_VIEW_IN_BROWSER):
-                result.append(ObservableActionViewInBrowser())
-                result.append(ObservableActionSeparator())
-            result.append(ObservableActionDownloadFile())
-            result.append(ObservableActionDownloadFileAsZip())
-            result.append(ObservableActionSeparator())
-            result.append(ObservableActionViewAsHex())
-            result.append(ObservableActionViewAsText())
-            result.append(ObservableActionSeparator())
-            result.append(ObservableActionUploadToVt())
-            result.append(ObservableActionViewInVt())
-            
-            result.append(ObservableActionSeparator())
-            result.append(ObservableActionFileRender())
-
-            result.append(ObservableActionSeparator())
-        result.extend(super().jinja_available_actions)
-        return result
-
-    @property
     def is_image(self) -> bool:
         """Returns True if the file command thinks this file is an image."""
         if self.mime_type is None:
@@ -476,7 +450,6 @@ class FileObservablePresenter(ObservablePresenter):
             ObservableActionDownloadFileAsZip,
             ObservableActionViewAsHex,
             ObservableActionViewAsText,
-            ObservableActionViewInBrowser,
             ObservableActionFileRender,
         )
         from saq.gui import ObservableActionSeparator
@@ -485,7 +458,6 @@ class FileObservablePresenter(ObservablePresenter):
             ObservableActionDownloadFileAsZip(),
             ObservableActionViewAsHex(),
             ObservableActionViewAsText(),
-            ObservableActionViewInBrowser(),
             ObservableActionFileRender(),
             ObservableActionSeparator(),
         ]
