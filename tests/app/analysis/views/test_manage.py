@@ -308,29 +308,6 @@ def test_search_endpoint_requires_alert_read(app):
 
 
 @pytest.mark.integration
-def test_display_disposition_hidden_when_narrowed_to_one_disposition(web_client, analyst):
-    """Regression: this condition indexed the filter LIST as if it were a dict
-    ('Disposition' in session['filters'] ... ['Disposition']), so it was always False and
-    the column was always shown -- dead logic left over from an older filter format."""
-    from app.analysis.views.manage import _ensure_manage_session_defaults, build_manage_list_context
-    from app.analysis.views.session.filters import write_working_filters
-
-    _ensure_manage_session_defaults()
-    write_working_filters([{"name": "Disposition", "inverted": False, "values": ["OPEN"]}])
-    assert build_manage_list_context()["display_disposition"] is False
-
-
-@pytest.mark.integration
-def test_display_disposition_shown_when_several_dispositions_match(web_client, analyst):
-    from app.analysis.views.manage import _ensure_manage_session_defaults, build_manage_list_context
-    from app.analysis.views.session.filters import write_working_filters
-
-    _ensure_manage_session_defaults()
-    write_working_filters([{"name": "Disposition", "inverted": False, "values": ["OPEN", "IGNORE"]}])
-    assert build_manage_list_context()["display_disposition"] is True
-
-
-@pytest.mark.integration
 def test_csv_export_honors_an_active_temporary_filter(web_client, analyst):
     """The export should match the list on screen, pivot included -- otherwise an analyst
     exports something different from what they are looking at. export.py used to read the
@@ -481,10 +458,22 @@ def test_manage_table_follows_the_column_preference(web_client, analyst):
 
 
 @pytest.mark.integration
-def test_manage_table_disposition_override_keeps_header_and_rows_aligned(web_client, analyst):
-    """Narrowing to one disposition drops the column from the rows too (it used to drop only
-    the header, leaving every row one cell wider than the header)."""
-    alert = _insert_alert('manage-columns-dispo', 'disposition override test alert')
+def test_manage_table_shows_disposition_when_filtered_to_one_disposition(web_client, analyst):
+    """A disposition filter never hides the disposition column: without it, a list narrowed
+    to one disposition reads as a list of alerts that were never dispositioned."""
+    alert = _insert_alert('manage-columns-dispo', 'disposition filter test alert')
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=[{"name": "Disposition", "inverted": False, "values": ["OPEN"]}])
+
+    html = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+    assert "disposition" in _header_columns(html)
+    assert _header_columns(html) == _row_columns(html, alert.uuid)
+
+
+@pytest.mark.integration
+def test_manage_table_disposition_column_follows_the_preference_under_a_disposition_filter(web_client, analyst):
+    alert = _insert_alert('manage-columns-dispo-hidden', 'hidden disposition filter test alert')
+    _set_manage_columns(analyst, hidden=["disposition"])
     with web_client.session_transaction() as sess:
         _seed_manage_session(sess, analyst, filters=[{"name": "Disposition", "inverted": False, "values": ["OPEN"]}])
 

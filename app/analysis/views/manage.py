@@ -60,16 +60,6 @@ from saq.search.syntax import parse_search_query
 from saq.search.types import AlertSearchResult, SearchRequest
 
 
-def _is_single_disposition_filter(filters: list) -> bool:
-    """True when the analyst has narrowed to exactly one disposition, so showing the
-    disposition column would repeat the same value on every row."""
-    for entry in filters or []:
-        if entry["name"] == "Disposition" and not entry.get("inverted") and len(entry["values"]) == 1:
-            return True
-
-    return False
-
-
 def _ensure_manage_session_defaults(seed_saved_filters: bool = False):
     """Seeds the session with the default alert management view settings on first visit.
 
@@ -257,18 +247,12 @@ def build_manage_list_context() -> dict:
     if search_result_mapping:
         alerts = sorted(alerts, key=lambda alert: search_result_mapping[alert.uuid].rank if alert.uuid in search_result_mapping else 0)
 
-    # hide the disposition column when the analyst has narrowed to a single disposition (it
-    # would be the same value on every row). This overrides the analyst's column layout.
-    display_disposition = not _is_single_disposition_filter(effective_filters)
-
     # The analyst's column layout (see saq/gui/manage_columns.py), read on every render --
     # the polled refresh included -- so a change made on the preferences page shows up
-    # without a reload. The table renders exactly this list, in this order.
+    # without a reload. The table renders exactly this list, in this order, whatever the
+    # filters are.
     column_preference = get_manage_columns_preference()
-    manage_columns = [
-        MANAGE_COLUMNS_BY_ID[column_id] for column_id in column_preference.visible
-        if display_disposition or column_id != "disposition"
-    ]
+    manage_columns = [MANAGE_COLUMNS_BY_ID[column_id] for column_id in column_preference.visible]
 
     return {
         # settings
@@ -299,7 +283,6 @@ def build_manage_list_context() -> dict:
         'remediation_coverage': remediation_coverage,
         'display_timezone_label': display_timezone_label,
         'alert_tags': alert_tags,
-        'display_disposition': display_disposition,
         'manage_columns': manage_columns,
         # the column chooser's model: every column, in order, with its visibility
         'manage_column_layout': manage_column_layout(column_preference),
