@@ -14,6 +14,11 @@ Lease times come from the database clock, never the worker's. A completed valida
 later request for the same commits while the corpus version (what the samples and their labels
 are) and the engine fingerprint (what decides the results) are unchanged. Only this module writes
 svs_validations and svs_validation_results.
+
+The API imports this module, and `import saq` reaches the API, so it must not import yara_scanner
+(or child.py, which does): the drift check's environment installs only
+installer/requirements-pinned.txt. The engine fingerprint reads the YARA libraries' versions from
+their installed distributions instead.
 """
 
 import hashlib
@@ -22,11 +27,10 @@ import logging
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-import yara
-import yara_scanner
 from sqlalchemy import and_, delete, func, insert, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
@@ -44,7 +48,6 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.svs.constants import CaptureState, ValidationState
-from saq.svs.yara import child
 from saq.svs.yara.diff import Category
 from saq.svs.yara.layout import resolve_layout
 
@@ -61,8 +64,12 @@ NEW_FP_CATEGORIES = (Category.NEW_FP, Category.NEW_FP_OTHER_RULE)
 # result rows inserted per statement
 _RESULT_BATCH = 1000
 
-# the sources whose code decides a validation's results
-_ENGINE_SOURCES = Path(child.__file__).parent
+# the replay package (saq/svs/yara), whose code decides a validation's results: child.py, and so
+# its protocol version, included
+_ENGINE_SOURCES = Path(__file__).parent / "yara"
+
+# the distributions of the libraries the sandboxed child compiles and scans with
+_YARA_DISTRIBUTIONS = ("yara-python", "yara_scanner_v2")
 
 
 class LeaseLost(Exception):
@@ -123,14 +130,20 @@ def _engine_sources_digest() -> str:
     return digest.hexdigest()
 
 
+def _installed_version(distribution: str) -> Optional[str]:
+    # None where it is not installed, which is also a node that cannot run a validation
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
 def engine_fingerprint(repository: str) -> str:
     """A digest of what decides a validation's results besides the corpus and the commits: the
     replay's code and protocol, the YARA libraries, how dispositions classify, the per-file scan
     timeout and which directories of the repository are loaded. Raises LayoutError."""
     return _digest({
-        "protocol": child.PROTOCOL_VERSION,
-        "yara_python": yara.__version__,
-        "yara_scanner": yara_scanner.__version__,
+        "libraries": {name: _installed_version(name) for name in _YARA_DISTRIBUTIONS},
         "sources": _engine_sources_digest(),
         "disposition_classification": dict(get_config().disposition_classification),
         "file_timeout": get_service_config(SERVICE_YARA_SCANNER).default_timeout,
