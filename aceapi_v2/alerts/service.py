@@ -27,7 +27,7 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.database.util.alert import node_scope_locations
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen, node_scope_locations
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
@@ -308,6 +308,11 @@ def _add_observable_to_alert(
     if alert is None:
         logger.error("alert %s not found in database", alert_uuid)
         return "alert not found"
+
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        return str(e)
 
     lock_uuid = str(uuidlib.uuid4())
     try:

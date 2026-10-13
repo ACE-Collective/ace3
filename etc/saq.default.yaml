@@ -229,6 +229,9 @@ yara_qa:
 
 # the Signature Validation System (docs/SVS.md)
 svs:
+  # SIMULATED (test-run) alerts older than this many days are archived by ace alert cleanup, like
+  # FALSE_POSITIVE alerts after fp_days; they are never deleted (docs/SVS_RUNS.md)
+  simulated_days: 30
   # the YARA samples captured from dispositioned alerts (Signatures -> Samples, /api/v2/svs/samples).
   # docs/SVS_SAMPLES.md
   samples:
@@ -2511,6 +2514,7 @@ service_engine:
     - IGNORE
     - UNKNOWN
     - WEAPONIZATION
+    - SIMULATED
   # A comma separated list of analysis modes that should ignore the cumulative analysis timeout.
   analysis_modes_ignore_cumulative_timeout:
     - event
@@ -2706,6 +2710,8 @@ dispositions:
   COMMAND_AND_CONTROL: {rank: 130, css: danger,    show_save_to_event: true}
   EXFIL:               {rank: 150, css: danger,    show_save_to_event: true}
   DAMAGE:              {rank: 160, css: danger,    show_save_to_event: true}
+  # a red-team test run's alert (docs/SVS_RUNS.md): set only by SVS, ranked below GRAYWARE
+  SIMULATED:           {rank: 55,  css: info,      show_save_to_event: false, analyst_selectable: false}
 
 # What a disposition says about the alert's detections (docs/SVS.md, Part 1):
 #   tp -- they detected malicious activity
@@ -2724,6 +2730,7 @@ disposition_classification:
   COMMAND_AND_CONTROL: tp
   EXFIL: tp
   DAMAGE: tp
+  SIMULATED: tp
 
 config:
   git_repos_default: etc/saq.git_repos.default.yaml

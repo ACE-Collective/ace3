@@ -29,18 +29,41 @@ def confirmed_takes_from_form(form) -> dict[str, int]:
     return result
 
 
-def describe_skipped(ownership: OwnershipCheck) -> str | None:
-    """'left 3 alerts owned by jsmith alone', or None when nothing was skipped."""
-    if not ownership.skipped:
+def describe_frozen(frozen: dict[str, str]) -> str | None:
+    """'left 2 SIMULATED alerts alone (only ACE sets that disposition)', or None when no alert
+    was left alone for its disposition (see OwnershipCheck.frozen)."""
+    if not frozen:
         return None
 
-    by_owner = Counter(ownership.skipped.values())
-    total = len(ownership.skipped)
+    by_disposition = Counter(frozen.values())
+    total = len(frozen)
     plural = "" if total == 1 else "s"
-    if len(by_owner) == 1:
-        owner = next(iter(by_owner))
-        return f"left {total} alert{plural} owned by {owner} alone"
+    if len(by_disposition) == 1:
+        disposition = next(iter(by_disposition))
+        return f"left {total} {disposition} alert{plural} alone (only ACE sets that disposition)"
 
-    owners = ", ".join(f"{owner} {count}" for owner, count in by_owner.most_common())
-    return f"left {total} alert{plural} owned by other analysts alone ({owners})"
+    dispositions = ", ".join(f"{disposition} {count}" for disposition, count in by_disposition.most_common())
+    return f"left {total} alert{plural} alone whose disposition only ACE sets ({dispositions})"
+
+
+def describe_skipped(ownership: OwnershipCheck) -> str | None:
+    """'left 3 alerts owned by jsmith alone', and the alerts left alone for their disposition
+    (describe_frozen), or None when nothing was skipped."""
+    parts = []
+    if ownership.skipped:
+        by_owner = Counter(ownership.skipped.values())
+        total = len(ownership.skipped)
+        plural = "" if total == 1 else "s"
+        if len(by_owner) == 1:
+            owner = next(iter(by_owner))
+            parts.append(f"left {total} alert{plural} owned by {owner} alone")
+        else:
+            owners = ", ".join(f"{owner} {count}" for owner, count in by_owner.most_common())
+            parts.append(f"left {total} alert{plural} owned by other analysts alone ({owners})")
+
+    frozen = describe_frozen(ownership.frozen)
+    if frozen:
+        parts.append(frozen)
+
+    return "; ".join(parts) or None
 

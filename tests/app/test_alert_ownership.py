@@ -1,6 +1,6 @@
 import pytest
 
-from app.alert_ownership import TAKE_OWNED_FIELD, confirmed_takes_from_form, describe_skipped
+from app.alert_ownership import TAKE_OWNED_FIELD, confirmed_takes_from_form, describe_frozen, describe_skipped
 from saq.database.util.alert import OwnershipCheck
 
 
@@ -31,3 +31,22 @@ def test_confirmed_takes_from_form_without_field():
 ])
 def test_describe_skipped(skipped, expected):
     assert describe_skipped(OwnershipCheck(skipped=skipped)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("frozen,expected", [
+    ({}, None),
+    ({"a": "SIMULATED"}, "left 1 SIMULATED alert alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED"}, "left 2 SIMULATED alerts alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED", "c": "OTHER"},
+     "left 3 alerts alone whose disposition only ACE sets (SIMULATED 2, OTHER 1)"),
+])
+def test_describe_frozen(frozen, expected):
+    assert describe_frozen(frozen) == expected
+
+
+@pytest.mark.unit
+def test_describe_skipped_names_owned_and_frozen_alerts():
+    ownership = OwnershipCheck(skipped={"a": "Jane"}, frozen={"b": "SIMULATED"})
+    assert describe_skipped(ownership) == (
+        "left 1 alert owned by Jane alone; left 1 SIMULATED alert alone (only ACE sets that disposition)")

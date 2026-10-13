@@ -333,6 +333,7 @@ DISPOSITION_INSTALLATION = 'INSTALLATION'
 DISPOSITION_COMMAND_AND_CONTROL = 'COMMAND_AND_CONTROL'
 DISPOSITION_EXFIL = 'EXFIL'
 DISPOSITION_DAMAGE = 'DAMAGE'
+DISPOSITION_SIMULATED = 'SIMULATED'
 
 # disposition review states
 # tracks whether an alert's disposition has been reviewed by a senior analyst and, if so, the result

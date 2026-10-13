@@ -16,13 +16,15 @@ from saq.constants import (
 from saq.database.model import Alert, AlertQueueChange, new_alert_version
 from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
+from saq.disposition import is_frozen_disposition
 from saq.environment import get_global_runtime_settings
 from saq.search.tasks import submit_index_task, submit_payload_task
 
 
-def _fetch_disposition_context(c, alert_uuids: list) -> dict:
+def _fetch_disposition_context(c, alert_uuids: list, lock: bool = False) -> dict:
     """Read the alert metadata worth recording alongside a disposition change,
-    keyed by alert uuid.
+    keyed by alert uuid. With lock, the alert rows stay locked until the
+    transaction ends.
 
     Must be called BEFORE the UPDATE: it captures the outgoing disposition,
     which the UPDATE overwrites in place, and the pre-existing owner, which
@@ -44,7 +46,7 @@ def _fetch_disposition_context(c, alert_uuids: list) -> dict:
               FROM alerts a
                   LEFT JOIN company c ON a.company_id = c.id
                   LEFT JOIN users o ON a.owner_id = o.id
-              WHERE a.uuid IN ( {uuid_placeholders} )""", tuple(alert_uuids))
+              WHERE a.uuid IN ( {uuid_placeholders} ){" FOR UPDATE OF a" if lock else ""}""", tuple(alert_uuids))
 
     return {
         row[0]: {
@@ -85,6 +87,9 @@ class OwnershipCheck:
     reassigned: list[str] = field(default_factory=list)
     # alert uuid -> display name of the analyst who owns it, for the alerts left alone
     skipped: dict[str, str] = field(default_factory=dict)
+    # alert uuid -> its disposition, for the alerts left alone because only ACE sets that
+    # disposition (see is_frozen_disposition)
+    frozen: dict[str, str] = field(default_factory=dict)
 
 
 def check_alert_ownership(
@@ -258,6 +263,33 @@ def get_alert_by_uuid(uuid: str) -> Alert | None:
     """Given a UUID, this function will return the Alert object from the database, or None if it does not exist."""
     return get_db().query(Alert).filter(Alert.uuid == uuid).one_or_none()
 
+
+class AlertFrozen(Exception):
+    """The alert's disposition is one only ACE sets (SIMULATED, a test-run alert): it is never
+    reset or re-analyzed, so the detections its run review froze stay as they are."""
+
+    def __init__(self, alert_uuid: str, disposition: str):
+        super().__init__(
+            f"alert {alert_uuid} is {disposition}, a disposition only ACE sets: it can't be reset, "
+            "re-analyzed or given new observables")
+        self.alert_uuid = alert_uuid
+        self.disposition = disposition
+
+
+def ensure_not_frozen(alert: Alert) -> None:
+    """Raises AlertFrozen for an alert with a frozen disposition (see is_frozen_disposition).
+    Called by everything that resets an existing alert or queues it for analysis again."""
+    if is_frozen_disposition(alert.disposition):
+        raise AlertFrozen(alert.uuid, alert.disposition)
+
+
+def ensure_uuid_not_frozen(alert_uuid: str) -> None:
+    """ensure_not_frozen() for a caller that has only the uuid. Nothing to check for a root that
+    is not an alert."""
+    disposition = get_db().query(Alert.disposition).filter(Alert.uuid == alert_uuid).scalar()
+    if is_frozen_disposition(disposition):
+        raise AlertFrozen(alert_uuid, disposition)
+
 def touch_alerts(alert_uuids: list[str], cursor=None) -> None:
     """Rotates alerts.version for the given alerts so that API clients polling them see a change.
 
@@ -308,30 +340,46 @@ def _reassign_owner(c, alert_uuids: list, user_id: int) -> None:
                   WHERE uuid IN ( {uuid_placeholders} )""",
               [user_id, new_alert_version(), *alert_uuids])
 
-def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None) -> OwnershipCheck:
+def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None,
+                     system: bool = False) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
 
     An alert owned by another analyst is left alone unless the user confirmed taking it, in
-    which case the user becomes its owner (see check_alert_ownership).
+    which case the user becomes its owner (see check_alert_ownership). An alert whose current
+    disposition only ACE sets (SIMULATED) is left alone too, unless ACE itself is the caller.
 
        :param alert_uuids: A list of UUIDs of Alert objects to set.
        :param disposition: The disposition to set the Alerts.
        :param user_id: The id of the User that is setting the disposition.
        :param user_comment: Optional comment the User is providing as part of the disposition.
        :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
+       :param system: True when ACE sets the disposition rather than an analyst (SVS setting
+           SIMULATED): alerts with a frozen disposition are changed too.
        :returns: which alerts were dispositioned and which were left alone."""
 
     with get_db_connection() as db:
         c = db.cursor()
 
-        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), user_id, confirmed_takes)
+        # locks the rows, so neither the owners nor the dispositions read here change before the UPDATE
+        owners = _fetch_alert_owners(c, alert_uuids)
+
+        # capture what the alerts look like before the UPDATE overwrites the
+        # outgoing disposition (and before the owner changes below)
+        context = _fetch_disposition_context(c, list(owners))
+
+        # a frozen alert is left alone whoever owns it; ACE itself (system) changes it. This comes
+        # before the ownership check: SIMULATED was set by the automation user, who now owns it
+        frozen = {} if system else {
+            alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+            if is_frozen_disposition(row["old_disposition"])}
+        ownership = check_alert_ownership(
+            [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen], owners, user_id, confirmed_takes)
+        ownership.frozen = frozen
         alert_uuids = ownership.permitted
         if not alert_uuids:
             return ownership
 
-        # capture what the alerts look like before the UPDATE overwrites the
-        # outgoing disposition (and before the owner changes below)
-        context = _fetch_disposition_context(c, alert_uuids)
+        context = {alert_uuid: context[alert_uuid] for alert_uuid in alert_uuids}
         acting_username = _fetch_username(c, user_id)
 
         _reassign_owner(c, ownership.reassigned, user_id)
@@ -422,14 +470,19 @@ def take_ownership(alert_uuids, user_id, confirmed_takes=None) -> OwnershipCheck
     _log_ownership_taken(context, ownership.reassigned, acting_username)
     return ownership
 
-def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None, review_comment=None):
+def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None,
+                            review_comment=None) -> dict[str, str]:
     """Utility function to record a senior analyst's review of the disposition of many Alerts at once.
+
+    A correction never changes an alert whose current disposition only ACE sets (SIMULATED); a
+    review that the disposition was correct changes nothing about it and is recorded.
        :param alert_uuids: A list of UUIDs of Alert objects to review.
        :param review_result: Either DISPOSITION_REVIEW_CORRECT or DISPOSITION_REVIEW_INCORRECT.
        :param reviewer_id: The id of the User performing the review.
        :param corrected_disposition: When the review result is INCORRECT, the disposition to correct the alerts to.
        :param review_comment: Optional comment describing the review; stored as an alert comment prefixed with
-                              REVIEW_COMMENT_PREFIX. Required by the caller when the result is INCORRECT."""
+                              REVIEW_COMMENT_PREFIX. Required by the caller when the result is INCORRECT.
+       :returns: alert uuid -> disposition of the alerts left alone because their disposition is frozen."""
 
     # build the prefixed review comment if one was provided
     prefixed_comment = None
@@ -447,8 +500,16 @@ def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_d
             c = db.cursor()
 
             # capture the outgoing (incorrect) disposition before it moves to
-            # incorrect_disposition and the correction takes its place
-            context = _fetch_disposition_context(c, alert_uuids)
+            # incorrect_disposition and the correction takes its place. locked, so a frozen
+            # disposition can't be set between this read and the UPDATE
+            context = _fetch_disposition_context(c, alert_uuids, lock=True)
+            frozen = {alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+                      if is_frozen_disposition(row["old_disposition"])}
+            alert_uuids = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
+            context = {alert_uuid: row for alert_uuid, row in context.items() if alert_uuid not in frozen}
+            if not alert_uuids:
+                return frozen
+
             acting_username = _fetch_username(c, reviewer_id)
 
             uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
@@ -512,6 +573,7 @@ WHERE
             disposition_user=acting_username,
             disposition_comment=review_comment,
         )
+        return frozen
     else:
         # the disposition was correct; just record the review (and optional comment)
         with get_db_connection() as db:
@@ -552,3 +614,4 @@ WHERE
             disposition_user=acting_username,
             disposition_comment=review_comment,
         )
+        return {}

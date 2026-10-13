@@ -15,6 +15,7 @@ from saq.database.pool import get_db_connection
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
 from saq.util.time import parse_event_time
+from tests.saq.helpers import insert_alert, make_simulated, workload_count
 
 @pytest.mark.integration
 def test_api_analysis_submit(test_client):
@@ -584,3 +585,18 @@ def test_api_analysis_submit_rejected_while_draining(test_client):
     result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
                               content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
     assert result.status_code == 200
+
+
+@pytest.mark.integration
+def test_api_analysis_resubmit_refuses_a_simulated_alert(test_client):
+    """A SIMULATED alert is never reset or re-analyzed (docs/SVS_RUNS.md)."""
+    alert = insert_alert()
+    make_simulated(alert)
+
+    result = test_client.get(url_for('analysis.resubmit', uuid=alert.uuid),
+                             headers={'x-ace-auth': get_config().api.api_key})
+
+    assert result.status_code == 200
+    assert result.json['result'] == 'failed'
+    assert result.json['error'].startswith(f"alert {alert.uuid} is SIMULATED")
+    assert workload_count(alert.uuid) == 0

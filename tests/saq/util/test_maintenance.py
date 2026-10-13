@@ -4,7 +4,12 @@ from datetime import datetime, timedelta
 
 from saq.analysis import RootAnalysis
 from saq.database import ALERT, Alert, Event, get_db
-from saq.util.maintenance import distribute_old_alerts
+from saq.configuration.config import get_config
+from saq.constants import DISPOSITION_SIMULATED
+from saq.database.model import DetectionPoint
+from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
+from saq.util.maintenance import archive_simulated_alerts, cleanup_alerts, distribute_old_alerts
+from tests.saq.helpers import insert_alert_with_detections, make_simulated
 
 import saq.util.maintenance
 
@@ -143,3 +148,69 @@ def test_emit_cache_stats_emits_heartbeat(caplog):
     record = stats_lines[0]
     for field in ("total_rows", "total_on_disk_bytes", "blob_refs_rows"):
         assert hasattr(record, field), f"cache_stats line missing field {field!r}"
+
+
+#
+# SIMULATED (test-run) alerts are archived after svs.simulated_days and never deleted
+#
+
+def _simulated_alert(days_ago: int) -> Alert:
+    alert = insert_alert_with_detections([
+        {"description": "test signature fired", "signature_uuid": BUILTIN_SIGNATURE_UUID, "fqdn": "test.example.com"},
+    ])
+    make_simulated(alert)
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update(
+        {Alert.disposition_time: datetime.now() - timedelta(days=days_ago)})
+    db.commit()
+    return alert
+
+
+def _reloaded(alert: Alert) -> Alert:
+    db = get_db()
+    db.expire_all()
+    return db.get(Alert, alert.id)
+
+
+@pytest.mark.integration
+def test_simulated_alerts_are_archived_after_simulated_days():
+    old, recent = _simulated_alert(days_ago=31), _simulated_alert(days_ago=1)
+
+    archive_simulated_alerts(30, dry_run=False)
+
+    old, recent = _reloaded(old), _reloaded(recent)
+    assert old.archived and not recent.archived
+    # the row, its disposition and its detections stay: verdicts, labels and attributions derive from them
+    assert old.disposition == DISPOSITION_SIMULATED
+    assert get_db().query(DetectionPoint).filter(DetectionPoint.alert_id == old.id).count() == 1
+
+
+@pytest.mark.integration
+def test_cleanup_archives_simulated_alerts_and_deletes_none():
+    alert = _simulated_alert(days_ago=2)
+
+    cleanup_alerts(fp_days_old=1, ignore_days_old=1, simulated_days_old=1)
+
+    alert = _reloaded(alert)
+    assert alert is not None and alert.archived
+    assert alert.disposition == DISPOSITION_SIMULATED
+
+
+@pytest.mark.integration
+def test_cleanup_defaults_to_simulated_days(monkeypatch):
+    alert = _simulated_alert(days_ago=5)
+    monkeypatch.setattr(get_config().svs, "simulated_days", 4)
+
+    cleanup_alerts(fp_days_old=1, ignore_days_old=1)
+
+    assert _reloaded(alert).archived
+
+
+@pytest.mark.integration
+def test_simulated_dry_run_archives_nothing(caplog):
+    alert = _simulated_alert(days_ago=31)
+
+    archive_simulated_alerts(30, dry_run=True)
+
+    assert not _reloaded(alert).archived
+    assert "1 SIMULATED alerts would be archived" in caplog.text

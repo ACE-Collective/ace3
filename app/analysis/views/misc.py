@@ -8,7 +8,7 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.database.util.alert import ALERT, get_alert_by_uuid
+from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_temp_dir
 from saq.error.reporting import report_exception
@@ -61,6 +61,12 @@ def upload_file():
             flash("no alert found")
             return redirect(url_for('analysis.index'))
 
+        try:
+            ensure_not_frozen(alert)
+        except AlertFrozen as e:
+            flash(str(e))
+            return redirect(url_for('analysis.index', direct=alert.uuid))
+
         lock_uuid = str(uuid4())
         if not acquire_lock(alert.uuid, lock_uuid):
             flash("unable to lock alert {}".format(alert))
@@ -93,6 +99,12 @@ def analyze_alert():
     if not alert:
         flash("alert not found")
         return redirect(url_for('analysis.index'))
+
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        flash(str(e))
+        return redirect(url_for('analysis.index', direct=alert.uuid))
 
     alert.root_analysis.schedule()
     return redirect(url_for('analysis.index', direct=alert.uuid))

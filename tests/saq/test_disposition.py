@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from saq.configuration.config import get_config, get_engine_config
 from saq.configuration.schema import ACEConfig, DispositionConfig, REMOVED_DISPOSITION_CONFIG_KEYS
-from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN
+from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Event
 from saq.disposition import (
     DEFAULT_DISPOSITION_CSS,
@@ -22,6 +22,7 @@ from saq.disposition import (
     get_dispositions,
     get_selectable_dispositions,
     initialize_dispositions,
+    is_frozen_disposition,
     is_selectable_disposition,
     is_valid_disposition,
 )
@@ -41,7 +42,7 @@ class TestTheList:
         assert list(get_dispositions()) == [
             "OPEN", "FALSE_POSITIVE", "IGNORE", "UNKNOWN", "REVIEWED", "GRAYWARE",
             "POLICY_VIOLATION", "RECONNAISSANCE", "WEAPONIZATION", "DELIVERY", "EXPLOITATION",
-            "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE",
+            "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED",
         ]
 
     @pytest.mark.parametrize("removed", [
@@ -78,12 +79,44 @@ class TestTheList:
         assert list(get_selectable_dispositions())[:3] == ["OPEN", "FALSE_POSITIVE", "IGNORE"]
 
 
+class TestSimulated:
+    """The disposition SVS sets on a test run's alerts (docs/SVS_RUNS.md)."""
+
+    def test_only_ace_sets_it(self):
+        assert is_valid_disposition(DISPOSITION_SIMULATED)
+        assert not is_selectable_disposition(DISPOSITION_SIMULATED)
+        assert DISPOSITION_SIMULATED not in get_selectable_dispositions()
+
+    def test_it_is_the_only_frozen_disposition(self):
+        assert [d for d in get_dispositions() if is_frozen_disposition(d)] == [DISPOSITION_SIMULATED]
+        # a value that is not configured is not frozen: nothing says only ACE sets it
+        assert not is_frozen_disposition("AUTHORIZED")
+        assert not is_frozen_disposition(None)
+
+    def test_it_is_tp(self):
+        assert get_disposition_class(DISPOSITION_SIMULATED) == DISPOSITION_CLASS_TP
+
+    def test_it_ranks_below_grayware(self):
+        assert get_disposition_rank("REVIEWED") < get_disposition_rank(DISPOSITION_SIMULATED) \
+            < get_disposition_rank("GRAYWARE")
+
+    def test_the_engine_stops_analysis_on_it(self):
+        assert DISPOSITION_SIMULATED in get_engine_config().stop_analysis_on_dispositions
+
+    def test_simulated_days(self):
+        assert get_config().svs.simulated_days == 30
+        data = _config_data()
+        data["svs"]["simulated_days"] = 0
+        with pytest.raises(ValidationError, match="simulated_days"):
+            ACEConfig.model_validate(data)
+
+
 class TestClassification:
     def test_the_agreed_map(self):
         """docs/SVS.md, Part 1: GRAYWARE, POLICY_VIOLATION and every kill-chain disposition are
         tp; FALSE_POSITIVE is fp; OPEN, IGNORE, UNKNOWN and REVIEWED are unclassified."""
         tp = {"GRAYWARE", "POLICY_VIOLATION", "RECONNAISSANCE", "WEAPONIZATION", "DELIVERY",
-              "EXPLOITATION", "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE"}
+              "EXPLOITATION", "INSTALLATION", "COMMAND_AND_CONTROL", "EXFIL", "DAMAGE", "SIMULATED"}
         for disposition in get_dispositions():
             expected = (DISPOSITION_CLASS_TP if disposition in tp
                         else DISPOSITION_CLASS_FP if disposition == DISPOSITION_FALSE_POSITIVE
