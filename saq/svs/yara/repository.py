@@ -1,7 +1,7 @@
 """SVS's own clone of a rule repository, and exporting a commit's tree from it.
 
 Each repository in svs.yara.repositories gets a bare mirror under svs.yara.mirror_dir, fetched
-with the URL and SSH key of its `git_repo_<name>` section. It is never the checkout the yara
+with the URL and SSH key of its `git_repo_*` section. It is never the checkout the yara
 service loads rules from (GitManagerService's local_path), so a validation can neither change what
 production scans nor see a working tree someone edited by hand.
 

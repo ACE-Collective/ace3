@@ -17,7 +17,7 @@ storing nothing. The reports are read under *Signatures → Validations*
 
 ## Which rules are validated
 
-A validation names a **repository**: a `git_repo_<name>` section listed in `svs.yara.repositories`.
+A validation names a **repository**: the `name` of a `git_repo_*` section, listed in `svs.yara.repositories`.
 SVS uses that section's `git_url`, `ssh_key_path` and `branch`, and works out from
 `service_yara.signature_dir` which of the repository's directories the yara service loads
 (`saq/svs/yara/layout.py`). The yara service loads every directory directly inside
@@ -357,7 +357,7 @@ Landlock, a failed export or scan). `prune` removes the finished validations old
 ```yaml
 svs:
   yara:
-    repositories: []              # git_repo_<name> sections whose commits may be validated
+    repositories: []              # names of the git_repo_* sections whose commits may be validated
     scan_timeout_seconds: 1800    # compiling and scanning one commit's rules over the corpus
     max_concurrent_validations: 1 # service_svs workers
     retention_days: 90            # how long a finished validation and its report are kept
