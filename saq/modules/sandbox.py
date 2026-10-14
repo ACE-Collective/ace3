@@ -8,11 +8,13 @@ import logging
 import re
 
 from collections import UserList
-from typing import List, Union
+from typing import List, Type, Union
+from pydantic import Field, field_validator
 from urlfinderlib import find_urls, is_url
 
 from saq.constants import DIRECTIVE_NO_SANDBOX, DIRECTIVE_SANDBOX, DIRECTIVE_SANDBOX_FORCE, F_FILE, F_MD5, F_SHA256
 from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
 from saq.proxy import proxies
 
 
@@ -25,7 +27,33 @@ def value_is_bad(value: str) -> bool:
     return value in bad_values
 
 
+def _normalize_extensions(value: Union[str, list[str], None]) -> list[str]:
+    """Returns the given extensions (a list, or a comma-separated string) stripped and lowercased."""
+    if not value:
+        return []
+
+    if isinstance(value, str):
+        value = value.split(',')
+
+    return [ext.strip().lower() for ext in value if ext.strip()]
+
+
+class SandboxAnalysisModuleConfig(AnalysisModuleConfig):
+    supported_extensions: list[str] = Field(default_factory=list, description="File extensions that are always sent to the sandbox, regardless of file type. A comma-separated string is also accepted.")
+    use_proxy: bool = Field(default=True, description="Whether requests to the sandbox go through the configured proxy.")
+    verify_ssl: bool = Field(default=True, description="Whether to verify the sandbox's TLS certificate.")
+
+    @field_validator("supported_extensions", mode="before")
+    @classmethod
+    def _split_supported_extensions(cls, value):
+        return _normalize_extensions(value)
+
+
 class SandboxAnalysisModule(AnalysisModule):
+
+    @classmethod
+    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+        return SandboxAnalysisModuleConfig
 
     def custom_requirement(self, observable):
         if observable.has_directive(DIRECTIVE_NO_SANDBOX):
@@ -33,20 +61,17 @@ class SandboxAnalysisModule(AnalysisModule):
 
         return True
 
-    @property
-    def supported_extensions(self):
-        if self.config:
-            if "supported_extensions" in self.config:
-                return map(lambda x: x.strip().lower(), self.config['supported_extensions'].split(','))
-        return []
+    # the properties below read the config with getattr because an integration subclass may declare
+    # its own config class that extends AnalysisModuleConfig rather than SandboxAnalysisModuleConfig
 
     @property
-    def use_proxy(self):
+    def supported_extensions(self) -> list[str]:
+        return _normalize_extensions(getattr(self.config, "supported_extensions", None))
+
+    @property
+    def use_proxy(self) -> bool:
         """Returns True if this sandbox is configured to use the proxy, False otherwise.  Defaults to True."""
-        if 'use_proxy' in self.config:
-            return self.config.getboolean('use_proxy')
-    
-        return True
+        return getattr(self.config, "use_proxy", True)
 
     @property
     def proxies(self):
@@ -56,12 +81,9 @@ class SandboxAnalysisModule(AnalysisModule):
         return proxies()
 
     @property
-    def verify_ssl(self):
+    def verify_ssl(self) -> bool:
         """Return True if we should do cert verfication for the sandbox."""
-        if 'verify_ssl' in self.config:
-            return self.config.getboolean('verify_ssl')
-        
-        return True
+        return getattr(self.config, "verify_ssl", True)
 
     @property
     def valid_observable_types(self):
