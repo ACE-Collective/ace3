@@ -3406,8 +3406,8 @@ declarative base `CacheBase` (`saq/database/meta.py`) instead of the main
 (`DB_ANALYSIS_RESULT_CACHE = "analysis_result_cache"`, `saq/constants.py`),
 which resolves the new `database_analysis_result_cache` connection block in
 `etc/saq.default.yaml`. `sql/04-analysis-result-cache.sql` creates the empty
-database (tables come from Alembic); grant templates under `sql/templates/` and
-a `sql/tools/reset_analysis_result_cache_database.sql` round out the bootstrap.
+database (tables come from Alembic); grant templates under `sql/templates/`
+round out the bootstrap.
 Isolating the cache keeps its multi-billion-row growth, partition DDL, and
 backup characteristics off the operational tables.
 
