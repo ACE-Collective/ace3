@@ -61,7 +61,7 @@ def test_only_configured_repositories_resolve(svs_repository, monkeypatch):
         resolve_layout(REPOSITORY)
 
     monkeypatch.setattr(get_config().svs.yara, "repositories", ["nope"])
-    with pytest.raises(LayoutError, match="no git_repo_nope section"):
+    with pytest.raises(LayoutError, match="no git_repo section is named nope"):
         resolve_layout("nope")
 
 

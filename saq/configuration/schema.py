@@ -759,7 +759,7 @@ class SVSYaraConfig(BaseModel):
     *Validation*): both commits of a repository are compiled the way the yara service loads rules
     and scanned over every stored sample, in the Landlock sandbox."""
     model_config = ConfigDict(extra="forbid")
-    repositories: list[str] = Field(default_factory=list, description="the git_repo_<name> sections whose commits may be validated, by name. Each one's local_path must hold rules the yara service loads: service_yara.signature_dir is inside it, or entries of signature_dir are (or link to) directories inside it")
+    repositories: list[str] = Field(default_factory=list, description="the names (the name field) of the git_repo_* sections whose commits may be validated. Each one's local_path must hold rules the yara service loads: service_yara.signature_dir is inside it, or entries of signature_dir are (or link to) directories inside it")
     scan_timeout_seconds: int = Field(default=1800, gt=0, description="how long compiling and scanning one commit's rules over the whole corpus may take")
     max_concurrent_validations: int = Field(default=1, ge=1, description="how many validations run at once")
     fetch_timeout_seconds: int = Field(default=600, gt=0, description="how long fetching a repository into its mirror may take (the first fetch clones it)")
@@ -776,7 +776,7 @@ class SVSCatalogConfig(BaseModel):
     """The Atomic Red Team test catalog (docs/SVS_RUNS.md, *The Atomic Red Team catalog*): the tests
     runs may be registered for, read from git repositories in the ART layout."""
     model_config = ConfigDict(extra="forbid")
-    repositories: list[str] = Field(default_factory=list, description="the git_repo_<name> sections, by name, whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
+    repositories: list[str] = Field(default_factory=list, description="the names (the name field) of the git_repo_* sections whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
     refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
 
 
@@ -1513,14 +1513,22 @@ class ACEConfig(BaseModel):
     
     def load_git_repo_configs(self):
         self.__git_repos = {}
+        # name -> the section key that registered it, to name both sections of a duplicate
+        section_keys: dict[str, str] = {}
 
         for key, value in self.raw._data.items():
             if not key.startswith("git_repo_"):
                 continue
 
-            git_repo_name = key[len("git_repo_"):]
             git_repo_config = GitRepoConfig.model_validate(value)
-            self.add_git_repo_config(git_repo_name, git_repo_config)
+            if git_repo_config.name in section_keys:
+                logging.error(
+                    "git repo sections %s and %s are both named %s: %s replaces %s",
+                    section_keys[git_repo_config.name], key, git_repo_config.name,
+                    key, section_keys[git_repo_config.name])
+
+            section_keys[git_repo_config.name] = key
+            self.add_git_repo_config(git_repo_config.name, git_repo_config)
 
     def add_git_repo_config(self, name: str, git_repo_config: GitRepoConfig):
         self.__git_repos[name] = git_repo_config

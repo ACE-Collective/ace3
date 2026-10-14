@@ -28,3 +28,13 @@ def normalize_marker(value: str) -> str:
 def find_markers(text: str) -> list[str]:
     """The distinct markers in text, normalized, in the order they first appear."""
     return list(dict.fromkeys(normalize_marker(match) for match in MARKER_REGEX.findall(text or "")))
+
+
+def find_markers_in_match(data: bytes | str) -> list[str]:
+    """The markers in the matched data of the marker rule (saq/svs/marker_rule.py), which can
+    include a boundary character on each side, and NULs when the match was UTF-16 text. A match
+    is bytes from the scanner and a str once its analysis has been saved and loaded again."""
+    if isinstance(data, bytes):
+        data = data.decode("latin-1")
+
+    return find_markers(data.replace("\x00", ""))

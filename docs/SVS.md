@@ -284,7 +284,7 @@ GET  /api/v2/svs/yara/validations/{id}/status  (CI: svs:validate)
 GET  /api/v2/svs/yara/validations/{id}         (the report: signature:read)
 ```
 
-- **`repository`** names an existing `git_repo_<name>` section, so ACE uses credentials it already
+- **`repository`** names an existing `git_repo_*` section (by its `name`), so ACE uses credentials it already
   has.
 - **The CI key** belongs to a dedicated automation user with only `svs:validate`, so a leaked key
   can't read samples.
@@ -575,7 +575,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
 |---|---|
 | Observable values and file names, and `root.details` (at both stages) | Hunt raw events, API details, command lines, URLs |
 | Each module's `ModuleExecutionDelta` (new observables and added detections, plus the new analysis's `details`), scanned in the executor right after the module returns. The cache path produces the same delta, so cache replays are scanned too. [FR-19] | Decoded or deobfuscated output |
-| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`, so the rule ships in the repo as its own namespace there, listed with the other rule locations (`saq/signatures/locations.py`); a test asserts that both the service and the module's fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
+| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`. So the rule ships in the repo (`saq/svs/marker_rule.py`), and the service writes it into `signature_dir/svs_marker/` as its own namespace, as observable export writes `observable_export/`. It does that before it starts its server, because the scanner lists rule directories only when it starts, and it writes only when the content changed, because rule changes are detected by mtime. The fallback scanner does the same before it compiles. The Signatures inventory leaves the directory out, and the phase-3 validation never sees it, because it compiles commits of the rule repositories. Tests assert that both the service and the fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
 
 **The scan is gated and the cache is one-sided.** [FR-8]
 - The whole scan (a regex over every observable value and `root.details`, on every alert insert)
@@ -678,7 +678,7 @@ results are *possibly suppressed*, reconsider. The SVS page shows that share. [D
 ACE doesn't execute tests. It holds ART repositories only as a **catalog**: to validate
 `test_guid`, to display names and descriptions, to check `supported_platforms`, and to know each
 test's technique. [ART-12]
-- Each repository is an ordinary `git_repo_<name>` section, polled by `GitManagerService`.
+- Each repository is an ordinary `git_repo_*` section, named by its `name` field and polled by `GitManagerService`.
 - SVS parses `atomics/T*/T*.yaml` into a catalog table when the commit changes.
 - Custom repositories follow the ART schema and must carry `auto_generated_guid`. A test without
   one is skipped with a warning.
@@ -1066,7 +1066,7 @@ svs:
     attribution_extra_hours: 24
   log_search_url: null              # e.g. "https://splunk.example/...?q=svs_run={run_uuid}"
   yara:
-    repositories: [signatures]      # git_repo_<name> sections SVS may validate
+    repositories: [signatures]      # names of the git_repo_* sections SVS may validate
     scan_timeout_seconds: 1800
     max_concurrent_validations: 1   # [FR-13]
   attack_release: "v17"             # names etc/attack/v17.json [FR-14]

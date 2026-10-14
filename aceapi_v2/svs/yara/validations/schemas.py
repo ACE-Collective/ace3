@@ -18,7 +18,7 @@ _COMMIT_PATTERN = r"^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$"
 
 class ValidationRequest(BaseModel):
     """What the signature repository's CI asks for: validate head_sha against base_sha."""
-    repository: str = Field(min_length=1, max_length=256, description="a git_repo_<name> section named in svs.yara.repositories")
+    repository: str = Field(min_length=1, max_length=256, description="the name of a git_repo_* section (its name field), listed in svs.yara.repositories")
     base_sha: str = Field(pattern=_COMMIT_PATTERN, description="the full id of the commit to compare against: the pull request's merge base")
     head_sha: str = Field(pattern=_COMMIT_PATTERN, description="the full id of the commit to validate")
     branch: str = Field(min_length=1, max_length=256, description="the branch head_sha is on")

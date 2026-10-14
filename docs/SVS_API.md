@@ -293,7 +293,7 @@ are read with `signature:read`.
 | `GET /api/v2/svs/yara/validations/{uuid}/results/export/ndjson`, `/export/csv` | `signature:read` | The same, streamed |
 | `GET /api/v2/svs/yara/validations/{uuid}/download` `?category=…&rule_uuid=…` | `signature:download` | The files of the selected pairs and their samples' match records, in an `infected` zip |
 
-**Requests.** `repository` is a `git_repo_<name>` section listed in `svs.yara.repositories`;
+**Requests.** `repository` is the `name` of a `git_repo_*` section, listed in `svs.yara.repositories`;
 `base_sha` and `head_sha` are full commit ids (40 or 64 hex characters), because an abbreviation
 would not be recognized as the same commit by the next request. A request with the same repository
 and commits gets the validation that is queued or running, or a completed one while the corpus
@@ -422,7 +422,7 @@ come with the runs, later in phase 4.
 | Field | Meaning |
 |---|---|
 | `guid` | The test's `auto_generated_guid`, lower case: the stable identifier runs are registered with. |
-| `repository` | The `git_repo_<name>` section it is read from. |
+| `repository` | The name of the `git_repo_*` section it is read from. |
 | `technique`, `technique_name` | The ATT&CK technique of its atomic file (`attack_technique`, `display_name`). |
 | `name`, `platforms`, `executor` | The test's `name`, `supported_platforms` (lower case) and `executor.name`. |
 | `path` | Its atomic file, relative to the repository. |

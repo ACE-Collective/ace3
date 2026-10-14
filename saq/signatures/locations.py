@@ -37,9 +37,10 @@ def _yara_locations() -> list[SignatureLocation]:
         return []
 
     # The location is the signature_dir itself rather than one per rule
-    # subdirectory: the loader mirrors YaraScanner's traversal of it, which is
-    # what keeps generated directories like observable_export out of the
-    # inventory. It also matches the shape of the configuration block.
+    # subdirectory: the loader mirrors YaraScanner's traversal of it, and leaves
+    # out by name the directories ACE generates (observable_export, svs_marker),
+    # which the scanner does load. It also matches the shape of the
+    # configuration block.
     signature_dir = abs_path(config.signature_dir)
 
     # get_validated_git_repo_dirs drops entries that are not a directory or not

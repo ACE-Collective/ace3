@@ -4,7 +4,7 @@ ACE never runs a test. It holds ART repositories only as a catalog: to validate 
 to show a test's name, description and commands, to check its supported platforms, and to know its
 ATT&CK technique [ART-12].
 
-Each repository in svs.catalog.repositories is an ordinary `git_repo_<name>` section. service_git
+Each repository in svs.catalog.repositories is the name of an ordinary `git_repo_*` section. service_git
 keeps its checkout at local_path up to date, and service_svs reads `atomics/T*/T*.yaml` from that
 checkout into svs_catalog_tests whenever its commit changes (refresh_catalog). A test without an
 `auto_generated_guid` is skipped with a warning, and a GUID already taken by another test (in this
@@ -178,7 +178,7 @@ def _checkout(repository: str) -> str:
     try:
         repo_config = get_config().get_git_repo_config(repository)
     except ValueError:
-        raise CatalogError(f"svs.catalog.repositories names {repository}, which has no git_repo_{repository} section") from None
+        raise CatalogError(f"svs.catalog.repositories names {repository}, but no git_repo section is named {repository}") from None
 
     path = abs_path(repo_config.local_path)
     if not os.path.isdir(path):

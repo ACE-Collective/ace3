@@ -3,7 +3,7 @@
 The yara service loads `service_yara.signature_dir`: each directory directly inside it is one
 namespace, and the `.yar`/`.yara` files directly inside a namespace directory are its rules
 (YaraScanner.__init__). Files loose in signature_dir and files nested deeper are not loaded. A
-repository (a `git_repo_<name>` section) can feed that in one of two ways, and SVS derives which
+repository (the `name` of a `git_repo_*` section) can feed that in one of two ways, and SVS derives which
 from the configuration rather than asking for it again:
 
 - **contained**: signature_dir is the checkout's `local_path` or lies inside it. Every directory
@@ -124,7 +124,7 @@ def resolve_layout(repository: str) -> RepoLayout:
     try:
         repo_config = get_config().get_git_repo_config(repository)
     except ValueError:
-        raise LayoutError(f"repository {repository} has no git_repo_{repository} section") from None
+        raise LayoutError(f"no git_repo section is named {repository}") from None
 
     signature_dir = abs_path(get_service_config(SERVICE_YARA_SCANNER).signature_dir)
     return derive_layout(repository, abs_path(repo_config.local_path), signature_dir)
