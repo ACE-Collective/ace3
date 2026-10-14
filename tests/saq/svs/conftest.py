@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 
 from saq.analysis.root import RootAnalysis
 from saq.cas import CASPool, get_cas
-from saq.database.model import Alert, SVSYaraCapture, load_alert
+from saq.database.model import Alert, SVSCatalogTest, SVSYaraCapture, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import get_global_runtime_settings
@@ -17,6 +17,8 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
 from saq.database.private_session import private_transaction
+from saq.svs import windows
+from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
 from tests.saq.helpers import create_root_analysis
 
@@ -142,3 +144,30 @@ def graded_alert(disposition: Optional[str], files: dict[str, list[str]], *, cap
                     insert_capture(root.uuid, key[0], rule_uuid, file_path=name)
 
     return load_alert(root.uuid), observables
+
+
+#
+# test runs
+#
+
+def add_catalog_test(guid: str, *, platforms=("windows",), removed: bool = False, technique: str = "T1059.001",
+                     name: str = "PowerShell download") -> SVSCatalogTest:
+    """A test in the Atomic Red Team catalog, as saq.svs.catalog stores one."""
+    entry = {"name": name, "auto_generated_guid": guid, "supported_platforms": list(platforms),
+             "executor": {"name": "powershell", "command": "whoami"}}
+    test = SVSCatalogTest(
+        guid=guid, repository="atomic-red-team", technique=technique, technique_name=f"{technique} name", name=name,
+        description=f"{name} does a thing", platforms=json.dumps(list(platforms)), executor="powershell",
+        test=json.dumps(entry), content_hash=catalog_content_hash(entry), commit="a" * 40,
+        path=f"atomics/{technique}/{technique}.yaml", first_seen_at=datetime.now(),
+        removed_at=datetime.now() if removed else None)
+    db = get_db()
+    db.add(test)
+    db.commit()
+    return test
+
+
+@pytest.fixture
+def no_hunts(monkeypatch):
+    """No enabled hunts: a run's observation window is the floor (60 minutes by default)."""
+    monkeypatch.setattr(windows, "hunt_latencies", lambda: {})

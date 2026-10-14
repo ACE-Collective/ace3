@@ -330,3 +330,8 @@ def refresh_repository(repository: str, *, force: bool = False) -> RefreshResult
 def refresh_catalog(*, force: bool = False) -> list[RefreshResult]:
     """Refreshes every repository in svs.catalog.repositories."""
     return [refresh_repository(repository, force=force) for repository in get_config().svs.catalog.repositories]
+
+
+def supported_platforms(test: SVSCatalogTest) -> list[str]:
+    """A catalog test's supported_platforms, lower case."""
+    return json.loads(test.platforms)

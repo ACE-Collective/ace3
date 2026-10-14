@@ -61,6 +61,9 @@ EMAIL_SUSPECT_URL_NEW_SENDER  = BuiltinSignature("email_suspect_url_new_sender",
 CVE_2021_30657_DMG_SCRIPT     = BuiltinSignature("cve_2021_30657_dmg_script", "3ba358a3-b7ab-4475-a10a-f2a8070b455d", "CVE-2021-30657 DMG script")
 URL_CLICKER                   = BuiltinSignature("url_clicker", "a764126b-443d-4991-a554-72d86125382d", "user clicked a URL / visited a flagged domain (clicker detection)")
 DHASH_IMAGE_MATCH             = BuiltinSignature("dhash_image_match", "10d1e320-3b07-45f1-9bcf-078044643b7e", "image dhash match")
+# a launcher tried to register an SVS test run against a host that is not a test host
+# (docs/SVS_RUNS.md, *Refused registrations*)
+SVS_REGISTRATION_REFUSED      = BuiltinSignature("svs_registration_refused", "0d950be1-edba-4861-b1eb-df8bd96aa2ed", "SVS test run registered against a host that is not a test host")
 # fallback for YARA rules that matched but carry no uuid meta (warn-but-detect)
 YARA_RULE_MATCH               = BuiltinSignature("yara_rule_match", "3557435e-da7f-4b1b-a5dd-655107839530", "YARA rule match with no uuid meta")
 # special built-in for detection points that predate signature attribution: applied
@@ -94,6 +97,7 @@ BUILTIN_SIGNATURES = {
         CVE_2021_30657_DMG_SCRIPT,
         URL_CLICKER,
         DHASH_IMAGE_MATCH,
+        SVS_REGISTRATION_REFUSED,
         YARA_RULE_MATCH,
         LEGACY,
     )

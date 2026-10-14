@@ -9,6 +9,10 @@ dropped. svs.yara.max_concurrent_validations workers run, on the primary node on
 
 The catalog refresher looks for a new commit of each svs.catalog.repositories checkout every
 svs.catalog.refresh_interval_seconds, also on the primary node only (saq.svs.catalog).
+
+The run timer moves test runs whose start timeout or windows have passed every
+svs.runs.timer_interval_seconds (saq.svs.runs.run_timers), on the primary node only. Every move is
+conditional on the run's state, so a second timer somewhere would change nothing [FR-13].
 """
 
 import logging
@@ -28,6 +32,7 @@ from saq.sandbox.runner import LAUNCHER_STOP_SECONDS
 from saq.service import ACEServiceInterface
 from saq.svs.actions import retired_pairs
 from saq.svs.catalog import refresh_catalog
+from saq.svs.runs import run_timers
 from saq.svs.validations import (
     Claim,
     LeaseLost,
@@ -203,6 +208,32 @@ class CatalogRefresher:
             self.shutdown.wait(get_config().svs.catalog.refresh_interval_seconds)
 
 
+class RunTimer:
+    """Moves test runs on by time until stopped."""
+
+    def __init__(self, shutdown: threading.Event):
+        self.shutdown = shutdown
+        self.thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.loop, name="svs-runs", daemon=True)
+        self.thread.start()
+
+    def run_once(self):
+        try:
+            # a run that can't be moved is logged by run_timers and retried on the next pass
+            run_timers()
+        except Exception as e:
+            log_loop_exception(e, "svs run timers failed")
+        finally:
+            remove_all_sessions()
+
+    def loop(self):
+        while not self.shutdown.is_set():
+            self.run_once()
+            self.shutdown.wait(get_config().svs.runs.timer_interval_seconds)
+
+
 class SVSService(ACEServiceInterface):
 
     @classmethod
@@ -213,6 +244,7 @@ class SVSService(ACEServiceInterface):
         self.shutdown = threading.Event()
         self.workers: list[ValidationWorker] = []
         self.catalog: Optional[CatalogRefresher] = None
+        self.runs: Optional[RunTimer] = None
 
     def _workers(self) -> list[ValidationWorker]:
         config = get_service_config(SERVICE_SVS)
@@ -222,8 +254,9 @@ class SVSService(ACEServiceInterface):
 
     def start(self):
         if not is_primary_node():
-            # the queue and the catalog are shared; one node runs them
-            logging.info("svs validations and the catalog refresh run on the primary node only; this service stays idle")
+            # the queue, the catalog and the runs are shared; one node runs them
+            logging.info("svs validations, the catalog refresh and the run timers run on the primary node only; "
+                         "this service stays idle")
             return
 
         self.workers = self._workers()
@@ -233,19 +266,28 @@ class SVSService(ACEServiceInterface):
         self.catalog = CatalogRefresher(self.shutdown)
         self.catalog.start()
 
+        self.runs = RunTimer(self.shutdown)
+        self.runs.start()
+
     def wait_for_start(self, timeout: float = 5) -> bool:
         return True
 
     def start_single_threaded(self):
-        """Refreshes the catalog once and runs every waiting validation, one at a time, then returns."""
-        CatalogRefresher(self.shutdown).run_once()
-        worker = self._workers()[0]
-        while not self.shutdown.is_set():
-            try:
-                if not worker.run_once():
-                    break
-            finally:
-                remove_all_sessions()
+        """Refreshes the catalog and moves the runs once, and runs every waiting validation, one at a
+        time, then returns. The service is finished then, so wait() returns too (`ace service start
+        --single-threaded svs` exits)."""
+        try:
+            CatalogRefresher(self.shutdown).run_once()
+            RunTimer(self.shutdown).run_once()
+            worker = self._workers()[0]
+            while not self.shutdown.is_set():
+                try:
+                    if not worker.run_once():
+                        break
+                finally:
+                    remove_all_sessions()
+        finally:
+            self.shutdown.set()
 
     def stop(self):
         self.shutdown.set()
@@ -259,5 +301,6 @@ class SVSService(ACEServiceInterface):
         for worker in self.workers:
             if worker.thread is not None:
                 worker.thread.join()
-        if self.catalog is not None and self.catalog.thread is not None:
-            self.catalog.thread.join()
+        for component in (self.catalog, self.runs):
+            if component is not None and component.thread is not None:
+                component.thread.join()

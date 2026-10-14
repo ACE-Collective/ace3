@@ -424,7 +424,8 @@ The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Ev
 **Cancel stops the run, not attribution.** The test may have run anyway, so a canceled run keeps
 attributing inside its attribution window. Otherwise its markers would surface as
 `MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts, so it is Closed at the
-transition, with the reason in its event log, and never waits in *Needs attention*. [MGT-3]
+transition, with the reason in its event log, and never waits in *Needs attention*. A run *Canceled*
+before `start` is the same case and is Closed in the same call. [MGT-3]
 
 **Timers run in one place.** `service_svs` runs as a single instance on the primary node, like the
 CAS cron tasks, and owns the run timers, the validation queue and the catalog refresh. Every timer

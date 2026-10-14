@@ -18,6 +18,7 @@ from saq.database.model import SVSCatalogTest
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_TESTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
+from saq.svs.catalog import supported_platforms
 from saq.svs.catalog_filters import catalog_filter_conditions
 from saq.svs.samples import to_utc_naive
 from saq.util.uuid import is_uuid
@@ -56,7 +57,7 @@ def prepare_listing(filter_params: list[str], *, changed_since: datetime | None)
 def _row(test: SVSCatalogTest) -> dict:
     return dict(
         guid=test.guid, repository=test.repository, technique=test.technique, technique_name=test.technique_name,
-        name=test.name, platforms=json.loads(test.platforms), executor=test.executor, path=test.path,
+        name=test.name, platforms=supported_platforms(test), executor=test.executor, path=test.path,
         commit=test.commit, content_hash=test.content_hash, first_seen_at=test.first_seen_at,
         removed_at=test.removed_at, updated_at=test.updated_at)
 

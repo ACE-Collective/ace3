@@ -38,3 +38,24 @@ class ValidationState(StrEnum):
 
 
 VALIDATION_STATES = tuple(state.value for state in ValidationState)
+
+
+class RunState(StrEnum):
+    """Where a test run is (docs/SVS_RUNS.md, *Run states and timers*)."""
+    CREATED = "created"      # registered; the launcher has not called start
+    STARTED = "started"      # the windows are open
+    ENDED = "ended"          # the observation window passed; waits for a person
+    REVIEWED = "reviewed"    # signed off; what coverage counts
+    CANCELED = "canceled"    # stopped by the launcher; still attributes until its attribution window ends
+    ERROR = "error"          # the launcher reported a failure, or never called start
+    CLOSED = "closed"        # discarded: nothing is learned from it
+
+
+RUN_STATES = tuple(state.value for state in RunState)
+
+
+class RunEventKind(StrEnum):
+    """The kinds of row in a run's event log (svs_run_events)."""
+    REGISTERED = "registered"
+    TRANSITION = "transition"
+    LAUNCHER_CALL = "launcher_call"
