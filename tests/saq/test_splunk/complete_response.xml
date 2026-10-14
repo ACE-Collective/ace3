@@ -1,7 +1,0 @@
-<entry xmlns="http://www.w3.org/2005/Atom" xmlns:s="http://dev.splunk.com/ns/rest" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
-  <content type="text/xml">
-    <s:dict>
-      <s:key name="isDone">1</s:key>
-    </s:dict>
-  </content>
-</entry>
