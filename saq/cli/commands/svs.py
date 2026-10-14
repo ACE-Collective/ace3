@@ -4,7 +4,9 @@
 what changed, synchronously and without storing anything (docs/SVS_VALIDATION.md); the queued
 validations CI requests are run by service_svs instead. ``yara layout`` prints which directories of
 each repository in svs.yara.repositories the yara service loads. ``yara prune`` removes the
-validations older than svs.yara.retention_days (daily cron).
+validations older than svs.yara.retention_days (daily cron). ``catalog refresh`` reads the Atomic
+Red Team catalog repositories (service_svs does it on its own) and ``catalog status`` prints them
+(docs/SVS_RUNS.md).
 """
 
 import json
@@ -191,3 +193,68 @@ prune_parser = svs_yara_sp.add_parser("prune", help="Remove the validations olde
 prune_parser.add_argument("--dry-run", action="store_true", default=False, help="Count them without removing anything.")
 prune_parser.add_argument("--force", action="store_true", default=False, help="Prune even when this is not the primary node.")
 prune_parser.set_defaults(func=cli_prune)
+
+
+svs_catalog_parser = svs_sp.add_parser("catalog", help="The Atomic Red Team test catalog.")
+svs_catalog_sp = svs_catalog_parser.add_subparsers(dest="svs_catalog_cmd")
+
+
+def cli_catalog_refresh(args):
+    """Read each catalog repository's tests whose checkout has a new commit."""
+    from saq.svs.catalog import refresh_catalog, refresh_repository
+
+    results = [refresh_repository(args.repository, force=args.force)] if args.repository else refresh_catalog(force=args.force)
+    if not results:
+        print("svs.catalog.repositories is empty")
+        return 0
+
+    status = 0
+    for result in results:
+        if result.error:
+            print(f"{result.repository}: {result.error}")
+            status = 1
+        elif result.refreshed:
+            print(f"{result.repository} @ {_short(result.commit)}: {result.tests} tests ({result.added} added, "
+                  f"{result.changed} changed, {result.removed} removed, {len(result.skipped)} skipped)")
+            for path, name, reason in result.skipped:
+                print(f"  skipped {path}{f' ({name})' if name else ''}: {reason}")
+        else:
+            print(f"{result.repository} @ {_short(result.commit or '?')}: already read (--force to read it again)")
+
+    return status
+
+
+catalog_refresh_parser = svs_catalog_sp.add_parser(
+    "refresh", help="Read the tests of each catalog repository whose commit changed (service_svs does this on its own).")
+catalog_refresh_parser.add_argument("--repository", help="Only this repository (one of svs.catalog.repositories).")
+catalog_refresh_parser.add_argument("--force", action="store_true", default=False, help="Read the tests even if the commit did not change.")
+catalog_refresh_parser.set_defaults(func=cli_catalog_refresh)
+
+
+def cli_catalog_status(args):
+    """Print each catalog repository's commit, test count and last error."""
+    from sqlalchemy import func
+
+    from saq.configuration.config import get_config
+    from saq.database.model import SVSCatalogRepository, SVSCatalogTest
+    from saq.database.pool import get_db
+
+    configured = get_config().svs.catalog.repositories
+    rows = {row.name: row for row in get_db().query(SVSCatalogRepository)}
+    removed = dict(get_db().query(SVSCatalogTest.repository, func.count(SVSCatalogTest.id))
+                   .filter(SVSCatalogTest.removed_at.isnot(None)).group_by(SVSCatalogTest.repository))
+    for name in sorted(set(configured) | set(rows)):
+        row = rows.get(name)
+        state = "" if name in configured else " (no longer in svs.catalog.repositories)"
+        if row is None or row.refreshed_at is None:
+            print(f"{name}{state}: never read" + (f"; last error: {row.error}" if row is not None and row.error else ""))
+            continue
+
+        print(f"{name}{state}: {row.test_count} tests at {_short(row.commit)}, read {row.refreshed_at}, "
+              f"{row.skipped_count} skipped, {removed.get(name, 0)} removed since"
+              + (f"; last error: {row.error}" if row.error else ""))
+    return 0
+
+
+catalog_status_parser = svs_catalog_sp.add_parser("status", help="Print each catalog repository's commit and test count.")
+catalog_status_parser.set_defaults(func=cli_catalog_status)

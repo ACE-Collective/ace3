@@ -4,7 +4,8 @@ ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
 with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
-(phase 2) and the YARA validations (phase 3).
+(phase 2), the YARA validations (phase 3), and the test hosts and the Atomic Red Team test catalog
+(phase 4, so far).
 
 ## Conventions
 
@@ -370,6 +371,85 @@ disappears; deleting a sample removes its rows from every report.
   (a `new_fp_other_rule` or `new_match_real_hit` row has no sample of its own rule: use `sha256` with
   `f=sha256:…`).
 - **Result → detections:** as for a sample.
+
+## Test hosts
+
+The hosts SVS test runs may target (`docs/SVS_RUNS.md`, *Test hosts*). Read with `svs:run_read`;
+added, changed and removed with `svs:admin`, each change an AUDIT line.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `GET /api/v2/svs/test-hosts` | `svs:run_read` | Test hosts by host name, paged |
+| `GET /api/v2/svs/test-hosts/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `usernames` and `ips` with `,`) |
+| `GET /api/v2/svs/test-hosts/{id}` | `svs:run_read` | One test host |
+| `POST /api/v2/svs/test-hosts` `{hostname, fqdn?, usernames?, ips?, platform?, notes?}` | `svs:admin` | 201 and the new host; 409 when its short name is already a test host, 422 for a field that can't be used |
+| `PUT /api/v2/svs/test-hosts/{id}` (the same body) | `svs:admin` | The host with its fields replaced |
+| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `id` | The host. |
+| `hostname` | The short name, lower case. It is unique: one test host per short name. |
+| `fqdn` | The fully qualified name, lower case, or null. A target named by a fully qualified name matches only this one; with no `fqdn`, a target in any domain matches. |
+| `usernames` | The bare user names runs may use, lower case (`CORP\Alice` and `alice@corp.example` are stored as `alice`); empty means any user. |
+| `ips` | The host's addresses. |
+| `platform` | `windows`, `linux` or `macos` when known: a test whose `supported_platforms` doesn't include it can't target the host. Null isn't checked. |
+| `notes`, `created_by`, `created_at` | Free text, and who added it when. |
+| `updated_at` | The row's last change. |
+
+### Incremental pulls
+
+With `changed_since`, a host is returned when it was added or changed at or after that time. A
+removed host just disappears; its removal is an AUDIT line in ACE's log.
+
+## Tests
+
+The Atomic Red Team tests runs may be registered for, as `service_svs` reads them from the
+repositories in `svs.catalog.repositories` (`docs/SVS_RUNS.md`, *The Atomic Red Team catalog*).
+Read with `svs:run_read`. The test state, last run and expectations columns of the Tests screen
+come with the runs, later in phase 4.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
+| `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
+| `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `guid` | The test's `auto_generated_guid`, lower case: the stable identifier runs are registered with. |
+| `repository` | The `git_repo_<name>` section it is read from. |
+| `technique`, `technique_name` | The ATT&CK technique of its atomic file (`attack_technique`, `display_name`). |
+| `name`, `platforms`, `executor` | The test's `name`, `supported_platforms` (lower case) and `executor.name`. |
+| `path` | Its atomic file, relative to the repository. |
+| `commit` | The repository commit this version of the test was first read from: a new commit that doesn't change the test doesn't change it. |
+| `content_hash` | sha256 of the test's entry; it changes exactly when the test does. |
+| `first_seen_at` | When the catalog first read it. |
+| `removed_at` | When it disappeared from its repository, or null. A removed test keeps its row and its runs. |
+| `updated_at` | The row's last change. |
+
+`GET …/{guid}` adds `description` and `test`, the test's whole entry in its atomic file: `executor`
+(`command`, `cleanup_command`, `elevation_required`), `input_arguments`, `dependencies`.
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `name` | Name | text the test name contains |
+| `platform` | Platform | a platform in `supported_platforms` |
+| `executor` | Executor | `command_prompt`, `powershell`, `sh`, `bash`, `manual` |
+| `repository` | Repository | text the repository name contains |
+| `removed` | Removed | `true`, `false` |
+
+### Incremental pulls
+
+With `changed_since`, a test is returned when it was added, changed, removed or came back at or
+after that time.
 
 ## Worked examples
 

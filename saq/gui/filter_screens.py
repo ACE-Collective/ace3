@@ -23,12 +23,14 @@ from saq.gui.filter_entry import (
     FilterEntry,
     FilterEntryBase,
     SampleFilterEntry,
+    CatalogTestFilterEntry,
     ValidationFilterEntry,
 )
 from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
     FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
+    SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
 from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
@@ -148,11 +150,29 @@ SVS_VALIDATIONS_SCREEN = FilterScreen(
     ),
 )
 
+# the Atomic Red Team test catalog and, later in phase 4, each test's run history (GET
+# /api/v2/svs/tests, docs/SVS_API.md); read with svs:run_read
+SVS_TESTS_SCREEN = FilterScreen(
+    name="svs_tests",
+    entry_model=CatalogTestFilterEntry,
+    slugs=SVS_TEST_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Name", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("Executor", FilterFieldKind.TEXT),
+        FilterField("Repository", FilterFieldKind.TEXT),
+        FilterField("Removed", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
 FILTER_SCREENS: dict[str, FilterScreen] = {
     ALERTS_SCREEN.name: ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
     SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
+    SVS_TESTS_SCREEN.name: SVS_TESTS_SCREEN,
 }
 
 

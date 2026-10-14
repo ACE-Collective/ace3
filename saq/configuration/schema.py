@@ -772,11 +772,20 @@ class SVSYaraConfig(BaseModel):
     prune_batch_size: int = Field(default=100, ge=1, le=1000, description="how many validations one prune transaction removes (their results go with them)")
 
 
+class SVSCatalogConfig(BaseModel):
+    """The Atomic Red Team test catalog (docs/SVS_RUNS.md, *The Atomic Red Team catalog*): the tests
+    runs may be registered for, read from git repositories in the ART layout."""
+    model_config = ConfigDict(extra="forbid")
+    repositories: list[str] = Field(default_factory=list, description="the git_repo_<name> sections, by name, whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
+    refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
+    catalog: SVSCatalogConfig = Field(default_factory=SVSCatalogConfig, description="the Atomic Red Team test catalog")
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
 

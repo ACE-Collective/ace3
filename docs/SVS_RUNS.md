@@ -6,8 +6,91 @@ incidents. Reviewing a run teaches SVS which signatures detect which techniques 
 Part 3).
 
 This document covers how runs work in ACE and how to operate them. It grows with phase 4. Today it
-covers what happens to a test run's alerts once SVS closes them, and how search treats them. The
-design and its reasoning are in `docs/SVS.md`.
+covers the test hosts, the Atomic Red Team catalog, what happens to a test run's alerts once SVS
+closes them, and how search treats them. The design and its reasoning are in `docs/SVS.md`; the
+API's data dictionary is `docs/SVS_API.md`.
+
+## Permissions
+
+| Permission | Grants |
+|---|---|
+| `svs:run_register` | The launcher's run lifecycle calls |
+| `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
+| `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association |
+| `svs:admin` | Adding, changing and removing test hosts (and, for YARA, retiring and deleting samples) |
+
+## Test hosts
+
+A run can target only a **test host**: a host listed in `svs_test_hosts`. A registration against
+any other host, or as a user the host doesn't list, is refused. They are a table rather than config
+so a site that builds test VMs on demand adds one without restarting anything. An `svs:admin`
+manages them through `/api/v2/svs/test-hosts` (and, later in phase 4, the SVS area's *Test hosts*
+tab).
+
+| Field | Meaning |
+|---|---|
+| `hostname` | The short name. One test host per short name. A fully qualified hostname also sets `fqdn`. |
+| `fqdn` | The fully qualified name. Set it: a target named by a fully qualified name then matches only this one, so a production host that shares the short name in another domain never does. Without it, a target in any domain matches. |
+| `usernames` | The users runs may use on the host. Empty means any user. |
+| `ips` | The host's addresses. |
+| `platform` | `windows`, `linux` or `macos` when known. A test whose `supported_platforms` doesn't include it can't target the host. |
+
+Matching ignores case, takes a target's hostname as either the short or the fully qualified name,
+and treats `CORP\alice`, `alice@corp.example` and `alice` as the same user
+(`saq/svs/hosts.py::match_target`). Every change is an AUDIT line in ACE's log with the host's
+fields (and, for a change, what they were before).
+
+```bash
+curl -X POST https://ace.example/api/v2/svs/test-hosts/ -H "x-ace-auth: $KEY" -H 'Content-Type: application/json' \
+     -d '{"hostname": "win10-art-01.lab.example", "usernames": ["LAB\\svc_art"], "platform": "windows"}'
+```
+
+## The Atomic Red Team catalog
+
+ACE never runs a test. It holds Atomic Red Team repositories only as a catalog: to check the test a
+run is registered for, to show its name, description and commands, to check its supported platforms
+and to know its ATT&CK technique.
+
+- **Each repository is an ordinary `git_repo_<name>` section**, which `service_git` keeps checked out
+  at its `local_path`, listed in `svs.catalog.repositories`. Custom repositories follow the ART
+  layout and schema.
+- **`service_svs` reads `atomics/T*/T*.yaml`** from the checkout whenever its commit changes,
+  looking every `svs.catalog.refresh_interval_seconds`, on the primary node. If the commit moves
+  while it reads (`service_git` pulled), nothing is stored and the next look reads the new commit.
+- **A test is its `auto_generated_guid`.** A test without one is skipped with a WARNING, and a GUID
+  already taken by another test, in that repository or another, is skipped too: the first one read
+  keeps it.
+- **A test that disappears keeps its row**, with `removed_at` set, so its runs keep their test. If it
+  comes back, `removed_at` is cleared.
+- **A test's `commit` is the commit its current version was first read from**, and its
+  `content_hash` changes exactly when the test does; a new commit that doesn't touch a test leaves
+  it alone.
+- **A repository that can't be read** (no `git_repo_` section, no checkout yet, a broken file system)
+  keeps its tests; the error is logged at ERROR, kept on the repository's row and shown by
+  `ace svs catalog status`. The next successful read clears it.
+
+```yaml
+git_repo_atomic_red_team:
+  name: atomic_red_team
+  description: Atomic Red Team
+  local_path: data/git/atomic-red-team
+  git_url: https://github.com/redcanaryco/atomic-red-team.git
+  branch: master
+  update_frequency: 3600
+
+svs:
+  catalog:
+    repositories: [atomic_red_team]
+    refresh_interval_seconds: 300
+```
+
+```bash
+ace svs catalog status                 # each repository's commit, test count and last error
+ace svs catalog refresh [--force]      # read now; --force reads an unchanged commit again
+```
+
+The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
+finds its sub-techniques), name, platform, executor, repository or `removed`.
 
 ## Test alerts and `SIMULATED`
 
