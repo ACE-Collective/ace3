@@ -123,7 +123,8 @@ calling ACE, but they are separate systems.
 
 `service_svs` (`saq/svs/service.py`, its own `svs` container) runs the queue
 (`saq/svs/validations.py`). It runs `svs.yara.max_concurrent_validations` workers (one by default)
-on the primary node only; on any other node it stays idle.
+on the primary node only; on any other node it stays idle. It also keeps the Atomic Red Team test
+catalog current (`docs/SVS_RUNS.md`).
 
 - **The queue.** A request is a row in `svs_validations`, `queued`. A worker claims the oldest one
   with a conditional UPDATE that repeats the condition, so two workers never both take it, and

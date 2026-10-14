@@ -2046,6 +2046,109 @@ class SVSValidationResult(Base):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class SVSTestHost(Base):
+    """A host SVS test runs may target (docs/SVS_RUNS.md, *Test hosts*). A run registered against
+    any other host, or as a user the host doesn't list, is refused. A table rather than config so
+    a site that builds test VMs on demand adds one without restarting anything [FR-15]. Only
+    saq/svs/hosts.py writes this table."""
+
+    __tablename__ = 'svs_test_hosts'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # the short host name, lower case: what a target's hostname, short or fully qualified, matches
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # the fully qualified name, lower case, when the host has one
+    fqdn: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # JSON-serialized list of the bare user names runs may use, lower case; empty means any user
+    usernames: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON-serialized list of the host's addresses
+    ips: Mapped[str] = mapped_column(Text, nullable=False)
+    # windows, linux or macos (the Atomic Red Team names), when known: a test that doesn't support
+    # it can't target the host
+    platform: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # maintained by the server on every change of the row, for incremental pulls
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    created_by_user: Mapped[Optional["User"]] = relationship('User', foreign_keys=[created_by])
+
+
+class SVSCatalogRepository(Base):
+    """An Atomic Red Team repository in svs.catalog.repositories and the commit its tests were last
+    read from (docs/SVS_RUNS.md, *The Atomic Red Team catalog*). Its row is locked while a refresh
+    writes, so two nodes never interleave. Only saq/svs/catalog.py writes this table."""
+
+    __tablename__ = 'svs_catalog_repositories'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # a git_repo_<name> section
+    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    # the commit the catalog holds, NULL until the first refresh succeeds
+    commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # tests and files the last refresh could not read
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # why the last refresh failed, NULL when it succeeded
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSCatalogTest(Base):
+    """An Atomic Red Team test from a catalog repository, by its auto_generated_guid (docs/SVS.md,
+    Part 3, *The Atomic Red Team catalog*). A test that disappears from its repository keeps its row,
+    with removed_at set, so its run history stays. Only saq/svs/catalog.py writes this table."""
+
+    __tablename__ = 'svs_catalog_tests'
+    __table_args__ = (
+        Index('ix_svs_catalog_tests_technique_name', 'technique', 'name', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    repository: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    # the ATT&CK technique of the atomic file, e.g. T1059.001
+    technique: Mapped[str] = mapped_column(String(32), nullable=False)
+    technique_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # 512 keeps the (technique, name, id) index under InnoDB's key length limit
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON-serialized supported_platforms
+    platforms: Mapped[str] = mapped_column(Text, nullable=False)
+    executor: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # the test's entry in its atomic file, JSON-serialized: commands, input arguments, dependencies
+    test: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    # sha256 of the canonical test entry: a changed test makes its coverage stale (docs/SVS.md, Part 4)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    # the repository commit the test was last read from, and the path of its atomic file
+    commit: Mapped[str] = mapped_column(String(64), nullable=False)
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # when the test disappeared from its repository, NULL while it is there
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

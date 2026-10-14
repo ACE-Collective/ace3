@@ -16,6 +16,7 @@ from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
     FILTER_NAMES,
     SVS_SAMPLE_FILTER_SLUGS,
+    SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
@@ -278,5 +279,50 @@ class ValidationFilterEntry(FilterEntryBase):
         for value in values:
             if value not in allowed:
                 raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+
+        return values
+
+
+# an ATT&CK technique or sub-technique id, e.g. T1059 or T1059.001
+_TECHNIQUE = re.compile(r"^T\d{4}(\.\d{3})?$")
+
+
+class CatalogTestFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS tests screen (GET /api/v2/svs/tests)."""
+
+    name: str = Field(description="a filter name of the SVS tests screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_TEST_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_TEST_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            values = [value.strip().upper() for value in values]
+            for value in values:
+                if not _TECHNIQUE.match(value):
+                    raise ValueError(f"invalid technique {value!r} (expected an ATT&CK id such as T1059 or T1059.001)")
+            return values
+
+        if name in ("Platform", "Executor"):
+            return [value.strip().lower() for value in values]
+
+        if name == "Removed":
+            values = [value.lower() for value in values]
+            for value in values:
+                if value not in SAMPLE_BOOL_OPTIONS:
+                    raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(SAMPLE_BOOL_OPTIONS)})")
+            return values
 
         return values

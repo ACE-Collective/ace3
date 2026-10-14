@@ -398,11 +398,13 @@ broken on base* until it is retired or relabeled.
 
 ### Test hosts and registration
 
-**Test hosts** are rows in `svs_test_hosts` (`hostname, fqdn?, usernames?, ips?`), managed on an
-SVS admin tab and through `/api/v2/svs/test-hosts`, both under `svs:admin`. They are a table
-rather than config because a site may build test VMs dynamically, and adding one must not need a
-restart of every process that evaluates routers. Matching normalizes case, short name vs FQDN,
-and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15]
+**Test hosts** are rows in `svs_test_hosts` (`hostname, fqdn?, usernames?, ips?, platform?`),
+managed on an SVS admin tab and through `/api/v2/svs/test-hosts`, both under `svs:admin`. They are
+a table rather than config because a site may build test VMs dynamically, and adding one must not
+need a restart of every process that evaluates routers. Matching normalizes case, short name vs
+FQDN, and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15] A host's optional `platform`
+(`windows`, `linux`, `macos`) is what a test's `supported_platforms` is checked against at
+registration; a host without one isn't checked.
 
 The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Every call requires
 `svs:run_register`. [ART-2]
@@ -1002,8 +1004,8 @@ tables are on the main chain.
 | `svs_sample_retirements` | Retire actions: `(sha256, rule uuid, who, why, when)`; unretiring is soft |
 | `svs_sample_deletions` | The sample deletion audit: `(sha256, who, why, when, rules, captures, purged when)` |
 | `svs_validations`, `svs_validation_results` | A validation request and its per-`(sample, rule)` outcome and category; a request is served from an earlier validation with the same `(repository, base_sha, head_sha, corpus version)` [FR-13] |
-| `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips` (Part 3) [FR-15] |
-| `svs_catalog_tests` | The ART catalog: guid, repository, technique, name, platforms, commit |
+| `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips, platform` (Part 3) [FR-15] |
+| `svs_catalog_tests`, `svs_catalog_repositories` | The ART catalog: guid, repository, technique, name, platforms, commit, content hash; and the commit each repository was last read at |
 | `svs_runs`, `svs_run_targets` | Runs, their lifecycle timestamps, marker, windows, and targets |
 | `svs_attributions` | `(run, alert uuid, detection content_hash, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23] |
 | `svs_expectations` | `(test guid, signature uuid, state: candidate/expected/rejected, who, when)` |

@@ -108,6 +108,17 @@ SVS_VALIDATION_FILTER_SLUGS = {
     'State': 'state',
 }
 
+# The filters of the SVS tests screen (GET /api/v2/svs/tests, docs/SVS_API.md): display name ->
+# URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_TEST_FILTER_SLUGS = {
+    'Executor': 'executor',
+    'Name': 'name',
+    'Platform': 'platform',
+    'Removed': 'removed',
+    'Repository': 'repository',
+    'Technique': 'technique',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
@@ -117,4 +128,5 @@ __all__ = [
     "DETECTION_POINT_FILTER_SLUGS",
     "SVS_SAMPLE_FILTER_SLUGS",
     "SVS_VALIDATION_FILTER_SLUGS",
+    "SVS_TEST_FILTER_SLUGS",
 ]
