@@ -119,6 +119,26 @@ SVS_TEST_FILTER_SLUGS = {
     'Technique': 'technique',
 }
 
+# The filters of the SVS runs screen (GET /api/v2/svs/runs, docs/SVS_API.md): display name ->
+# URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_RUN_FILTER_SLUGS = {
+    'Batch': 'batch',
+    'Changed Since Review': 'changed_since_review',
+    'Created': 'created',
+    'Ended': 'ended',
+    'Launcher': 'launcher',
+    'Needs Attention': 'needs_attention',
+    'Owner': 'owner',
+    'Reason': 'reason',
+    'Reviewer': 'reviewer',
+    'Started': 'started',
+    'State': 'state',
+    'Target': 'target',
+    'Technique': 'technique',
+    'Test': 'test',
+    'Test Name': 'test_name',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
@@ -129,4 +149,5 @@ __all__ = [
     "SVS_SAMPLE_FILTER_SLUGS",
     "SVS_VALIDATION_FILTER_SLUGS",
     "SVS_TEST_FILTER_SLUGS",
+    "SVS_RUN_FILTER_SLUGS",
 ]

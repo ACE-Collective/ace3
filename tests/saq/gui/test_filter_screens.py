@@ -8,6 +8,7 @@ from saq.gui.filter_entry import (
     DetectionPointFilterEntry,
     FilterEntry,
     FilterEntryBase,
+    RunFilterEntry,
     SampleFilterEntry,
     ValidationFilterEntry,
 )
@@ -16,6 +17,7 @@ from saq.gui.filter_screens import (
     ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN,
     FILTER_SCREENS,
+    SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
     FilterScreen,
@@ -225,6 +227,64 @@ def test_svs_validation_values_are_normalized(name, values, expected):
 def test_svs_validations_rejects_bad_entries(name, values):
     with pytest.raises(ValidationError):
         SVS_VALIDATIONS_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+def test_the_svs_runs_screen():
+    assert get_filter_screen("svs_runs") is SVS_RUNS_SCREEN
+    assert SVS_RUNS_SCREEN.entry_model is RunFilterEntry
+    assert SVS_RUNS_SCREEN.permission == ("svs", "run_read")
+    assert {f.name for f in SVS_RUNS_SCREEN.fields} == SVS_RUNS_SCREEN.filter_names
+
+
+def test_the_svs_run_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_RUNS_SCREEN.slugs) == {
+        "Batch": "batch",
+        "Changed Since Review": "changed_since_review",
+        "Created": "created",
+        "Ended": "ended",
+        "Launcher": "launcher",
+        "Needs Attention": "needs_attention",
+        "Owner": "owner",
+        "Reason": "reason",
+        "Reviewer": "reviewer",
+        "Started": "started",
+        "State": "state",
+        "Target": "target",
+        "Technique": "technique",
+        "Test": "test",
+        "Test Name": "test_name",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("State", ["Ended", "error"], ["ended", "error"]),
+    ("Technique", [" t1059.001"], ["T1059.001"]),
+    ("Test", ["AAAAAAAA-1111-4111-8111-111111111111"], ["aaaaaaaa-1111-4111-8111-111111111111"]),
+    ("Target", [" WIN10-01.Lab.Example"], ["win10-01.lab.example"]),
+    ("Owner", [" Alice "], ["Alice"]),
+    ("Needs Attention", ["True"], ["true"]),
+    ("Started", ["-7d"], ["-7d"]),
+    ("Launcher", ["ART"], ["ART"]),
+])
+def test_svs_run_values_are_normalized(name, values, expected):
+    (entry,) = SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("State", ["done"]),
+    ("Technique", ["1059"]),
+    ("Test", ["not-a-guid"]),
+    ("Needs Attention", ["yes"]),
+    ("Changed Since Review", ["1"]),
+    ("Ended", ["not a date"]),
+    ("Batch", [["pair", "value"]]),
+    ("Label", ["tp"]),
+])
+def test_svs_runs_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
 
 
 @pytest.mark.parametrize("screen", sorted(DEFAULT_SAVED_FILTERS))

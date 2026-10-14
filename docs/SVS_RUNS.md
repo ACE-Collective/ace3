@@ -214,6 +214,29 @@ A launcher retrying in a loop must not flood the queue, so the alerts are **coll
 `svs_test`, `alerted`), which every refusal is. A refusal is refused even when its alert can't be
 created; that failure is logged at ERROR.
 
+## Following runs
+
+Everything about a run is readable through `GET /api/v2/svs/runs` with `svs:run_read`. The
+GUI's Runs tab, which comes later in phase 4, is a shell over the same endpoints and the same
+filters (`docs/SVS_API.md`, *Runs*).
+
+- **Needs attention** (`f=needs_attention:true`) is the Runs screen's default view. It matches runs
+  that:
+  - ended and wait for review;
+  - are in `error`;
+  - were reviewed and have changed since.
+
+  Once attribution lands, it will also match terminal runs that still hold open alerts. Every user
+  starts with it as a saved filter on the screen, next to *Started* (the runs in flight).
+- **A run closed because `start` never came** is not in that list. Find it with
+  `f=state:closed&f=reason:start%20timeout`.
+- **The event log** (`GET …/runs/{run_id}/events`) is the run's history: its registration, every
+  launcher call with its payload, and every state change, with who made it and when. It is not a
+  debugging tool. A test that didn't fire is debugged from ACE's log, by searching
+  `svs_run=<run_id>` or `svs_marker=<marker>`.
+- **The event feed** (`GET …/runs/events?changed_since=…`) is every run's events in one stream,
+  which is what a report polls.
+
 ## Test alerts and `SIMULATED`
 
 When a run is reviewed or closed, SVS gives every alert fully attributed to it the disposition
