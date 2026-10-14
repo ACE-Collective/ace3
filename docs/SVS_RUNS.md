@@ -6,8 +6,10 @@ incidents. Reviewing a run teaches SVS which signatures detect which techniques 
 Part 3).
 
 This document covers how runs work in ACE and how to operate them. It grows with phase 4. Today it
-covers the test hosts, the Atomic Red Team catalog, what happens to a test run's alerts once SVS
-closes them, and how search treats them. The design and its reasoning are in `docs/SVS.md`; the
+covers the test hosts, the Atomic Red Team catalog, how a launcher registers and drives a run, the
+run states and timers, refused registrations, what happens to a test run's alerts once SVS closes
+them, and how search treats them. Nothing attributes alerts to runs yet: that arrives later in
+phase 4. The design and its reasoning are in `docs/SVS.md`; the
 API's data dictionary is `docs/SVS_API.md`.
 
 ## Permissions
@@ -91,6 +93,126 @@ ace svs catalog refresh [--force]      # read now; --force reads an unchanged co
 
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
 finds its sub-techniques), name, platform, executor, repository or `removed`.
+
+## Registering a run
+
+ACE never runs a test. A **launcher** outside ACE (a script around `Invoke-AtomicTest`, a CI job, a
+person with `curl`) drives each run through `/api/v2/svs/runs` with an API key holding
+`svs:run_register`:
+
+| Call | Does |
+|---|---|
+| `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
+| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now. |
+| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
+| `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
+
+```bash
+curl -X POST https://ace.example/api/v2/svs/runs/ -H "x-ace-auth: $KEY" -H 'Content-Type: application/json' \
+     -d '{"test_guid": "5c16ceb4-ba3a-43d7-b848-a13c1f216d95",
+          "targets": [{"hostname": "win10-art-01", "username": "LAB\\svc_art"}],
+          "launcher": "nightly-art", "batch_id": "2026-10-14", "extra": {"job": 1234}}'
+# {"run_id": "…", "marker": "svs-3yq4…", "state": "created", "observation_seconds": 3600, …}
+curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY"
+```
+
+- **`test_guid`** is a test's `auto_generated_guid` in the catalog (`/api/v2/svs/tests`). A test
+  that is not there, or that was removed, is refused with 422.
+- **`targets`** are test hosts, by short or fully qualified name, each with the user the test runs
+  as. A target that is not a test host, or a user the host doesn't list, refuses the whole
+  registration with 403 (below). A test whose `supported_platforms` doesn't include a target's
+  `platform` is refused with 422. At most `svs.runs.max_targets` (16).
+- **`launcher`** names the launcher; **`batch_id`** is a label shared by runs registered together;
+  **`extra`** is any JSON object the launcher wants kept with the run, at most
+  `svs.runs.max_extra_bytes` (16 KiB) serialized. It is stored and shown on the run page.
+- A call that doesn't apply to the run's state (starting a run twice, `executed` before `start`)
+  answers 409 with the run's current state. Each call, accepted or not, is in the run's event log
+  with its payload.
+
+### The marker
+
+Every run gets a **marker**: `svs-` followed by 26 base32 characters (128 random bits, lower case,
+`saq/svs/markers.py`). The launcher puts it where the test's process telemetry shows it, so the
+alerts the test causes can be told apart from real ones:
+
+- as an input argument the test passes to its command (`Invoke-AtomicTest -InputArgs`), when the
+  test has a free-text or output-name argument;
+- or as a trailing comment on the executor's command, in a per-run copy of the test's YAML:
+  `& REM svs-…` for `command_prompt`, `# svs-…` for `sh` and `bash`, `<# svs-… #>` for `powershell`.
+
+The marker is not a secret. It counts only for its own run, on its own targets, inside its window
+(`docs/SVS.md`, Part 3, *Markers*).
+
+## Run states and timers
+
+| State | Reached by | Then |
+|---|---|---|
+| `created` | registration | `start`, `cancel`, or the start timeout |
+| `started` | `start` | the observation window passes → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
+| `ended` | the observation window passed | waits for a person, who reviews or closes it (later in phase 4) |
+| `reviewed` | an analyst signed it off | (later in phase 4) |
+| `canceled` | `cancel` | `closed` when the attribution window passes |
+| `error` | `executed` reported a failure, or `start` never came | `closed` when the attribution window passes |
+| `closed` | the timers, or an analyst | final: nothing is learned from the run |
+
+- **Cancel stops the run, not attribution.** The test may have fired anyway, so a canceled run keeps
+  attributing until its attribution window passes, and is closed then.
+- **A run canceled before it started** has no windows and can't have alerts: it is closed in the
+  same call (`close_reason` *canceled before start*).
+- **A run never started** goes to *error* `svs.runs.start_timeout_minutes` (30) after it was
+  registered, and is closed at once (`close_reason` *start timeout*). It never waits in a list.
+- **An ended run always waits for a person.**
+
+`service_svs` runs the timers every `svs.runs.timer_interval_seconds` (30), on the primary node. Every
+state change, by a launcher call or a timer, is a conditional update on the state it was read in,
+so a timer that fires twice, or a launcher call that races a timer, changes the run once. Each one
+writes a row to the run's event log (`svs_run_events`) and an INFO record carrying `svs_run`,
+`svs_test`, `svs_marker`, `from_state`, `to_state` and `actor` (the caller's name, or `svs` for a
+timer); `svs_run=<run uuid>` in the site's log search finds everything ACE did about a run.
+
+## Windows
+
+A run has two windows, both starting at `start`:
+
+- **The observation window** is how long the run waits for its alerts before it ends: the worst-case
+  latency of the slowest signature the test is expected to fire, plus `slack_minutes`, within
+  `floor_minutes` and `ceiling_hours`. A hunt's worst-case latency is its `frequency` (for a cron
+  frequency, the longest gap between two firings in a week) plus its `time_range` plus its `offset`;
+  any other signature fires while the alert is analyzed, so the floor covers it. **A test without
+  expectations yet**, which is every test until reviewed runs teach SVS what it fires, waits for the
+  slowest *enabled* hunt, capped at the ceiling: the first run is the one that discovers what fires,
+  so it needs the longest window, not the shortest.
+- **The attribution window** is longer by `attribution_extra_hours`. An alert that arrives after the
+  run ended but inside it is still attributed, as *late*.
+
+The lengths are fixed at registration, so a run's windows don't move when hunts change while it
+runs. A per-test window that overrides the computed one is not available yet.
+
+```yaml
+svs:
+  runs:
+    start_timeout_minutes: 30
+    observation_window: {slack_minutes: 30, floor_minutes: 60, ceiling_hours: 72}
+    attribution_extra_hours: 24
+    max_extra_bytes: 16384
+    max_targets: 16
+    timer_interval_seconds: 30
+```
+
+## Refused registrations
+
+A registration whose target is not a test host, or names a user the host doesn't list, is
+**refused with 403**, with the reason for each refused target, and no run is created. It also
+**creates an alert** in the `default` queue through the normal alert path: alert type
+`svs - registration refused`, a detection from the built-in signature `svs_registration_refused`,
+and the target host and user and the caller's name and address as observables. A launcher pointed
+at a production host is something an analyst should see.
+
+A launcher retrying in a loop must not flood the queue, so the alerts are **collapsed to one per
+(caller, host) per clock hour**. Later refusals in that hour are counted in
+`svs_registration_refusals` and logged at WARNING (`caller`, `host`, `reason`, `launcher`,
+`svs_test`, `alerted`), which every refusal is. A refusal is refused even when its alert can't be
+created; that failure is logged at ERROR.
 
 ## Test alerts and `SIMULATED`
 

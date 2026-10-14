@@ -780,12 +780,39 @@ class SVSCatalogConfig(BaseModel):
     refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
 
 
+class SVSObservationWindowConfig(BaseModel):
+    """How long a started run waits for its alerts before it ends (docs/SVS_RUNS.md, *Windows*): the
+    worst-case latency of the signatures it expects, plus slack, within a floor and a ceiling."""
+    model_config = ConfigDict(extra="forbid")
+    slack_minutes: int = Field(default=30, ge=0, description="added to the worst-case latency of the slowest expected signature")
+    floor_minutes: int = Field(default=60, ge=1, description="the shortest observation window")
+    ceiling_hours: int = Field(default=72, ge=1, description="the longest observation window")
+
+    @model_validator(mode="after")
+    def _floor_below_ceiling(self) -> "SVSObservationWindowConfig":
+        if self.floor_minutes > self.ceiling_hours * 60:
+            raise ValueError(f"floor_minutes ({self.floor_minutes}) must not exceed ceiling_hours ({self.ceiling_hours}) in minutes")
+        return self
+
+
+class SVSRunsConfig(BaseModel):
+    """Test runs (docs/SVS_RUNS.md): what a launcher may register and how long a run's windows last."""
+    model_config = ConfigDict(extra="forbid")
+    start_timeout_minutes: int = Field(default=30, ge=1, description="a run whose launcher has not called start this long after registering it goes to Error and is closed")
+    observation_window: SVSObservationWindowConfig = Field(default_factory=SVSObservationWindowConfig, description="how long a started run waits for its alerts before it ends")
+    attribution_extra_hours: int = Field(default=24, ge=0, description="how much longer than the observation window alerts are still attributed to the run (as late)")
+    max_extra_bytes: int = Field(default=16384, ge=0, description="the largest launcher extra a registration may carry, as serialized JSON; it is stored and shown on the run page")
+    max_targets: int = Field(default=16, ge=1, description="the most targets one run may have")
+    timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
     catalog: SVSCatalogConfig = Field(default_factory=SVSCatalogConfig, description="the Atomic Red Team test catalog")
+    runs: SVSRunsConfig = Field(default_factory=SVSRunsConfig, description="test runs")
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
 

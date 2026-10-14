@@ -4,8 +4,8 @@ ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
 with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
-(phase 2), the YARA validations (phase 3), and the test hosts and the Atomic Red Team test catalog
-(phase 4, so far).
+(phase 2), the YARA validations (phase 3), and the test hosts, the Atomic Red Team test catalog and
+the launcher's run calls (phase 4, so far).
 
 ## Conventions
 
@@ -450,6 +450,40 @@ come with the runs, later in phase 4.
 
 With `changed_since`, a test is returned when it was added, changed, removed or came back at or
 after that time.
+
+## Runs
+
+The launcher's lifecycle calls (`docs/SVS_RUNS.md`, *Registering a run*). Every one needs
+`svs:run_register`. Reading runs, their results and their event logs comes later in phase 4.
+
+| Endpoint | Returns |
+|---|---|
+| `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | 201 and the run in state `created`, with its `marker` |
+| `POST /api/v2/svs/runs/{run_id}/start` | The run in state `started`, with its window ends |
+| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
+| `POST /api/v2/svs/runs/{run_id}/cancel` | The run in state `canceled`, or `closed` when it was never started |
+
+| Status | When |
+|---|---|
+| 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without `svs:run_register`. |
+| 404 | No run has that `run_id`. |
+| 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
+| 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, a host or user name can't be used, too many targets, or `extra` is too large. |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `run_id` | The run's UUID: the stable identifier of a run, and the `svs_run` field of every log record about it. |
+| `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. |
+| `state` | `created`, `started`, `ended`, `reviewed`, `canceled`, `error` or `closed` (`docs/SVS_RUNS.md`, *Run states and timers*). |
+| `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
+| `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
+| `observation_seconds`, `attribution_seconds` | The windows' lengths, fixed at registration (`docs/SVS_RUNS.md`, *Windows*). |
+| `created_at`, `started_at` | When it was registered and started. |
+| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. |
+| `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
+| `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
 
 ## Worked examples
 

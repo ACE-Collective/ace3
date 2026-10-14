@@ -249,6 +249,23 @@ svs:
     repositories: []
     # how often service_svs looks for a new commit of each repository
     refresh_interval_seconds: 300
+  # test runs registered by a launcher (docs/SVS_RUNS.md)
+  runs:
+    # a run not started this long after it was registered goes to Error and is closed
+    start_timeout_minutes: 30
+    # how long a started run waits for its alerts: the worst-case latency of the signatures it
+    # expects (every enabled hunt, before it has expectations) plus slack, within floor and ceiling
+    observation_window:
+      slack_minutes: 30
+      floor_minutes: 60
+      ceiling_hours: 72
+    # alerts arriving this long after the observation window are still attributed, as late
+    attribution_extra_hours: 24
+    # the largest launcher "extra" a registration may carry (serialized JSON)
+    max_extra_bytes: 16384
+    max_targets: 16
+    # how often service_svs moves runs whose start timeout or windows have passed
+    timer_interval_seconds: 30
   # validating changes to YARA rules against the samples (docs/SVS_VALIDATION.md)
   yara:
     # the git_repo_<name> sections whose commits may be validated

@@ -2149,6 +2149,181 @@ class SVSCatalogTest(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSRun(Base):
+    """A test run (docs/SVS_RUNS.md): one Atomic Red Team test a launcher outside ACE runs against
+    one or more test hosts, from registration through review or close. Every state change is a
+    conditional update, so a timer that fires twice changes nothing. Only saq/svs/runs.py writes
+    this table."""
+
+    __tablename__ = 'svs_runs'
+    __table_args__ = (
+        Index('ix_svs_runs_state_created', 'state', 'created_at'),
+        Index('ix_svs_runs_state_observation', 'state', 'observation_ends_at'),
+        Index('ix_svs_runs_state_attribution', 'state', 'attribution_ends_at'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    # the catalog test (svs_catalog_tests.guid), its content hash and the repository commit it was
+    # read from, as they were when the run was registered
+    test_guid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    test_content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    catalog_commit: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        Enum('created', 'started', 'ended', 'reviewed', 'canceled', 'error', 'closed'),
+        nullable=False)
+    # svs- and 26 base32 characters (saq.svs.markers)
+    marker: Mapped[str] = mapped_column(CHAR(30), nullable=False, unique=True)
+    launcher: Mapped[str] = mapped_column(String(256), nullable=False)
+    # a label shared by the runs a launcher registered together; not a table
+    batch_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True, index=True)
+    # JSON-serialized object the launcher sent, capped at svs.runs.max_extra_bytes
+    extra: Mapped[str] = mapped_column(Text, nullable=False)
+    # who registered it, NULL for a config key or once that user is deleted
+    registered_by: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # what the launcher reported through executed
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    close_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the window lengths, computed at registration (saq.svs.windows), and where they end, set at start
+    observation_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    attribution_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    observation_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    attribution_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    owner_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    reviewer_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # a late alert or a manual association after review; the run needs attention again
+    changed_since_review: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    targets: Mapped[list["SVSRunTarget"]] = relationship(
+        'SVSRunTarget', back_populates='run', cascade='all, delete-orphan', passive_deletes=True,
+        order_by='SVSRunTarget.id')
+
+
+class SVSRunTarget(Base):
+    """A host (and user) a run targets, matched against svs_test_hosts at registration. Only
+    saq/svs/runs.py writes this table."""
+
+    __tablename__ = 'svs_run_targets'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False,
+        index=True)
+    # as the launcher sent them
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # normalized (saq.svs.hosts): the short host name and the fully qualified one when given, and
+    # the bare user name, all lower case. What attribution matches an alert's host and user against
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    fqdn: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    user: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # the test host it matched, NULL once that host is removed
+    test_host_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('svs_test_hosts.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+    run: Mapped["SVSRun"] = relationship('SVSRun', back_populates='targets')
+
+
+class SVSRunEvent(Base):
+    """One append-only row of a run's event log (docs/SVS.md, Part 5, *Debugging a run*): a state
+    transition, a launcher call with its payload, and later attributions and decisions. Only
+    saq/svs/runs.py writes this table."""
+
+    __tablename__ = 'svs_run_events'
+    __table_args__ = (
+        Index('ix_svs_run_events_run', 'run_id', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    # saq.svs.constants.RunEventKind
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    to_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # who did it: a user or key name, or the service for a timer
+    actor: Mapped[str] = mapped_column(String(256), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    # JSON-serialized: the call's payload, the reason
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSRegistrationRefusal(Base):
+    """Refused registrations per (caller, host, hour) (docs/SVS_RUNS.md, *Refused registrations*):
+    the first refusal in an hour creates an alert, the rest only count, so a launcher retrying in a
+    loop does not flood the queue [FR-15]. Only saq/svs/refusals.py writes this table."""
+
+    __tablename__ = 'svs_registration_refusals'
+    __table_args__ = (
+        UniqueConstraint('caller', 'host', 'hour', name='uq_svs_registration_refusals_caller_host_hour'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # the caller's name (a user or API key)
+    caller: Mapped[str] = mapped_column(String(256), nullable=False)
+    # the refused target host, normalized when it could be
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    # the start of the hour the refusals fell in
+    hour: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('1'))
+    # the alert the first refusal created, NULL if that failed
+    alert_uuid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    first_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

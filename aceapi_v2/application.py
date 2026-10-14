@@ -22,6 +22,7 @@ from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
 from aceapi_v2.svs.catalog.router import router as svs_tests_router
+from aceapi_v2.svs.runs.router import router as svs_runs_router
 from aceapi_v2.svs.samples.router import router as svs_samples_router
 from aceapi_v2.svs.test_hosts.router import router as svs_test_hosts_router
 from aceapi_v2.svs.yara.validations.router import router as svs_validations_router
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(svs_validations_router, prefix="/svs/yara/validations", tags=["svs"])
     app.include_router(svs_test_hosts_router, prefix="/svs/test-hosts", tags=["svs"])
     app.include_router(svs_tests_router, prefix="/svs/tests", tags=["svs"])
+    app.include_router(svs_runs_router, prefix="/svs/runs", tags=["svs"])
     app.include_router(yara_qa_router, prefix="/signatures/yara-qa", tags=["signatures"])
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])
