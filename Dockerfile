@@ -301,7 +301,7 @@ RUN if [ "$BUILD_TYPE" = "development" ]; then \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-ARG ACE_VERSION=3.0.124
+ARG ACE_VERSION=3.0.125
 LABEL version="${ACE_VERSION}"
 ENV ACE_VERSION=${ACE_VERSION}
 

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.125] - 2026-10-14
+
+- [Remove remote email collectors and port sandbox config to pydantic](https://github.com/ACE-Collective/ace3/pull/693)
+- [removed copy of removed dir](https://github.com/ACE-Collective/ace3/pull/692)
+- [Remove orphan test fixture directories](https://github.com/ACE-Collective/ace3/pull/690)
+- [Remove unreferenced YARA files from etc/](https://github.com/ACE-Collective/ace3/pull/689)
+- [Remove orphaned sql/tools reset scripts](https://github.com/ACE-Collective/ace3/pull/688)
+- [Remove the top-level hunts/ directory](https://github.com/ACE-Collective/ace3/pull/686)
+- [Remove orphan bin/ and cron/ scripts](https://github.com/ACE-Collective/ace3/pull/684)
+- [Leave SPL comments out of Splunk search links](https://github.com/ACE-Collective/ace3/pull/682)
+- [Remove the Open and Download File actions, and serve only images from /image](https://github.com/ACE-Collective/ace3/pull/680)
+- [Move /email to FastAPI, remove dead GUI routes, and track the Flask migration in docs/](https://github.com/ACE-Collective/ace3/pull/678)
+
 ## [3.0.124] - 2026-10-13
 
 - [SVS: the Validations card in the Signatures hub](https://github.com/ACE-Collective/ace3/pull/676)
