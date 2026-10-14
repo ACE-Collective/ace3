@@ -93,6 +93,19 @@ class TestAccess:
         assert kinds["sha256"] == ("text", [])
 
     @pytest.mark.asyncio
+    async def test_the_svs_runs_screen_is_for_run_readers(self, session: AsyncSession, test_user,
+                                                          signature_reader: AsyncClient):
+        key = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
+        async with api_key_client(key) as reader:
+            body = (await reader.get(f"{BASE}/svs_runs")).json()
+        kinds = {f["slug"]: (f["kind"], f["options"]) for f in body["filters"]}
+        assert kinds["needs_attention"] == ("bool", ["true", "false"])
+        assert kinds["state"] == ("multi", ["created", "started", "ended", "reviewed", "canceled", "error", "closed"])
+        assert kinds["created"] == ("date_range", [])
+        assert kinds["target"] == ("text", [])
+        assert (await signature_reader.get(f"{BASE}/svs_runs")).status_code == 403
+
+    @pytest.mark.asyncio
     async def test_unknown_screen_is_404(self, client: AsyncClient):
         assert (await client.get(f"{BASE}/nope")).status_code == 404
 

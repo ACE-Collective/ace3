@@ -15,12 +15,13 @@ from saq.gui.filter_names import (
     DATE_RANGE_FILTER_NAMES,
     DETECTION_POINT_FILTER_SLUGS,
     FILTER_NAMES,
+    SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
 
@@ -324,5 +325,75 @@ class CatalogTestFilterEntry(FilterEntryBase):
                 if value not in SAMPLE_BOOL_OPTIONS:
                     raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(SAMPLE_BOOL_OPTIONS)})")
             return values
+
+        return values
+
+
+# the date range filters of the SVS runs screen
+RUN_DATE_RANGE_FILTER_NAMES = ("Created", "Started", "Ended")
+
+
+class RunFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS runs screen (GET /api/v2/svs/runs)."""
+
+    name: str = Field(description="a filter name of the SVS runs screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_RUN_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_RUN_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            values = [value.strip().upper() for value in values]
+            for value in values:
+                if not _TECHNIQUE.match(value):
+                    raise ValueError(f"invalid technique {value!r} (expected an ATT&CK id such as T1059 or T1059.001)")
+            return values
+
+        if name == "Test":
+            values = [value.strip().lower() for value in values]
+            for value in values:
+                if not UUID_REGEX.fullmatch(value):
+                    raise ValueError(f"invalid test guid {value!r}")
+            return values
+
+        if name == "Target":
+            return [value.strip().lower() for value in values]
+
+        if name in ("Owner", "Reviewer"):
+            return [value.strip() for value in values]
+
+        if name in RUN_DATE_RANGE_FILTER_NAMES:
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "State": list(RUN_STATES),
+            "Changed Since Review": list(SAMPLE_BOOL_OPTIONS),
+            "Needs Attention": list(SAMPLE_BOOL_OPTIONS),
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.strip().lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
 
         return values

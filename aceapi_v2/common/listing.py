@@ -24,6 +24,8 @@ from typing import Any, Optional, TypeVar
 import pytz
 from fastapi import HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func, text
+from sqlalchemy.sql.elements import ColumnElement
 
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.sync import run_db_in_thread
@@ -34,6 +36,13 @@ LISTING_MAX_PAGE_SIZE = 1000
 LISTING_EXPORT_PAGE_SIZE = 1000
 
 CURSOR_VERSION = 1
+
+# A changed_since pull only returns rows whose updated_at is at least this old. updated_at is
+# stamped when the UPDATE runs, not when it commits, so a row can appear with a timestamp
+# older than a cursor that was already handed out; waiting until no transaction can still be
+# writing a value that old is what makes an (updated_at, id) keyset safe. Delivery is
+# at-least-once: a client that resumes from changed_since may see a row twice, never miss one.
+CHANGED_SINCE_SETTLE_SECONDS = 5
 
 T = TypeVar("T")
 
@@ -76,6 +85,13 @@ def decode_cursor(cursor: str, parse: Callable[[dict], T]) -> T:
         raise
     except Exception as e:
         raise InvalidCursor(f"malformed cursor: {e}") from None
+
+
+def settled(column, seconds: float) -> ColumnElement[bool]:
+    """column (a server-stamped updated_at) is at least `seconds` old, the condition every
+    (updated_at, id) keyset page carries (CHANGED_SINCE_SETTLE_SECONDS); the caller passes its
+    module's copy of the constant so a test can shorten it."""
+    return column < func.timestampadd(text("MICROSECOND"), -int(seconds * 1000000), func.now(6))
 
 
 #

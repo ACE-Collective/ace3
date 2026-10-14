@@ -24,16 +24,18 @@ from saq.gui.filter_entry import (
     FilterEntryBase,
     SampleFilterEntry,
     CatalogTestFilterEntry,
+    RunFilterEntry,
     ValidationFilterEntry,
 )
 from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
     FILTER_SLUGS,
+    SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 
 
 class UnknownFilterScreen(LookupError):
@@ -167,12 +169,39 @@ SVS_TESTS_SCREEN = FilterScreen(
     ),
 )
 
+# the test runs (GET /api/v2/svs/runs, docs/SVS_API.md); read with svs:run_read. Needs Attention is
+# one filter rather than a list of them because it is an OR (saq.svs.run_filters)
+SVS_RUNS_SCREEN = FilterScreen(
+    name="svs_runs",
+    entry_model=RunFilterEntry,
+    slugs=SVS_RUN_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Needs Attention", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("State", FilterFieldKind.MULTI, RUN_STATES),
+        FilterField("Test", FilterFieldKind.TEXT),
+        FilterField("Test Name", FilterFieldKind.TEXT),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Target", FilterFieldKind.TEXT),
+        FilterField("Launcher", FilterFieldKind.TEXT),
+        FilterField("Batch", FilterFieldKind.TEXT),
+        FilterField("Created", FilterFieldKind.DATE_RANGE),
+        FilterField("Started", FilterFieldKind.DATE_RANGE),
+        FilterField("Ended", FilterFieldKind.DATE_RANGE),
+        FilterField("Owner", FilterFieldKind.TEXT),
+        FilterField("Reviewer", FilterFieldKind.TEXT),
+        FilterField("Reason", FilterFieldKind.TEXT),
+        FilterField("Changed Since Review", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
 FILTER_SCREENS: dict[str, FilterScreen] = {
     ALERTS_SCREEN.name: ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
     SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
     SVS_TESTS_SCREEN.name: SVS_TESTS_SCREEN,
+    SVS_RUNS_SCREEN.name: SVS_RUNS_SCREEN,
 }
 
 

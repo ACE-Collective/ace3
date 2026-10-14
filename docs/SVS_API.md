@@ -5,7 +5,7 @@ ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
 with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
 (phase 2), the YARA validations (phase 3), and the test hosts, the Atomic Red Team test catalog and
-the launcher's run calls (phase 4, so far).
+the runs with their event logs (phase 4, so far).
 
 ## Conventions
 
@@ -25,9 +25,9 @@ the launcher's run calls (phase 4, so far).
   at-least-once: a row can come again, never be missed.
 - **Timestamps** are UTC. Relative date filters (`-7d`, `@d`) resolve in the `tz` parameter's zone.
 - **Scope.** Alert data is scoped to the alerts this node shows, as the GUI is. SVS data (samples,
-  validations) is global.
+  validations, tests, runs) is global.
 - **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`,
-  validation UUID.
+  validation UUID, test GUID, run UUID.
 
 ## Alerts
 
@@ -453,37 +453,136 @@ after that time.
 
 ## Runs
 
-The launcher's lifecycle calls (`docs/SVS_RUNS.md`, *Registering a run*). Every one needs
-`svs:run_register`. Reading runs, their results and their event logs comes later in phase 4.
+A run is one Atomic Red Team test a launcher outside ACE runs against test hosts, from
+registration through review or close (`docs/SVS_RUNS.md`). The launcher drives it with the
+lifecycle calls, which need `svs:run_register`. Everything else reads it with `svs:run_read`. A
+launcher that also reads its runs needs both.
 
-| Endpoint | Returns |
-|---|---|
-| `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | 201 and the run in state `created`, with its `marker` |
-| `POST /api/v2/svs/runs/{run_id}/start` | The run in state `started`, with its window ends |
-| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
-| `POST /api/v2/svs/runs/{run_id}/cancel` | The run in state `canceled`, or `closed` when it was never started |
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
+| `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
+| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
+| `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
+| `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
+| `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
+| `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent |
+| `GET /api/v2/svs/runs/{run_id}/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The run's event log, oldest first |
+| `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
+
+The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `state`, `test_guid`,
+`targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
+`close_reason`. Their errors:
 
 | Status | When |
 |---|---|
-| 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without `svs:run_register`. |
+| 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, a host or user name can't be used, too many targets, or `extra` is too large. |
+
+The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
 
 ### Fields
 
 | Field | Meaning |
 |---|---|
 | `run_id` | The run's UUID: the stable identifier of a run, and the `svs_run` field of every log record about it. |
-| `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. |
 | `state` | `created`, `started`, `ended`, `reviewed`, `canceled`, `error` or `closed` (`docs/SVS_RUNS.md`, *Run states and timers*). |
 | `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
+| `test_name`, `technique`, `technique_name` | From the catalog, as it is now. |
+| `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. It is `svs_marker` in ACE's log. |
 | `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
-| `observation_seconds`, `attribution_seconds` | The windows' lengths, fixed at registration (`docs/SVS_RUNS.md`, *Windows*). |
+| `launcher`, `batch_id` | As registered. A batch is a label shared by the runs a launcher registered together, not a resource. |
 | `created_at`, `started_at` | When it was registered and started. |
-| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. |
+| `executed_at`, `exit_code` | What the launcher reported through `executed`. |
+| `ended_at`, `canceled_at`, `closed_at` | When it moved to those states. |
+| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. *Time left* on a started run is `observation_ends_at` minus now. |
 | `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
 | `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
+| `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was reviewed. Review and ownership come later in phase 4, so these are null until then. |
+| `changed_since_review` | A late alert or a manual association came after its review. |
+| `needs_attention` | Whether it is in the *Needs attention* view (below). |
+| `updated_at` | The row's last change; the `changed_since` key. |
+
+`GET …/{run_id}` adds:
+- `extra`, the object the launcher sent;
+- `launcher_error`, the error `executed` reported;
+- `test_content_hash` and `catalog_commit`, the test as it was registered (a later catalog change
+  doesn't change them);
+- `observation_seconds` and `attribution_seconds`, the window lengths fixed at registration
+  (`docs/SVS_RUNS.md`, *Windows*);
+- `registered_by`, the username of the key that registered it (null for a config key).
+
+### Filters
+
+The runs, the event feed and the GUI's Runs screen share these filters (screen `svs_runs`).
+
+| Slug | Filter | Values |
+|---|---|---|
+| `needs_attention` | Needs Attention | `true`, `false` |
+| `state` | State | the states above |
+| `test` | Test | a test GUID |
+| `test_name` | Test Name | text the catalog name contains |
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `target` | Target | a host, by its short or fully qualified name |
+| `launcher` | Launcher | text the launcher's name contains |
+| `batch` | Batch | a `batch_id` |
+| `created`, `started`, `ended` | Created, Started, Ended | date ranges |
+| `owner`, `reviewer` | Owner, Reviewer | usernames |
+| `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
+| `changed_since_review` | Changed Since Review | `true`, `false` |
+
+**Needs attention** is the Runs screen's default view and the count on its navigation entry. It
+matches runs that:
+- ended and wait for review;
+- are in `error`;
+- were reviewed and have changed since.
+
+It is one filter, not a combination of the others, because it is an OR. When attribution lands
+later in phase 4, it will also match terminal runs that still hold open alerts. A saved filter on
+it follows that change.
+
+### Incremental pulls
+
+With `changed_since`, a run is returned when it was registered or its row changed at or after that
+time. The pages are then in `(updated_at, id)` order instead of newest first, and a cursor only
+works with the order it came from (otherwise 400). A row shows up a few seconds after it is
+written, once no open transaction can still write an older `updated_at`. Resume from the last
+row's `updated_at` and you never miss a run.
+
+### Run events
+
+Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Each event has:
+- `id` (a run's events are in `id` order) and `run_id`;
+- `kind`, `from_state` and `to_state`;
+- `actor` (the caller's name, or `svs` for a timer) and `actor_user` (its username, when it is a
+  user);
+- `details`, whose shape depends on `kind`;
+- `created_at` and `updated_at`.
+
+| `kind` | States | `details` |
+|---|---|---|
+| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra` |
+| `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
+| `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
+
+Later phase-4 work adds kinds for attribution, manual association and disassociation, candidate
+decisions and review. A reader skips kinds it doesn't know. In CSV, `details` is a JSON string.
+
+### The event feed
+
+`GET /api/v2/svs/runs/events` is the runs' change feed: every event of every run the `f=` filters
+match, in `(updated_at, id)` order, with `changed_since`. As with the run list, an event shows up a
+few seconds after it is written, so a pull resumed from the last event's `updated_at` never misses
+one. It may repeat one. This is where a report sees what happened to a run between two pulls, and
+later in phase 4 what was disassociated from it.
+
+### Joins
+
+- **Run → test:** `test_guid` = the test's `guid` in `GET /api/v2/svs/tests`.
+- **Event → run:** `run_id` = the run's `run_id`.
+- **Run → logs:** `run_id` and `marker` are the `svs_run` and `svs_marker` fields in ACE's log.
 
 ## Worked examples
 

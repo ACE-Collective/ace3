@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, func, or_, select, text
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import aliased
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
@@ -43,7 +43,15 @@ from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import ALERT_ROW_CSV_FIELDS, AlertRow, BulkAddObservableResult
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
-from aceapi_v2.common.listing import InvalidCursor, InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
+from aceapi_v2.common.listing import (
+    CHANGED_SINCE_SETTLE_SECONDS,
+    InvalidCursor,
+    InvalidListingRequest,
+    decode_cursor,
+    encode_cursor,
+    rows_to_csv,
+    settled,
+)
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -416,12 +424,6 @@ async def bulk_add_observable(
 LISTING_ORDER_ID = "id"
 LISTING_ORDER_UPDATED = "updated_at"
 
-# A changed_since pull only returns rows whose updated_at is at least this old. updated_at is
-# stamped when the UPDATE runs, not when it commits, so a row can appear with a timestamp
-# older than a cursor that was already handed out; waiting until no transaction can still be
-# writing a value that old is what makes the (updated_at, id) keyset safe. Delivery is
-# at-least-once: a client that resumes from changed_since may see a row twice, never miss one.
-CHANGED_SINCE_SETTLE_SECONDS = 5
 
 @dataclass(frozen=True)
 class AlertListing:
@@ -522,8 +524,8 @@ def fetch_alert_page_ids(
     InvalidCursor."""
     statement = listing.statement
     if listing.order == LISTING_ORDER_UPDATED:
-        settled = func.timestampadd(text("MICROSECOND"), -CHANGED_SINCE_SETTLE_SECONDS * 1000000, func.now(6))
-        statement = statement.where(Alert.updated_at < settled)
+        # only rows no open transaction can still be writing (aceapi_v2.common.listing)
+        statement = statement.where(settled(Alert.updated_at, CHANGED_SINCE_SETTLE_SECONDS))
         if cursor is not None:
             updated_at, alert_id = decode_listing_cursor(cursor, listing.order)
             # written out rather than as a row comparison so mysql serves it from the index

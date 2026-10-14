@@ -12,17 +12,18 @@ from sqlalchemy.sql.elements import ColumnElement
 from saq.database.model import SVSCatalogTest
 
 
-def _technique(value: str) -> ColumnElement[bool]:
+def technique_condition(column, value: str) -> ColumnElement[bool]:
+    """column is the technique value, or one of its sub-techniques when value is a technique."""
     if "." in value:
-        return SVSCatalogTest.technique == value
-    return or_(SVSCatalogTest.technique == value, SVSCatalogTest.technique.startswith(f"{value}.", autoescape=True))
+        return column == value
+    return or_(column == value, column.startswith(f"{value}.", autoescape=True))
 
 
 def catalog_filter_condition(entry: dict) -> ColumnElement[bool]:
     """The condition of one validated filter entry ({name, inverted, values})."""
     name, values = entry["name"], entry["values"]
     if name == "Technique":
-        condition = or_(*[_technique(value) for value in values])
+        condition = or_(*[technique_condition(SVSCatalogTest.technique, value) for value in values])
     elif name == "Name":
         condition = or_(*[SVSCatalogTest.name.contains(value, autoescape=True) for value in values])
     elif name == "Platform":

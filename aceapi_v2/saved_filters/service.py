@@ -29,6 +29,7 @@ from saq.database.model import SavedFilter
 from saq.gui.filter_screens import (
     ALERTS_SCREEN,
     FILTER_SCREENS,
+    SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
     FilterScreen,
@@ -99,11 +100,31 @@ DEFAULT_SVS_VALIDATION_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS runs screen: Needs attention is the screen's default view
+# (docs/SVS_RUNS.md, *Following runs*)
+DEFAULT_SVS_RUN_SAVED_FILTERS = (
+    {
+        "name": "Needs attention",
+        "description": "Runs that ended and wait for review, failed, or changed since they were reviewed",
+        "filters": [
+            {"name": "Needs Attention", "inverted": False, "values": ["true"]},
+        ],
+    },
+    {
+        "name": "Started",
+        "description": "Runs in flight: their observation window is open",
+        "filters": [
+            {"name": "State", "inverted": False, "values": ["started"]},
+        ],
+    },
+)
+
 # screen name -> the saved filters a user starts with on that screen
 DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
+    SVS_RUNS_SCREEN.name: DEFAULT_SVS_RUN_SAVED_FILTERS,
 }
 
 
