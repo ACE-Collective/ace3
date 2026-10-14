@@ -268,7 +268,7 @@ svs:
     timer_interval_seconds: 30
   # validating changes to YARA rules against the samples (docs/SVS_VALIDATION.md)
   yara:
-    # the git_repo_<name> sections whose commits may be validated
+    # the names (the name field) of the git_repo_* sections whose commits may be validated
     repositories: []
     # how long compiling and scanning one commit's rules over the whole corpus may take
     scan_timeout_seconds: 1800

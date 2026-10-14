@@ -284,7 +284,7 @@ GET  /api/v2/svs/yara/validations/{id}/status  (CI: svs:validate)
 GET  /api/v2/svs/yara/validations/{id}         (the report: signature:read)
 ```
 
-- **`repository`** names an existing `git_repo_<name>` section, so ACE uses credentials it already
+- **`repository`** names an existing `git_repo_*` section (by its `name`), so ACE uses credentials it already
   has.
 - **The CI key** belongs to a dedicated automation user with only `svs:validate`, so a leaked key
   can't read samples.
@@ -678,7 +678,7 @@ results are *possibly suppressed*, reconsider. The SVS page shows that share. [D
 ACE doesn't execute tests. It holds ART repositories only as a **catalog**: to validate
 `test_guid`, to display names and descriptions, to check `supported_platforms`, and to know each
 test's technique. [ART-12]
-- Each repository is an ordinary `git_repo_<name>` section, polled by `GitManagerService`.
+- Each repository is an ordinary `git_repo_*` section, named by its `name` field and polled by `GitManagerService`.
 - SVS parses `atomics/T*/T*.yaml` into a catalog table when the commit changes.
 - Custom repositories follow the ART schema and must carry `auto_generated_guid`. A test without
   one is skipped with a warning.
@@ -1066,7 +1066,7 @@ svs:
     attribution_extra_hours: 24
   log_search_url: null              # e.g. "https://splunk.example/...?q=svs_run={run_uuid}"
   yara:
-    repositories: [signatures]      # git_repo_<name> sections SVS may validate
+    repositories: [signatures]      # names of the git_repo_* sections SVS may validate
     scan_timeout_seconds: 1800
     max_concurrent_validations: 1   # [FR-13]
   attack_release: "v17"             # names etc/attack/v17.json [FR-14]

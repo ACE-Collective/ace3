@@ -1968,7 +1968,7 @@ class SVSValidation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
-    # a git_repo_<name> section listed in svs.yara.repositories
+    # the name of a git_repo_* section, listed in svs.yara.repositories
     repository: Mapped[str] = mapped_column(String(256), nullable=False)
     base_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
