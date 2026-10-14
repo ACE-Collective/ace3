@@ -1,1 +1,0 @@
-from saq.collectors.email.remote import RemoteEmailCollector

@@ -702,7 +702,6 @@ SERVICE_NETWORK_SEMAPHORE = "network_semaphore"
 SERVICE_REMEDIATION = "remediation"
 SERVICE_FILE_COLLECTION = "file_collection"
 SERVICE_EXTERNAL_REMEDIATION_CHECK = "external_remediation_check"
-SERVICE_REMOTE_EMAIL_COLLECTOR = "remote_email_collector"
 SERVICE_YARA_SCANNER = "yara"
 SERVICE_MONITORING = "monitoring"
 SERVICE_SVS = "svs"
@@ -1019,9 +1018,6 @@ CONFIG_SPLUNK_APP_CONTEXT = "app_context"
 CONFIG_QUERY_HUNTER = "query_hunter"
 CONFIG_QUERY_HUNTER_MAX_RESULT_COUNT = "max_result_count"
 CONFIG_QUERY_HUNTER_QUERY_TIMEOUT = "query_timeout"
-
-# remote email scanner
-CONFIG_REMOTE_EMAIL_COLLECTOR = "service_remote_email_collector"
 
 # events
 CONFIG_EVENTS = "events"

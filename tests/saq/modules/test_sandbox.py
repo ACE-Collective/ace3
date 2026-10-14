@@ -3,8 +3,9 @@ from unittest.mock import Mock
 import pytest
 
 from saq.constants import DIRECTIVE_SANDBOX_FORCE
+from saq.modules.config import AnalysisModuleConfig
 from saq.modules.sandbox import *
-from saq.modules.sandbox import SandboxAnalysisModule
+from saq.modules.sandbox import SandboxAnalysisModule, SandboxAnalysisModuleConfig
 
 
 def _make_module(is_sandboxable):
@@ -47,6 +48,66 @@ def test_should_sandbox_file_not_forced_and_not_sandboxable_returns_false():
 
     assert module.should_sandbox_file(observable, "/tmp/notes.txt") is False
     module.is_sandboxable_file.assert_called_once_with("/tmp/notes.txt")
+
+
+def _make_configured_module(config_class=SandboxAnalysisModuleConfig, **kwargs):
+    """Build a SandboxAnalysisModule without running __init__, with only its config set."""
+    module = object.__new__(SandboxAnalysisModule)
+    module.config = config_class(
+        name="test_sandbox", python_module="saq.modules.sandbox", python_class="SandboxAnalysisModule",
+        enabled=True, **kwargs)
+    return module
+
+
+@pytest.mark.unit
+def test_sandbox_config_defaults():
+    module = _make_configured_module()
+
+    assert module.use_proxy is True
+    assert module.verify_ssl is True
+    assert module.supported_extensions == []
+
+
+@pytest.mark.unit
+def test_sandbox_config_values_are_honored():
+    module = _make_configured_module(use_proxy=False, verify_ssl=False, supported_extensions=["EXE", " dll "])
+
+    assert module.use_proxy is False
+    assert module.verify_ssl is False
+    assert module.supported_extensions == ["exe", "dll"]
+
+
+@pytest.mark.unit
+def test_sandbox_config_accepts_comma_separated_extensions():
+    module = _make_configured_module(supported_extensions="EXE, dll")
+
+    assert module.config.supported_extensions == ["exe", "dll"]
+    assert module.supported_extensions == ["exe", "dll"]
+
+
+@pytest.mark.unit
+def test_sandbox_plain_config_uses_defaults():
+    # an integration subclass may declare a config class that does not extend SandboxAnalysisModuleConfig
+    module = _make_configured_module(config_class=AnalysisModuleConfig)
+
+    assert module.use_proxy is True
+    assert module.verify_ssl is True
+    assert module.supported_extensions == []
+
+
+@pytest.mark.unit
+def test_is_sandboxable_file_supported_extension():
+    module = _make_configured_module(supported_extensions=["xyz"])
+
+    # the extension check returns before the file is opened
+    assert module.is_sandboxable_file("/nonexistent/sample.XYZ") is True
+
+
+@pytest.mark.unit
+def test_proxies_empty_when_proxy_disabled():
+    module = _make_configured_module(use_proxy=False)
+
+    assert module.proxies == {}
 
 
 @pytest.mark.unit
