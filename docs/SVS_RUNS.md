@@ -143,6 +143,22 @@ alerts the test causes can be told apart from real ones:
 The marker is not a secret. It counts only for its own run, on its own targets, inside its window
 (`docs/SVS.md`, Part 3, *Markers*).
 
+**Markers inside files.** A marker can also end up in a dropped script or document rather than in a
+command line. ACE ships a YARA rule, `SVS_Marker` (`saq/svs/marker_rule.py`), that finds the same
+markers in file contents, as ASCII or UTF-16 text:
+- **Where it lives.** The `yara` service writes it to `<service_yara.signature_dir>/svs_marker/svs_marker.yar`
+  when it starts, before it loads any rules, so its own namespace is loaded and watched with the
+  rest. The engine's fallback scanner does the same before it loads rules.
+- **When it is rewritten.** Only when ACE's copy of the rule changes (an upgrade). A rewrite with
+  the same bytes would recompile every rule, so an unchanged file is left alone.
+- **It never alerts** (`modifiers = "no_alert"`). A match is kept in the file's *Yara Scan Results*,
+  with the matched marker, and that is what attribution reads.
+- **It is not a signature.** Like `observable_export/`, the directory is left out of the Signatures
+  inventory and has no uuid.
+- **Don't edit it, and don't commit it.** An edit is overwritten at the next start. When
+  `signature_dir` is inside a rules repository's checkout, `svs_marker/` shows up there as
+  untracked: don't commit a directory of that name to the repository.
+
 ## Run states and timers
 
 | State | Reached by | Then |
