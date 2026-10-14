@@ -776,7 +776,7 @@ class SVSCatalogConfig(BaseModel):
     """The Atomic Red Team test catalog (docs/SVS_RUNS.md, *The Atomic Red Team catalog*): the tests
     runs may be registered for, read from git repositories in the ART layout."""
     model_config = ConfigDict(extra="forbid")
-    repositories: list[str] = Field(default_factory=list, description="the git_repo_<name> sections, by name, whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
+    repositories: list[str] = Field(default_factory=list, description="the names (the name field) of the git_repo_* sections whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
     refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
 
 

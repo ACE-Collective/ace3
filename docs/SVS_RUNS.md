@@ -53,7 +53,7 @@ ACE never runs a test. It holds Atomic Red Team repositories only as a catalog: 
 run is registered for, to show its name, description and commands, to check its supported platforms
 and to know its ATT&CK technique.
 
-- **Each repository is an ordinary `git_repo_<name>` section**, which `service_git` keeps checked out
+- **Each repository is an ordinary `git_repo_*` section**, named by its `name` field, which `service_git` keeps checked out
   at its `local_path`, listed in `svs.catalog.repositories`. Custom repositories follow the ART
   layout and schema.
 - **`service_svs` reads `atomics/T*/T*.yaml`** from the checkout whenever its commit changes,

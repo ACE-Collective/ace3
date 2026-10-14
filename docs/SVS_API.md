@@ -422,7 +422,7 @@ come with the runs, later in phase 4.
 | Field | Meaning |
 |---|---|
 | `guid` | The test's `auto_generated_guid`, lower case: the stable identifier runs are registered with. |
-| `repository` | The `git_repo_<name>` section it is read from. |
+| `repository` | The name of the `git_repo_*` section it is read from. |
 | `technique`, `technique_name` | The ATT&CK technique of its atomic file (`attack_technique`, `display_name`). |
 | `name`, `platforms`, `executor` | The test's `name`, `supported_platforms` (lower case) and `executor.name`. |
 | `path` | Its atomic file, relative to the repository. |

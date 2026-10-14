@@ -245,7 +245,7 @@ svs:
     inventory_refresh_seconds: 300
   # the Atomic Red Team test catalog runs are registered for (docs/SVS_RUNS.md)
   catalog:
-    # the git_repo_<name> sections whose atomics/T*/T*.yaml are the catalog
+    # the names (the name field) of the git_repo_* sections whose atomics/T*/T*.yaml are the catalog
     repositories: []
     # how often service_svs looks for a new commit of each repository
     refresh_interval_seconds: 300

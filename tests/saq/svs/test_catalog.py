@@ -255,7 +255,7 @@ def test_a_commit_that_moves_while_reading_stores_nothing(checkout, monkeypatch)
 @pytest.mark.integration
 @pytest.mark.parametrize("setup, message", [
     ("unlisted", "is not in svs.catalog.repositories"),
-    ("no_section", "has no git_repo_nowhere section"),
+    ("no_section", "no git_repo section is named nowhere"),
     ("no_checkout", "does not exist yet; is service_git running?"),
 ])
 def test_refresh_errors_are_recorded(checkout, monkeypatch, setup, message):
@@ -373,7 +373,7 @@ def test_cli_refresh_and_status(checkout, capsys):
 def test_cli_refresh_reports_an_error(checkout, capsys, monkeypatch):
     monkeypatch.setattr(get_config().svs.catalog, "repositories", ["nowhere"])
     assert cli_catalog_refresh(Namespace(repository=None, force=False)) == 1
-    assert "has no git_repo_nowhere section" in capsys.readouterr().out
+    assert "no git_repo section is named nowhere" in capsys.readouterr().out
 
     assert cli_catalog_status(Namespace()) == 0
     assert "nowhere: never read; last error:" in capsys.readouterr().out

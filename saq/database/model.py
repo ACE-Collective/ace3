@@ -2091,7 +2091,7 @@ class SVSCatalogRepository(Base):
     __tablename__ = 'svs_catalog_repositories'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # a git_repo_<name> section
+    # the name of a git_repo_* section
     name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     # the commit the catalog holds, NULL until the first refresh succeeds
     commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

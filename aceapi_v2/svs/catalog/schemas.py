@@ -10,7 +10,7 @@ class CatalogTest(BaseModel):
     """An Atomic Red Team test, by its auto_generated_guid."""
 
     guid: str = Field(description="the test's auto_generated_guid, lower case")
-    repository: str = Field(description="the git_repo_<name> section it is read from")
+    repository: str = Field(description="the name of the git_repo_* section it is read from")
     technique: str = Field(description="the ATT&CK technique of its atomic file, e.g. T1059.001")
     technique_name: Optional[str] = None
     name: str
