@@ -45,6 +45,12 @@ class TextFileResponse(FileResponse):
     media_type = "text/plain"
 
 
+class TextStreamResponse(StreamingResponse):
+    """Text generated as it is sent, as text/plain (a file observable's hex dump)."""
+
+    media_type = "text/plain"
+
+
 class ImageFileResponse(FileResponse):
     """An image file from an alert. The class-level type is the range the schema publishes; each
     response passes the file's own image type as media_type."""

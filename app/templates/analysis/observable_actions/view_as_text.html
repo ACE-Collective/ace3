@@ -1,9 +1,8 @@
 {% autoescape false %}
 {% if _observable.exists %}
 <script type="text/javascript">
-console.log($('#action_{{action.name}}_{{unique_reference}}'));
 $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-    window.open("{{url_for('analysis.download_file', file_uuid=_observable.uuid, alert_uuid=alert.uuid, mode='text')}}");
+    window.open("/api/v2/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/text");
 });
 </script>
 {% endif %}

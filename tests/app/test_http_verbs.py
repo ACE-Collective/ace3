@@ -28,7 +28,6 @@ POST_ONLY_ENDPOINTS = [
 # cannot be added later under an already-accepted verb.
 GET_ONLY_ENDPOINTS = [
     "analysis.redirect_to",
-    "analysis.download_file",
     "analysis.load_more_events",
     "analysis.new_alert_observable",
     "analysis.new_filter_option",

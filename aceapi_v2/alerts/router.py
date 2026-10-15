@@ -18,6 +18,7 @@ from aceapi_v2.responses import (
     ImageFileResponse,
     NdjsonStreamResponse,
     TextFileResponse,
+    TextStreamResponse,
     ZipFileResponse,
 )
 from aceapi_v2.sync import run_db_in_thread
@@ -379,6 +380,66 @@ async def get_observable_image(
         # alert content: a browser may keep it, a shared cache may not
         "Cache-Control": "private",
     })
+
+
+# a file observable's content opened as a page must stay inert on the GUI origin: never sniffed as
+# HTML, sandboxed, and kept by the browser only
+_FILE_VIEW_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+    "Cache-Control": "private",
+}
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/text", response_class=TextFileResponse)
+async def view_observable_file_as_text(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> TextFileResponse:
+    """A file observable of the alert, as text: its bytes as they are, served as text/plain
+    (the alert page's View As Text)."""
+    file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s viewed file %s of alert %s as text", auth.auth_name, observable_uuid, alert_uuid)
+    # FileResponse ignores the class attribute; without this it guesses from the filename
+    return TextFileResponse(file_observable.path, media_type="text/plain; charset=utf-8", headers=_FILE_VIEW_HEADERS)
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/hex", response_class=TextStreamResponse)
+async def view_observable_file_as_hex(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> TextStreamResponse:
+    """A file observable of the alert as a hex dump, in the format of `hexdump -C` (the alert
+    page's View As Hex)."""
+    file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s viewed file %s of alert %s as hex", auth.auth_name, observable_uuid, alert_uuid)
+    return TextStreamResponse(service.hexdump(file_observable.path), media_type="text/plain; charset=utf-8",
+                              headers=_FILE_VIEW_HEADERS)
+
+
+@router.get(
+    "/{alert_uuid}/observables/{observable_uuid}/zip",
+    response_class=ZipFileResponse,
+    responses=ZIP_DOWNLOAD_RESPONSES,
+)
+async def download_observable_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> ZipFileResponse:
+    """A file observable of the alert, as a zip encrypted with password 'infected' (the alert
+    page's Download File As ZIP)."""
+    zip_path, file_name = await run_db_in_thread(service.create_encrypted_file_zip, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s downloaded file %s of alert %s", auth.auth_name, observable_uuid, alert_uuid)
+    return ZipFileResponse(
+        zip_path,
+        # FileResponse ignores the class attribute; without this it guesses from the filename
+        media_type="application/zip",
+        filename=file_name,
+        background=BackgroundTask(_safe_unlink, zip_path),
+    )
 
 
 @router.get("/{alert_uuid}/logs", response_class=TextFileResponse)
