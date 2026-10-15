@@ -5,75 +5,7 @@ import pytest
 from flask import url_for
 
 from saq.configuration import get_config
-from saq.database.model import Alert, Comment, Tag, TagMapping
-from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.util.time import local_time
-
-
-@pytest.mark.integration
-def test_export_alerts_to_csv_no_filters(web_client):
-    """Test export_alerts_to_csv with no session filters."""
-    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
-    assert result.status_code == 200
-    assert result.headers['Content-Type'] == 'text/csv'
-    assert 'export.csv' in result.headers['Content-Disposition']
-
-
-@pytest.mark.integration  
-def test_export_alerts_to_csv_with_alerts(web_client, root_analysis):
-    """Test export_alerts_to_csv with actual alerts in database."""
-    root_analysis.event_time = local_time()
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Add a comment to test comments column
-    comment = Comment(uuid=alert.uuid, comment="Test comment", user_id=get_config().global_settings.automation_user_id)
-    get_db().add(comment)
-    get_db().commit()
-
-    # Initialize session filters
-    with web_client.session_transaction() as sess:
-        sess['filters'] = []
-
-    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
-    assert result.status_code == 200
-    assert result.headers['Content-Type'] == 'text/csv'
-    
-    csv_content = result.get_data(as_text=True)
-    assert 'Event Time' in csv_content
-    assert 'Alert Time' in csv_content
-    assert 'Description' in csv_content
-    assert str(alert.uuid) in csv_content
-
-
-@pytest.mark.integration
-def test_export_alerts_to_csv_includes_tags(web_client, root_analysis):
-    """Exported alert rows include their tags (e.g. MITRE ATT&CK techniques)."""
-    root_analysis.event_time = local_time()
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    tag_one = Tag(name="mitre:T1566")
-    tag_two = Tag(name="mitre:T1059.001")
-    get_db().add_all([tag_one, tag_two])
-    get_db().flush()
-    get_db().add_all([
-        TagMapping(alert_id=alert.id, tag_id=tag_one.id),
-        TagMapping(alert_id=alert.id, tag_id=tag_two.id),
-    ])
-    get_db().commit()
-
-    with web_client.session_transaction() as sess:
-        sess['filters'] = []
-
-    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
-    assert result.status_code == 200
-
-    csv_content = result.get_data(as_text=True)
-    assert 'Tags' in csv_content
-    assert 'mitre:T1566' in csv_content
-    assert 'mitre:T1059.001' in csv_content
 
 
 @pytest.mark.integration
@@ -281,32 +213,3 @@ def test_html_details_with_field(web_client, root_analysis):
                           })
     assert result.status_code == 200
     assert b"<h1>Test HTML</h1>" in result.data
-
-@pytest.mark.integration
-def test_export_alerts_to_csv_matches_the_alert_list(web_client, root_analysis):
-    """The CSV export and the alert management page build the same query
-    (build_alert_query), so an alert that /manage shows has to appear in the export.
-
-    Regression test for an inverted Observable filter: the export used to inner-join
-    ObservableMapping, which dropped every alert that has no observables at all before
-    the NOT condition was even evaluated, so "NOT Observable X" exported fewer alerts
-    than the analyst was looking at."""
-    from app.analysis.views.session.filters import build_alert_query
-
-    root_analysis.event_time = local_time()
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    filters = [{"name": "Observable", "inverted": True, "values": [["ipv4", "10.0.0.1"]]}]
-    with web_client.session_transaction() as sess:
-        sess['filters'] = filters
-
-    listed = build_alert_query(filters).group_by(Alert.id).all()
-    assert alert.uuid in [_.uuid for _ in listed]
-
-    result = web_client.get(url_for("analysis.export_alerts_to_csv"))
-
-    assert result.status_code == 200
-    csv_content = result.get_data(as_text=True)
-    for listed_alert in listed:
-        assert str(listed_alert.uuid) in csv_content

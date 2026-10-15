@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **19 API-shaped candidates** out of 88 routes (12 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **18 API-shaped candidates** out of 87 routes (11 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,7 +33,7 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **GUI Tier 1 remainder**: `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
+1. **GUI Tier 1 remainder**: `set_owner` and `remediation_targets`.
 2. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
 3. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
 4. **GUI Tier 2** observable actions.
@@ -362,6 +362,19 @@ Notes:
 - **`image`** keeps the Flask route's guards: only an image file observable is served (anything else is a 404), with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, and only that one observable is loaded, never the analysis tree. It streams through `ImageFileResponse` (`image/*` in the schema, the file's own type on the wire) and is `Cache-Control: private` rather than the GUI blueprint's default `public, max-age=0`. A malformed alert uuid is a 400 and an archived alert a 410, as on the other `/alerts/{alert_uuid}` routes.
 - The templates that embed images (`analysis/file_observable.html`, `analysis/image_full.html`, `events/screenshots.html`) write the v2 path directly, like the alert page's download and log links.
 
+### Manage page CSV export → `GET /api/v2/alerts/export/csv`
+
+| Legacy Flask URL (GUI)         | v2 URL                                                        |
+|--------------------------------|---------------------------------------------------------------|
+| `GET /export_alerts_to_csv`    | `GET /api/v2/alerts/export/csv?f=...&tz=...` (already existed) |
+
+No new endpoint: the manage page's Export to CSV button downloads the API's CSV export of the filters the page shows. The CSV is the API's, not the old one: UTC ISO 8601 times instead of the analyst's display timezone, usernames instead of display names, and the listing's other columns (`priority`, `company`, `location`, `archived`, `detection_count`, ...).
+
+Notes:
+- **Comments.** The old export had a Comments column and the API's did not, which is what kept this route in Flask. `GET /api/v2/alerts` rows are now `AlertListRow`: `AlertRow` plus `comments`, the comments on the alert oldest first, loaded with one more query per page (`service.load_alert_list_rows()`). The CSV joins them with a newline. The AI API's export (`aceapi_ai/export/`) extends the plain `AlertRow` and stays without them, so `ai:export` does not hand out analyst-written text; `tests/aceapi_ai/test_export.py::test_alert_comments_are_not_exported` pins that.
+- **Which filters.** The view renders the URL as `data-export-url` on `#manage_filter_bar`, beside `data-effective-filters`: the effective filters (a temporary pivot included, as before) in share-link form, plus the analyst's `tz` for relative dates. The bar is what the refresh poll re-renders and the action bar is not, so the button reads the URL from the bar when clicked (`export_alerts_to_csv()` in `manage_alerts.js`) and always exports what the bar shows.
+- The Flask export's regression test for an inverted Observable filter (an alert with no observables must still be exported under "NOT observable X") moved to `tests/aceapi_v2/alerts/test_list.py::TestFilters`.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -386,7 +399,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 88** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 87** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -405,7 +418,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    47 |        9 | 10 (3 T1 + 7 T2)     | 28 (17 B + 11 C)    |
+| `analysis`        |    46 |        9 |  9 (2 T1 + 7 T2)     | 28 (17 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     7 |        2 |                    5 |                   0 |
 | `file_collection` |     6 |        2 |                    4 |                   0 |
@@ -413,19 +426,18 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **88**|   **29** | **19 (12 T1 + 7 T2)**|              **40** |
+| **Total**         | **87**|   **29** | **18 (11 T1 + 7 T2)**|              **40** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), and `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), and `/export_alerts_to_csv` (the button uses the API export, see its appendix entry).
 
 ### `analysis` blueprint
 
-47 routes total: 9 template, 10 candidates (3 Tier 1 + 7 Tier 2), 17 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+46 routes total: 9 template, 9 candidates (2 Tier 1 + 7 Tier 2), 17 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 **Tier 1:**
 
 | Method(s)          | URL                         | Function                   | file:line                 | Returns | Callers / notes |
 |--------------------|-----------------------------|----------------------------|---------------------------|---------|-----------------|
-| GET                | `/export_alerts_to_csv`     | `export_alerts_to_csv`     | `export.py:26`            | CSV     | `analysis/manage.html:16` (`url_for` link). Overlaps `GET /api/v2/alerts/export/csv`, which takes `f=` share-link filters rather than session state and has no Comments column; close those gaps and repoint the link. |
 | PUT, DELETE, PATCH | `/remediation_targets`      | `remediation_targets`      | `remediation.py:9`        | **text** | `remediation.js:8` (opened from `manage_alerts.js:358`, `saq_analysis.js:327`, `analysis/index.html:58`). **Mixed** — POST returns a template and stays. PATCH returns inside its loop, so it acts on the first target only. Every verb, writes included, is gated by `remediation:read`. |
 | POST               | `/set_owner`                | `set_owner`                | `edit/ownership.py:71`    | 204     | `manage_alerts.js:55`, `saq_analysis.js:832`. Database only (`take_ownership`), but reports skipped alerts through `flash()` and sets `session['checked']`. |
 

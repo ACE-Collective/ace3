@@ -9,86 +9,14 @@ import smtplib
 from subprocess import PIPE, Popen
 from uuid import uuid4
 import zipfile
-from flask import flash, make_response, redirect, request, session, url_for
+from flask import flash, make_response, redirect, request, url_for
 from flask_login import current_user
 from app.analysis.views.session.alert import get_current_alert, load_current_alert
-from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_effective_filters
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.csv_builder import CSV
-from saq.database.model import Comment
-from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_temp_dir
 from saq.error.reporting import report_exception
-from saq.gui.alert import GUIAlert
-
-@analysis.route('/export_alerts_to_csv', methods=['GET'])
-@require_permission('alert', 'read')
-def export_alerts_to_csv():
-    # use default page settings if first visit. 
-    if 'filter_uuid' not in session:
-        _reset_filters()
-
-    # create alert view by joining required tables, applying the session filters and
-    # scoping to the alerts visible from this node 
-    # honors an active temporary filter on purpose: the CSV should match the list the
-    # analyst is looking at
-    query = build_alert_query(get_effective_filters())
-
-    # group by id to prevent duplicates
-    query = query.group_by(GUIAlert.id)
-
-    # query alerts
-    alerts = query.all()
-
-    # load alert comments
-    # NOTE: We should have the alert class do this automatically
-    comments = {}
-    if alerts:
-        for comment in get_db().query(Comment).filter(Comment.uuid.in_([a.uuid for a in alerts])).order_by(Comment.insert_date.asc()):
-            if comment.uuid not in comments:
-                comments[comment.uuid] = []
-            comments[comment.uuid].append(f'{comment.comment}')
-
-    # converts alerts to csv
-    csv = CSV(
-        'Event Time',
-        'Alert Time', 
-        'Disposition Time', 
-        'Tool', 
-        'Tool Instance', 
-        'Alert Type', 
-        'Description', 
-        'Disposition', 
-        'Owner', 
-        'UUID', 
-        'Queue', 
-        'Tags',
-        'Comments',
-    )
-    for alert in alerts:
-        csv.add_row(
-            alert.display_event_time,
-            alert.display_insert_date, 
-            alert.display_disposition_time if alert.disposition_time is not None else '', 
-            alert.tool,
-            alert.tool_instance,
-            alert.alert_type,
-            alert.description,
-            alert.disposition,
-            alert.owner.gui_display if alert.owner_id is not None else '', 
-            alert.uuid,
-            alert.queue,
-            ', '.join(tag.name for tag in alert.sorted_tags),
-            '\n'.join(comments.get(alert.uuid, [])),
-        )
-
-    # send csv to client
-    output = make_response(str(csv))
-    output.headers["Content-Disposition"] = "attachment; filename=export.csv"
-    output.headers["Content-type"] = "text/csv"
-    return output
 
 @analysis.route('/download_file', methods=['GET'])
 @require_permission('alert', 'read')

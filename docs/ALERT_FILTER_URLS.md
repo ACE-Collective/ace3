@@ -111,8 +111,9 @@ f=queue:$USER_QUEUE&f=reviewed:UNREVIEWED
 
 ## The same filters in the API
 
-`GET /api/v2/alerts` (permission `alert:read`) lists alerts as flat database rows for export
-and reporting, and takes these filters as repeated `f` query parameters, exactly as written in
+`GET /api/v2/alerts` (permission `alert:read`) lists alerts as flat database rows, each with
+the comments on the alert, for export and reporting (the manage page's Export to CSV button
+downloads its CSV export), and takes these filters as repeated `f` query parameters, exactly as written in
 a link: copy the part of a manage-page URL after `?` and the API returns the same alerts. Two
 differences, both on purpose:
 

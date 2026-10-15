@@ -28,7 +28,7 @@ from aceapi_v2.alerts.schemas import (
     AlertCount,
     AlertListPage,
     AlertMeta,
-    AlertRow,
+    AlertListRow,
     BulkAddObservableRequest,
     BulkAddObservableResult,
     DateRange,
@@ -162,7 +162,7 @@ class _ExportFailed(Exception):
 
 async def _prepare_export(
     auth: ApiAuthResult, f: list[str], changed_since: datetime | None, tz: str
-) -> tuple[service.AlertListing, tuple[list[AlertRow], str | None]]:
+) -> tuple[service.AlertListing, tuple[list[AlertListRow], str | None]]:
     """The listing and its first page. Everything that can be a 4xx happens here, before the
     response starts: once the first byte is sent the status code cannot change."""
     listing = await _prepare_listing(auth, f, changed_since, tz)
@@ -170,7 +170,7 @@ async def _prepare_export(
     return listing, first_page
 
 
-async def _export_pages(listing: service.AlertListing, first_page: tuple[list[AlertRow], str | None]):
+async def _export_pages(listing: service.AlertListing, first_page: tuple[list[AlertListRow], str | None]):
     """Yields the rows of every page in turn. Raises _ExportFailed (after logging) when a later
     page fails, so each format can end its stream the way that format can say so."""
     rows, next_cursor = first_page
@@ -196,7 +196,7 @@ async def export_alerts_ndjson(
     changed_since: ChangedSinceParam = None,
     tz: TimezoneParam = "UTC",
 ) -> NdjsonStreamResponse:
-    """Stream every alert the listing matches as NDJSON, one AlertRow per line.
+    """Stream every alert the listing matches as NDJSON, one AlertListRow per line.
 
     A failure part-way through cannot change the status code that was already sent: the
     stream then ends with an {"error": ...} line, and the failure is logged.

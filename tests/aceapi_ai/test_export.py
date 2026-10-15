@@ -10,7 +10,8 @@ import aceapi_ai.export.service as export_service
 from aceapi_ai.export.schemas import MAX_OBSERVABLE_IDS
 from aceapi_ai.ratelimit import RateLimitExceeded, rate_limiter
 from aceapi_v2.alerts import service as alerts_service
-from saq.database.model import Alert, EventMapping
+from saq.configuration.config import get_config
+from saq.database.model import Alert, Comment, EventMapping
 from saq.database.pool import get_db
 from tests.aceapi_ai.conftest import api_key_client
 from tests.aceapi_ai.test_events import _make_event
@@ -127,6 +128,20 @@ async def test_archived_alert_is_exported_with_its_observables(export_client):
     assert row["archived"] is True
     assert row["disposition_class"] == "fp"
     assert row["observable_ids"]
+
+
+@pytest.mark.asyncio
+async def test_alert_comments_are_not_exported(export_client):
+    """GET /api/v2/alerts rows carry the analysts' comments; this export's rows do not, so the
+    ai:export scope does not hand out analyst-written text."""
+    alert = insert_alert()
+    db = get_db()
+    db.add(Comment(uuid=alert.uuid, user_id=get_config().global_settings.automation_user_id,
+                   comment="an analyst's note"))
+    db.commit()
+
+    (row,) = [row for row in await _all_alerts(export_client, {}, limit=100) if row["uuid"] == alert.uuid]
+    assert "comments" not in row
 
 
 @pytest.mark.asyncio
