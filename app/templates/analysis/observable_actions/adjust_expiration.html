@@ -1,54 +1,8 @@
- <script type="text/javascript">
-     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-         $('#adjust_observable_expiration_modal').modal('show');
-     });
-
-     function disable_date_input() {
-         if (document.getElementById("observable_never_expire").checked != 1) {
-             document.getElementById("observable_expiration_time").removeAttribute("disabled");
-         } else {
-             document.getElementById("observable_expiration_time").setAttribute("disabled", "disabled");
-
-         }
-     }
- </script>
-
-<div class="modal fade" id="adjust_observable_expiration_modal" tabindex="-1" role="dialog" aria-labelledby="adjust_observable_expiration_modal_label" aria-hidden="true">
-    <div class="modal-dialog">
-        <form id="adjust-observable-expiration-form" class="form-horizontal" role="form" method="POST" action={{url_for('analysis.observable_action_adjust_expiration')}}>
-        <div class="modal-content">
-            <div class="modal-header">
-                <button type="button" class="close" data-dismiss="modal"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
-                <h4 class="modal-title" id="adjust_observable_expiration_modal_label">Adjust Observable Expiration TIme</h4>
-            </div>
-            <div class="modal-body">
-                <div class="row">
-                    <div class="col-xs-12">
-                    <b>Current Expiration Time (UTC) </b>
-                    <input type="text" class="form-control" id="current_expiration_time" name="current_expiration_time" value="" placeholder="{{ _observable.expires_on }}" readonly  />
-                    </div>
-                </div>
-                <br>
-                <div class="row">
-                    <div class="col-xs-12">
-                    <b>New Expiration Time (UTC) </b>
-                    <input type="text" class="form-control" id="observable_expiration_time" name="observable_expiration_time" value="" placeholder="YYYY-MM-DD HH:MM:SS"/>
-                    </div>
-                </div>
-                <br>
-                <div class="row">
-                    <div class="col-xs-12">
-                        <b>This observable should never expire</b> <input type="checkbox" class="checkbox-inline" id="observable_never_expire" onclick="disable_date_input()" name="observable_never_expire" style="transform: scale(1.5);margin-left: 10px" {% if _observable.expires_on is none %} disabled="disabled" {% endif %}/>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <input type="hidden" name="alert_uuid" value="{{alert.uuid}}">
-                <input type="hidden" name="observable_uuid" value="{{_observable.uuid}}">
-                <button type="button" class="btn btn-default" data-dismiss="modal">Leave It</button>
-                <button type="submit" class="btn btn-primary" id="btn-submit-observable-expiration">Update It</button>
-            </div>
-        </div>
-        </form>
-    </div>
-</div>
+{% set detection = observable_detections[_observable.uuid] %}
+<script type="text/javascript">
+    $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
+        show_detection_expiration_modal_for(
+            {{ detection.detection_id }},
+            {{ (detection.expires_on.strftime('%Y-%m-%d %H:%M:%S') if detection.expires_on else none) | tojson }});
+    });
+</script>

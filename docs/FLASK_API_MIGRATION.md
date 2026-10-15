@@ -18,14 +18,14 @@ This doc tracks two surfaces:
 | `common`   | _(removed)_   | –         | –              | Migrated   |
 | `events`   | _(removed)_   | –         | –              | Migrated   |
 | `email`    | _(removed)_   | –         | –              | Migrated   |
+| `intel`    | _(removed)_   | –         | –              | Deleted    |
 | `analysis` | `analysis.py` | 7         | GET, POST      | Legacy     |
 | `engine`   | `engine.py`   | 3         | GET, POST      | Legacy     |
-| `intel`    | `intel.py`    | 2         | GET, POST      | Legacy     |
 | `hunt`     | `hunt.py`     | 1         | POST           | Legacy     |
 
-**Legacy endpoints remaining: 13** (9 GET, 4 POST).
+**Legacy endpoints remaining: 11** (8 GET, 3 POST).
 
-GUI routes (`app/`): **24 API-shaped candidates** out of 94 routes (16 Tier 1, 8 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **23 API-shaped candidates** out of 92 routes (16 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,19 +33,29 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **Detection management in one place.** `/intel/observables` GET and POST plus the GUI's `observable_action_set_for_detection` and `observable_action_adjust_expiration`, all onto `aceapi_v2/detection/`. Decide the permission pair first: the legacy routes use `observable:*`, `aceapi_v2/detection/` uses `detection:*`.
-2. **`/analysis` reads** (6 routes): `ace_api` helpers only; `RootAnalysis` loads through `asyncio.to_thread`.
-3. **GUI Tier 1 remainder**: `get_alert_meta`, `resolve_date_range`, `reset_filter_alert_count`, `image`, `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
-4. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
-5. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
-6. **GUI Tier 2** observable actions.
-7. **`/engine` and `/analysis/submit`**, last: node to node, so they need a rolling-upgrade plan.
+1. **`/analysis` reads** (6 routes): `ace_api` helpers only; `RootAnalysis` loads through `asyncio.to_thread`.
+2. **GUI Tier 1 remainder**: `get_alert_meta`, `resolve_date_range`, `reset_filter_alert_count`, `image`, `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
+3. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
+4. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
+5. **GUI Tier 2** observable actions.
+6. **`/engine` and `/analysis/submit`**, last: node to node, so they need a rolling-upgrade plan.
+
+Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
 ---
 
 ## Migration playbook
 
 A migration moves a blueprint's endpoints from Flask to FastAPI. This is a **full replacement**: the Flask routes and their module are deleted, and every caller (Python `ace_api` client, Flask-UI views, JavaScript) is updated in the same change. Do not keep Flask routes as shims.
+
+### Check for callers first
+
+A route nothing calls is deleted, not ported. Before designing a v2 replacement, check both sides:
+
+- **In the tree:** grep every checkout (this repo, `integrations/`, `signatures/`, and other repos that may call ACE) for the URL path, the `ace_api` helper and any CLI subcommand built on it. A helper whose only callers are its own CLI wrapper and its own tests is not evidence of use.
+- **In production:** the reverse proxy's access log has the request path of every call. Count requests to the route over the log's whole retention, and run the same search for a route you know is busy, so that zero hits mean "unused" rather than "not logged".
+
+`/intel` was removed this way (see [the appendix](#intel--deleted-alert-page-detection-actions--aceapi_v2detection)): its richer filters and batch update would have been the largest port so far, and nothing had called them.
 
 ### URL naming
 
@@ -205,15 +215,6 @@ The six reads load a `RootAnalysis` from disk (sync, `asyncio.to_thread`) and ca
 
 Every caller is another ACE node, so this group carries the rolling-upgrade problem above. Tar streaming in both directions; `clear` mutates through a `GET`. Migrate last.
 
-### `/intel` — `intel.py`
-
-| Method | URL                    | Function          | Line | Callers |
-|--------|------------------------|-------------------|------|---------|
-| GET    | `/intel/observables`   | `get_observables` | 113  | `ace_api.get_observables` only |
-| POST   | `/intel/observables`   | `set_observables` | 242  | `ace_api.set_observables` only |
-
-Already reads and writes `observable_detections`, the same table `aceapi_v2/detection/` manages (list, create, delete, set expiration). The migration is a consolidation into that group rather than a new one: what `intel` has that `detection` lacks is the richer filter set (ids, exact/b64 values, `fa_hits`, modified-by, batch id, alert ids/uuids, event ids) and a batch update that enables, disables and edits many detections in one call.
-
 ### `/hunt` — `hunt.py`
 
 | Method | URL              | Function        | Line | Callers |
@@ -305,6 +306,28 @@ Module: `aceapi_v2/detection/{router,service,schemas}.py`. Tests: `tests/aceapi_
 
 Note: `detection_context` defaults to `"manually added by {user}"` **in the router**, not the caller, so API clients get the same provenance the GUI records.
 
+### `/intel` — deleted; alert-page detection actions → `aceapi_v2/detection/`
+
+| Legacy Flask URL                                      | Replacement                                   |
+|-------------------------------------------------------|-----------------------------------------------|
+| `GET /intel/observables`                              | _(deleted, no replacement)_                   |
+| `POST /intel/observables`                             | _(deleted, no replacement)_                   |
+| `POST /observable_action_set_for_detection` *(GUI)*, enable  | `POST /api/v2/detection/`              |
+| `POST /observable_action_set_for_detection` *(GUI)*, disable | `DELETE /api/v2/detection/{detection_id}` |
+| `POST /observable_action_adjust_expiration` *(GUI)*   | `PATCH /api/v2/detection/{detection_id}/expiration` |
+
+`/intel` had no callers but `ace_api.get_observables` / `iter_get_observables` / `set_observables`, the `get-observables` / `set-observables` subcommands built on them, and its own tests, and no requests in six months of production access logs. It was deleted with those helpers and subcommands rather than ported, so its filter set (ids, exact values, `fa_hits`, modified-by, batch id, alert/event pivots) and its batch update have no v2 form. Detections are managed one at a time through `/api/v2/detection`, from the admin page or the alert page.
+
+The two GUI routes were deleted and the alert page's three detection actions (`app/templates/analysis/observable_actions/{enable_detection,disable_detection,adjust_expiration}.html`) call the v2 routes through `aceApi`.
+
+Notes:
+- **One permission per table.** The GUI routes were gated by `observable:write`; the v2 routes use `detection:write`, so every read and write of `observable_detections` now goes through `detection:*`. A principal holding `observable:write` without `detection:write` loses the alert-page detection actions. `observable:*` still gates comments, the interesting flag, the prevalence lookup, the observable types list and the other alert-page observable actions.
+- **Disable and adjust address the detection by id.** `ObservableDetectionSummary` (the batched lookup the alert view already makes, `get_observable_detections()`) carries `detection_id` and `expires_on`, and the action templates read them from `observable_detections` in the template context. No extra query per observable.
+- **Enable goes by type and value**, which the API resolves again through `resolve_detection_identity()`. The legacy route took the identity from the in-memory observable. `tests/saq/database/util/test_observable_detection.py::test_detection_from_an_alert_observable_is_found_by_the_alert_view` pins that the two land on the same row. An observable of a type no longer in the registry, or a value over `MAX_DETECTION_VALUE_LENGTH`, now gets a 400 where the legacy route stored it anyway.
+- **Every matching observable gets its detection.** `get_observable_detections()` used to hand a detection to the first observable with its type and hash only. Two file observables with the same content at different paths are two observables, so the second one offered "enable" for a detection that existed. That was harmless when enable upserted; against v2, which answers 409, it was an error.
+- **The adjust-expiration dialog was rebuilt** as one shared modal in `analysis/index.html` (`show_detection_expiration_modal_for()` in `saq_analysis.js`), following the observable-comment modal. The old one was rendered once per detected observable with fixed element ids, so the action opened the first observable's dialog, and its "current expiration" read a field the observable does not have and was always blank.
+- **Audit lines moved to the router.** The GUI routes logged an `AUDIT:` line per enable and disable; `aceapi_v2/detection/router.py` now logs one for every create, delete and expiration change, which also covers the admin page. `service.delete_detection()` returns the removed detection (or `None`) so the line can name the value.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -329,7 +352,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 94** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 92** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -348,7 +371,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    53 |        9 | 15 (7 T1 + 8 T2)     | 29 (18 B + 11 C)    |
+| `analysis`        |    51 |        9 | 14 (7 T1 + 7 T2)     | 28 (17 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     7 |        2 |                    5 |                   0 |
 | `file_collection` |     6 |        2 |                    4 |                   0 |
@@ -356,13 +379,13 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **94**|   **29** | **24 (16 T1 + 8 T2)**|              **41** |
+| **Total**         | **92**|   **29** | **23 (16 T1 + 7 T2)**|              **40** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three) and the six `/saved_filters*` routes (migrated, see the appendix).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), and `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry).
 
 ### `analysis` blueprint
 
-53 routes total: 9 template, 15 candidates (7 Tier 1 + 8 Tier 2), 18 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+51 routes total: 9 template, 14 candidates (7 Tier 1 + 7 Tier 2), 17 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 **Tier 1:**
 
@@ -384,12 +407,9 @@ Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `
 | GET       | `/html_details`                                 | `html_details`                                  | `export.py:301`                              | text/html data | `analysis/custom/ews.html:4` (iframe). Serves a `details` field raw. See [Known defects](#known-defects-in-unmigrated-routes) 2. |
 | POST      | `/observable_action_check_for_clickers`         | same                                            | `edit/observable_action/clicker.py:25`       | JSON    | `observable_actions/check_for_clickers.html:4`. Lock, load, delete old analysis, sync, add workload. |
 | POST      | `/observable_action_open_clicker_search_splunk` | same                                            | `edit/observable_action/clicker.py:91`       | JSON    | `observable_actions/open_clicker_search_splunk.html:3`. Loads without a lock; read-only. |
-| POST      | `/observable_action_set_for_detection`          | same                                            | `edit/observable_action/detection.py:17`     | text    | `observable_actions/{enable,disable}_detection.html:4`. Overlaps `POST /api/v2/detection/` and `DELETE /api/v2/detection/{id}`, but is gated by `observable:write` where v2 uses `detection:write`, addresses the observable rather than the detection id, and v2 answers 409 for an existing detection. |
 | POST      | `/observable_action`                            | `observable_action`                             | `edit/observable_action/legacy.py:18`        | text    | `observable_actions/{collect_file,url_crawl,file_render}.html`. Legacy multi-action (`mark_as_suspect`, `collect_file`, `url_crawl`, `file_render`); lock, load, sync, schedule or add workload. |
 | POST      | `/observable_action_whitelist`                  | same                                            | `edit/observable_action/whitelist.py:9`      | text    | `observable_actions/whitelist.html:4`. Alert load + tag-mapping write; errors come back as 200. |
 | POST      | `/observable_action_un_whitelist`               | same                                            | `edit/observable_action/whitelist.py:36`     | text    | `observable_actions/un_whitelist.html:4`. Same as whitelist. |
-
-Excluded (B) but with a v2 equivalent already: `/observable_action_adjust_expiration` (`edit/observable_action/detection.py:57`) does what `PATCH /api/v2/detection/{id}/expiration` does, and belongs with `set_for_detection` when detection management is consolidated.
 
 ### `events` blueprint
 

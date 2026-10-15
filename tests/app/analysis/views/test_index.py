@@ -724,6 +724,8 @@ def test_index_renders_detection_and_interesting_actions(
                 for_detection=True,
                 detection_modified_by="tester",
                 detection_context="enabled by tester",
+                detection_id=4242,
+                expires_on=datetime(2099, 1, 2, 3, 4, 5),
             )
             for observable in alert.all_observables
         }
@@ -739,6 +741,33 @@ def test_index_renders_detection_and_interesting_actions(
     body = result.data.decode("utf-8")
     assert "Disable observable for future detection" in body
     assert "Enable observable for future detection" not in body
+
+    # disable and adjust-expiration address the detection by id through /api/v2/detection, and the
+    # expiration dialog opens with the detection's current expiration
+    assert 'aceApi.del("/detection/4242")' in body
+    assert re.search(r'show_detection_expiration_modal_for\(\s*4242,\s*"2099-01-02 03:04:05"\)', body)
+
+
+@pytest.mark.integration
+def test_index_enable_detection_action_posts_to_the_api(
+    web_client, root_analysis, test_context,
+):
+    """An observable without a detection offers "enable", which creates one through
+    POST /api/v2/detection/ with the observable's type and value."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Enable observable for future detection" in body
+    assert 'aceApi.post("/detection/", {' in body
+    assert f'value: "{test_observable.value}"' in body
 
 
 @pytest.mark.integration
