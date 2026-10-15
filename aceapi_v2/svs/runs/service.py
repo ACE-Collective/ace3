@@ -32,6 +32,12 @@ from aceapi_v2.svs.runs.schemas import (
     AssociationRequest,
     AssociationResult,
     Attribution,
+    BulkRunRequest,
+    BulkRunResult,
+    ReviewRequest,
+    ReviewResult,
+    RunComment,
+    RunCommentRequest,
     RunDetail,
     RunEvent,
     RunExecutedRequest,
@@ -53,7 +59,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
-from saq.svs import runs
+from saq.svs import review, run_comments, runs
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, run_summaries
@@ -595,8 +601,7 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
     # observables, which import aceapi_v2 while saq itself is still being imported
     from saq.svs import association
 
-    if user_id is None:
-        raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
+    _require_user(user_id)
     run_uuid = _validate_run_id(run_id)
     if not UUID_REGEX.fullmatch(alert_uuid.lower()):
         raise HTTPException(status_code=400, detail="invalid alert uuid")
@@ -620,3 +625,134 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
 
     return AssociationResult(alert_uuid=result.alert_uuid, svs_status=result.svs_status, queue=result.queue,
                              moved=result.moved, reopened=result.reopened)
+
+
+#
+# a person's actions on runs (svs:run_manage): ownership, cancel, close, review, comments
+#
+
+def _require_user(user_id: int | None) -> int:
+    # every action records who took it; a config API key belongs to nobody
+    if user_id is None:
+        raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
+    return user_id
+
+
+def _user_ids(usernames) -> dict[str, int]:
+    usernames = {name for name in usernames if name}
+    if not usernames:
+        return {}
+    return dict(get_db().execute(select(User.username, User.id).where(User.username.in_(usernames))).all())
+
+
+def _confirmed_takes(body: BulkRunRequest) -> dict[str, int]:
+    """run uuid -> the owner's user id, from the usernames the caller agreed to take runs from."""
+    ids = _user_ids(body.confirmed_takes.values())
+    return {run_id.lower(): ids[name] for run_id, name in body.confirmed_takes.items() if name in ids}
+
+
+def _bulk_result(result) -> BulkRunResult:
+    return BulkRunResult(done=result.done, left_alone=result.left_alone, conflicts=result.conflicts,
+                         unknown=result.unknown)
+
+
+def _run_ids(body: BulkRunRequest) -> list[str]:
+    run_ids = [run_id.lower() for run_id in body.run_ids]
+    for run_id in run_ids:
+        if not UUID_REGEX.fullmatch(run_id):
+            raise HTTPException(status_code=400, detail=f"invalid run id {run_id!r}")
+    return run_ids
+
+
+def take_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
+    user_id = _require_user(user_id)
+    return _bulk_result(review.take_ownership(_run_ids(body), user_id, actor, _confirmed_takes(body)))
+
+
+def cancel_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
+    user_id = _require_user(user_id)
+    return _bulk_result(review.cancel_runs(_run_ids(body), user_id, actor, _confirmed_takes(body)))
+
+
+def close_runs(body: BulkRunRequest, user_id: int | None, actor: str) -> BulkRunResult:
+    user_id = _require_user(user_id)
+    return _bulk_result(review.close_runs(_run_ids(body), user_id, actor, body.reason, _confirmed_takes(body)))
+
+
+def review_run(run_id: str, body: ReviewRequest | None, user_id: int | None, actor: str) -> ReviewResult:
+    """404 for an unknown run; 409 with what stands in the way: another person's ownership, the
+    run's state, a stale result, undecided candidates or context-only alerts."""
+    user_id = _require_user(user_id)
+    run_uuid = _validate_run_id(run_id)
+    confirmed_from = None
+    if body is not None and body.confirmed_take_from:
+        confirmed_from = _user_ids([body.confirmed_take_from]).get(body.confirmed_take_from)
+
+    try:
+        result = review.review(run_uuid, user_id, actor, confirmed_from)
+    except runs.UnknownRun as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except review.RunOwned as e:
+        raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner})
+    except runs.RunStateConflict as e:
+        raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
+    except review.ReviewBlocked as e:
+        raise HTTPException(status_code=409, detail={"message": str(e), **e.blockers})
+
+    return ReviewResult(run=get_detail(run_uuid), re_review=result.re_review, counts=result.counts,
+                        alerts_closed=result.alerts_closed, fp_verdicts=result.fp_verdicts)
+
+
+def _comment(row, run_uuid: str) -> RunComment:
+    username = None
+    if row.user_id is not None:
+        username = get_db().execute(select(User.username).where(User.id == row.user_id)).scalar()
+    return RunComment(id=row.id, run_id=run_uuid, user=username, comment=row.comment, created_at=row.created_at,
+                      updated_at=row.updated_at)
+
+
+def _comment_errors(e: Exception) -> HTTPException:
+    if isinstance(e, (runs.UnknownRun, run_comments.UnknownComment)):
+        return HTTPException(status_code=404, detail=str(e))
+    if isinstance(e, run_comments.NotTheAuthor):
+        return HTTPException(status_code=403, detail=str(e))
+    return HTTPException(status_code=422, detail=str(e))
+
+
+COMMENT_ERRORS = (runs.UnknownRun, run_comments.UnknownComment, run_comments.NotTheAuthor, run_comments.InvalidComment)
+
+
+def list_run_comments(run_id: str) -> list[RunComment]:
+    run_uuid = _validate_run_id(run_id)
+    try:
+        return [_comment(row, run_uuid) for row in run_comments.list_comments(run_uuid)]
+    except COMMENT_ERRORS as e:
+        raise _comment_errors(e)
+
+
+def add_run_comment(run_id: str, body: RunCommentRequest, user_id: int | None, actor: str) -> RunComment:
+    user_id = _require_user(user_id)
+    run_uuid = _validate_run_id(run_id)
+    try:
+        return _comment(run_comments.add_comment(run_uuid, user_id, actor, body.comment), run_uuid)
+    except COMMENT_ERRORS as e:
+        raise _comment_errors(e)
+
+
+def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, user_id: int | None,
+                       actor: str) -> RunComment:
+    user_id = _require_user(user_id)
+    run_uuid = _validate_run_id(run_id)
+    try:
+        return _comment(run_comments.update_comment(run_uuid, comment_id, user_id, actor, body.comment), run_uuid)
+    except COMMENT_ERRORS as e:
+        raise _comment_errors(e)
+
+
+def delete_run_comment(run_id: str, comment_id: int, user_id: int | None, actor: str) -> None:
+    user_id = _require_user(user_id)
+    run_uuid = _validate_run_id(run_id)
+    try:
+        run_comments.delete_comment(run_uuid, comment_id, user_id, actor)
+    except COMMENT_ERRORS as e:
+        raise _comment_errors(e)

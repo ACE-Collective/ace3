@@ -67,6 +67,8 @@ class RunEventKind(StrEnum):
     ASSOCIATED = "associated"                    # a person associated an alert with the run
     DISASSOCIATED = "disassociated"              # a person disassociated an alert (or marked it not a test)
     CONTEXT_KEPT = "context_kept"                # a person kept an alert's context attribution
+    OWNERSHIP_TAKEN = "ownership_taken"          # a person took the run (from its owner, when it had one)
+    REVIEWED = "reviewed"                        # a person signed the run's result off (again, for a re-review)
 
 
 class ExpectationState(StrEnum):

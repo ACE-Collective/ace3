@@ -9,9 +9,9 @@ This document covers how runs work in ACE and how to operate them. It grows with
 covers the test hosts, the Atomic Red Team catalog, how a launcher registers and drives a run, the
 run states and timers, refused registrations, how alerts are attributed to runs and routed to the
 test queue, what a run found (its result) and the expectations and ignores it is judged by, what
-happens to a test run's alerts once SVS closes them, and how search treats them. Reviewing runs and
-the SVS screens arrive later in phase 4. The design and
-its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
+happens to a test run's alerts once SVS closes them, how a person reviews, closes and owns a run,
+and how search treats test alerts. The SVS screens arrive later in phase 4. The design and its
+reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 
 ## Permissions
 
@@ -184,10 +184,10 @@ markers in file contents, as ASCII or UTF-16 text:
 |---|---|---|
 | `created` | registration | `start`, `cancel`, or the start timeout |
 | `started` | `start` | the observation window passes → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
-| `ended` | the observation window passed | waits for a person, who reviews or closes it (later in phase 4) |
-| `reviewed` | an analyst signed it off | (later in phase 4) |
-| `canceled` | `cancel` | `closed` when the attribution window passes |
-| `error` | `executed` reported a failure, or `start` never came | `closed` when the attribution window passes |
+| `ended` | the observation window passed | waits for a person, who reviews or closes it (*Reviewing runs*) |
+| `reviewed` | a person signed its result off | reviewed again after a late change |
+| `canceled` | `cancel` (the launcher or a person) | `closed` when the attribution window passes, or by a person |
+| `error` | `executed` reported a failure, or `start` never came | `closed` when the attribution window passes, or by a person |
 | `closed` | the timers, or an analyst | final: nothing is learned from the run |
 
 - **Cancel stops the run, not attribution.** The test may have fired anyway, so a canceled run keeps
@@ -497,7 +497,7 @@ below), each signature is:
 
   Only `ended` and `reviewed` runs are recomputed. The API's `stale` says a run's result is about
   to change. A signature that leaves the result is deleted from it, unless the row holds the result
-  as reviewed (later in phase 4), when only its live `status` becomes null.
+  as reviewed, when only its live `status` becomes null.
 - **The event log** gets a `result_computed` event when the counts per status change.
 
 | Record | Level | Fields |
@@ -529,10 +529,51 @@ the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*).
 - **Expected signatures set the window.** A new run of a test with expectations waits for the
   slowest of them (*Windows*, above).
 
+## Reviewing runs
+
+A person with `svs:run_manage` acts on runs through `POST /api/v2/svs/runs/…` (`docs/SVS_API.md`,
+*Run actions*). Every action is in the run's event log and an AUDIT or transition record with who
+took it.
+
+- **Ownership** works as it does for alerts. A run someone else owns is changed only when the
+  person confirmed taking it from them (`confirmed_takes`), and it then becomes theirs; a run whose
+  owner's account is disabled or gone counts as nobody's. *Take ownership* (`bulk/take-ownership`)
+  does only that. Reviewing a run also takes it when nobody owns it.
+- **Cancel** (`bulk/cancel`) is the launcher's cancel, by a person: a created or started run is
+  canceled, and one that never started is closed at once.
+- **Close** (`bulk/close`) discards an ended, canceled or failed run: its fully attributed open
+  alerts become `SIMULATED`, and nothing is learned from it. An ended run waited for a review, so
+  closing it instead needs a reason.
+- **Review** (`{run_id}/review`, never a bulk action) signs an ended run's result off. It needs:
+  - the result to be current (not `stale`);
+  - every candidate decided (expected or rejected, *Expectations and ignores*);
+  - every context-only (`TEST?`) alert kept or marked not a test (*Associating alerts by hand*).
+
+  The answer is 409 with what is still in the way. When it goes through, in this order:
+  1. the run is committed as `reviewed`, with its reviewer, and its live result is copied to the
+     result as signed off (`reviewed_*`);
+  2. its fully attributed open alerts nobody has taken become `SIMULATED` (comment *reviewed with
+     SVS test run … by …*). The run is reviewed by then, so their YARA hits are captured as TP
+     samples (`docs/SVS_SAMPLES.md`) and their detections get verdicts;
+  3. the detections of signatures ignored for the test (launcher noise) get an FP verdict from the
+     reviewer, unless someone already gave them one.
+
+  A failure after step 1 keeps the review; reviewing again finishes the job.
+- **Review again.** A late alert, a manual association or a disassociation after the review marks
+  the run *changed since review* and puts it back in *Needs attention*. The late alert stays open
+  until the run is reviewed again. A re-review has the same preconditions, replaces what was signed
+  off, closes the alerts that arrived since, and clears the flag. The event log keeps each
+  review's counts.
+- **Comments** (`{run_id}/comments`) are a person's notes on a run; only the author changes or
+  deletes one.
+
+Closing never writes FP verdicts: an alert attributed to a run that is not reviewed has no
+verdicts at all, so they would never count.
+
 ## Test alerts and `SIMULATED`
 
 When a run is reviewed or closed, SVS gives every alert fully attributed to it the disposition
-**`SIMULATED`**. Closing does so now; the run review, later in phase 4, will too.
+**`SIMULATED`**, both when a person reviews it and when it is closed (*Reviewing runs*).
 
 - **Which alerts.** Those whose every detection is attributed (`svs_status` `test` or `test?`), to
   this run or to it and another, that are still `OPEN` and that nobody has taken (the automation

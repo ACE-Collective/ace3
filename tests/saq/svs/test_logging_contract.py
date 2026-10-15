@@ -15,7 +15,7 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.svs import association
+from saq.svs import association, review
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
 from saq.svs.expectations import set_expectation
 
@@ -252,3 +252,17 @@ def test_a_persons_association_changes(caplog, routed):
         (record,) = _records(caplog, message)
         assert record.svs_run == run.uuid and record.alert_uuid == root.uuid
         _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id"))
+
+
+def test_a_review(caplog):
+    user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    run_timers(T0 + timedelta(days=2))
+    with caplog.at_level(logging.INFO):
+        review.review(run.uuid, user_id, "unittest")
+
+    (transition,) = [r for r in _records(caplog, f"svs run {run.uuid}: ended -> reviewed")]
+    _assert_fields(transition, TRANSITION_FIELDS)
+    (reviewed,) = _records(caplog, f"svs run {run.uuid} reviewed by unittest")
+    _assert_fields(reviewed, RUN_FIELDS + ("actor", "counts", "re_review", "alerts_closed", "fp_verdicts"))

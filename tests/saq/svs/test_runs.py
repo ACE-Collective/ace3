@@ -60,7 +60,7 @@ HOOKS: list[tuple[str, str]] = []
 
 
 def _record(name: str):
-    return lambda run: HOOKS.append((name, run.uuid))
+    return lambda run, *args: HOOKS.append((name, run.uuid))
 
 
 def _registration(**values) -> Registration:

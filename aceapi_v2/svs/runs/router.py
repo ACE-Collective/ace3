@@ -5,15 +5,16 @@ Every call needs svs:run_register [ART-2]. A registration against a host that is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
 Reading runs, each run's event log, result and attributions, and the feeds of those over every run
-needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds. Associating
-an alert with a run by hand, disassociating it, marking it not a test and keeping a context
-attribution need svs:run_manage (docs/SVS_RUNS.md, *Associating alerts by hand*).
+needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds. A person's
+actions need svs:run_manage: associating an alert with a run by hand, disassociating it, marking it
+not a test and keeping a context attribution (docs/SVS_RUNS.md, *Associating alerts by hand*), and
+taking, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
 """
 
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Security
+from fastapi import APIRouter, Depends, Query, Request, Response, Security
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
@@ -31,6 +32,12 @@ from aceapi_v2.svs.runs.schemas import (
     AssociationRequest,
     AssociationResult,
     AttributionPage,
+    BulkRunRequest,
+    BulkRunResult,
+    ReviewRequest,
+    ReviewResult,
+    RunComment,
+    RunCommentRequest,
     RunDetail,
     RunEventPage,
     RunExecutedRequest,
@@ -71,6 +78,32 @@ AttributionsChangedSinceParam = Annotated[datetime | None, Query(
 def _caller(auth: ApiAuthResult, request: Request) -> Caller:
     return Caller(name=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
                   address=request.client.host if request.client is not None else None)
+
+
+#
+# a person's bulk actions (svs:run_manage); declared before /{run_id}/cancel, which would take
+# "bulk" for a run id
+#
+
+@router.post("/bulk/take-ownership", response_model=BulkRunResult)
+async def take_ownership(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
+    """Take the runs. One someone else owns is left alone unless confirmed_takes names that owner;
+    one whose owner's account is disabled is taken without asking."""
+    return await run_db_in_thread(service.take_runs, body, auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/bulk/cancel", response_model=BulkRunResult)
+async def cancel_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
+    """Cancel the runs (created or started), as the launcher would. A run someone else owns is left
+    alone unless confirmed_takes names that owner, and then becomes the caller's."""
+    return await run_db_in_thread(service.cancel_runs, body, auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/bulk/close", response_model=BulkRunResult)
+async def close_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
+    """Close the runs (ended, canceled or error): nothing is learned from them and their alerts
+    become SIMULATED. An ended run needs a reason. Ownership as for cancel."""
+    return await run_db_in_thread(service.close_runs, body, auth.auth_user_id, auth.auth_name)
 
 
 #
@@ -434,3 +467,43 @@ async def keep_context(run_id: str, alert_uuid: str, auth: ManageAuth) -> Associ
     """Confirm the alert's context attributions to the run (409 when it has none)."""
     return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None,
                                   auth.auth_user_id, auth.auth_name)
+
+
+
+#
+# review and comments (svs:run_manage; comments are read with svs:run_read)
+#
+
+@router.post("/{run_id}/review", response_model=ReviewResult)
+async def review_run(run_id: str, auth: ManageAuth, body: ReviewRequest | None = None) -> ReviewResult:
+    """Sign the run's result off: an ended run becomes reviewed, a reviewed one is reviewed again.
+    Its fully attributed open alerts become SIMULATED and its ignored detections get an FP verdict.
+    Reviewing takes the run when nobody owns it. 409 with what stands in the way: another person's
+    ownership (owner), the state, a stale result (stale), undecided candidates (candidates), or
+    context-only alerts neither kept nor marked not a test (context_alerts)."""
+    return await run_db_in_thread(service.review_run, run_id, body, auth.auth_user_id, auth.auth_name)
+
+
+@router.get("/{run_id}/comments", response_model=list[RunComment])
+async def list_run_comments(run_id: str, auth: ReadAuth) -> list[RunComment]:
+    """The run's comments, oldest first."""
+    return await run_db_in_thread(service.list_run_comments, run_id)
+
+
+@router.post("/{run_id}/comments", response_model=RunComment, status_code=201)
+async def add_run_comment(run_id: str, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
+    return await run_db_in_thread(service.add_run_comment, run_id, body, auth.auth_user_id, auth.auth_name)
+
+
+@router.patch("/{run_id}/comments/{comment_id}", response_model=RunComment)
+async def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
+    """Change a comment; only its author can (403)."""
+    return await run_db_in_thread(service.update_run_comment, run_id, comment_id, body, auth.auth_user_id,
+                                  auth.auth_name)
+
+
+@router.delete("/{run_id}/comments/{comment_id}", status_code=204)
+async def delete_run_comment(run_id: str, comment_id: int, auth: ManageAuth) -> Response:
+    """Delete a comment; only its author can (403)."""
+    await run_db_in_thread(service.delete_run_comment, run_id, comment_id, auth.auth_user_id, auth.auth_name)
+    return Response(status_code=204)
