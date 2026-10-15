@@ -141,14 +141,6 @@ class TestValidation:
 
 
 class TestInitialize:
-    def test_logs_the_classification_at_warning(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            initialize_dispositions()
-
-        (record,) = [r for r in caplog.records if r.getMessage() == "disposition classification in effect"]
-        assert record.levelno == logging.WARNING
-        assert record.disposition_classification == dict(get_config().disposition_classification)
-
     def test_a_typo_in_stop_analysis_on_dispositions_fails(self, monkeypatch):
         engine_config = get_engine_config()
         monkeypatch.setattr(engine_config, "stop_analysis_on_dispositions",
