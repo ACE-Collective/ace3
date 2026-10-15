@@ -46,6 +46,9 @@
 <script src="{{ url_for('static', filename='js/selection_guard.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/remediation.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/shortcuts.js') }}?version={{ ACE_VERSION }}"></script>
+{% if current_user.is_authenticated and has_permission('svs', 'run_read') %}
+<script defer src="{{ url_for('static', filename='js/svs_nav.js') }}?version={{ ACE_VERSION }}"></script>
+{% endif %}
 
 <!-- Datastar (https://data-star.dev) -- declarative reactive attributes, incrementally replacing custom jQuery; see docs/GUI_DATASTAR.md -->
 <script type="module" src="{{ url_for('static', filename='js/datastar-1.0.4.js') }}?version={{ ACE_VERSION }}"></script>
@@ -101,10 +104,11 @@
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('signatures.signatures_hub') }}">Signatures</a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
                     {% endif %}
-                    <li class="nav-item">
-                        <a class="nav-link disabled" href="#" tabindex="-1" aria-disabled="true" style="pointer-events: none; opacity: 0.5;">DetectOps</a>
-                    </li>
+                    {% if has_permission('svs', 'run_read') %}
+                    {# the count of runs that need attention is filled in by svs_nav.js #}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('svs.runs') }}">SVS<span id="svs_nav_count" class="small ms-1" title="runs that need attention" data-count-url="{{ svs_nav_count_url() }}"></span></a></li>
                     <li class="nav-item"><span class="nav-separator"></span></li>
+                    {% endif %}
                     {% if has_permission('admin', 'read') %}
                     <li class="nav-item"><a class="nav-link" href="{{ url_for('admin.admin_hub') }}">Admin</a></li>
                     {% endif %}

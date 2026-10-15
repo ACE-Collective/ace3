@@ -5,7 +5,8 @@ Every call needs svs:run_register [ART-2]. A registration against a host that is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
 Reading runs, each run's event log, result and attributions, and the feeds of those over every run
-needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds. A person's
+needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds, and pick
+the runs that the count and the batches (one row per batch_id) are over. A person's
 actions need svs:run_manage: associating an alert with a run by hand, disassociating it, marking it
 not a test and keeping a context attribution (docs/SVS_RUNS.md, *Associating alerts by hand*), and
 taking, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
@@ -42,6 +43,8 @@ from aceapi_v2.svs.runs.schemas import (
     RunEventPage,
     RunExecutedRequest,
     RunLifecycle,
+    RunBatchPage,
+    RunCount,
     RunPage,
     RunRegistrationRequest,
     RunResultPage,
@@ -60,7 +63,8 @@ FilterParam = Annotated[list[str], Query(
     description="a filter in the share-link encoding (`[!]slug:v1,v2`) with the runs screen's slugs: "
                 "needs_attention, state, test, test_name, technique (T1059 also finds its sub-techniques), target, "
                 "launcher, batch, created, started, ended, owner, reviewer, reason, changed_since_review, "
-                "has_open_alerts (see docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
+                "has_open_alerts, has_missing, has_possibly_suppressed, has_candidates, has_late, has_context_only "
+                "(see docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
 TimezoneParam = Annotated[str, Query(description="the timezone relative date filters (`-7d`, `@d`) resolve in")]
 CursorParam = Annotated[str | None, Query(description="the next_cursor of the previous page")]
 LimitParam = Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)]
@@ -104,6 +108,58 @@ async def close_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Close the runs (ended, canceled or error): nothing is learned from them and their alerts
     become SIMULATED. An ended run needs a reason. Ownership as for cancel."""
     return await run_db_in_thread(service.close_runs, body, auth.auth_user_id, auth.auth_name)
+
+
+#
+# the count and the batches; declared before /{run_id}, which would take "count" and "batches" for
+# a run id
+#
+
+@router.get("/count", response_model=RunCount)
+async def count_runs(auth: ReadAuth, f: FilterParam, tz: TimezoneParam = "UTC") -> RunCount:
+    """How many runs the filters match: f=needs_attention:true is the count on the GUI's SVS entry."""
+    return await run_listing(service.count_runs, f, parse_timezone(tz))
+
+
+async def _prepare_batches(f: list[str], tz: str) -> service.BatchListing:
+    return await run_listing(service.prepare_batch_listing, f, tz=parse_timezone(tz))
+
+
+@router.get("/batches", response_model=RunBatchPage)
+async def list_batches(
+    auth: ReadAuth,
+    f: FilterParam,
+    cursor: CursorParam = None,
+    limit: LimitParam = 100,
+    tz: TimezoneParam = "UTC",
+) -> RunBatchPage:
+    """One row per batch_id over the runs the filters match, summing only those runs: their states,
+    how many need attention, and their results. The batch with the latest run comes first; runs
+    without a batch_id are left out. Follow next_cursor, with the same filters, until it is null."""
+    listing = await _prepare_batches(f, tz)
+    rows, next_cursor = await run_listing(service.fetch_batch_page, listing, cursor, limit)
+    return RunBatchPage(data=rows, next_cursor=next_cursor)
+
+
+# the GUI's list pages request {api}/
+router.add_api_route("/batches/", list_batches, methods=["GET"], response_model=RunBatchPage,
+                     include_in_schema=False)
+
+
+@router.get("/batches/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_batches_ndjson(auth: ReadAuth, f: FilterParam, tz: TimezoneParam = "UTC") -> NdjsonStreamResponse:
+    """Stream every batch as NDJSON, one RunBatch per line."""
+    listing = await _prepare_batches(f, tz)
+    export = await start_export(service.fetch_batch_page, listing, what="svs run batch")
+    return ndjson_response(export, "svs-run-batches.ndjson")
+
+
+@router.get("/batches/export/csv", response_class=CsvStreamResponse)
+async def export_batches_csv(auth: ReadAuth, f: FilterParam, tz: TimezoneParam = "UTC") -> CsvStreamResponse:
+    """Stream every batch as CSV, with one state_<state> column per state."""
+    listing = await _prepare_batches(f, tz)
+    export = await start_export(service.fetch_batch_page, listing, what="svs run batch")
+    return csv_response(export, service.run_batches_to_csv, "svs-run-batches.csv")
 
 
 #

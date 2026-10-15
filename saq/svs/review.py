@@ -88,15 +88,16 @@ class ReviewBlocked(Exception):
 #
 
 def _owners(run_uuids: list[str]) -> dict[str, AlertOwner]:
-    """The owner of each run that exists, locking the run rows until the transaction ends."""
+    """The owner of each run that exists, locking the run rows until the transaction ends. The owner
+    is named by username, as on a run row, because that is what a confirmation to take a run names."""
     rows = get_db().execute(
-        select(SVSRun.uuid, SVSRun.owner_id, User.display_name, User.username, User.enabled)
+        select(SVSRun.uuid, SVSRun.owner_id, User.username, User.enabled)
         .outerjoin(User, User.id == SVSRun.owner_id)
         .where(SVSRun.uuid.in_(run_uuids))
         .with_for_update(of=SVSRun)).all()
     # an owner whose users row is gone has nobody left to protect, the same as a disabled one
-    return {run_uuid: AlertOwner(user_id=owner_id, name=display_name or username, enabled=bool(enabled))
-            for run_uuid, owner_id, display_name, username, enabled in rows}
+    return {run_uuid: AlertOwner(user_id=owner_id, name=username, enabled=bool(enabled))
+            for run_uuid, owner_id, username, enabled in rows}
 
 
 def _take(run_uuid: str, owner: AlertOwner, user_id: int, actor: str, now: datetime) -> None:
@@ -114,7 +115,7 @@ def _take(run_uuid: str, owner: AlertOwner, user_id: int, actor: str, now: datet
 class BulkResult:
     """What a bulk action did to each run it was given."""
     done: list[str] = field(default_factory=list)
-    # run uuid -> the name of the person who owns it, for the runs left alone
+    # run uuid -> the username of the person who owns it, for the runs left alone
     left_alone: dict[str, str] = field(default_factory=dict)
     # run uuid -> why the action doesn't apply to it
     conflicts: dict[str, str] = field(default_factory=dict)

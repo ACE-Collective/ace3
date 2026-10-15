@@ -7,7 +7,7 @@ from typing import Iterable
 
 from sqlalchemy import Integer, case, cast, func, select
 
-from saq.database.model import SVSAttribution, SVSRunResult, SVSRunResultState
+from saq.database.model import SVSAttribution, SVSRun, SVSRunResult, SVSRunResultState
 from saq.svs.constants import AttributionConfidence
 
 
@@ -68,3 +68,23 @@ def run_summaries(session, run_ids: Iterable[int]) -> dict[int, RunSummary]:
                               late_alerts=int(late or 0))
 
     return {run_id: RunSummary(**fields) for run_id, fields in values.items()}
+
+
+def batch_result_summaries(session, batch_ids: Iterable[str], conditions: Iterable = ()) -> dict[str, RunSummary]:
+    """The live results of each batch's runs that match the conditions, summed, keyed by the batch id
+    in lower case (a batch id compares without case, as the batch filter does). Only the result
+    counts are filled in."""
+    batch_ids = sorted(set(batch_ids))
+    if not batch_ids:
+        return {}
+
+    values: dict[str, dict] = {}
+    for batch_id, status, count in session.execute(
+            select(SVSRun.batch_id, SVSRunResult.status, func.count())
+            .join(SVSRunResult, SVSRunResult.run_id == SVSRun.id)
+            .where(SVSRun.batch_id.in_(batch_ids), SVSRunResult.status.is_not(None), *conditions)
+            .group_by(SVSRun.batch_id, SVSRunResult.status)):
+        counts = values.setdefault(batch_id.lower(), {})
+        counts[status] = counts.get(status, 0) + count
+
+    return {batch_id: RunSummary(**counts) for batch_id, counts in values.items()}

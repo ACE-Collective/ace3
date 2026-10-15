@@ -1,0 +1,20 @@
+{# What the Runs tab hands its script (static/js/svs_runs.js). The page is a shell: everything comes
+   from the API named here. #}
+{% macro runs_page_attributes() -%}
+data-view="{{ view }}"
+data-api="/api/v2/svs/runs"
+data-screen="{{ runs_screen }}"
+data-default-f='{{ svs_needs_attention_f() | tojson }}'
+data-runs-url="{{ url_for('svs.runs') }}"
+data-batches-url="{{ url_for('svs.batches') }}"
+data-run-url="{{ run_url }}"
+data-tz="{{ current_user.timezone or 'UTC' }}"
+data-can-manage="{{ 'true' if has_permission('svs', 'run_manage') else 'false' }}"
+{%- endmacro %}
+
+{% macro runs_page_scripts() %}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_runs.js') }}?version={{ ACE_VERSION }}"></script>
+{% endmacro %}

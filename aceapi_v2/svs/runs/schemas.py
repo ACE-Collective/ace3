@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from saq.svs.constants import RunState
+from saq.svs.constants import RUN_STATES, RunState
 
 
 class RunTargetRequest(BaseModel):
@@ -113,6 +113,31 @@ class RunDetail(RunRow):
 
 class RunPage(BaseModel):
     data: list[RunRow]
+    next_cursor: Optional[str] = None
+
+
+class RunCount(BaseModel):
+    count: int = Field(description="the runs the filters match")
+
+
+class RunBatch(BaseModel):
+    """One batch_id over the runs the filters match: only those runs are counted."""
+
+    batch_id: str
+    runs: int
+    states: dict[str, int] = Field(description="the runs per state, every state named")
+    needs_attention: int = Field(description="the runs in the Needs attention view")
+    first_created_at: datetime = Field(description="when its first run was registered")
+    last_created_at: datetime = Field(description="when its latest run was registered; the batches are newest first by it")
+    result_hit: int = Field(default=0, description="expected signatures that fired, summed over the runs")
+    result_expected: int = Field(default=0, description="the expected signatures the results judged, summed")
+    result_missing: int = Field(default=0, description="expected signatures that didn't fire, possibly suppressed "
+                                                       "ones included, summed")
+    result_candidate: int = Field(default=0, description="undecided signatures that fired, summed")
+
+
+class RunBatchPage(BaseModel):
+    data: list[RunBatch]
     next_cursor: Optional[str] = None
 
 
@@ -232,7 +257,9 @@ class BulkRunRequest(BaseModel):
 
 class BulkRunResult(BaseModel):
     done: list[str] = Field(description="the runs the action was applied to")
-    left_alone: dict[str, str] = Field(description="run id -> who owns it, for the runs someone else owns")
+    left_alone: dict[str, str] = Field(
+        description="run id -> the username of whoever owns it, for the runs someone else owns; sent back as "
+                    "confirmed_takes it takes them")
     conflicts: dict[str, str] = Field(description="run id -> why the action doesn't apply to it (its state, a missing reason)")
     unknown: list[str] = Field(description="run ids that don't exist")
 
@@ -264,6 +291,10 @@ class RunComment(BaseModel):
 
 
 RUN_ROW_CSV_FIELDS = tuple(RunRow.model_fields)
+# the CSV spreads a batch's states over one column each
+RUN_BATCH_CSV_FIELDS = tuple(
+    column for name in RunBatch.model_fields
+    for column in ([f"state_{state}" for state in RUN_STATES] if name == "states" else [name]))
 RUN_EVENT_CSV_FIELDS = tuple(RunEvent.model_fields)
 RUN_RESULT_CSV_FIELDS = tuple(RunResult.model_fields)
 ATTRIBUTION_CSV_FIELDS = tuple(Attribution.model_fields)
