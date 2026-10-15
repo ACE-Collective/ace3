@@ -578,10 +578,10 @@ api:
 apikeys:
   # Automatically generated api key used for node-to-node communication. The scope must cover every
   # endpoint the engine calls on a peer node:
-  #   alert:create -> POST /api/analysis/submit
-  #   engine:*     -> GET  /api/engine/download/{uuid}
-  #                   POST /api/engine/upload/{uuid}
-  #                   GET  /api/engine/clear/{uuid}/{lock_uuid}
+  #   alert:create -> POST /api/v2/analysis/
+  #   engine:*     -> GET  /api/v2/engine/download/{uuid}
+  #                   POST /api/v2/engine/upload/{uuid}
+  #                   POST /api/v2/engine/clear/{uuid}/{lock_uuid}
   # The bare-string form (name: <sha256>) is still accepted but deprecated: it carries no scope and
   # bypasses permission checks.
   automation:

@@ -81,15 +81,14 @@ class TestCatalogGuard:
         assert ("user", "edit") not in _enforced_permission_pairs()
 
 
-# The legacy Flask blueprint carrying ACE's node-to-node surface. engine_bp is declared in
-# aceapi/blueprints.py and every one of its routes is defined in aceapi/engine.py -- nothing else
-# registers a route on it, so scanning that one file yields the whole surface.
-_ENGINE_MODULE = REPO_ROOT / "aceapi" / "engine.py"
+# The router carrying ACE's node-to-node surface (mounted at /api/v2/engine). Every one of its routes
+# is defined in this one file, so scanning it yields the whole surface.
+_ENGINE_MODULE = REPO_ROOT / "aceapi_v2" / "engine" / "router.py"
 
-# The one node-to-node call that is NOT an engine_bp route: ace_api.submit() posts to
-# /api/analysis/submit (aceapi/analysis.py:76), used by saq/collectors/remote_node.py and the GUI's
-# manual alert entry.
-_SUBMIT_PERMISSION = ("alert", "create")
+# The one node-to-node call that is NOT an engine route: ace_api.submit() posts to
+# /api/v2/analysis/, used by the GUI's New Alert (which sends to the node the analyst picks) and
+# `ace hunt --submit-alerts`.
+_SUBMIT_MODULE = REPO_ROOT / "aceapi_v2" / "analysis" / "router.py"
 
 
 @pytest.mark.unit
@@ -106,14 +105,14 @@ class TestNodeToNodeScope:
     """
 
     def test_every_engine_route_is_gated_on_the_engine_major(self):
-        # /api/engine/ is machine-to-machine only. Keeping every route under one major is what
+        # /api/v2/engine/ is machine-to-machine only. Keeping every route under one major is what
         # lets the scope be a single `engine:*` entry and makes the coverage test below total.
         enforced = _enforced_permission_pairs_in(_ENGINE_MODULE)
-        assert enforced, "no api_auth_check() call sites found in aceapi/engine.py — scanner broken"
+        assert enforced, "no require_permission() call sites found in aceapi_v2/engine/router.py — scanner broken"
 
         foreign = sorted(pair for pair in enforced if pair[0] != "engine")
         assert not foreign, (
-            f"these aceapi/engine.py routes are gated on a non-engine major: {foreign}. "
+            f"these aceapi_v2/engine/router.py routes are gated on a non-engine major: {foreign}. "
             f"Node-to-node endpoints must use engine:* so the automation key's scope covers them."
         )
 
@@ -127,7 +126,9 @@ class TestNodeToNodeScope:
         )
         scope = [parse_permission_pattern(s) for s in entry.scope]
 
-        required = _enforced_permission_pairs_in(_ENGINE_MODULE) | {_SUBMIT_PERMISSION}
+        submit = _enforced_permission_pairs_in(_SUBMIT_MODULE)
+        assert submit, "no require_permission() call sites found in aceapi_v2/analysis/router.py — scanner broken"
+        required = _enforced_permission_pairs_in(_ENGINE_MODULE) | submit
         unpermitted = sorted(
             pair for pair in required if not key_scope_allows(scope, *pair)
         )

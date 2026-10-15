@@ -411,7 +411,7 @@ def submit(
         files_params.append(('file', (f[0], f[1])))
 
     # OK everything seems legit
-    return _execute_api_call('analysis/submit', data={
+    response = _execute_api_call('v2/analysis/', data={
         'analysis': json.dumps({
             'analysis_mode': analysis_mode,
             'tool': tool,
@@ -428,6 +428,9 @@ def submit(
             'extensions': extensions,
         }),
     }, files=files_params, method=METHOD_POST, *args, **kwargs).json()
+
+    # the library's published shape: {'result': {'uuid': ...}}
+    return {'result': {'uuid': response['uuid']}}
 
 def _cli_submit(args):
     
@@ -587,7 +590,7 @@ def download(uuid, target_dir, *args, **kwargs):
     fp, tar_path = tempfile.mkstemp(prefix='download_{}'.format(uuid), suffix='.tar')
 
     try:
-        response = _execute_api_call('engine/download/{}'.format(uuid), stream=True, *args, **kwargs)
+        response = _execute_api_call('v2/engine/download/{}'.format(uuid), stream=True, *args, **kwargs)
 
         size = 0
         for chunk in response.iter_content(io.DEFAULT_BUFFER_SIZE):
@@ -644,7 +647,7 @@ def upload(uuid, source_dir, overwrite=False, sync=True, move=False, is_alert=Tr
             tar.add(source_dir, '.')
 
         with open(tar_path, 'rb') as fp:
-            return _execute_api_call('engine/upload/{}'.format(uuid), data={
+            return _execute_api_call('v2/engine/upload/{}'.format(uuid), data={
                 'upload_modifiers': json.dumps({
                     'overwrite': overwrite,
                     'sync': sync,
@@ -684,7 +687,7 @@ upload_command_parser.add_argument('--move', action="store_true", default=False,
 upload_command_parser.set_defaults(func=_cli_upload)
 
 def clear(uuid, lock_uuid, *args, **kwargs):
-    return _execute_api_call('engine/clear/{}/{}'.format(uuid, lock_uuid), *args, **kwargs).status_code == 200
+    return _execute_api_call('v2/engine/clear/{}/{}'.format(uuid, lock_uuid), method=METHOD_POST, *args, **kwargs).status_code == 200
 
 #
 # supporting backwards comptability for the old ace_client_lib.client library
