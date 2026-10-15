@@ -85,7 +85,20 @@ class RunRow(BaseModel):
     reviewed_at: Optional[datetime] = None
     changed_since_review: bool = Field(description="a late alert or a manual association came after the review")
     needs_attention: bool = Field(description="the run is in the Needs attention view (docs/SVS_API.md, *Runs*)")
-    updated_at: datetime = Field(description="when the row last changed; the changed_since key")
+    result_hit: int = Field(default=0, description="expected signatures that fired (docs/SVS_API.md, *Results*)")
+    result_expected: int = Field(default=0, description="the expected signatures the result judged: hit, missing or possibly suppressed")
+    result_missing: int = Field(default=0, description="expected signatures that didn't fire, possibly suppressed ones included")
+    result_possibly_suppressed: int = Field(default=0)
+    result_candidate: int = Field(default=0, description="signatures that fired and nobody has decided about")
+    result_rejected: int = Field(default=0)
+    result_ignored: int = Field(default=0)
+    result_stale: bool = Field(default=False, description="the result is about to be recomputed")
+    alerts: int = Field(default=0, description="the alerts attributed to the run")
+    marker_alerts: int = Field(default=0, description="of those, attributed by a marker")
+    context_alerts: int = Field(default=0, description="of those, attributed by context alone (TEST?)")
+    late_alerts: int = Field(default=0, description="of those, late")
+    updated_at: datetime = Field(description="when the row last changed; the changed_since key. A change to its "
+                                             "result or alerts doesn't change it: pull GET /svs/runs/results")
 
 
 class RunDetail(RunRow):

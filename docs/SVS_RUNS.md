@@ -95,6 +95,24 @@ ace svs catalog refresh [--force]      # read now; --force reads an unchanged co
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
 finds its sub-techniques), name, platform, executor, repository or `removed`.
 
+### Tests and their state
+
+`GET /api/v2/svs/tests` lists the catalog with each test's state, judged on its latest reviewed run
+as signed off (`docs/SVS_API.md`, *Tests*):
+
+| State | Meaning |
+|---|---|
+| `never_run` | no run was ever registered for it |
+| `awaiting_review` | no run of it is reviewed yet, or something was expected of it only after its latest review |
+| `no_expectations` | it has a reviewed run, and nothing is expected of it |
+| `failing` | its latest reviewed run missed an expected signature |
+| `stale` | it would be validated, but the test or an expected signature's rule changed since that review |
+| `validated` | its latest reviewed run hit every expected signature |
+
+Each row also has its run count, its latest run and latest reviewed run, how many signatures are
+expected of it, and how many of its latest 5 ended or reviewed runs missed an expected signature.
+Nothing suggests what to run next: that stays the team's call.
+
 ## Registering a run
 
 ACE never runs a test. A **launcher** outside ACE (a script around `Invoke-AtomicTest`, a CI job, a
@@ -257,6 +275,13 @@ filters (`docs/SVS_API.md`, *Runs*).
   Every user starts with it as a saved filter on the screen, next to *Started* (the runs in flight).
 - **A run closed because `start` never came** is not in that list. Find it with
   `f=state:closed&f=reason:start%20timeout`.
+- **Each run row summarizes its result and alerts** (*Results*, below):
+  - expected hits *n*/*m* (`result_hit` / `result_expected`), missing, possibly suppressed,
+    candidates;
+  - its alerts by marker, by context alone, and late.
+
+  The filters `has_missing`, `has_possibly_suppressed`, `has_candidates`, `has_late` and
+  `has_context_only` find the runs that have them.
 - **The event log** (`GET …/runs/{run_id}/events`) is the run's history: its registration, every
   launcher call with its payload, every state change, every alert attributed to it or no longer
   attributed, and the alerts closed with it, with who did it and when. It is not a

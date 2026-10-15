@@ -1,7 +1,8 @@
 """Atomic Red Team test catalog service for ACE API v2 (docs/SVS_RUNS.md, docs/SVS_API.md).
 
 Synchronous; the router runs each function through run_db_in_thread. saq.svs.catalog writes the
-catalog; this reads it, ordered by technique and then name, the Tests screen's default order.
+catalog; this reads it, ordered by technique and then name, the Tests screen's default order, with
+each test's state and run history (saq.svs.test_state), read for the whole page at once.
 """
 
 import json
@@ -21,6 +22,7 @@ from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.svs.catalog import supported_platforms
 from saq.svs.catalog_filters import catalog_filter_conditions
 from saq.svs.samples import to_utc_naive
+from saq.svs.test_state import TestHistory, catalog_histories
 from saq.util.uuid import is_uuid
 
 
@@ -54,12 +56,16 @@ def prepare_listing(filter_params: list[str], *, changed_since: datetime | None)
     return CatalogListing(statement=statement)
 
 
-def _row(test: SVSCatalogTest) -> dict:
+def _row(test: SVSCatalogTest, history: TestHistory) -> dict:
     return dict(
         guid=test.guid, repository=test.repository, technique=test.technique, technique_name=test.technique_name,
         name=test.name, platforms=supported_platforms(test), executor=test.executor, path=test.path,
         commit=test.commit, content_hash=test.content_hash, first_seen_at=test.first_seen_at,
-        removed_at=test.removed_at, updated_at=test.updated_at)
+        removed_at=test.removed_at, updated_at=test.updated_at, test_state=history.state.value,
+        run_count=history.run_count, last_run_id=history.last_run_uuid, last_run_at=history.last_run_at,
+        last_reviewed_run_id=history.last_reviewed_run_uuid, last_reviewed_at=history.last_reviewed_at,
+        expected_signatures=history.expected, recent_runs=history.recent_runs,
+        recent_runs_missing=history.recent_runs_missing)
 
 
 def _parse_key(payload: dict) -> tuple[str, str, int]:
@@ -86,7 +92,8 @@ def fetch_page(listing: CatalogListing, cursor: str | None, limit: int) -> tuple
         last = rows[-1]
         next_cursor = encode_cursor(k=[last.technique, last.name, last.id])
 
-    return [CatalogTest(**_row(test)) for test in rows], next_cursor
+    histories = catalog_histories(get_db(), rows)
+    return [CatalogTest(**_row(test, histories[test.guid])) for test in rows], next_cursor
 
 
 def catalog_tests_to_csv(rows: list[CatalogTest], *, header: bool) -> str:
@@ -104,4 +111,5 @@ def get_catalog_test(guid: str) -> CatalogTestDetail:
     if test is None:
         raise HTTPException(status_code=404, detail=f"test {guid} is not in the catalog")
 
-    return CatalogTestDetail(**_row(test), description=test.description, test=json.loads(test.test))
+    history = catalog_histories(get_db(), [test])[test.guid]
+    return CatalogTestDetail(**_row(test, history), description=test.description, test=json.loads(test.test))

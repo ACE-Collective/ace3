@@ -44,6 +44,7 @@ from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.svs import runs
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
+from saq.svs.run_summary import RunSummary, run_summaries
 from saq.svs.samples import to_utc_naive
 from saq.util.uuid import UUID_REGEX
 
@@ -158,6 +159,22 @@ def _row_values(row) -> dict:
         needs_attention=bool(needs_attention), updated_at=run.updated_at)
 
 
+def _summary_values(summary: RunSummary) -> dict:
+    return dict(
+        result_hit=summary.hit, result_expected=summary.expected,
+        result_missing=summary.missing + summary.possibly_suppressed,
+        result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
+        result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        alerts=summary.alerts, marker_alerts=summary.marker_alerts, context_alerts=summary.context_alerts,
+        late_alerts=summary.late_alerts)
+
+
+def _rows(rows) -> list[RunRow]:
+    """The page's rows with their result and alert summaries, read for the whole page at once."""
+    summaries = run_summaries(get_db(), [row[0].id for row in rows])
+    return [RunRow(**_row_values(row), **_summary_values(summaries[row[0].id])) for row in rows]
+
+
 #
 # the listing: newest first, or (updated_at, id) for a changed_since pull
 #
@@ -225,7 +242,7 @@ def fetch_page(listing: RunListing, cursor: str | None, limit: int) -> tuple[lis
         at = last.created_at if listing.order == LISTING_ORDER_CREATED else last.updated_at
         next_cursor = encode_cursor(o=listing.order, k=[at.isoformat(), last.id])
 
-    return [RunRow(**_row_values(row)) for row in rows], next_cursor
+    return _rows(rows), next_cursor
 
 
 def _flatten_run(values: dict) -> None:
@@ -248,8 +265,9 @@ def get_detail(run_id: str) -> RunDetail:
 
     run = row[0]
     registrar = get_db().get(User, run.registered_by) if run.registered_by is not None else None
+    summary = run_summaries(get_db(), [run.id])[run.id]
     return RunDetail(
-        **_row_values(row), extra=_json(run.extra), launcher_error=run.launcher_error,
+        **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
         registered_by=registrar.username if registrar is not None else None)

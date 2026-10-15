@@ -387,6 +387,11 @@ class RunFilterEntry(FilterEntryBase):
             "State": list(RUN_STATES),
             "Changed Since Review": list(SAMPLE_BOOL_OPTIONS),
             "Has Open Alerts": list(SAMPLE_BOOL_OPTIONS),
+            "Has Missing": list(SAMPLE_BOOL_OPTIONS),
+            "Has Possibly Suppressed": list(SAMPLE_BOOL_OPTIONS),
+            "Has Candidates": list(SAMPLE_BOOL_OPTIONS),
+            "Has Late": list(SAMPLE_BOOL_OPTIONS),
+            "Has Context Only": list(SAMPLE_BOOL_OPTIONS),
             "Needs Attention": list(SAMPLE_BOOL_OPTIONS),
         }.get(name)
         if allowed is None:

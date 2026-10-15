@@ -3,16 +3,18 @@
 import csv
 import io
 import json
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.svs.runs import service
-from saq.database.model import SVSRun
+from saq.database.model import SVSAttribution, SVSRun, SVSRunResult
 from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 from saq.svs import runs, windows
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
@@ -126,6 +128,25 @@ class TestListing:
         assert (row["launcher"], row["batch_id"], row["exit_code"]) == ("art", "nightly", 1)
         assert row["error_reason"] and row["needs_attention"] is True
         assert row["marker"].startswith("svs-")
+
+    @pytest.mark.asyncio
+    async def test_a_rows_result_and_alerts(self, client: AsyncClient, seeded):
+        run_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == seeded["ended"])).scalar_one()
+        with private_transaction() as session:
+            for status in ("hit", "missing", "possibly_suppressed", "candidate"):
+                session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), status=status))
+            session.add(SVSAttribution(run_id=run_id, alert_uuid=str(uuid.uuid4()), content_hash="1" * 64,
+                                       signature_uuid=str(uuid.uuid4()), confidence="context", late=True,
+                                       source="router", actor="svs", created_at=datetime.now()))
+
+        (row,) = (await client.get("/svs/runs/", params={"f": "state:ended"})).json()["data"]
+        assert (row["result_hit"], row["result_expected"], row["result_missing"], row["result_possibly_suppressed"],
+                row["result_candidate"], row["result_stale"]) == (1, 3, 2, 1, 1, False)
+        assert (row["alerts"], row["marker_alerts"], row["context_alerts"], row["late_alerts"]) == (1, 0, 1, 1)
+        detail = (await client.get(f"/svs/runs/{seeded['ended']}")).json()
+        assert (detail["result_hit"], detail["alerts"]) == (1, 1)
+        assert (await client.get("/svs/runs/", params={"f": "has_missing:true"})).json()["data"][0]["run_id"] == \
+            seeded["ended"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("filters, expected", [

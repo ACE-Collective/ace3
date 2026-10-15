@@ -193,6 +193,11 @@ SVS_RUNS_SCREEN = FilterScreen(
         FilterField("Reason", FilterFieldKind.TEXT),
         FilterField("Changed Since Review", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
         FilterField("Has Open Alerts", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Missing", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Possibly Suppressed", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Candidates", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Late", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Context Only", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
     ),
 )
 
