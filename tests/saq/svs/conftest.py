@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 
 from saq.analysis.root import RootAnalysis
 from saq.cas import CASPool, get_cas
-from saq.database.model import Alert, SVSCatalogTest, SVSYaraCapture, load_alert
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSYaraCapture, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import get_global_runtime_settings
@@ -17,10 +17,22 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
 from saq.database.private_session import private_transaction
-from saq.svs import windows
+from saq.svs import attribution, windows
 from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
+from saq.svs.hosts import build_spec, create_host
+from saq.svs.markers import new_marker
+from saq.svs.refusals import Caller
+from saq.svs.runs import Registration, TargetSpec, register, start
 from tests.saq.helpers import create_root_analysis
+
+@pytest.fixture(autouse=True)
+def clear_attribution_caches():
+    """Each test starts with no cached gate answer or resolved marker (saq.svs.attribution)."""
+    attribution.clear_caches()
+    yield
+    attribution.clear_caches()
+
 
 RULE_UUID = "7d1c2a4e-5b6f-4c3d-9e8f-0a1b2c3d4e5f"
 OTHER_RULE_UUID = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b"
@@ -171,3 +183,39 @@ def add_catalog_test(guid: str, *, platforms=("windows",), removed: bool = False
 def no_hunts(monkeypatch):
     """No enabled hunts: a run's observation window is the floor (60 minutes by default)."""
     monkeypatch.setattr(windows, "hunt_latencies", lambda: {})
+
+
+LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+
+
+def add_test_host(hostname: str = "win10-01", **values):
+    return create_host(build_spec(hostname, **values), None)
+
+
+def started_run(test_guid: str, hostname: str = "win10-01", *, now: Optional[datetime] = None):
+    """A run of test_guid against one test host, registered and started at now (default: now).
+    Its windows are the floor and the default extra hours unless hunts say otherwise."""
+    run = register(Registration(test_guid=test_guid, targets=[TargetSpec(hostname)], launcher="art"), LAUNCHER,
+                   now=now)
+    run = start(run.uuid, LAUNCHER, now=now)
+    attribution.clear_caches()
+    return run
+
+
+def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str = "0" * 64) -> SVSRun:
+    """Attributes a detection of the alert to a new run in the given state, as the marker router
+    would have (saq.svs.attribution). The run's test is added to the catalog if it isn't there."""
+    test_guid = "dddddddd-4444-4444-8444-444444444444"
+    with private_transaction() as session:
+        if session.execute(select(SVSCatalogTest.id).where(SVSCatalogTest.guid == test_guid)).first() is None:
+            add_catalog_test(test_guid)
+    run = SVSRun(uuid=str(uuid.uuid4()), test_guid=test_guid, test_content_hash="0" * 64, catalog_commit="a" * 40,
+                 state=state, marker=new_marker(), launcher="art", extra="{}", created_at=datetime.now(),
+                 observation_seconds=3600, attribution_seconds=3600 * 25)
+    with private_transaction() as session:
+        session.add(run)
+        session.flush()
+        session.add(SVSAttribution(run_id=run.id, alert_uuid=alert_uuid, content_hash=content_hash,
+                                   confidence="marker", source="router", actor="svs", created_at=datetime.now()))
+        session.expunge(run)
+    return run

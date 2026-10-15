@@ -266,6 +266,15 @@ svs:
     max_targets: 16
     # how often service_svs moves runs whose start timeout or windows have passed
     timer_interval_seconds: 30
+  # attributing alerts to test runs by their markers (docs/SVS_RUNS.md, *Attribution*)
+  attribution:
+    # how long each process trusts its answer to "is any run registered or inside its attribution
+    # window?"; while none is, nothing looks for markers
+    gate_cache_seconds: 5
+    # how many markers of started runs each process keeps resolved (a miss reads the database)
+    marker_cache_size: 1024
+    # the most markers found in analysis details an alert keeps
+    max_sightings: 200
   # validating changes to YARA rules against the samples (docs/SVS_VALIDATION.md)
   yara:
     # the names (the name field) of the git_repo_* sections whose commits may be validated
@@ -2203,6 +2212,15 @@ analysis_module_svs_yara_sample_capture:
   python_class: YaraSampleCapture
   enabled: true
 
+# tags an alert attributed to an SVS test run (svs_test) and one carrying a marker that doesn't
+# match its run (svs:marker_mismatch, plus a detection), the way the svs_marker alert router judges
+# it (docs/SVS_RUNS.md, *Attribution*). runs in correlation mode, in post-analysis
+analysis_module_svs_alert_tagger:
+  name: svs_alert_tagger
+  python_module: saq.modules.svs
+  python_class: SVSAlertTagger
+  enabled: true
+
 analysis_module_dhash:
   name: dhash
   python_module: saq.modules.dhash
@@ -2615,6 +2633,8 @@ analysis_mode_correlation:
     - file
     - email
     - correlation
+  enabled_modules:
+    - svs_alert_tagger
   cleanup: false
   # NOTE once an analysis is set to correlation it automatically becomes an alert
   # analysis_module_detection: no
@@ -2706,7 +2726,13 @@ timeline:
 # They run in ascending priority in every process that creates or analyzes alerts, and the first
 # decision wins. The built-in detection queue router (a detection's `queue` meta) has priority 500.
 # This list is appended to when config files merge, so an integration adds its own entries.
-alert_routers: []
+alert_routers:
+  # routes alerts whose every detection is attributed to an SVS test run into svs.queue
+  # (docs/SVS_RUNS.md, *Attribution*); ahead of the detection queue router
+  - name: svs_marker
+    python_module: saq.svs.routing
+    python_class: MarkerRouter
+    priority: 100
 #  - name: vendor_router
 #    python_module: vendor.routing
 #    python_class: VendorRouter

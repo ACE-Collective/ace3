@@ -14,7 +14,10 @@ from saq.detection_verdicts.effective import unreviewed_run_condition
 from saq.disposition import get_disposition_class
 from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
+from saq.signatures.builtin import SVS_MARKER_MISMATCH, get_builtin_signature_version
+from saq.svs.attribution import alert_event_time, attribution_open, evaluate
 from saq.svs.capture import candidates_from_root, capture
+from saq.svs.constants import TAG_MARKER_MISMATCH, TAG_SVS_TEST, SVSStatus
 
 
 class YaraSampleCapture(AnalysisModule):
@@ -66,5 +69,46 @@ class YaraSampleCapture(AnalysisModule):
                               extra={"alert_uuid": root.uuid, "sha256": candidate.sha256,
                                      "rule_uuid": candidate.rule_uuid})
                 report_exception()
+
+        return AnalysisExecutionResult.COMPLETED
+
+
+class SVSAlertTagger(AnalysisModule):
+    """Marks what SVS attribution makes of an alert (docs/SVS_RUNS.md, *Attribution*) in its tree:
+    the svs_test tag on an alert whose every detection is attributed to a test run, and the
+    svs:marker_mismatch tag plus a detection on one carrying a marker that doesn't match its run.
+
+    The svs_marker alert router judges alerts but never changes the tree [FR-3], so this module
+    does that part. It runs in correlation mode, in post-analysis, which comes before the router's
+    POST_ANALYSIS stage in the same pass, and it evaluates the alert the same way the router does
+    rather than reading the router's rows, which would lag a pass: a hunt alert gets only one.
+    Tags and detections are idempotent, and a mismatch is never taken back. svs_test is removed
+    when the alert stops being fully attributed."""
+
+    def execute_post_analysis(self) -> AnalysisExecutionResult:
+        root = self.get_root()
+        if not attribution_open():
+            return AnalysisExecutionResult.COMPLETED
+
+        inserted_at = get_db().execute(select(Alert.insert_date).where(Alert.uuid == root.uuid)).scalar()
+        if inserted_at is None:
+            logging.debug("%s has no alert row - not tagged for svs", root)
+            return AnalysisExecutionResult.COMPLETED
+
+        evaluation = evaluate(root, alert_event_time(root, inserted_at))
+
+        if evaluation.status == SVSStatus.MISMATCH:
+            root.add_tag(TAG_MARKER_MISMATCH)
+            for judgement in evaluation.mismatches:
+                root.add_detection_point(
+                    f"SVS test run marker {judgement.marker} does not match its run: {judgement.result.value}",
+                    details={"marker": judgement.marker, "result": judgement.result.value},
+                    signature_uuid=SVS_MARKER_MISMATCH.uuid,
+                    signature_version=get_builtin_signature_version())
+
+        if evaluation.routed:
+            root.add_tag(TAG_SVS_TEST)
+        elif root.has_tag(TAG_SVS_TEST):
+            root.remove_tag(TAG_SVS_TEST)
 
         return AnalysisExecutionResult.COMPLETED

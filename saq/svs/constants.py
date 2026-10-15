@@ -59,3 +59,51 @@ class RunEventKind(StrEnum):
     REGISTERED = "registered"
     TRANSITION = "transition"
     LAUNCHER_CALL = "launcher_call"
+
+
+class AttributionConfidence(StrEnum):
+    """How an alert's detection was attributed to a run (svs_attributions.confidence)."""
+    MARKER = "marker"        # a marker that agrees with the run: its run, its target, its window
+    CONTEXT = "context"      # no marker at all: the run's target and window alone
+
+
+class AttributionSource(StrEnum):
+    """Who wrote an attribution (svs_attributions.source)."""
+    ROUTER = "router"        # the marker router (saq/svs/routing.py)
+    MANUAL = "manual"        # a person associated the alert with the run
+
+
+class ScanPoint(StrEnum):
+    """Where in an alert a marker was found (docs/SVS_RUNS.md, *Attribution*)."""
+    OBSERVABLE = "observable"        # an observable's value, or a file observable's name
+    DETECTION = "detection"          # a detection's description or details
+    ROOT_DETAILS = "root_details"    # the alert's own details: hunt events, API details
+    ANALYSIS = "analysis"            # the details of a module's analysis (saved by the executor)
+    FILE_CONTENTS = "file_contents"  # the SVS_Marker YARA rule matched a file (saq/svs/marker_rule.py)
+
+
+class MarkerResult(StrEnum):
+    """What a marker found in an alert says about it (docs/SVS.md, Part 3, *Markers*)."""
+    ATTRIBUTED = "attributed"            # it agrees with its run
+    UNKNOWN = "unknown"                  # no run has it
+    OTHER_HOST = "other host"            # the alert involves none of its run's targets
+    OUTSIDE_WINDOW = "outside window"    # the run never started, or the event is outside its attribution window
+
+
+class SVSStatus(StrEnum):
+    """The one SVS status of an alert (docs/SVS.md, Part 3, *What analysts see*)."""
+    TEST = "test"                        # every detection attributed by marker; routed to the test queue
+    TEST_CONTEXT = "test?"               # attributed by context only; routed to the test queue
+    PARTIAL = "partial"                  # some detections attributed; stays in its queue
+    MISMATCH = "mismatch"                # a marker that doesn't agree with its context; stays in its queue
+
+
+# the root extension the executor saves the markers it finds in analysis details to
+SIGHTINGS_EXTENSION = "svs_sightings"
+
+# the tags the svs_alert_tagger module puts on the root
+TAG_SVS_TEST = "svs_test"
+TAG_MARKER_MISMATCH = "svs:marker_mismatch"
+
+# the actor of what the marker router writes
+ROUTER_ACTOR = "svs"

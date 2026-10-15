@@ -157,6 +157,14 @@ class TestFailures:
 
 
 class TestConfiguration:
+    def test_the_shipped_configuration_loads(self):
+        """etc/saq.default.yaml registers the SVS marker router ahead of the built-in one."""
+        load_alert_routers(force=True)
+        assert get_alert_router_load_errors() == {}
+        routers = {r.name: r for r in get_alert_routers()}
+        assert type(routers["svs_marker"]).__name__ == "MarkerRouter"
+        assert routers["svs_marker"].priority < routers["detection_queue"].priority
+
     def test_configured_routers_are_loaded(self, configured):
         configured(_config("from_config", "FixedRouter", 150, queue="configured"))
 

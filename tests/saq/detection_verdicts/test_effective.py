@@ -1,16 +1,20 @@
 """The effective verdict rule (saq.detection_verdicts.effective), in Python and in SQL."""
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import update
 
 from saq.configuration.config import get_config
-from saq.database.model import Alert, DetectionPointVerdict, User
+from saq.database.model import Alert, DetectionPointVerdict, SVSAttribution, User
 from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, SOURCE_INHERITED_SINGLE
 from saq.detection_verdicts.effective import compute_effective, disposition_class_lists
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.disposition import get_disposition_class
 from tests.saq.helpers import insert_alert_with_detections
+from tests.saq.svs.conftest import attribute_to_run
 
 SIG_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 SIG_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -71,8 +75,11 @@ MULTI = [{"description": "d1", "signature_uuid": SIG_A, "fqdn": "one.example.com
 @pytest.mark.parametrize("disposition", ["OPEN", "IGNORE", "FALSE_POSITIVE", "DELIVERY", "GRAYWARE", "NOT_CONFIGURED"])
 @pytest.mark.parametrize("detections", [SINGLE, MULTI], ids=["single", "multi"])
 @pytest.mark.parametrize("with_override", [False, True], ids=["inherited", "override"])
-def test_sql_agrees_with_python(disposition, detections, with_override):
+@pytest.mark.parametrize("run_state", [None, "ended", "reviewed"], ids=["no-run", "unreviewed-run", "reviewed-run"])
+def test_sql_agrees_with_python(disposition, detections, with_override, run_state):
     alert = insert_alert_with_detections(detections, disposition=disposition)
+    if run_state is not None:
+        attribute_to_run(alert.uuid, run_state)
     rows = list_alert_detection_points(alert.id)
     assert len(rows) == 2
     if with_override:
@@ -81,8 +88,22 @@ def test_sql_agrees_with_python(disposition, detections, with_override):
 
     multi = len({row["signature_uuid"] for row in rows}) > 1
     for row in rows:
-        expected = compute_effective(get_disposition_class(disposition), row["override"], multi)
+        expected = compute_effective(get_disposition_class(disposition), row["override"], multi,
+                                     unreviewed_run=run_state == "ended")
         assert (row["verdict"], row["verdict_source"]) == expected, row
+
+
+@pytest.mark.integration
+def test_a_removed_attribution_gives_the_verdicts_back():
+    alert = insert_alert_with_detections(SINGLE, disposition="DELIVERY")
+    run = attribute_to_run(alert.uuid, "ended")
+    assert {row["verdict"] for row in list_alert_detection_points(alert.id)} == {None}
+
+    with private_transaction() as session:
+        session.execute(update(SVSAttribution).where(SVSAttribution.run_id == run.id).values(
+            removed_at=datetime.now(), removed_by="alice"))
+    get_db().expire_all()
+    assert {row["verdict"] for row in list_alert_detection_points(alert.id)} == {"tp"}
 
 
 @pytest.mark.integration

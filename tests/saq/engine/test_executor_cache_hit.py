@@ -25,6 +25,8 @@ from saq.constants import AnalysisExecutionResult, F_FILE, F_FQDN, F_URL
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.modules.rdap import RdapAnalysis
+from saq.svs.attribution import Sighting, saved_sightings
+from saq.svs.constants import ScanPoint
 
 
 def _make_executor() -> AnalysisExecutor:
@@ -591,3 +593,39 @@ class TestModuleExecutionDeltaCacheHitMetadata:
             ObservableSpec(uuid="2", type=F_FILE, value="path")
         )
         assert delta.has_file_observables is True
+
+
+class TestSVSMarkersOnReplay:
+    """A replayed module's details carry the same SVS test run markers its live run did, and the
+    executor saves them on the root the same way (docs/SVS_RUNS.md, *Attribution*)."""
+
+    MARKER = "svs-" + "c" * 26
+
+    @pytest.mark.unit
+    def test_markers_in_replayed_details_are_saved(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("saq.svs.attribution.attribution_open", lambda now=None: True)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+        delta = _make_delta_for(obs)
+        delta.analysis["details"] = {"registrar": f"registered by {self.MARKER}"}
+
+        executor._apply_cached_delta(_make_context(root), root, obs, _make_module(),
+                                     CacheLookupResult(delta, None, 4, "abc"))
+
+        assert saved_sightings(root) == [Sighting(self.MARKER, obs.uuid, ScanPoint.ANALYSIS, "rdap_analyzer")]
+
+    @pytest.mark.unit
+    def test_a_failing_marker_scan_never_breaks_replay(self, tmp_path, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("broken")
+
+        monkeypatch.setattr("saq.engine.executor.record_delta_sightings", broken)
+        executor = _make_executor()
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_FQDN, "example.com")
+
+        executor._apply_cached_delta(_make_context(root), root, obs, _make_module(),
+                                     CacheLookupResult(_make_delta_for(obs), None, 4, "abc"))
+
+        assert len(root.module_executions) == 1

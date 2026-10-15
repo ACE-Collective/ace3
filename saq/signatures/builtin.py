@@ -64,6 +64,9 @@ DHASH_IMAGE_MATCH             = BuiltinSignature("dhash_image_match", "10d1e320-
 # a launcher tried to register an SVS test run against a host that is not a test host
 # (docs/SVS_RUNS.md, *Refused registrations*)
 SVS_REGISTRATION_REFUSED      = BuiltinSignature("svs_registration_refused", "0d950be1-edba-4861-b1eb-df8bd96aa2ed", "SVS test run registered against a host that is not a test host")
+# an SVS test run marker in an alert that doesn't agree with its run: unknown, on another host, or
+# outside the run's window (docs/SVS_RUNS.md, *Attribution*)
+SVS_MARKER_MISMATCH           = BuiltinSignature("svs_marker_mismatch", "9b90e9be-67e7-402c-b4f6-e7be758ee260", "SVS test run marker that does not match its run")
 # fallback for YARA rules that matched but carry no uuid meta (warn-but-detect)
 YARA_RULE_MATCH               = BuiltinSignature("yara_rule_match", "3557435e-da7f-4b1b-a5dd-655107839530", "YARA rule match with no uuid meta")
 # special built-in for detection points that predate signature attribution: applied
@@ -98,6 +101,7 @@ BUILTIN_SIGNATURES = {
         URL_CLICKER,
         DHASH_IMAGE_MATCH,
         SVS_REGISTRATION_REFUSED,
+        SVS_MARKER_MISMATCH,
         YARA_RULE_MATCH,
         LEGACY,
     )

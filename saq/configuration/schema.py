@@ -806,6 +806,14 @@ class SVSRunsConfig(BaseModel):
     timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
 
 
+class SVSAttributionConfig(BaseModel):
+    """Attributing alerts to test runs (docs/SVS_RUNS.md, *Attribution*)."""
+    model_config = ConfigDict(extra="forbid")
+    gate_cache_seconds: int = Field(default=5, ge=0, description="how long each process trusts its answer to 'is any run registered or inside its attribution window?'. While no run is, nothing looks for markers")
+    marker_cache_size: int = Field(default=1024, ge=0, description="how many markers of started runs each process keeps resolved. A marker it doesn't have is always looked up in the database")
+    max_sightings: int = Field(default=200, ge=1, description="the most markers found in analysis details an alert keeps (the svs_sightings root extension)")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
@@ -813,6 +821,7 @@ class SVSConfig(BaseModel):
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
     catalog: SVSCatalogConfig = Field(default_factory=SVSCatalogConfig, description="the Atomic Red Team test catalog")
     runs: SVSRunsConfig = Field(default_factory=SVSRunsConfig, description="test runs")
+    attribution: SVSAttributionConfig = Field(default_factory=SVSAttributionConfig, description="attributing alerts to test runs")
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
 

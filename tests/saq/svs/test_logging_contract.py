@@ -3,13 +3,21 @@ carries svs_run, svs_test and svs_marker in extra, plus the fields of its row in
 table is a contract; this keeps a refactor from dropping a field."""
 
 import logging
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
 
+from saq.alert_routing import reset_alert_routers
+from saq.analysis.root import RootAnalysis
+from saq.constants import F_HOSTNAME
+from saq.database.util.alert import ALERT
+from saq.svs.attribution import clear_caches, evaluate, write_attributions
+
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
+from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test
 
 pytestmark = pytest.mark.integration
@@ -90,3 +98,89 @@ def test_a_refused_registration(caplog):
 
     (call,) = _records(caplog, "svs launcher call")
     assert (call.levelno, call.call, call.outcome, call.caller) == (logging.WARNING, "register", "refused", "art-launcher")
+
+
+#
+# attribution (saq.svs.attribution, saq.svs.routing)
+#
+
+SIGHTING_FIELDS = ("svs_marker", "alert_uuid", "scan_point", "result")
+DECISION_FIELDS = RUN_FIELDS + ("alert_uuid", "stage", "decision", "queue", "confidence")
+ATTRIBUTION_FIELDS = RUN_FIELDS + ("alert_uuid", "detection", "confidence", "late", "source")
+
+
+@pytest.fixture
+def routed(monkeypatch):
+    reset_alert_routers()
+    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
+    yield
+    reset_alert_routers()
+
+
+def _alert(host: str, details: dict, detections=("hunt hit",)) -> RootAnalysis:
+    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now())
+    root.initialize_storage()
+    root.add_observable_by_spec(F_HOSTNAME, host)
+    root.details = details
+    for description in detections:
+        root.add_detection_point(description)
+    root.save()
+    ALERT(root)
+    return root
+
+
+def _started():
+    run = register(_registration(), LAUNCHER, now=datetime.now() - timedelta(minutes=1))
+    run = start(run.uuid, LAUNCHER, now=datetime.now() - timedelta(minutes=1))
+    clear_caches()
+    return run
+
+
+def test_attribution(caplog, routed):
+    run = _started()
+    with caplog.at_level(logging.INFO):
+        root = _alert("win10-01", {"cmd": run.marker})
+
+    (sighting,) = _records(caplog, "svs marker ")
+    assert sighting.levelno == logging.INFO and sighting.result == "attributed" and sighting.svs_run == run.uuid
+    _assert_fields(sighting, SIGHTING_FIELDS + RUN_FIELDS)
+
+    (decision,) = _records(caplog, "svs router decision")
+    assert (decision.decision, decision.stage, decision.confidence) == ("routed", "pre_insert", "marker")
+    _assert_fields(decision, DECISION_FIELDS)
+
+    (written,) = _records(caplog, "svs attribution written")
+    assert written.alert_uuid == root.uuid and written.source == "router"
+    _assert_fields(written, ATTRIBUTION_FIELDS)
+
+    caplog.clear()
+    root.detections.clear()
+    with caplog.at_level(logging.INFO):
+        write_attributions(root.uuid, evaluate(root, datetime.now()))
+    (removed,) = _records(caplog, "svs attribution removed")
+    _assert_fields(removed, ATTRIBUTION_FIELDS)
+
+
+def test_a_mismatch(caplog, routed):
+    run = _started()
+    with caplog.at_level(logging.INFO):
+        _alert("prod-dc-01", {"cmd": run.marker})
+
+    (sighting,) = _records(caplog, "svs marker ")
+    assert (sighting.levelno, sighting.result) == (logging.WARNING, "other host")
+    _assert_fields(sighting, SIGHTING_FIELDS + RUN_FIELDS)
+    (decision,) = _records(caplog, "svs router decision")
+    assert decision.decision == "mismatch" and decision.svs_run == run.uuid
+
+
+def test_a_refused_context_attribution(caplog, routed):
+    first, second = _started(), _started()
+    with caplog.at_level(logging.INFO):
+        root = _alert("win10-01", {})
+
+    (refused,) = _records(caplog, "svs context attribution")
+    assert refused.levelno == logging.WARNING
+    assert sorted(refused.candidate_runs) == sorted([first.uuid, second.uuid])
+    assert refused.alert_uuid == root.uuid
+    # it is about two runs, so it names neither as its own
+    assert not hasattr(refused, "svs_run")

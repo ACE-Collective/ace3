@@ -23,12 +23,12 @@ in Python, and the tests check that the two agree. Nothing else may restate it.
 
 from typing import Optional
 
-from sqlalchemy import and_, case, exists, false, literal, select
+from sqlalchemy import and_, case, exists, literal, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from saq.configuration.config import get_config
-from saq.database.model import DetectionPoint, DetectionPointVerdict
+from saq.database.model import DetectionPoint, DetectionPointVerdict, SVSAttribution, SVSRun
 from saq.detection_verdicts.constants import (
     SOURCE_EXPLICIT,
     SOURCE_INHERITED_MULTI,
@@ -37,6 +37,7 @@ from saq.detection_verdicts.constants import (
     VERDICT_TP,
 )
 from saq.disposition import DISPOSITION_CLASS_FP, DISPOSITION_CLASS_TP
+from saq.svs.constants import RunState
 
 
 def disposition_class_lists() -> tuple[list[str], list[str]]:
@@ -90,9 +91,13 @@ def verdict_join_condition(dp, verdict) -> ColumnElement[bool]:
 
 def unreviewed_run_condition(alert) -> ColumnElement[bool]:
     """True when the alert is attributed to a test run that is not Reviewed, which gives it no
-    verdicts. Test runs do not exist yet: phase 4 replaces this with the join from
-    svs_attributions to svs_runs.state."""
-    return false()
+    verdicts: any detection of it, through a row that still holds (docs/SVS_RUNS.md,
+    *Attribution*). Answered from ix_svs_attributions_alert_uuid."""
+    return exists().where(
+        SVSAttribution.alert_uuid == alert.uuid,
+        SVSAttribution.removed_at.is_(None),
+        SVSRun.id == SVSAttribution.run_id,
+        SVSRun.state != RunState.REVIEWED.value)
 
 
 def other_signature_exists(dp) -> ColumnElement[bool]:
