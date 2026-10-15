@@ -326,8 +326,105 @@ class TestExport:
             assert (await client.get(path, params={"f": "state:bogus"})).status_code == 422
 
 
+class TestCount:
+    @pytest.mark.asyncio
+    async def test_count(self, client: AsyncClient, seeded):
+        assert (await client.get("/svs/runs/count")).json() == {"count": len(seeded)}
+        response = await client.get("/svs/runs/count", params={"f": "needs_attention:true"})
+        assert response.status_code == 200, response.text
+        assert response.json()["count"] == len(await _ids(client, "needs_attention:true")) == 3
+        assert (await client.get("/svs/runs/count", params={"f": ["batch:nightly", "!state:closed"]})).json() == \
+            {"count": 5}
+
+    @pytest.mark.asyncio
+    async def test_a_bad_filter(self, client: AsyncClient):
+        assert (await client.get("/svs/runs/count", params={"f": "state:bogus"})).status_code == 422
+        assert (await client.get("/svs/runs/count", params={"f": "nope:1"})).status_code == 422
+
+
+def _add_results(run_uuid: str, *statuses: str) -> None:
+    run_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == run_uuid)).scalar_one()
+    with private_transaction() as session:
+        for status in statuses:
+            session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), status=status))
+
+
+class TestBatches:
+    @pytest.mark.asyncio
+    async def test_a_batch(self, client: AsyncClient, seeded):
+        _add_results(seeded["ended"], "hit", "missing", "possibly_suppressed", "candidate")
+        _add_results(seeded["reviewed"], "hit", "ignored")
+        # the started run has no batch, so its result counts nowhere
+        _add_results(seeded["started"], "hit")
+
+        response = await client.get("/svs/runs/batches")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["next_cursor"] is None
+        (batch,) = body["data"]
+        assert (batch["batch_id"], batch["runs"], batch["needs_attention"]) == ("nightly", 6, 3)
+        assert batch["states"] == {"created": 1, "started": 0, "ended": 1, "reviewed": 2, "canceled": 0, "error": 1,
+                                   "closed": 1}
+        created = {row["run_id"]: row["created_at"] for row in (await client.get("/svs/runs/")).json()["data"]}
+        assert (batch["first_created_at"], batch["last_created_at"]) == (created[seeded["created"]],
+                                                                         created[seeded["closed"]])
+        assert (batch["result_hit"], batch["result_expected"], batch["result_missing"], batch["result_candidate"]) == \
+            (2, 4, 2, 1)
+
+        # the trailing slash the GUI's list pages request
+        assert (await client.get("/svs/runs/batches/")).json() == body
+
+    @pytest.mark.asyncio
+    async def test_the_filters_pick_the_runs_counted(self, client: AsyncClient, seeded):
+        _add_results(seeded["ended"], "hit", "missing")
+        _add_results(seeded["reviewed"], "hit")
+        (batch,) = (await client.get("/svs/runs/batches", params={"f": "state:reviewed"})).json()["data"]
+        assert (batch["runs"], batch["states"]["reviewed"], batch["states"]["ended"]) == (2, 2, 0)
+        assert (batch["result_hit"], batch["result_expected"], batch["result_missing"]) == (1, 1, 0)
+        assert (await client.get("/svs/runs/batches", params={"f": "state:started"})).json()["data"] == []
+
+    @pytest.mark.asyncio
+    async def test_paging(self, client: AsyncClient, seeded):
+        tie = datetime.now() + timedelta(hours=1)
+        _register(tie, batch_id="tie-a")
+        _register(tie, batch_id="tie-b")
+        _register(tie - timedelta(hours=1, minutes=30), batch_id="older")
+        _register(tie + timedelta(hours=1), batch_id="newest")
+        rows = await _pages(client, "/svs/runs/batches", limit=1)
+        # the batch with the latest run first; a tie goes by batch id, last first
+        assert [row["batch_id"] for row in rows] == ["newest", "tie-b", "tie-a", "older", "nightly"]
+        assert [row["batch_id"] for row in await _pages(client, "/svs/runs/batches", limit=2)] == \
+            [row["batch_id"] for row in rows]
+
+    @pytest.mark.asyncio
+    async def test_bad_cursors(self, client: AsyncClient, seeded):
+        _register(datetime.now(), batch_id="second")
+        assert (await client.get("/svs/runs/batches", params={"cursor": "junk"})).status_code == 400
+        runs_cursor = (await client.get("/svs/runs/", params={"limit": 1})).json()["next_cursor"]
+        response = await client.get("/svs/runs/batches", params={"cursor": runs_cursor})
+        assert response.status_code == 400 and "not by batch" in response.json()["detail"]
+        assert (await client.get("/svs/runs/batches", params={"f": "state:bogus"})).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_exports(self, client: AsyncClient, seeded):
+        _register(datetime.now(), batch_id="second")
+        lines = (await client.get("/svs/runs/batches/export/ndjson")).text.splitlines()
+        assert [json.loads(line)["batch_id"] for line in lines] == ["second", "nightly"]
+
+        response = await client.get("/svs/runs/batches/export/csv", params={"f": "batch:nightly"})
+        assert response.headers["content-type"].startswith("text/csv")
+        (record,) = list(csv.DictReader(io.StringIO(response.text)))
+        assert (record["batch_id"], record["runs"], record["state_reviewed"], record["state_started"]) == \
+            ("nightly", "6", "2", "0")
+        assert "states" not in record
+
+        for path in ("/svs/runs/batches/export/ndjson", "/svs/runs/batches/export/csv"):
+            assert (await client.get(path, params={"f": "state:bogus"})).status_code == 422
+
+
 READS = ["/svs/runs/", "/svs/runs/export/ndjson", "/svs/runs/export/csv", "/svs/runs/events",
-         "/svs/runs/events/export/ndjson", "/svs/runs/events/export/csv"]
+         "/svs/runs/events/export/ndjson", "/svs/runs/events/export/csv", "/svs/runs/count", "/svs/runs/batches",
+         "/svs/runs/batches/export/ndjson", "/svs/runs/batches/export/csv"]
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, or_, select
+from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.orm import aliased, selectinload
 
 from aceapi_v2.common.listing import (
@@ -26,6 +26,7 @@ from aceapi_v2.common.listing import (
 )
 from aceapi_v2.svs.runs.schemas import (
     ATTRIBUTION_CSV_FIELDS,
+    RUN_BATCH_CSV_FIELDS,
     RUN_EVENT_CSV_FIELDS,
     RUN_RESULT_CSV_FIELDS,
     RUN_ROW_CSV_FIELDS,
@@ -36,8 +37,10 @@ from aceapi_v2.svs.runs.schemas import (
     BulkRunResult,
     ReviewRequest,
     ReviewResult,
+    RunBatch,
     RunComment,
     RunCommentRequest,
+    RunCount,
     RunDetail,
     RunEvent,
     RunExecutedRequest,
@@ -60,9 +63,10 @@ from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.svs import review, run_comments, runs
+from saq.svs.constants import RUN_STATES
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
-from saq.svs.run_summary import RunSummary, run_summaries
+from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries
 from saq.svs.samples import to_utc_naive
 from saq.util.uuid import UUID_REGEX
 
@@ -270,6 +274,79 @@ def _flatten_run(values: dict) -> None:
 
 def run_rows_to_csv(rows: list[RunRow], *, header: bool) -> str:
     return rows_to_csv(rows, RUN_ROW_CSV_FIELDS, header=header, flatten=_flatten_run)
+
+
+#
+# the count, and the batches: one row per batch_id over the runs the filters match
+#
+
+def count_runs(filter_params: list[str], tz) -> RunCount:
+    """How many runs the share-link filters match. Raises InvalidListingRequest."""
+    statement = select(func.count()).select_from(SVSRun).where(*_filter_conditions(filter_params, tz))
+    return RunCount(count=get_db().execute(statement).scalar_one())
+
+
+LISTING_ORDER_BATCH = "batch"
+
+
+@dataclass(frozen=True)
+class BatchListing:
+    conditions: tuple
+
+
+def prepare_batch_listing(filter_params: list[str], *, tz) -> BatchListing:
+    """The runs a batch row counts: those the share-link filters match. Raises InvalidListingRequest."""
+    return BatchListing(conditions=tuple(_filter_conditions(filter_params, tz)))
+
+
+def _parse_batch_key(payload: dict) -> tuple[datetime, str]:
+    if payload["o"] != LISTING_ORDER_BATCH:
+        raise InvalidCursor(f"this cursor pages a listing ordered by {payload['o']}, not by batch")
+    at, batch_id = payload["k"]
+    return datetime.fromisoformat(at), str(batch_id)
+
+
+def fetch_batch_page(listing: BatchListing, cursor: str | None, limit: int) -> tuple[list[RunBatch], str | None]:
+    """One page of batches after `cursor`, the one with the latest run first, and the next page's
+    cursor (None on the last). Raises InvalidCursor."""
+    last_created_at = func.max(SVSRun.created_at)
+    states = [func.sum(case((SVSRun.state == state, 1), else_=0)) for state in RUN_STATES]
+    statement = (select(SVSRun.batch_id, func.count(), func.min(SVSRun.created_at), last_created_at,
+                        func.sum(case((needs_attention_condition(), 1), else_=0)), *states)
+                 .where(SVSRun.batch_id.is_not(None), *listing.conditions)
+                 .group_by(SVSRun.batch_id))
+    if cursor is not None:
+        at, batch_id = decode_cursor(cursor, _parse_batch_key)
+        statement = statement.having(or_(
+            last_created_at < at, and_(last_created_at == at, SVSRun.batch_id < batch_id)))
+    statement = statement.order_by(last_created_at.desc(), SVSRun.batch_id.desc())
+
+    rows = get_db().execute(statement.limit(limit + 1)).all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = encode_cursor(o=LISTING_ORDER_BATCH, k=[rows[-1][3].isoformat(), rows[-1][0]])
+
+    summaries = batch_result_summaries(get_db(), [row[0] for row in rows], listing.conditions)
+    batches = []
+    for batch_id, runs_count, first_created_at, last_at, needs_attention, *state_counts in rows:
+        summary = _summary_values(summaries.get(batch_id.lower(), RunSummary()))
+        batches.append(RunBatch(
+            batch_id=batch_id, runs=runs_count, states=dict(zip(RUN_STATES, (int(n) for n in state_counts))),
+            needs_attention=int(needs_attention), first_created_at=first_created_at, last_created_at=last_at,
+            result_hit=summary["result_hit"], result_expected=summary["result_expected"],
+            result_missing=summary["result_missing"], result_candidate=summary["result_candidate"]))
+
+    return batches, next_cursor
+
+
+def _flatten_batch(values: dict) -> None:
+    for state, count in values.pop("states").items():
+        values[f"state_{state}"] = count
+
+
+def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
+    return rows_to_csv(rows, RUN_BATCH_CSV_FIELDS, header=header, flatten=_flatten_batch)
 
 
 #

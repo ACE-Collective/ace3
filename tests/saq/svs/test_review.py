@@ -126,10 +126,10 @@ class TestOwnership:
 
         result = review.take_ownership([free.uuid, bobs.uuid, disabled.uuid, str(uuid.uuid4())], user_id, ACTOR)
         assert sorted(result.done) == sorted([free.uuid, disabled.uuid])
-        assert result.left_alone == {bobs.uuid: "Bob"} and len(result.unknown) == 1
+        assert result.left_alone == {bobs.uuid: "bob"} and len(result.unknown) == 1
         assert _run_row(free).owner_id == user_id
         (event,) = _events(disabled, RunEventKind.OWNERSHIP_TAKEN)
-        assert json.loads(event.details) == {"from": "Ghost"}
+        assert json.loads(event.details) == {"from": "ghost"}
 
         # confirmed: taken from bob
         result = review.take_ownership([bobs.uuid], user_id, ACTOR, {bobs.uuid: bob.id})
@@ -167,7 +167,7 @@ class TestCancelAndClose:
         run = _run()
         runs.cancel(run.uuid, LAUNCHER)
         _set_owner(run, bob.id)
-        assert review.close_runs([run.uuid], user_id, ACTOR).left_alone == {run.uuid: "Bob"}
+        assert review.close_runs([run.uuid], user_id, ACTOR).left_alone == {run.uuid: "bob"}
         result = review.close_runs([run.uuid], user_id, ACTOR, confirmed_takes={run.uuid: bob.id})
         assert result.done == [run.uuid]
         assert (_run_row(run).state, _run_row(run).owner_id) == (RunState.CLOSED, user_id)
@@ -319,7 +319,7 @@ class TestReview:
         _set_owner(run, bob.id)
         with pytest.raises(review.RunOwned) as e:
             review.review(run.uuid, user_id, ACTOR)
-        assert e.value.owner == "Bob"
+        assert e.value.owner == "bob"
         result = review.review(run.uuid, user_id, ACTOR, confirmed_from=bob.id)
         assert _run_row(run).owner_id == user_id and result.counts == {}
 

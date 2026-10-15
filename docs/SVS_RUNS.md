@@ -27,8 +27,7 @@ reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 A run can target only a **test host**: a host listed in `svs_test_hosts`. A registration against
 any other host, or as a user the host doesn't list, is refused. They are a table rather than config
 so a site that builds test VMs on demand adds one without restarting anything. An `svs:admin`
-manages them through `/api/v2/svs/test-hosts` (and, later in phase 4, the SVS area's *Test hosts*
-tab).
+manages them on the SVS area's *Test hosts* tab, or through `/api/v2/svs/test-hosts`.
 
 | Field | Meaning |
 |---|---|
@@ -260,8 +259,7 @@ created; that failure is logged at ERROR.
 ## Following runs
 
 Everything about a run is readable through `GET /api/v2/svs/runs` with `svs:run_read`. The
-GUI's Runs tab, which comes later in phase 4, is a shell over the same endpoints and the same
-filters (`docs/SVS_API.md`, *Runs*).
+GUI's Runs tab is a shell over the same endpoints and the same filters (`docs/SVS_API.md`, *Runs*).
 
 - **Needs attention** (`f=needs_attention:true`) is the Runs screen's default view. It matches runs
   that:
@@ -289,6 +287,31 @@ filters (`docs/SVS_API.md`, *Runs*).
   `svs_run=<run_id>` or `svs_marker=<marker>`.
 - **The event feed** (`GET …/runs/events?changed_since=…`) is every run's events in one stream,
   which is what a report polls.
+
+### In the GUI
+
+The **SVS** entry of the navigation bar (with `svs:run_read`) opens the SVS area. Next to it is
+the number of runs that need attention, when any do.
+
+- **Runs** opens on *Needs attention*. Its filters, saved filters and share links work as on the
+  alert list, and the export menu streams what the filters match.
+  - A row shows the run's state and test, its targets, launcher and batch, and when it was created,
+    started and ended.
+  - While a run is `started`, it shows the time left in its observation window.
+  - It also shows the result summary, the alerts by marker, by context and late, and the owner and
+    reviewer.
+- **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
+  attention, and the expected hits and missing signatures. The filters carry over between the two
+  views, and opening a batch lists its runs.
+- **Bulk actions** need `svs:run_manage`. Select runs on the page, then *Take ownership*, *Cancel*
+  or *Close* them.
+  - *Close* asks for a reason, which an ended run needs (*Reviewing runs*, below).
+  - A run someone else owns is not touched until you confirm, in a second dialog, that you take it
+    from them.
+  - Afterwards the page reports what was done, what was left alone and why.
+  - Review is never a bulk action.
+- **Test hosts** is shown only with `svs:admin`, and adds, changes and deletes test hosts (*Test
+  hosts*, above).
 
 ## Attribution
 

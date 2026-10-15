@@ -89,7 +89,7 @@ async def test_review_takes_from_a_confirmed_owner(client: AsyncClient):
     db.commit()
 
     response = await client.post(f"/svs/runs/{run.uuid}/review")
-    assert response.status_code == 409 and response.json()["detail"]["owner"] == "Bob"
+    assert response.status_code == 409 and response.json()["detail"]["owner"] == "bob"
     response = await client.post(f"/svs/runs/{run.uuid}/review", json={"confirmed_take_from": "bob"})
     assert response.status_code == 200, response.text
 
@@ -104,7 +104,7 @@ async def test_bulk_actions(client: AsyncClient, test_user):
 
     response = await client.post("/svs/runs/bulk/take-ownership", json={"run_ids": [ended.uuid, started.uuid]})
     assert response.status_code == 200, response.text
-    assert response.json() == {"done": [ended.uuid], "left_alone": {started.uuid: "Bob"}, "conflicts": {},
+    assert response.json() == {"done": [ended.uuid], "left_alone": {started.uuid: "bob"}, "conflicts": {},
                                "unknown": []}
 
     response = await client.post("/svs/runs/bulk/cancel", json={
@@ -122,6 +122,24 @@ async def test_bulk_actions(client: AsyncClient, test_user):
 
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": ["not-a-uuid"]})).status_code == 400
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": []})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_left_alone_is_a_confirmation(client: AsyncClient, test_user):
+    """What a bulk action leaves alone, sent back as it is, confirms taking those runs: the GUI's
+    take-from-owner dialog relies on it, for an owner whose display name isn't their username too."""
+    run = started_run(GUID)
+    carol = add_user("carol", "carol@localhost", "Carol Example", "carol")
+    db = get_db()
+    db.execute(update(SVSRun).where(SVSRun.id == run.id).values(owner_id=carol.id))
+    db.commit()
+
+    left_alone = (await client.post("/svs/runs/bulk/take-ownership", json={"run_ids": [run.uuid]})).json()["left_alone"]
+    assert left_alone == {run.uuid: "carol"}
+    response = await client.post("/svs/runs/bulk/take-ownership", json={
+        "run_ids": list(left_alone), "confirmed_takes": left_alone})
+    assert response.json()["done"] == [run.uuid]
+    assert (await client.get(f"/svs/runs/{run.uuid}")).json()["owner"] == test_user.username
 
 
 @pytest.mark.asyncio

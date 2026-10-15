@@ -508,6 +508,8 @@ launcher that also reads its runs needs both.
 | `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
 | `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
 | `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
+| `GET /api/v2/svs/runs/count` | `svs:run_read` | `{"count"}`: how many runs the filters match |
+| `GET /api/v2/svs/runs/batches` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | One row per batch over the runs the filters match (*Batches*, below) |
 | `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent |
 | `GET /api/v2/svs/runs/{run_id}/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The run's event log, oldest first |
 | `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
@@ -606,6 +608,28 @@ works with the order it came from (otherwise 400). A row shows up a few seconds 
 written, once no open transaction can still write an older `updated_at`. Resume from the last
 row's `updated_at` and you never miss a run.
 
+### Batches
+
+A run's `batch_id` is a label the launcher gives it, not a table. `GET /api/v2/svs/runs/batches`
+groups the runs by it, one row per batch:
+
+| Field | Meaning |
+|---|---|
+| `batch_id` | The batch. Batch ids compare without case, as the `batch` filter does; runs without one are left out. |
+| `runs`, `states` | How many runs, and how many in each state (every state is named, with 0 when there are none). |
+| `needs_attention` | How many are in the *Needs attention* view. |
+| `first_created_at`, `last_created_at` | When its first and its latest run were registered. |
+| `result_hit`, `result_expected`, `result_missing`, `result_candidate` | The runs' result counts (*Fields*, above), summed. |
+
+**The `f=` filters pick the runs, and a row counts only those.** A batch with no matching run has
+no row, and `f=batch:<id>` on `GET /api/v2/svs/runs` lists exactly the runs a row counted. The
+batch with the latest run comes first, ties by batch id; a batch moves up when a run joins it. There
+is no `changed_since`: a batch is a summary, not a change feed. The CSV has a `state_<state>`
+column per state in place of `states`.
+
+`GET /api/v2/svs/runs/count` takes the same filters. `f=needs_attention:true` is the count the
+GUI shows on its *SVS* entry.
+
 ### Run events
 
 Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Each event has:
@@ -629,7 +653,7 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 | `associated` | none | `{"alert_uuid", "detections", "late", "reason"}`: a person associated the alert with the run (`detections` are `content_hash`es) |
 | `disassociated` | none | `{"alert_uuid", "detections", "reason", "not_a_test"}`: a person disassociated it, or marked it not a test |
 | `context_kept` | none | `{"alert_uuid"}`: a person kept the alert's context attributions |
-| `ownership_taken` | none | `{"from"}`: a person took the run, from that owner (null when nobody owned it) |
+| `ownership_taken` | none | `{"from"}`: a person took the run, from that owner's username (null when nobody owned it) |
 | `reviewed` | `from_state: ended` or `reviewed`, `to_state: reviewed` | `{"counts", "re_review"}`: a person signed the result off; the counts are per status, as signed off |
 
 `alerts_closed` also carries `"reviewed": true` when a review closed them. A reader skips kinds it
@@ -659,11 +683,11 @@ A person's actions on runs, all `svs:run_manage` and from a user's key (a config
 - **The bulk actions** take `{"run_ids", "confirmed_takes"?, "reason"?}`. `confirmed_takes` maps a
   run id to the username of the person the caller agreed to take it from. They answer
   `{"done", "left_alone", "conflicts", "unknown"}`: the runs acted on; the ones someone else owns
-  (run id → their name); the ones the action doesn't apply to (run id → why); and the ids that
-  don't exist.
+  (run id → their username, which can be sent back as `confirmed_takes` as it is); the ones the
+  action doesn't apply to (run id → why); and the ids that don't exist.
 - **A review** answers `{"run", "re_review", "counts", "alerts_closed", "fp_verdicts"}`, or 409
   whose `detail` says what stands in the way, any of:
-  - `owner`: someone else owns it, and `confirmed_take_from` didn't name them;
+  - `owner`: the username of whoever else owns it, when `confirmed_take_from` didn't name them;
   - `state`;
   - `stale`: the result is being recomputed;
   - `candidates`: the undecided signature uuids;

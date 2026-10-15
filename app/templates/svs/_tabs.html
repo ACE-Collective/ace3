@@ -1,0 +1,9 @@
+{# The SVS area's tabs (app/svs/views/tabs.py); only those the user may open are listed. #}
+<h2 class="mb-2">SVS</h2>
+<ul class="nav nav-tabs mb-3">
+    {% for tab in svs_tabs %}
+    <li class="nav-item">
+        <a class="nav-link{{ ' active' if request.endpoint in tab.active }}"{{ ' aria-current="page"' | safe if request.endpoint in tab.active }} href="{{ url_for(tab.endpoint) }}">{{ tab.title }}</a>
+    </li>
+    {% endfor %}
+</ul>
