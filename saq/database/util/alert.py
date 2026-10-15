@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -92,13 +93,17 @@ def check_alert_ownership(
     owners: dict[str, AlertOwner],
     user_id: int,
     confirmed_takes: dict[str, int] | None = None,
+    *,
+    new_owner_id: int | None = None,
 ) -> OwnershipCheck:
     """Decides which of alert_uuids the user may change (see OwnershipCheck).
 
     :param owners: the owner of each alert that exists; an alert missing from it is dropped.
     :param confirmed_takes: alert uuid -> id of the analyst the user agreed to take it from.
         The confirmation only counts while that analyst still owns the alert, so an alert
-        someone else took in the meantime is left alone rather than taken from them unseen."""
+        someone else took in the meantime is left alone rather than taken from them unseen.
+    :param new_owner_id: who the change gives the alerts to, when that is not the user: an
+        alert they already own is theirs either way, so it needs no confirmation."""
     confirmed_takes = confirmed_takes or {}
     result = OwnershipCheck()
     for alert_uuid in dict.fromkeys(alert_uuids):
@@ -106,7 +111,8 @@ def check_alert_ownership(
         if owner is None:
             continue
 
-        if owner.user_id is None or owner.user_id == user_id:
+        if owner.user_id is None or owner.user_id == user_id or (
+                new_owner_id is not None and owner.user_id == new_owner_id):
             result.permitted.append(alert_uuid)
         elif not owner.enabled or confirmed_takes.get(alert_uuid) == owner.user_id:
             result.permitted.append(alert_uuid)
@@ -115,6 +121,22 @@ def check_alert_ownership(
             result.skipped[alert_uuid] = owner.name
 
     return result
+
+
+def describe_skipped(ownership: OwnershipCheck) -> str | None:
+    """'left 3 alerts owned by jsmith alone', or None when nothing was skipped."""
+    if not ownership.skipped:
+        return None
+
+    by_owner = Counter(ownership.skipped.values())
+    total = len(ownership.skipped)
+    plural = "" if total == 1 else "s"
+    if len(by_owner) == 1:
+        owner = next(iter(by_owner))
+        return f"left {total} alert{plural} owned by {owner} alone"
+
+    owners = ", ".join(f"{owner} {count}" for owner, count in by_owner.most_common())
+    return f"left {total} alert{plural} owned by other analysts alone ({owners})"
 
 
 def _fetch_alert_owners(c, alert_uuids: list) -> dict[str, AlertOwner]:
@@ -160,11 +182,13 @@ def _log_disposition_changes(event: str, context: dict, changed_uuids: list, **f
         logging.info(event, extra={**context[uuid], **fields})
 
 
-def _log_ownership_taken(context: dict, taken_uuids: list, new_owner: str | None):
+def _log_ownership_taken(context: dict, taken_uuids: list, new_owner: str | None, changed_by: str | None):
     """Emit one audit line per alert taken from another analyst (or from a disabled account).
-    The context's alert_owner is who had it."""
+    The context's alert_owner is who had it; new_owner is who has it now (None when it was
+    unassigned), and changed_by who made the change."""
     for uuid in taken_uuids:
-        logging.info("AUDIT: alert ownership taken", extra={**context[uuid], "new_owner": new_owner})
+        logging.info("AUDIT: alert ownership taken",
+                     extra={**context[uuid], "new_owner": new_owner, "changed_by": changed_by})
 
 
 def ALERT(root: RootAnalysis, owner_id: int | None = None) -> Alert:
@@ -298,13 +322,15 @@ def _submit_search_updates(alert_uuids, reindex: bool) -> None:
     for alert_uuid in alert_uuids:
         submit(alert_uuid)
 
-def _reassign_owner(c, alert_uuids: list, user_id: int) -> None:
-    """Makes user_id the owner of the given alerts, inside the caller's transaction."""
+def _reassign_owner(c, alert_uuids: list, user_id: int | None) -> None:
+    """Makes user_id the owner of the given alerts, or unassigns them when it is None, inside the
+    caller's transaction."""
     if not alert_uuids:
         return
 
     uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
-    c.execute(f"""UPDATE alerts SET owner_id = %s, owner_time = NOW(), version = %s
+    owner_time = "NOW()" if user_id is not None else "NULL"
+    c.execute(f"""UPDATE alerts SET owner_id = %s, owner_time = {owner_time}, version = %s
                   WHERE uuid IN ( {uuid_placeholders} )""",
               [user_id, new_alert_version(), *alert_uuids])
 
@@ -397,29 +423,32 @@ WHERE
         disposition_user=acting_username,
         disposition_comment=user_comment,
     )
-    _log_ownership_taken(context, ownership.reassigned, acting_username)
+    _log_ownership_taken(context, ownership.reassigned, acting_username, acting_username)
 
     return ownership
 
-def take_ownership(alert_uuids, user_id, confirmed_takes=None) -> OwnershipCheck:
-    """Makes the user the owner of the given alerts. An alert owned by another analyst is left
-    alone unless the user confirmed taking it (see check_alert_ownership).
-       :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
-       :returns: which alerts were taken and which were left alone."""
+def change_alert_owner(alert_uuids, owner_id: int | None, acting_user_id: int, confirmed_takes=None) -> OwnershipCheck:
+    """Gives the alerts to owner_id, or unassigns them when it is None: the acting user takes them
+    when owner_id is their own id, and assigns them otherwise. An alert another analyst owns is
+    left alone unless the acting user confirmed taking it from them (see check_alert_ownership).
+       :param confirmed_takes: alert uuid -> id of the analyst the acting user agreed to take it from.
+       :returns: which alerts now have that owner and which were left alone."""
     with get_db_connection() as db:
         c = db.cursor()
 
-        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), user_id, confirmed_takes)
+        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), acting_user_id,
+                                          confirmed_takes, new_owner_id=owner_id)
         if not ownership.permitted:
             return ownership
 
         context = _fetch_disposition_context(c, ownership.reassigned)
-        acting_username = _fetch_username(c, user_id)
+        acting_username = _fetch_username(c, acting_user_id)
+        new_owner = _fetch_username(c, owner_id) if owner_id is not None else None
 
-        _reassign_owner(c, ownership.permitted, user_id)
+        _reassign_owner(c, ownership.permitted, owner_id)
         db.commit()
 
-    _log_ownership_taken(context, ownership.reassigned, acting_username)
+    _log_ownership_taken(context, ownership.reassigned, new_owner, acting_username)
     return ownership
 
 def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None, review_comment=None):

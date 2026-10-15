@@ -47,22 +47,23 @@ function deselect_alerts(uuids) {
 
 // takes ownership of the given alerts; take_owned confirms taking the ones other analysts own
 function post_set_owner(alert_uuids, take_owned) {
-    const params = new URLSearchParams();
-    alert_uuids.forEach(function(uuid){ params.append('alert_uuids', uuid); });
-    if (take_owned) {
-        params.append('take_owned', take_owned);
-    }
-    fetch('set_owner', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-        body: params,
-        credentials: 'same-origin'
+    const current_user_id = Number(document.getElementById("take_ownership_selection_guard").dataset.currentUserId);
+    aceApi.put("/alerts/owner", {alert_uuids: alert_uuids, owner_id: current_user_id, take_owned: take_owned_map(take_owned)})
+    .then(function(result) {
+        if (result.message) {
+            show_flash_message(result.message);
+        }
+
+        // refreshed in place rather than reloaded, so the selection stays as it was; the
+        // refresh does not run while a dialog is open, so the confirmation closes first
+        const modal = document.getElementById("take_ownership_modal");
+        if (modal.classList.contains("show")) {
+            $(modal).one("hidden.bs.modal", function() { refresh_manage_list(); }).modal("hide");
+        } else {
+            refresh_manage_list();
+        }
     })
-    .then(function(resp){
-        if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-        window.location.replace('/ace/manage');
-    })
-    .catch(function(err){
+    .catch(function(err) {
         alert(err.message);
     });
 }

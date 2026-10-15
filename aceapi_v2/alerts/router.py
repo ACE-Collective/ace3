@@ -32,6 +32,8 @@ from aceapi_v2.alerts.schemas import (
     BulkAddObservableRequest,
     BulkAddObservableResult,
     DateRange,
+    SetOwnerRequest,
+    SetOwnerResult,
 )
 from aceapi_v2.detection_points import service as detection_points_service
 from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
@@ -127,6 +129,25 @@ async def _fetch_page(listing: service.AlertListing, cursor: str | None, limit: 
         return await run_db_in_thread(service.fetch_alert_page, listing, cursor, limit)
     except service.InvalidCursor as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/owner", response_model=SetOwnerResult)
+async def set_alert_owner(
+    body: SetOwnerRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> SetOwnerResult:
+    """Sets the owner of the alerts: the caller takes them when `owner_id` is their own id, assigns
+    them to someone else otherwise, and unassigns them when it is null. An alert another analyst
+    owns is left alone unless `take_owned` confirms taking it from them
+    (saq.database.util.alert.check_alert_ownership)."""
+    if auth.auth_user_id is None:
+        raise HTTPException(status_code=400, detail="changing an alert's owner needs a caller that is a user")
+
+    result = await run_db_in_thread(
+        service.set_alert_owner, body.alert_uuids, body.owner_id, auth.auth_user_id, body.take_owned)
+    logger.info("AUDIT: user %s set the owner of alerts %s to %s",
+                auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody")
+    return result
 
 
 @router.get("/", response_model=AlertListPage)

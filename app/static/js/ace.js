@@ -513,3 +513,32 @@ function renderJsonTree(data, container, options) {
 
     targetElement.appendChild(ul);
 }
+
+// A message in the same banner a flashed message gets, for a page that reports something without
+// reloading (see #flash_messages in base.html).
+function show_flash_message(text) {
+    const banner = document.createElement("div");
+    banner.className = "alert alert-warning alert-dismissible fade show";
+    banner.setAttribute("role", "alert");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "btn-close";
+    close.setAttribute("data-bs-dismiss", "alert");
+    close.setAttribute("aria-label", "Close");
+    banner.appendChild(close);
+    banner.appendChild(document.createTextNode(text));
+    document.getElementById("flash_messages").appendChild(banner);
+}
+
+// The take_owned form value ("alert_uuid:owner_id,...", see selection_guard.js) as the
+// {alert_uuid: owner_id} map PUT /api/v2/alerts/owner takes.
+function take_owned_map(take_owned) {
+    const result = {};
+    (take_owned || "").split(",").forEach(function(pair) {
+        const parts = pair.trim().split(":");
+        if (parts.length === 2 && parts[0] && /^\d+$/.test(parts[1])) {
+            result[parts[0]] = parseInt(parts[1], 10);
+        }
+    });
+    return result;
+}

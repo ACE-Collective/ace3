@@ -869,19 +869,15 @@ function set_owner(alert_uuid) {
         return;
     }
 
-    (function() {
-        const params = new URLSearchParams();
-        params.append('alert_uuids', alert_uuid);
-        if (take_owned) {
-            params.append('take_owned', take_owned);
+    aceApi.put("/alerts/owner", {alert_uuids: [alert_uuid], owner_id: current_user_id, take_owned: take_owned_map(take_owned)})
+    .then(function(result) {
+        // the page reloads to show the new owner, so a skipped alert is reported before it does
+        if (result.message) {
+            alert(result.message);
         }
-        fetch('set_owner', { method: 'POST', credentials: 'same-origin', body: params })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace(window.location);
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
+        window.location.replace(window.location);
+    })
+    .catch(function(err) { alert(err.message); });
 }
 
 function toggleCollapseAll(button) {

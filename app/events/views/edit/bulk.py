@@ -4,7 +4,7 @@ import uuid as uuidlib
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
 
-from app.alert_ownership import confirmed_takes_from_form, describe_skipped
+from app.alert_ownership import confirmed_takes_from_form
 from app.auth.permissions import require_permission
 from app.blueprints import events
 from saq.constants import (
@@ -13,7 +13,7 @@ from saq.constants import (
 )
 from saq.database.model import Comment
 from saq.database.pool import get_db
-from saq.database.util.alert import set_disposition_reviews, set_dispositions, touch_alerts
+from saq.database.util.alert import describe_skipped, set_disposition_reviews, set_dispositions, touch_alerts
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception

@@ -146,12 +146,16 @@
 <div id="content_area">
 {% block content %}
     <div class="container-fluid">
+        {# show_flash_message() in static/js/ace.js adds to this the same way, for a page that
+           reports something without reloading #}
+        <div id="flash_messages">
         {% for message in get_flashed_messages() %}
         <div class="alert alert-warning alert-dismissible fade show" role="alert">
             <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             {{ message }}
         </div>
         {% endfor %}
+        </div>
         <div style="margin-top: 10px">
         {% block page_content %}{% endblock %}
         </div>
