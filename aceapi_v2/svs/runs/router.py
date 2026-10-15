@@ -4,8 +4,8 @@ The launcher's lifecycle calls: register a run, start it, report how the test ex
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
-Reading runs, each run's event log, result and attributions, and the feeds of those over every run
-needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds, and pick
+Reading runs, each run's event log, result, attributions and alerts, how its signatures did in the
+test's earlier runs, and the feeds of those over every run needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds, and pick
 the runs that the count and the batches (one row per batch_id) are over. A person's
 actions need svs:run_manage: associating an alert with a run by hand, disassociating it, marking it
 not a test and keeping a context attribution (docs/SVS_RUNS.md, *Associating alerts by hand*), and
@@ -37,11 +37,13 @@ from aceapi_v2.svs.runs.schemas import (
     BulkRunResult,
     ReviewRequest,
     ReviewResult,
+    RunAlertPage,
     RunComment,
     RunCommentRequest,
     RunDetail,
     RunEventPage,
     RunExecutedRequest,
+    RunHistory,
     RunLifecycle,
     RunBatchPage,
     RunCount,
@@ -484,6 +486,35 @@ async def export_run_attributions_csv(run_id: str, auth: ReadAuth) -> CsvStreamR
     selection = await run_db_in_thread(service.select_run_attributions, run_id)
     export = await start_export(service.fetch_run_attributions_page, selection, what="svs attribution")
     return csv_response(export, service.attributions_to_csv, f"svs-run-{selection.run_uuid}-attributions.csv")
+
+
+@router.get("/{run_id}/alerts", response_model=RunAlertPage)
+async def list_run_alerts(run_id: str, auth: ReadAuth, cursor: CursorParam = None,
+                          limit: LimitParam = 100) -> RunAlertPage:
+    """The alerts the run holds or held, in the order they were first attributed to it: each with
+    its row as GET /api/v2/alerts lists it, what its attributions to the run say, and every
+    detection with its attribution (docs/SVS_API.md, *Run alerts*)."""
+    selection = await run_db_in_thread(service.select_run_events, run_id)
+    rows, next_cursor = await run_listing(service.fetch_run_alerts_page, selection, cursor, limit)
+    return RunAlertPage(data=rows, next_cursor=next_cursor)
+
+
+@router.get("/{run_id}/alerts/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_run_alerts_ndjson(run_id: str, auth: ReadAuth) -> NdjsonStreamResponse:
+    """Stream the run's alerts as NDJSON (they nest, so there is no CSV: GET
+    /{run_id}/attributions/export/csv is the flat form)."""
+    selection = await run_db_in_thread(service.select_run_events, run_id)
+    export = await start_export(service.fetch_run_alerts_page, selection, what="svs run alert")
+    return ndjson_response(export, f"svs-run-{selection.run_uuid}-alerts.ndjson")
+
+
+@router.get("/{run_id}/history", response_model=RunHistory)
+async def get_run_history(run_id: str, auth: ReadAuth,
+                          runs: Annotated[int, Query(ge=1, le=service.RUN_HISTORY_MAX_RUNS,
+                                                     description="how many earlier runs")] = 10) -> RunHistory:
+    """How each signature of the run's result did in the test's ended and reviewed runs registered
+    before it, latest first (docs/SVS_API.md, *Run history*)."""
+    return await run_db_in_thread(service.run_history, run_id, runs)
 
 
 #

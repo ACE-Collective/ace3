@@ -136,12 +136,8 @@
 
     function test_node(settings, row) {
         const node = el("div");
-        const name = row.test_name || row.test_guid;
-        if (settings.run_url) {
-            node.appendChild(link(settings.run_url.replace("__RUN__", encodeURIComponent(row.run_id)), name));
-        } else {
-            node.appendChild(el("span", null, name));
-        }
+        node.appendChild(link(settings.run_url.replace("__RUN__", encodeURIComponent(row.run_id)),
+                              row.test_name || row.test_guid));
         const details = el("div", "small text-muted");
         append(details, row.technique ? row.technique + " · " : "", el("span", "font-monospace text-break-all", row.test_guid));
         if (row.technique_name) {

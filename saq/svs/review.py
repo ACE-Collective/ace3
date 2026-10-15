@@ -207,13 +207,14 @@ class ReviewResult:
     fp_verdicts: int = 0
 
 
-def review_blockers(session, run: SVSRun) -> dict:
+def review_blockers(session, run: SVSRun, *, lock: bool = True) -> dict:
     """What keeps the run from being reviewed: its result is stale (or was never computed),
     candidate signatures are undecided, or context-only alerts are neither kept nor marked not a
-    test. Empty when nothing does."""
+    test. Empty when nothing does. A review locks the run's result state (lock); the run page only
+    reads it."""
     blockers: dict = {}
-    state = session.execute(select(SVSRunResultState.stale).where(SVSRunResultState.run_id == run.id)
-                            .with_for_update()).first()
+    statement = select(SVSRunResultState.stale).where(SVSRunResultState.run_id == run.id)
+    state = session.execute(statement.with_for_update() if lock else statement).first()
     if state is None or state[0]:
         blockers["stale"] = True
     if state is None:

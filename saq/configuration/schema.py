@@ -1,8 +1,9 @@
 import logging
 import re
+import string
 import sys
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
@@ -814,6 +815,10 @@ class SVSAttributionConfig(BaseModel):
     max_sightings: int = Field(default=200, ge=1, description="the most markers found in analysis details an alert keeps (the svs_sightings root extension)")
 
 
+# the names svs.log_search_url may use (saq.svs.log_search)
+SVS_LOG_SEARCH_FIELDS = ("run_uuid", "marker", "test_guid", "earliest", "latest")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
@@ -824,6 +829,26 @@ class SVSConfig(BaseModel):
     attribution: SVSAttributionConfig = Field(default_factory=SVSAttributionConfig, description="attributing alerts to test runs")
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
+    log_search_url: Optional[str] = Field(default=None, description="a link to the site's log search for one run, shown in the Logs section of the run page; ACE never queries it. {run_uuid}, {marker}, {test_guid}, {earliest} and {latest} (epoch seconds: the run's start, and the end of its attribution window or now) are replaced, URL-encoded (docs/SVS_RUNS.md, *Logs*)")
+
+    @field_validator("log_search_url")
+    @classmethod
+    def _check_log_search_url(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        # it becomes a link on the run page
+        if not value.lower().startswith(("https://", "http://")):
+            raise ValueError("svs.log_search_url must be an http or https URL")
+        try:
+            fields = [(name, spec, conversion) for _, name, spec, conversion in string.Formatter().parse(value)
+                      if name is not None]
+        except ValueError as e:
+            raise ValueError(f"svs.log_search_url is not a valid template: {e}")
+        for name, spec, conversion in fields:
+            if name not in SVS_LOG_SEARCH_FIELDS or spec or conversion:
+                raise ValueError(f"svs.log_search_url may only use {{{'}, {'.join(SVS_LOG_SEARCH_FIELDS)}}} "
+                                 f"(braces themselves are written {{{{ and }}}}), not {{{name}}}")
+        return value
 
 
 class NRDConfig(BaseModel):

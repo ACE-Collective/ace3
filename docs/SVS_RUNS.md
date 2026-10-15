@@ -313,6 +313,36 @@ the number of runs that need attention, when any do.
 - **Test hosts** is shown only with `svs:admin`, and adds, changes and deletes test hosts (*Test
   hosts*, above).
 
+**The run page** (`/ace/svs/runs/<run_id>`, opened from a row) is the run's review, and the screen
+to watch it on while it runs. It reloads itself while the run is `created` or `started`, or while
+its result is being recomputed.
+- **The header** has the test, the run's state, and a timeline of its observation and attribution
+  windows. Below it are the marker, targets, launcher and batch (which opens the batch's runs),
+  the windows' lengths, the owner, and the launcher's exit code, errors and `extra`.
+- **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
+  *Mark reviewed* (*Review again* on a reviewed run).
+  - The page lists what still stands in the way of a review: candidates to decide, context-only
+    alerts to keep or mark not a test, a result being recomputed. *Mark reviewed* is enabled once
+    nothing but the recompute is left.
+  - Each action on a run someone else owns asks before it takes the run from them.
+- **Result** is one row per signature: its status, how many alerts carry it, the result as signed
+  off, what is decided about it for the test and by whom, and a mark for each of the test's last
+  ten ended or reviewed runs, each linking to that run.
+  - A decision can be undone there (*Undo*), which makes the signature a candidate again.
+  - A missing YARA signature links to the files captured from the run's alerts (Signatures →
+    Samples, with `signature:read`).
+- **Candidates** lists the undecided signatures and the alerts that carry them, with *Expected*,
+  *Rejected*, *Ignore for this test* and, with `svs:admin`, *Ignore everywhere*
+  (*Expectations and ignores*, below).
+- **Alerts** lists every alert the run holds, then those it no longer holds. Each shows its SVS
+  status, how it is attributed, its detections, and its queue, disposition and owner.
+  - *Keep*, *Not a test*, *Disassociate* and *Associate* (*Associating alerts by hand*, below) are
+    on each alert.
+  - Any other alert is associated by its uuid, below the list.
+- **Logs** has the run's search keys, ready to copy, and a link to the site's log search when
+  `svs.log_search_url` is set (*Logs*, below).
+- **Comments** and the **event log**, latest event first.
+
 ## Attribution
 
 ACE decides which alerts a run caused by the run's marker, and failing that by its target and
@@ -440,6 +470,21 @@ run has carries only `svs_marker`:
 | `svs run … changed since review` | INFO | `alert_uuid` |
 | `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
 | `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, `actor`, `actor_user_id`, and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
+
+`svs.log_search_url` makes the run page's *Logs* section a link to the site's own log search. ACE
+never queries it. It is an `http` or `https` URL in which `{run_uuid}`, `{marker}`, `{test_guid}`,
+`{earliest}` and `{latest}` are replaced, each URL-encoded. `{earliest}` and `{latest}` are epoch
+seconds:
+- `{earliest}` is when the run started (or was registered, if it never started);
+- `{latest}` is when its attribution window ends (or when it was canceled or closed, if it never
+  got one), or now when that is still to come.
+
+Any other name in braces fails the config, and a literal brace is written `{{` or `}}`. For example:
+
+```yaml
+svs:
+  log_search_url: https://splunk.example/en-US/app/search/search?q=search%20svs_run%3D{run_uuid}&earliest={earliest}&latest={latest}
+```
 
 ## Associating alerts by hand
 
