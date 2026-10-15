@@ -1,17 +1,21 @@
 """The runs screen's filters (saq.svs.run_filters)."""
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import select, update
 
-from saq.database.model import SVSRun
+from saq.constants import DISPOSITION_FALSE_POSITIVE
+from saq.database.model import SVSAttribution, SVSRun
 from saq.database.pool import get_db
 from saq.svs import runs
 from saq.svs.constants import RUN_STATES
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
-from saq.svs.run_filters import needs_attention_condition
+from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.runs import Registration, TargetSpec
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.helpers import insert_alert
+from tests.saq.svs.conftest import add_catalog_test, attribute_to_run, set_disposition
 
 pytestmark = pytest.mark.integration
 
@@ -44,3 +48,29 @@ def test_needs_attention():
     # the flag means nothing outside reviewed
     assert set(db.execute(select(SVSRun.uuid).where(needs_attention_condition())).scalars()) == {
         plain["ended"], plain["error"], changed["reviewed"]}
+
+
+def test_terminal_runs_holding_open_alerts_need_attention():
+    open_alert = insert_alert()
+    closed_alert = insert_alert()
+    set_disposition(closed_alert.uuid, DISPOSITION_FALSE_POSITIVE)
+
+    holding = {state: attribute_to_run(open_alert.uuid, state).uuid for state in ("closed", "reviewed", "canceled")}
+    done = attribute_to_run(closed_alert.uuid, "closed").uuid
+    removed = attribute_to_run(open_alert.uuid, "closed", content_hash="1" * 64)
+    db = get_db()
+    db.execute(update(SVSAttribution).where(SVSAttribution.run_id == removed.id)
+               .values(removed_at=datetime.now(), removed_by="svs"))
+    db.commit()
+
+    db.expire_all()
+    needing = set(db.execute(select(SVSRun.uuid).where(needs_attention_condition())).scalars())
+    # a canceled run still attributes: it is not done with yet
+    assert needing == {holding["closed"], holding["reviewed"]}
+
+    with_open_alerts = set(db.execute(select(SVSRun.uuid).where(*run_filter_conditions(
+        [{"name": "Has Open Alerts", "values": ["true"]}]))).scalars())
+    assert with_open_alerts == set(holding.values())
+    without = set(db.execute(select(SVSRun.uuid).where(*run_filter_conditions(
+        [{"name": "Has Open Alerts", "values": ["false"]}]))).scalars())
+    assert without == {done, removed.uuid}

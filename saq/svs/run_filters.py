@@ -12,20 +12,36 @@ import pytz
 from sqlalchemy import and_, case, exists, false, literal, or_, select, true
 from sqlalchemy.sql.elements import ColumnElement
 
-from saq.database.model import SVSCatalogTest, SVSRun, SVSRunTarget, User
+from saq.constants import DISPOSITION_OPEN
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget, User
 from saq.svs.catalog_filters import technique_condition
 from saq.svs.constants import RunState
 from saq.svs.filters import date_range_condition
 from saq.svs.hosts import InvalidTestHost, split_hostname
 
 
+# a run in these states is done with: nothing more happens to it unless a person acts
+TERMINAL_STATES = (RunState.REVIEWED.value, RunState.CLOSED.value)
+
+
+def open_alerts_condition() -> ColumnElement[bool]:
+    """The run has an alert attributed to it that is still open."""
+    return SVSRun.id.in_(
+        select(SVSAttribution.run_id)
+        .join(Alert, Alert.uuid == SVSAttribution.alert_uuid)
+        .where(SVSAttribution.removed_at.is_(None), Alert.disposition == DISPOSITION_OPEN))
+
+
 def needs_attention_condition() -> ColumnElement[bool]:
-    """The runs a person has to look at: ended and not reviewed, failed, or changed since they were
-    reviewed. This is the one definition of the Needs Attention view and its count."""
+    """The runs a person has to look at: ended and not reviewed, failed, changed since they were
+    reviewed, or reviewed or closed with an alert still open (one an analyst took, a partial one, or
+    one closing could not reach). This is the one definition of the Needs Attention view and its
+    count."""
     return or_(
         SVSRun.state == RunState.ENDED.value,
         SVSRun.state == RunState.ERROR.value,
-        and_(SVSRun.state == RunState.REVIEWED.value, SVSRun.changed_since_review.is_(True)))
+        and_(SVSRun.state == RunState.REVIEWED.value, SVSRun.changed_since_review.is_(True)),
+        and_(SVSRun.state.in_(TERMINAL_STATES), open_alerts_condition()))
 
 
 def _flag(condition: ColumnElement[bool], values: list[str]) -> ColumnElement[bool]:
@@ -90,6 +106,8 @@ def run_filter_condition(entry: dict, tz: tzinfo = pytz.utc) -> ColumnElement[bo
                               SVSRun.error_reason.contains(value, autoescape=True)) for value in values])
     elif name == "Changed Since Review":
         condition = _flag(SVSRun.changed_since_review.is_(True), values)
+    elif name == "Has Open Alerts":
+        condition = _flag(open_alerts_condition(), values)
     elif name == "Needs Attention":
         condition = _flag(needs_attention_condition(), values)
     else:

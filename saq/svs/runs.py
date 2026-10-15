@@ -11,7 +11,11 @@ state=?`), so a timer firing twice, or a launcher call racing a timer, changes t
 [FR-13]. Each one appends a row to the run's event log in the same transaction, and every log
 record carries the run's svs_run, svs_test and svs_marker fields (docs/SVS.md, *Logging contract*).
 
-svs_runs, svs_run_targets and svs_run_events are written here only.
+Closing a run gives its fully attributed alerts the disposition SIMULATED, and the timers close
+the alerts attributed to a closed run afterwards the same way.
+
+svs_runs, svs_run_targets and svs_run_events are written here, except for what attribution writes
+(saq/svs/attribution.py): its own events, and the changed-since-review flag of a reviewed run.
 """
 
 import json
@@ -24,14 +28,18 @@ from typing import Any, Optional
 from sqlalchemy import or_, select, update
 
 from saq.configuration.config import get_config
-from saq.database.model import SVSCatalogTest, SVSRun, SVSRunEvent, SVSRunTarget
+from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget
 from saq.database.pool import get_db
-from saq.error.reporting import log_loop_exception
+from saq.database.util.alert import set_dispositions
+from saq.error.reporting import log_loop_exception, report_exception
+from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import supported_platforms
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.hosts import InvalidTestHost, match_target, normalize_username, split_hostname
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller, prune_refusals, refuse
+from saq.svs.run_events import new_run_event
 from saq.svs.windows import attribution_window, observation_window
 
 # the actor of a timer's transitions
@@ -39,6 +47,10 @@ TIMER_ACTOR = "svs"
 
 # how many runs one timer pass moves per kind of transition
 TIMER_BATCH = 500
+
+# how many alerts closing a run, or one pass of the late-alert sweep, closes at most; the next pass
+# closes the rest
+CLOSE_ALERTS_BATCH = 1000
 
 CLOSE_REASON_START_TIMEOUT = "start timeout"
 CLOSE_REASON_CANCELED_BEFORE_START = "canceled before start"
@@ -114,15 +126,8 @@ def run_log_fields(run: SVSRun) -> dict:
 def _add_event(run: SVSRun, kind: RunEventKind, actor: str, *, actor_user_id: Optional[int] = None,
                from_state: Optional[str] = None, to_state: Optional[str] = None, details: Optional[dict] = None,
                now: Optional[datetime] = None) -> None:
-    get_db().add(SVSRunEvent(
-        run_id=run.id,
-        kind=kind.value,
-        from_state=from_state,
-        to_state=to_state,
-        actor=actor[:256],
-        actor_user_id=actor_user_id,
-        details=json.dumps(details, sort_keys=True, default=str) if details is not None else None,
-        created_at=now or datetime.now()))
+    get_db().add(new_run_event(run.id, kind, actor, actor_user_id=actor_user_id, from_state=from_state,
+                               to_state=to_state, details=details, now=now))
 
 
 def _log_transition(run: SVSRun, from_state: Optional[str], to_state: str, actor: str, reason: Optional[str] = None):
@@ -188,18 +193,94 @@ def _close(run: SVSRun, from_state: RunState, actor: str, reason: str, *, actor_
                        values={"closed_at": now, "close_reason": reason})
 
 
-def close_run_alerts(run: SVSRun) -> None:
-    """Closes the alerts attributed to a run that was just closed. Attribution (docs/SVS.md, Part 3,
-    *Attribution and routing*) fills this in; until then no alert is attributed to a run."""
+def _closable_alerts(*conditions) -> list[tuple[int, str]]:
+    """(run id, alert uuid) of the open alerts nobody has taken that are fully attributed and
+    attributed to a run matching conditions."""
+    automation_user_id = get_config().global_settings.automation_user_id
+    statement = (
+        select(SVSAttribution.run_id, Alert.uuid).distinct()
+        .join(Alert, Alert.uuid == SVSAttribution.alert_uuid)
+        .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
+        .where(SVSAttribution.removed_at.is_(None),
+               Alert.disposition == DISPOSITION_OPEN,
+               or_(Alert.owner_id.is_(None), Alert.owner_id == automation_user_id),
+               fully_attributed_condition(),
+               *conditions)
+        .order_by(SVSAttribution.run_id, Alert.uuid)
+        .limit(CLOSE_ALERTS_BATCH))
+    return [(run_id, alert_uuid) for run_id, alert_uuid in get_db().execute(statement)]
+
+
+def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool) -> int:
+    """Gives the alerts SIMULATED, through the disposition writer analysts use, as the automation
+    user. An alert dispositioned or taken by an analyst in the meantime is left alone."""
+    if not alert_uuids:
+        return 0
+
+    result = set_dispositions(
+        alert_uuids, DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
+        user_comment=f"closed with SVS test run {run.uuid}", system=True,
+        expected_dispositions={DISPOSITION_OPEN})
+    closed = result.permitted
+    left_alone = sorted(set(result.skipped) | set(result.unexpected))
+    if closed:
+        get_db().add(new_run_event(run.id, RunEventKind.ALERTS_CLOSED, actor, details={
+            "alerts": closed, "disposition": DISPOSITION_SIMULATED, "late": late}))
+        get_db().commit()
+
+    logging.info("svs run %s: %d %salerts closed as %s, %d left alone", run.uuid, len(closed),
+                 "late " if late else "", DISPOSITION_SIMULATED, len(left_alone),
+                 extra={**run_log_fields(run), "alert_uuids": closed, "left_alone": left_alone, "late": late,
+                        "actor": actor})
+    return len(closed)
+
+
+def close_run_alerts(run: SVSRun, actor: str = TIMER_ACTOR) -> int:
+    """Gives SIMULATED to the alerts of a run that was just closed: those fully attributed, open
+    and not taken by an analyst (docs/SVS.md, Part 3, *Test alerts downstream*). Nothing is learned
+    from them: an alert attributed to a run that is not reviewed has no verdicts and no capture.
+    An alert attributed after this is closed by the timers' sweep (close_late_alerts). Returns how
+    many it closed."""
+    return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
+                         actor, late=False)
+
+
+def close_late_alerts() -> int:
+    """Closes the alerts attributed to runs that were closed before they arrived, as closing the
+    run would have. Returns how many it closed."""
+    by_run: dict[int, list[str]] = {}
+    seen = set()
+    for run_id, alert_uuid in _closable_alerts(SVSRun.state == RunState.CLOSED.value):
+        # an alert attributed to two closed runs is closed once, with the older run
+        if alert_uuid not in seen:
+            seen.add(alert_uuid)
+            by_run.setdefault(run_id, []).append(alert_uuid)
+
+    count = 0
+    db = get_db()
+    for run in db.execute(select(SVSRun).where(SVSRun.id.in_(list(by_run))).order_by(SVSRun.id)).scalars():
+        try:
+            count += _close_alerts(run, by_run[run.id], TIMER_ACTOR, late=True)
+        except Exception as e:
+            db.rollback()
+            log_loop_exception(e, f"unable to close the late alerts of svs run {run.uuid}")
+    return count
 
 
 def on_run_ended(run: SVSRun) -> None:
-    """Computes the result of a run that just ended (docs/SVS.md, Part 3, *Expectations*). Nothing
-    is attributed to runs yet, so there is nothing to compute."""
+    """Computes the result of a run that just ended (docs/SVS.md, Part 3, *Expectations*). Results
+    come later in phase 4; until then there is nothing to compute."""
 
 
 def _after_close(run: SVSRun) -> None:
-    close_run_alerts(run)
+    """Closes the alerts of a run whose close was committed. A failure never undoes the close: the
+    timers' late-alert sweep closes those alerts on its next pass."""
+    try:
+        close_run_alerts(run)
+    except Exception as e:
+        get_db().rollback()
+        logging.error("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
+        report_exception()
 
 
 #
@@ -429,6 +510,7 @@ class TimerResult:
     timed_out: int = 0
     ended: int = 0
     closed: int = 0
+    late_alerts_closed: int = 0
     pruned_refusals: int = 0
 
 
@@ -506,5 +588,6 @@ def run_timers(now: Optional[datetime] = None) -> TimerResult:
         _due(SVSRun.state.in_((RunState.CANCELED.value, RunState.ERROR.value)),
              or_(SVSRun.attribution_ends_at.is_(None), SVSRun.attribution_ends_at <= now)),
         lambda run, state: _close_after_attribution(run, state, now))
+    result.late_alerts_closed = close_late_alerts()
     result.pruned_refusals = prune_refusals(now)
     return result

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -90,6 +91,9 @@ class OwnershipCheck:
     # alert uuid -> its disposition, for the alerts left alone because only ACE sets that
     # disposition (see is_frozen_disposition)
     frozen: dict[str, str] = field(default_factory=dict)
+    # alert uuid -> its disposition, for the alerts left alone because their disposition was not
+    # one the caller expected (set_dispositions' expected_dispositions)
+    unexpected: dict[str, str] = field(default_factory=dict)
 
 
 def check_alert_ownership(
@@ -341,7 +345,7 @@ def _reassign_owner(c, alert_uuids: list, user_id: int) -> None:
               [user_id, new_alert_version(), *alert_uuids])
 
 def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None,
-                     system: bool = False) -> OwnershipCheck:
+                     system: bool = False, expected_dispositions: Collection[str] | None = None) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
 
     An alert owned by another analyst is left alone unless the user confirmed taking it, in
@@ -355,6 +359,9 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
        :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
        :param system: True when ACE sets the disposition rather than an analyst (SVS setting
            SIMULATED): alerts with a frozen disposition are changed too.
+       :param expected_dispositions: when given, an alert whose disposition is not one of these
+           (read under the row lock) is left alone: an analyst dispositioned it after the caller
+           chose it.
        :returns: which alerts were dispositioned and which were left alone."""
 
     with get_db_connection() as db:
@@ -372,9 +379,14 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
         frozen = {} if system else {
             alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
             if is_frozen_disposition(row["old_disposition"])}
+        unexpected = {} if expected_dispositions is None else {
+            alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+            if alert_uuid not in frozen and row["old_disposition"] not in expected_dispositions}
         ownership = check_alert_ownership(
-            [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen], owners, user_id, confirmed_takes)
+            [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen and alert_uuid not in unexpected],
+            owners, user_id, confirmed_takes)
         ownership.frozen = frozen
+        ownership.unexpected = unexpected
         alert_uuids = ownership.permitted
         if not alert_uuids:
             return ownership

@@ -240,14 +240,17 @@ filters (`docs/SVS_API.md`, *Runs*).
   that:
   - ended and wait for review;
   - are in `error`;
-  - were reviewed and have changed since.
+  - were reviewed and have changed since (*What happens to the alert*, below);
+  - are `reviewed` or `closed` and still hold an alert that is `OPEN` (`f=has_open_alerts:true`):
+    one an analyst took before the run closed, a `partial` alert whose other detections wait for
+    triage, or one closing couldn't reach yet.
 
-  Once attribution lands, it will also match terminal runs that still hold open alerts. Every user
-  starts with it as a saved filter on the screen, next to *Started* (the runs in flight).
+  Every user starts with it as a saved filter on the screen, next to *Started* (the runs in flight).
 - **A run closed because `start` never came** is not in that list. Find it with
   `f=state:closed&f=reason:start%20timeout`.
 - **The event log** (`GET …/runs/{run_id}/events`) is the run's history: its registration, every
-  launcher call with its payload, and every state change, with who made it and when. It is not a
+  launcher call with its payload, every state change, every alert attributed to it or no longer
+  attributed, and the alerts closed with it, with who did it and when. It is not a
   debugging tool. A test that didn't fire is debugged from ACE's log, by searching
   `svs_run=<run_id>` or `svs_marker=<marker>`.
 - **The event feed** (`GET …/runs/events?changed_since=…`) is every run's events in one stream,
@@ -329,6 +332,9 @@ An alert with no detections is never attributed.
   attributed.
 - **Late.** An alert whose event time is after the run's observation window, but inside its
   attribution window, is attributed and marked *late*.
+- **After review.** An attribution added to or removed from a run that was already reviewed (a late
+  alert, or a later analysis pass) marks the run *changed since review*, which puts it back in
+  *Needs attention*.
 - **Verdicts.** An alert attributed to a run that isn't reviewed has no detection verdicts, and its
   YARA hits are not captured as samples, whatever its disposition (`docs/SVS.md`, Part 1). That holds
   for a `partial` alert too: its real detections get their verdicts once the run is reviewed, and
@@ -337,7 +343,14 @@ An alert with no detections is never attributed.
 Every attribution is a row of `svs_attributions`: the run, the alert uuid, the detection's
 `content_hash` (the key of its `detection_points` row and its verdict), the confidence (`marker` or
 `context`), *late*, and where the marker was found. A row that stops applying is kept, marked
-removed, and a row a person removed is never added again by the router.
+removed, and a row a person removed is never added again by the router. Each change is also an
+event in the run's event log (`attributed`, `attribution_removed`), once per run and alert.
+
+The status is never stored: it is derived from these rows whenever an alert is read, as
+`svs_status` and `svs_runs` in `GET /api/v2/alerts` (`docs/SVS_API.md`, *Alerts*). There an alert
+is `test` or `test?` when every one of its `detection_points` rows has an attribution that holds,
+to any run, `partial` when some have, and `mismatch` when it has none and carries the
+`svs:marker_mismatch` tag.
 
 ### Cost
 
@@ -367,11 +380,28 @@ run has carries only `svs_marker`:
 | `svs router decision on alert …` | INFO | `alert_uuid`, `stage`, `decision` (`routed`, `partial`, `mismatch`, `moved back`, `not moved because owned`/`closed`), `queue`, `confidence` |
 | `svs context attribution of alert … refused` | WARNING | `alert_uuid`, `candidate_runs` (no `svs_run`) |
 | `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+| `svs run … changed since review` | INFO | `alert_uuid` |
+| `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
 
 ## Test alerts and `SIMULATED`
 
 When a run is reviewed or closed, SVS gives every alert fully attributed to it the disposition
-**`SIMULATED`**. Nothing sets it yet: the run review that sets it arrives later in phase 4.
+**`SIMULATED`**. Closing does so now; the run review, later in phase 4, will too.
+
+- **Which alerts.** Those whose every detection is attributed (`svs_status` `test` or `test?`), to
+  this run or to it and another, that are still `OPEN` and that nobody has taken (the automation
+  user counts as nobody). A `partial` alert stays open for analysts to triage its other
+  detections, and an alert an analyst took stays theirs; either keeps the run in *Needs attention*
+  until it is dispositioned.
+- **When.** As the run closes, whoever closes it, and afterwards: an alert attributed to a run that
+  is already closed (a hunt reports late, inside the attribution window) is closed by the timers'
+  next pass, `svs.runs.timer_interval_seconds`. A failure to close them never undoes the close; the
+  next pass closes them too.
+- **What it records.** The automation user dispositions the alert with the comment *closed with SVS
+  test run …*, the run's event log gets an `alerts_closed` event listing them, and an INFO record
+  (*Logs*, above) lists them and any left alone.
+- **Nothing is learned from them.** The run isn't reviewed, so their detections have no verdicts
+  and their YARA hits are not captured (`docs/SVS.md`, Part 1 and Part 2).
 
 | Setting | Value | Meaning |
 |---|---|---|

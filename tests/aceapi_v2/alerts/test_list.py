@@ -12,12 +12,22 @@ from sqlalchemy import text
 
 from aceapi_v2.alerts import service
 from aceapi_v2.common import listing
-from saq.database.model import Alert, AuthUserPermission, Company, DetectionPoint, Tag, TagMapping, User
+from saq.database.model import (
+    Alert,
+    AuthUserPermission,
+    Company,
+    DetectionPoint,
+    SVSAttribution,
+    Tag,
+    TagMapping,
+    User,
+)
 from saq.database.pool import get_db
 from saq.database.util.alert import touch_alerts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from saq.detection_verdicts.store import confirm_alert
 from tests.saq.helpers import insert_alert, insert_alert_with_detections
+from tests.saq.svs.conftest import attribute_to_run
 
 pytestmark = pytest.mark.integration
 
@@ -102,6 +112,7 @@ class TestRows:
         assert row["disposition_time"].startswith("2026-03-01T12:00:00")
         assert row["tags"] == ["alpha", "zeta"]
         assert row["detection_count"] == 3
+        assert (row["svs_status"], row["svs_runs"]) == (None, [])
         assert row["location"] == alert.location
         assert row["archived"] is False
         assert row["updated_at"]
@@ -119,6 +130,75 @@ class TestRows:
 
         rows = (await client.get("/alerts/")).json()["data"]
         assert [row["uuid"] for row in rows] == [visible.uuid]
+
+
+def _detections(alert: Alert, *hashes: str) -> None:
+    db = get_db()
+    for content_hash in hashes:
+        db.add(DetectionPoint(alert_id=alert.id, description=f"detection {content_hash[:4]}",
+                              signature_uuid="6f3a1b2c-1111-2222-3333-444455556666", signature_version="v1",
+                              content_hash=content_hash))
+    db.commit()
+
+
+def _attribute(alert: Alert, run_id: int, content_hash: str, confidence: str = "marker", removed: bool = False):
+    db = get_db()
+    db.add(SVSAttribution(run_id=run_id, alert_uuid=alert.uuid, content_hash=content_hash, confidence=confidence,
+                          source="router", actor="svs", created_at=datetime.now(),
+                          removed_at=datetime.now() if removed else None))
+    db.commit()
+
+
+def _set_confidence(alert: Alert, confidence: str) -> None:
+    db = get_db()
+    db.execute(SVSAttribution.__table__.update().where(SVSAttribution.alert_uuid == alert.uuid)
+               .values(confidence=confidence))
+    db.commit()
+
+
+class TestSVSStatus:
+    @pytest.mark.asyncio
+    async def test_the_status_and_runs_of_each_alert(self, client: AsyncClient):
+        a, b = "a" * 64, "b" * 64
+        test = insert_alert()
+        _detections(test, a, b)
+        run = attribute_to_run(test.uuid, content_hash=a)
+        other_run = attribute_to_run(test.uuid, content_hash=b, state="closed")
+
+        context = insert_alert()
+        _detections(context, a)
+        context_run = attribute_to_run(context.uuid, content_hash=a)
+        _set_confidence(context, "context")
+
+        partial = insert_alert()
+        _detections(partial, a, b)
+        _attribute(partial, run.id, a)
+        _attribute(partial, run.id, b, removed=True)
+
+        mismatch = insert_alert()
+        _detections(mismatch, a)
+        db = get_db()
+        tag = Tag(name="svs:marker_mismatch")
+        db.add(tag)
+        db.flush()
+        db.add(TagMapping(tag_id=tag.id, alert_id=mismatch.id))
+        db.commit()
+
+        untouched = insert_alert()
+        _detections(untouched, a)
+
+        rows = {row["uuid"]: row for row in (await client.get("/alerts/")).json()["data"]}
+        assert (rows[test.uuid]["svs_status"], rows[test.uuid]["svs_runs"]) == ("test", [run.uuid, other_run.uuid])
+        assert (rows[context.uuid]["svs_status"], rows[context.uuid]["svs_runs"]) == ("test?", [context_run.uuid])
+        assert (rows[partial.uuid]["svs_status"], rows[partial.uuid]["svs_runs"]) == ("partial", [run.uuid])
+        assert (rows[mismatch.uuid]["svs_status"], rows[mismatch.uuid]["svs_runs"]) == ("mismatch", [])
+        assert (rows[untouched.uuid]["svs_status"], rows[untouched.uuid]["svs_runs"]) == (None, [])
+
+        records = {record["uuid"]: record for record in csv.DictReader(io.StringIO(
+            (await client.get("/alerts/export/csv")).text))}
+        assert records[test.uuid]["svs_status"] == "test"
+        assert records[test.uuid]["svs_runs"] == f"{run.uuid},{other_run.uuid}"
+        assert records[untouched.uuid]["svs_status"] == ""
 
 
 class TestKeysetPaging:

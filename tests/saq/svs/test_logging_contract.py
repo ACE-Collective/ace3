@@ -7,10 +7,13 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import update
 
 from saq.alert_routing import reset_alert_routers
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_HOSTNAME
+from saq.database.model import SVSRun
+from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
 
@@ -184,3 +187,31 @@ def test_a_refused_context_attribution(caplog, routed):
     assert refused.alert_uuid == root.uuid
     # it is about two runs, so it names neither as its own
     assert not hasattr(refused, "svs_run")
+
+
+CLOSED_ALERTS_FIELDS = RUN_FIELDS + ("alert_uuids", "left_alone", "late", "actor")
+
+
+def test_alerts_closed_with_their_run(caplog, routed):
+    run = _started()
+    root = _alert("win10-01", {"cmd": run.marker})
+    cancel(run.uuid, LAUNCHER)
+    with caplog.at_level(logging.INFO):
+        run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
+
+    (closed,) = _records(caplog, f"svs run {run.uuid}: 1 alerts closed")
+    assert closed.alert_uuids == [root.uuid] and closed.late is False
+    _assert_fields(closed, CLOSED_ALERTS_FIELDS)
+
+
+def test_a_run_changed_since_review(caplog, routed):
+    run = _started()
+    db = get_db()
+    db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state="reviewed"))
+    db.commit()
+    with caplog.at_level(logging.INFO):
+        root = _alert("win10-01", {"cmd": run.marker})
+
+    (changed,) = _records(caplog, f"svs run {run.uuid} changed since review")
+    assert changed.alert_uuid == root.uuid
+    _assert_fields(changed, RUN_FIELDS + ("alert_uuid",))

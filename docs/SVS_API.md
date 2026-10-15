@@ -36,6 +36,21 @@ manage page's filters (`docs/ALERT_FILTER_URLS.md`). `detection_count` is the nu
 `detection_points` rows of the alert: one per detection *per node it sits on*, so a description
 that fired on three URLs counts three.
 
+`svs_status` is the alert's SVS status (`docs/SVS_RUNS.md`, *What happens to the alert*), and null
+for an alert no test run touched:
+
+| `svs_status` | Meaning |
+|---|---|
+| `test` | Every detection is attributed to a run, at least one by a marker |
+| `test?` | Every detection is attributed, by context only |
+| `partial` | Some detections are attributed |
+| `mismatch` | A marker in the alert doesn't agree with its run (the alert carries the `svs:marker_mismatch` tag) |
+
+`svs_runs` lists the uuids of the runs the alert is attributed to (`GET /api/v2/svs/runs/{run_id}`),
+empty for a mismatch. Both are derived from the attributions when the row is read, so an alert
+disassociated from its run loses them, and in CSV `svs_runs` is joined with `,` as `tags` is. Test
+alerts are listed like any other; `f=!queue:<svs.queue>` leaves out the ones routed to the test queue.
+
 ## Detections
 
 A **detection** (detection point) is one signature firing on one node of an alert's analysis tree.
@@ -501,7 +516,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
 | `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
 | `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was reviewed. Review and ownership come later in phase 4, so these are null until then. |
-| `changed_since_review` | A late alert or a manual association came after its review. |
+| `changed_since_review` | An attribution of an alert to it was added or removed after its review: a late alert, a later analysis pass, or a manual association. |
 | `needs_attention` | Whether it is in the *Needs attention* view (below). |
 | `updated_at` | The row's last change; the `changed_since` key. |
 
@@ -532,16 +547,19 @@ The runs, the event feed and the GUI's Runs screen share these filters (screen `
 | `owner`, `reviewer` | Owner, Reviewer | usernames |
 | `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
 | `changed_since_review` | Changed Since Review | `true`, `false` |
+| `has_open_alerts` | Has Open Alerts | `true`, `false`: an alert attributed to the run is still `OPEN` |
 
 **Needs attention** is the Runs screen's default view and the count on its navigation entry. It
 matches runs that:
 - ended and wait for review;
 - are in `error`;
-- were reviewed and have changed since.
+- were reviewed and have changed since;
+- are `reviewed` or `closed` and still hold an open alert (`has_open_alerts`): one an analyst
+  took before the run closed, a `partial` alert whose other detections wait for triage, or one
+  closing couldn't reach yet.
 
-It is one filter, not a combination of the others, because it is an OR. When attribution lands
-later in phase 4, it will also match terminal runs that still hold open alerts. A saved filter on
-it follows that change.
+It is one filter, not a combination of the others, because it is an OR. A saved filter on it
+follows any change to that definition.
 
 ### Incremental pulls
 
@@ -566,9 +584,12 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 | `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra` |
 | `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
 | `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
+| `attributed` | none | `{"alert_uuid", "detections"}`: detections of one alert attributed to the run, each `{"detection", "confidence", "late", "scan_point"}` (`detection` is its `content_hash`; `scan_point` is null for context). Written when an attribution is added or comes back, not on every analysis pass. `actor` is `svs` |
+| `attribution_removed` | none | `{"alert_uuid", "detections", "reason"}`: the `content_hash`es of the alert's detections whose attribution no longer holds (a later analysis pass found the marker disagrees, say) |
+| `alerts_closed` | none | `{"alerts", "disposition", "late"}`: the alerts given `SIMULATED` when the run closed, or (`late: true`) by the timers afterwards (`docs/SVS_RUNS.md`, *Test alerts and `SIMULATED`*) |
 
-Later phase-4 work adds kinds for attribution, manual association and disassociation, candidate
-decisions and review. A reader skips kinds it doesn't know. In CSV, `details` is a JSON string.
+Later phase-4 work adds kinds for manual association and disassociation, candidate decisions and
+review. A reader skips kinds it doesn't know. In CSV, `details` is a JSON string.
 
 ### The event feed
 
