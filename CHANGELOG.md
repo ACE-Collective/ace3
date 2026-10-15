@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.126] - 2026-10-15
+
+- [Let analysts edit their own alert comments](https://github.com/ACE-Collective/ace3/pull/701)
+- [Key git_repo_* configs by their name field](https://github.com/ACE-Collective/ace3/pull/697)
+
 ## [3.0.125] - 2026-10-14
 
 - [Remove remote email collectors and port sandbox config to pydantic](https://github.com/ACE-Collective/ace3/pull/693)
