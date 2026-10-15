@@ -386,6 +386,7 @@ class RunFilterEntry(FilterEntryBase):
         allowed = {
             "State": list(RUN_STATES),
             "Changed Since Review": list(SAMPLE_BOOL_OPTIONS),
+            "Has Open Alerts": list(SAMPLE_BOOL_OPTIONS),
             "Needs Attention": list(SAMPLE_BOOL_OPTIONS),
         }.get(name)
         if allowed is None:

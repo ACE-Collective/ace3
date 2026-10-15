@@ -38,6 +38,7 @@ from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
 from saq.search.query import build_listing_query
 from saq.search.types import SearchFilters
+from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
 from saq.util.uuid import is_uuid
 
@@ -550,7 +551,8 @@ def fetch_alert_page_ids(
 
 
 def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
-    """The rows for these alert ids, in the order given: three queries, whatever the page size."""
+    """The rows for these alert ids, in the order given: a fixed number of queries, whatever the
+    page size."""
     if not alert_ids:
         return []
 
@@ -584,6 +586,8 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
         .group_by(DetectionPoint.alert_id)
     ).all())
 
+    svs = alert_svs_statuses({row[0]: row[1] for row in result})
+
     rows = {}
     for (alert_id, alert_uuid, insert_date, event_time, disposition_time, owner_time, updated_at,
          tool, tool_instance, alert_type, description, priority, queue, disposition,
@@ -609,6 +613,8 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
             archived=bool(archived),
             tags=sorted(tags.get(alert_id, [])),
             detection_count=detection_counts.get(alert_id, 0),
+            svs_status=svs[alert_id].status.value if alert_id in svs else None,
+            svs_runs=list(svs[alert_id].runs) if alert_id in svs else [],
         )
 
     # an alert deleted between the key query and this one is simply absent
@@ -619,5 +625,6 @@ def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
     def flatten(values: dict) -> None:
         values["tags"] = ",".join(values["tags"])
+        values["svs_runs"] = ",".join(values["svs_runs"])
 
     return rows_to_csv(rows, ALERT_ROW_CSV_FIELDS, header=header, flatten=flatten)

@@ -192,6 +192,7 @@ SVS_RUNS_SCREEN = FilterScreen(
         FilterField("Reviewer", FilterFieldKind.TEXT),
         FilterField("Reason", FilterFieldKind.TEXT),
         FilterField("Changed Since Review", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Open Alerts", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
     ),
 )
 

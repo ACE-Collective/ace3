@@ -45,8 +45,8 @@ FilterParam = Annotated[list[str], Query(
     default_factory=list,
     description="a filter in the share-link encoding (`[!]slug:v1,v2`) with the runs screen's slugs: "
                 "needs_attention, state, test, test_name, technique (T1059 also finds its sub-techniques), target, "
-                "launcher, batch, created, started, ended, owner, reviewer, reason, changed_since_review (see "
-                "docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
+                "launcher, batch, created, started, ended, owner, reviewer, reason, changed_since_review, "
+                "has_open_alerts (see docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
 TimezoneParam = Annotated[str, Query(description="the timezone relative date filters (`-7d`, `@d`) resolve in")]
 CursorParam = Annotated[str | None, Query(description="the next_cursor of the previous page")]
 LimitParam = Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)]

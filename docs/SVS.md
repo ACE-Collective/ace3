@@ -623,7 +623,9 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   a run is *Reviewed* or *Closed*, on the run's fully attributed alerts, through the same
   disposition writer analysts use. That writer requeues the alert into
   `analysis_mode_dispositioned`, so capture (Part 2) runs on a reviewed run's alerts the way it
-  runs on any other. [D-16, MGT-3]
+  runs on any other. An alert attributed after its run was closed (a late hunt) is closed the same
+  way by `service_svs`'s timers; one an analyst owns, or a `PARTIAL TEST` one, stays open and keeps
+  the run in *Needs attention*. [D-16, MGT-3]
   - It is `analyst_selectable: false`: not in any modal, and rejected server-side.
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
@@ -858,6 +860,8 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Marker sighting, agreeing or not | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window) |
 | Context attribution refused: more than one candidate run | WARNING | `alert_uuid`, `candidate_runs` (every run UUID; no single `svs_run`) [FR-9] |
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+| A reviewed run changed since review | INFO | `alert_uuid` |
+| A run's alerts closed as `SIMULATED` | INFO | `alert_uuids`, `left_alone`, `late`, `actor` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 

@@ -59,6 +59,9 @@ class RunEventKind(StrEnum):
     REGISTERED = "registered"
     TRANSITION = "transition"
     LAUNCHER_CALL = "launcher_call"
+    ATTRIBUTED = "attributed"                    # detections of an alert attributed to the run
+    ATTRIBUTION_REMOVED = "attribution_removed"  # attributions that no longer hold
+    ALERTS_CLOSED = "alerts_closed"              # the run's alerts given SIMULATED when it closed
 
 
 class AttributionConfidence(StrEnum):

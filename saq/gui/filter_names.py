@@ -126,6 +126,7 @@ SVS_RUN_FILTER_SLUGS = {
     'Changed Since Review': 'changed_since_review',
     'Created': 'created',
     'Ended': 'ended',
+    'Has Open Alerts': 'has_open_alerts',
     'Launcher': 'launcher',
     'Needs Attention': 'needs_attention',
     'Owner': 'owner',

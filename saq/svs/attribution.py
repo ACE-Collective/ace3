@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Optional
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.analysis.analysis import Analysis
@@ -58,13 +58,16 @@ from saq.svs.constants import (
     AttributionConfidence,
     AttributionSource,
     MarkerResult,
+    RunEventKind,
     RunState,
     ScanPoint,
     SVSStatus,
 )
+from saq.svs.alert_status import derive_status
 from saq.svs.hosts import InvalidTestHost, host_ips, normalize_ip, split_hostname
 from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import find_markers, find_markers_in_match
+from saq.svs.run_events import new_run_event
 
 # how deep the details walk goes; analysis details are JSON-shaped and shallow
 MAX_WALK_DEPTH = 32
@@ -635,15 +638,7 @@ def _status(evaluation: Evaluation) -> Optional[SVSStatus]:
         if not row.removed:
             confidences.setdefault(row.content_hash, set()).add(row.confidence)
 
-    detections = {d.content_hash for d in evaluation.detections}
-    attributed = detections & set(confidences)
-    if not attributed:
-        return None
-    if attributed != detections:
-        return SVSStatus.PARTIAL
-    if all(confidences[h] == {AttributionConfidence.CONTEXT} for h in attributed):
-        return SVSStatus.TEST_CONTEXT
-    return SVSStatus.TEST
+    return derive_status((d.content_hash for d in evaluation.detections), confidences)
 
 
 #
@@ -667,7 +662,8 @@ class WriteResult:
 def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[datetime] = None) -> WriteResult:
     """Brings the router's rows for the alert in line with the evaluation, in a transaction of its
     own: adds new ones, restores ones it removed earlier, and removes the ones that no longer hold.
-    Rows of a person are never touched. Logs each change."""
+    Rows of a person are never touched. Logs each change and appends it to its run's event log, and
+    a change to a reviewed run marks the run changed since review."""
     now = now or datetime.now()
     result = WriteResult()
     desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
@@ -722,6 +718,10 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
                     select(SVSRun).where(SVSRun.id.in_(removed_runs))).scalars())):
                 runs[run.id] = run
 
+        _add_attribution_events(session, alert_uuid, result, now)
+        flagged = _flag_changed_since_review(session, {a.run.id for a in result.written} | {
+            row.run_id for row in result.removed})
+
     for attribution in result.written:
         logging.info("svs attribution written: alert %s detection %s to run %s", alert_uuid,
                      attribution.content_hash, attribution.run.uuid,
@@ -736,7 +736,47 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
                      extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid,
                             "detection": row.content_hash, "confidence": row.confidence, "late": row.late,
                             "source": AttributionSource.ROUTER.value, "reason": REMOVAL_NO_LONGER_APPLIES})
+    for run_id in flagged:
+        run = runs.get(run_id)
+        logging.info("svs run %s changed since review: alert %s", run.uuid if run else run_id, alert_uuid,
+                     extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid})
     return result
+
+
+def _add_attribution_events(session, alert_uuid: str, result: WriteResult, now: datetime) -> None:
+    """One event per run whose attributions of the alert changed, in the run's event log."""
+    written: dict[int, list[dict]] = {}
+    for attribution in result.written:
+        written.setdefault(attribution.run.id, []).append({
+            "detection": attribution.content_hash, "confidence": attribution.confidence.value,
+            "late": attribution.late,
+            "scan_point": attribution.scan_point.value if attribution.scan_point else None})
+    for run_id, detections in written.items():
+        session.add(new_run_event(run_id, RunEventKind.ATTRIBUTED, ROUTER_ACTOR, now=now,
+                                  details={"alert_uuid": alert_uuid, "detections": detections}))
+
+    removed: dict[int, list[str]] = {}
+    for row in result.removed:
+        removed.setdefault(row.run_id, []).append(row.content_hash)
+    for run_id, detections in removed.items():
+        session.add(new_run_event(run_id, RunEventKind.ATTRIBUTION_REMOVED, ROUTER_ACTOR, now=now, details={
+            "alert_uuid": alert_uuid, "detections": detections, "reason": REMOVAL_NO_LONGER_APPLIES}))
+
+
+def _flag_changed_since_review(session, run_ids: set[int]) -> list[int]:
+    """Marks the reviewed runs among run_ids as changed since review (docs/SVS.md, Part 3: a late
+    alert after sign-off returns the run to Needs attention). Returns the runs it marked."""
+    flagged = []
+    for run_id in sorted(run_ids):
+        changed = session.execute(
+            update(SVSRun)
+            .where(SVSRun.id == run_id, SVSRun.state == RunState.REVIEWED.value,
+                   SVSRun.changed_since_review.is_(False))
+            .values(changed_since_review=True)
+            .execution_options(synchronize_session=False))
+        if changed.rowcount:
+            flagged.append(run_id)
+    return flagged
 
 
 def log_sightings(alert_uuid: str, evaluation: Evaluation, stage: str) -> None:
