@@ -1,47 +1,31 @@
+from flask import render_template
+from flask_login import current_user
 
-from flask import render_template, session
+from aceapi_v2.saved_filters.service import ensure_default_saved_filters
+from aceapi_v2.sync import run_async_with_session
 from app.auth.permissions import require_permission
 from app.blueprints import remediation
-from app.remediation.constants import R_DEFAULT_SORT_FILTER, R_DEFAULT_SORT_FILTER_DIRECTION, R_PAGE_OFFSET, R_PAGE_SIZE, R_PAGE_SIZE_DEFAULT, R_SORT_FILTER, R_SORT_FILTER_DESC, RH_PAGE_OFFSET, RH_PAGE_SIZE, RH_PAGE_SIZE_DEFAULT
-from app.remediation.views.remediations import get_current_pagination_size
-from app.remediation.views.history import get_current_pagination_size as get_current_remediation_history_pagination_size
+from saq.gui.filter_screens import REMEDIATIONS_SCREEN
 from saq.remediation.target import get_observable_remediation_interface_registry
 
 
-def initialize_remediation_session():
-    """Initializes default session variables for remediation management if not already set."""
-    if R_PAGE_OFFSET not in session or R_PAGE_SIZE not in session:
-        reset_remediation_pagination()
-    if RH_PAGE_OFFSET not in session or RH_PAGE_SIZE not in session:
-        reset_remediation_history_pagination()
-    if R_SORT_FILTER not in session or R_SORT_FILTER_DESC not in session:
-        reset_remediation_sort_filter()
-
-def reset_remediation_pagination():
-    session[R_PAGE_OFFSET] = 0
-    if R_PAGE_SIZE not in session:
-        session[R_PAGE_SIZE] = R_PAGE_SIZE_DEFAULT
-
-def reset_remediation_history_pagination():
-    session[RH_PAGE_OFFSET] = 0
-    if RH_PAGE_SIZE not in session:
-        session[RH_PAGE_SIZE] = RH_PAGE_SIZE_DEFAULT
-
-def reset_remediation_sort_filter():
-    session[R_SORT_FILTER] = R_DEFAULT_SORT_FILTER.value
-    session[R_SORT_FILTER_DESC] = R_DEFAULT_SORT_FILTER_DIRECTION.value
-
 def get_remediatable_observable_types() -> list[str]:
-    return list(get_observable_remediation_interface_registry().keys())
+    return sorted(get_observable_remediation_interface_registry().keys())
+
 
 @remediation.route('/remediation/manage', methods=['GET'])
 @require_permission('remediation', 'read')
 def manage():
-    initialize_remediation_session()
-
+    # the page is a shell: its script loads everything from /api/v2/remediation, and its filters
+    # and saved filters from /api/v2/filter-screens and /api/v2/saved-filters (screen
+    # remediations). The write controls follow has_permission('remediation', 'write') in the
+    # template, and the API enforces it regardless.
+    #
+    # A user new to the screen gets its default saved filters. This writes, which is why only
+    # this real page render calls it.
+    run_async_with_session(ensure_default_saved_filters, current_user.id, screen=REMEDIATIONS_SCREEN.name)
     return render_template(
         "remediation/manage.html",
-        page_size=get_current_pagination_size(),
-        rh_page_size=get_current_remediation_history_pagination_size(),
+        remediations_screen=REMEDIATIONS_SCREEN.name,
         observable_types=get_remediatable_observable_types(),
     )

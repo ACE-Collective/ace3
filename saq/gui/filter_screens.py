@@ -1,14 +1,15 @@
 """The screens that have filter lists, saved filters and share links.
 
-Every list screen (the alert manage page, and later the SVS screens) filters with the same
-{name, inverted, values} entries and stores them in the same saved_filters table, keyed by
-screen. What differs per screen is which filter names exist, what their values may be, and
-the URL slugs its share links use, and who may use it. A FilterScreen carries exactly that.
+Every list screen (the alert manage page, the SVS screens, Remediations, File Collections)
+filters with the same {name, inverted, values} entries and stores them in the same saved_filters
+table, keyed by screen. What differs per screen is which filter names exist, what their values
+may be, and the URL slugs its share links use, and who may use it. A FilterScreen carries exactly
+that.
 
-A screen built as a shell over the API (the SVS screens) also describes its filters as fields,
-so a generic filter editor (app/static/js/filter_list_page.js) can be built from the
-descriptor GET /api/v2/filter-screens/{screen} returns. The alert manage page has its own
-editor and describes none."""
+A screen built as a shell over the API (the SVS screens, Remediations, File Collections) also
+describes its filters as fields, so a generic filter editor (app/static/js/filter_list_page.js)
+can be built from the descriptor GET /api/v2/filter-screens/{screen} returns. The alert manage
+page has its own editor and describes none."""
 
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -18,16 +19,22 @@ from pydantic import BaseModel
 
 from saq.detection_verdicts.constants import SOURCES
 from saq.gui.filter_entry import (
+    FILE_COLLECTION_FILTER_OPTIONS,
+    REMEDIATION_FILTER_OPTIONS,
     SAMPLE_BOOL_OPTIONS,
     DetectionPointFilterEntry,
+    FileCollectionFilterEntry,
     FilterEntry,
     FilterEntryBase,
+    RemediationFilterEntry,
     SampleFilterEntry,
     ValidationFilterEntry,
 )
 from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
+    FILE_COLLECTION_FILTER_SLUGS,
     FILTER_SLUGS,
+    REMEDIATION_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
@@ -148,11 +155,52 @@ SVS_VALIDATIONS_SCREEN = FilterScreen(
     ),
 )
 
+# the remediations the remediation service works through, and their history (GET
+# /api/v2/remediation/remediations, the Remediations page)
+REMEDIATIONS_SCREEN = FilterScreen(
+    name="remediations",
+    entry_model=RemediationFilterEntry,
+    slugs=REMEDIATION_FILTER_SLUGS,
+    permission=("remediation", "read"),
+    fields=(
+        FilterField("ID", FilterFieldKind.TEXT),
+        FilterField("Remediator", FilterFieldKind.TEXT),
+        FilterField("Type", FilterFieldKind.TEXT),
+        FilterField("Value", FilterFieldKind.TEXT),
+        FilterField("Analyst", FilterFieldKind.TEXT),
+        FilterField("Action", FilterFieldKind.MULTI, REMEDIATION_FILTER_OPTIONS["Action"]),
+        FilterField("Status", FilterFieldKind.MULTI, REMEDIATION_FILTER_OPTIONS["Status"]),
+        FilterField("Result", FilterFieldKind.MULTI, REMEDIATION_FILTER_OPTIONS["Result"]),
+        FilterField("Created", FilterFieldKind.DATE_RANGE),
+    ),
+)
+
+# the file collection requests the file collection service works through, and their history (GET
+# /api/v2/file-collections, the File Collections page)
+FILE_COLLECTIONS_SCREEN = FilterScreen(
+    name="file_collections",
+    entry_model=FileCollectionFilterEntry,
+    slugs=FILE_COLLECTION_FILTER_SLUGS,
+    permission=("file_collection", "read"),
+    fields=(
+        FilterField("ID", FilterFieldKind.TEXT),
+        FilterField("Collector", FilterFieldKind.TEXT),
+        FilterField("Type", FilterFieldKind.TEXT),
+        FilterField("Value", FilterFieldKind.TEXT),
+        FilterField("Alert", FilterFieldKind.TEXT),
+        FilterField("Status", FilterFieldKind.MULTI, FILE_COLLECTION_FILTER_OPTIONS["Status"]),
+        FilterField("Result", FilterFieldKind.MULTI, FILE_COLLECTION_FILTER_OPTIONS["Result"]),
+        FilterField("Created", FilterFieldKind.DATE_RANGE),
+    ),
+)
+
 FILTER_SCREENS: dict[str, FilterScreen] = {
     ALERTS_SCREEN.name: ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
     SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
+    REMEDIATIONS_SCREEN.name: REMEDIATIONS_SCREEN,
+    FILE_COLLECTIONS_SCREEN.name: FILE_COLLECTIONS_SCREEN,
 }
 
 

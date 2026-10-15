@@ -62,6 +62,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
+    CatalogEntry("file_collection", "write", "Stop, retry and delete file collection requests on the File Collections page."),
     CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),
     CatalogEntry("node", "manage", "Drain and resume nodes via API."),
     CatalogEntry("node", "read", "Read node status and outstanding work counts via API."),

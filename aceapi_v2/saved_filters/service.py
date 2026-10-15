@@ -28,7 +28,9 @@ from aceapi_v2.saved_filters.schemas import (
 from saq.database.model import SavedFilter
 from saq.gui.filter_screens import (
     ALERTS_SCREEN,
+    FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
+    REMEDIATIONS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
     FilterScreen,
@@ -99,11 +101,50 @@ DEFAULT_SVS_VALIDATION_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the Remediations screen: the remediations still being worked on, and
+# the ones that failed
+DEFAULT_REMEDIATION_SAVED_FILTERS = (
+    {
+        "name": "Not completed",
+        "description": "Remediations queued or waiting to be tried again",
+        "filters": [
+            {"name": "Status", "inverted": False, "values": ["NEW", "IN_PROGRESS"]},
+        ],
+    },
+    {
+        "name": "Failed",
+        "description": "Remediations whose latest attempt failed",
+        "filters": [
+            {"name": "Result", "inverted": False, "values": ["ERROR", "FAILED"]},
+        ],
+    },
+)
+
+# What a user starts with on the File Collections screen: the same two lists
+DEFAULT_FILE_COLLECTION_SAVED_FILTERS = (
+    {
+        "name": "Not completed",
+        "description": "Requests queued or waiting to be tried again",
+        "filters": [
+            {"name": "Status", "inverted": False, "values": ["NEW", "IN_PROGRESS"]},
+        ],
+    },
+    {
+        "name": "Failed",
+        "description": "Requests whose latest attempt failed",
+        "filters": [
+            {"name": "Result", "inverted": False, "values": ["ERROR", "FAILED"]},
+        ],
+    },
+)
+
 # screen name -> the saved filters a user starts with on that screen
 DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
+    REMEDIATIONS_SCREEN.name: DEFAULT_REMEDIATION_SAVED_FILTERS,
+    FILE_COLLECTIONS_SCREEN.name: DEFAULT_FILE_COLLECTION_SAVED_FILTERS,
 }
 
 

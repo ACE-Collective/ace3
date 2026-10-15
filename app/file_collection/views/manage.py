@@ -1,58 +1,24 @@
 # vim: sw=4:ts=4:et:cc=120
 
-from flask import render_template, session
+from flask import render_template
+from flask_login import current_user
+
+from aceapi_v2.saved_filters.service import ensure_default_saved_filters
+from aceapi_v2.sync import run_async_with_session
 from app.auth.permissions import require_permission
 from app.blueprints import file_collection
-from app.file_collection.constants import (
-    FC_DEFAULT_SORT_FILTER,
-    FC_DEFAULT_SORT_FILTER_DIRECTION,
-    FC_PAGE_OFFSET,
-    FC_PAGE_SIZE,
-    FC_PAGE_SIZE_DEFAULT,
-    FC_SORT_FILTER,
-    FC_SORT_FILTER_DESC,
-    FCH_PAGE_OFFSET,
-    FCH_PAGE_SIZE,
-    FCH_PAGE_SIZE_DEFAULT,
-)
-from app.file_collection.views.collections import get_current_pagination_size
-from app.file_collection.views.history import get_current_pagination_size as get_current_history_pagination_size
-
-
-def initialize_file_collection_session():
-    """Initializes default session variables for file collection management if not already set."""
-    if FC_PAGE_OFFSET not in session or FC_PAGE_SIZE not in session:
-        reset_file_collection_pagination()
-    if FCH_PAGE_OFFSET not in session or FCH_PAGE_SIZE not in session:
-        reset_file_collection_history_pagination()
-    if FC_SORT_FILTER not in session or FC_SORT_FILTER_DESC not in session:
-        reset_file_collection_sort_filter()
-
-
-def reset_file_collection_pagination():
-    session[FC_PAGE_OFFSET] = 0
-    if FC_PAGE_SIZE not in session:
-        session[FC_PAGE_SIZE] = FC_PAGE_SIZE_DEFAULT
-
-
-def reset_file_collection_history_pagination():
-    session[FCH_PAGE_OFFSET] = 0
-    if FCH_PAGE_SIZE not in session:
-        session[FCH_PAGE_SIZE] = FCH_PAGE_SIZE_DEFAULT
-
-
-def reset_file_collection_sort_filter():
-    session[FC_SORT_FILTER] = FC_DEFAULT_SORT_FILTER.value
-    session[FC_SORT_FILTER_DESC] = FC_DEFAULT_SORT_FILTER_DIRECTION.value
+from saq.gui.filter_screens import FILE_COLLECTIONS_SCREEN
 
 
 @file_collection.route('/file_collection/manage', methods=['GET'])
 @require_permission('file_collection', 'read')
 def manage():
-    initialize_file_collection_session()
-
-    return render_template(
-        "file_collection/manage.html",
-        page_size=get_current_pagination_size(),
-        fch_page_size=get_current_history_pagination_size(),
-    )
+    # the page is a shell: its script loads everything from /api/v2/file-collections, and its
+    # filters and saved filters from /api/v2/filter-screens and /api/v2/saved-filters (screen
+    # file_collections). The write controls follow has_permission('file_collection', 'write') in
+    # the template, and the API enforces it regardless.
+    #
+    # A user new to the screen gets its default saved filters. This writes, which is why only
+    # this real page render calls it.
+    run_async_with_session(ensure_default_saved_filters, current_user.id, screen=FILE_COLLECTIONS_SCREEN.name)
+    return render_template("file_collection/manage.html", file_collections_screen=FILE_COLLECTIONS_SCREEN.name)
