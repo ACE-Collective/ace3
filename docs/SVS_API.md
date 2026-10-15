@@ -626,9 +626,12 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 | `alerts_closed` | none | `{"alerts", "disposition", "late"}`: the alerts given `SIMULATED` when the run closed, or (`late: true`) by the timers afterwards (`docs/SVS_RUNS.md`, *Test alerts and `SIMULATED`*) |
 | `result_computed` | none | `{"counts", "previous"}`: the run's result changed; the number of signatures per status, now and before. `actor` is `svs` |
 | `candidate_decision` | none | `{"signature_uuid", "state", "reason"}`: a signature decided for the run's test from this run's result |
+| `associated` | none | `{"alert_uuid", "detections", "late", "reason"}`: a person associated the alert with the run (`detections` are `content_hash`es) |
+| `disassociated` | none | `{"alert_uuid", "detections", "reason", "not_a_test"}`: a person disassociated it, or marked it not a test |
+| `context_kept` | none | `{"alert_uuid"}`: a person kept the alert's context attributions |
 
-Later phase-4 work adds kinds for manual association and disassociation and review. A reader skips
-kinds it doesn't know. In CSV, `details` is a JSON string.
+Later phase-4 work adds kinds for review. A reader skips kinds it doesn't know. In CSV, `details` is
+a JSON string.
 
 ### The event feed
 
@@ -662,10 +665,46 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 `stale` (one run only) is true while something changed since the result was computed: the timers
 recompute it within `svs.runs.timer_interval_seconds`. A run that hasn't ended has no result.
 
+### Attributions
+
+Which detections of which alerts a run holds (`docs/SVS_RUNS.md`, *Attribution* and *Associating
+alerts by hand*), one row per (alert, detection), removed ones included, read with `svs:run_read`:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/runs/{run_id}/attributions` (and `/export/ndjson`, `/export/csv`) | One run's rows in id order |
+| `GET /api/v2/svs/runs/attributions` (and exports) | The rows of every run the `f=` filters match, in `(updated_at, id)` order, with `changed_since`; a row shows up a few seconds after it is written. A disassociation is a row whose `removed_at` changed, so this is where reports see one |
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `alert_uuid`, `detection` | The run, the alert, and the detection's `content_hash`; together they are unique. |
+| `signature_uuid`, `signature_family` | The detection's signature. |
+| `confidence`, `late` | `marker` or `context` (a person's association is `marker`), and whether the alert's event came after the observation window. |
+| `source` | `router` (the `svs_marker` router) or `manual` (a person associated the alert). |
+| `scan_point` | Where the agreeing marker was found; null for context and for a person's association. |
+| `actor`, `actor_user`, `created_at` | Who attributed it (`svs` for the router) and when. |
+| `removed_at`, `removed_by`, `removed_by_user`, `removal_reason` | Set once it no longer holds: by the router (`svs`, it no longer applies) or by a person (disassociated, or *not a test*). |
+| `kept_at`, `kept_by_user` | A person kept this context attribution. |
+| `updated_at` | The row's last change; the feed's `changed_since` key. |
+
+A person changes them with `svs:run_manage`, from a user's key (a config key gets 422):
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/v2/svs/runs/{run_id}/alerts/{alert_uuid}/associate` `{"reason"?}` | Associate the alert with the run (409 for a run that never started, 422 for an alert without detections) |
+| `POST …/disassociate` `{"reason"?}` | Disassociate it (409 when the run doesn't hold it) |
+| `POST …/not-a-test` `{"reason"?}` | Disassociate a `TEST?` alert (409 unless the run holds it by context alone) |
+| `POST …/keep` | Keep its context attributions (409 when it has none) |
+
+Each answers `{"alert_uuid", "svs_status", "queue", "moved", "reopened"}`: the alert's SVS status
+and queue afterwards, whether it moved, and whether it went from `SIMULATED` back to `OPEN`.
+
 ### Joins
 
 - **Run → test:** `test_guid` = the test's `guid` in `GET /api/v2/svs/tests`.
 - **Event → run:** `run_id` = the run's `run_id`.
+- **Attribution → alert, detection:** `alert_uuid` = an alert's `uuid` in `GET /api/v2/alerts`,
+  `detection` = a detection's `content_hash` in `GET /api/v2/alerts/{uuid}/detection-points`.
 - **Result → run:** `run_id` = the run's `run_id`; **result → signature:** `signature_uuid` = a
   detection's `signature_uuid` in `GET /api/v2/detection-points`, and a sample's `rule_uuid`.
 - **Run → logs:** `run_id` and `marker` are the `svs_run` and `svs_marker` fields in ACE's log.

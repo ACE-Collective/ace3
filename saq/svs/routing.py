@@ -11,6 +11,10 @@ in a transaction of its own. It never changes the tree: the svs_test and svs:mar
 the mismatch detection come from the svs_alert_tagger module, which evaluates the alert the same way
 [FR-3]. At POST_ANALYSIS an alert it routed that is no longer fully attributed goes back to the queue
 it came from. The engine moves an existing alert only while it is OPEN and nobody has taken it.
+
+A queue a person set through SVS (associating or disassociating the alert, recorded with the router
+name svs_manual) is never overridden: while that is the alert's latest move, the router still
+attributes it but holds it where it is, which also keeps any lower-priority router from moving it.
 """
 
 import logging
@@ -33,16 +37,18 @@ from saq.svs.attribution import (
     log_sightings,
     write_attributions,
 )
-from saq.svs.constants import SVSStatus
+from saq.svs.constants import SVS_MANUAL_ROUTER, SVSStatus
 
 REASON_ROUTED = "every detection is attributed to SVS test run {run}"
 REASON_NO_LONGER_ATTRIBUTED = "no longer attributed to an SVS test run"
+REASON_HELD = "queue set by hand in SVS"
 
 DECISION_ROUTED = "routed"
 DECISION_PARTIAL = "partial"
 DECISION_MISMATCH = "mismatch"
 DECISION_NONE = "none"
 DECISION_MOVED_BACK = "moved back"
+DECISION_HELD = "held (manual)"
 
 
 @dataclass(frozen=True)
@@ -88,7 +94,10 @@ class MarkerRouter(AlertRouter):
         write_attributions(root.uuid, evaluation)
 
         queue = get_config().svs.queue
-        if evaluation.routed:
+        if alert is not None and alert.last_change is not None and alert.last_change[0] == SVS_MANUAL_ROUTER:
+            decision = RouteDecision(queue=alert.queue, reason=REASON_HELD)
+            outcome = DECISION_HELD
+        elif evaluation.routed:
             run = evaluation.runs[0].uuid if evaluation.runs else None
             decision = RouteDecision(queue=queue, reason=REASON_ROUTED.format(run=run))
             outcome = DECISION_ROUTED

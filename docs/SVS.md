@@ -535,9 +535,10 @@ ACE itself, not only to SVS. [D-13, ART-15]
     evidence than a queue set by hunt config, a `queue` detection meta or a submission, so the SVS
     router may route such an alert. (There is no "explicitly set" flag to honor: `root.queue`
     always has a value, and every hunt submits with one.) The only queue it never overrides is one
-    that `move_alert_to_queue` itself set earlier and recorded as SVS-set, so a manual
-    *disassociate* is not undone by re-analysis. When the SVS router makes no decision, the
-    configured route applies as it does today. [FR-2]
+    that `move_alert_to_queue` itself set earlier and recorded as SVS-set (router `svs_manual`): the
+    SVS router then returns a decision for the alert's current queue, which also keeps any later
+    router from moving it, so a manual *disassociate* is not undone by re-analysis. When the SVS
+    router makes no decision, the configured route applies as it does today. [FR-2]
   - **A router never breaks an insert.** The registry runs each router inside a `try`; a router
     that raises is logged with `report_exception()` and skipped, and `ALERT()` continues. ART-15
     says this for loading a router; it holds at runtime too, because the registry sits inside
@@ -678,7 +679,10 @@ targets during any run) and per test. [ART-13]
 
 **Manual (re)association.** An analyst can associate any alert with any run, or disassociate one.
 It uses `move_alert_to_queue`, records who, when and why, recomputes the run's result, and is
-reversible. Disassociating restores the previous queue. [ART-13]
+reversible. Disassociating restores the previous queue, gives a `SIMULATED` alert back as `OPEN`,
+and keeps the router from attributing the alert to that run again. Every move it makes is recorded
+with the router name `svs_manual`, and while that is an alert's latest move the SVS router holds
+the alert where it is. [ART-13]
 
 **Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
 `suppression` period before the run started, the result reads *missing, possibly suppressed*. It is

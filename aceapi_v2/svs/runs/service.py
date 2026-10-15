@@ -25,9 +25,13 @@ from aceapi_v2.common.listing import (
     settled,
 )
 from aceapi_v2.svs.runs.schemas import (
+    ATTRIBUTION_CSV_FIELDS,
     RUN_EVENT_CSV_FIELDS,
     RUN_RESULT_CSV_FIELDS,
     RUN_ROW_CSV_FIELDS,
+    AssociationRequest,
+    AssociationResult,
+    Attribution,
     RunDetail,
     RunEvent,
     RunExecutedRequest,
@@ -37,7 +41,15 @@ from aceapi_v2.svs.runs.schemas import (
     RunRow,
     RunTarget,
 )
-from saq.database.model import SVSCatalogTest, SVSRun, SVSRunEvent, SVSRunResult, SVSRunResultState, User
+from saq.database.model import (
+    SVSAttribution,
+    SVSCatalogTest,
+    SVSRun,
+    SVSRunEvent,
+    SVSRunResult,
+    SVSRunResultState,
+    User,
+)
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
@@ -481,3 +493,130 @@ def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> 
         next_cursor = encode_cursor(k=[last.updated_at.isoformat(), last.id])
 
     return [_result(row) for row in rows], next_cursor
+
+
+#
+# attributions: one run's in id order, and the feed over every run's in (updated_at, id) order
+#
+
+def _attributions_statement() -> Select:
+    actor, remover, keeper = aliased(User), aliased(User), aliased(User)
+    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username)
+            .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
+            .outerjoin(actor, actor.id == SVSAttribution.actor_user_id)
+            .outerjoin(remover, remover.id == SVSAttribution.removed_by_user_id)
+            .outerjoin(keeper, keeper.id == SVSAttribution.kept_by_user_id))
+
+
+def _attribution(row) -> Attribution:
+    attribution, run_uuid, actor_user, removed_by_user, kept_by_user = row
+    return Attribution(
+        id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
+        signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
+        confidence=attribution.confidence, late=attribution.late, source=attribution.source,
+        scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
+        created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
+        removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,
+        kept_by_user=kept_by_user, updated_at=attribution.updated_at)
+
+
+def attributions_to_csv(rows: list[Attribution], *, header: bool) -> str:
+    return rows_to_csv(rows, ATTRIBUTION_CSV_FIELDS, header=header)
+
+
+def select_run_attributions(run_id: str) -> RunEventSelection:
+    """The attributions of one run; 400 for a malformed run id, 404 for an unknown run."""
+    return select_run_events(run_id)
+
+
+def fetch_run_attributions_page(selection: RunEventSelection, cursor: str | None,
+                                limit: int) -> tuple[list[Attribution], str | None]:
+    """One page of a run's attributions in id order, removed ones included. Raises InvalidCursor."""
+    statement = _attributions_statement().where(SVSAttribution.run_id == selection.run_db_id)
+    if cursor is not None:
+        statement = statement.where(SVSAttribution.id > decode_cursor(cursor, _parse_result_id))
+
+    rows = get_db().execute(statement.order_by(SVSAttribution.id).limit(limit + 1)).all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = encode_cursor(k=[rows[-1][0].id])
+
+    return [_attribution(row) for row in rows], next_cursor
+
+
+@dataclass(frozen=True)
+class AttributionFeed:
+    statement: Select
+
+
+def prepare_attribution_feed(filter_params: list[str], *, changed_since: datetime | None, tz) -> AttributionFeed:
+    """The attributions of every run the runs screen's filters (`f=`) match. Raises
+    InvalidListingRequest."""
+    statement = _attributions_statement()
+    for condition in _filter_conditions(filter_params, tz):
+        statement = statement.where(condition)
+
+    if changed_since is not None:
+        statement = statement.where(SVSAttribution.updated_at >= to_utc_naive(changed_since))
+
+    return AttributionFeed(statement=statement)
+
+
+def fetch_attribution_feed_page(feed: AttributionFeed, cursor: str | None,
+                                limit: int) -> tuple[list[Attribution], str | None]:
+    """One page of the feed in (updated_at, id) order, settled rows only. Raises InvalidCursor."""
+    statement = feed.statement.where(settled(SVSAttribution.updated_at, CHANGED_SINCE_SETTLE_SECONDS))
+    if cursor is not None:
+        updated_at, row_id = decode_cursor(cursor, _parse_feed_key)
+        statement = statement.where(or_(
+            SVSAttribution.updated_at > updated_at,
+            and_(SVSAttribution.updated_at == updated_at, SVSAttribution.id > row_id)))
+
+    rows = get_db().execute(statement.order_by(SVSAttribution.updated_at, SVSAttribution.id).limit(limit + 1)).all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1][0]
+        next_cursor = encode_cursor(k=[last.updated_at.isoformat(), last.id])
+
+    return [_attribution(row) for row in rows], next_cursor
+
+
+#
+# a person's association changes (svs:run_manage)
+#
+
+def change_association(action: str, run_id: str, alert_uuid: str, body: AssociationRequest | None,
+                       user_id: int | None, actor: str) -> AssociationResult:
+    """associate, disassociate, not-a-test or keep on (run, alert). 422 for a config key (a change records who made
+    it), 400 for a malformed id, 404 for an unknown run or alert, 409 when it doesn't apply."""
+    # local: saq.svs.association imports the attribution and analysis stack, which imports the
+    # observables, which import aceapi_v2 while saq itself is still being imported
+    from saq.svs import association
+
+    if user_id is None:
+        raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
+    run_uuid = _validate_run_id(run_id)
+    if not UUID_REGEX.fullmatch(alert_uuid.lower()):
+        raise HTTPException(status_code=400, detail="invalid alert uuid")
+    reason = body.reason if body is not None else None
+
+    try:
+        if action == "associate":
+            result = association.associate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+        elif action == "disassociate":
+            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+        elif action == "not-a-test":
+            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason, not_a_test=True)
+        else:
+            result = association.keep(run_uuid, alert_uuid.lower(), user_id, actor)
+    except (runs.UnknownRun, association.UnknownAlert) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except association.AssociationConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except association.InvalidAssociation as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return AssociationResult(alert_uuid=result.alert_uuid, svs_status=result.svs_status, queue=result.queue,
+                             moved=result.moved, reopened=result.reopened)

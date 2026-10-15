@@ -2329,8 +2329,9 @@ class SVSAttribution(Base):
     on the alert uuid, because the marker router writes it at PRE_INSERT, before the alert has an
     id [FR-23], and on the detection's content_hash (saq.analysis.detection_identity), which is
     what its detection_points row and verdicts are keyed on. A removed row is kept, with who
-    removed it: the router never re-adds a detection a person disassociated. Only
-    saq/svs/attribution.py writes this table."""
+    removed it: the router never re-adds a detection a person disassociated. The marker router
+    writes its rows (source 'router') in saq/svs/attribution.py; a person's changes (source
+    'manual', removals by a person, kept context attributions) are saq/svs/association.py's."""
 
     __tablename__ = 'svs_attributions'
     __table_args__ = (

@@ -411,11 +411,45 @@ run has carries only `svs_marker`:
 | Record | Level | Fields |
 |---|---|---|
 | `svs marker … in alert …` | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (`attributed`, `unknown`, `other host`, `outside window`), `stage` |
-| `svs router decision on alert …` | INFO | `alert_uuid`, `stage`, `decision` (`routed`, `partial`, `mismatch`, `moved back`, `not moved because owned`/`closed`), `queue`, `confidence` |
+| `svs router decision on alert …` | INFO | `alert_uuid`, `stage`, `decision` (`routed`, `partial`, `mismatch`, `moved back`, `held (manual)`, `not moved because owned`/`closed`), `queue`, `confidence` |
 | `svs context attribution of alert … refused` | WARNING | `alert_uuid`, `candidate_runs` (no `svs_run`) |
 | `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | `svs run … changed since review` | INFO | `alert_uuid` |
 | `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
+| `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, `actor`, `actor_user_id`, and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
+
+## Associating alerts by hand
+
+A person with `svs:run_manage` corrects what the router decided, one alert and one run at a time:
+`POST /api/v2/svs/runs/{run_id}/alerts/{alert_uuid}/{action}`, with an optional `{"reason"}`
+(`docs/SVS_API.md`, *Attributions*). Each change is recorded in the run's event log and as an AUDIT
+record with who made it, marks the run's result stale (*Results*, below), and marks a reviewed run
+changed since review. Every change can be undone by the opposite one.
+
+| Action | What it does |
+|---|---|
+| `associate` | Attributes every detection of the alert to the run, by hand (`source` `manual`). A person's association is certain, so it counts as a marker would: the alert becomes `test`. *Late* is judged on the alert's event time, as the router judges it. Refused for a run that never started, and for an alert without detections. |
+| `disassociate` | Removes the alert's attributions to the run, recording the person and the reason. The router never attributes the alert to that run again, for any of its detections, even ones a later analysis pass finds. |
+| `not-a-test` | `disassociate` for a `TEST?` alert, one the run holds by context alone (refused otherwise); the reason is *not a test*. |
+| `keep` | Confirms a `TEST?` alert's context attributions: a person says it is the run's. Run review asks for every context-only alert to be kept or marked not a test. |
+
+- **Moving the alert.** An alert that `associate` makes fully attributed moves to the test queue.
+  One that `disassociate` leaves not fully attributed goes back to the queue SVS took it from: the
+  queue before its latest move, when that move was into the test queue by the router or by a person
+  here. An alert that was submitted straight into the test queue stays there. As with the router, an
+  alert moves only while it is `OPEN` and nobody else has taken it; the response says whether it
+  moved.
+- **Giving a `SIMULATED` alert back.** Disassociating a `SIMULATED` alert that is then no longer
+  fully attributed sets it back to `OPEN`. The automation user, which set `SIMULATED` and owns it,
+  writes it, with the comment *disassociated from SVS test run … by …*. Analysts triage it like
+  any other alert. An alert still fully attributed to another run keeps its queue and disposition.
+- **A queue set by hand is held.** Every move made here is recorded with the router name
+  `svs_manual`. While that is the alert's latest move, the `svs_marker` router still attributes the
+  alert on each correlation pass but keeps it where it is (`held (manual)` in its decision log). A
+  router of lower priority gets no turn either. So a disassociated alert isn't moved back by
+  re-analysis, even when a marker for another run turns up, and an associated one isn't moved out.
+- **A marker that disagrees** with its run still flags a hand-associated alert `svs:marker_mismatch`,
+  but its attribution stays and so does its status (`test`): the person's association wins.
 
 ## Results
 
@@ -538,7 +572,8 @@ whose current disposition is configured that way is *frozen* (`is_frozen_disposi
   event page's bulk disposition and a review that corrects the disposition all leave a frozen alert
   alone and say so: *"left 1 SIMULATED alert alone (only ACE sets that disposition)"*. A review that
   finds the disposition correct is still recorded. To treat a test alert as a real one, it is
-  disassociated from its run (a later phase-4 change), which gives it back to analysts.
+  disassociated from its run (*Associating alerts by hand*, above), which gives it back to analysts
+  as `OPEN`.
 - **It is never reset or re-analyzed, and gets no new observables.** Each of these refuses a
   frozen alert with *"alert … is SIMULATED, a disposition only ACE sets: it can't be reset,
   re-analyzed or given new observables"*:
