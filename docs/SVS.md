@@ -461,7 +461,15 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
 - **Not secret.** Once a test runs, the marker is in telemetry. It is valid only in context.
 - **A marker attributes only when it agrees with its run:** it matches a registered run, *and* the
   alert involves one of that run's targets, *and* the event falls inside the run's attribution
-  window. [ART-4]
+  window. [ART-4] The alert *involves* a target when it has a `hostname` or `fqdn` observable (or a
+  subtype) naming the target host, matched as registration matches it, or an `ipv4` observable
+  listed in the test host's `ips`. The target's user is not checked: process telemetry often lacks
+  it.
+- **A marker attributes the detections on its branch of the tree** [ART-7]: the node it was found
+  on, every node above it and every node beneath it. A marker in `root.details` is on the root, so
+  it attributes every detection, and a detection on the root is reached by every marker. A marker
+  found only in one attachment leaves a detection on an unrelated branch unattributed, and the
+  alert is `PARTIAL TEST`.
 - **A marker that doesn't agree never routes the alert.** That covers unknown markers, well-formed
   markers not in the database, markers from another host, and markers outside the window. The
   alert stays in its normal queue, is tagged `svs:marker_mismatch`, and gets a detection from a
@@ -542,8 +550,8 @@ ACE itself, not only to SVS. [D-13, ART-15]
   before `Alert.create_from_root_analysis` copies `root.queue`.
   - Engine-converted alerts arrive here fully analyzed, so they never appear in the wrong queue.
   - **`PRE_INSERT` routers are pure.** They return a decision and may write their own rows (the
-    SVS router writes `svs_attributions`) in the caller's transaction, but they never touch the
-    tree. The tree belongs to the caller, and the routed queue is the only change `ALERT()`
+    SVS router writes `svs_attributions`, in a transaction of its own so a failed write can never
+    fail the insert), but they never touch the tree. The tree belongs to the caller, and the routed queue is the only change `ALERT()`
     makes on a router's behalf (it saves the caller's root again when a router changed the
     queue). The mismatch
     tag and detection therefore belong to `POST_ANALYSIS`, below. This rule is part of the
@@ -573,8 +581,8 @@ ACE itself, not only to SVS. [D-13, ART-15]
 
 | Scan point | Covers |
 |---|---|
-| Observable values and file names, and `root.details` (at both stages) | Hunt raw events, API details, command lines, URLs |
-| Each module's `ModuleExecutionDelta` (new observables and added detections, plus the new analysis's `details`), scanned in the executor right after the module returns. The cache path produces the same delta, so cache replays are scanned too. [FR-19] | Decoded or deobfuscated output |
+| Observable values and file names, detections' descriptions and details, and `root.details` (at both stages, from the tree) | Hunt raw events, API details, command lines, URLs |
+| The new analysis's `details` in each module's `ModuleExecutionDelta`, scanned in the executor right after the module returns; the cache path produces the same delta, so cache replays are scanned too. The details are stored outside the tree, so the markers found are kept on the root (the `svs_sightings` extension) for the router. The delta's new observables and detections are in the tree and are scanned there. [FR-19] | Decoded or deobfuscated output |
 | File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`. So the rule ships in the repo (`saq/svs/marker_rule.py`), and the service writes it into `signature_dir/svs_marker/` as its own namespace, as observable export writes `observable_export/`. It does that before it starts its server, because the scanner lists rule directories only when it starts, and it writes only when the content changed, because rule changes are detected by mtime. The fallback scanner does the same before it compiles. The Signatures inventory leaves the directory out, and the phase-3 validation never sees it, because it compiles commits of the rule repositories. Tests assert that both the service and the fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
 
 **The scan is gated and the cache is one-sided.** [FR-8]

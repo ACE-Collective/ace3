@@ -70,6 +70,7 @@ from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.network_semaphore.client import NetworkSemaphore
+from saq.svs.attribution import record_delta_sightings
 from saq.util import local_time
 
 
@@ -1030,6 +1031,9 @@ class AnalysisExecutor:
         apply_delta(root, observable, delta, blob_store=get_blob_store())
         replay_ms = (time.monotonic_ns() - replay_start_ns) // 1_000_000
 
+        # a replayed module's output carries the same markers its live run did
+        self._record_svs_sightings(root, observable, delta, module.config.name)
+
         attribution_delta = delta.with_cache_hit_metadata(
             executed_at=datetime.now(UTC),
             execution_time_ms=lookup_result.lookup_ms + replay_ms,
@@ -1052,6 +1056,23 @@ class AnalysisExecutor:
         except Exception:
             logging.warning(
                 "on_cache_hit failed module_name=%s observable_uuid=%s",
+                module_name, observable.uuid, exc_info=True,
+            )
+
+    def _record_svs_sightings(
+        self,
+        root: RootAnalysis,
+        observable: Observable,
+        delta,
+        module_name: str,
+    ) -> None:
+        """Saves the SVS test run markers in a module's new analysis details on
+        the root (docs/SVS_RUNS.md, *Attribution*). Never breaks analysis."""
+        try:
+            record_delta_sightings(root, observable, delta, module_name)
+        except Exception:
+            logging.warning(
+                "failed to look for svs markers module_name=%s observable_uuid=%s",
                 module_name, observable.uuid, exc_info=True,
             )
 
@@ -1517,6 +1538,13 @@ class AnalysisExecutor:
                                 and not d.from_cache_hit
                                 and (d.analysis is None or d.analysis.get("delayed"))
                             ]
+
+                        # SVS markers in the module's output: its details
+                        # are dropped from the record below and stored
+                        # outside the tree, so this is where they are seen
+                        self._record_svs_sightings(
+                            root, work_item.observable, delta, analysis_module.config.name,
+                        )
 
                         if not delta.is_empty:
                             # The attribution log doesn't need the bulk

@@ -7,10 +7,10 @@ Part 3).
 
 This document covers how runs work in ACE and how to operate them. It grows with phase 4. Today it
 covers the test hosts, the Atomic Red Team catalog, how a launcher registers and drives a run, the
-run states and timers, refused registrations, what happens to a test run's alerts once SVS closes
-them, and how search treats them. Nothing attributes alerts to runs yet: that arrives later in
-phase 4. The design and its reasoning are in `docs/SVS.md`; the
-API's data dictionary is `docs/SVS_API.md`.
+run states and timers, refused registrations, how alerts are attributed to runs and routed to the
+test queue, what happens to a test run's alerts once SVS closes them, and how search treats them.
+Closing a run's alerts, reviewing runs and the SVS screens arrive later in phase 4. The design and
+its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 
 ## Permissions
 
@@ -253,6 +253,121 @@ filters (`docs/SVS_API.md`, *Runs*).
 - **The event feed** (`GET …/runs/events?changed_since=…`) is every run's events in one stream,
   which is what a report polls.
 
+## Attribution
+
+ACE decides which alerts a run caused by the run's marker, and failing that by its target and
+window. Attribution is **per detection**: an alert is routed to the test queue (`svs.queue`) only
+when every one of its detections is attributed.
+
+### Where ACE looks for markers
+
+| Where | What it covers |
+|---|---|
+| Observable values, and file observables' names | Command lines, URLs, file names a hunt or a module extracted |
+| Detections' descriptions and details | A hunt or module that quotes what it matched |
+| The alert's own details | A hunt's raw events, an API submission's details |
+| The details of every module's analysis | Decoded or deobfuscated output, sandbox reports. The engine reads them as each module finishes, live or replayed from the analysis cache, and keeps the markers it finds on the alert (the `svs_sightings` root extension), because the details themselves are stored outside the tree. |
+| File contents | The `SVS_Marker` YARA rule (*The marker*, above); its matches are part of the YARA analysis's details |
+
+### When a marker counts
+
+A marker **agrees** with its run when all three hold:
+- the marker is a registered run's;
+- the alert **involves one of the run's targets**: a `hostname` or `fqdn` observable (or one of their
+  subtypes) whose short name is the target's (a fully qualified name must be the target's own when
+  the test host has one), or an `ipv4` observable listed in the target test host's `ips`. The user is
+  not checked: process telemetry often doesn't carry it;
+- the alert's **event time** is inside the run's attribution window, from `start` to the window's
+  end. The event time is the alert's (for a hunt, the query's event time), or when the alert was
+  created if it has none.
+
+A marker that doesn't agree (unknown, on another host, outside the window, or of a run that never
+started) is a **mismatch**. A mismatch is never routed, and it ends attribution for the whole
+alert: nothing in it is attributed, not by its other markers and not by context. A marker on a
+production host is exactly what an analyst should see.
+
+### Which detections a marker attributes
+
+A marker attributes the detections **on its branch of the analysis tree**: the node it was found on,
+every node above it and every node beneath it. A marker in the alert's own details is on the root,
+which is above everything, so it attributes every detection; so is a detection on the root itself,
+which every marker reaches. A marker found only inside one attachment attributes that attachment's
+detections and the root's, and leaves a detection on an unrelated URL of the same email
+unattributed. That alert is *partially* attributed and stays in its queue.
+
+### Without a marker: context
+
+An alert with no marker at all is attributed by **context** when exactly one run could have caused
+it: a run whose window covers the alert's event time and one of whose targets the alert involves.
+Context has no per-detection signal, so it attributes every detection. When two runs could claim
+the alert (overlapping runs on one host), nothing is attributed and a WARNING names both
+(`candidate_runs`): attributing to the wrong run would teach the wrong expectation.
+
+An alert with no detections is never attributed.
+
+### What happens to the alert
+
+| Status | When | Where the alert goes | Tags |
+|---|---|---|---|
+| `test` | every detection is attributed by a marker | `svs.queue` | `svs_test` |
+| `test?` | attributed by context | `svs.queue` | `svs_test` |
+| `partial` | some detections are attributed | stays in its queue | |
+| `mismatch` | a marker doesn't agree | stays in its queue | `svs:marker_mismatch`, and a detection from the built-in signature `svs_marker_mismatch` naming the marker and why |
+
+- **When.** The `svs_marker` alert router (`saq/svs/routing.py`, an `alert_routers` entry at priority
+  100, ahead of the detection-queue router) judges every alert as it is created, and again after
+  every correlation pass of an existing alert, which catches markers that only analysis finds in a
+  hunt alert. A marker that agrees overrides any configured queue: a hunt's, a submission's, or a
+  YARA rule's `queue` meta.
+- **Moving an existing alert.** After analysis, ACE moves an alert only while it is open and nobody
+  has taken it; one an analyst owns keeps its place and is still attributed. An alert the router
+  routed that is no longer fully attributed (a later pass found a detection the run doesn't reach)
+  goes back to the queue it came from.
+- **Tags and the mismatch detection** come from the `svs_alert_tagger` module, which runs in the
+  correlation mode's post-analysis and judges the alert the same way. A router never changes the
+  tree. A mismatch is never taken back; `svs_test` is removed when the alert stops being fully
+  attributed.
+- **Late.** An alert whose event time is after the run's observation window, but inside its
+  attribution window, is attributed and marked *late*.
+- **Verdicts.** An alert attributed to a run that isn't reviewed has no detection verdicts, and its
+  YARA hits are not captured as samples, whatever its disposition (`docs/SVS.md`, Part 1). That holds
+  for a `partial` alert too: its real detections get their verdicts once the run is reviewed, and
+  never if the run is closed.
+
+Every attribution is a row of `svs_attributions`: the run, the alert uuid, the detection's
+`content_hash` (the key of its `detection_points` row and its verdict), the confidence (`marker` or
+`context`), *late*, and where the marker was found. A row that stops applying is kept, marked
+removed, and a row a person removed is never added again by the router.
+
+### Cost
+
+None of this runs while no run is registered or inside its attribution window: each process asks
+the database at most every `gate_cache_seconds` whether one is, and scans nothing while none is.
+Registering a run opens the gate before its test fires. A marker is looked up in the database the
+first time a process sees it; only runs that have started are kept in each process's cache, since
+nothing attribution needs of them changes afterwards, and a marker the cache doesn't have always
+goes to the database.
+
+```yaml
+svs:
+  attribution:
+    gate_cache_seconds: 5
+    marker_cache_size: 1024
+    max_sightings: 200   # markers from module output kept per alert
+```
+
+### Logs
+
+A record about a run carries its `svs_run`, `svs_test` and `svs_marker`; a sighting of a marker no
+run has carries only `svs_marker`:
+
+| Record | Level | Fields |
+|---|---|---|
+| `svs marker … in alert …` | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (`attributed`, `unknown`, `other host`, `outside window`), `stage` |
+| `svs router decision on alert …` | INFO | `alert_uuid`, `stage`, `decision` (`routed`, `partial`, `mismatch`, `moved back`, `not moved because owned`/`closed`), `queue`, `confidence` |
+| `svs context attribution of alert … refused` | WARNING | `alert_uuid`, `candidate_runs` (no `svs_run`) |
+| `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+
 ## Test alerts and `SIMULATED`
 
 When a run is reviewed or closed, SVS gives every alert fully attributed to it the disposition
@@ -296,8 +411,8 @@ Tags, comments and ownership changes still work on a frozen alert.
 
 ### Test alerts in search
 
-Test-run alerts are routed to their own queue, `svs.queue` (default `svs`; the routing arrives
-later in phase 4). Alert search and *similar alerts* leave that queue out whenever a request says
+Test-run alerts are routed to their own queue, `svs.queue` (default `svs`; see *Attribution*).
+Alert search and *similar alerts* leave that queue out whenever a request says
 nothing about queues, so "have we seen this before?" is answered from real alerts, and they say
 how many test alerts they left out (`docs/SEARCH.md`, *Read path*):
 

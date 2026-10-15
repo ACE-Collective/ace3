@@ -2324,6 +2324,58 @@ class SVSRegistrationRefusal(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSAttribution(Base):
+    """One detection of an alert attributed to a test run (docs/SVS_RUNS.md, *Attribution*). Keyed
+    on the alert uuid, because the marker router writes it at PRE_INSERT, before the alert has an
+    id [FR-23], and on the detection's content_hash (saq.analysis.detection_identity), which is
+    what its detection_points row and verdicts are keyed on. A removed row is kept, with who
+    removed it: the router never re-adds a detection a person disassociated. Only
+    saq/svs/attribution.py writes this table."""
+
+    __tablename__ = 'svs_attributions'
+    __table_args__ = (
+        UniqueConstraint('run_id', 'alert_uuid', 'content_hash', name='uq_svs_attributions_run_alert_detection'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    alert_uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, index=True)
+    content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    # saq.svs.constants.AttributionConfidence: a marker that agreed with the run, or the run's
+    # target and window alone
+    confidence: Mapped[str] = mapped_column(Enum('marker', 'context'), nullable=False)
+    # the alert's event time was past the run's observation window
+    late: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # saq.svs.constants.AttributionSource: the marker router, or a person
+    source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
+    # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
+    scan_point: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    actor: Mapped[str] = mapped_column(String(256), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    # set when the attribution no longer holds: the router found it no longer applies
+    # (removed_by svs), or a person disassociated it
+    removed_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    removed_by: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    removed_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

@@ -260,9 +260,10 @@ An **alert router** decides which queue an alert belongs in (`saq/alert_routing/
 in every process that creates or analyzes alerts (engine workers, collectors, the API, the GUI
 and the CLI), in ascending `priority`, and the first one that returns a decision wins. Core
 ships one built-in router, `detection_queue` (priority 500), which routes a new alert to the
-queue its detections' `queue` meta requests when every detection requests one. Register yours
-from `etc/saq.integration.yaml`; the list is appended to core's (empty) `alert_routers` because
-lists append when config files merge:
+queue its detections' `queue` meta requests when every detection requests one, and configures
+one more, `svs_marker` (priority 100), which routes alerts attributed to SVS test runs to the test
+queue (`docs/SVS_RUNS.md`, *Attribution*). Register yours from `etc/saq.integration.yaml`; the list
+is appended to core's `alert_routers` because lists append when config files merge:
 
 ```yaml
 alert_routers:
@@ -296,8 +297,10 @@ The contract:
   belongs to the caller (an engine worker, a collector, an API request), and the routed queue is
   the only change `ALERT()` or the engine makes on a router's behalf. A tag or detection belongs
   in an analysis module, which runs in the engine under the alert's lock and is indexed with the
-  rest of the analysis. A router may write rows of its own in the caller's transaction (key them
-  on the alert uuid: at `PRE_INSERT` the row has no id yet).
+  rest of the analysis. A router may write rows of its own (key them on the alert uuid: at
+  `PRE_INSERT` the row has no id yet), in the caller's transaction or, better, in one of its own
+  (`saq/database/private_session.py`): a failed write in the caller's transaction fails the
+  caller's commit, which is the alert insert. `svs_marker` writes `svs_attributions` that way.
 - **A router should not raise.** If it does, or returns anything but a `RouteDecision` or
   `None`, the exception is reported, the router is skipped and the next one runs. A router never
   breaks an alert insert or an analysis pass.

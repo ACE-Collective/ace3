@@ -4,9 +4,9 @@ import itertools
 import uuid
 
 import pytest
-from sqlalchemy import delete, select, true
+from sqlalchemy import delete, select, update
 
-from saq.database.model import Alert, User
+from saq.database.model import Alert, SVSRun, User
 from saq.database.pool import get_db
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, SOURCE_INHERITED_SINGLE
 from saq.detection_verdicts.query import list_alert_detection_points
@@ -14,7 +14,14 @@ from saq.detection_verdicts.store import set_verdict
 from saq.svs import labels
 from saq.svs.labels import STRENGTHS, Votes, aggregate_label
 from saq.svs.samples import get_sample, samples_subquery
-from tests.saq.svs.conftest import OTHER_RULE_UUID, RULE_UUID, graded_alert, insert_capture, set_disposition
+from tests.saq.svs.conftest import (
+    OTHER_RULE_UUID,
+    RULE_UUID,
+    attribute_to_run,
+    graded_alert,
+    insert_capture,
+    set_disposition,
+)
 
 
 @pytest.mark.unit
@@ -178,10 +185,14 @@ def test_a_detection_of_another_rule_or_file_does_not_vote():
 
 
 @pytest.mark.integration
-def test_an_unreviewed_test_run_casts_no_vote(monkeypatch):
-    _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]})
-    monkeypatch.setattr("saq.detection_verdicts.effective.unreviewed_run_condition", lambda alert: true())
+def test_an_unreviewed_test_run_casts_no_vote():
+    alert, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]})
+    run = attribute_to_run(alert.uuid, "ended")
     assert _sample(files["a.bin"])["label"] is None
+
+    get_db().execute(update(SVSRun).where(SVSRun.id == run.id).values(state="reviewed"))
+    get_db().commit()
+    assert _sample(files["a.bin"])["label"] == "tp"
 
 
 @pytest.mark.integration

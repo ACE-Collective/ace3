@@ -46,8 +46,9 @@ class AlertRouter(ABC):
     The contract:
     - route() never changes the tree. The tree belongs to the caller, and the routed queue is
       the only change made on a router's behalf; tags and detections belong in analysis modules.
-      A router may write rows of its own in the caller's transaction (keyed on the alert uuid:
-      at PRE_INSERT the alerts row has no id yet).
+      A router may write rows of its own (keyed on the alert uuid: at PRE_INSERT the alerts row
+      has no id yet), preferably in a transaction of its own: a failed write in the caller's
+      transaction fails the caller's commit, which is the alert insert.
     - route() should not raise. If it does, the exception is reported, the router is skipped
       and the next one runs: a router never breaks an alert insert or an analysis pass.
     """
