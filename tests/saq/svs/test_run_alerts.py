@@ -20,9 +20,10 @@ from saq.constants import (
     F_HOSTNAME,
     F_TEST,
 )
-from saq.database.model import Alert, Comment, SVSAttribution, SVSRun, SVSRunEvent, User
+from saq.database.model import Alert, Comment, SVSAttribution, SVSRun, SVSRunEvent, SVSRunResultState, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, set_dispositions
+from saq.signatures.builtin import GENERIC
 from saq.svs import runs
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import RunEventKind, RunState
@@ -33,6 +34,7 @@ from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, st
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
+YARA_RULE = "22222222-bbbb-4bbb-8bbb-222222222222"
 
 
 @pytest.fixture(autouse=True)
@@ -239,6 +241,22 @@ class TestEventLog:
         alert_uuid = _alert(marker=run.marker)
         write_attributions(alert_uuid, evaluate(_root(alert_uuid, marker=run.marker), datetime.now()))
         assert len(_events(run.uuid, RunEventKind.ATTRIBUTED)) == 1
+
+
+class TestResultInputs:
+    def test_an_attribution_carries_its_detections_signature_and_marks_the_result_stale(self, run):
+        root = _root(str(uuid.uuid4()), marker=run.marker)
+        root.add_detection_point("yara hit", signature_uuid=YARA_RULE)
+        root.save()
+        ALERT(root)
+
+        db = get_db()
+        db.expire_all()
+        signatures = set(db.execute(select(SVSAttribution.signature_uuid, SVSAttribution.signature_family)
+                                    .where(SVSAttribution.alert_uuid == root.uuid)).all())
+        assert signatures == {(GENERIC.uuid, "builtin"), (YARA_RULE, None)}
+        state = db.get(SVSRunResultState, run.id)
+        assert (state.stale, state.generation) == (True, 1)
 
 
 class TestChangedSinceReview:

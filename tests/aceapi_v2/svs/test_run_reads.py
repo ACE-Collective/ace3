@@ -30,7 +30,7 @@ UNKNOWN_RUN = "dddddddd-4444-4444-8444-444444444444"
 @pytest.fixture(autouse=True)
 def setup(monkeypatch):
     # no enabled hunts: the observation window is the floor
-    monkeypatch.setattr(windows, "hunt_latencies", lambda: {})
+    monkeypatch.setattr(windows, "hunt_info", lambda: {})
     add_catalog_test(GUID)
     add_catalog_test(LINUX_GUID, platforms=("linux",), technique="T1003", name="Dump credentials")
     create_host(build_spec("win10-01.lab.example", usernames=["svc_art"], platform="windows"), None)

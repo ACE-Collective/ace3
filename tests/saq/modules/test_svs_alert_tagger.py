@@ -29,7 +29,7 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 
 @pytest.fixture(autouse=True)
 def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_latencies", lambda: {})
+    monkeypatch.setattr(windows, "hunt_info", lambda: {})
     attribution.clear_caches()
     reset_alert_routers()
     monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)

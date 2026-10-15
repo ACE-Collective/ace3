@@ -446,7 +446,8 @@ collapsed to one per `(caller, host)` per hour; further refusals in that hour ar
 WARNING, so a misconfigured launcher retrying in a loop does not flood the queue. The launcher's
 `extra` is stored and rendered, so its size is capped. [FR-15]
 
-**Windows.** The *observation window* comes from the test's config if it sets one. Otherwise it is
+**Windows.** The *observation window* comes from the test's settings (`svs_test_settings`) if they
+set one, used as it is. Otherwise it is
 computed as the maximum, over the test's expected signatures, of their worst-case latency (for
 hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceiling. A test with no
 expectations yet (its first run, where expectations are discovered) gets the maximum worst-case
@@ -663,7 +664,9 @@ Expectations are **learned from reviewed runs**, not derived from declared techn
 
 1. **Discovery.** The first Reviewed run of a test proposes every attributed signature, minus the
    ignore lists, as a *candidate*. The analyst accepts (*expected*) or rejects each one. A rejected
-   candidate is remembered and not proposed again.
+   candidate is remembered and not proposed again. A candidate is a status of a run's result, not a
+   stored decision: only *expected* and *rejected* are rows, so nothing goes stale when a run is
+   reconsidered.
 2. **Steady state.** Later runs compare against the expected set:
    - an expected signature that doesn't fire is *missing*;
    - a signature that fires and isn't expected becomes a new candidate.
@@ -1020,10 +1023,12 @@ tables are on the main chain.
 | `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips, platform` (Part 3) [FR-15] |
 | `svs_catalog_tests`, `svs_catalog_repositories` | The ART catalog: guid, repository, technique, name, platforms, commit, content hash; and the commit each repository was last read at |
 | `svs_runs`, `svs_run_targets` | Runs, their lifecycle timestamps, marker, windows, and targets |
-| `svs_attributions` | `(run, alert uuid, detection content_hash, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23] |
-| `svs_expectations` | `(test guid, signature uuid, state: candidate/expected/rejected, who, when)` |
+| `svs_attributions` | `(run, alert uuid, detection content_hash, the detection's signature, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23], and carrying the signature because its `detection_points` row doesn't exist yet either |
+| `svs_expectations` | `(test guid, signature uuid, state: expected/rejected, who, when, the run it was decided from)`; a candidate is derived, never stored |
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
-| `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / unexpected / ignored |
+| `svs_test_settings` | Per test: an observation window that replaces the computed one |
+| `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
+| `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
 | `svs_technique_worklist` | Declared-vs-measured flags and their resolution |
 | `svs_run_events` | Append-only run event log (Part 5) |
 | `svs_coverage_snapshots` | Daily technique × state rows (Part 6) |

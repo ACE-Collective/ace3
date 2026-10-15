@@ -35,12 +35,15 @@ from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import supported_platforms
+from saq.svs.expectations import observation_for_test
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.hosts import InvalidTestHost, match_target, normalize_username, split_hostname
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller, prune_refusals, refuse
-from saq.svs.run_events import new_run_event
-from saq.svs.windows import attribution_window, observation_window
+from saq.svs.result_state import mark_runs_stale
+from saq.svs.results import compute_result, recompute_stale_results
+from saq.svs.run_events import new_run_event, run_log_fields
+from saq.svs.windows import attribution_window
 
 # the actor of a timer's transitions
 TIMER_ACTOR = "svs"
@@ -117,11 +120,6 @@ class Registration:
 #
 # logging and the event log
 #
-
-def run_log_fields(run: SVSRun) -> dict:
-    """The fields every record about a run carries."""
-    return {"svs_run": run.uuid, "svs_test": run.test_guid, "svs_marker": run.marker}
-
 
 def _add_event(run: SVSRun, kind: RunEventKind, actor: str, *, actor_user_id: Optional[int] = None,
                from_state: Optional[str] = None, to_state: Optional[str] = None, details: Optional[dict] = None,
@@ -268,8 +266,13 @@ def close_late_alerts() -> int:
 
 
 def on_run_ended(run: SVSRun) -> None:
-    """Computes the result of a run that just ended (docs/SVS.md, Part 3, *Expectations*). Results
-    come later in phase 4; until then there is nothing to compute."""
+    """Computes the result of a run that just ended (docs/SVS_RUNS.md, *Results*). A failure never
+    undoes the end: the run's result stays stale, and the timers compute it on their next pass."""
+    try:
+        compute_result(run.id)
+    except Exception as e:
+        logging.error("unable to compute the result of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
+        report_exception()
 
 
 def _after_close(run: SVSRun) -> None:
@@ -353,7 +356,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
                 f"test {test.guid} supports {', '.join(platforms) or 'no platform'}; "
                 f"test host {match.host.hostname} is {match.host.platform}")
 
-    observation = observation_window()
+    observation, observation_source = observation_for_test(test.guid)
     attribution = attribution_window(observation)
 
     run = SVSRun(
@@ -386,7 +389,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     db.add(run)
     db.flush()
     _add_event(run, RunEventKind.REGISTERED, caller.name, actor_user_id=caller.user_id, to_state=run.state,
-               details=payload, now=now)
+               details={**payload, "observation_source": observation_source.value}, now=now)
     db.commit()
 
     _log_transition(run, None, run.state, caller.name)
@@ -511,6 +514,7 @@ class TimerResult:
     ended: int = 0
     closed: int = 0
     late_alerts_closed: int = 0
+    results_computed: int = 0
     pruned_refusals: int = 0
 
 
@@ -555,6 +559,7 @@ def _end(run: SVSRun, now: datetime) -> bool:
     if not _transition(run, RunState.STARTED, RunState.ENDED, TIMER_ACTOR, values={"ended_at": now}, now=now):
         get_db().rollback()
         return False
+    mark_runs_stale(get_db(), run_ids=[run.id])
     get_db().commit()
     _log_transition(run, RunState.STARTED.value, RunState.ENDED.value, TIMER_ACTOR)
     on_run_ended(run)
@@ -589,5 +594,6 @@ def run_timers(now: Optional[datetime] = None) -> TimerResult:
              or_(SVSRun.attribution_ends_at.is_(None), SVSRun.attribution_ends_at <= now)),
         lambda run, state: _close_after_attribution(run, state, now))
     result.late_alerts_closed = close_late_alerts()
+    result.results_computed = recompute_stale_results(now)
     result.pruned_refusals = prune_refusals(now)
     return result

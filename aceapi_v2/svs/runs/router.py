@@ -4,8 +4,8 @@ The launcher's lifecycle calls: register a run, start it, report how the test ex
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
-Reading runs, each run's event log and the event feed over every run needs svs:run_read; the runs
-screen's filters (`f=`) apply to all three listings.
+Reading runs, each run's event log and result, and the event and result feeds over every run needs
+svs:run_read; the runs screen's filters (`f=`) apply to the runs and to both feeds.
 """
 
 from datetime import datetime
@@ -32,6 +32,7 @@ from aceapi_v2.svs.runs.schemas import (
     RunLifecycle,
     RunPage,
     RunRegistrationRequest,
+    RunResultPage,
 )
 from aceapi_v2.sync import run_db_in_thread
 from saq.svs.refusals import Caller
@@ -55,6 +56,8 @@ RunsChangedSinceParam = Annotated[datetime | None, Query(
                 "are then in (updated_at, id) order")]
 EventsChangedSinceParam = Annotated[datetime | None, Query(
     description="only events written at or after this time (UTC if no offset is given)")]
+ResultsChangedSinceParam = Annotated[datetime | None, Query(
+    description="only result rows written or changed at or after this time (UTC if no offset is given)")]
 
 
 def _caller(auth: ApiAuthResult, request: Request) -> Caller:
@@ -198,6 +201,57 @@ async def export_events_csv(
 
 
 #
+# the result feed over every run
+#
+
+async def _prepare_result_feed(f: list[str], changed_since: datetime | None, tz: str) -> service.ResultFeed:
+    return await run_listing(service.prepare_result_feed, f, changed_since=changed_since, tz=parse_timezone(tz))
+
+
+@router.get("/results", response_model=RunResultPage)
+async def list_results(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: ResultsChangedSinceParam = None,
+    cursor: CursorParam = None,
+    limit: LimitParam = 100,
+    tz: TimezoneParam = "UTC",
+) -> RunResultPage:
+    """The result rows of every run the filters match, in (updated_at, id) order: what reports pull.
+    A row shows up a few seconds after it is written, so a pull resumed from its last updated_at
+    never misses one (and may repeat one)."""
+    feed = await _prepare_result_feed(f, changed_since, tz)
+    rows, next_cursor = await run_listing(service.fetch_result_feed_page, feed, cursor, limit)
+    return RunResultPage(data=rows, next_cursor=next_cursor)
+
+
+@router.get("/results/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_results_ndjson(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: ResultsChangedSinceParam = None,
+    tz: TimezoneParam = "UTC",
+) -> NdjsonStreamResponse:
+    """Stream the result feed as NDJSON, one RunResult per line."""
+    feed = await _prepare_result_feed(f, changed_since, tz)
+    export = await start_export(service.fetch_result_feed_page, feed, what="svs run result")
+    return ndjson_response(export, "svs-run-results.ndjson")
+
+
+@router.get("/results/export/csv", response_class=CsvStreamResponse)
+async def export_results_csv(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: ResultsChangedSinceParam = None,
+    tz: TimezoneParam = "UTC",
+) -> CsvStreamResponse:
+    """Stream the result feed as CSV."""
+    feed = await _prepare_result_feed(f, changed_since, tz)
+    export = await start_export(service.fetch_result_feed_page, feed, what="svs run result")
+    return csv_response(export, service.run_results_to_csv, "svs-run-results.csv")
+
+
+#
 # one run
 #
 
@@ -230,3 +284,29 @@ async def export_run_events_csv(run_id: str, auth: ReadAuth) -> CsvStreamRespons
     selection = await run_db_in_thread(service.select_run_events, run_id)
     export = await start_export(service.fetch_run_events_page, selection, what="svs run event")
     return csv_response(export, service.run_events_to_csv, f"svs-run-{selection.run_uuid}-events.csv")
+
+
+@router.get("/{run_id}/results", response_model=RunResultPage)
+async def list_run_results(run_id: str, auth: ReadAuth, cursor: CursorParam = None,
+                           limit: LimitParam = 100) -> RunResultPage:
+    """The run's result, one row per signature (docs/SVS_RUNS.md, *Results*). stale says it is
+    about to be recomputed."""
+    selection = await run_db_in_thread(service.select_run_results, run_id)
+    rows, next_cursor = await run_listing(service.fetch_run_results_page, selection, cursor, limit)
+    return RunResultPage(data=rows, next_cursor=next_cursor, stale=selection.stale, computed_at=selection.computed_at)
+
+
+@router.get("/{run_id}/results/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_run_results_ndjson(run_id: str, auth: ReadAuth) -> NdjsonStreamResponse:
+    """Stream the run's result as NDJSON."""
+    selection = await run_db_in_thread(service.select_run_results, run_id)
+    export = await start_export(service.fetch_run_results_page, selection, what="svs run result")
+    return ndjson_response(export, f"svs-run-{selection.run_uuid}-results.ndjson")
+
+
+@router.get("/{run_id}/results/export/csv", response_class=CsvStreamResponse)
+async def export_run_results_csv(run_id: str, auth: ReadAuth) -> CsvStreamResponse:
+    """Stream the run's result as CSV."""
+    selection = await run_db_in_thread(service.select_run_results, run_id)
+    export = await start_export(service.fetch_run_results_page, selection, what="svs run result")
+    return csv_response(export, service.run_results_to_csv, f"svs-run-{selection.run_uuid}-results.csv")

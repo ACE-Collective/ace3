@@ -62,6 +62,41 @@ class RunEventKind(StrEnum):
     ATTRIBUTED = "attributed"                    # detections of an alert attributed to the run
     ATTRIBUTION_REMOVED = "attribution_removed"  # attributions that no longer hold
     ALERTS_CLOSED = "alerts_closed"              # the run's alerts given SIMULATED when it closed
+    RESULT_COMPUTED = "result_computed"          # the run's result changed
+    CANDIDATE_DECISION = "candidate_decision"    # a signature in the run's result was decided
+
+
+class ExpectationState(StrEnum):
+    """A decision about a signature for a test (svs_expectations.state)."""
+    EXPECTED = "expected"    # a run of the test should fire it
+    REJECTED = "rejected"    # it fires, but it is not what the test is about; never proposed again
+
+
+class IgnoreScope(StrEnum):
+    """Which runs an ignore applies to (svs_ignores.scope)."""
+    GLOBAL = "global"        # every test's runs (launcher noise); svs:admin
+    TEST = "test"            # one test's runs; svs:run_manage
+
+
+# svs_ignores.scope_key of a global ignore; a test's ignores carry its guid
+GLOBAL_SCOPE_KEY = "global"
+
+
+class ResultStatus(StrEnum):
+    """One signature of a run's result (svs_run_results.status, docs/SVS_RUNS.md, *Results*)."""
+    HIT = "hit"                                  # expected, and it fired
+    MISSING = "missing"                          # expected, and it did not fire
+    POSSIBLY_SUPPRESSED = "possibly_suppressed"  # missing, and its hunt alerted within its suppression period
+    CANDIDATE = "candidate"                      # it fired, and nobody has decided about it yet
+    REJECTED = "rejected"                        # it fired, and it was rejected for the test
+    IGNORED = "ignored"                          # it fired, and it is ignored (globally or for the test)
+
+
+class ObservationSource(StrEnum):
+    """Where a run's observation window came from (the registered event's observation_source)."""
+    OVERRIDE = "override"    # the test's settings
+    EXPECTED = "expected"    # the latency of the test's expected signatures
+    ALL_HUNTS = "all_hunts"  # the test has no expectations yet: the slowest enabled hunt
 
 
 class AttributionConfidence(StrEnum):
