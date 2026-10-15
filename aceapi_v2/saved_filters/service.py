@@ -31,6 +31,7 @@ from saq.gui.filter_screens import (
     FILTER_SCREENS,
     SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
+    SVS_TESTS_SCREEN,
     SVS_VALIDATIONS_SCREEN,
     FilterScreen,
     get_filter_screen,
@@ -119,12 +120,26 @@ DEFAULT_SVS_RUN_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS tests screen: the tests still in their repository, which the
+# Tests tab opens on (docs/SVS_RUNS.md, *Following runs*). A removed test keeps its runs, so it is
+# one filter away rather than gone.
+DEFAULT_SVS_TEST_SAVED_FILTERS = (
+    {
+        "name": "In the catalog",
+        "description": "Tests still in their repository",
+        "filters": [
+            {"name": "Removed", "inverted": False, "values": ["false"]},
+        ],
+    },
+)
+
 # screen name -> the saved filters a user starts with on that screen
 DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
     SVS_RUNS_SCREEN.name: DEFAULT_SVS_RUN_SAVED_FILTERS,
+    SVS_TESTS_SCREEN.name: DEFAULT_SVS_TEST_SAVED_FILTERS,
 }
 
 

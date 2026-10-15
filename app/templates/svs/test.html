@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+{# A test's page (docs/SVS.md, Part 5, *Tests*): a shell whose script, static/js/svs_tests.js, reads
+   everything from the API named here. The actions follow the permissions below; the API enforces
+   them regardless. #}
+<div id="svs_test_page"
+     data-api="/api/v2/svs"
+     data-guid="{{ guid }}"
+     data-runs-f='{{ runs_f | tojson }}'
+     data-runs-url="{{ url_for('svs.runs') }}"
+     data-run-url="{{ run_url }}"
+     data-tz="{{ current_user.timezone or 'UTC' }}"
+     data-username="{{ current_user.username }}"
+     data-can-manage="{{ 'true' if has_permission('svs', 'run_manage') else 'false' }}"
+     data-is-admin="{{ 'true' if has_permission('svs', 'admin') else 'false' }}">
+    <p class="mb-2"><a href="{{ url_for('svs.tests') }}"><span class="bi bi-arrow-left"></span> Tests</a></p>
+    <div id="svs_test_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="svs_test_message" class="alert d-none" role="status"></div>
+    <div id="svs_test_loading" class="text-muted">Loading…</div>
+
+    <div id="svs_test_body" class="d-none">
+        <div class="mb-2">
+            <h3 class="mb-0" id="svs_test_title"></h3>
+            <div class="text-muted small" id="svs_test_subtitle"></div>
+        </div>
+
+        <section class="mb-4" aria-labelledby="svs_test_facts_title">
+            <h4 class="visually-hidden" id="svs_test_facts_title">The test</h4>
+            <dl class="row mb-0 small" id="svs_test_facts"></dl>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_description_title">
+            <h4 id="svs_test_description_title">Description</h4>
+            <div id="svs_test_description"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_commands_title">
+            <h4 id="svs_test_commands_title">Commands</h4>
+            <div id="svs_test_commands"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_arguments_title">
+            <h4 id="svs_test_arguments_title">Input arguments</h4>
+            <div id="svs_test_arguments"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_dependencies_title">
+            <h4 id="svs_test_dependencies_title">Dependencies</h4>
+            <div id="svs_test_dependencies"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_window_title">
+            <h4 id="svs_test_window_title">Observation window</h4>
+            <div id="svs_test_window"></div>
+            {% if has_permission('svs', 'run_manage') %}
+            <form class="row g-2 align-items-end mt-1" id="svs_test_window_form">
+                <div class="col-auto">
+                    <label class="form-label small mb-0" for="svs_test_window_minutes">Minutes, for runs registered from now on</label>
+                    <input class="form-control form-control-sm" type="number" min="1" step="1" required
+                           id="svs_test_window_minutes" name="observation_minutes">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">Set</button>
+                </div>
+            </form>
+            {% endif %}
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_expectations_title">
+            <h4 id="svs_test_expectations_title">Expectations</h4>
+            <div id="svs_test_expectations"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_ignores_title">
+            <h4 id="svs_test_ignores_title">Ignores</h4>
+            <div id="svs_test_ignores"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_test_runs_title">
+            <h4 id="svs_test_runs_title">Runs</h4>
+            <div id="svs_test_runs"></div>
+        </section>
+    </div>
+</div>
+
+{% if has_permission('svs', 'run_manage') or has_permission('svs', 'admin') %}
+{# every removal asks first; svs_tests.js fills in the title, the text and the button #}
+<div class="modal fade" id="svs_test_ask_modal" tabindex="-1" role="dialog" aria-hidden="true" aria-labelledby="svs_test_ask_title">
+    <form id="svs_test_ask_form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="svs_test_ask_title"></h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="svs_test_ask_text"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary" id="svs_test_ask_submit"></button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_tests.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

@@ -827,7 +827,9 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
   (with the same meanings as in Part 4).
 - **Sort and filters:** the default sort is technique, then name. There is no suggested order.
 - **The detail page:** the test's description, commands and input arguments from the catalog, its
-  expectations and ignores, and its run history.
+  expectations and ignores, and its run history. It is also where an operator sets the test's
+  observation window and removes a decision or an ignore; nothing else on the Tests tab changes
+  anything.
 
 ### Debugging a run
 

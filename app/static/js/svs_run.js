@@ -154,6 +154,7 @@
             path: data.api.substring(aceApi.BASE.length),
             run_id: data.runId,
             runs_url: data.runsUrl,
+            test_url: data.testUrl,
             screen: data.screen,
             alert_url: data.alertUrl,
             samples_url: data.samplesUrl,
@@ -558,7 +559,10 @@
                 list.appendChild(el("dt", "col-sm-2 fw-normal text-muted", term));
                 list.appendChild(append(el("dd", "col-sm-10 mb-1"), value));
             }
-            fact("Test", append(el("span"), run.test_name || "", run.test_name ? " " : "", mono(run.test_guid, "small")));
+            const test = link(settings.test_url.replace("__TEST__", encodeURIComponent(run.test_guid)),
+                              run.test_name || run.test_guid);
+            test.title = "the test's page: its catalog entry, expectations and runs";
+            fact("Test", append(el("span"), test, run.test_name ? " " : "", run.test_name ? mono(run.test_guid, "small") : ""));
             const commit = mono(run.catalog_commit.substring(0, 12));
             commit.title = run.catalog_commit;
             const content = mono(run.test_content_hash.substring(0, 12), "text-muted");

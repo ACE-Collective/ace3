@@ -92,6 +92,7 @@
             runs_url: data.runsUrl,
             batches_url: data.batchesUrl,
             run_url: data.runUrl,
+            test_url: data.testUrl,
             tz: data.tz,
             can_manage: data.canManage === "true",
         };
@@ -139,7 +140,10 @@
         node.appendChild(link(settings.run_url.replace("__RUN__", encodeURIComponent(row.run_id)),
                               row.test_name || row.test_guid));
         const details = el("div", "small text-muted");
-        append(details, row.technique ? row.technique + " · " : "", el("span", "font-monospace text-break-all", row.test_guid));
+        const test = link(settings.test_url.replace("__TEST__", encodeURIComponent(row.test_guid)), row.test_guid,
+                          "font-monospace text-break-all link-secondary");
+        test.title = "the test's page";
+        append(details, row.technique ? row.technique + " · " : "", test);
         if (row.technique_name) {
             details.title = row.technique_name;
         }

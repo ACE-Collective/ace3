@@ -152,7 +152,7 @@ SVS_VALIDATIONS_SCREEN = FilterScreen(
     ),
 )
 
-# the Atomic Red Team test catalog and, later in phase 4, each test's run history (GET
+# the Atomic Red Team test catalog, each row with its test's state and run history (GET
 # /api/v2/svs/tests, docs/SVS_API.md); read with svs:run_read
 SVS_TESTS_SCREEN = FilterScreen(
     name="svs_tests",

@@ -110,7 +110,8 @@ as signed off (`docs/SVS_API.md`, *Tests*):
 
 Each row also has its run count, its latest run and latest reviewed run, how many signatures are
 expected of it, and how many of its latest 5 ended or reviewed runs missed an expected signature.
-Nothing suggests what to run next: that stays the team's call.
+Nothing suggests what to run next: that stays the team's call. The GUI's Tests tab and each test's
+page show the same (*In the GUI*, below).
 
 ## Registering a run
 
@@ -310,6 +311,15 @@ the number of runs that need attention, when any do.
     from them.
   - Afterwards the page reports what was done, what was left alone and why.
   - Review is never a bulk action.
+- **Tests** lists the catalog, one row per test, in the API's one order: technique, then name
+  (*Tests and their state*, above). It opens on *In the catalog*, the tests still in their
+  repository; a removed test keeps its runs and is one filter away.
+  - A row shows the test's technique, name and guid, its platforms and repository, and its state,
+    coloured (failing in red, awaiting review and stale in amber, validated in green).
+  - It also shows its latest run and latest reviewed run, each linking to the run, its number of
+    runs, how many signatures are expected of it, and how many of its latest ended or reviewed runs
+    missed one.
+  - The tab is read-only, and its export menu streams what the filters match.
 - **Test hosts** is shown only with `svs:admin`, and adds, changes and deletes test hosts (*Test
   hosts*, above).
 
@@ -342,6 +352,21 @@ its result is being recomputed.
 - **Logs** has the run's search keys, ready to copy, and a link to the site's log search when
   `svs.log_search_url` is set (*Logs*, below).
 - **Comments** and the **event log**, latest event first.
+
+**The test page** (`/ace/svs/tests/<guid>`, opened from the Tests tab, from a run's page and from the
+guid on a row of the Runs tab) shows one test.
+- **Its facts:** state, platforms, executor, repository and path, commit and content hash, runs, and
+  expectations.
+- **The catalog entry:** the description, commands (command, manual steps, cleanup), input arguments
+  and dependencies.
+- **Its observation window** (*Windows*, above): computed, or the minutes an operator set. With
+  `svs:run_manage` it is set here, or cleared to go back to the computed window.
+- **Expectations:** every decided signature, with who decided it, when, why and from which run. With
+  `svs:run_manage`, *Remove* makes one a candidate again.
+- **Ignores** that apply to the test: its own, which `svs:run_manage` removes, and the global ones,
+  which only `svs:admin` removes.
+- **Runs:** its latest 25, newest first, each linking to its run page, and a link to all of them on
+  the Runs tab.
 
 ## Attribution
 
@@ -588,6 +613,8 @@ the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*).
     event log records it (`candidate_decision`).
   - Removing a decision (`DELETE`) makes the signature a candidate again the next time it fires.
     Nothing removes an expectation automatically: a flaky signature shows up in the run history.
+  - In the GUI, decisions are made among a run's candidates on its page, and undone there or on the
+    test's page (*In the GUI*, above).
 - **An ignore** marks a signature as noise during runs, such as the launcher's own WinRM or remoting:
   - for one test: `PUT …/tests/{guid}/ignores/{signature_uuid}`, `svs:run_manage`;
   - for every test: `PUT /api/v2/svs/ignores/global/{signature_uuid}`, `svs:admin`, because it

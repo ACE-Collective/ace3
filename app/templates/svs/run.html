@@ -10,6 +10,7 @@
      data-run-id="{{ run_id }}"
      data-runs-url="{{ url_for('svs.runs') }}"
      data-screen="{{ runs_screen }}"
+     data-test-url="{{ test_url }}"
      data-alert-url="{{ url_for('analysis.index') }}"
      data-samples-url="{{ url_for('signatures.samples') if has_permission('signature', 'read') else '' }}"
      data-username="{{ current_user.username }}"
