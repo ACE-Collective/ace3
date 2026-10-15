@@ -1,9 +1,8 @@
 """Atomic Red Team test catalog router for ACE API v2, at /svs/tests (docs/SVS_RUNS.md,
 docs/SVS_API.md).
 
-The tests runs may be registered for, as service_svs reads them from the catalog repositories.
-Read with svs:run_read. The test state and run history columns of the Tests screen come with the
-runs, later in phase 4.
+The tests runs may be registered for, as service_svs reads them from the catalog repositories,
+with each test's state and run history. Read with svs:run_read.
 
 What is decided about a test's signatures (docs/SVS_RUNS.md, *Expectations and ignores*) and its
 settings (*Windows*) are changed here, with svs:run_manage: each change marks the results of the

@@ -423,9 +423,9 @@ removed host just disappears; its removal is an AUDIT line in ACE's log.
 
 The Atomic Red Team tests runs may be registered for, as `service_svs` reads them from the
 repositories in `svs.catalog.repositories` (`docs/SVS_RUNS.md`, *The Atomic Red Team catalog*).
-Read with `svs:run_read`. The test state, last run and expectations columns of the Tests screen
-come later in phase 4. What is decided about a test's signatures, and its settings, are changed
-under it with `svs:run_manage` (*Expectations*, *Ignores* and *Test settings*, below).
+Read with `svs:run_read`, each with its state and run history. What is decided about a test's
+signatures, and its settings, are changed under it with `svs:run_manage` (*Expectations*,
+*Ignores* and *Test settings*, below).
 
 | Endpoint | Permission | Returns |
 |---|---|---|
@@ -450,7 +450,29 @@ under it with `svs:run_manage` (*Expectations*, *Ignores* and *Test settings*, b
 | `content_hash` | sha256 of the test's entry; it changes exactly when the test does. |
 | `first_seen_at` | When the catalog first read it. |
 | `removed_at` | When it disappeared from its repository, or null. A removed test keeps its row and its runs. |
-| `updated_at` | The row's last change. |
+| `updated_at` | The row's last change. A change to the test's runs, results or state doesn't change it. |
+| `test_state` | Below. |
+| `run_count` | Every run registered for it, in any state. |
+| `last_run_id`, `last_run_at` | Its latest run and when it was registered. |
+| `last_reviewed_run_id`, `last_reviewed_at` | Its latest reviewed run and when it was reviewed. |
+| `expected_signatures` | The signatures expected of it that no ignore applies to. |
+| `recent_runs`, `recent_runs_missing` | Its latest ended or reviewed runs, at most 5, and how many of them missed an expected signature (missing or possibly suppressed in their live result). |
+
+**Test state**, judged on the latest *reviewed* run, as signed off:
+
+| `test_state` | Meaning |
+|---|---|
+| `never_run` | No run was ever registered for it. |
+| `awaiting_review` | None of its runs is reviewed, or something was expected of it only after its latest reviewed run, so no review has judged it. |
+| `no_expectations` | It has a reviewed run, and nothing is expected of it. |
+| `failing` | Its latest reviewed run missed an expected signature (possibly suppressed counts). |
+| `stale` | It would be validated, but the test (its `content_hash`) or the rule of an expected signature changed since that run was reviewed. A rule ACE can't read now doesn't count as changed. |
+| `validated` | Its latest reviewed run hit every expected signature. |
+
+The state and history are derived when read, so they aren't filters: the rule hashes behind
+`stale` come from the rule inventory, not the database. Its run history is
+`GET /api/v2/svs/runs?f=test:{guid}`, its decisions `GET /api/v2/svs/expectations?test={guid}` and
+`GET /api/v2/svs/ignores?test={guid}`.
 
 `GET …/{guid}` adds `description` and `test`, the test's whole entry in its atomic file: `executor`
 (`command`, `cleanup_command`, `elevation_required`), `input_arguments`, `dependencies`.
@@ -523,7 +545,12 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was reviewed. Review and ownership come later in phase 4, so these are null until then. |
 | `changed_since_review` | An attribution of an alert to it was added or removed after its review: a late alert, a later analysis pass, or a manual association. |
 | `needs_attention` | Whether it is in the *Needs attention* view (below). |
-| `updated_at` | The row's last change; the `changed_since` key. |
+| `result_hit`, `result_expected` | Its result's hits out of the expected signatures it judged (*expected hits n/m*): `result_expected` counts hit, missing and possibly suppressed (*Results*, below). |
+| `result_missing`, `result_possibly_suppressed` | Expected signatures it missed (possibly suppressed ones included), and of those the possibly suppressed. |
+| `result_candidate`, `result_rejected`, `result_ignored` | Signatures that fired and nobody decided, were rejected, or are ignored. |
+| `result_stale` | Its result is about to be recomputed. |
+| `alerts`, `marker_alerts`, `context_alerts`, `late_alerts` | The alerts attributed to it; of those, by a marker, by context alone (`TEST?`), and late. |
+| `updated_at` | The row's last change; the `changed_since` key. A change to its result or its alerts doesn't change it: pull the result feed for those. |
 
 `GET …/{run_id}` adds:
 - `extra`, the object the launcher sent;
@@ -553,6 +580,11 @@ The runs, the event feed and the GUI's Runs screen share these filters (screen `
 | `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
 | `changed_since_review` | Changed Since Review | `true`, `false` |
 | `has_open_alerts` | Has Open Alerts | `true`, `false`: an alert attributed to the run is still `OPEN` |
+| `has_missing` | Has Missing | `true`, `false`: its result misses an expected signature (possibly suppressed included) |
+| `has_possibly_suppressed` | Has Possibly Suppressed | `true`, `false` |
+| `has_candidates` | Has Candidates | `true`, `false`: a signature fired that nobody has decided about |
+| `has_late` | Has Late | `true`, `false`: an alert was attributed to it late |
+| `has_context_only` | Has Context Only | `true`, `false`: an alert was attributed to it by context alone (`TEST?`) |
 
 **Needs attention** is the Runs screen's default view and the count on its navigation entry. It
 matches runs that:

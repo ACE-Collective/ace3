@@ -9,12 +9,14 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import SVSCatalogTest
+from saq.database.model import SVSCatalogTest, SVSRun
 from saq.database.pool import get_db
 from saq.svs.catalog import content_hash
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 
 pytestmark = pytest.mark.integration
+
+RUN_UUID = "dddddddd-4444-4444-8444-444444444444"
 
 
 def _test(guid: str, technique: str, name: str, *, platforms=("windows",), executor="powershell", removed=False,
@@ -100,6 +102,26 @@ async def test_detail(client: AsyncClient, catalog):
 
     assert (await client.get("/svs/tests/not-a-guid")).status_code == 400
     assert (await client.get(f"/svs/tests/{_guid(99)}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_each_tests_state_and_runs(client: AsyncClient, catalog):
+    """The state and history columns (saq.svs.test_state, tested there in full)."""
+    db = get_db()
+    db.add(SVSRun(uuid=RUN_UUID, test_guid=_guid(1), test_content_hash="0" * 64, catalog_commit="a" * 40,
+                  state="ended", marker="svs-" + "a" * 26, launcher="art", extra="{}", created_at=datetime.now(),
+                  observation_seconds=3600, attribution_seconds=3600))
+    db.commit()
+
+    rows = {row["guid"]: row for row in (await client.get("/svs/tests/")).json()["data"]}
+    ran = rows[_guid(1)]
+    assert (ran["test_state"], ran["run_count"], ran["last_run_id"], ran["recent_runs"]) == (
+        "awaiting_review", 1, RUN_UUID, 1)
+    assert (rows[_guid(3)]["test_state"], rows[_guid(3)]["run_count"]) == ("never_run", 0)
+    detail = (await client.get(f"/svs/tests/{_guid(1)}")).json()
+    assert detail["test_state"] == "awaiting_review"
+    records = list(csv.DictReader(io.StringIO((await client.get("/svs/tests/export/csv")).text)))
+    assert {record["test_state"] for record in records} == {"awaiting_review", "never_run"}
 
 
 @pytest.mark.asyncio

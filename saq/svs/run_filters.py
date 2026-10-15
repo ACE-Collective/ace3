@@ -13,9 +13,9 @@ from sqlalchemy import and_, case, exists, false, literal, or_, select, true
 from sqlalchemy.sql.elements import ColumnElement
 
 from saq.constants import DISPOSITION_OPEN
-from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget, User
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunResult, SVSRunTarget, User
 from saq.svs.catalog_filters import technique_condition
-from saq.svs.constants import RunState
+from saq.svs.constants import AttributionConfidence, ResultStatus, RunState
 from saq.svs.filters import date_range_condition
 from saq.svs.hosts import InvalidTestHost, split_hostname
 
@@ -30,6 +30,18 @@ def open_alerts_condition() -> ColumnElement[bool]:
         select(SVSAttribution.run_id)
         .join(Alert, Alert.uuid == SVSAttribution.alert_uuid)
         .where(SVSAttribution.removed_at.is_(None), Alert.disposition == DISPOSITION_OPEN))
+
+
+def _result_condition(*statuses: ResultStatus) -> ColumnElement[bool]:
+    """The run's live result has a signature in one of the statuses."""
+    return exists(select(literal(1)).where(
+        SVSRunResult.run_id == SVSRun.id, SVSRunResult.status.in_([status.value for status in statuses])))
+
+
+def _attribution_condition(*conditions) -> ColumnElement[bool]:
+    """An attribution to the run that holds matches the conditions."""
+    return exists(select(literal(1)).where(
+        SVSAttribution.run_id == SVSRun.id, SVSAttribution.removed_at.is_(None), *conditions))
 
 
 def needs_attention_condition() -> ColumnElement[bool]:
@@ -110,6 +122,17 @@ def run_filter_condition(entry: dict, tz: tzinfo = pytz.utc) -> ColumnElement[bo
         condition = _flag(open_alerts_condition(), values)
     elif name == "Needs Attention":
         condition = _flag(needs_attention_condition(), values)
+    elif name == "Has Missing":
+        condition = _flag(_result_condition(ResultStatus.MISSING, ResultStatus.POSSIBLY_SUPPRESSED), values)
+    elif name == "Has Possibly Suppressed":
+        condition = _flag(_result_condition(ResultStatus.POSSIBLY_SUPPRESSED), values)
+    elif name == "Has Candidates":
+        condition = _flag(_result_condition(ResultStatus.CANDIDATE), values)
+    elif name == "Has Late":
+        condition = _flag(_attribution_condition(SVSAttribution.late.is_(True)), values)
+    elif name == "Has Context Only":
+        condition = _flag(_attribution_condition(
+            SVSAttribution.confidence == AttributionConfidence.CONTEXT.value), values)
     else:
         raise ValueError(f"unknown runs filter {name!r}")
 

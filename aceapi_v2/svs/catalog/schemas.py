@@ -21,7 +21,18 @@ class CatalogTest(BaseModel):
     content_hash: str = Field(description="sha256 of the test's entry; it changes exactly when the test does")
     first_seen_at: datetime
     removed_at: Optional[datetime] = Field(default=None, description="when the test disappeared from its repository; it keeps its runs")
-    updated_at: datetime
+    updated_at: datetime = Field(description="when the catalog row last changed; the changed_since key. A change "
+                                             "to the test's runs or state doesn't change it")
+    test_state: str = Field(description="never_run, awaiting_review, no_expectations, failing, stale or validated "
+                                        "(docs/SVS_API.md, *Tests*)")
+    run_count: int = Field(default=0, description="every run registered for it")
+    last_run_id: Optional[str] = Field(default=None, description="its latest run's uuid")
+    last_run_at: Optional[datetime] = Field(default=None, description="when its latest run was registered")
+    last_reviewed_run_id: Optional[str] = None
+    last_reviewed_at: Optional[datetime] = None
+    expected_signatures: int = Field(default=0, description="signatures expected of it that no ignore applies to")
+    recent_runs: int = Field(default=0, description="its latest ended or reviewed runs looked at (at most 5)")
+    recent_runs_missing: int = Field(default=0, description="of those, the runs that missed an expected signature")
 
 
 class CatalogTestDetail(CatalogTest):
