@@ -1,4 +1,4 @@
-// The selection guard of the bulk alert actions (set disposition, take ownership).
+// The selection guard of the bulk alert actions (set disposition, take or assign ownership).
 //
 // Before an action runs, it shows what the selection actually holds -- how many alerts, in
 // which queues, owned by whom -- so a select-all that swept in someone else's alerts is
@@ -24,12 +24,31 @@ var SelectionGuard = (function() {
             verb_many: function(n) { return "set the disposition of " + n + " " + plural(n, "alert"); },
             take_many: function(n, name) { return "Take " + n + " " + plural(n, "alert") + " from " + name + " and set " + (n == 1 ? "its" : "their") + " disposition"; },
             take_one: function(name) { return "Take this alert from " + name + " and set its disposition"; },
+            confirm_verb: function() { return "take"; },
             check_queues: true,
         },
         take: {
             verb_many: function(n) { return "take ownership of " + n + " " + plural(n, "alert"); },
             take_many: function(n, name) { return "Take " + n + " " + plural(n, "alert") + " from " + name; },
             take_one: function(name) { return "Take this alert from " + name; },
+            confirm_verb: function() { return "take"; },
+            check_queues: false,
+        },
+        // giving the alerts to options.new_owner_id (options.new_owner_name), or unassigning them
+        // when it is null
+        assign: {
+            verb_many: function(n, options) {
+                return options.new_owner_id == null
+                    ? "unassign " + n + " " + plural(n, "alert")
+                    : "assign " + n + " " + plural(n, "alert") + " to " + options.new_owner_name;
+            },
+            take_many: function(n, name, options) {
+                return (options.new_owner_id == null ? "Unassign " : "Reassign ") + n + " " + plural(n, "alert") + " from " + name;
+            },
+            take_one: function(name, options) {
+                return (options.new_owner_id == null ? "Unassign" : "Reassign") + " this alert from " + name;
+            },
+            confirm_verb: function(options) { return options.new_owner_id == null ? "unassign" : "reassign"; },
             check_queues: false,
         },
     };
@@ -42,14 +61,17 @@ var SelectionGuard = (function() {
         return Number(container.dataset.currentUserId);
     }
 
-    // true when changing the alert needs its owner's alerts to be taken first
-    function owned_by_another(alert, user_id) {
-        return alert.owner_id != null && alert.owner_id !== user_id && alert.owner_enabled;
+    // true when changing the alert needs its owner's alerts to be taken first: it belongs to an
+    // active analyst other than the user and other than new_owner_id, who an assignment gives
+    // it to (it is theirs either way)
+    function owned_by_another(alert, user_id, new_owner_id) {
+        return alert.owner_id != null && alert.owner_id !== user_id && alert.owner_enabled
+            && (new_owner_id == null || alert.owner_id !== new_owner_id);
     }
 
     // true when any of these alerts belongs to another active analyst
-    function needs_confirmation(alerts, user_id) {
-        return alerts.some(function(alert) { return owned_by_another(alert, user_id); });
+    function needs_confirmation(alerts, user_id, new_owner_id) {
+        return alerts.some(function(alert) { return owned_by_another(alert, user_id, new_owner_id); });
     }
 
     // groups alerts by key_of(alert), keeping first-seen order; each group is
@@ -126,6 +148,7 @@ var SelectionGuard = (function() {
         const container = state.container;
         const action = ACTIONS[state.options.action];
         const user_id = current_user_id(container);
+        const new_owner_id = state.options.new_owner_id;
         const alerts = state.alerts;
         const id_prefix = (container.id || "selection_guard") + "_";
         // redrawing replaces the checkbox the analyst just used; keep keyboard focus on it
@@ -135,7 +158,7 @@ var SelectionGuard = (function() {
         // the other analysts whose alerts are selected, and which of them the analyst
         // agreed to take alerts from
         const other_owners = group_by(
-            alerts.filter(function(alert) { return owned_by_another(alert, user_id); }),
+            alerts.filter(function(alert) { return owned_by_another(alert, user_id, new_owner_id); }),
             function(alert) { return alert.owner_id; },
             function(alert) { return alert.owner_name; });
         const queues = group_by(alerts, function(alert) { return alert.queue; }, function(alert) { return alert.queue; });
@@ -180,7 +203,9 @@ var SelectionGuard = (function() {
             warning.appendChild(element("div", null, alerts.length == 1
                 ? "This alert is owned by " + owner.label + "."
                 : count + " of these alerts " + (count == 1 ? "is" : "are") + " owned by " + owner.label + "."));
-            const text = alerts.length == 1 ? action.take_one(owner.label) : action.take_many(count, owner.label);
+            const text = alerts.length == 1
+                ? action.take_one(owner.label, state.options)
+                : action.take_many(count, owner.label, state.options);
             warning.appendChild(checkbox(id_prefix + "take_" + owner.key, text, state.taken.has(owner.key), function(checked) {
                 if (checked) {
                     state.taken.add(owner.key);
@@ -195,9 +220,11 @@ var SelectionGuard = (function() {
         // what the button will actually do, once anything needs spelling out
         if (alerts.length > 0 && applied == 0) {
             container.appendChild(element("div", "small text-muted",
-                "Nothing will change unless you take " + (alerts.length == 1 ? "it" : "them") + "."));
+                "Nothing will change unless you " + action.confirm_verb(state.options) + " " +
+                (alerts.length == 1 ? "it" : "them") + " from " +
+                (other_owners.length == 1 ? other_owners[0].label : "their owners") + "."));
         } else if (alerts.length > 1 || other_owners.length) {
-            let outcome = "This will " + action.verb_many(applied);
+            let outcome = "This will " + action.verb_many(applied, state.options);
             if (left_alone > 0) {
                 outcome += " and leave " + left_alone + " owned by " + (other_owners.length == 1 ? other_owners[0].label : "other analysts") + " alone";
             }
@@ -232,7 +259,9 @@ var SelectionGuard = (function() {
     }
 
     // Renders the guard for the given alerts into container.
-    //   options.action     "disposition" or "take"
+    //   options.action     "disposition", "take" or "assign"
+    //   options.new_owner_id, options.new_owner_name  for "assign": who gets the alerts (null
+    //                      unassigns them); alerts they already own need no confirmation
     //   options.submit     the button that runs the action; disabled until it would do something
     //   options.on_deselect(uuids)  unchecks alerts on the page; omit where there is no selection
     function render(container, alerts, options) {

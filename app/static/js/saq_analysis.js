@@ -325,9 +325,12 @@ $(document).ready(function() {
         })();
     });
 
-    $('#btn-assign-ownership').click(function(e) {
-        // add a hidden field to the form and then submit
-        $("#assign-ownership-form").append('<input type="hidden" name="alert_uuid" value="' + current_alert_uuid + '" />').submit();
+    // the page reloads to show the new owner, so a skipped alert is reported before it does
+    setup_assign_ownership_dialog(function() { return [current_alert_description()]; }, null, function(result) {
+        if (result.message) {
+            alert(result.message);
+        }
+        window.location.replace(window.location);
     });
 
     $("#btn-analyze_alert").click(function(e) {

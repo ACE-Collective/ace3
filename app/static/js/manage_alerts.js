@@ -654,16 +654,12 @@ $(document).ready(function() {
         post_set_owner(get_all_checked_alerts(), SelectionGuard.take_owned(guard));
     });
 
-    $("#btn-assign-ownership").click(function(e) {
-        all_alert_uuids = get_all_checked_alerts();
-        if (all_alert_uuids.length == 0) {
-            // XXX do this on the disposition button
-            alert("You must select one or more alerts to assign to a user.");
-            return;
+    // assigning refreshes the list in place, like taking ownership, so the selection stays
+    setup_assign_ownership_dialog(selected_alert_descriptions, deselect_alerts, function(result) {
+        if (result.message) {
+            show_flash_message(result.message);
         }
-
-        // add a hidden field to the form and then submit
-        $("#assign-ownership-form").append('<input type="hidden" name="alert_uuids" value="' + all_alert_uuids.join(",") + '" />').submit();
+        $("#assign_ownership_modal").one("hidden.bs.modal", function() { refresh_manage_list(); }).modal("hide");
     });
 
     $('#btn-limit').click(function(e) {

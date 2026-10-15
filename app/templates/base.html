@@ -474,9 +474,10 @@
 </div>
 
 <!-- assign ownership dialog -->
+{# PUT /api/v2/alerts/owner; the page's script (manage_alerts.js, saq_analysis.js) renders the
+   selection guard for the alerts it assigns and re-renders it when the assignee changes #}
 <div class="modal fade" id="assign_ownership_modal" tabindex="-1" role="dialog" aria-labelledby="assign_ownership_modal_label" aria-hidden="true">
-    <form id="assign-ownership-form" method="POST" action="{{url_for('analysis.assign_ownership')}}">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
                 <h1 class="modal-title fs-5" id="assign_ownership_modal_label">Assign Ownership</h1>
@@ -485,7 +486,7 @@
             <div class="modal-body">
                 <div class="row">
                     <div class="col">
-                        <select name="selected_user_id" class="form-control">
+                        <select id="assign_ownership_user" class="form-control">
                             <option value="">Unassigned</option>
                             {% for user in all_users | sort(attribute='gui_display') %}
                                 {% if user.enabled %}
@@ -495,14 +496,14 @@
                         </select>
                     </div>
                 </div>
+                <div id="assign_ownership_selection_guard" class="mt-3" data-current-user-id="{{ current_user.id }}"></div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-black" data-bs-dismiss="modal">Nevermind</button>
-                <button type="submit" class="btn btn-outline-primary" id="btn-assign-ownership">Assign</button>
+                <button type="button" class="btn btn-outline-primary" id="btn-assign-ownership">Assign</button>
             </div>
         </div>
     </div>
-    </form>
 </div>
 
 <!-- remediation selection dialog -->

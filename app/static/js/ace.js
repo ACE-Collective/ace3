@@ -542,3 +542,44 @@ function take_owned_map(take_owned) {
     });
     return result;
 }
+
+// The Assign Ownership dialog (base.html), for a page that describes the alerts it assigns.
+//   alerts()        the alerts to assign, described for SelectionGuard (selection_guard.js)
+//   on_deselect     as SelectionGuard.render takes it, or null where there is no selection
+//   done(result)    runs with the result of PUT /api/v2/alerts/owner
+// Assigning goes through the same rule as taking: an alert another analyst owns is left alone
+// unless the guard's checkbox for that analyst is ticked. Alerts the assignee already owns need
+// no confirmation, so the guard is drawn again whenever the assignee changes.
+function setup_assign_ownership_dialog(alerts, on_deselect, done) {
+    const modal = document.getElementById("assign_ownership_modal");
+    const select = document.getElementById("assign_ownership_user");
+    const guard = document.getElementById("assign_ownership_selection_guard");
+    const button = document.getElementById("btn-assign-ownership");
+
+    function owner_id() {
+        return select.value === "" ? null : Number(select.value);
+    }
+
+    function render() {
+        SelectionGuard.render(guard, alerts(), {
+            action: "assign",
+            new_owner_id: owner_id(),
+            new_owner_name: select.options[select.selectedIndex].text,
+            submit: button,
+            on_deselect: on_deselect,
+        });
+    }
+
+    $(modal).on("show.bs.modal", render);
+    select.addEventListener("change", render);
+    button.addEventListener("click", function() {
+        aceApi.put("/alerts/owner", {
+            alert_uuids: alerts().map(function(alert) { return alert.uuid; }),
+            owner_id: owner_id(),
+            take_owned: take_owned_map(SelectionGuard.take_owned(guard)),
+        })
+        .then(done)
+        .catch(function(err) { alert(err.message); });
+    });
+}
+

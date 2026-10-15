@@ -5,7 +5,6 @@ from app.analysis.views.navigation import redirect_to, set_page_size, set_page_o
 from app.analysis.views.edit.tag import add_tag, remove_tag
 from app.analysis.views.edit.observable import add_observable
 from app.analysis.views.edit.comment import add_comment, delete_comment
-from app.analysis.views.edit.ownership import assign_ownership
 from app.analysis.views.edit.new import new_alert, new_alert_observable, file
 from app.analysis.views.edit.disposition import set_disposition
 from app.analysis.views.edit.review import review_disposition
