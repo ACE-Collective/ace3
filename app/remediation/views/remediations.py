@@ -4,6 +4,7 @@ from flask import abort, jsonify, render_template, request, session
 from flask_login import current_user
 from sqlalchemy import Column
 from app.auth.permissions import require_permission
+from saq.permissions.logic import user_has_permission
 from app.blueprints import remediation
 from app.remediation.constants import (
     R_DEFAULT_SORT_FILTER,
@@ -130,11 +131,22 @@ def remediate_target(observable_type: str, observable_value: str) -> int:
     return total
 
 
+def _require_remediation_write():
+    """The writes of the mixed /remediation/remediations route need remediation:write; its POST
+    only renders the list, which remediation:read covers."""
+    if not user_has_permission(current_user.id, "remediation", "write"):
+        logging.error("user %s does not have permission remediation.write for URL %s", current_user.id, request.url)
+        abort(403)
+
+
 @remediation.route(
     "/remediation/remediations", methods=["POST", "PUT", "DELETE", "PATCH"]
 )
 @require_permission("remediation", "read")
 def remediations():
+    if request.method != "POST":
+        _require_remediation_write()
+
     if request.method == "POST":
         sort_filter = get_current_sort_filter()
         sort_column = get_sort_filter_column_by_name(sort_filter)
@@ -311,7 +323,7 @@ def remediations_sort():
 
 
 @remediation.route("/remediation/mass_remediate", methods=["POST"])
-@require_permission("remediation", "read")
+@require_permission("remediation", "write")
 def mass_remediate():
     observable_type = request.json["observable_type"]
     observable_values_raw = request.json["observable_values"]

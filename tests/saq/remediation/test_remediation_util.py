@@ -11,6 +11,7 @@ from saq.remediation.target import (
 )
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 from saq.remediation.util import (
+    cancel_remediation,
     cancel_remediations,
     delete_remediations,
     get_distinct_analyst_names,
@@ -606,3 +607,48 @@ def test_get_distinct_analyst_names():
         .first()
     )
     assert user.display_name in names
+
+
+def _remediation_in(status: RemediationStatus, value: str, result: RemediatorStatus | None = None) -> int:
+    target = RemediationTarget("custom", F_TEST, value)
+    remediation_id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
+    remediation.status = status.value
+    remediation.result = result.value if result else None
+    get_db().commit()
+    return remediation_id
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("status", [RemediationStatus.NEW, RemediationStatus.IN_PROGRESS])
+def test_cancel_remediation_stops_one_that_has_not_completed(status):
+    """Unlike cancel_remediations(), a queued remediation is stopped as well as a running one."""
+    remediation_id = _remediation_in(status, f"cancel_one_{status.value}")
+    user_id = get_config().global_settings.automation_user_id
+
+    assert cancel_remediation(remediation_id, user_id) is True
+
+    get_db().expire_all()
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
+    assert (remediation.status, remediation.result) == (RemediationStatus.COMPLETED.value, RemediatorStatus.CANCELLED.value)
+    (history,) = get_db().query(RemediationHistory).filter(RemediationHistory.remediation_id == remediation_id).all()
+    user = get_db().query(User).filter(User.id == user_id).first()
+    assert history.message == f"cancelled by {user.display_name}"
+
+
+@pytest.mark.integration
+def test_cancel_remediation_leaves_a_completed_one_alone():
+    remediation_id = _remediation_in(RemediationStatus.COMPLETED, "cancel_one_completed", RemediatorStatus.SUCCESS)
+
+    assert cancel_remediation(remediation_id) is False
+
+    get_db().expire_all()
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).first()
+    assert remediation.result == RemediatorStatus.SUCCESS.value
+    assert get_db().query(RemediationHistory).filter(RemediationHistory.remediation_id == remediation_id).count() == 0
+
+
+@pytest.mark.integration
+def test_cancel_remediation_unknown_id():
+    assert cancel_remediation(999999) is False
+

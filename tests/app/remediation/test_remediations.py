@@ -678,6 +678,44 @@ class TestRemediationsRoute:
             assert "login" in response.location
 
 
+@pytest.fixture
+def remediation_reader(app):
+    """A user who may view remediations but not change them, logged in."""
+    from saq.database.util.user_management import add_user, delete_user
+    from saq.permissions.user import add_user_permission
+
+    user = add_user(username="remediation_reader", email="remediation_reader@localhost",
+                    display_name="remediation_reader", password="TestPass123!")
+    add_user_permission(user.id, "remediation", "read")
+    with app.test_client() as client:
+        client.post(url_for("auth.login"), data={"username": "remediation_reader", "password": "TestPass123!"})
+        yield client
+    delete_user("remediation_reader")
+
+
+@pytest.mark.integration
+class TestRemediationsWritePermission:
+    """remediation:read shows the Remediations page; changing anything on it needs remediation:write."""
+
+    def test_reader_can_list(self, remediation_reader):
+        response = remediation_reader.post(url_for("remediation.remediations"), json={"filter_values": {}})
+        assert response.status_code == 200
+
+    @pytest.mark.parametrize("method,body", [
+        ("put", {"observable_type": "ipv4", "observable_value": "1.2.3.4"}),
+        ("patch", {"remediation_ids": [1], "action": "cancel"}),
+        ("delete", {"remediation_ids": [1]}),
+    ])
+    def test_reader_cannot_write(self, remediation_reader, method, body):
+        response = getattr(remediation_reader, method)(url_for("remediation.remediations"), json=body)
+        assert response.status_code == 403
+
+    def test_reader_cannot_mass_remediate(self, remediation_reader):
+        response = remediation_reader.post(url_for("remediation.mass_remediate"),
+                                           json={"observable_type": "ipv4", "observable_values": "1.2.3.4"})
+        assert response.status_code == 403
+
+
 class TestRemediationsPageRoute:
     """Test the /remediation/remediations/page route."""
 
