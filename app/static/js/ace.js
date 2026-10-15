@@ -220,10 +220,9 @@ $(document).ready(function() {
     }
 
     function poll() {
-        // redirect: "manual" turns a login-page redirect (session expired/logged out) into
-        // a non-ok opaque response instead of silently handing back HTML for resp.json() to
-        // choke on, so the dot actually clears instead of going stale
-        fetch(count_url, { credentials: "same-origin", redirect: "manual" })
+        // an expired session is a 401 from the API, which clears the dot rather than leaving
+        // it stale
+        fetch(count_url, { credentials: "same-origin" })
             .then(function(resp) {
                 if (!resp.ok) {
                     show_dot(false);

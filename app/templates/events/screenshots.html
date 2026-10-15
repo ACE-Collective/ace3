@@ -3,6 +3,6 @@
 </div>
 <div class="panel-body collapse in" id="collapseScreenshots">
     {% for screenshot in screenshots %}
-    <img width="{{screenshot['scaled_width']}}" height="{{screenshot['scaled_height']}}" src="{{ url_for('analysis.image', alert_uuid=screenshot['alert_id'], observable_uuid=screenshot['observable_id']) }}" class="img-thumbnail" />
+    <img width="{{screenshot['scaled_width']}}" height="{{screenshot['scaled_height']}}" src="/api/v2/alerts/{{ screenshot['alert_id'] }}/observables/{{ screenshot['observable_id'] }}/image" class="img-thumbnail" />
     {% endfor %}
 </div>

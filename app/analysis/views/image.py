@@ -1,59 +1,7 @@
 import logging
-import os
-from flask import make_response, render_template, request
+from flask import render_template, request
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
-from saq.analysis.root import load_file_observable
-from saq.database.pool import get_db
-from saq.gui.alert import GUIAlert
-
-@analysis.route('/image', methods=['GET'])
-@require_permission('alert', 'read')
-def image():
-    alert_uuid = request.values.get("alert_uuid")
-    observable_uuid = request.values.get("observable_uuid")
-
-    if not alert_uuid:
-        logging.info("attempted to display image but alert_uuid is missing")
-        return "alert_uuid is missing", 400
-
-    if not observable_uuid:
-        logging.info("attempted to display image but observable_uuid is missing")
-        return "observable_uuid is missing", 400
-
-    alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert_uuid).one_or_none()
-
-    if not alert:
-        logging.info(f"attempted to display image but alert with uuid {alert_uuid} does not exist")
-        return "unknown alert", 404
-
-    # deliberately not alert.root_analysis: that property builds the entire analysis
-    # tree, and an alert page fires one of these requests per image it renders
-    _file = load_file_observable(alert.storage_dir, observable_uuid)
-
-    if not _file:
-        logging.info(f"attempted to display file observable with uuid {observable_uuid} as image but file observable does not exist")
-        return "unknown file", 404
-
-    if not os.path.exists(_file.path):
-        logging.info(f"attempted to display {_file.path} as image but file does not exist")
-        return "unknown file", 404
-
-    # this route feeds <img> tags, but its URL can also be opened as a page: a file from an alert
-    # served as anything other than an image, or an SVG allowed to run its scripts, would render
-    # on the GUI origin with the analyst's session
-    if not _file.is_image:
-        logging.info(f"attempted to display {_file.path} as image but it is {_file.mime_type}")
-        return "not an image", 404
-
-    with open(_file.path, 'rb') as fp:
-        result = fp.read()
-
-    response = make_response(result)
-    response.headers['Content-Type'] = _file.mime_type
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Content-Security-Policy'] = 'sandbox'
-    return response
 
 @analysis.route('/image_full', methods=['GET'])
 @require_permission('alert', 'read')

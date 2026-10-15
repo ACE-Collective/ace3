@@ -3,7 +3,6 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import COMMASPACE, formatdate
-import json
 import logging
 import os
 import smtplib
@@ -176,19 +175,6 @@ def download_file():
         response.headers['Content-Type'] = 'text/plain; charset=utf-8'
         return response
     return "", 404
-
-@analysis.route('/get_alert_meta', methods=['GET'])
-@require_permission('alert', 'read')
-def get_alert_metadata():
-    alert = get_current_alert()
-    if alert is None:
-        result = {}
-    else:
-        result = alert.get_metadata_json()
-
-    response = make_response(json.dumps(result))
-    response.mimetype = 'application/json'
-    return response
 
 @analysis.route('/email_file', methods=["POST"])
 @require_permission('alert', 'read')

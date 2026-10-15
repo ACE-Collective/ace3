@@ -983,11 +983,10 @@ function update_relative_date_hint(input) {
     var value = el.val().trim();
     if (value === '') { hint.text(''); return; }
 
-    const params = new URLSearchParams({ value: value });
-    fetch('resolve_date_range?' + params.toString(), { credentials: 'same-origin' })
-    .then(function(resp){ return resp.ok ? resp.json() : { text: '' }; })
-    .then(function(data){ hint.text(data.text || 'not a valid time range'); })
-    .catch(function(){ hint.text(''); });
+    aceApi.get("/alerts/date-range" + aceApi.query({ value: value, tz: el.attr('data-tz') || 'UTC' }))
+    .then(function(data){ hint.text(data.text); })
+    // the API answers 422 for a value it cannot parse
+    .catch(function(){ hint.text('not a valid time range'); });
 }
 
 function toggle_include_exclude(filter_row_unique_id) {

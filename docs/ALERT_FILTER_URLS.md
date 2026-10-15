@@ -126,6 +126,11 @@ The listing is scoped to the alerts this node shows, like the manage page, and d
 test alerts out. Pages are keyset pages: follow `next_cursor` until it is `null`, and no alert
 is skipped or repeated while new ones arrive. Rows come in `id` order.
 
+`GET /api/v2/alerts/count` takes the same `f` and `tz` and returns `{"count": N}`, the number of
+alerts the listing returns. `GET /api/v2/alerts/date-range?value=-7d&tz=America/Chicago` returns
+the window a date value means right now: `start` and `end`, and the `text` the manage page shows
+under the relative date input. A value that does not parse is a 422.
+
 `changed_since=<ISO time>` returns only the alerts whose row changed at or after that time,
 ordered by `(updated_at, id)`. `alerts.updated_at` is maintained by the database on every
 update of the row (a disposition, an owner, a comment, an analysis sync all rotate the row). A

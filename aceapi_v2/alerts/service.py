@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, or_, select, text
 from sqlalchemy.orm import aliased
 
+from saq.analysis.root import load_file_observable
 from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
 from saq.database.model import (
     Alert,
@@ -135,6 +136,21 @@ def get_alert_version(alert_uuid: str) -> str:
         raise HTTPException(status_code=404, detail="alert not found")
 
     return version
+
+
+def get_alert_meta(alert_uuid: str) -> dict:
+    """The ownership, disposition, lock and version state the alert page polls for.
+
+    Database state only: the alert is not loaded from disk, and an archived alert still has it.
+    """
+    if not is_uuid(alert_uuid):
+        raise HTTPException(status_code=400, detail="invalid alert UUID")
+
+    alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert_uuid).one_or_none()
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+
+    return alert.get_metadata_json()
 
 
 def get_alert_json(alert_uuid: str) -> dict:
@@ -335,6 +351,23 @@ def resolve_alert_log_path(alert_uuid: str) -> str:
             status_code=404, detail="saq.log not present for this alert"
         )
     return log_path
+
+
+def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
+    """Return (path, mime type) of a file observable of the alert that is an image.
+
+    Only that one observable is loaded, never the analysis tree: the alert page fetches one of
+    these per image it shows. The URL can also be opened as a page, so a file that is not an
+    image is a 404 rather than something the browser would render on the GUI origin.
+    """
+    file_observable = load_file_observable(_resolve_alert_storage_path(alert_uuid), observable_uuid)
+    if file_observable is None or not os.path.exists(file_observable.path):
+        raise HTTPException(status_code=404, detail="unknown file")
+
+    if not file_observable.is_image:
+        raise HTTPException(status_code=404, detail="not an image")
+
+    return file_observable.path, file_observable.mime_type
 
 
 def _add_observable_to_alert(
@@ -617,6 +650,11 @@ def fetch_alert_page_ids(
         next_cursor = encode_listing_cursor(listing.order, last_id, last_updated_at)
 
     return [alert_id for alert_id, _ in keys], next_cursor
+
+
+def count_alert_listing(listing: AlertListing) -> int:
+    """How many alerts the listing matches."""
+    return get_db().execute(select(func.count()).select_from(listing.statement.subquery())).scalar_one()
 
 
 def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:

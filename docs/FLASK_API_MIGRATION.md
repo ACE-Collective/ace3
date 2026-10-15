@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **23 API-shaped candidates** out of 92 routes (16 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **19 API-shaped candidates** out of 88 routes (12 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,7 +33,7 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **GUI Tier 1 remainder**: `get_alert_meta`, `resolve_date_range`, `reset_filter_alert_count`, `image`, `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
+1. **GUI Tier 1 remainder**: `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
 2. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
 3. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
 4. **GUI Tier 2** observable actions.
@@ -342,6 +342,26 @@ Notes:
 - `aceapi/analysis.py` holds `submit` alone. Its tests read what a submission saved from storage (`RootAnalysis.load()`, encoded with the legacy `_JSONEncoder`) instead of through the deleted routes, so their assertions are unchanged; the `ace_api` client test of `Analysis.add_file` does the same.
 - `tests/aceapi/test_engine_node_to_node.py::test_automation_scope_still_denies_out_of_scope_endpoints` probed `GET /api/analysis/<uuid>`. No Flask route requires `alert:read` now, so it probes `GET /api/v2/alerts/{uuid}` with the same config key, dispatched on the shared event loop like `tests/conftest.py::_dispatch_v2`.
 
+### GUI reads → `aceapi_v2/alerts/`
+
+| Legacy Flask URL (GUI)                       | v2 URL                                                          |
+|----------------------------------------------|-----------------------------------------------------------------|
+| `GET /get_alert_meta?direct=<uuid>`          | `GET /api/v2/alerts/{alert_uuid}/meta`                          |
+| `GET /image?alert_uuid=&observable_uuid=`    | `GET /api/v2/alerts/{alert_uuid}/observables/{observable_uuid}/image` |
+| `GET /reset_filter_alert_count`              | `GET /api/v2/alerts/count?f=...` (net-new, general)             |
+| `GET /resolve_date_range?value=`             | `GET /api/v2/alerts/date-range?value=&tz=`                      |
+
+Four read-only Tier 1 routes, all in heavy use: the alert page polls `meta` every five seconds, and the manage page's browser tab polls the count, so these two are the most-requested routes the GUI has. `/image_full` stays in Flask (it renders a page) and embeds the v2 image.
+
+Module: `aceapi_v2/alerts/{router,service,schemas}.py`. Tests: `tests/aceapi_v2/alerts/{test_meta,test_image,test_count,test_date_range}.py`.
+
+Notes:
+- **`meta`** is `GUIAlert.get_metadata_json()`, read through the sync session in a thread without loading the alert from disk. An unknown alert is a 404 where the Flask route answered `{}`; the poll counts it as a failed check.
+- **`count`** takes the same `f` share-link filters and `tz` as `GET /alerts` and counts what it lists, scoped the same way, so it closes the gap that kept this route in Flask (`AlertListPage` has no total). The tab's URL is built by `reset_filter_count_url()` (`app/analysis/views/session/filters.py`), which encodes `_default_filters()`, so the "Reset" filter is still defined once. `tests/aceapi_v2/alerts/test_count.py::test_reset_filter_count_matches_the_gui` pins that the API's count of that filter equals the GUI's own `filter_query.count_alerts()`.
+- **`date-range`** returns `start` and `end` as well as the display `text` (`saq/util/relative_time.py::format_date_range`, shared with the `resolve_date_range` template filter). The Flask route read the analyst's timezone from `current_user`; the API takes `tz` like `GET /alerts`, and the relative date input carries `data-tz` for the page to pass, as the Signatures pages do. A value that does not parse is a 422, not `200 {"text": ""}`.
+- **`image`** keeps the Flask route's guards: only an image file observable is served (anything else is a 404), with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, and only that one observable is loaded, never the analysis tree. It streams through `ImageFileResponse` (`image/*` in the schema, the file's own type on the wire) and is `Cache-Control: private` rather than the GUI blueprint's default `public, max-age=0`. A malformed alert uuid is a 400 and an archived alert a 410, as on the other `/alerts/{alert_uuid}` routes.
+- The templates that embed images (`analysis/file_observable.html`, `analysis/image_full.html`, `events/screenshots.html`) write the v2 path directly, like the alert page's download and log links.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -366,7 +386,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 92** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 88** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -385,7 +405,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    51 |        9 | 14 (7 T1 + 7 T2)     | 28 (17 B + 11 C)    |
+| `analysis`        |    47 |        9 | 10 (3 T1 + 7 T2)     | 28 (17 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     7 |        2 |                    5 |                   0 |
 | `file_collection` |     6 |        2 |                    4 |                   0 |
@@ -393,23 +413,19 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **92**|   **29** | **23 (16 T1 + 7 T2)**|              **40** |
+| **Total**         | **88**|   **29** | **19 (12 T1 + 7 T2)**|              **40** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), and `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), and `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry).
 
 ### `analysis` blueprint
 
-51 routes total: 9 template, 14 candidates (7 Tier 1 + 7 Tier 2), 17 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+47 routes total: 9 template, 10 candidates (3 Tier 1 + 7 Tier 2), 17 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 **Tier 1:**
 
 | Method(s)          | URL                         | Function                   | file:line                 | Returns | Callers / notes |
 |--------------------|-----------------------------|----------------------------|---------------------------|---------|-----------------|
-| GET                | `/export_alerts_to_csv`     | `export_alerts_to_csv`     | `export.py:27`            | CSV     | `analysis/manage.html:16` (`url_for` link). Overlaps `GET /api/v2/alerts/export/csv`, which takes `f=` share-link filters rather than session state and has no Comments column; close those gaps and repoint the link. |
-| GET                | `/get_alert_meta`           | `get_alert_metadata`       | `export.py:205`           | JSON    | `saq_analysis.js:86` (`check_alert_meta` poll). `GET /api/v2/alerts/{uuid}` overlaps only partly: its ETag/304 poll is cheap, but it builds the whole tree when the alert changes. |
-| GET                | `/image`                    | `image`                    | `image.py:10`             | FILE    | `analysis/file_observable.html:47`, `analysis/image_full.html:2`, `events/screenshots.html:6` (`<img src>`). Serves only image types, with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, because its URL can be opened as a page; keep both in v2. |
-| GET                | `/resolve_date_range`       | `resolve_date_range`       | `edit/filters.py:199`     | JSON    | `manage_alerts.js:987`. Pure function. |
-| GET                | `/reset_filter_alert_count` | `reset_filter_alert_count` | `manage.py:386`           | JSON    | `base.html:7` (data attribute) read by `ace.js:146`. `AlertListPage` has no total, so there is no v2 equivalent yet. |
+| GET                | `/export_alerts_to_csv`     | `export_alerts_to_csv`     | `export.py:26`            | CSV     | `analysis/manage.html:16` (`url_for` link). Overlaps `GET /api/v2/alerts/export/csv`, which takes `f=` share-link filters rather than session state and has no Comments column; close those gaps and repoint the link. |
 | PUT, DELETE, PATCH | `/remediation_targets`      | `remediation_targets`      | `remediation.py:9`        | **text** | `remediation.js:8` (opened from `manage_alerts.js:358`, `saq_analysis.js:327`, `analysis/index.html:58`). **Mixed** — POST returns a template and stays. PATCH returns inside its loop, so it acts on the first target only. Every verb, writes included, is gated by `remediation:read`. |
 | POST               | `/set_owner`                | `set_owner`                | `edit/ownership.py:71`    | 204     | `manage_alerts.js:55`, `saq_analysis.js:832`. Database only (`take_ownership`), but reports skipped alerts through `flash()` and sets `session['checked']`. |
 
@@ -417,8 +433,8 @@ Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `
 
 | Method(s) | URL                                             | Function                                        | file:line                                    | Returns | Callers / notes |
 |-----------|-------------------------------------------------|-------------------------------------------------|----------------------------------------------|---------|-----------------|
-| GET       | `/download_file`                                | `download_file`                                 | `export.py:94`                               | FILE / text | `analysis/observable_actions/{download_file_as_zip,view_as_hex,view_as_text}.html`. Modes `zip`, `hex` and `text`. There is no mode that serves the file as-is: **Open** (`view`, `html`) and **Download File** (`raw`) were removed rather than fixed, because serving an alert's file inline runs a malicious HTML or JS file on the GUI origin. Don't add one back in v2. |
-| GET       | `/html_details`                                 | `html_details`                                  | `export.py:301`                              | text/html data | `analysis/custom/ews.html:4` (iframe). Serves a `details` field raw. See [Known defects](#known-defects-in-unmigrated-routes) 2. |
+| GET       | `/download_file`                                | `download_file`                                 | `export.py:93`                               | FILE / text | `analysis/observable_actions/{download_file_as_zip,view_as_hex,view_as_text}.html`. Modes `zip`, `hex` and `text`. There is no mode that serves the file as-is: **Open** (`view`, `html`) and **Download File** (`raw`) were removed rather than fixed, because serving an alert's file inline runs a malicious HTML or JS file on the GUI origin. Don't add one back in v2. |
+| GET       | `/html_details`                                 | `html_details`                                  | `export.py:262`                              | text/html data | `analysis/custom/ews.html:4` (iframe). Serves a `details` field raw. See [Known defects](#known-defects-in-unmigrated-routes) 2. |
 | POST      | `/observable_action_check_for_clickers`         | same                                            | `edit/observable_action/clicker.py:25`       | JSON    | `observable_actions/check_for_clickers.html:4`. Lock, load, delete old analysis, sync, add workload. |
 | POST      | `/observable_action_open_clicker_search_splunk` | same                                            | `edit/observable_action/clicker.py:91`       | JSON    | `observable_actions/open_clicker_search_splunk.html:3`. Loads without a lock; read-only. |
 | POST      | `/observable_action`                            | `observable_action`                             | `edit/observable_action/legacy.py:18`        | text    | `observable_actions/{collect_file,url_crawl,file_render}.html`. Legacy multi-action (`mark_as_suspect`, `collect_file`, `url_crawl`, `file_render`); lock, load, sync, schedule or add workload. |

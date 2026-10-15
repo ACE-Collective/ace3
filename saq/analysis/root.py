@@ -942,8 +942,8 @@ def load_file_observable(storage_dir: str, observable_uuid: str) -> Optional["Fi
 
     load_root() rehydrates every observable and analysis in the alert, which on a large
     one costs hundreds of milliseconds -- wasted work for a caller that only needs one
-    file's location on disk (see app/analysis/views/image.py, which the alert page hits
-    once per image it renders).
+    file's location on disk (see aceapi_v2/alerts/service.py::resolve_alert_image, which the
+    alert page hits once per image it renders).
 
     The returned observable is detached: it has a file manager, so path/exists/mime_type
     work, but it is not attached to a RootAnalysis and its analysis tree is not built.
