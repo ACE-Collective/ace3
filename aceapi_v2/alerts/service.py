@@ -9,7 +9,7 @@ import os
 import shutil
 import tempfile
 import uuid as uuidlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -20,7 +20,21 @@ from sqlalchemy import Select, and_, func, or_, select, text
 from sqlalchemy.orm import aliased
 
 from saq.analysis.root import load_file_observable
-from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
+from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
+from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
+from saq.configuration.config import get_analysis_module_config
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    DIRECTIVE_CLICKER_DETECTION,
+    DIRECTIVE_COLLECT_FILE,
+    DIRECTIVE_CRAWL,
+    DIRECTIVE_RENDER,
+    F_FILE,
+    F_FILE_LOCATION,
+    F_FQDN,
+    F_URL,
+    VALID_DIRECTIVES,
+)
 from saq.database.model import (
     Alert,
     Comment,
@@ -35,7 +49,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.database.util.alert import change_alert_owner, describe_skipped, node_scope_locations, touch_alerts
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.database.util.workload import add_workload
+from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
@@ -54,6 +68,7 @@ from aceapi_v2.alerts.schemas import (
     AlertListRow,
     AlertRow,
     BulkAddObservableResult,
+    ClickerSearch,
     SetOwnerResult,
 )
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip, safe_file_name
@@ -62,6 +77,7 @@ from aceapi_v2.sync import run_db_in_thread
 if TYPE_CHECKING:
     # saq.observables.file imports the presenters, which import aceapi_v2, so a runtime import
     # here is circular
+    from saq.analysis.observable import Observable
     from saq.observables.file import FileObservable
 
 logger = logging.getLogger(__name__)
@@ -464,6 +480,109 @@ def create_encrypted_file_zip(alert_uuid: str, observable_uuid: str) -> tuple[st
     dest = os.path.join(get_temp_dir(), f"{uuidlib.uuid4()}.zip")
     add_to_encrypted_zip(dest, os.path.dirname(path), os.path.basename(path), f"alert {alert_uuid} file {observable_uuid}")
     return dest, f"{safe_file_name(os.path.basename(path))}.zip"
+
+
+#
+# analysis an analyst requests for one observable (the alert page's observable actions)
+#
+
+# the analysis module whose configuration holds the Splunk clicker searches
+CLICKER_SPLUNK_MODULE_NAME = "clicker_detection_splunk"
+
+
+def _request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
+                                 change: Callable[["Observable"], None]) -> str:
+    """Change one observable of the alert (add the directive an analysis module waits for), and
+    queue the alert for the analysis the analyst asked for. Returns the observable as text, for
+    the audit log.
+
+    request_analyst_analysis() puts the alert back in correlation mode and past the stop on a
+    dispositioned alert, so the requested analysis runs on an alert the analyst already worked.
+    404 for an unknown alert or observable, 422 for an observable of another type, and 409 while
+    the engine, or anything else, holds the alert's lock."""
+    alert = _resolve_alert(alert_uuid)
+    lock_uuid = str(uuidlib.uuid4())
+    if not acquire_lock(str(alert.uuid), lock_uuid):
+        raise HTTPException(status_code=409, detail="the alert is being analyzed; try again in a moment")
+
+    try:
+        if not alert.load():
+            raise HTTPException(status_code=500, detail="unable to load the alert")
+
+        observable = alert.root_analysis.get_observable(observable_uuid)
+        if observable is None:
+            raise HTTPException(status_code=404, detail="observable not found")
+
+        if observable.type not in valid_types:
+            raise HTTPException(status_code=422, detail=f"this applies to {' and '.join(valid_types)} observables, not {observable.type}")
+
+        change(observable)
+        request_analyst_analysis(alert.root_analysis)
+        alert.sync()
+        add_workload(alert.root_analysis)
+        return str(observable)
+    finally:
+        release_lock(str(alert.uuid), lock_uuid)
+
+
+def request_file_collection(alert_uuid: str, observable_uuid: str) -> str:
+    """Collect File: the file collectors fetch the file at this location from its host."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_FILE_LOCATION,),
+        lambda observable: observable.add_directive(DIRECTIVE_COLLECT_FILE))
+
+
+def request_render(alert_uuid: str, observable_uuid: str) -> str:
+    """Render: phishkit renders the file (HTML and PDF) and takes a screenshot."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_FILE,),
+        lambda observable: observable.add_directive(DIRECTIVE_RENDER))
+
+
+def request_crawl(alert_uuid: str, observable_uuid: str) -> str:
+    """Crawl: phishkit downloads the URL's content and takes a screenshot."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_URL,),
+        lambda observable: observable.add_directive(DIRECTIVE_CRAWL))
+
+
+def _check_for_clickers(observable: "Observable") -> None:
+    observable.add_directive(DIRECTIVE_CLICKER_DETECTION)
+    # An analyst asking again wants a fresh check. The engine skips a module whose analysis
+    # already exists (saq/modules/base_module.py accepts()), so the earlier clicker analyses are
+    # dropped. delete_analysis also prunes what the old analysis owned (its detection points,
+    # observables and detail files); the sync that follows reconciles the detection_points table.
+    for existing in list(observable.all_analysis):
+        if type(existing) in REGISTERED_CLICKER_PROVIDERS:
+            observable.delete_analysis(existing)
+
+
+def request_clicker_check(alert_uuid: str, observable_uuid: str) -> str:
+    """Check for clickers: every configured clicker module looks for anyone who clicked the URL or
+    visited the domain."""
+    return _request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
+
+
+def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearch]:
+    """The Splunk searches the clicker check would run for the observable, as Splunk web URLs, so
+    an analyst can run them without the check. Empty when none is configured for its type."""
+    alert = _resolve_alert(alert_uuid)
+    if not alert.load():
+        raise HTTPException(status_code=500, detail="unable to load the alert")
+
+    observable = alert.root_analysis.get_observable(observable_uuid)
+    if observable is None:
+        raise HTTPException(status_code=404, detail="observable not found")
+
+    try:
+        module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
+    except Exception:
+        # the Splunk clicker module is not configured on this node
+        return []
+
+    config = load_clicker_config(module_config.config_path)
+    return [ClickerSearch(name=search["name"], url=search["url"])
+            for search in build_splunk_clicker_search_urls(config, observable, api_name=module_config.api_name)]
 
 
 def _add_observable_to_alert(

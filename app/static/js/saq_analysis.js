@@ -664,6 +664,16 @@ $(document).ready(function() {
 });
 
 // attachment downloading
+// Asks for analysis of one observable of the alert (an observable action that adds a directive
+// and requeues the alert: collect-file, render, crawl, check-for-clickers, under
+// /api/v2/alerts/{uuid}/observables/{id}/), then reloads the alert page to show it queued. A
+// locked alert is a 409, reported like any other refusal.
+function request_observable_analysis(alert_uuid, observable_uuid, action, reload_url) {
+    aceApi.post("/alerts/" + encodeURIComponent(alert_uuid) + "/observables/" + encodeURIComponent(observable_uuid) + "/" + action)
+        .then(function() { window.location = reload_url; })
+        .catch(function(err) { alert(err.message); });
+}
+
 var $download_element;
 
 function download_url(url) {

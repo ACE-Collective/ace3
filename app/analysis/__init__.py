@@ -14,8 +14,6 @@ from app.analysis.views.edit.filters import (
 )
 from app.analysis.views.observables import observables
 from app.analysis.views.prune import toggle_prune, toggle_prune_volatile
-from app.analysis.views.edit.observable_action.legacy import observable_action
-from app.analysis.views.edit.observable_action.clicker import observable_action_check_for_clickers, observable_action_open_clicker_search_splunk
 from app.analysis.views.edit.event import add_to_event, load_more_events
 from app.analysis.views.search import search, search_similar
 from app.analysis.views.misc import upload_file, analyze_alert

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated
 
 import pytz
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, Security
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, Security, status
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
@@ -32,10 +32,13 @@ from aceapi_v2.alerts.schemas import (
     AlertListRow,
     BulkAddObservableRequest,
     BulkAddObservableResult,
+    ClickerSearch,
     DateRange,
+    ObservableAnalysisRequested,
     SetOwnerRequest,
     SetOwnerResult,
 )
+from aceapi_v2.schemas.base import ListResponse
 from aceapi_v2.detection_points import service as detection_points_service
 from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
 from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
@@ -440,6 +443,82 @@ async def download_observable_file(
         filename=file_name,
         background=BackgroundTask(_safe_unlink, zip_path),
     )
+
+
+#
+# analysis an analyst requests for one observable: each adds the directive an analysis module
+# waits for, and queues the alert in correlation mode, even when it has been dispositioned. A 409
+# means the alert is locked (being analyzed); the analyst tries again.
+#
+
+async def _request_analysis(request, alert_uuid: str, observable_uuid: str, auth: ApiAuthResult, what: str,
+                            message: str) -> ObservableAnalysisRequested:
+    observable = await run_db_in_thread(request, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s requested %s for observable %s in alert %s", auth.auth_name, what, observable, alert_uuid)
+    return ObservableAnalysisRequested(message=message)
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/collect-file",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def collect_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Collect the file at a file_location observable from its host (the file collectors)."""
+    return await _request_analysis(service.request_file_collection, alert_uuid, observable_uuid, auth,
+                                   "file collection", "File collection requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/render",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def render_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Render a file observable (HTML or PDF) and take a screenshot of it (phishkit)."""
+    return await _request_analysis(service.request_render, alert_uuid, observable_uuid, auth,
+                                   "a render", "Render requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/crawl",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def crawl_url(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Download a url observable's content and take a screenshot of it (phishkit)."""
+    return await _request_analysis(service.request_crawl, alert_uuid, observable_uuid, auth,
+                                   "a crawl", "Crawl requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/check-for-clickers",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def check_for_clickers(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Look for anyone who clicked a url or visited an fqdn, with every configured clicker module.
+    Earlier clicker results on the observable are replaced."""
+    return await _request_analysis(service.request_clicker_check, alert_uuid, observable_uuid, auth,
+                                   "a clicker check", "Clicker check requested.")
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/clicker-searches", response_model=ListResponse[ClickerSearch])
+async def get_clicker_searches(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "read"))],
+) -> ListResponse[ClickerSearch]:
+    """The Splunk searches the clicker check runs for this observable, as Splunk web URLs, to run
+    by hand. Empty when none is configured for its type."""
+    searches = await run_db_in_thread(service.clicker_searches, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s opened %d Splunk clicker searches for observable %s in alert %s",
+                auth.auth_name, len(searches), observable_uuid, alert_uuid)
+    return ListResponse(data=searches)
 
 
 @router.get("/{alert_uuid}/logs", response_class=TextFileResponse)

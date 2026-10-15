@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **3 API-shaped candidates** out of 69 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **no API-shaped candidates left** out of 66 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,9 +33,8 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **GUI Tier 2** observable actions.
-2. **`/engine` and `/analysis/submit`**: node to node, so they need a rolling-upgrade plan.
-3. **`/hunt/validate`**, last, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
+1. **`/engine` and `/analysis/submit`**: node to node, so they need a rolling-upgrade plan.
+2. **`/hunt/validate`**, last, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -464,6 +463,27 @@ Notes:
 - **Zip** uses `aceapi_v2/common/archive.py` (password `infected`), is deleted after it is sent, and is named after the file through `safe_file_name()` rather than the raw file name.
 - All three log an `AUDIT:` line; the permission is `alert:read`, as before.
 
+### Observable actions → `aceapi_v2/alerts/`
+
+| Legacy Flask URL (GUI)                                            | v2 URL                                                                      |
+|-------------------------------------------------------------------|-----------------------------------------------------------------------------|
+| `POST /observable_action` `collect_file` (Collect File)           | `POST /api/v2/alerts/{uuid}/observables/{id}/collect-file` *(202)*          |
+| `POST /observable_action` `file` (render a screenshot)            | `POST /api/v2/alerts/{uuid}/observables/{id}/render` *(202)*                |
+| `POST /observable_action` `crawl` (crawl a URL)                   | `POST /api/v2/alerts/{uuid}/observables/{id}/crawl` *(202)*                 |
+| `POST /observable_action_check_for_clickers`                      | `POST /api/v2/alerts/{uuid}/observables/{id}/check-for-clickers` *(202)*    |
+| `POST /observable_action_open_clicker_search_splunk`              | `GET /api/v2/alerts/{uuid}/observables/{id}/clicker-searches`               |
+
+The four writes share one helper (`_request_observable_analysis` in `aceapi_v2/alerts/service.py`): lock the alert, add the directive an analysis module waits for to the observable, and queue the alert through `request_analyst_analysis()`. They need `observable:write`, the clicker searches `observable:read`, and each logs an `AUDIT:` line. The alert page's templates call them through `request_observable_analysis()` in `saq_analysis.js`.
+
+Notes:
+- **A locked alert is a 409**, "being analyzed; try again in a moment". All four production 500s of the clicker check in six months were this: an engine worker, or the search embedding worker, held the alert's lock for a second, and the route answered 500 without logging why.
+- **The 500s of `/observable_action`** (18 in six months, the last in July) were the render action passing the `GUIAlert` rather than its `RootAnalysis` to `add_workload()`, fixed in `e0542bb9` before this change.
+- **Collect File works on a dispositioned alert.** It requeued the alert with `schedule()` in whatever mode it was in, and the `dispositioned` mode runs no file collection module, so on an alert an analyst had already worked it did nothing. It now goes through `request_analyst_analysis()` like the others.
+- **Render adds the `render` directive.** Phishkit renders a file only when it carries that directive (or is an email attachment); the Flask action added nothing and only requeued the alert, so for most files it did nothing. Render applies to file observables; phishkit renders HTML and PDF.
+- **URL crawl is back in the menu.** It was listed only in `URLObservable.jinja_available_actions` (known defect 1), so no URL observable offered it; it is now registered with `register_observable_action`, next to the clicker actions.
+- **`mark_as_suspect` is gone.** No template sent it, and it did nothing.
+- An observable of a type the action does not apply to is a 422. The clicker searches are an empty list when the Splunk clicker module is not configured, or has no search for the type.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -488,7 +508,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 69** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 66** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -507,7 +527,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    39 |        9 |  3 (0 T1 + 3 T2)     | 27 (16 B + 11 C)    |
+| `analysis`        |    36 |        9 |                    0 | 27 (16 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     1 |        1 |                    0 |                   0 |
 | `file_collection` |     1 |        1 |                    0 |                   0 |
@@ -515,23 +535,15 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **69**|   **27** |  **3 (0 T1 + 3 T2)** |              **39** |
+| **Total**         | **66**|   **27** |                **0** |              **39** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), and `/download_file` (see the file views appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), `/download_file` (see the file views appendix entry), and `/observable_action`, `/observable_action_check_for_clickers` and `/observable_action_open_clicker_search_splunk` (see the observable actions appendix entry).
 
 ### `analysis` blueprint
 
-39 routes total: 9 template, 3 candidates (all Tier 2), 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+36 routes total: 9 template, 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
-**Tier 1:** none left; see the appendix entries for where they went.
-
-**Tier 2:**
-
-| Method(s) | URL                                             | Function                                        | file:line                                    | Returns | Callers / notes |
-|-----------|-------------------------------------------------|-------------------------------------------------|----------------------------------------------|---------|-----------------|
-| POST      | `/observable_action_check_for_clickers`         | same                                            | `edit/observable_action/clicker.py:25`       | JSON    | `observable_actions/check_for_clickers.html:4`. Lock, load, delete old analysis, sync, add workload. |
-| POST      | `/observable_action_open_clicker_search_splunk` | same                                            | `edit/observable_action/clicker.py:91`       | JSON    | `observable_actions/open_clicker_search_splunk.html:3`. Loads without a lock; read-only. |
-| POST      | `/observable_action`                            | `observable_action`                             | `edit/observable_action/legacy.py:18`        | text    | `observable_actions/{collect_file,url_crawl,file_render}.html`. Legacy multi-action (`mark_as_suspect`, `collect_file`, `url_crawl`, `file_render`); lock, load, sync, schedule or add workload. |
+No candidates left, in either tier; see the appendix entries for where they went.
 
 ### `events` blueprint
 
@@ -563,4 +575,4 @@ This is the shape every GUI blueprint should converge on: Flask renders GET page
 
 Found while surveying the routes above. They are to be fixed separately, not as part of a migration, but a migration of one of these routes must not carry its defect over. "Verified" means reproduced against the dev instance; "code" means read from the source.
 
-1. **Unreachable action lists** (code). The `jinja_available_actions` properties in `saq/observables/` are referenced by no template: the alert page builds its menus in the presenters (`saq/analysis/presenter/observable_presenter.py`).
+1. **Unreachable action lists** (code). The `jinja_available_actions` properties in `saq/observables/` are referenced by no template: the alert page builds its menus in the presenters (`saq/analysis/presenter/observable_presenter.py`). An action listed only there never reaches a menu; URL crawl was one, until it was registered with `register_observable_action` (see the observable actions appendix entry).

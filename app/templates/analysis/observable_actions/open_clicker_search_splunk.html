@@ -1,18 +1,13 @@
 <script type="text/javascript">
     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-        $.post("{{ url_for('analysis.observable_action_open_clicker_search_splunk') }}",
-                {"observable_uuid":"{{_observable.uuid}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
-                function(data) {
-                    if (data && data.urls && data.urls.length) {
-                        data.urls.forEach(function(s) { window.open(s.url, '_blank', 'noopener'); });
-                    } else {
-                        alert(data && data.message ? data.message : "No Splunk clicker search is configured for this observable type.");
-                    }
-                }, "json"
-        ).fail(function(jqXHR, textStatus) {
-            var msg = "Unable to build Splunk search";
-            try { msg += ": " + (jqXHR.responseJSON && jqXHR.responseJSON.message ? jqXHR.responseJSON.message : textStatus); } catch (e) {}
-            alert(msg);
-        });
+        aceApi.get("/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/clicker-searches")
+            .then(function(result) {
+                if (result.data.length === 0) {
+                    alert("No Splunk clicker search is configured for this observable type.");
+                    return;
+                }
+                result.data.forEach(function(search) { window.open(search.url, '_blank', 'noopener'); });
+            })
+            .catch(function(err) { alert("Unable to build the Splunk search: " + err.message); });
     });
 </script>

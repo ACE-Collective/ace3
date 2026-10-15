@@ -858,6 +858,20 @@ def test_the_observable_menu_starts_with_an_action(root_analysis):
     assert not any("whitelist" in (action.name or "") for action in actions)
 
 
+@pytest.mark.unit
+def test_a_url_can_be_crawled(root_analysis):
+    """URL observables offer the crawl action (phishkit), next to the clicker actions."""
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.constants import ACTION_CHECK_FOR_CLICKERS, ACTION_URL_CRAWL, F_URL
+
+    observable = root_analysis.add_observable_by_spec(F_URL, "https://evil.example/login")
+    presenter = create_observable_presenter(observable, detection_status=False, is_interesting=False)
+
+    action_names = [action.name for action in presenter.available_actions]
+    assert ACTION_URL_CRAWL in action_names
+    assert ACTION_CHECK_FOR_CLICKERS in action_names
+
+
 #
 # Batched disposition history.
 #
