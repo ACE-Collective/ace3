@@ -83,8 +83,3 @@ def initialize_dispositions():
         raise ValueError(
             f"service_engine.stop_analysis_on_dispositions names dispositions that are not "
             f"configured in dispositions: {', '.join(unknown)}")
-
-    # Logged at WARNING on every start on purpose: labels are derived from this map when they
-    # are read, so a changed map relabels every detection at once (docs/SVS.md, Logging contract).
-    classification = dict(get_config().disposition_classification)
-    logging.warning("disposition classification in effect", extra={"disposition_classification": classification})
