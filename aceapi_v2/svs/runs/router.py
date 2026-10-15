@@ -4,8 +4,10 @@ The launcher's lifecycle calls: register a run, start it, report how the test ex
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
-Reading runs, each run's event log and result, and the event and result feeds over every run needs
-svs:run_read; the runs screen's filters (`f=`) apply to the runs and to both feeds.
+Reading runs, each run's event log, result and attributions, and the feeds of those over every run
+needs svs:run_read; the runs screen's filters (`f=`) apply to the runs and to the feeds. Associating
+an alert with a run by hand, disassociating it, marking it not a test and keeping a context
+attribution need svs:run_manage (docs/SVS_RUNS.md, *Associating alerts by hand*).
 """
 
 from datetime import datetime
@@ -26,6 +28,9 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.svs.runs import service
 from aceapi_v2.svs.runs.schemas import (
+    AssociationRequest,
+    AssociationResult,
+    AttributionPage,
     RunDetail,
     RunEventPage,
     RunExecutedRequest,
@@ -41,6 +46,7 @@ router = APIRouter(dependencies=[Security(get_current_auth)])
 
 RegisterAuth = Annotated[ApiAuthResult, Depends(require_permission("svs", "run_register"))]
 ReadAuth = Annotated[ApiAuthResult, Depends(require_permission("svs", "run_read"))]
+ManageAuth = Annotated[ApiAuthResult, Depends(require_permission("svs", "run_manage"))]
 
 FilterParam = Annotated[list[str], Query(
     default_factory=list,
@@ -58,6 +64,8 @@ EventsChangedSinceParam = Annotated[datetime | None, Query(
     description="only events written at or after this time (UTC if no offset is given)")]
 ResultsChangedSinceParam = Annotated[datetime | None, Query(
     description="only result rows written or changed at or after this time (UTC if no offset is given)")]
+AttributionsChangedSinceParam = Annotated[datetime | None, Query(
+    description="only attributions written, removed or kept at or after this time (UTC if no offset is given)")]
 
 
 def _caller(auth: ApiAuthResult, request: Request) -> Caller:
@@ -252,6 +260,58 @@ async def export_results_csv(
 
 
 #
+# the attribution feed over every run
+#
+
+async def _prepare_attribution_feed(f: list[str], changed_since: datetime | None,
+                                    tz: str) -> service.AttributionFeed:
+    return await run_listing(service.prepare_attribution_feed, f, changed_since=changed_since,
+                             tz=parse_timezone(tz))
+
+
+@router.get("/attributions", response_model=AttributionPage)
+async def list_attributions(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: AttributionsChangedSinceParam = None,
+    cursor: CursorParam = None,
+    limit: LimitParam = 100,
+    tz: TimezoneParam = "UTC",
+) -> AttributionPage:
+    """The attributions of every run the filters match, removed ones included, in (updated_at, id)
+    order: where reports see what was associated and disassociated."""
+    feed = await _prepare_attribution_feed(f, changed_since, tz)
+    rows, next_cursor = await run_listing(service.fetch_attribution_feed_page, feed, cursor, limit)
+    return AttributionPage(data=rows, next_cursor=next_cursor)
+
+
+@router.get("/attributions/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_attributions_ndjson(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: AttributionsChangedSinceParam = None,
+    tz: TimezoneParam = "UTC",
+) -> NdjsonStreamResponse:
+    """Stream the attribution feed as NDJSON, one Attribution per line."""
+    feed = await _prepare_attribution_feed(f, changed_since, tz)
+    export = await start_export(service.fetch_attribution_feed_page, feed, what="svs attribution")
+    return ndjson_response(export, "svs-attributions.ndjson")
+
+
+@router.get("/attributions/export/csv", response_class=CsvStreamResponse)
+async def export_attributions_csv(
+    auth: ReadAuth,
+    f: FilterParam,
+    changed_since: AttributionsChangedSinceParam = None,
+    tz: TimezoneParam = "UTC",
+) -> CsvStreamResponse:
+    """Stream the attribution feed as CSV."""
+    feed = await _prepare_attribution_feed(f, changed_since, tz)
+    export = await start_export(service.fetch_attribution_feed_page, feed, what="svs attribution")
+    return csv_response(export, service.attributions_to_csv, "svs-attributions.csv")
+
+
+#
 # one run
 #
 
@@ -310,3 +370,67 @@ async def export_run_results_csv(run_id: str, auth: ReadAuth) -> CsvStreamRespon
     selection = await run_db_in_thread(service.select_run_results, run_id)
     export = await start_export(service.fetch_run_results_page, selection, what="svs run result")
     return csv_response(export, service.run_results_to_csv, f"svs-run-{selection.run_uuid}-results.csv")
+
+
+@router.get("/{run_id}/attributions", response_model=AttributionPage)
+async def list_run_attributions(run_id: str, auth: ReadAuth, cursor: CursorParam = None,
+                                limit: LimitParam = 100) -> AttributionPage:
+    """The run's attributions, one row per (alert, detection), removed ones included."""
+    selection = await run_db_in_thread(service.select_run_attributions, run_id)
+    rows, next_cursor = await run_listing(service.fetch_run_attributions_page, selection, cursor, limit)
+    return AttributionPage(data=rows, next_cursor=next_cursor)
+
+
+@router.get("/{run_id}/attributions/export/ndjson", response_class=NdjsonStreamResponse)
+async def export_run_attributions_ndjson(run_id: str, auth: ReadAuth) -> NdjsonStreamResponse:
+    """Stream the run's attributions as NDJSON."""
+    selection = await run_db_in_thread(service.select_run_attributions, run_id)
+    export = await start_export(service.fetch_run_attributions_page, selection, what="svs attribution")
+    return ndjson_response(export, f"svs-run-{selection.run_uuid}-attributions.ndjson")
+
+
+@router.get("/{run_id}/attributions/export/csv", response_class=CsvStreamResponse)
+async def export_run_attributions_csv(run_id: str, auth: ReadAuth) -> CsvStreamResponse:
+    """Stream the run's attributions as CSV."""
+    selection = await run_db_in_thread(service.select_run_attributions, run_id)
+    export = await start_export(service.fetch_run_attributions_page, selection, what="svs attribution")
+    return csv_response(export, service.attributions_to_csv, f"svs-run-{selection.run_uuid}-attributions.csv")
+
+
+#
+# a person's association changes
+#
+
+@router.post("/{run_id}/alerts/{alert_uuid}/associate", response_model=AssociationResult)
+async def associate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
+                          body: AssociationRequest | None = None) -> AssociationResult:
+    """Attribute every detection of the alert to the run, by hand; the alert moves to the test queue
+    when it is OPEN and nobody else has taken it. 409 for a run that never started, 422 for an alert
+    without detections."""
+    return await run_db_in_thread(service.change_association, "associate", run_id, alert_uuid, body,
+                                  auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/{run_id}/alerts/{alert_uuid}/disassociate", response_model=AssociationResult)
+async def disassociate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
+                             body: AssociationRequest | None = None) -> AssociationResult:
+    """Remove the alert's attributions to the run, by hand; the router never attributes it to the run
+    again. An alert no longer fully attributed is given back: OPEN if it was SIMULATED, and back in
+    the queue SVS took it from. 409 when it isn't attributed to the run."""
+    return await run_db_in_thread(service.change_association, "disassociate", run_id, alert_uuid, body,
+                                  auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/{run_id}/alerts/{alert_uuid}/not-a-test", response_model=AssociationResult)
+async def mark_not_a_test(run_id: str, alert_uuid: str, auth: ManageAuth,
+                          body: AssociationRequest | None = None) -> AssociationResult:
+    """Disassociate a TEST? alert: one the run holds by context alone (409 otherwise)."""
+    return await run_db_in_thread(service.change_association, "not-a-test", run_id, alert_uuid, body,
+                                  auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/{run_id}/alerts/{alert_uuid}/keep", response_model=AssociationResult)
+async def keep_context(run_id: str, alert_uuid: str, auth: ManageAuth) -> AssociationResult:
+    """Confirm the alert's context attributions to the run (409 when it has none)."""
+    return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None,
+                                  auth.auth_user_id, auth.auth_name)

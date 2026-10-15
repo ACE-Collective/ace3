@@ -173,6 +173,52 @@ class RunResultPage(BaseModel):
     computed_at: Optional[datetime] = Field(default=None, description="one run's results only: when it was last computed")
 
 
+class Attribution(BaseModel):
+    """One detection of an alert attributed to a run, removed ones included (docs/SVS_API.md,
+    *Attributions*)."""
+
+    id: int = Field(description="the row's id")
+    run_id: str = Field(description="the run's uuid")
+    alert_uuid: str
+    detection: str = Field(description="the detection's content_hash (its detection_points row)")
+    signature_uuid: str
+    signature_family: Optional[str] = None
+    confidence: str = Field(description="marker or context; a person's association is marker")
+    late: bool = Field(description="the alert's event came after the run's observation window")
+    source: str = Field(description="router (the marker router) or manual (a person associated the alert)")
+    scan_point: Optional[str] = Field(default=None, description="where the agreeing marker was found; null for context or manual")
+    actor: str = Field(description="who attributed it: svs for the router, else the person")
+    actor_user: Optional[str] = Field(default=None, description="the person's username")
+    created_at: datetime
+    removed_at: Optional[datetime] = Field(default=None, description="when it stopped holding; null while it holds")
+    removed_by: Optional[str] = Field(default=None, description="svs (the router found it no longer applies) or the person who disassociated it")
+    removed_by_user: Optional[str] = None
+    removal_reason: Optional[str] = None
+    kept_at: Optional[datetime] = Field(default=None, description="when a person kept this context attribution")
+    kept_by_user: Optional[str] = None
+    updated_at: datetime = Field(description="the feed's changed_since key")
+
+
+class AttributionPage(BaseModel):
+    data: list[Attribution]
+    next_cursor: Optional[str] = None
+
+
+class AssociationRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=4096, description="why, as the run's event log records it")
+
+
+class AssociationResult(BaseModel):
+    """What a person's association change left the alert with."""
+
+    alert_uuid: str
+    svs_status: Optional[str] = Field(default=None, description="test, test?, partial or mismatch; null for none")
+    queue: str
+    moved: bool = Field(description="the alert moved to another queue")
+    reopened: bool = Field(description="the alert was SIMULATED and is OPEN again")
+
+
 RUN_ROW_CSV_FIELDS = tuple(RunRow.model_fields)
 RUN_EVENT_CSV_FIELDS = tuple(RunEvent.model_fields)
 RUN_RESULT_CSV_FIELDS = tuple(RunResult.model_fields)
+ATTRIBUTION_CSV_FIELDS = tuple(Attribution.model_fields)

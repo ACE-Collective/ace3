@@ -10,7 +10,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
-from saq.database.model import SVSAttribution, SVSRun
+from saq.database.model import SVSAttribution, SVSRun, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.environment import get_local_timezone
@@ -70,7 +70,7 @@ def _run(marker: str = MARKER, run_id: int = 1, host: str = "win10-01", fqdn=Non
 @pytest.fixture
 def runs(monkeypatch):
     """Evaluation against runs given here instead of the database."""
-    state = {"markers": {}, "window": [], "existing": ([], set())}
+    state = {"markers": {}, "window": [], "existing": ([], set(), set())}
     monkeypatch.setattr(attribution, "resolve_markers",
                         lambda markers: {m: state["markers"][m] for m in markers if m in state["markers"]})
     monkeypatch.setattr(attribution, "runs_in_window", lambda when: list(state["window"]))
@@ -341,18 +341,30 @@ class TestEvaluate:
         removed = _hashes(root)
         removed = next(h for h, dp in removed.items() if dp.description == "bad url")
         runs["existing"] = ([ExistingAttribution(run.id, removed, AttributionConfidence.MARKER, True)],
-                            {(run.id, removed)})
+                            {(run.id, removed)}, set())
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.PARTIAL
         assert removed not in {a.content_hash for a in evaluation.attributions}
+
+    def test_a_run_a_person_disassociated_the_alert_from_attributes_nothing(self, runs):
+        root, parent, child, url = _tree()
+        root.details = {"cmd": MARKER}
+        root.add_detection_point("hunt hit")
+        run = runs["markers"][MARKER] = _run()
+        # a detection added since the disassociation is not attributed either
+        url.add_detection_point("bad url")
+        runs["existing"] = ([], set(), {run.id})
+
+        evaluation = evaluate(root, T0)
+        assert evaluation.attributions == [] and evaluation.status is None
 
     def test_a_persons_association_counts(self, runs):
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         (content_hash,) = _hashes(root)
         runs["existing"] = ([ExistingAttribution(7, content_hash, AttributionConfidence.MARKER, False)],
-                            {(7, content_hash)})
+                            {(7, content_hash)}, set())
 
         assert evaluate(root, T0).status == SVSStatus.TEST
 
@@ -489,11 +501,27 @@ class TestDatabase:
                                   .order_by(SVSAttribution.id).limit(1)).scalar_one()
             row.removed_at = datetime.now()
             row.removed_by = "alice"
+            row.removed_by_user_id = session.execute(select(User.id).where(User.username == "unittest")).scalar_one()
 
+        # a person's removal blocks the run for the whole alert: the router removes its other row
         evaluation = evaluate(root, _soon())
-        assert evaluation.status == SVSStatus.PARTIAL
+        assert evaluation.status is None
         assert write_attributions(root.uuid, evaluation).written == []
-        assert sorted((by or "") for _, _, by, _ in self._rows(root.uuid)) == ["", "alice"]
+        assert sorted((by or "") for _, _, by, _ in self._rows(root.uuid)) == ["alice", "svs"]
+
+    def test_a_removal_by_a_user_named_like_the_router_is_still_a_persons(self):
+        run = started_run(GUID)
+        root = self._root(run)
+        write_attributions(root.uuid, evaluate(root, _soon()))
+        with private_transaction() as session:
+            for row in session.execute(select(SVSAttribution).where(SVSAttribution.alert_uuid == root.uuid)).scalars():
+                row.removed_at = datetime.now()
+                row.removed_by = "svs"
+                row.removed_by_user_id = session.execute(
+                    select(User.id).where(User.username == "unittest")).scalar_one()
+
+        assert write_attributions(root.uuid, evaluate(root, _soon())).written == []
+        assert all(removed for _, removed, _, _ in self._rows(root.uuid))
 
     def test_a_mismatch_removes_what_the_router_wrote(self):
         run = started_run(GUID)

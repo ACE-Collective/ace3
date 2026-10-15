@@ -64,6 +64,9 @@ class RunEventKind(StrEnum):
     ALERTS_CLOSED = "alerts_closed"              # the run's alerts given SIMULATED when it closed
     RESULT_COMPUTED = "result_computed"          # the run's result changed
     CANDIDATE_DECISION = "candidate_decision"    # a signature in the run's result was decided
+    ASSOCIATED = "associated"                    # a person associated an alert with the run
+    DISASSOCIATED = "disassociated"              # a person disassociated an alert (or marked it not a test)
+    CONTEXT_KEPT = "context_kept"                # a person kept an alert's context attribution
 
 
 class ExpectationState(StrEnum):
@@ -145,3 +148,8 @@ TAG_MARKER_MISMATCH = "svs:marker_mismatch"
 
 # the actor of what the marker router writes
 ROUTER_ACTOR = "svs"
+
+# the router name (alert_queue_changes.router) of every queue move a person makes through SVS:
+# associating an alert, or disassociating it. The marker router never moves an alert whose latest
+# move is one of these (docs/SVS_RUNS.md, *Associating alerts by hand*)
+SVS_MANUAL_ROUTER = "svs_manual"

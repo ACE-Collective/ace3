@@ -26,8 +26,13 @@ the runs through a cache that holds only runs that have started, whose windows a
 change again; a marker it doesn't have always goes to the database, so a stale cache never turns a
 real test into a mismatch.
 
-svs_attributions is written here only, by the marker router, in a transaction of its own: a router
-must never break the alert insert it runs in.
+The marker router writes its own rows of svs_attributions here (source 'router'), in a transaction
+of its own: a router must never break the alert insert it runs in. A person's changes (associating
+an alert by hand, disassociating it, keeping a context attribution) are saq/svs/association.py's.
+The router never touches a row a person wrote or removed, and every change it makes to an existing
+row is conditional on the row still being its own, so a person's change that lands while it works
+is never overwritten. A run a person disassociated an alert from is never attributed that alert
+again, for any of its detections.
 """
 
 import logging
@@ -555,20 +560,30 @@ class _Branches:
         return a in self.ancestors(b) or b in self.ancestors(a)
 
 
-def _existing(alert_uuid: str) -> tuple[list[ExistingAttribution], set[tuple[int, str]]]:
-    """The rows of a person for this alert, and the (run, detection) pairs the router must leave
-    alone: a person removed them, or a person attributed them."""
+def removed_by_person(row: SVSAttribution) -> bool:
+    """A person removed the row (disassociated the alert, or marked it not a test)."""
+    return row.removed_at is not None and row.removed_by_user_id is not None
+
+
+def _existing(alert_uuid: str) -> tuple[list[ExistingAttribution], set[tuple[int, str]], set[int]]:
+    """The rows of a person for this alert; the (run, detection) pairs the router must leave alone
+    (a person attributed or removed them); and the runs a person disassociated the alert from, which
+    the router never attributes it to again, for any detection."""
     existing = []
     blocked = set()
+    disassociated = set()
+    associated = set()
     with private_transaction() as session:
         for row in session.execute(select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars():
-            by_person = row.source == AttributionSource.MANUAL or (
-                row.removed_at is not None and row.removed_by != ROUTER_ACTOR)
-            if by_person:
+            if row.source == AttributionSource.MANUAL and row.removed_at is None:
+                associated.add(row.run_id)
+            if row.source == AttributionSource.MANUAL or removed_by_person(row):
                 existing.append(ExistingAttribution(row.run_id, row.content_hash,
                                                     AttributionConfidence(row.confidence), row.removed_at is not None))
                 blocked.add((row.run_id, row.content_hash))
-    return existing, blocked
+                if removed_by_person(row):
+                    disassociated.add(row.run_id)
+    return existing, blocked, disassociated - associated
 
 
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
@@ -595,7 +610,7 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
             result = MarkerResult.ATTRIBUTED
         evaluation.judgements.append(MarkerJudgement(marker, result, scan_point, run))
 
-    evaluation.existing, blocked = _existing(root.uuid)
+    evaluation.existing, blocked, disassociated = _existing(root.uuid)
 
     if evaluation.mismatches:
         # a marker that doesn't agree ends attribution for the whole alert [FR-3]
@@ -610,6 +625,8 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
         branches = _Branches(root)
         for judgement in evaluation.judgements:
             run = judgement.run
+            if run.id in disassociated:
+                continue
             for sighting in sightings:
                 if sighting.marker != judgement.marker:
                     continue
@@ -623,7 +640,7 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                             sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
         candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
-        if len(candidates) == 1:
+        if len(candidates) == 1 and candidates[0].id not in disassociated:
             run = candidates[0]
             for detection in evaluation.detections:
                 if (run.id, detection.content_hash) not in blocked:
@@ -684,44 +701,38 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
             select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars()}
 
         for key, row in rows.items():
-            if row.source != AttributionSource.ROUTER:
+            if row.source != AttributionSource.ROUTER or removed_by_person(row):
                 continue
             attribution = desired.get(key)
             if attribution is None:
-                if row.removed_at is None:
-                    row.removed_at = now
-                    row.removed_by = ROUTER_ACTOR
-                    row.removal_reason = REMOVAL_NO_LONGER_APPLIES
+                if row.removed_at is None and _update_own_row(
+                        session, row.id, SVSAttribution.removed_at.is_(None), removed_at=now,
+                        removed_by=ROUTER_ACTOR, removal_reason=REMOVAL_NO_LONGER_APPLIES):
                     result.removed.append(RemovedAttribution(row.run_id, row.content_hash, row.confidence, row.late))
                 continue
-            if row.removed_at is not None and row.removed_by != ROUTER_ACTOR:
-                continue
-            changed = row.removed_at is not None
-            row.removed_at = row.removed_by = row.removal_reason = None
-            if (row.confidence, row.late, row.scan_point) != (
-                    attribution.confidence.value, attribution.late,
-                    attribution.scan_point.value if attribution.scan_point else None):
-                row.confidence = attribution.confidence.value
-                row.late = attribution.late
-                row.scan_point = attribution.scan_point.value if attribution.scan_point else None
-                changed = True
-            if changed:
+
+            values = {}
+            if row.removed_at is not None:
+                values.update(removed_at=None, removed_by=None, removal_reason=None)
+            scan_point = attribution.scan_point.value if attribution.scan_point else None
+            if (row.confidence, row.late, row.scan_point) != (attribution.confidence.value, attribution.late, scan_point):
+                values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
+            if values and _update_own_row(session, row.id, **values):
                 result.written.append(attribution)
 
         for key, attribution in desired.items():
             if key in rows:
                 continue
-            # another process may be writing the same alert (an engine pass racing an insert); the
-            # unique key keeps one row and this insert changes nothing then
-            session.execute(mysql_insert(SVSAttribution).values(
+            # another process may be writing the same alert (an engine pass racing an insert, or a
+            # person associating it); the unique key keeps the row that came first
+            inserted = session.execute(mysql_insert(SVSAttribution).prefix_with("IGNORE").values(
                 run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
                 signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
                 confidence=attribution.confidence.value, late=attribution.late,
-                source=AttributionSource.ROUTER.value,
-                scan_point=attribution.scan_point.value if attribution.scan_point else None,
-                actor=ROUTER_ACTOR, created_at=now,
-            ).on_duplicate_key_update(id=SVSAttribution.id))
-            result.written.append(attribution)
+                source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
+                actor=ROUTER_ACTOR, created_at=now))
+            if inserted.rowcount == 1:
+                result.written.append(attribution)
 
         removed_runs = {row.run_id for row in result.removed} - set(runs)
         if removed_runs:
@@ -731,7 +742,7 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
 
         _add_attribution_events(session, alert_uuid, result, now)
         touched = {a.run.id for a in result.written} | {row.run_id for row in result.removed}
-        flagged = _flag_changed_since_review(session, touched)
+        flagged = flag_changed_since_review(session, touched)
         mark_runs_stale(session, run_ids=touched)
 
     for attribution in result.written:
@@ -755,6 +766,18 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
     return result
 
 
+def _update_own_row(session, row_id: int, *conditions, **values) -> bool:
+    """Changes one of the router's rows, only while it still is the router's and no person removed
+    it: a person may have taken it since it was read."""
+    changed = session.execute(
+        update(SVSAttribution)
+        .where(SVSAttribution.id == row_id, SVSAttribution.source == AttributionSource.ROUTER.value,
+               SVSAttribution.removed_by_user_id.is_(None), *conditions)
+        .values(**values)
+        .execution_options(synchronize_session=False))
+    return changed.rowcount == 1
+
+
 def _add_attribution_events(session, alert_uuid: str, result: WriteResult, now: datetime) -> None:
     """One event per run whose attributions of the alert changed, in the run's event log."""
     written: dict[int, list[dict]] = {}
@@ -775,7 +798,7 @@ def _add_attribution_events(session, alert_uuid: str, result: WriteResult, now: 
             "alert_uuid": alert_uuid, "detections": detections, "reason": REMOVAL_NO_LONGER_APPLIES}))
 
 
-def _flag_changed_since_review(session, run_ids: set[int]) -> list[int]:
+def flag_changed_since_review(session, run_ids: set[int]) -> list[int]:
     """Marks the reviewed runs among run_ids as changed since review (docs/SVS.md, Part 3: a late
     alert after sign-off returns the run to Needs attention). Returns the runs it marked."""
     flagged = []

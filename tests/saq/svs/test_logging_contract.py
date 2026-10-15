@@ -15,6 +15,7 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
+from saq.svs import association
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
 from saq.svs.expectations import set_expectation
 
@@ -235,3 +236,19 @@ def test_a_result(caplog):
     (record,) = _records(caplog, f"svs run {run.uuid} is missing expected signature")
     assert record.levelno == logging.INFO and record.signature_uuid == missing
     _assert_fields(record, RUN_FIELDS + ("signature_uuid", "signature_family", "possibly_suppressed"))
+
+
+def test_a_persons_association_changes(caplog, routed):
+    user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+    run = _started()
+    root = _alert("win10-01", {})
+    with caplog.at_level(logging.INFO):
+        association.keep(run.uuid, root.uuid, user_id, "unittest")
+        association.disassociate(run.uuid, root.uuid, user_id, "unittest", not_a_test=True)
+        association.associate(run.uuid, root.uuid, user_id, "unittest", "it was the test after all")
+
+    for message in ("AUDIT: svs context attribution kept", "AUDIT: svs alert disassociated from a run",
+                    "AUDIT: svs alert associated with a run"):
+        (record,) = _records(caplog, message)
+        assert record.svs_run == run.uuid and record.alert_uuid == root.uuid
+        _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id"))
