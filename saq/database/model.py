@@ -2387,6 +2387,34 @@ class SVSAttribution(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSRunComment(Base):
+    """A person's comment on a test run (docs/SVS_RUNS.md, *Reviewing runs*). Only its author edits
+    or deletes it. Only saq/svs/run_comments.py writes this table."""
+
+    __tablename__ = 'svs_run_comments'
+    __table_args__ = (
+        Index('ix_svs_run_comments_run', 'run_id', 'id'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class SVSExpectation(Base):
     """A decision about a signature for an Atomic Red Team test (docs/SVS_RUNS.md, *Expectations and
     ignores*): expected (a run of the test should fire it) or rejected (it fires, but it is not what

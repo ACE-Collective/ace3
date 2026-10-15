@@ -14,8 +14,12 @@ record carries the run's svs_run, svs_test and svs_marker fields (docs/SVS.md, *
 Closing a run gives its fully attributed alerts the disposition SIMULATED, and the timers close
 the alerts attributed to a closed run afterwards the same way.
 
+A person cancels and closes runs through saq/svs/review.py, which also takes runs and reviews them.
+
 svs_runs, svs_run_targets and svs_run_events are written here, except for what attribution writes
-(saq/svs/attribution.py): its own events, and the changed-since-review flag of a reviewed run.
+(saq/svs/attribution.py: its own events, and the changed-since-review flag of a reviewed run), what
+a person's association changes write (saq/svs/association.py), and ownership and review
+(saq/svs/review.py).
 """
 
 import json
@@ -58,6 +62,7 @@ CLOSE_ALERTS_BATCH = 1000
 CLOSE_REASON_START_TIMEOUT = "start timeout"
 CLOSE_REASON_CANCELED_BEFORE_START = "canceled before start"
 CLOSE_REASON_ATTRIBUTION_ENDED = "attribution window ended"
+CLOSE_REASON_BY_PERSON = "closed by hand"
 
 # the launcher's calls, as they are logged and recorded
 CALL_REGISTER = "register"
@@ -81,6 +86,10 @@ class RegistrationRefused(PermissionError):
 
 class UnknownRun(LookupError):
     pass
+
+
+class ReasonRequired(ValueError):
+    """Closing an ended run needs a reason."""
 
 
 class RunStateConflict(Exception):
@@ -128,7 +137,7 @@ def _add_event(run: SVSRun, kind: RunEventKind, actor: str, *, actor_user_id: Op
                                to_state=to_state, details=details, now=now))
 
 
-def _log_transition(run: SVSRun, from_state: Optional[str], to_state: str, actor: str, reason: Optional[str] = None):
+def log_transition(run: SVSRun, from_state: Optional[str], to_state: str, actor: str, reason: Optional[str] = None):
     logging.info("svs run %s: %s -> %s by %s%s", run.uuid, from_state, to_state, actor,
                  f" ({reason})" if reason else "",
                  extra={**run_log_fields(run), "from_state": from_state, "to_state": to_state, "actor": actor,
@@ -209,7 +218,8 @@ def _closable_alerts(*conditions) -> list[tuple[int, str]]:
     return [(run_id, alert_uuid) for run_id, alert_uuid in get_db().execute(statement)]
 
 
-def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool) -> int:
+def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *, comment: Optional[str] = None,
+                  reviewed: bool = False) -> int:
     """Gives the alerts SIMULATED, through the disposition writer analysts use, as the automation
     user. An alert dispositioned or taken by an analyst in the meantime is left alone."""
     if not alert_uuids:
@@ -217,13 +227,13 @@ def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool) -
 
     result = set_dispositions(
         alert_uuids, DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
-        user_comment=f"closed with SVS test run {run.uuid}", system=True,
+        user_comment=comment or f"closed with SVS test run {run.uuid}", system=True,
         expected_dispositions={DISPOSITION_OPEN})
     closed = result.permitted
     left_alone = sorted(set(result.skipped) | set(result.unexpected))
     if closed:
         get_db().add(new_run_event(run.id, RunEventKind.ALERTS_CLOSED, actor, details={
-            "alerts": closed, "disposition": DISPOSITION_SIMULATED, "late": late}))
+            "alerts": closed, "disposition": DISPOSITION_SIMULATED, "late": late, "reviewed": reviewed}))
         get_db().commit()
 
     logging.info("svs run %s: %d %salerts closed as %s, %d left alone", run.uuid, len(closed),
@@ -241,6 +251,14 @@ def close_run_alerts(run: SVSRun, actor: str = TIMER_ACTOR) -> int:
     many it closed."""
     return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
                          actor, late=False)
+
+
+def close_reviewed_run_alerts(run: SVSRun, actor: str) -> int:
+    """Gives SIMULATED to the alerts of a run that was just reviewed (saq/svs/review.py), as closing
+    it would, with a comment naming the review. Their YARA hits are captured now that the run is
+    reviewed, so the review must be committed first. Returns how many it closed."""
+    return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
+                         actor, late=False, comment=f"reviewed with SVS test run {run.uuid} by {actor}", reviewed=True)
 
 
 def close_late_alerts() -> int:
@@ -275,11 +293,11 @@ def on_run_ended(run: SVSRun) -> None:
         report_exception()
 
 
-def _after_close(run: SVSRun) -> None:
+def _after_close(run: SVSRun, actor: str = TIMER_ACTOR) -> None:
     """Closes the alerts of a run whose close was committed. A failure never undoes the close: the
     timers' late-alert sweep closes those alerts on its next pass."""
     try:
-        close_run_alerts(run)
+        close_run_alerts(run, actor)
     except Exception as e:
         get_db().rollback()
         logging.error("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
@@ -392,7 +410,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
                details={**payload, "observation_source": observation_source.value}, now=now)
     db.commit()
 
-    _log_transition(run, None, run.state, caller.name)
+    log_transition(run, None, run.state, caller.name)
     _log_call(run, CALL_REGISTER, run.launcher, "created", caller)
     return run
 
@@ -431,7 +449,7 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
 
     _launcher_call(run, CALL_START, caller, "started", now=now)
     get_db().commit()
-    _log_transition(run, RunState.CREATED.value, run.state, caller.name)
+    log_transition(run, RunState.CREATED.value, run.state, caller.name)
     _log_call(run, CALL_START, run.launcher, "started", caller)
     return run
 
@@ -471,36 +489,86 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     _launcher_call(run, CALL_EXECUTED, caller, outcome, payload, now=now)
     get_db().commit()
     if failed:
-        _log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
+        log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
     _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code)
     return run
 
 
-def cancel(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
-    """Created or Started -> Canceled. A canceled run keeps attributing until its attribution
-    window ends, because the test may have run anyway. A run canceled before it started has no
-    windows, so it is closed at once. Raises UnknownRun, RunStateConflict."""
-    now = now or datetime.now()
-    run = get_run(run_uuid)
+def _cancel(run: SVSRun, actor: str, user_id: Optional[int], now: datetime) -> Optional[tuple[RunState, bool]]:
+    """Created or Started -> Canceled, in the caller's transaction; a run canceled before it
+    started is also closed. Returns the state it was canceled from and whether it was closed, or
+    None when it is in neither state (anymore)."""
     if run.state not in (RunState.CREATED, RunState.STARTED):
-        raise _conflict(run, CALL_CANCEL, caller)
+        return None
     from_state = RunState(run.state)
-    if not _transition(
-            run, from_state, RunState.CANCELED, caller.name, actor_user_id=caller.user_id, now=now,
-            values={"canceled_at": now}):
-        raise _conflict(run, CALL_CANCEL, caller)
+    if not _transition(run, from_state, RunState.CANCELED, actor, actor_user_id=user_id, now=now,
+                       values={"canceled_at": now}):
+        return None
 
     closed = from_state == RunState.CREATED and _close(
-        run, RunState.CANCELED, caller.name, CLOSE_REASON_CANCELED_BEFORE_START, actor_user_id=caller.user_id, now=now)
+        run, RunState.CANCELED, actor, CLOSE_REASON_CANCELED_BEFORE_START, actor_user_id=user_id, now=now)
+    return from_state, closed
+
+
+def _log_cancel(run: SVSRun, from_state: RunState, closed: bool, actor: str) -> None:
+    log_transition(run, from_state.value, RunState.CANCELED.value, actor)
+    if closed:
+        log_transition(run, RunState.CANCELED.value, RunState.CLOSED.value, actor, CLOSE_REASON_CANCELED_BEFORE_START)
+        _after_close(run, actor)
+
+
+def cancel(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
+    """The launcher's cancel: Created or Started -> Canceled. A canceled run keeps attributing until
+    its attribution window ends, because the test may have run anyway. A run canceled before it
+    started has no windows, so it is closed at once. Raises UnknownRun, RunStateConflict."""
+    now = now or datetime.now()
+    run = get_run(run_uuid)
+    canceled = _cancel(run, caller.name, caller.user_id, now)
+    if canceled is None:
+        raise _conflict(run, CALL_CANCEL, caller)
 
     _launcher_call(run, CALL_CANCEL, caller, "canceled", now=now)
     get_db().commit()
-    _log_transition(run, from_state.value, RunState.CANCELED.value, caller.name)
-    if closed:
-        _log_transition(run, RunState.CANCELED.value, RunState.CLOSED.value, caller.name,
-                        CLOSE_REASON_CANCELED_BEFORE_START)
-        _after_close(run)
+    _log_cancel(run, *canceled, caller.name)
     _log_call(run, CALL_CANCEL, run.launcher, "canceled", caller)
+    return run
+
+
+def cancel_by_person(run_uuid: str, actor: str, user_id: int, now: Optional[datetime] = None) -> SVSRun:
+    """A person's cancel (saq/svs/review.py), the same as the launcher's. Raises UnknownRun,
+    RunStateConflict."""
+    now = now or datetime.now()
+    run = get_run(run_uuid)
+    canceled = _cancel(run, actor, user_id, now)
+    if canceled is None:
+        get_db().rollback()
+        raise RunStateConflict(run.uuid, run.state, "cancel")
+
+    get_db().commit()
+    _log_cancel(run, *canceled, actor)
+    return run
+
+
+def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
+                    now: Optional[datetime] = None) -> SVSRun:
+    """A person discards a run (saq/svs/review.py): Ended, Canceled or Error -> Closed, and its
+    alerts are closed as SIMULATED. Nothing is learned from it. An Ended run needs a reason, since
+    it waited for a review [MGT-3]. Raises UnknownRun, RunStateConflict, ReasonRequired."""
+    now = now or datetime.now()
+    run = get_run(run_uuid)
+    if run.state not in (RunState.ENDED, RunState.CANCELED, RunState.ERROR):
+        raise RunStateConflict(run.uuid, run.state, "close")
+    from_state = RunState(run.state)
+    reason = (reason or "").strip() or None
+    if from_state == RunState.ENDED and reason is None:
+        raise ReasonRequired(f"run {run.uuid} ended and waits for a review: closing it instead needs a reason")
+
+    if not _close(run, from_state, actor, reason or CLOSE_REASON_BY_PERSON, actor_user_id=user_id, now=now):
+        get_db().rollback()
+        raise RunStateConflict(run.uuid, run.state, "close")
+    get_db().commit()
+    log_transition(run, from_state.value, RunState.CLOSED.value, actor, run.close_reason)
+    _after_close(run, actor)
     return run
 
 
@@ -549,8 +617,8 @@ def _time_out(run: SVSRun, now: datetime) -> bool:
         return False
     _close(run, RunState.ERROR, TIMER_ACTOR, CLOSE_REASON_START_TIMEOUT, now=now)
     get_db().commit()
-    _log_transition(run, RunState.CREATED.value, RunState.ERROR.value, TIMER_ACTOR, reason)
-    _log_transition(run, RunState.ERROR.value, RunState.CLOSED.value, TIMER_ACTOR, CLOSE_REASON_START_TIMEOUT)
+    log_transition(run, RunState.CREATED.value, RunState.ERROR.value, TIMER_ACTOR, reason)
+    log_transition(run, RunState.ERROR.value, RunState.CLOSED.value, TIMER_ACTOR, CLOSE_REASON_START_TIMEOUT)
     _after_close(run)
     return True
 
@@ -561,7 +629,7 @@ def _end(run: SVSRun, now: datetime) -> bool:
         return False
     mark_runs_stale(get_db(), run_ids=[run.id])
     get_db().commit()
-    _log_transition(run, RunState.STARTED.value, RunState.ENDED.value, TIMER_ACTOR)
+    log_transition(run, RunState.STARTED.value, RunState.ENDED.value, TIMER_ACTOR)
     on_run_ended(run)
     return True
 
@@ -571,7 +639,7 @@ def _close_after_attribution(run: SVSRun, from_state: RunState, now: datetime) -
         get_db().rollback()
         return False
     get_db().commit()
-    _log_transition(run, from_state.value, RunState.CLOSED.value, TIMER_ACTOR, CLOSE_REASON_ATTRIBUTION_ENDED)
+    log_transition(run, from_state.value, RunState.CLOSED.value, TIMER_ACTOR, CLOSE_REASON_ATTRIBUTION_ENDED)
     _after_close(run)
     return True
 

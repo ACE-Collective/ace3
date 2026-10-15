@@ -218,6 +218,51 @@ class AssociationResult(BaseModel):
     reopened: bool = Field(description="the alert was SIMULATED and is OPEN again")
 
 
+class BulkRunRequest(BaseModel):
+    """A bulk action on runs, as the runs screen sends it."""
+
+    run_ids: list[str] = Field(min_length=1, max_length=500, description="the runs' uuids")
+    confirmed_takes: dict[str, str] = Field(
+        default_factory=dict,
+        description="run id -> the username of the person the caller agreed to take the run from; a run someone "
+                    "else owns is left alone without it")
+    reason: Optional[str] = Field(default=None, max_length=4096,
+                                  description="close only: why; required for an ended run, which waits for a review")
+
+
+class BulkRunResult(BaseModel):
+    done: list[str] = Field(description="the runs the action was applied to")
+    left_alone: dict[str, str] = Field(description="run id -> who owns it, for the runs someone else owns")
+    conflicts: dict[str, str] = Field(description="run id -> why the action doesn't apply to it (its state, a missing reason)")
+    unknown: list[str] = Field(description="run ids that don't exist")
+
+
+class ReviewRequest(BaseModel):
+    confirmed_take_from: Optional[str] = Field(
+        default=None, description="the username of the run's owner the caller agreed to take it from, when someone else owns it")
+
+
+class ReviewResult(BaseModel):
+    run: RunDetail
+    re_review: bool = Field(description="the run had been reviewed before; this sign-off replaces that one")
+    counts: dict[str, int] = Field(description="signatures per result status, as signed off")
+    alerts_closed: int = Field(description="alerts that became SIMULATED")
+    fp_verdicts: int = Field(description="detections of ignored signatures given an FP verdict")
+
+
+class RunCommentRequest(BaseModel):
+    comment: str = Field(min_length=1, max_length=16384)
+
+
+class RunComment(BaseModel):
+    id: int
+    run_id: str
+    user: Optional[str] = Field(default=None, description="its author's username")
+    comment: str
+    created_at: datetime
+    updated_at: datetime
+
+
 RUN_ROW_CSV_FIELDS = tuple(RunRow.model_fields)
 RUN_EVENT_CSV_FIELDS = tuple(RunEvent.model_fields)
 RUN_RESULT_CSV_FIELDS = tuple(RunResult.model_fields)

@@ -542,7 +542,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. *Time left* on a started run is `observation_ends_at` minus now. |
 | `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
 | `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
-| `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was reviewed. Review and ownership come later in phase 4, so these are null until then. |
+| `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was last reviewed (*Run actions*, below). |
 | `changed_since_review` | An attribution of an alert to it was added or removed after its review: a late alert, a later analysis pass, or a manual association. |
 | `needs_attention` | Whether it is in the *Needs attention* view (below). |
 | `result_hit`, `result_expected` | Its result's hits out of the expected signatures it judged (*expected hits n/m*): `result_expected` counts hit, missing and possibly suppressed (*Results*, below). |
@@ -629,9 +629,11 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 | `associated` | none | `{"alert_uuid", "detections", "late", "reason"}`: a person associated the alert with the run (`detections` are `content_hash`es) |
 | `disassociated` | none | `{"alert_uuid", "detections", "reason", "not_a_test"}`: a person disassociated it, or marked it not a test |
 | `context_kept` | none | `{"alert_uuid"}`: a person kept the alert's context attributions |
+| `ownership_taken` | none | `{"from"}`: a person took the run, from that owner (null when nobody owned it) |
+| `reviewed` | `from_state: ended` or `reviewed`, `to_state: reviewed` | `{"counts", "re_review"}`: a person signed the result off; the counts are per status, as signed off |
 
-Later phase-4 work adds kinds for review. A reader skips kinds it doesn't know. In CSV, `details` is
-a JSON string.
+`alerts_closed` also carries `"reviewed": true` when a review closed them. A reader skips kinds it
+doesn't know. In CSV, `details` is a JSON string.
 
 ### The event feed
 
@@ -640,6 +642,32 @@ match, in `(updated_at, id)` order, with `changed_since`. As with the run list, 
 few seconds after it is written, so a pull resumed from the last event's `updated_at` never misses
 one. It may repeat one. This is where a report sees what happened to a run between two pulls, and
 later in phase 4 what was disassociated from it.
+
+### Run actions
+
+A person's actions on runs, all `svs:run_manage` and from a user's key (a config key gets 422);
+`docs/SVS_RUNS.md`, *Reviewing runs*:
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/v2/svs/runs/bulk/take-ownership` | Take the runs |
+| `POST /api/v2/svs/runs/bulk/cancel` | Cancel them (created or started) |
+| `POST /api/v2/svs/runs/bulk/close` | Close them (ended, canceled or error); an ended run needs `reason` |
+| `POST /api/v2/svs/runs/{run_id}/review` `{"confirmed_take_from"?}` | Review the run (ended, or reviewed again) |
+| `GET`, `POST /api/v2/svs/runs/{run_id}/comments`; `PATCH`, `DELETE …/comments/{comment_id}` | Its comments (reading needs only `svs:run_read`; only the author changes or deletes one) |
+
+- **The bulk actions** take `{"run_ids", "confirmed_takes"?, "reason"?}`. `confirmed_takes` maps a
+  run id to the username of the person the caller agreed to take it from. They answer
+  `{"done", "left_alone", "conflicts", "unknown"}`: the runs acted on; the ones someone else owns
+  (run id → their name); the ones the action doesn't apply to (run id → why); and the ids that
+  don't exist.
+- **A review** answers `{"run", "re_review", "counts", "alerts_closed", "fp_verdicts"}`, or 409
+  whose `detail` says what stands in the way, any of:
+  - `owner`: someone else owns it, and `confirmed_take_from` didn't name them;
+  - `state`;
+  - `stale`: the result is being recomputed;
+  - `candidates`: the undecided signature uuids;
+  - `context_alerts`: the context-only alerts neither kept nor marked not a test.
 
 ### Results
 
@@ -659,7 +687,7 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 | `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
 | `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
 | `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
-| `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed (later in phase 4). |
+| `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
 | `updated_at` | The row's last change; the feed's `changed_since` key. |
 
 `stale` (one run only) is true while something changed since the result was computed: the timers

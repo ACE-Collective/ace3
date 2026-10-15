@@ -100,9 +100,9 @@ effective(dp) =
   canceled, error and discarded runs too (Part 3), and `SIMULATED` is tp, so without this rule every
   detection on those alerts would count as TP in per-signature counts and in the detection-points
   API, although nothing was learned from the run. The check is one join from `svs_attributions` to
-  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review or close
-  writes for ignored detections are stored either way and take effect only once the run is
-  Reviewed. An alert with no attribution is unaffected.
+  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review
+  writes for ignored detections take effect once the run is Reviewed; close writes none, since a
+  closed run's alerts never have verdicts. An alert with no attribution is unaffected.
 - **Overrides survive disposition changes.** A TP→FP→TP correction restores them.
 - **On a TP alert every detection inherits TP.** `inherited_multi` marks inheritance on an alert
   where several signatures fired: 37% of TP alerts with a YARA hit, in production data from
@@ -434,7 +434,8 @@ duplicate firing is harmless anyway. [FR-13]
 
 **A reviewed run can change.** A late alert or a manual association after sign-off flags the run
 *changed since review*, and it returns to the operator's *Needs attention* list. The result as
-signed off is kept (Part 6). [MGT-2, RPT-4]
+signed off is kept (Part 6) until the run is reviewed again, which replaces it; the event log keeps
+each review's counts. A late alert waits for that re-review to become `SIMULATED`. [MGT-2, RPT-4]
 
 **Runs have an owner**, with the same model as alerts, including the confirmation for taking one
 from another person. Reviewing a run takes it if nobody owns it. [MGT-3]
@@ -649,7 +650,7 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   `RootAnalysis.reset()` clears the disposition and the derived observables, which is the same
   loss. [FR-7]
 - **Ignored detections are benign.** A run's ignored detections (launcher noise) get FP overrides
-  when the run is reviewed or closed.
+  from the reviewer when the run is reviewed, unless someone already gave them a verdict.
 - **YARA TP samples come from Reviewed runs only.** Because `SIMULATED` is tp, YARA hits in a
   reviewed run become TP samples through the normal capture. Capture skips alerts attributed to a
   run in any other state (Part 2), and the verdict formula returns no verdict for them (Part 1),
@@ -872,11 +873,10 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
-Two SVS records are not about a run and carry no `svs_run`: [FR-15]
+One SVS record is not about a run and carries no `svs_run`: [FR-15]
 
 | Event | Level | Fields |
 |---|---|---|
-| The `disposition_classification` map, once at startup | WARNING | the map. A changed map relabels the whole corpus at read time, so every start says what it is. Unknown keys still fail validation. |
 | A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
@@ -1061,7 +1061,7 @@ gates the Signatures area. A reporting key gets the `*_read` permissions, `alert
 ## Configuration (sketch)
 
 ```yaml
-disposition_classification:         # logged at WARNING on every start [FR-15]
+disposition_classification:
   FALSE_POSITIVE: fp
   GRAYWARE: tp
   # ... (Part 1 table)
