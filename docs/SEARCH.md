@@ -23,7 +23,7 @@ Which lanes run at all is decided by parsing the query (section 2).
 engine (correlation / dispositioned pass, no outstanding work)
    orchestrator sets ctx.search_index_requested
    Worker.execute() releases the lock, THEN submit_index_task(uuid)
-GUI comment add / delete ..................... submit_index_task
+GUI comment add / edit / delete .............. submit_index_task
 set_dispositions / set_disposition_reviews ... submit_payload_task (submit_index_task when a comment was written)
 cleanup_ignored_alerts, ace alert delete ..... submit_delete_task
 ace search index [-u | --all | dir] .......... submit_index_task (or --sync in-process)
