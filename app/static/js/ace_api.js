@@ -3,7 +3,8 @@
 // The page's Flask session cookie authenticates the request; the API accepts a cookie-authenticated
 // write only from this origin, which a same-origin fetch satisfies. Every call resolves to the
 // parsed JSON body (null for an empty one) or rejects with an Error whose message is the API's
-// own sentence rather than its envelope.
+// own sentence rather than its envelope; the Error also carries the HTTP status and the parsed
+// detail (null when there is none), for a caller that acts on what a 409 names.
 
 var aceApi = (function() {
     "use strict";
@@ -30,6 +31,15 @@ var aceApi = (function() {
         return text || response.statusText || ("request failed: " + response.status);
     }
 
+    function error_detail(text) {
+        try {
+            const detail = JSON.parse(text).detail;
+            return detail === undefined ? null : detail;
+        } catch (e) {
+            return null;
+        }
+    }
+
     function request(method, path, body) {
         const options = {method: method, credentials: "same-origin", headers: {}};
         if (body !== undefined) {
@@ -40,7 +50,10 @@ var aceApi = (function() {
         return fetch(BASE + path, options).then(function(response) {
             return response.text().then(function(text) {
                 if (!response.ok) {
-                    throw new Error(error_message(text, response));
+                    const error = new Error(error_message(text, response));
+                    error.status = response.status;
+                    error.detail = error_detail(text);
+                    throw error;
                 }
                 return text ? JSON.parse(text) : null;
             });

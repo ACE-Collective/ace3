@@ -1,9 +1,9 @@
 """Smoke tests for the /svs blueprint.
 
-The area renders pages and nothing else: the Runs tab is a shell over /api/v2/svs/runs and the
-Test hosts tab over /api/v2/svs/test-hosts (tests/aceapi_v2/svs/). These tests assert that
-boundary, the svs:run_read gate on the area and its nav link, and the permissions the tabs and
-the bulk actions layer on top.
+The area renders pages and nothing else: the Runs tab and the run page are shells over
+/api/v2/svs/runs and the Test hosts tab over /api/v2/svs/test-hosts (tests/aceapi_v2/svs/). These
+tests assert that boundary, the svs:run_read gate on the area and its nav link, and the permissions
+the tabs and the actions layer on top.
 """
 
 import pytest
@@ -19,6 +19,8 @@ from saq.permissions.user import add_user_permission
 pytestmark = pytest.mark.integration
 
 PAGE_VIEWS = ("svs.svs_home", "svs.runs", "svs.batches", "svs.test_hosts")
+# the run page takes the run's uuid; whether the run exists is the API's answer, not the page's
+RUN_ID = "C0FFEE00-1111-4111-8111-111111111111"
 
 # the nav link is `<a ...>SVS<span id="svs_nav_count" ...></span></a>`
 SVS_NAV_LINK = b'>SVS<span id="svs_nav_count"'
@@ -77,7 +79,7 @@ def svs_admin():
 
 class TestSVSIsPagesOnly:
     def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS:
+        for endpoint in PAGE_VIEWS + ("svs.run_detail",):
             assert endpoint in app.view_functions, endpoint
 
     def test_svs_blueprint_serves_only_get_pages(self, app):
@@ -124,10 +126,11 @@ class TestRunsPages:
                 assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
                 assert SVS_NAV_LINK in data
 
-    def test_rows_link_nowhere_until_the_run_page_exists(self, app, run_reader):
+    def test_rows_link_to_the_run_page(self, app, run_reader):
         with app.test_client() as client:
             _login(client, run_reader)
-            assert b'data-run-url=""' in client.get(url_for("svs.runs")).data
+            run_url = url_for("svs.run_detail", run_id="__RUN__")
+            assert f'data-run-url="{run_url}"'.encode() in client.get(url_for("svs.runs")).data
 
     def test_bulk_actions_follow_run_manage(self, app, run_reader, run_manager):
         with app.test_client() as client:
@@ -152,6 +155,67 @@ class TestRunsPages:
             assert _saved_filter_names(run_reader, "svs_runs") == ["Needs attention", "Started"]
             client.get(url_for("svs.runs"))
             assert _saved_filter_names(run_reader, "svs_runs") == ["Needs attention", "Started"]
+
+
+class TestRunPage:
+    def test_requires_auth(self, app):
+        with app.test_client() as client:
+            resp = client.get(url_for("svs.run_detail", run_id=RUN_ID))
+            assert resp.status_code == 302
+            assert "login" in resp.location
+
+    def test_the_page_is_driven_by_the_v2_api(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            page = client.get(url_for("svs.run_detail", run_id=RUN_ID))
+            assert page.status_code == 200
+            data = page.data
+            assert b'data-api="/api/v2/svs"' in data
+            assert f'data-run-id="{RUN_ID.lower()}"'.encode() in data
+            assert b'data-screen="svs_runs"' in data
+            assert data.index(b"ace_api.js") < data.index(b"svs_run.js")
+            # the Runs tab is the open one
+            assert b'aria-current="page" href="' + url_for("svs.runs").encode() + b'">Runs</a>' in data
+            for section in (b"svs_run_result", b"svs_run_candidates", b"svs_run_alerts", b"svs_run_logs",
+                            b"svs_run_comments", b"svs_run_events"):
+                assert b'id="' + section + b'"' in data
+
+    def test_not_a_run_id(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            assert client.get(url_for("svs.run_detail", run_id="not-a-run")).status_code == 404
+
+    def test_actions_follow_the_permissions(self, app, run_reader, run_manager, svs_admin):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            page = client.get(url_for("svs.run_detail", run_id=RUN_ID)).data
+            assert b'data-can-manage="false"' in page and b'data-is-admin="false"' in page
+            for form in (b"svs_run_ask_modal", b"svs_run_associate_form", b"svs_run_comment_form"):
+                assert b'id="' + form + b'"' not in page
+            # no signature:read, so no link to the samples
+            assert b'data-samples-url=""' in page
+
+        with app.test_client() as client:
+            _login(client, run_manager)
+            page = client.get(url_for("svs.run_detail", run_id=RUN_ID)).data
+            assert b'data-can-manage="true"' in page and b'data-is-admin="false"' in page
+            assert b'data-username="svs_manager"' in page
+            for form in (b"svs_run_ask_modal", b"svs_run_associate_form", b"svs_run_comment_form"):
+                assert b'id="' + form + b'"' in page
+
+        with app.test_client() as client:
+            _login(client, svs_admin)
+            assert b'data-is-admin="true"' in client.get(url_for("svs.run_detail", run_id=RUN_ID)).data
+
+    def test_the_samples_link_follows_signature_read(self, app):
+        _make_user("svs_signatures", [("svs", "run_read"), ("signature", "read")])
+        try:
+            with app.test_client() as client:
+                _login(client, "svs_signatures")
+                page = client.get(url_for("svs.run_detail", run_id=RUN_ID)).data
+                assert f'data-samples-url="{url_for("signatures.samples")}"'.encode() in page
+        finally:
+            delete_user("svs_signatures")
 
 
 class TestNavigation:
@@ -192,6 +256,7 @@ class TestSVSAreaGate:
                 _login(client, "svs_none")
                 for endpoint in PAGE_VIEWS:
                     assert client.get(url_for(endpoint)).status_code == 403, endpoint
+                assert client.get(url_for("svs.run_detail", run_id=RUN_ID)).status_code == 403
 
                 # the nav link and its count are gated too, so they are absent on a page they can load
                 page = client.get(url_for("auth.change_password"))

@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from aceapi_v2.alerts.schemas import AlertRow
 from saq.svs.constants import RUN_STATES, RunState
 
 
@@ -101,6 +102,14 @@ class RunRow(BaseModel):
                                              "result or alerts doesn't change it: pull GET /svs/runs/results")
 
 
+class ReviewBlockers(BaseModel):
+    """What a review would answer 409 with right now (docs/SVS_API.md, *Run actions*)."""
+
+    stale: bool = Field(description="the result is being recomputed, or was never computed")
+    candidates: list[str] = Field(description="the undecided signature uuids")
+    context_alerts: list[str] = Field(description="the alerts with context attributions neither kept nor marked not a test")
+
+
 class RunDetail(RunRow):
     extra: Optional[dict[str, Any]] = Field(default=None, description="what the launcher sent with the registration")
     launcher_error: Optional[str] = Field(default=None, description="the error the launcher reported through executed")
@@ -109,6 +118,10 @@ class RunDetail(RunRow):
     observation_seconds: int
     attribution_seconds: int
     registered_by: Optional[str] = Field(default=None, description="the username of the key that registered it")
+    review_blockers: Optional[ReviewBlockers] = Field(
+        default=None, description="ended and reviewed runs: what stands in the way of a review; null for other states")
+    log_search_url: Optional[str] = Field(
+        default=None, description="the run's search in the site's log tooling, from svs.log_search_url; null when that isn't set")
 
 
 class RunPage(BaseModel):
@@ -227,6 +240,60 @@ class Attribution(BaseModel):
 class AttributionPage(BaseModel):
     data: list[Attribution]
     next_cursor: Optional[str] = None
+
+
+class RunAlertDetection(BaseModel):
+    """One detection of an alert the run holds or held, and its attribution to the run."""
+
+    detection: str = Field(description="the detection's content_hash")
+    description: Optional[str] = Field(default=None, description="null when the alert no longer has the detection")
+    signature_uuid: Optional[str] = None
+    signature_family: Optional[str] = None
+    attribution: Optional[Attribution] = Field(
+        default=None, description="its attribution to this run, removed or not; null when it never had one")
+
+
+class RunAlert(BaseModel):
+    """An alert attributed to the run, now or before (docs/SVS_API.md, *Run alerts*)."""
+
+    alert_uuid: str
+    alert: Optional[AlertRow] = Field(default=None, description="the alert as GET /api/v2/alerts lists it; null when it is gone")
+    holds: bool = Field(description="some attribution of it to the run holds")
+    confidence: Optional[str] = Field(
+        default=None, description="of those that hold: marker when any is (a person's association is marker), else context")
+    late: bool = Field(description="an attribution that holds is late")
+    manual: bool = Field(description="an attribution that holds was made by a person")
+    kept: bool = Field(description="a person kept its context attributions")
+    undecided_context: bool = Field(
+        description="it has a context attribution that holds and nobody kept: a review waits for keep or not-a-test")
+    detections: list[RunAlertDetection] = Field(description="every detection of the alert, and those it no longer has "
+                                                            "that were attributed")
+
+
+class RunAlertPage(BaseModel):
+    data: list[RunAlert]
+    next_cursor: Optional[str] = None
+
+
+class HistoryRun(BaseModel):
+    run_id: str
+    state: RunState
+    created_at: datetime
+    reviewed_at: Optional[datetime] = None
+
+
+class SignatureHistory(BaseModel):
+    signature_uuid: str
+    statuses: list[Optional[str]] = Field(
+        description="its status in each of the runs, in their order: as reviewed for a reviewed run, else live; null "
+                    "when it isn't in that run's result")
+
+
+class RunHistory(BaseModel):
+    """How the signatures of a run's result did in the test's earlier runs (docs/SVS_API.md, *Run history*)."""
+
+    runs: list[HistoryRun] = Field(description="the test's ended and reviewed runs registered before this one, newest first")
+    signatures: list[SignatureHistory] = Field(description="one per signature of this run's result, in its order")
 
 
 class AssociationRequest(BaseModel):

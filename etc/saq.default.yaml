@@ -235,6 +235,10 @@ svs:
   # SIMULATED (test-run) alerts older than this many days are archived by ace alert cleanup, like
   # FALSE_POSITIVE alerts after fp_days; they are never deleted (docs/SVS_RUNS.md)
   simulated_days: 30
+  # a link to the site's log search for one run, shown on the run page (ACE never queries it).
+  # {run_uuid}, {marker}, {test_guid}, {earliest} and {latest} (epoch seconds) are replaced
+  # (docs/SVS_RUNS.md, *Logs*). For example:
+  # log_search_url: https://splunk.example/en-US/app/search/search?q=search%20svs_run%3D{run_uuid}&earliest={earliest}&latest={latest}
   # the YARA samples captured from dispositioned alerts (Signatures -> Samples, /api/v2/svs/samples).
   # docs/SVS_SAMPLES.md
   samples:

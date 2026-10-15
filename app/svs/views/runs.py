@@ -1,20 +1,16 @@
-from flask import current_app, redirect, render_template, url_for
+from flask import abort, redirect, render_template, url_for
 from flask_login import current_user
 
 from aceapi_v2.saved_filters.service import ensure_default_saved_filters
 from aceapi_v2.sync import run_async_with_session
 from app.blueprints import svs
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
-
-# the run page's endpoint; the rows link to it once it is registered
-RUN_DETAIL_ENDPOINT = "svs.run_detail"
-
+from saq.util.uuid import UUID_REGEX
 
 def _page_context(view: str) -> dict:
-    run_url = ""
-    if RUN_DETAIL_ENDPOINT in current_app.view_functions:
-        run_url = url_for(RUN_DETAIL_ENDPOINT, run_id="__RUN__")
-    return {"view": view, "runs_screen": SVS_RUNS_SCREEN.name, "run_url": run_url}
+    # each row links to its run page; the script puts the run id in place of __RUN__
+    return {"view": view, "runs_screen": SVS_RUNS_SCREEN.name,
+            "run_url": url_for("svs.run_detail", run_id="__RUN__")}
 
 
 def _render(view: str):
@@ -43,3 +39,13 @@ def runs():
 def batches():
     # the same runs, one row per batch_id; the filters carry over between the two views
     return _render("batches")
+
+
+@svs.route("/runs/<run_id>", methods=["GET"])
+def run_detail(run_id: str):
+    # the run page (docs/SVS.md, Part 5, *The run page*): a shell over /api/v2/svs/runs/{run_id} and
+    # what hangs off it. Each action follows its permission in the template, and the API enforces
+    # them regardless. A run that doesn't exist is the script's 404, from the API.
+    if not UUID_REGEX.fullmatch(run_id):
+        abort(404)
+    return render_template("svs/run.html", run_id=run_id.lower(), runs_screen=SVS_RUNS_SCREEN.name)

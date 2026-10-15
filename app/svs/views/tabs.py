@@ -19,7 +19,7 @@ SVS_TABS = [
     {
         "endpoint": "svs.runs",
         "title": "Runs",
-        "active": ("svs.runs", "svs.batches"),
+        "active": ("svs.runs", "svs.batches", "svs.run_detail"),
         "major": "svs",
         "minor": "run_read",
     },

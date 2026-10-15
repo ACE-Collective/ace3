@@ -8,12 +8,13 @@ else. The YARA half of SVS (Samples, Validations) lives in the Signatures area.
 # Imported first so its before_request guard is registered on the blueprint: `svs:run_read` gates
 # the whole area, and a page can layer its own permission on top.
 from app.svs.views import access  # noqa: F401
-from app.svs.views.runs import batches, runs, svs_home
+from app.svs.views.runs import batches, run_detail, runs, svs_home
 from app.svs.views.tabs import svs_tab_context
 from app.svs.views.test_hosts import test_hosts
 
 __all__ = [
     'batches',
+    'run_detail',
     'runs',
     'svs_home',
     'svs_tab_context',

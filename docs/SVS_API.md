@@ -510,7 +510,9 @@ launcher that also reads its runs needs both.
 | `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
 | `GET /api/v2/svs/runs/count` | `svs:run_read` | `{"count"}`: how many runs the filters match |
 | `GET /api/v2/svs/runs/batches` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | One row per batch over the runs the filters match (*Batches*, below) |
-| `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent |
+| `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent, what stands in the way of its review and its log search link |
+| `GET /api/v2/svs/runs/{run_id}/alerts` (and `/export/ndjson`) | `svs:run_read` | The alerts the run holds or held (*Run alerts*, below) |
+| `GET /api/v2/svs/runs/{run_id}/history?runs=` | `svs:run_read` | How the signatures of its result did in the test's earlier runs (*Run history*, below) |
 | `GET /api/v2/svs/runs/{run_id}/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The run's event log, oldest first |
 | `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
 
@@ -561,7 +563,12 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
   doesn't change them);
 - `observation_seconds` and `attribution_seconds`, the window lengths fixed at registration
   (`docs/SVS_RUNS.md`, *Windows*);
-- `registered_by`, the username of the key that registered it (null for a config key).
+- `registered_by`, the username of the key that registered it (null for a config key);
+- `review_blockers`, for an `ended` or `reviewed` run (null otherwise): `{"stale", "candidates",
+  "context_alerts"}`, what a review would answer 409 with right now (*Run actions*, below), empty
+  lists and `false` when nothing is in the way;
+- `log_search_url`, the run's search in the site's log tooling, built from `svs.log_search_url`
+  (`docs/SVS_RUNS.md`, *Logs*); null when that isn't set.
 
 ### Filters
 
@@ -750,6 +757,35 @@ A person changes them with `svs:run_manage`, from a user's key (a config key get
 
 Each answers `{"alert_uuid", "svs_status", "queue", "moved", "reopened"}`: the alert's SVS status
 and queue afterwards, whether it moved, and whether it went from `SIMULATED` back to `OPEN`.
+
+### Run alerts
+
+`GET /api/v2/svs/runs/{run_id}/alerts` is what the run page shows of the run's alerts: one row per
+alert with an attribution to the run, held or removed, in the order they were first attributed,
+paged with `cursor`. Its NDJSON export streams every row. The rows nest, so there is no CSV:
+`…/attributions/export/csv` is the flat form.
+
+| Field | Meaning |
+|---|---|
+| `alert_uuid` | The alert. |
+| `alert` | Its row as `GET /api/v2/alerts` lists it, `svs_status` included; null when the alert is gone. |
+| `holds` | An attribution of it to this run holds. A row whose attributions were all removed (disassociated, *not a test*, or the router found they no longer apply) has `false`. |
+| `confidence` | Of the attributions that hold: `marker` when any is (a person's association counts as one), else `context`; null when none holds. |
+| `late`, `manual` | An attribution that holds is late, or was made by a person. |
+| `kept` | A person kept its context attributions. |
+| `undecided_context` | It has a context attribution that holds and that nobody kept: a review waits for *keep* or *not a test* (`review_blockers.context_alerts`). |
+| `detections` | Every detection of the alert, then any attributed one it no longer has: `{"detection", "description", "signature_uuid", "signature_family", "attribution"}`, where `detection` is the `content_hash`, `description` is null for one it no longer has, and `attribution` is its attribution to this run (as in *Attributions*), or null when it never had one. |
+
+### Run history
+
+`GET /api/v2/svs/runs/{run_id}/history?runs=10` (1 to 50) answers how each signature of the run's
+result did before: `{"runs", "signatures"}`.
+- `runs` are the test's `ended` and `reviewed` runs registered before this one, latest first, each
+  `{"run_id", "state", "created_at", "reviewed_at"}`.
+- `signatures` has one entry per signature of this run's result, in its order, `{"signature_uuid",
+  "statuses"}`. `statuses` lines up with `runs`: the signature's status in that run, as signed off
+  for a reviewed run and live for an ended one, or null when it isn't in that run's result (it
+  didn't fire, and nothing expected it then).
 
 ### Joins
 

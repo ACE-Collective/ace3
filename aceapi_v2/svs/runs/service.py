@@ -24,6 +24,7 @@ from aceapi_v2.common.listing import (
     rows_to_csv,
     settled,
 )
+from aceapi_v2.alerts.service import load_alert_rows
 from aceapi_v2.svs.runs.schemas import (
     ATTRIBUTION_CSV_FIELDS,
     RUN_BATCH_CSV_FIELDS,
@@ -35,8 +36,12 @@ from aceapi_v2.svs.runs.schemas import (
     Attribution,
     BulkRunRequest,
     BulkRunResult,
+    HistoryRun,
+    ReviewBlockers,
     ReviewRequest,
     ReviewResult,
+    RunAlert,
+    RunAlertDetection,
     RunBatch,
     RunComment,
     RunCommentRequest,
@@ -44,13 +49,17 @@ from aceapi_v2.svs.runs.schemas import (
     RunDetail,
     RunEvent,
     RunExecutedRequest,
+    RunHistory,
     RunLifecycle,
     RunRegistrationRequest,
     RunResult,
     RunRow,
     RunTarget,
+    SignatureHistory,
 )
 from saq.database.model import (
+    Alert,
+    DetectionPoint,
     SVSAttribution,
     SVSCatalogTest,
     SVSRun,
@@ -63,7 +72,8 @@ from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.svs import review, run_comments, runs
-from saq.svs.constants import RUN_STATES
+from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
+from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries
@@ -361,11 +371,17 @@ def get_detail(run_id: str) -> RunDetail:
     run = row[0]
     registrar = get_db().get(User, run.registered_by) if run.registered_by is not None else None
     summary = run_summaries(get_db(), [run.id])[run.id]
+    blockers = None
+    if run.state in review.REVIEWABLE_STATES:
+        found = review.review_blockers(get_db(), run, lock=False)
+        blockers = ReviewBlockers(stale=bool(found.get("stale")), candidates=found.get("candidates", []),
+                                  context_alerts=found.get("context_alerts", []))
     return RunDetail(
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        registered_by=registrar.username if registrar is not None else None)
+        registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
+        log_search_url=log_search_url(run))
 
 
 #
@@ -626,6 +642,119 @@ def fetch_run_attributions_page(selection: RunEventSelection, cursor: str | None
         next_cursor = encode_cursor(k=[rows[-1][0].id])
 
     return [_attribution(row) for row in rows], next_cursor
+
+
+#
+# the run page: the run's alerts, and how its signatures did in the test's earlier runs
+#
+
+def _run_alert(alert_uuid: str, alert, attributions: list[Attribution], detections: list) -> RunAlert:
+    holding = [a for a in attributions if a.removed_at is None]
+    context = [a for a in holding if a.confidence == AttributionConfidence.CONTEXT.value]
+    confidence = None
+    if holding:
+        confidence = (AttributionConfidence.CONTEXT.value if len(context) == len(holding)
+                      else AttributionConfidence.MARKER.value)
+
+    by_hash = {a.detection: a for a in attributions}
+    rows = [RunAlertDetection(detection=content_hash, description=description, signature_uuid=signature_uuid,
+                              signature_family=signature_family, attribution=by_hash.pop(content_hash, None))
+            for content_hash, description, signature_uuid, signature_family in detections]
+    # attributed detections the alert no longer has
+    rows.extend(RunAlertDetection(detection=a.detection, signature_uuid=a.signature_uuid,
+                                  signature_family=a.signature_family, attribution=a) for a in by_hash.values())
+    return RunAlert(
+        alert_uuid=alert_uuid, alert=alert, holds=bool(holding), confidence=confidence,
+        late=any(a.late for a in holding), manual=any(a.source == "manual" for a in holding),
+        kept=any(a.kept_at is not None for a in context),
+        undecided_context=any(a.kept_at is None for a in context), detections=rows)
+
+
+def fetch_run_alerts_page(selection: RunEventSelection, cursor: str | None,
+                          limit: int) -> tuple[list[RunAlert], str | None]:
+    """One page of the alerts the run holds or held, in the order they were first attributed to
+    it. Raises InvalidCursor."""
+    db = get_db()
+    first_id = func.min(SVSAttribution.id)
+    statement = (select(SVSAttribution.alert_uuid, first_id)
+                 .where(SVSAttribution.run_id == selection.run_db_id)
+                 .group_by(SVSAttribution.alert_uuid))
+    if cursor is not None:
+        statement = statement.having(first_id > decode_cursor(cursor, _parse_result_id))
+
+    keys = db.execute(statement.order_by(first_id).limit(limit + 1)).all()
+    next_cursor = None
+    if len(keys) > limit:
+        keys = keys[:limit]
+        next_cursor = encode_cursor(k=[keys[-1][1]])
+    alert_uuids = [alert_uuid for alert_uuid, _ in keys]
+    if not alert_uuids:
+        return [], next_cursor
+
+    attributions: dict[str, list[Attribution]] = {}
+    for row in db.execute(_attributions_statement()
+                          .where(SVSAttribution.run_id == selection.run_db_id,
+                                 SVSAttribution.alert_uuid.in_(alert_uuids))
+                          .order_by(SVSAttribution.id)):
+        attribution = _attribution(row)
+        attributions.setdefault(attribution.alert_uuid, []).append(attribution)
+
+    alert_ids = dict(db.execute(select(Alert.id, Alert.uuid).where(Alert.uuid.in_(alert_uuids))).all())
+    alerts = {row.uuid: row for row in load_alert_rows(list(alert_ids))}
+    detections: dict[str, list] = {}
+    for alert_id, *detection in db.execute(
+            select(DetectionPoint.alert_id, DetectionPoint.content_hash, DetectionPoint.description,
+                   DetectionPoint.signature_uuid, DetectionPoint.signature_family)
+            .where(DetectionPoint.alert_id.in_(list(alert_ids)))
+            .order_by(DetectionPoint.id)):
+        detections.setdefault(alert_ids[alert_id], []).append(detection)
+
+    return [_run_alert(alert_uuid, alerts.get(alert_uuid), attributions.get(alert_uuid, []),
+                       detections.get(alert_uuid, []))
+            for alert_uuid in alert_uuids], next_cursor
+
+
+RUN_HISTORY_MAX_RUNS = 50
+HISTORY_STATES = (RunState.ENDED.value, RunState.REVIEWED.value)
+
+
+def run_history(run_id: str, max_runs: int) -> RunHistory:
+    """How each signature of the run's result did in the test's ended and reviewed runs registered
+    before it, the latest max_runs of them; 400 for a malformed run id, 404 for an unknown run."""
+    run_uuid = _validate_run_id(run_id)
+    db = get_db()
+    run = db.execute(select(SVSRun.id, SVSRun.test_guid, SVSRun.created_at)
+                     .where(SVSRun.uuid == run_uuid)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+
+    signatures = list(db.execute(select(SVSRunResult.signature_uuid)
+                                 .where(SVSRunResult.run_id == run.id)
+                                 .order_by(SVSRunResult.id)).scalars())
+    earlier = db.execute(
+        select(SVSRun.id, SVSRun.uuid, SVSRun.state, SVSRun.created_at, SVSRun.reviewed_at)
+        .where(SVSRun.test_guid == run.test_guid, SVSRun.state.in_(HISTORY_STATES),
+               or_(SVSRun.created_at < run.created_at,
+                   and_(SVSRun.created_at == run.created_at, SVSRun.id < run.id)))
+        .order_by(SVSRun.created_at.desc(), SVSRun.id.desc())
+        .limit(max_runs)).all()
+
+    statuses: dict[tuple[int, str], Optional[str]] = {}
+    if earlier and signatures:
+        reviewed = {row.id for row in earlier if row.state == RunState.REVIEWED.value}
+        for run_db_id, signature_uuid, status, reviewed_status in db.execute(
+                select(SVSRunResult.run_id, SVSRunResult.signature_uuid, SVSRunResult.status,
+                       SVSRunResult.reviewed_status)
+                .where(SVSRunResult.run_id.in_([row.id for row in earlier]),
+                       SVSRunResult.signature_uuid.in_(signatures))):
+            statuses[(run_db_id, signature_uuid)] = reviewed_status if run_db_id in reviewed else status
+
+    return RunHistory(
+        runs=[HistoryRun(run_id=row.uuid, state=row.state, created_at=row.created_at, reviewed_at=row.reviewed_at)
+              for row in earlier],
+        signatures=[SignatureHistory(signature_uuid=signature_uuid,
+                                     statuses=[statuses.get((row.id, signature_uuid)) for row in earlier])
+                    for signature_uuid in signatures])
 
 
 @dataclass(frozen=True)
