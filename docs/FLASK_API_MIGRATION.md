@@ -21,9 +21,9 @@ This doc tracks two surfaces:
 | `intel`    | _(removed)_   | –         | –              | Deleted    |
 | `analysis` | _(removed)_   | –         | –              | Migrated   |
 | `engine`   | _(removed)_   | –         | –              | Migrated   |
-| `hunt`     | `hunt.py`     | 1         | POST           | Legacy     |
+| `hunt`     | `hunt.py`     | 1         | POST           | v2 added; legacy kept for the CLI |
 
-**Legacy endpoints remaining: 1** (POST).
+**Legacy endpoints remaining: 1** (POST), which already has its v2 route.
 
 GUI routes (`app/`): **no API-shaped candidates left** out of 66 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
@@ -33,7 +33,7 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **`/hunt/validate`**, the last one, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
+1. **`/hunt/validate`**, step 2: once production serves `POST /api/v2/hunt/validate`, switch the `validate-hunt` CLI to it, then delete the Flask route (see [`/hunt`](#hunt--huntpy)).
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -193,10 +193,10 @@ What decides the cost of each group is less the handler than who calls it. Three
 |--------|------------------|-----------------|------|---------|
 | POST   | `/hunt/validate` | `validate_hunt` | 387  | `lib/signature_validator/hunt_compiler/validate.py` (the separately installed `validate-hunt` CLI); documented in `docs/HUNTS.md` |
 
-Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost: the CLI is installed editable from ace3 `main`, by analysts through the signature repository's `install_validator.sh` and by that repository's CI, which clones `main` on every run, so a CLI change reaches CI before the server has the route. Planned for the end of the migration, in two steps:
+Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost: the CLI is installed editable from ace3 `main`, by analysts through the signature repository's `install_validator.sh` and by that repository's CI, which clones `main` on every run, so a CLI change reaches CI before the server has the route. Two steps:
 
-1. Add the v2 route beside this one and deploy it.
-2. Once production has it, switch the CLI to it and delete this route. Analysts re-run `install_validator.sh`.
+1. **Done:** `POST /api/v2/hunt/validate` (`aceapi_v2/hunt/`) runs beside this route. Both call `aceapi_v2/hunt/service.py::validate_hunt` and write the same `HUNT_AUDIT` record (`aceapi_v2/hunt/audit.py`); the v2 route answers in this route's shape (200 `{"valid": true, ...}`, 400 `{"valid": false, "error": ...}`, 415 for a body that is not JSON) rather than FastAPI's `{"detail": ...}`, so the CLI changes only its URL. `tests/aceapi/test_hunt.py` runs every test against both routes.
+2. Once production serves the v2 route, switch the CLI (`lib/signature_validator/hunt_compiler/validate.py`) to it and delete this route and `aceapi/`'s remaining modules; analysts re-run `install_validator.sh`. Then the tests run against v2 alone.
 
 ---
 
