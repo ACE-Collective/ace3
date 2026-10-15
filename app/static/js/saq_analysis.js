@@ -196,6 +196,10 @@ $(document).ready(function() {
         $("#option_" + disposition).click();
     });
 
+    $('#edit_comment_modal').on('shown.bs.modal', function() {
+        $('#edit_comment_text').trigger('focus');
+    });
+
     // validate the review modal before it submits (the alert_uuid is already injected via the review_form block)
     $("#btn-review").click(function(e) {
         if ($("input[name='review_result']:checked").val() == "INCORRECT") {
@@ -690,6 +694,27 @@ function delete_comment(comment_id) {
     }
 
     $("#delete_comment_form").submit();
+}
+
+// alert comment editing — AJAX to FastAPI at /api/v2/alerts/<uuid>/comments/<id>
+function edit_comment(comment_id) {
+    $("#edit_comment_id").val(comment_id.toString());
+    $("#edit_comment_text").val($("#comment_text_" + comment_id).text());
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("edit_comment_modal")).show();
+}
+
+function submit_edited_comment() {
+    var comment_id = $("#edit_comment_id").val();
+    var comment_text = $("#edit_comment_text").val().trim();
+    if (!comment_text) { alert("Comment cannot be empty"); return; }
+
+    var $save = $("#btn-save-edited-comment").prop("disabled", true);
+    aceApi.patch("/alerts/" + encodeURIComponent(current_alert_uuid) + "/comments/" + comment_id, {comment: comment_text})
+        .then(function() { window.location.reload(); })
+        .catch(function(e) {
+            $save.prop("disabled", false);
+            alert("Error updating comment: " + e.message);
+        });
 }
 
 // observable comment functions — AJAX to FastAPI at /api/v2/observable-comments/

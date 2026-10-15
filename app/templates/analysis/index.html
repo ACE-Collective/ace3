@@ -151,6 +151,26 @@
 
 </div>
 
+{# modal for editing the analyst's own comments on the alert (AJAX to FastAPI) #}
+<div class="modal fade" id="edit_comment_modal" tabindex="-1" aria-labelledby="edit_comment_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <input type="hidden" id="edit_comment_id" value=""/>
+            <div class="modal-header">
+                <h5 class="modal-title" id="edit_comment_modal_label">Edit Comment</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <textarea class="form-control" rows="3" id="edit_comment_text"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-primary" id="btn-save-edited-comment" onclick="submit_edited_comment()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {# modal for adding/editing observable comments (AJAX to FastAPI) #}
 <div class="modal fade" id="observable_comment_modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
@@ -319,6 +339,7 @@
     var current_user_can_write_alerts = {{ has_permission('alert', 'write') | tojson }};
     var current_user_can_review_alerts = {{ has_permission('alert', 'review') | tojson }};
 </script>
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>

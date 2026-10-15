@@ -22,6 +22,8 @@ from aceapi_v2.responses import (
 from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import (
+    AlertCommentRead,
+    AlertCommentUpdate,
     AlertListPage,
     AlertRow,
     BulkAddObservableRequest,
@@ -308,6 +310,19 @@ async def view_alert_logs(
         media_type="text/plain; charset=utf-8",
         content_disposition_type="inline",
     )
+
+
+@router.patch("/{alert_uuid}/comments/{comment_id}", response_model=AlertCommentRead)
+async def update_alert_comment(
+    alert_uuid: str,
+    comment_id: int,
+    body: AlertCommentUpdate,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> AlertCommentRead:
+    """Edit the text of a comment on the alert. Only the comment's author may edit it (403)."""
+    return await run_db_in_thread(
+        service.update_alert_comment, alert_uuid, comment_id, body.comment, auth.auth_user_id,
+        auth.auth_name)
 
 
 ContentHashParam = Annotated[str, Path(
