@@ -79,7 +79,6 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),
-    CatalogEntry("whitelist", "write", "Whitelist observables."),
 )
 
 # Convenience lookups for validation and guard tests. These cover the STATIC entries only; use

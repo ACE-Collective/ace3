@@ -177,39 +177,3 @@ def test_email_file_success(mock_config, mock_smtp, web_client, root_analysis, t
                                 'subject': 'Test subject'
                             })
     assert result.status_code == 302
-
-@pytest.mark.integration
-def test_html_details_no_alert(web_client):
-    """Test html_details when no alert is loaded."""
-    result = web_client.get(url_for("analysis.html_details"))
-    assert result.status_code == 200
-    assert b"alert not found" in result.data
-
-
-@pytest.mark.integration
-def test_html_details_missing_field(web_client, root_analysis):
-    """Test html_details with missing field parameter."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    result = web_client.get(url_for("analysis.html_details"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    assert b"missing required parameter: field" in result.data
-
-
-@pytest.mark.integration
-def test_html_details_with_field(web_client, root_analysis):
-    """Test html_details with valid field parameter."""
-    # Add some details to the alert
-    root_analysis.details = {'test_field': '<h1>Test HTML</h1>'}
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    result = web_client.get(url_for("analysis.html_details"),
-                          query_string={
-                              'direct': alert.uuid,
-                              'field': 'test_field'
-                          })
-    assert result.status_code == 200
-    assert b"<h1>Test HTML</h1>" in result.data

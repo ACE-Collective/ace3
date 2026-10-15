@@ -564,8 +564,6 @@ ACTION_TAG_OBSERVABLE = 'tag_observable'
 ACTION_VIEW_IN_TRIAGE = 'view_in_triage'
 ACTION_TRIAGE = 'triage'
 ACTION_VMRAY = 'vmray'
-ACTION_UN_WHITELIST = 'un_whitelist'
-ACTION_WHITELIST = 'whitelist'
 ACTION_URL_CRAWL = 'crawl'
 ACTION_URLSCAN = 'urlscan'
 ACTION_CHECK_FOR_CLICKERS = 'check_for_clickers'
@@ -825,7 +823,6 @@ CONFIG_GUI_GOOGLE_ANALYTICS = "google_analytics" # XXX remove
 CONFIG_GUI_FILE_PREVIEW_BYTES = "file_preview_bytes"
 CONFIG_GUI_NAVIGATION_TABS = "navigation_tabs" # XXX remove
 CONFIG_GUI_SECRET_KEY = "secret_key"
-CONFIG_GUI_WHITELIST_EXCLUDED_OBSERVABLE_TYPES = "whitelist_excluded_observable_types"
 CONFIG_GUI_LISTEN_ADDRESS = "listen_address"
 CONFIG_GUI_LISTEN_PORT = "listen_port"
 
