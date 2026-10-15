@@ -3,18 +3,35 @@ import hashlib
 import io
 import json
 import os
-import uuid
 from flask import url_for
 import pytest
 import pytz
 
-from saq.analysis.root import KEY_PLAYBOOK_URL
+from saq.analysis.root import KEY_PLAYBOOK_URL, RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import DIRECTIVE_NO_SCAN, EVENT_TIME_FORMAT_JSON_TZ, F_FILE, F_IP, F_USER
 from saq.database.pool import get_db_connection
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
-from saq.util.time import parse_event_time
+from saq.util.uuid import get_storage_dir
+
+
+def _load_submitted_root(root_uuid: str) -> RootAnalysis:
+    """The root a submission saved, read back from storage."""
+    root = RootAnalysis(storage_dir=get_storage_dir(root_uuid))
+    root.load()
+    return root
+
+
+def _as_json(value) -> dict:
+    """The JSON form the API serves, so that datetimes compare as the strings clients see."""
+    return json.loads(json.dumps(value, cls=_JSONEncoder))
+
+
+def _file_bytes(root: RootAnalysis, file_uuid: str) -> bytes:
+    with open(root.get_observable(file_uuid).full_path, "rb") as fp:
+        return fp.read()
+
 
 @pytest.mark.integration
 def test_api_analysis_submit(test_client):
@@ -51,11 +68,8 @@ def test_api_analysis_submit(test_client):
     uuid = result['uuid']
     #_id = result['id']
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    result = result.get_json()
-    assert result
-    assert 'result' in result
-    result = result['result']
+    root = _load_submitted_root(uuid)
+    result = _as_json(root.json)
 
     assert result['analysis_mode'] == 'analysis'
     assert result['tool'] == 'unittest'
@@ -105,42 +119,14 @@ def test_api_analysis_submit(test_client):
     assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
-    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ace-auth': get_config().api.api_key })
-    result = result.get_json()
-    assert result
-    result = result['result']
-    assert 'hello' in result
-    assert result['hello'] == 'world'
+    root.load_details()
+    assert root.details == {'hello': 'world'}
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    assert result.data == b'Hello, world!'
+    # the uploaded file is stored with the root, under the name it was submitted with
+    assert _file_bytes(root, file_uuid) == b'Hello, world!'
+    assert root.find_observable(lambda o: o.type == F_FILE and o.file_path == 'sample.dat').uuid == file_uuid
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    assert result.data == b'Hello, world!'
-
-    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    result = result.get_json()
-    assert result
-    result = result['result']
-    assert 'workload' in result
-    assert 'delayed_analysis' in result
-    assert 'locks' in result
-    assert result['delayed_analysis'] == []
-    assert result['locks'] is None
-    assert isinstance(result['workload']['id'], int)
-    assert result['workload']['uuid'] == uuid
-    assert result['workload']['node_id'] == get_global_runtime_settings().saq_node_id
-    assert result['workload']['analysis_mode'] == 'analysis'
-    assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
-
-    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code, 200
-    result = result.get_json()
-    assert result
-    result = result['result']
+    result = _as_json(root.submission)
 
     assert result['analysis_mode'] == 'analysis'
     assert result['tool'] == 'unittest'
@@ -199,8 +185,7 @@ def test_api_analysis_submit_added_by(test_client):
     assert result
     uuid = result['result']['uuid']
 
-    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    result = result.get_json()['result']
+    result = _as_json(_load_submitted_root(uuid).json)
 
     assert len(result['observable_store']) == 3
     for observable in result['observable_store'].values():
@@ -240,11 +225,8 @@ def test_api_analysis_submit_queue(test_client):
     result = result['result']
     assert result['uuid']
     uuid = result['uuid']
-    result = test_client.get(url_for('analysis.get_analysis', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    result = result.get_json()
-    assert result
-    assert 'result' in result
-    result = result['result']
+    root = _load_submitted_root(uuid)
+    result = _as_json(root.json)
 
     assert result['analysis_mode'] == 'analysis'
     assert result['tool'] == 'unittest'
@@ -292,42 +274,14 @@ def test_api_analysis_submit_queue(test_client):
     assert row[2] == get_global_runtime_settings().saq_node_id
     assert row[3] == 'analysis'
 
-    result = test_client.get(url_for('analysis.get_details', uuid=uuid, name=result['file_path']), headers = { 'x-ace-auth': get_config().api.api_key })
-    result = result.get_json()
-    assert result
-    result = result['result']
-    assert 'hello' in result
-    assert result['hello'] == 'world'
+    root.load_details()
+    assert root.details == {'hello': 'world'}
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name=file_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    assert result.data == b'Hello, world!'
+    # the uploaded file is stored with the root, under the name it was submitted with
+    assert _file_bytes(root, file_uuid) == b'Hello, world!'
+    assert root.find_observable(lambda o: o.type == F_FILE and o.file_path == 'sample.dat').uuid == file_uuid
 
-    result = test_client.get(url_for('analysis.get_file', uuid=uuid, file_uuid_or_name='sample.dat'), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    assert result.data == b'Hello, world!'
-
-    result = test_client.get(url_for('analysis.get_status', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    result = result.get_json()
-    assert result
-    result = result['result']
-    assert 'workload' in result
-    assert 'delayed_analysis' in result
-    assert 'locks' in result
-    assert result['delayed_analysis'] == []
-    assert result['locks'] is None
-    assert isinstance(result['workload']['id'], int)
-    assert result['workload']['uuid'] == uuid
-    assert result['workload']['node_id'] == get_global_runtime_settings().saq_node_id
-    assert result['workload']['analysis_mode'] == 'analysis'
-    assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
-
-    result = test_client.get(url_for('analysis.get_submission', uuid=uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 200
-    result = result.get_json()
-    assert result
-    result = result['result']
+    result = _as_json(root.submission)
 
     assert result['analysis_mode'] == 'analysis'
     assert result['tool'] == 'unittest'
@@ -520,36 +474,6 @@ def test_api_analysis_submit_invalid(test_client):
     #assert alertdir_count == 0
 
 @pytest.mark.integration
-def test_api_analysis_invalid_status(test_client):
-    result = test_client.get(url_for('analysis.get_status', uuid='invalid'), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 400
-
-    test_uuid = str(uuid.uuid4())
-    result = test_client.get(url_for('analysis.get_status', uuid=test_uuid), headers = { 'x-ace-auth': get_config().api.api_key })
-    assert result.status_code == 400
-    assert result.data.decode() == 'invalid uuid {}'.format(test_uuid)
-
-@pytest.mark.integration
-def test_api_analysis_status_detection_count(test_client):
-    # detection_count is computed on the fly from the detection_points table
-    from tests.saq.helpers import create_root_analysis
-    from saq.database.util.alert import ALERT
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-    root.add_detection_point("real detection")
-    o = root.add_observable_by_spec(F_USER, "test_user")
-    o.add_detection_point("another detection")
-    root.save()
-    ALERT(root)
-
-    result = test_client.get(url_for('analysis.get_status', uuid=root.uuid), headers={'x-ace-auth': get_config().api.api_key})
-    assert result.status_code == 200
-    result = result.get_json()['result']
-    assert result['alert'] is not None
-    assert result['alert']['detection_count'] == 2
-
-@pytest.mark.integration
 def test_api_analysis_submit_rejected_while_draining(test_client):
     from saq.constants import NODE_STATUS_DRAINING, NODE_STATUS_RUNNING
     from saq.database.util.node import set_node_status
@@ -572,11 +496,6 @@ def test_api_analysis_submit_rejected_while_draining(test_client):
     set_node_status(node_id, NODE_STATUS_DRAINING)
     result = test_client.post(url_for('analysis.submit'), data=dict(submission_data),
                               content_type='multipart/form-data', headers={'x-ace-auth': get_config().api.api_key})
-    assert result.status_code == 503
-
-    # resubmit is also rejected
-    result = test_client.get(url_for('analysis.resubmit', uuid=str(uuid.uuid4())),
-                             headers={'x-ace-auth': get_config().api.api_key})
     assert result.status_code == 503
 
     # once the node is running again submissions are accepted

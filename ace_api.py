@@ -555,109 +555,25 @@ submit_command_parser.add_argument('--playbook-url',
     help="""An optional url to a playbook for this alert.""")
 submit_command_parser.set_defaults(func=_cli_submit)
 
-def resubmit_alert(uuid, *args, **kwargs):
-    """Resubmit an alert for analysis. This means the alert will be re-analyzed as-if it was new.
-
-    :param str uuid: The uuid of the alert to be resubmitted.
-    :return: A result dictionary (has 'result' key).
-    :rtype: dict
-    """
-    return _execute_api_call('analysis/resubmit/{}'.format(uuid), *args, **kwargs).json()
-
-def _cli_resubmit_alert(args):
-    return resubmit_alert(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
-
-#resubmit_command_parser = _api_command(subparsers.add_parser('resubmit',
-    #help="""Resubmit an alert for analysis. This means the alert will be re-analyzed as-if it was new."""))
-#resubmit_command_parser.add_argument('uuid', help="The UUID of the analysis/alert to resubmit.")
-#resubmit_command_parser.set_defaults(func=_cli_resubmit_alert)
-
 def get_analysis(uuid, *args, **kwargs):
-    """Get analysis results.
+    """Get an alert: its analysis tree plus its database state.
 
-    :param str uuid: The UUID of the analysis request.
-    :return: Result dictionary containing any and all analysis results.
+    Served by GET /api/v2/alerts/{uuid}, so only alerts are found; a submission that has not
+    become an alert raises requests.HTTPError (404).
+
+    :param str uuid: The UUID of the alert.
+    :return: {'result': <alert JSON>}
     :rtype: dict
     """
-    return _execute_api_call('analysis/{}'.format(uuid), *args, **kwargs).json()
+    return _execute_api_call('v2/alerts/{}'.format(uuid), *args, **kwargs).json()
 
 def _cli_get_analysis(args):
     return get_analysis(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
 
 get_analysis_command_parser = _api_command(subparsers.add_parser('get-analysis',
-    help="""Get analysis results."""))
-get_analysis_command_parser.add_argument('uuid', help="The UUID of the analysis to get.")
+    help="""Get an alert's analysis results."""))
+get_analysis_command_parser.add_argument('uuid', help="The UUID of the alert to get.")
 get_analysis_command_parser.set_defaults(func=_cli_get_analysis)
-
-def get_analysis_details(uuid, name, *args, **kwargs):
-    # Get external details.
-    return _execute_api_call('analysis/details/{}/{}'.format(uuid, name), *args, **kwargs).json()
-
-def _cli_get_analysis_details(args):
-    return get_analysis_details(remote_host=args.remote_host, 
-                                ssl_verification=args.ssl_verification, 
-                                uuid=args.uuid,
-                                name=args.name,
-                                api_key=args.api_key)
-
-get_analysis_details_command_parser = _api_command(subparsers.add_parser('get-analysis-details',
-    help="""Get detailed analysis results."""))
-get_analysis_details_command_parser.add_argument('uuid', help="The UUID of the analysis to get details from.")
-get_analysis_details_command_parser.add_argument('name', help="The name of the details to get.")
-get_analysis_details_command_parser.set_defaults(func=_cli_get_analysis_details)
-
-def get_analysis_file(uuid, name, output_file=None, output_fp=None, *args, **kwargs):
-    if output_file is None and output_fp is None:
-        output_fp = sys.stdout.buffer
-    elif output_fp is None:
-        output_fp = open(output_file, 'wb')
-
-    r = _execute_api_call('analysis/file/{}/{}'.format(uuid, name), stream=True, *args, **kwargs)
-    
-    size = 0
-    for chunk in r.iter_content(io.DEFAULT_BUFFER_SIZE):
-        if chunk:
-            output_fp.write(chunk)
-            size += len(chunk)
-
-    if output_file is not None:
-        output_fp.close()
-
-    return True
-
-def _cli_get_analysis_file(args):
-    return get_analysis_file(remote_host=args.remote_host,
-                             ssl_verification=args.ssl_verification,
-                             uuid=args.uuid,
-                             name=args.name,
-                             output_file=args.output_file,
-                             output_fp=sys.stdout.buffer if args.output_file is None else None,
-                             api_key=args.api_key)
-
-get_analysis_file_command_parser = _api_command(subparsers.add_parser('get-analysis-file',
-    help="""Download the given file from the given analysis."""))
-get_analysis_file_command_parser.add_argument('uuid', help="The UUID of the analysis to get the file from.")
-get_analysis_file_command_parser.add_argument('name', help="The name of the file to get.")
-get_analysis_file_command_parser.add_argument('-o', '--output-file', 
-    help="""The name of the local file to write to. If this option is not specified then the file is written
-            to standard output.""")
-get_analysis_file_command_parser.set_defaults(func=_cli_get_analysis_file)
-
-def get_analysis_status(uuid, *args, **kwargs):
-    """Get the status of an analysis.
-
-    :param str uuid: The analysis UUID.
-    :return: Result dictionary
-    """
-    return _execute_api_call('analysis/status/{}'.format(uuid), *args, **kwargs).json()
-
-def _cli_get_analysis_status(args):
-    return get_analysis_status(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
-
-get_analysis_status_command_parser = _api_command(subparsers.add_parser('get-analysis-status',
-    help="""Get the status of an analysis."""))
-get_analysis_status_command_parser.add_argument('uuid', help="The UUID of the analysis to get the status from.")
-get_analysis_status_command_parser.set_defaults(func=_cli_get_analysis_status)
 
 def download(uuid, target_dir, *args, **kwargs):
     """Download everything related to this uuid and write it to target_dir.
@@ -855,43 +771,6 @@ class Analysis(object):
     @description.setter
     def description(self, value):
         self.submit_kwargs['description'] = description
-
-    @property
-    def status(self):
-        """Return the human readable status of this Analysis.
-
-            - If this Analysis does not have a uuid, the status is 'UNKNOWN: UUID is None'.
-            - A status of 'COMPLETE: No detections' is returned if this Analysis has a uuid but ACE returned a 404 for it (ACE deletes any analysis that didn't become an Alert).
-            - 'ANALYZING' means ACE is working on the root analysis.
-            - 'DELAYED' means ACE is waiting for one or more Analysis Modules to complete it's work.
-            - 'NEW' means ACE has received the Analysis but hasn't started working on it yet. Analysis shouldn't stay in the NEW state long.
-            - 'COMPLETE (Alerted with # detections)' means the Analysis became an Alert and has # detection points.
-        """
-        if self.uuid is None:
-            return "UNKNOWN: UUID is None. Not submitted?"
-        result = None
-        try:
-            result = get_analysis_status(self.uuid, remote_host=self.remote_host, ssl_verification=self.ssl_verification)
-        except requests.exceptions.HTTPError as e:
-            # UUID is not none, so ACE had to have received this analysis and then delete it after finding no detections
-            return "COMPLETE: No detections"
-        if 'result' not in result:
-            logger.error("Unexpected result when getting analysis status: {}".format(result))
-            return result
-        result = result['result']
-        if 'locks' in result and result['locks'] is not None:
-            return "ANALYZING"
-        if 'delayed_analysis' in result:
-            assert isinstance(result['delayed_analysis'], list)
-        if len(result['delayed_analysis']) > 0:
-            return "DELAYED"
-        if 'workload' in result and result['workload'] is not None:
-            return "NEW"
-        if 'alert' in result and result['alert'] is not None:
-            a = result['alert']
-            return "COMPLETE (Alerted with {} detections)".format(a['detection_count'])
-
-        return "UNKNOWN"
 
     def set_description(self, value):
         self.description = value
