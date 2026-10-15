@@ -8,6 +8,7 @@ data-default-f='{{ svs_needs_attention_f() | tojson }}'
 data-runs-url="{{ url_for('svs.runs') }}"
 data-batches-url="{{ url_for('svs.batches') }}"
 data-run-url="{{ run_url }}"
+data-test-url="{{ test_url }}"
 data-tz="{{ current_user.timezone or 'UTC' }}"
 data-can-manage="{{ 'true' if has_permission('svs', 'run_manage') else 'false' }}"
 {%- endmacro %}

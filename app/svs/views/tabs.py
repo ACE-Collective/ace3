@@ -7,9 +7,9 @@ from urllib.parse import urlencode
 from flask import current_app
 from flask_login import current_user
 
-from aceapi_v2.saved_filters.service import DEFAULT_SVS_RUN_SAVED_FILTERS
+from aceapi_v2.saved_filters.service import DEFAULT_SVS_RUN_SAVED_FILTERS, DEFAULT_SVS_TEST_SAVED_FILTERS
 from app.blueprints import svs
-from saq.gui.filter_screens import SVS_RUNS_SCREEN
+from saq.gui.filter_screens import SVS_RUNS_SCREEN, SVS_TESTS_SCREEN
 from saq.gui.filter_url import encode_filter_query
 from saq.permissions.logic import user_has_permission
 
@@ -20,6 +20,13 @@ SVS_TABS = [
         "endpoint": "svs.runs",
         "title": "Runs",
         "active": ("svs.runs", "svs.batches", "svs.run_detail"),
+        "major": "svs",
+        "minor": "run_read",
+    },
+    {
+        "endpoint": "svs.tests",
+        "title": "Tests",
+        "active": ("svs.tests", "svs.test_detail"),
         "major": "svs",
         "minor": "run_read",
     },
@@ -47,6 +54,14 @@ def svs_needs_attention_f() -> list[str]:
     """The f= values of the runs screen's Needs attention view: what the SVS entry of the
     navigation bar counts, and the view the Runs tab opens with."""
     return encode_filter_query(list(DEFAULT_SVS_RUN_SAVED_FILTERS[0]["filters"]), screen=SVS_RUNS_SCREEN)
+
+
+@svs.app_template_global()
+@cache
+def svs_tests_default_f() -> list[str]:
+    """The f= values of the tests screen's default view, the tests still in the catalog: what the
+    Tests tab opens with."""
+    return encode_filter_query(list(DEFAULT_SVS_TEST_SAVED_FILTERS[0]["filters"]), screen=SVS_TESTS_SCREEN)
 
 
 @svs.app_template_global()

@@ -8,9 +8,11 @@ from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.util.uuid import UUID_REGEX
 
 def _page_context(view: str) -> dict:
-    # each row links to its run page; the script puts the run id in place of __RUN__
+    # each row links to its run page and to its test's page; the script puts the run id in place of
+    # __RUN__ and the test's guid in place of __TEST__
     return {"view": view, "runs_screen": SVS_RUNS_SCREEN.name,
-            "run_url": url_for("svs.run_detail", run_id="__RUN__")}
+            "run_url": url_for("svs.run_detail", run_id="__RUN__"),
+            "test_url": url_for("svs.test_detail", guid="__TEST__")}
 
 
 def _render(view: str):
@@ -48,4 +50,5 @@ def run_detail(run_id: str):
     # them regardless. A run that doesn't exist is the script's 404, from the API.
     if not UUID_REGEX.fullmatch(run_id):
         abort(404)
-    return render_template("svs/run.html", run_id=run_id.lower(), runs_screen=SVS_RUNS_SCREEN.name)
+    return render_template("svs/run.html", run_id=run_id.lower(), runs_screen=SVS_RUNS_SCREEN.name,
+                           test_url=url_for("svs.test_detail", guid="__TEST__"))
